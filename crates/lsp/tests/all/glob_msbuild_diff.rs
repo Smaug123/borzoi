@@ -4,7 +4,7 @@
 //! against `dotnet msbuild` over the *vendored* F# corpus — but that corpus
 //! never globs its sources (every `<Compile>` is an explicit literal). This
 //! test fills that gap: it builds **synthetic** globbing fixtures in a
-//! tempdir and diffs [`borzoi::glob_resolver::resolve`] (wired into
+//! tempdir and diffs [`borzoi_msbuild::glob_resolver::resolve`] (wired into
 //! [`parse_fsproj_with_imports`] exactly as the LSP wires it) against
 //! `dotnet msbuild -getItem:Compile` for the same project.
 //!
@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use borzoi_spawn::BoundedCommand;
 
-use borzoi::glob_resolver;
+use borzoi_msbuild::glob_resolver;
 use borzoi_msbuild::{GlobResolver, ItemKind, parse_fsproj_with_imports};
 use serde::Deserialize;
 use tempfile::TempDir;

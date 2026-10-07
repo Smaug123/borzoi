@@ -1,13 +1,12 @@
 //! Pure MSBuild-style glob matching for `.fsproj` item includes.
 //!
-//! This is the policy half of the `borzoi-msbuild` glob *seam*
-//! (`GlobResolver`): the `msbuild` core deliberately stays
-//! filesystem-free and dependency-light, so the LSP shell owns glob
-//! semantics and ordering. This module is the *pure* core of that —
-//! pattern parsing and matching against relative paths, plus a
-//! deterministic selection over a candidate set. The filesystem
-//! enumeration that produces those candidates, and the wiring into the
-//! parser, live separately (phase 9b-2).
+//! This is the policy half of the glob *seam* (`GlobResolver`): the
+//! evaluator never globs, it hands each globbing item element to a
+//! caller-supplied resolver. This module is the *pure* core of the
+//! resolver this crate ships ([`crate::glob_resolver`]) — pattern parsing
+//! and matching against relative paths, plus a deterministic selection
+//! over a candidate set. The filesystem enumeration that produces those
+//! candidates lives in `glob_resolver`.
 //!
 //! ## Semantics modelled
 //!
