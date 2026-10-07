@@ -38,6 +38,7 @@ pub use diagnostic::{
     PackageReferenceUncertaintyCauseKind, StructuralCompileItemUncertainty,
     StructuralPackageReferenceUncertainty,
 };
+pub use glob::GlobDecline;
 pub use imports::detect_implicit_imports;
 /// Escape text that entered from *outside* MSBuild's escaped-value domain — a
 /// filesystem path, a computed toolset seed — so that seeding it as a property
@@ -199,9 +200,12 @@ pub struct GlobRequest<'a> {
 /// Returns the final, ordered list of absolute paths to splice as items
 /// — each already joined onto [`GlobRequest::base_dir`], with excludes
 /// applied and ordering finalised (F# compile order is load-bearing, so
-/// the resolver owns a deterministic order). An empty result means the
-/// element contributed no files; the evaluator emits no diagnostic for
-/// that (MSBuild is silent when a glob matches nothing).
+/// the resolver owns the order, and it must be MSBuild's). An empty result
+/// means the element contributed no files; the evaluator emits no
+/// diagnostic for that (MSBuild is silent when a glob matches nothing).
+/// A [`GlobDecline`] means the resolver cannot reproduce MSBuild's list:
+/// the evaluator records [`DiagnosticKind::GlobDeclined`] and marks the
+/// item set uncertain rather than splice a guess.
 ///
 /// Expanding globs requires touching the filesystem (and matching
 /// MSBuild's `FileMatcher` semantics), which is policy the parser stays
@@ -211,7 +215,7 @@ pub struct GlobRequest<'a> {
 /// supplies no resolver, a wildcard `Include` surfaces as
 /// [`DiagnosticKind::UnsupportedGlob`] and an `Exclude` as
 /// [`DiagnosticKind::UnsupportedItemOperation`] (the phase-8 behaviour).
-pub type GlobResolver<'r> = dyn Fn(&GlobRequest<'_>) -> Vec<PathBuf> + 'r;
+pub type GlobResolver<'r> = dyn Fn(&GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> + 'r;
 
 /// Which item element produced a [`ResolvedItem`]. This is provenance, not
 /// the whole ordering model: F#'s effective source order also considers

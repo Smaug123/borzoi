@@ -2608,6 +2608,26 @@ fn route_item_through_resolver(
         };
         resolver(&request)
     };
+    let matched = match matched {
+        Ok(matched) => matched,
+        Err(reason) => {
+            // Nothing is spliced, and the list is missing whatever MSBuild
+            // expands here. `push` marks the Compile set uncertain in a
+            // Compile context; a reference list is marked by hand, since a
+            // dropped `<ProjectReference>` glob is a missing edge.
+            if kind == ItemKind::ProjectReference {
+                state.project_references_uncertain = true;
+            }
+            state.push(
+                DiagnosticKind::GlobDeclined {
+                    include: include_joined.clone(),
+                    reason,
+                },
+                node.range(),
+            );
+            return;
+        }
+    };
     let span = state.effective_span(node.range());
     for path in matched {
         push_resolved_item(
