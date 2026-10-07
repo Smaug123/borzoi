@@ -177,9 +177,10 @@ measured, and both stayed green. A count also cannot see movement inside itself
 
 The corpus is content-addressed (the `fsharp-src` flake input) and both sides
 are deterministic, so a sweep's outcome for every item is a fixed fact. The sema
-sweeps therefore pin that fact itself: each checks a run against a manifest
-checked in under `crates/sema/tests/manifests/`, one sorted line per item, and
-fails on **any** difference with a line diff of what moved. There is no slack,
+and cst corpus sweeps, and assembly's reference-pack sweep, therefore pin that
+fact itself: each checks a run against a manifest checked in under
+`crates/<crate>/tests/manifests/`, one sorted line per item, and fails on
+**any** difference with a line diff of what moved. There is no slack,
 and no direction is privileged — a newly bound name fails the run exactly as a
 lost one does, because both are a change someone should look at. An intended
 movement is acknowledged by regenerating the manifest and committing it, so the
@@ -191,9 +192,11 @@ BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all re
 
 (Each manifest's header and each failure message names its own command.)
 A manifest records state, so it cannot say a state is wrong; the hard
-soundness gates — zero resolution divergences, zero inference divergences, the
-attribute and overload certain-implies-exact checks — remain separate
-assertions that run first, so regeneration cannot bless a wrong answer.
+gates — zero resolution divergences, zero inference divergences, the attribute
+and overload certain-implies-exact checks, the parser's lossless round-trip and
+zero panics, an `fcs-dump` record that always says whether FCS's parse erred,
+zero reference-pack *type* drops — remain separate assertions that run first,
+so regeneration cannot bless a wrong answer.
 
 Granularity is chosen per sweep, to keep each file reviewable:
 
@@ -204,6 +207,27 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
 | `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside. |
+| `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
+| `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). |
+| `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
+| `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
+
+The cst manifests count their dominant bucket for the same reason
+`resolve_corpus_diff` counts matches: every other file is listed by path, so a
+file entering or leaving the counted bucket moves a listed line, and the corpus
+is pinned, so no file can join the walk unlisted.
+
+The reference pack is not the F# corpus: it is whichever pack the SDK on `PATH`
+ships. Under `nix develop`, which is how CI and every documented command run
+it, that is the flake's pinned nixpkgs SDK (`Microsoft.NETCore.App.Ref`
+10.0.9 today), and the pack is platform-neutral *at the granularity the
+manifest records*: the Linux and macOS SDKs from the same nixpkgs pin ship
+byte-different copies of 57 of its 167 DLLs, yet both project to the identical
+manifest. A byte-level pin (a hash per DLL) would therefore fail on one
+platform or the other; a projection-level one does not. Outside the devshell
+the pack is whatever SDK is installed, so the manifest's first line names the
+pack version it describes, and a run against another SDK fails on that line
+first.
 
 An alt-binder entry says whether FCS checked its file cleanly (`fcs-clean`) or
 with errors (`fcs-check-errors`). In the latter it is usually FCS's isolation
@@ -229,12 +253,14 @@ had to be pinned for that:
 - **File keys.** On a case-insensitive file system Nix stores a name that
   collides case-insensitively with a sibling under a `~nix~case~hack~<n>`
   suffix (the corpus has both `CompilerOptions/Fsc` and `CompilerOptions/fsc`).
-  Keys decode it, files are sorted by their decoded components so a strided
+  Keys decode it (every crate's corpus entries go through
+  `corpus_key::corpus_relative`), files are sorted by their decoded components so a strided
   sample picks the same files everywhere, and two files decoding to one key
   fail the sweep (`borzoi_oracle_harness::corpus_key`).
 
 The comparison helper is `borzoi_oracle_harness::manifest`, and the corpus key
-spelling `borzoi_oracle_harness::corpus_key`, both deliberately outside `sema`.
+spelling `borzoi_oracle_harness::corpus_key`, both shared by every crate's
+tests.
 
 The whole-project gate (`ci.yml`'s `corpus-diff` job) uses the same helper over
 the pinned *project* corpus, with
@@ -249,9 +275,14 @@ green. Regenerate it with
 `BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`, run outside
 `nix develop`; the script materialises the corpus first when run locally.
 
-The other crates' corpus gates still assert one-sided counts with slack —
-`cst`'s `MAX_WE_ACCEPT_FCS_REJECTS`, `assembly`'s `bcl_ref_pack_sweep` — and are
-the next candidates for it.
+The slack the cst and assembly manifests replaced was real too: on 2026-10-07
+the reference pack dropped 4 members under a ceiling of 180, and the parser
+accepted 26 FCS-rejected files under a ceiling of 28 (a margin once justified by
+`ast-batch` accept/reject nondeterminism that repeated runs do not reproduce).
+One corpus count is still one-sided: `projection_skip_sweep`'s `MIN_PROJECTED`,
+an anti-vacuity floor over a package cache that is pinned in CI (the restored
+project corpus) but not locally (`~/.nuget/packages`), so an exact record of it
+would describe only one machine.
 
 Two things follow for anyone adding a sweep:
 
