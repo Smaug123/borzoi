@@ -177,9 +177,10 @@ measured, and both stayed green. A count also cannot see movement inside itself
 
 The corpus is content-addressed (the `fsharp-src` flake input) and both sides
 are deterministic, so a sweep's outcome for every item is a fixed fact. The sema
-sweeps therefore pin that fact itself: each checks a run against a manifest
-checked in under `crates/sema/tests/manifests/`, one sorted line per item, and
-fails on **any** difference with a line diff of what moved. There is no slack,
+and cst corpus sweeps, and assembly's reference-pack sweep, therefore pin that
+fact itself: each checks a run against a manifest checked in under
+`crates/<crate>/tests/manifests/`, one sorted line per item, and fails on
+**any** difference with a line diff of what moved. There is no slack,
 and no direction is privileged — a newly bound name fails the run exactly as a
 lost one does, because both are a change someone should look at. An intended
 movement is acknowledged by regenerating the manifest and committing it, so the
@@ -191,9 +192,20 @@ BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all re
 
 (Each manifest's header and each failure message names its own command.)
 A manifest records state, so it cannot say a state is wrong; the hard
-soundness gates — zero resolution divergences, zero inference divergences, the
-attribute and overload certain-implies-exact checks — remain separate
-assertions that run first, so regeneration cannot bless a wrong answer.
+gates — zero resolution divergences, zero inference divergences, the attribute
+and overload certain-implies-exact checks, the parser's lossless round-trip and
+zero panics, an `fcs-dump` record that always says whether FCS's parse erred,
+zero reference-pack *type* drops — remain separate assertions that run first,
+so regeneration cannot bless a wrong answer.
+
+A manifest must also be the same file on every machine that runs it, which
+means no absolute path, no platform separator, and no directory-walk order in
+an entry (the helper sorts). One trap is specific to Nix on macOS: the pinned
+corpus holds both `CompilerOptions/Fsc` and `CompilerOptions/fsc`, and on a
+case-insensitive filesystem Nix unpacks the second as
+`fsc~nix~case~hack~1`. Linux CI keeps the original name, so
+`manifest::relative_key` — which every corpus entry's path goes through —
+strips that suffix.
 
 Granularity is chosen per sweep, to keep each file reviewable:
 
@@ -203,6 +215,27 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `infer_corpus_diff` | one per sampled file, and one per commit (agree or error-recovered, with both types when they differ). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
+| `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
+| `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). |
+| `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
+| `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
+
+The cst manifests count their dominant bucket for the same reason
+`resolve_corpus_diff` counts matches: every other file is listed by path, so a
+file entering or leaving the counted bucket moves a listed line, and the corpus
+is pinned, so no file can join the walk unlisted.
+
+The reference pack is not the F# corpus: it is whichever pack the SDK on `PATH`
+ships. Under `nix develop`, which is how CI and every documented command run
+it, that is the flake's pinned nixpkgs SDK (`Microsoft.NETCore.App.Ref`
+10.0.9 today), and the pack is platform-neutral *at the granularity the
+manifest records*: the Linux and macOS SDKs from the same nixpkgs pin ship
+byte-different copies of 57 of its 167 DLLs, yet both project to the identical
+manifest. A byte-level pin (a hash per DLL) would therefore fail on one
+platform or the other; a projection-level one does not. Outside the devshell
+the pack is whatever SDK is installed, so the manifest's first line names the
+pack version it describes, and a run against another SDK fails on that line
+first.
 
 An alt-binder entry says whether FCS checked its file cleanly (`fcs-clean`) or
 with errors (`fcs-check-errors`). In the latter it is usually FCS's isolation
@@ -212,11 +245,16 @@ it is a wrong answer. One stands today, and the manifest names it:
 an enclosing `let x` where F# binds the callee's parameter — the limitation
 `resolve/exprs.rs` documents at `is_named_arg_label`.
 
-The comparison helper is `borzoi_oracle_harness::manifest`, deliberately outside
-`sema`. The other crates' corpus gates still assert one-sided counts with slack
-— `cst`'s `MAX_WE_ACCEPT_FCS_REJECTS`, `assembly`'s `bcl_ref_pack_sweep`, the
-`corpus-diff` job's lack of an answered floor — and are the next candidates for
-it.
+The comparison helper is `borzoi_oracle_harness::manifest`, shared by every
+crate's tests. The slack these manifests replaced was real: on 2026-10-07 the
+reference pack dropped 4 members under a ceiling of 180, and the parser accepted
+26 FCS-rejected files under a ceiling of 28 (a margin once justified by
+`ast-batch` accept/reject nondeterminism that repeated runs do not reproduce).
+Gates elsewhere still assert one-sided counts — the `corpus-diff` job's lack of
+an answered floor, and `projection_skip_sweep`'s `MIN_PROJECTED`, an
+anti-vacuity floor over a package cache that is pinned in CI (the restored
+project corpus) but not locally (`~/.nuget/packages`), so an exact record of it
+would describe only one machine.
 
 Two things follow for anyone adding a sweep:
 

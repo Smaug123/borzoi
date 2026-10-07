@@ -16,6 +16,7 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
+pub mod corpus_manifest;
 pub mod normalised_ast;
 mod range_audit;
 
