@@ -45,17 +45,7 @@ pub fn check_manifest(name: &str, actual: &Manifest, regenerate: &str) {
 /// `path` relative to the corpus `root`, `/`-separated, so an entry names the
 /// same file wherever the corpus is checked out.
 pub fn corpus_relative(root: &Path, path: &Path) -> String {
-    let rel = path.strip_prefix(root).unwrap_or_else(|_| {
-        panic!(
-            "{} is not under the corpus root {}",
-            path.display(),
-            root.display()
-        )
-    });
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
+    borzoi_oracle_harness::manifest::relative_key(root, path)
 }
 
 /// Byte offsets to `line:col` positions in one source text.

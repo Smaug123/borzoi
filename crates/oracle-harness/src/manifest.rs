@@ -232,6 +232,39 @@ impl ManifestDiff {
     }
 }
 
+/// The suffix Nix appends on case-insensitive filesystems (macOS) to the second
+/// of two store names that differ only in case: the pinned F# corpus holds both
+/// `CompilerOptions/Fsc` and `CompilerOptions/fsc`, and on macOS the latter is
+/// unpacked as `fsc~nix~case~hack~1`. Linux keeps the original name.
+const NIX_CASE_HACK: &str = "~nix~case~hack~";
+
+/// One path component as the input spells it, undoing [`NIX_CASE_HACK`].
+fn component_key(component: &str) -> &str {
+    match component.rsplit_once(NIX_CASE_HACK) {
+        Some((name, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => component,
+    }
+}
+
+/// `path` relative to `root`, its components joined with `/`, so an entry names
+/// the same file whichever directory the input is checked out or unpacked in,
+/// whichever platform separator the walk produced, and whether or not Nix had
+/// to rename it for a case-insensitive filesystem. Panics if `path` is not
+/// under `root`: an entry keyed by an absolute path would differ per machine.
+pub fn relative_key(root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or_else(|_| {
+        panic!(
+            "{} is not under the manifest root {}",
+            path.display(),
+            root.display()
+        )
+    });
+    rel.components()
+        .map(|c| component_key(&c.as_os_str().to_string_lossy()).to_string())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn update_requested() -> bool {
     std::env::var_os(UPDATE_ENV).is_some_and(|v| !v.is_empty() && v != "0")
 }
@@ -378,6 +411,26 @@ mod tests {
             prop_assert_eq!(got, want);
         }
 
+        /// The key is the components as the input spells them, `/`-joined,
+        /// whether or not Nix renamed any of them for a case-insensitive
+        /// filesystem.
+        #[test]
+        fn relative_key_is_the_unhacked_components_joined_by_slash(
+            parts in prop::collection::vec(("[A-Za-z0-9 ._~-]{1,8}", prop::option::of(1u32..4)), 1..5),
+        ) {
+            let root = Path::new("/corpus/root");
+            let mut path = root.to_path_buf();
+            for (name, hack) in &parts {
+                prop_assume!(component_key(name) == name.as_str() && name != "." && name != "..");
+                path.push(match hack {
+                    Some(n) => format!("{name}{NIX_CASE_HACK}{n}"),
+                    None => name.clone(),
+                });
+            }
+            let want = parts.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join("/");
+            prop_assert_eq!(relative_key(root, &path), want);
+        }
+
         #[test]
         fn rendered_diff_lists_every_moved_entry_below_the_limit(a in manifest(), b in manifest()) {
             let d = a.diff(&b);
@@ -391,6 +444,22 @@ mod tests {
                 prop_assert!(text.lines().any(|l| l == want));
             }
         }
+    }
+
+    #[test]
+    fn relative_key_undoes_the_nix_case_hack_and_nothing_else() {
+        let root = Path::new("/nix/store/x-source");
+        let key = |rel: &str| relative_key(root, &root.join(rel));
+        assert_eq!(
+            key("tests/CompilerOptions/fsc~nix~case~hack~1/times/times01.fs"),
+            "tests/CompilerOptions/fsc/times/times01.fs"
+        );
+        assert_eq!(key("a/Fsc/b.fs"), "a/Fsc/b.fs");
+        assert_eq!(key("a/x~nix~case~hack~/b.fs"), "a/x~nix~case~hack~/b.fs");
+        assert_eq!(
+            key("a/x~nix~case~hack~1a/b.fs"),
+            "a/x~nix~case~hack~1a/b.fs"
+        );
     }
 
     #[test]
