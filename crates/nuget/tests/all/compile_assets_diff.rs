@@ -15,12 +15,10 @@
 //! Fixed seeds, so a failure reproduces exactly; `soak.rs` owns fresh-seed
 //! exploration.
 
-mod common;
-
+use crate::common::{Oracle, SplitMix64};
 use borzoi_nuget::{
     AssetSelectionDecline, NuGetFramework, PackageNuspec, parse_nuspec, select_compile_assets,
 };
-use common::{Oracle, SplitMix64};
 
 /// The project frameworks we resolve for: the `.NETFramework` /`.NETCoreApp` /
 /// `.NETStandard` envelope, spread across the generations that actually differ

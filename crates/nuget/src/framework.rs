@@ -1,7 +1,7 @@
 //! `NuGetFramework`: NuGet's target-framework model — TFM parsing (short
 //! folder names and long `FrameworkName` forms), the compatibility
 //! relation, and nearest-candidate selection. Differentially pinned to
-//! `NuGet.Frameworks` in `tests/framework_diff.rs`.
+//! `NuGet.Frameworks` in `tests/all/framework_diff.rs`.
 //!
 //! Slice 3 of `docs/nuget-restore-plan.md`. Unlike versions and ranges the
 //! interesting risk here is *table completeness* (identifier aliases, the

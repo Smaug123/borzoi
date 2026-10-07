@@ -5,7 +5,7 @@
 //! with a fresh seed and 10× volume; run it when touching the parsers:
 //!
 //! ```sh
-//! cargo test -p borzoi-nuget --test soak -- --ignored --nocapture
+//! cargo test -p borzoi-nuget --test all soak:: -- --ignored --nocapture
 //! ```
 //!
 //! It has caught a real bug the fixed corpus missed (an over-fit
@@ -35,12 +35,10 @@
 //! reviewable real-world contract is the fixed corpus in
 //! `framework_diff.rs`; this soak is the regression guard around it.
 
-mod common;
-
-use borzoi_nuget::{NuGetFramework, NuGetVersion, VersionRange};
-use common::{
+use crate::common::{
     FRAMEWORK_ZOO, Oracle, SplitMix64, gen_framework_string, gen_range_string, gen_version_string,
 };
+use borzoi_nuget::{NuGetFramework, NuGetVersion, VersionRange};
 
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)

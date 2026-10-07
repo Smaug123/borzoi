@@ -4,10 +4,8 @@
 //! regression is caught even with the oracle unavailable. The domain is the
 //! real-TFM zoo (`FRAMEWORK_ZOO`), sampled by proptest.
 
-mod common;
-
+use crate::common::FRAMEWORK_ZOO;
 use borzoi_nuget::NuGetFramework;
-use common::FRAMEWORK_ZOO;
 use proptest::prelude::*;
 
 /// A parseable, *specific* framework drawn from the zoo (the domain over
