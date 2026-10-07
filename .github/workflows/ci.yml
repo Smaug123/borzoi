@@ -361,11 +361,12 @@ jobs:
         # shows up. Both defects it has caught were of that shape, and neither
         # was reachable by a generated document.
         #
-        # The ratchets stay at their strict defaults (`MAX_DIVERGENCES=0`,
-        # `MAX_ERRORS=0`): a ceiling set to the count you currently have
-        # ratifies a known-wrong value as expected, which is how a differential
-        # stops being one. Evaluation is pre-execution, so this needs no
-        # restore and costs seconds.
+        # It visits every project in the corpus and is two-sided: no facet may
+        # diverge, and every project's outcome (match / decline-with-cause /
+        # skip / error) must equal its line in
+        # `crates/msbuild/tests/fixtures/fsproj_msbuild_corpus_manifest.tsv`.
+        # A newly declined project fails as loudly as a newly wrong one.
+        # Evaluation is pre-execution, so this needs no restore (~40 s).
         run: |
           nix develop --command cargo test -p borzoi-msbuild \
             --test fsproj_msbuild_corpus_diff -- --ignored --nocapture
