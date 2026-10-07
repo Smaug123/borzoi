@@ -58,14 +58,18 @@
 ///      "packages":[{"id":..,"version":..,"nuspec":xml}, ..],
 ///      "direct":[{"id":..,"range":..}, ..]}
 ///     The end-to-end offline resolver oracle: the *genuine* PackageReference
-///     restore engine (RemoteDependencyWalker + GraphOperations.Analyze — what
-///     `dotnet restore` runs for SDK-style projects), over a synthetic local
+///     restore engine (RemoteDependencyWalker + GraphOperations.Analyze — the
+///     legacy dependency resolver, which `dotnet restore` runs when
+///     `RestoreUseLegacyDependencyResolver` is set; the .NET 10 SDK's default
+///     resolver is a separate implementation, and the two are known to disagree
+///     on at least one graph, pinned in `resolver_diff.rs`), over a synthetic local
 ///     folder feed built from the supplied nuspecs plus a synthetic root
 ///     package depending on `direct`.
 ///     -> {"ok":true,"resolved":true,"packages":[{"id":lower,"version":norm}, ..]}
 ///          (sorted by lowercased id; the closure `dotnet restore` would write)
-///      | {"ok":true,"resolved":false,"reason":"missing"|"cycle"|"conflict"|"downgrade"}
-///          (the reason restore would fail — NU1101/NU1108/NU1107/NU1605)
+///      | {"ok":true,"resolved":false,
+///         "reason":"missing"|"cycle"|"undecided"|"conflict"|"downgrade"}
+///          (the reason restore would fail — NU1101/NU1108/NU1106/NU1107/NU1605)
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -482,8 +486,22 @@ let private respondResolve (root: JsonElement) : string =
         // branch never reaches the restore output, so restore still succeeds.
         let resolved = SortedDictionary<string, string>(StringComparer.Ordinal)
         let mutable anyUnresolved = false
+        // A node conflict resolution neither accepted nor rejected: cousin
+        // conflicts that each decide the other, which the resolver cannot
+        // settle. `RestoreTargetGraph.Create` reports every such node as an
+        // NU1106 error ("Unable to satisfy conflicting requests"); the
+        // accepted-only flatten above would silently drop it and report success
+        // with a closure missing those packages.
+        let mutable anyUndecided = false
 
         let rec visit (n: GraphNode<RemoteResolveResult>) =
+            if
+                string n.Disposition = "Acceptable"
+                && not (isNull (box n.Key))
+                && n.Key.Name <> rootId
+            then
+                anyUndecided <- true
+
             if
                 not (isNull (box n.Item))
                 && not (isNull (box n.Item.Key))
@@ -508,7 +526,8 @@ let private respondResolve (root: JsonElement) : string =
         // resolver rejected, which `dotnet restore` discards and still succeeds.
         // The accepted-only filters mirror restore's own error reporting; each
         // was cross-checked against a real `dotnet restore`. Priority
-        // missing > cycle > conflict > downgrade (all mean "no closure").
+        // missing > cycle > undecided > conflict > downgrade (all mean "no
+        // closure").
         let liveCycle = analyze.Cycles |> Seq.exists cycleIsLive
 
         let liveConflict =
@@ -522,6 +541,7 @@ let private respondResolve (root: JsonElement) : string =
         let reason =
             if anyUnresolved then Some "missing"
             elif liveCycle then Some "cycle"
+            elif anyUndecided then Some "undecided"
             elif liveConflict then Some "conflict"
             elif liveDowngrade then Some "downgrade"
             else None
