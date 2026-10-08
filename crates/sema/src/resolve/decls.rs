@@ -7,15 +7,24 @@ use borzoi_cst::syntax::{
 use crate::def::DefId;
 
 use super::model::{
-    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, Resolution, SlotClass,
+    AutoOpenVerdict, CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, OpenOpacity,
+    OpenTrace, Resolution, SlotClass,
 };
 use super::state::{
-    AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
+    AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ScopeEntry,
+    ShorteningPrefix,
 };
 use super::{
     attrs_auto_open, attrs_mark_struct, attrs_require_qualified_access, id_text,
     is_type_augmentation, single_ident, type_long_ident_path,
 };
+
+/// The one attribute whose presence means "fold this module's contents into the
+/// enclosing scope". Any other type of the same simple name is an ordinary
+/// attribute, whoever declares it — so the fold requires this exact identity
+/// rather than the `[<AutoOpen>]` spelling, which anyone may take
+/// ([`Resolver::auto_open_verdict`]).
+const FSHARP_CORE_AUTO_OPEN: &str = "Microsoft.FSharp.Core.AutoOpenAttribute";
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
 /// Color` — the `ACCESS_TOK` *before* the name's `LONG_IDENT`). FCS does not
@@ -29,7 +38,7 @@ use super::{
 /// repr's modifier nests inside its own node and never appears as a direct
 /// child here. `internal` types stay visible within the project (one
 /// assembly), so only `private` downgrades.
-fn type_header_is_private(defn: &TypeDefn) -> bool {
+pub(super) fn type_header_is_private(defn: &TypeDefn) -> bool {
     header_is_private(defn.syntax())
 }
 
@@ -334,7 +343,19 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(&expr);
                 }
             }
-            ModuleDecl::NestedModule(nm) => self.nested_module(nm),
+            ModuleDecl::NestedModule(nm) => {
+                // The header's own attributes resolve in the ENCLOSING env, and
+                // the auto-open indices `nested_module` writes need their
+                // verdict: a module is auto-open only if its marker is provably
+                // FSharp.Core's ([`Self::auto_open_verdict`]).
+                // The enclosing env is the same before the body as after it —
+                // every field the body may touch is saved and restored — so
+                // this is a reordering of two independent steps, and the fold
+                // itself still runs last (post-dispatch), which is what FCS's
+                // "header attributes before contents" ordering requires.
+                self.resolve_attribute_lists(nm.attributes());
+                self.nested_module(nm);
+            }
             ModuleDecl::ModuleAbbrev(a) => {
                 // A module abbreviation `module X = Bar.Baz` (parser 8.5) aliases
                 // `X` to the module `Bar.Baz`. We resolve the RHS to its canonical
@@ -391,7 +412,10 @@ impl<'a> Resolver<'a> {
                         // file). Same-file, the mapping below canonicalises `X` →
                         // `Target` *before* any hidden-check, so this marker is not
                         // consulted there.
-                        self.note_hidden_value_module(alias_path.clone());
+                        self.note_hidden_value_module(
+                            alias_path.clone(),
+                            Some(a.syntax().text_range().start()),
+                        );
                         // Resolvable in-project target: record the mapping so
                         // same-file resolution canonicalises `X` → `Target`. An
                         // unresolvable target (an assembly module) records no
@@ -507,9 +531,32 @@ impl<'a> Resolver<'a> {
                         // wiring reads it via `project_ns_hidden` below).
                         let type_auto_open = attrs_auto_open(defn.attributes());
                         if type_auto_open {
-                            self.note_hidden_value_module(self.container_path.clone());
+                            // A GENERIC `[<AutoOpen>]` type auto-opens nothing
+                            // (`CanAutoOpenTyconRef` ends `tcref.Typars(m) |>
+                            // List.isEmpty`), and a `private` one's statics stop
+                            // at its own container — so neither owes a parent
+                            // fold a barrier, though both stay hidden to a
+                            // blunter `open` (codex round 4).
+                            let inert_to_a_parent_fold =
+                                defn.typar_decls().is_some() || type_header_is_private(defn);
+                            self.note_hidden_value_module(
+                                self.container_path.clone(),
+                                (!inert_to_a_parent_fold)
+                                    .then(|| defn.syntax().text_range().start()),
+                            );
                         }
                         let slot = type_slot_class(defn);
+                        // A constructible type takes the unqualified slot from
+                        // a same-named name an `[<AutoOpen>]` module folded in
+                        // above it (fcs-dump-probed both ways round). Pushed
+                        // here, at the type's own position, so a use written
+                        // between the module and the type still binds the fold.
+                        if slot != SlotClass::Keeps {
+                            self.decline_folded_name_taken_by_type(
+                                id_text(name.text()),
+                                u32::from(defn.syntax().text_range().start()),
+                            );
+                        }
                         // The type's access-root (own `private` plus any enclosing
                         // `private` module) — a same-file module-qualified `A.Foo.Red`
                         // from an inaccessible site does not resolve the type's
@@ -735,6 +782,26 @@ impl<'a> Resolver<'a> {
                     .unwrap_or_default();
                 if !ext_name.is_empty() {
                     self.record_project_name_shadow(ext_name.clone());
+                    // …and, in the *frame*, a decline for the bare name from
+                    // here on. The prototype occupies the value namespace of
+                    // this module, so an unqualified use of it binds the
+                    // prototype in FCS — but we have no binder to name, and
+                    // without an entry the walk falls straight through to
+                    // whatever an earlier `open` (or the implicit
+                    // enclosing-namespace fold) supplied under that name: a
+                    // wrong go-to-def, not a gap. Declining by position is the
+                    // same concession the fold's other unnameable surfaces make
+                    // (codex round 2 on the fold-back, which removed the blanket
+                    // screen that had been covering this). Outside the module,
+                    // the fold-back declines the same name
+                    // ([`Resolver::unenumerated_member_names_in`]).
+                    let generation = self.open_generation;
+                    let name = ext_name.last().expect("non-empty").clone();
+                    self.module_frame().entries.push(ScopeEntry::binding(
+                        name,
+                        Resolution::Deferred(DeferredReason::UnboundName),
+                        generation,
+                    ));
                 }
                 // An `extern` introduces a value-namespace name we do NOT intern
                 // (interning it is a later slice), so it is invisible to the
@@ -745,8 +812,11 @@ impl<'a> Resolver<'a> {
                 // review of the straddle slice). A sound over-defer: `extern` is
                 // rare (P/Invoke), and every other unenumerable value producer
                 // (union cases / exception ctors / active patterns / aliases)
-                // already marks its module hidden.
-                self.note_hidden_value_module(self.container_path.clone());
+                // already marks its module hidden. The fold-back of the file's
+                // own `[<AutoOpen>]` module can *name* it, though, so it
+                // declines it per name rather than raising the blanket barrier
+                // ([`Resolver::unenumerated_member_names_in`]).
+                self.note_hidden_nameable_value_module(self.container_path.clone());
                 // The export-decl-list twin: `path` = the container (its
                 // hidden-value path, recorded unconditionally as above); `name`
                 // carries the function segments (empty for a nameless recovery
@@ -755,7 +825,10 @@ impl<'a> Resolver<'a> {
                 self.push_export_decl(
                     self.container_path.clone(),
                     ext.syntax().text_range().start(),
-                    ExportDeclKind::Extern { name: ext_name },
+                    ExportDeclKind::Extern {
+                        name: ext_name,
+                        private: header_is_private(ext.syntax()),
+                    },
                 );
             }
             ModuleDecl::Open(open) => {
@@ -1498,7 +1571,7 @@ impl<'a> Resolver<'a> {
                             // M (every fragment, every file) into scope, so no
                             // per-fragment restriction — that is only for a fragment
                             // reached implicitly by opening its enclosing namespace.
-                            self.open_module_values(gp, pos, None);
+                            self.open_module_values(gp, pos, None, None);
                             self.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
@@ -1557,7 +1630,19 @@ impl<'a> Resolver<'a> {
         // cannot contain a nested module, so its whole subtree shares this
         // scope (type resolution does not see expression-level binders).
         match decl {
-            ModuleDecl::NestedModule(nm) => self.resolve_attribute_lists(nm.attributes()),
+            ModuleDecl::NestedModule(nm) => {
+                // The header attributes resolved when the walk reached the
+                // header, before the body (see the dispatch arm).
+                // …and only THEN does an `[<AutoOpen>]` module's surface join the
+                // enclosing scope. FCS checks a module's own header attributes
+                // before adding its contents to the environment, so the fold must
+                // not be in force for them — it advances `latest_open_pos` to the
+                // module's end, and an in-file attribute candidate defined before
+                // the latest open defers (EX-3 §2(d)), which turned
+                // `[<Foo>] [<AutoOpen>] module Local` into a deferral where FCS
+                // commits (codex round 2).
+                self.fold_back_auto_open_module(nm);
+            }
             other => self.resolve_attributes_under(other.syntax()),
         }
     }
@@ -1608,7 +1693,14 @@ impl<'a> Resolver<'a> {
         self.record_project_name_shadow(segs.clone());
         let mut qualified = self.container_path.clone();
         qualified.extend(segs.iter().cloned());
-        let nm_auto_open = attrs_auto_open(nm.attributes());
+        // The *spelling* is not the attribute. A shadowed `[<AutoOpen>]` — the
+        // project's own `AutoOpenAttribute`, an assembly's, or a written foreign
+        // qualifier — is an ordinary attribute and the module is an ordinary
+        // module, so it must not enter the auto-open indices at all. Declining
+        // only at the fold-back's own position leaves this record standing, and
+        // a later `namespace` block reopening this namespace folds it in from
+        // here — committing a target FCS leaves unbound (codex review).
+        let nm_auto_open = self.auto_open_verdict(nm);
         let nm_private = header_is_private(nm.syntax());
         // The module-only cross-file index ([`ProjectItems::real_nested_modules`]):
         // unlike the name-shadow set just recorded (which types, exceptions,
@@ -1616,8 +1708,16 @@ impl<'a> Resolver<'a> {
         // module at this path?" for a later file's open-target classification.
         // The same real-root guard as the shadow's cross-file half.
         if !self.anonymous_root {
-            if nm_auto_open {
-                self.record_auto_open_module(qualified.clone(), nm_private);
+            // Recorded for an UNPROVEN marker too, and the verdict rides along:
+            // the veto consumers of this index must count a module that might
+            // auto-open, while the commit consumers filter to a proven one.
+            if nm_auto_open != AutoOpenVerdict::NotAutoOpen {
+                self.record_auto_open_module(
+                    qualified.clone(),
+                    nm_private,
+                    nm.syntax().text_range(),
+                    nm_auto_open,
+                );
             }
             self.real_nested_module_exports.push(qualified.clone());
         }
@@ -1803,6 +1903,162 @@ impl<'a> Resolver<'a> {
         }
         self.nested_module_locals = saved_nested_locals;
         self.augmentation_head_locals = saved_augmentation_locals;
+    }
+
+    /// Whether `nm`'s `[<AutoOpen>]` header attribute is **provably**
+    /// FSharp.Core's `AutoOpenAttribute` — the fold's precondition stated as
+    /// the proof it needs, not as the hazards it must dodge.
+    ///
+    /// The fold is the one consumer that cannot act on a *spelling*: it
+    /// commits members into the enclosing scope, and every way a foreign
+    /// `AutoOpenAttribute` can occupy that name — a type this file declares, a
+    /// preceding file's, an assembly's reached by `open` or by `open type`, a
+    /// written qualifier, an alias — makes FCS treat the attribute as ordinary
+    /// and bind none of them (`FS0039`, fcs-dump-probed for each shape).
+    /// Enumerating those routes is an allow-list by subtraction: three
+    /// consecutive review rounds each found another one, and the next reviewer
+    /// would have found the one after that.
+    ///
+    /// Requiring the positive verdict is route-independent. Anything the
+    /// attribute resolver could not pin to FSharp.Core's entity leaves the
+    /// fold without its premise, and *why* it could not stops mattering:
+    /// [`Self::resolve_attribute_type`] commits [`Resolution::Entity`] only for
+    /// a whole-path assembly leaf that survived every precedence tier and
+    /// shadow guard, so an in-file type, a deferral, and a name that resolves
+    /// nowhere all decline alike — costing a fold, never a wrong target.
+    ///
+    /// One genuine marker suffices: a header carrying both
+    /// `[<Microsoft.FSharp.Core.AutoOpen>]` and a foreign lookalike is
+    /// auto-opened by FCS, so this asks whether *any* attribute proves the
+    /// premise rather than whether any fails it.
+    fn auto_open_verdict(&self, nm: &NestedModuleDecl) -> AutoOpenVerdict {
+        // The ONLY finding of absence is the absence of the spelling. Past this
+        // gate a `[<AutoOpen>]`-spelled marker is present, and the question is
+        // whether it names FSharp.Core's attribute — which only a *proof*
+        // settles, in one direction. Enumerating the resolutions that prove the
+        // opposite is what four review rounds each defeated with a fifth route,
+        // and the enumeration is unsound in principle: a resolution to some
+        // other type does not prove foreignness, because that type may
+        // *abbreviate* the core marker and FCS chases abbreviations. Probed:
+        // `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute`
+        // makes `[<AutoOpen>]` resolve to a project type, and FCS still
+        // auto-opens the module (fsi-accepted). An assembly-declared
+        // abbreviation reached through an `open` does the same.
+        //
+        // So: proof of the core identity folds, and everything else with the
+        // spelling declines.
+        if !attrs_auto_open(nm.attributes()) {
+            return AutoOpenVerdict::NotAutoOpen;
+        }
+        let proven = nm
+            .attributes()
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .filter_map(|attr| attr.type_name())
+            .any(|name| {
+                let toks: Vec<_> = name.idents().collect();
+                let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
+                    return false;
+                };
+                let range =
+                    rowan::TextRange::new(first.text_range().start(), last.text_range().end());
+                matches!(
+                    self.attribute_resolutions.get(&range),
+                    Some(Resolution::Entity(h))
+                        if self.assemblies.entity_full_name(*h) == FSHARP_CORE_AUTO_OPEN
+                )
+            });
+        // One genuine marker suffices: a header carrying both
+        // `[<Microsoft.FSharp.Core.AutoOpen>]` and a foreign lookalike is
+        // auto-opened by FCS, so this asks whether *any* attribute proves the
+        // premise rather than whether any fails it.
+        if proven {
+            AutoOpenVerdict::Proven
+        } else {
+            AutoOpenVerdict::Unproven
+        }
+    }
+
+    /// An `[<AutoOpen>]` nested module's *values* fold into the enclosing frame
+    /// at its declaration position — the same fold an `open` of it there would
+    /// perform ([`Resolver::fold_own_auto_open_module`]).
+    ///
+    /// Called from [`Self::module_decl`] **after**
+    /// [`Self::nested_module`] has popped the body frame and restored every
+    /// saved field (so the fold's accessibility site and target frame are the
+    /// enclosing ones) *and* after the module's own header attributes have
+    /// resolved (FCS checks those before adding the module's contents).
+    pub(super) fn fold_back_auto_open_module(&mut self, nm: &NestedModuleDecl) {
+        // `attrs_auto_open` reads the *spelling*; [`Self::auto_open_verdict`]
+        // reads what the spelling resolved to. The header attributes have
+        // already resolved by here, so the verdict is available, and all three
+        // of its answers are distinct actions.
+        let verdict = self.auto_open_verdict(nm);
+        // A file declaring its own `type AutoOpenAttribute` shadows
+        // FSharp.Core's, and FCS then treats `[<AutoOpen>]` as an ordinary
+        // attribute that opens nothing (fcs-dump-probed) — so the enclosing
+        // scope keeps whatever was in it, and this fold does nothing.
+        if verdict == AutoOpenVerdict::NotAutoOpen {
+            return;
+        }
+        let Some(li) = nm.long_id() else { return };
+        let segs: Vec<String> = li.idents().map(|t| id_text(t.text()).to_string()).collect();
+        if segs.is_empty() {
+            return;
+        }
+        // The two structural declines below are checked ahead of an *unproven*
+        // marker because each already says what happens to the contested names,
+        // and each says it for a reason that holds whether or not the module
+        // auto-opens. In particular the `rec` arm must not raise the generation
+        // barrier: inside a `rec` container the enclosing block's own bindings
+        // take the contest, and staling them would decline the very names FCS
+        // binds there.
+        if self.recursive_module_active {
+            // Inside a `rec` container FCS orders nothing by source position —
+            // every declaration is visible to every other — so appending this
+            // module's entries last would win contests the enclosing block's own
+            // bindings take (fcs-dump probe `RecFold`). The implicit
+            // enclosing-namespace fold is declined there by
+            // `Resolver::own_auto_open_container`; this is the fold-back's half
+            // of the same decline (codex round 8).
+            return;
+        }
+        if self.anonymous_root {
+            // A header-less file's nested module has no modelled `module_path`,
+            // so its members carry no qualified path and the fold would
+            // enumerate *nothing* — leaving an earlier open's same-named value
+            // standing where FCS binds this module's. The generation barrier
+            // declines instead: it stales every earlier opened entry, which is
+            // exactly "we cannot say".
+            self.open_generation += 1;
+            return;
+        }
+        // The same "we cannot say" whether the uncertainty is this module's own
+        // marker or a **descendant's**. FCS folds nested auto-open modules
+        // innermost-last, so an unprovable child would take names from the
+        // parent we *can* enumerate: folding only the provable half commits the
+        // parent's binder where FCS binds the child's (fcs-dump-probed —
+        // `Root.Parent.Child.X`, not `Root.Parent.X`).
+        //
+        // A descendant fragment is same-file by construction, so this reads the
+        // file's own declaration list rather than the cross-file fold list.
+        if verdict == AutoOpenVerdict::Unproven
+            || self.unprovable_fragment_within(nm.syntax().text_range())
+        {
+            // We cannot fold (the marker might not be FSharp.Core's) and we
+            // cannot merely *decline to fold* either (it might be): returning
+            // here would leave an enclosing `open`'s same-named value standing
+            // and commit it, a wrong go-to-definition wherever FCS binds this
+            // module's member instead. The generation barrier is the "we cannot
+            // say" that covers both — it stales every earlier opened entry, so
+            // a contested name defers rather than resolving to the wrong side
+            // of a fold we could not adjudicate.
+            self.open_generation += 1;
+            return;
+        }
+        let mut qualified = self.container_path.clone();
+        qualified.extend(segs);
+        let pos = u32::from(nm.syntax().text_range().end());
+        self.fold_own_auto_open_module(&qualified, pos, nm.syntax().text_range());
     }
 
     /// Record a project-introduced *name* — a nested module

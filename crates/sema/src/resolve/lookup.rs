@@ -12,8 +12,59 @@ use crate::def::{DefId, DefKind};
 
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, Resolution, SlotClass,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ExportDef,
+    ExportedItem, ItemId, Resolution, SlotClass,
 };
+
+/// Where a member sits in the ladder by which a module's contents enter an
+/// enclosing scope. **Not source order**: FCS folds a module's exception
+/// definitions, then its tycons (and their union cases), then its values
+/// (`AddModuleOrNamespaceContentsToNameEnv`), so a name several members share
+/// is decided by *kind* first and position only within a kind.
+///
+/// fcs-dump-probed over every well-formed pair of same-named members a module
+/// can declare — the two orders always agree except between a union case and a
+/// class, which are one rank and so keep source order:
+///
+/// | pair | winner |
+/// | --- | --- |
+/// | value vs case / exception / class | the value, either order |
+/// | case vs exception | the case, either order |
+/// | case vs class | the later of the two |
+///
+/// A same-name pair *within* a rank other than case-vs-class does not compile
+/// (`FS0037`), so no ordering is claimed for it.
+fn fold_rank(case: Option<CaseKind>) -> u8 {
+    match case {
+        Some(CaseKind::Exception) => 0,
+        Some(CaseKind::Union { .. } | CaseKind::Enum) => 1,
+        // An ordinary value — folded last, so it takes the name from any
+        // same-named tycon-tier member regardless of which came first.
+        None => 2,
+    }
+}
+
+/// The [`fold_rank`] of a **tycon**: a project type's constructor, and an
+/// `[<AutoOpen>]` type's statics. Neither reaches [`fold_rank`], which reads a
+/// folded member's `CaseKind`, but both fold at the tycon tier — so naming the
+/// rank once here keeps them on the same ladder rather than beside it.
+const TYCON_RANK: u8 = 1;
+
+/// One thing a fragment contributes under a single name, at the point in FCS's
+/// fold order where it lands: the [`fold_rank`] ladder first, source position
+/// within a rank. Sorted, **the last contribution wins** — which is the single
+/// rule every eviction question in the fold reduces to.
+///
+/// `nameable` is whether sema can say *what* won. A folded member can be named;
+/// a project type's constructor and an `[<AutoOpen>]` type's static cannot
+/// (tasks #45 and #48), so when one of those wins, the name declines rather
+/// than standing. See [`Resolver::fragment_contributions`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Contribution {
+    rank: u8,
+    pos: TextSize,
+    nameable: bool,
+}
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
     ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
@@ -376,15 +427,21 @@ impl<'a> Resolver<'a> {
     ///   [`Resolver::own_value_slot_type_names`], which is a *closed* set — the
     ///   file's type definitions that can enter the slot, and nothing else can;
     /// - an **`[<AutoOpen>]` container**'s surface folds into the enclosing
-    ///   scope above anything opened before it. Here the whole group is demoted
-    ///   rather than screened per name, because that surface is open-ended:
-    ///   values, union and exception cases, `extern` prototypes, active-pattern
-    ///   tags, a single-case union spelled exactly like an abbreviation, an
-    ///   auto-open type's statics, statics borrowed through an abbreviation.
-    ///   Enumerating them is a list that grows under review and can only be
-    ///   audited by inspection; [`Resolver::own_auto_open_container`] is one
-    ///   closed question, and it costs commits only in files that declare such
-    ///   a container.
+    ///   scope above anything opened before it, in a way position-0 ordering
+    ///   cannot express. A `[<AutoOpen>]` *module* is no longer one of these —
+    ///   its surface folds at its own declaration position
+    ///   ([`Self::fold_own_auto_open_module`]), so ordinary source-position
+    ///   shadowing decides it — leaving an `[<AutoOpen>]` **type** (whose
+    ///   statics sema does not model) and any auto-open module inside a `rec`
+    ///   block (where FCS orders nothing by position). Here the whole group is
+    ///   demoted rather than screened per name, because that surface is
+    ///   open-ended: values, union and exception cases, `extern` prototypes,
+    ///   active-pattern tags, a single-case union spelled exactly like an
+    ///   abbreviation, an auto-open type's statics, statics borrowed through an
+    ///   abbreviation. Enumerating them is a list that grows under review and
+    ///   can only be audited by inspection;
+    ///   [`Resolver::own_auto_open_container`] is one closed question, and it
+    ///   costs commits only in files that declare such a container.
     ///
     /// `Opaque` rather than removal keeps an entry in scope shadowing by
     /// position, so an earlier open's same-named value cannot wrongly win.
@@ -1122,38 +1179,123 @@ impl<'a> Resolver<'a> {
     /// lexical position — starts with `container` (the candidate's direct
     /// parent). `preceding`'s half needs no such check: it is already
     /// privacy-filtered at the file/export boundary.
+    /// The **Compile-order file indices** at which an `[<AutoOpen>]`-spelled
+    /// module directly in `container` has an **unprovable** marker, ascending.
+    ///
+    /// Such a module is filtered out of every fold list here — it might not open,
+    /// so folding it would name members FCS never brings into scope — but its
+    /// absence from the list is not the same as its absence from the program. It
+    /// might open, and then the names it contributes outrank everything folded
+    /// **before it**: the namespace's own direct tier, and every proven fragment
+    /// at an earlier file (probed: FCS binds `N.A.X`, not the direct case
+    /// `N.H.X`; and across three files it binds the *later* unprovable
+    /// fragment's value over the earlier proven one's).
+    ///
+    /// So the answer is a list of positions, not a flag. The fold walks
+    /// fragments in file order and raises a generation barrier as it passes each
+    /// of these, which stales exactly what precedes the uncertainty and leaves a
+    /// fragment folded after it — which outranks it either way — standing. A
+    /// single pre-loop barrier instead staled only the direct tier, and the loop
+    /// then re-pushed every proven fragment into the fresh generation, so an
+    /// earlier proven fragment won a contest FCS gives the later unprovable one.
+    ///
+    /// Within one file the position is not resolved further: an unprovable
+    /// fragment at file `f` stales the whole of `f`'s fold, including proven
+    /// fragments declared after it. That over-declines and never over-commits.
+    ///
+    /// The fold-back's generation barrier does not cover any of this: it
+    /// protects the declaring block only, and a later `namespace` block folds
+    /// afresh. Both halves of the project are asked — an earlier file's
+    /// unprovable fragment reaches this contest exactly as a same-file one does
+    /// ([`ProjectItems::unproven_auto_open_fragment_files_in`](super::model::ProjectItems::unproven_auto_open_fragment_files_in)).
+    pub(super) fn unproven_auto_open_fragment_files_in(&self, container: &[String]) -> Vec<usize> {
+        let current = self.preceding.num_files();
+        let mut out = self
+            .preceding
+            .unproven_auto_open_fragment_files_in(container);
+        out.extend(
+            self.auto_open_module_paths
+                .iter()
+                .filter(|d| {
+                    !d.commits()
+                        && super::model::is_directly_in(&d.path, container)
+                        && (!d.private || self.container_path.starts_with(container))
+                })
+                .map(|_| current),
+        );
+        out.sort_unstable();
+        out
+    }
+
+    /// Whether an `[<AutoOpen>]`-spelled module declared **inside** `range` has
+    /// an unprovable marker.
+    ///
+    /// The fold-back's descendant question. Every fragment it would fold lies
+    /// lexically within the module block being folded, so containment in this
+    /// file's own declaration list answers it exactly — no cross-file half, and
+    /// no dependence on the fold list, which filters unprovable fragments out.
+    ///
+    /// Accessibility is deliberately not consulted: a `private` submodule is
+    /// still folded into its own parent, which is precisely the scope this
+    /// question is about.
+    pub(super) fn unprovable_fragment_within(&self, range: TextRange) -> bool {
+        self.auto_open_module_paths
+            .iter()
+            .any(|d| !d.commits() && range.contains_range(d.range))
+    }
+
     pub(super) fn project_auto_open_submodules_in(&self, container: &[String]) -> Vec<Vec<String>> {
         let mut out: Vec<Vec<String>> = self.preceding.auto_open_modules_directly_in(container);
         out.extend(
             self.auto_open_module_paths
                 .iter()
-                .filter(|(p, private)| {
-                    super::model::is_directly_in(p, container)
-                        && (!private || self.container_path.starts_with(container))
+                .filter(|d| {
+                    // A COMMIT consumer: an unproven marker is filtered out
+                    // here, and the fold-back's generation barrier is what
+                    // declines the names it would have contributed.
+                    d.commits()
+                        && super::model::is_directly_in(&d.path, container)
+                        && (!d.private || self.container_path.starts_with(container))
                 })
-                .map(|(p, _)| p.clone()),
+                .map(|d| d.path.clone()),
         );
         out
     }
 
     /// The `[<AutoOpen>]` **fragments** declared *directly* in `container`, as
-    /// `(path, file)` pairs — the same-file half (this file, at
+    /// `(path, file, range)` triples — the same-file half (this file, at
     /// [`ProjectItems::num_files`](super::model::ProjectItems::num_files), privacy-filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`]) plus the already-filtered
     /// earlier-file half ([`ProjectItems::auto_open_fragments_directly_in`](super::model::ProjectItems::auto_open_fragments_directly_in)). A
     /// module with fragments in several files appears once per fragment — the
     /// per-fragment provenance the file-ordered fold reads (Stage 5).
-    fn auto_open_fragments_directly_in(&self, container: &[String]) -> Vec<(Vec<String>, usize)> {
-        let mut out = self.preceding.auto_open_fragments_directly_in(container);
+    ///
+    /// `range` is `Some` only for a same-file fragment, where it is the
+    /// declaration's own text range: one file can declare the same module path
+    /// in a plain block and an `[<AutoOpen>]` one, and only the attributed one
+    /// folds, so the file index alone is too coarse an identity there. An
+    /// earlier file's fragments are already per-fragment by construction.
+    fn auto_open_fragments_directly_in(
+        &self,
+        container: &[String],
+    ) -> Vec<(Vec<String>, usize, Option<TextRange>)> {
+        let mut out: Vec<(Vec<String>, usize, Option<TextRange>)> = self
+            .preceding
+            .auto_open_fragments_directly_in(container)
+            .into_iter()
+            .map(|(p, f)| (p, f, None))
+            .collect();
         let current = self.preceding.num_files();
         out.extend(
             self.auto_open_module_paths
                 .iter()
-                .filter(|(p, private)| {
-                    super::model::is_directly_in(p, container)
-                        && (!private || self.container_path.starts_with(container))
+                .filter(|d| {
+                    // A COMMIT consumer, as above.
+                    d.commits()
+                        && super::model::is_directly_in(&d.path, container)
+                        && (!d.private || self.container_path.starts_with(container))
                 })
-                .map(|(p, _)| (p.clone(), current)),
+                .map(|d| (d.path.clone(), current, Some(d.range))),
         );
         out
     }
@@ -1175,28 +1317,561 @@ impl<'a> Resolver<'a> {
     /// fragments at any file. The final sort is stable, so within a file the
     /// recursion's parent-before-child order (a child folds after its parent)
     /// survives.
-    fn auto_open_fragments_reachable(&self, namespace: &[String]) -> Vec<(Vec<String>, usize)> {
+    fn auto_open_fragments_reachable(
+        &self,
+        namespace: &[String],
+    ) -> Vec<(Vec<String>, usize, Option<TextRange>)> {
         fn collect(
             resolver: &Resolver<'_>,
             path: &[String],
             file: usize,
-            out: &mut Vec<(Vec<String>, usize)>,
+            range: Option<TextRange>,
+            out: &mut Vec<(Vec<String>, usize, Option<TextRange>)>,
         ) {
-            out.push((path.to_vec(), file));
+            out.push((path.to_vec(), file, range));
             // Children of *this* block: fragments directly in `path` at the SAME
             // file `file` (a nested module lives in its parent block's file).
-            for (child, cf) in resolver.auto_open_fragments_directly_in(path) {
-                if cf == file {
-                    collect(resolver, &child, file, out);
+            for (child, cf, crange) in resolver.auto_open_fragments_directly_in(path) {
+                // A child belongs to the parent FRAGMENT that lexically declares
+                // it, not merely to the parent path in this file: one file can
+                // hold two fragments of `path`, and only one of them declares
+                // this child (codex round 8).
+                let same_fragment = match (range, crange) {
+                    (Some(parent), Some(child_range)) => parent.contains_range(child_range),
+                    _ => true,
+                };
+                if cf == file && same_fragment {
+                    collect(resolver, &child, file, crange, out);
                 }
             }
         }
-        let mut out: Vec<(Vec<String>, usize)> = Vec::new();
-        for (path, file) in self.auto_open_fragments_directly_in(namespace) {
-            collect(self, &path, file, &mut out);
+        let mut out: Vec<(Vec<String>, usize, Option<TextRange>)> = Vec::new();
+        for (path, file, range) in self.auto_open_fragments_directly_in(namespace) {
+            collect(self, &path, file, range, &mut out);
         }
-        out.sort_by_key(|(_, file)| *file);
+        out.sort_by_key(|(_, file, _)| *file);
         out
+    }
+
+    /// Fold a *just-declared* `[<AutoOpen>]` nested module's surface into the
+    /// enclosing frame: the same fold an `open` of that module, written at
+    /// `pos`, would perform. Called from
+    /// [`nested_module`](super::Resolver::nested_module) once the body frame is
+    /// popped and every saved field restored, so `container_path` — hence
+    /// `open_module_values`'s accessibility site and
+    /// [`Self::module_frame`] — is the enclosing one.
+    ///
+    /// Which of a same-named `open` and an `[<AutoOpen>]` module wins is decided
+    /// purely by source position (fcs-dump probes `OrderAfter`/`OrderBefore`),
+    /// and `latest_entry` walks a frame's entries in push order — so pushing
+    /// here, at the module's closing position, *is* the ordering rule. A use
+    /// preceding the module sees nothing of it, which is FCS's answer too (it
+    /// reports the name unbound).
+    ///
+    /// `path`'s own members fold first, then its **own-file** `[<AutoOpen>]`
+    /// descendants ([`Self::auto_open_fragments_reachable`]): FCS propagates a
+    /// nested auto-open module's surface outward through its auto-open parent,
+    /// which `open_module_values` — direct children only — would miss.
+    /// `fragment_file = Some(current_file)` is exact rather than conservative:
+    /// FCS folds the module type *as accumulated at this point in this file*, an
+    /// earlier file's same-path fragment is already folded by the implicit
+    /// enclosing-namespace open at position 0, and a later file's does not exist
+    /// yet.
+    ///
+    /// **Values only** — no dotted-head conservatism, and no shortening prefix.
+    /// An explicit `open M` sets the blanket
+    /// [`opaque_dotted_open`](Self::opaque_dotted_open) because M's submodules
+    /// and types are not in view at the `open`; here they are already accounted
+    /// for by the *declaration*-side machinery, which is name-keyed and
+    /// oracle-pinned: a submodule of an auto-open module is a project module
+    /// name (`project_auto_open_module_in_namespace`, reached through
+    /// `auto_open_modules_directly_in`), while a *type* or an *abbreviation*
+    /// there deliberately shadows no dotted head at all
+    /// (`a_fully_qualified_path_still_commits_beside_a_project_auto_open_module`,
+    /// `a_module_abbreviation_in_an_auto_open_module_is_not_a_dotted_head_shadow`).
+    /// Lending the module's short name as a shortening prefix is task #30,
+    /// declined for the implicit fold on the same terms.
+    pub(super) fn fold_own_auto_open_module(
+        &mut self,
+        path: &[String],
+        pos: u32,
+        range: TextRange,
+    ) {
+        // [`Self::latest_open_pos`] is deliberately NOT advanced. Its single
+        // consumer is the attribute-candidate guard, which distrusts an in-file
+        // definition preceding the latest open because that open might supply a
+        // higher-priority candidate — a presence-wide frontier an ordinary
+        // `open` needs because its contents are not in view. The auto-open
+        // attribute hazard already has a name-keyed guard covering exactly this
+        // shape ([`Resolver::own_auto_open_type_names`], AO-2), so advancing the
+        // frontier as well only re-opens the gap that guard was built to close
+        // (codex round 3).
+        let current_file = self.preceding.num_files();
+        // Each descendant keeps its OWN range, and only descendants declared
+        // *inside* this fragment come along: an earlier plain `Parent` fragment
+        // can hold an `[<AutoOpen>] Child` whose members belong to that parent,
+        // not to this one (codex round 8).
+        let mut fragments: Vec<(Vec<String>, TextRange)> = vec![(path.to_vec(), range)];
+        fragments.extend(
+            self.auto_open_fragments_reachable(path)
+                .into_iter()
+                .filter_map(|(p, file, frag_range)| {
+                    let frag_range = frag_range?;
+                    (file == current_file && range.contains_range(frag_range))
+                        .then_some((p, frag_range))
+                }),
+        );
+        for (frag, frag_range) in fragments {
+            // What this fragment contributes under each contested name, in
+            // FCS's fold order — see [`Self::fragment_contributions`]. The last
+            // contribution wins, and a contribution sema cannot *name* (a type
+            // constructor, an `[<AutoOpen>]` type's static) can therefore only
+            // decline.
+            //
+            // Two pushes, because the fold block sits between them. The early
+            // one evicts a same-named value an EARLIER open left in the frame,
+            // which an unnameable contributor takes the slot from whatever the
+            // fragment itself declares. The late one fires only when the
+            // unnameable contributor also beats the fragment's own member, and
+            // so must survive the fold's own push.
+            let mut late_evictions: Vec<String> = Vec::new();
+            let mut early_evictions: Vec<String> = Vec::new();
+            let type_names: Vec<String> = self
+                .fragment_type_contestants(&frag, frag_range)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            for name in self.fragment_contested_names(&frag, frag_range) {
+                let unnameable_wins = self
+                    .fragment_contributions(&frag, frag_range, &name)
+                    .last()
+                    .is_some_and(|last| !last.nameable);
+                // A type contestant evicts the outer binding whichever way the
+                // fragment-internal contest goes — it takes the slot from an
+                // earlier open's value either way. A name contested only by an
+                // unnameable static does not: the static's own name is unknown,
+                // so the outer binding may well keep it.
+                if type_names.contains(&name) {
+                    early_evictions.push(name.clone());
+                }
+                if unnameable_wins {
+                    late_evictions.push(name);
+                }
+            }
+            self.push_eviction_overrides(early_evictions, pos);
+            // Anything it hides that we cannot *name* — a module alias, a
+            // case-opaque type repr, or a path an earlier Compile-order file
+            // marked hidden — could be a value in expression position: raise the
+            // barrier before folding, so the unenumerable name shadows
+            // everything folded earlier.
+            if self.fold_back_needs_barrier(&frag, frag_range) {
+                self.open_generation += 1;
+            }
+            self.open_module_values(&frag, pos, Some(current_file), Some(frag_range));
+            self.push_eviction_overrides(late_evictions, pos);
+            // Record what this fragment contributed, so a constructible type
+            // the enclosing container declares *below* can take the name back
+            // when the walk reaches it ([`Self::decline_folded_name_taken_by_type`]).
+            // Per fragment, not once for the module: a nested `[<AutoOpen>]`
+            // submodule's members reach the same container through a deeper
+            // path.
+            self.note_fold_back_names(&frag, frag_range);
+            // …and the rest is declined **by name**, after the fold rather than
+            // before it. `open_module_values` enumerates only what it can point
+            // at, so a name it does push must still lose to a same-named member
+            // it cannot — within one module FCS's own source order decides, and
+            // an `extern` written after a same-named case takes the name (codex
+            // round 3). Declining last is the sound side of that ordering.
+            let unnameable = self.unenumerated_member_names_in(&frag, frag_range);
+            if !unnameable.is_empty() {
+                let generation = self.open_generation;
+                let entries: Vec<ScopeEntry> = unnameable
+                    .into_iter()
+                    .map(|(name, pattern_only)| {
+                        let mut entry = if pattern_only {
+                            let mut e = ScopeEntry::opened_pattern_only(
+                                name,
+                                Resolution::Deferred(DeferredReason::UnboundName),
+                                generation,
+                                pos,
+                            );
+                            // [`ScopeEntry::opened_case`]: the name provably
+                            // occupies the constructor namespace, so the
+                            // reference stops here with no committed target.
+                            // Without it `case_reference_entry` classifies the
+                            // `Deferred` as a non-case and scans **past** it to
+                            // whatever case an earlier open supplied — a wrong
+                            // go-to-def (codex round 1).
+                            e.opened_case = true;
+                            e
+                        } else {
+                            ScopeEntry::opened(
+                                name,
+                                Resolution::Deferred(DeferredReason::UnboundName),
+                                generation,
+                                pos,
+                            )
+                        };
+                        entry.from_open = true;
+                        entry
+                    })
+                    .collect();
+                self.module_frame().entries.extend(entries);
+            }
+        }
+    }
+
+    /// Record the names this fragment folds into the **enclosing container**, so
+    /// that a constructible type the container declares *after* the fold can take
+    /// them back — [`Self::decline_folded_name_taken_by_type`], called from the
+    /// type-declaration walk so the decline lands at the type's own position.
+    ///
+    /// The fold runs at the module's closing position and leaves ordinary
+    /// entries behind; nothing in the enclosing walk then evicts them, so a
+    /// `type Tag()` written below would be shadowed by the folded `Tag` where
+    /// FCS binds the type's constructor. fcs-dump-probed both ways round: a
+    /// type *before* the fold loses to the folded value, one *after* it wins,
+    /// so position is the whole rule.
+    ///
+    /// This is [`Resolver::fragment_type_contestants`]'s question one level
+    /// out, and it declines rather than commits for the same reason — sema
+    /// models no project type constructor. It closes the door the fold-back
+    /// opens onto task #45 (whose explicit-`open` arm resolves the same shape
+    /// the same wrong way, on `main` too); it does not fix #45.
+    fn note_fold_back_names(&mut self, module_path: &[String], range: TextRange) {
+        let container = self.container_path.clone();
+        let names: Vec<String> = self
+            .items
+            .iter()
+            .filter_map(|item| {
+                let q = item.qualified.as_ref()?;
+                let in_fragment = match item.def {
+                    ExportDef::Own(id) => range.contains_range(self.defs[id.index()].range),
+                    ExportDef::Sig { .. } => false,
+                };
+                (q.len() == module_path.len() + 1
+                    && q.starts_with(module_path)
+                    && in_fragment
+                    && super::model::accessible_from(item.access_root_len, q, &container))
+                .then(|| q.last().expect("non-empty qualified path").clone())
+            })
+            .collect();
+        self.fold_back_names
+            .entry(container)
+            .or_default()
+            .extend(names);
+    }
+
+    /// Decline a folded name a constructible type in the same container now
+    /// takes — called from the type-declaration walk, so it lands at the type's
+    /// own position and a use written *above* the type still binds the fold.
+    ///
+    /// It declines rather than commits for [`Self::fragment_type_contestants`]'s
+    /// reason: sema models no project type constructor. Scoped to names a fold
+    /// supplied, because the same contest against an ordinary `open`'s value is
+    /// task #45 — wrong on `main` too, and its fix belongs with the general
+    /// eviction machinery rather than here.
+    pub(super) fn decline_folded_name_taken_by_type(&mut self, name: &str, pos: u32) {
+        if !self
+            .fold_back_names
+            .get(&self.container_path)
+            .is_some_and(|names| names.contains(name))
+        {
+            return;
+        }
+        self.push_eviction_overrides(vec![name.to_string()], pos);
+    }
+
+    /// The constructible type names `container` declares **inside this
+    /// fragment** — the fold's type-eviction override.
+    ///
+    /// Not [`Self::direct_project_type_contestants`], which aggregates every
+    /// same-path fragment and every earlier Compile-order file: a plain
+    /// fragment's type at the same module path is not folded by the
+    /// `[<AutoOpen>]` one, so it evicts nothing here and FCS keeps the opened
+    /// value (fcs-dump probe `FragType`, codex round 5).
+    ///
+    /// Accessibility needs no separate filter: `export_type_path` already
+    /// downgrades a `type private` to [`SlotClass::Keeps`], which the slot test
+    /// below excludes — FCS does not import a private type at an `open` from
+    /// outside its declaration group.
+    /// Each carries its declaration position, because a class and a union case
+    /// are one [`fold_rank`] and so are ordered by source position against each
+    /// other — see [`Self::fragment_member_ranks`].
+    fn fragment_type_contestants(
+        &self,
+        container: &[String],
+        range: TextRange,
+    ) -> Vec<(String, TextSize)> {
+        self.export_decls
+            .iter()
+            .filter(|decl| range.contains(decl.pos))
+            .filter_map(|decl| match &decl.kind {
+                ExportDeclKind::Type {
+                    info: Some((_, slot)),
+                    ..
+                } if *slot != SlotClass::Keeps => {
+                    let (name, parent) = decl.path.split_last()?;
+                    (parent == container).then(|| (name.clone(), decl.pos))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every member `container` declares under `name` inside this fragment, as
+    /// its [`fold_rank`] and declaration position — what decides which side of
+    /// the fold the type-eviction override belongs on. `open_module_values`
+    /// pushes the fragment as one ranked block, so the override can only go
+    /// before it or after it, and "after" is right exactly when nothing in the
+    /// fragment outranks the class: a same-named value always does, and a
+    /// same-named case does when it is written later.
+    ///
+    /// Ranked over exactly the members [`Self::open_module_values`] folds —
+    /// same accessibility test, same reference site. A member that one omits
+    /// and the other counts is a member deciding an ordering it is not present
+    /// for: a `let private` never in scope here would push the override to the
+    /// wrong side of the fold and let a public case stand where FCS binds the
+    /// type (codex review of #49).
+    fn fragment_member_ranks(
+        &self,
+        container: &[String],
+        range: TextRange,
+        name: &str,
+    ) -> Vec<(u8, TextSize)> {
+        let site = self.container_path.clone();
+        self.items
+            .iter()
+            .filter(|item| {
+                item.qualified.as_ref().is_some_and(|q| {
+                    q.len() == container.len() + 1
+                        && q.starts_with(container)
+                        && q.last().is_some_and(|last| last == name)
+                        && super::model::accessible_from(item.access_root_len, q, &site)
+                })
+            })
+            .filter_map(|item| match item.def {
+                ExportDef::Own(id) => Some((
+                    fold_rank(item.case_kind()),
+                    self.defs[id.index()].range.start(),
+                )),
+                ExportDef::Sig { .. } => None,
+            })
+            .filter(|(_, pos)| range.contains(*pos))
+            .collect()
+    }
+
+    /// Every name this fragment contests — the names an unnameable contributor
+    /// could take. A constructible type contests the one name it declares; an
+    /// `[<AutoOpen>]` type's static has an unknown name, so while one is in the
+    /// fragment every member name is contested and the order decides.
+    ///
+    /// Over-inclusive by exactly that name-blindness: a static named something
+    /// else costs the fragment's other names a deferral, never a wrong target,
+    /// on a shape (a case and an auto-open type in one auto-open module) that
+    /// is already vanishingly rare.
+    fn fragment_contested_names(&self, container: &[String], range: TextRange) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .fragment_type_contestants(container, range)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        if self.fragment_static_positions(range).is_empty() {
+            names.sort();
+            names.dedup();
+            return names;
+        }
+        names.extend(self.fragment_member_names(container, range));
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// The positions of `[<AutoOpen>]` types inside this fragment — an
+    /// unnameable value surface at the tycon tier
+    /// ([`Resolver::own_auto_open_type_positions`](super::state::Resolver),
+    /// which already excludes the generic and `private` ones that contribute
+    /// nothing).
+    fn fragment_static_positions(&self, range: TextRange) -> Vec<TextSize> {
+        self.own_auto_open_type_positions
+            .iter()
+            .copied()
+            .filter(|p| range.contains(*p))
+            .collect()
+    }
+
+    /// Every name this fragment folds in, deduplicated. Same accessibility test
+    /// and reference site as [`Self::fragment_member_ranks`], for the same
+    /// reason: a member the fold does not bring in contests nothing.
+    fn fragment_member_names(&self, container: &[String], range: TextRange) -> Vec<String> {
+        let site = self.container_path.clone();
+        self.items
+            .iter()
+            .filter_map(|item| {
+                let q = item.qualified.as_ref()?;
+                if q.len() != container.len() + 1
+                    || !q.starts_with(container)
+                    || !super::model::accessible_from(item.access_root_len, q, &site)
+                {
+                    return None;
+                }
+                let ExportDef::Own(id) = item.def else {
+                    return None;
+                };
+                range
+                    .contains(self.defs[id.index()].range.start())
+                    .then(|| q.last().expect("non-empty qualified path").clone())
+            })
+            .collect()
+    }
+
+    /// Everything this fragment contributes under `name`, sorted into FCS's
+    /// fold order so the **last** element is the winner. One ordering, from
+    /// which every eviction question follows — an exception (rank 0) losing to
+    /// a static (rank 1) at any position, a union case (rank 1) beating one
+    /// written above it, a value (rank 2) beating both from either side — none
+    /// of which is restated as a predicate here.
+    fn fragment_contributions(
+        &self,
+        container: &[String],
+        range: TextRange,
+        name: &str,
+    ) -> Vec<Contribution> {
+        let mut out: Vec<Contribution> = self
+            .fragment_member_ranks(container, range, name)
+            .into_iter()
+            .map(|(rank, pos)| Contribution {
+                rank,
+                pos,
+                nameable: true,
+            })
+            .collect();
+        // A constructible type of exactly this name: the tycon tier, unnameable
+        // because sema models no project type constructor (#45).
+        out.extend(
+            self.fragment_type_contestants(container, range)
+                .into_iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, pos)| Contribution {
+                    rank: TYCON_RANK,
+                    pos,
+                    nameable: false,
+                }),
+        );
+        // An `[<AutoOpen>]` type's statics: the same tier, and unnameable both
+        // in target and in name, so each one contributes to every name.
+        out.extend(
+            self.fragment_static_positions(range)
+                .into_iter()
+                .map(|pos| Contribution {
+                    rank: TYCON_RANK,
+                    pos,
+                    nameable: false,
+                }),
+        );
+        out.sort_by_key(|c| (c.rank, c.pos));
+        out
+    }
+
+    /// Push a `Deferred` override for each name a constructible type takes
+    /// FCS's unqualified slot for. Sema models no project type constructor, so
+    /// the override never claims a target — it only stops a same-named value
+    /// on the losing side of the fold from standing.
+    fn push_eviction_overrides(&mut self, names: Vec<String>, pos: u32) {
+        if names.is_empty() {
+            return;
+        }
+        let generation = self.open_generation;
+        let entries: Vec<ScopeEntry> = names
+            .into_iter()
+            .map(|name| {
+                ScopeEntry::opened(
+                    name,
+                    Resolution::Deferred(DeferredReason::UnboundName),
+                    generation,
+                    pos,
+                )
+            })
+            .collect();
+        self.module_frame().entries.extend(entries);
+    }
+
+    /// The names `open_module_values` cannot enumerate for `container`, each
+    /// flagged `pattern_only` — the namespace it occupies, which decides how the
+    /// fold declines it:
+    ///
+    /// - a module-level **active-pattern case** (`true`): FCS does not admit one
+    ///   as a value at all (`let v = Even` is FS0039), so it contests the
+    ///   constructor namespace alone;
+    /// - an **`extern`** prototype (`false`): an ordinary value-namespace name
+    ///   that sema does not intern as a binder.
+    ///
+    /// Read off this file's [`Resolver::export_decls`](super::Resolver), which
+    /// carries each declaration's path — and, for an active-pattern case, the
+    /// [`ExportedItem`] whose `access_root_len` decides accessibility. A
+    /// `let private (|Case|_|)` is invisible outside its own module, so it
+    /// contests nothing in the enclosing scope and must not decline the case an
+    /// earlier open supplied there (codex round 3).
+    ///
+    /// This file only: an earlier Compile-order file's members are not in
+    /// `export_decls`, which is why [`Self::fold_back_needs_barrier`] still
+    /// raises the blanket barrier for a path one of them marked hidden.
+    fn unenumerated_member_names_in(
+        &self,
+        container: &[String],
+        range: TextRange,
+    ) -> Vec<(String, bool)> {
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for decl in self.export_decls.iter().filter(|d| range.contains(d.pos)) {
+            match &decl.kind {
+                // `path` = container + case name.
+                ExportDeclKind::ActivePatternCase { item, .. } => {
+                    let Some((name, parent)) = decl.path.split_last() else {
+                        continue;
+                    };
+                    if parent != container {
+                        continue;
+                    }
+                    // An anonymous-root case has no `ExportedItem` to key
+                    // accessibility on; the fold declines an anonymous root
+                    // wholesale, so it never reaches here.
+                    let accessible = item.is_some_and(|idx| {
+                        super::model::accessible_from(
+                            self.items[idx].access_root_len,
+                            &decl.path,
+                            &self.container_path,
+                        )
+                    });
+                    if accessible {
+                        out.push((name.clone(), true));
+                    }
+                }
+                // `path` = the container itself; `name` = the function segments.
+                ExportDeclKind::Extern { name, private } => {
+                    // A `private` prototype stops at its own module, exactly as a
+                    // `private` recognizer does, so it contests nothing here.
+                    if decl.path == container
+                        && !private
+                        && let Some(last) = name.last()
+                    {
+                        out.push((last.clone(), false));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Whether [`Self::fold_own_auto_open_module`] must raise the
+    /// [`open_generation`](Self::open_generation) barrier for `frag` — it hides
+    /// a value-space name that could appear in *expression* position, or it is a
+    /// path an **earlier Compile-order file** also marked hidden, where the
+    /// reason is unclassified and the case names are out of view.
+    fn fold_back_needs_barrier(&self, frag: &[String], range: TextRange) -> bool {
+        self.hidden_expression_value_sites
+            .iter()
+            .any(|(path, pos)| path == frag && range.contains(*pos))
     }
 
     /// Whether opening project namespace/module `container` may bring
@@ -1336,7 +2011,7 @@ impl<'a> Resolver<'a> {
         let site = self.container_path.clone();
         let mut out: HashMap<String, SubmoduleFold> = HashMap::new();
         let current = self.preceding.num_files();
-        for (sub, file) in self.auto_open_fragments_reachable(path) {
+        for (sub, file, range) in self.auto_open_fragments_reachable(path) {
             // The names this fragment declares in *its* file (ids unused here —
             // only the fold position matters): earlier files from the per-file
             // cross-file queries, the current file from `self.items`.
@@ -1366,9 +2041,17 @@ impl<'a> Resolver<'a> {
                 value_names = Vec::new();
                 case_names = Vec::new();
                 for item in &self.items {
+                    // Same fragment identity the fold itself uses: a plain block's
+                    // members at this path are not part of the `[<AutoOpen>]`
+                    // fragment, so they must not enter its straddle provenance
+                    // either (codex round 6).
                     if let Some(q) = &item.qualified
                         && q.len() == sub.len() + 1
                         && q.starts_with(sub.as_slice())
+                        && range.is_none_or(|r| match item.def {
+                            ExportDef::Own(id) => r.contains_range(self.defs[id.index()].range),
+                            ExportDef::Sig { .. } => false,
+                        })
                         && super::model::accessible_from(item.access_root_len, q, &site)
                     {
                         let name = q.last().expect("non-empty qualified path").clone();
@@ -1452,10 +2135,40 @@ impl<'a> Resolver<'a> {
     }
 
     /// Record the **current container** as a module that brings value-space names
-    /// we cannot enumerate (a union case / exception constructor / active pattern,
-    /// or — at the caller's discretion — a module alias). See
-    /// [`Self::modules_with_hidden_values`].
-    pub(super) fn note_hidden_value_module(&mut self, path: Vec<String>) {
+    /// we cannot enumerate (a union case / exception constructor, or — at the
+    /// caller's discretion — a module alias). See
+    /// [`Self::modules_with_hidden_values`]; the name may appear in *expression*
+    /// position, so it also joins
+    /// [`Self::hidden_expression_value_sites`].
+    /// `fold_site` is the declaring position, which
+    /// [`fold_own_auto_open_module`](Self::fold_own_auto_open_module) needs to
+    /// decide whether the hidden member is inside the fragment it is folding —
+    /// one file can declare the same module path in several blocks, and only the
+    /// `[<AutoOpen>]` one folds. `None` says the surface is inert for a *parent*
+    /// fold (a generic `[<AutoOpen>]` type auto-opens nothing at all —
+    /// `CanAutoOpenTyconRef` — and a `private` one's statics stop at its
+    /// container), so no barrier is owed there; every blunter consumer still
+    /// sees it through [`Self::modules_with_hidden_values`].
+    pub(super) fn note_hidden_value_module(
+        &mut self,
+        path: Vec<String>,
+        fold_site: Option<TextSize>,
+    ) {
+        if let Some(pos) = fold_site {
+            self.hidden_expression_value_sites.push((path.clone(), pos));
+        }
+        self.modules_with_hidden_values.insert(path);
+    }
+
+    /// [`Self::note_hidden_value_module`] for a hidden name the auto-open
+    /// fold-back can **name** — an active-pattern case or an `extern`
+    /// prototype. Both are declined per name by
+    /// [`Self::unenumerated_member_names_in`], so the fold needs no blanket
+    /// generation barrier for them and they join
+    /// [`Self::modules_with_hidden_values`] alone. Every other consumer — an
+    /// explicit `open`, which cannot see the module's contents — still treats
+    /// the container as hidden.
+    pub(super) fn note_hidden_nameable_value_module(&mut self, path: Vec<String>) {
         self.modules_with_hidden_values.insert(path);
     }
 
@@ -1709,6 +2422,7 @@ impl<'a> Resolver<'a> {
         module_path: &[String],
         open_pos: u32,
         fragment_file: Option<usize>,
+        fragment_range: Option<TextRange>,
     ) -> usize {
         // Collect first — the scans borrow `self.items` / `self.preceding`
         // immutably, while the push below borrows `self.scopes` mutably.
@@ -1724,6 +2438,21 @@ impl<'a> Resolver<'a> {
         // members are gated per id by their own `file_of`.
         let current_file = self.preceding.num_files();
         let same_file_folds = fragment_file.is_none_or(|f| f == current_file);
+        // A same-file member belongs to this fragment when its binder sits
+        // inside the declaration's own text range. One file can hold several
+        // blocks declaring the SAME module path — a plain `module M` and a later
+        // `[<AutoOpen>] module M` — and only the attributed one folds, so the
+        // file alone is too coarse a fragment identity (codex round 4).
+        let in_fragment = |item: &ExportedItem| match fragment_range {
+            None => true,
+            Some(range) => match item.def {
+                ExportDef::Own(id) => range.contains_range(self.defs[id.index()].range),
+                // A signature-paired binder lives in the `.fsi`'s arena, so it
+                // has no position in this range to test; the fragment fold is an
+                // impl-file walk, so this cannot arise.
+                ExportDef::Sig { .. } => false,
+            },
+        };
         // A module whose `open` brings value-space names we cannot enumerate (an
         // active pattern, an alias, …) is **hidden**: its own exported cases cannot
         // be *trusted in pattern position*, because a hidden constructor of the same
@@ -1763,6 +2492,7 @@ impl<'a> Resolver<'a> {
                 && q.len() == module_path.len() + 1
                 && q.starts_with(module_path)
                 && same_file_folds
+                && in_fragment(item)
                 && super::model::accessible_from(item.access_root_len, q, &site)
             {
                 constant_names.insert(q.last().expect("non-empty qualified path").clone());
@@ -1773,12 +2503,14 @@ impl<'a> Resolver<'a> {
         // too). Record value names in `seen_values`, same-file case names in
         // `seen_ctors`. No same-file dedup: a name exported twice at a path (a case
         // and a later same-named `let`) keeps both, so latest-wins `lookup` picks
-        // the later one in expression position (mirroring the in-file frame).
+        // the later one — but by [`fold_rank`], not by source order.
+        let mut same_file: Vec<(u8, ScopeEntry)> = Vec::new();
         for item in &self.items {
             if let Some(q) = &item.qualified
                 && q.len() == module_path.len() + 1
                 && q.starts_with(module_path)
                 && same_file_folds
+                && in_fragment(item)
                 && super::model::accessible_from(item.access_root_len, q, &site)
             {
                 let name = q.last().expect("non-empty qualified path").clone();
@@ -1798,9 +2530,13 @@ impl<'a> Resolver<'a> {
                 let mut entry =
                     ScopeEntry::opened(name, Resolution::Item(item.id), generation, open_pos);
                 entry.maybe_constant_pattern = item.attributed;
-                entries.push(entry);
+                same_file.push((fold_rank(item.case_kind()), entry));
             }
         }
+        // A **stable** sort by rank alone: within one rank the members keep their
+        // source order, so a later same-named value still shadows an earlier one.
+        same_file.sort_by_key(|(rank, _)| *rank);
+        entries.extend(same_file.into_iter().map(|(_, entry)| entry));
         // The cross-file member sets. A plain `open M` (`fragment_file == None`)
         // takes the latest **accessible** export per path across every earlier
         // file ([`direct_value_children`] — an inaccessible `private` value
@@ -2113,8 +2849,33 @@ impl<'a> Resolver<'a> {
         // matching FCS's latest-file rule without any per-path re-push. (The old
         // per-module-path recursion folded all of a module's members at the
         // module's list position, mis-ordering multi-file/nested fragments.)
-        let mut count = self.open_module_values(namespace, open_pos, None);
-        for (frag_path, frag_file) in self.auto_open_fragments_reachable(namespace) {
+        let mut count = self.open_module_values(namespace, open_pos, None, None);
+        // An unprovable marker in this namespace makes the contest unadjudicable
+        // for everything folded *before* it: the fragment is not in the list
+        // below (it might not open), but what precedes it must not stand either
+        // (it might, and then it outranks them). The generation barrier is the
+        // same "we cannot say" the fold-back raises, applied where a later block
+        // folds afresh and the fold-back's barrier no longer reaches.
+        //
+        // Its POSITION is what the barrier has to respect
+        // ([`Self::unproven_auto_open_fragment_files_in`]). The direct tier just
+        // folded precedes every fragment, so any unprovable fragment stales it;
+        // a proven fragment at an earlier file is staled only by an unprovable
+        // one that comes after it; and one folded later outranks the uncertainty
+        // anyway, so it survives.
+        let unproven_files = self.unproven_auto_open_fragment_files_in(namespace);
+        let mut next_unproven = 0usize;
+        for (frag_path, frag_file, frag_range) in self.auto_open_fragments_reachable(namespace) {
+            // Every uncertainty strictly *before* this fragment's file applies
+            // now, so this fragment is pushed into a generation that has already
+            // staled them. A same-file uncertainty is deliberately not resolved
+            // here: it is flushed after the loop, which stales the whole file's
+            // fold rather than guessing at declaration order within it.
+            while next_unproven < unproven_files.len() && unproven_files[next_unproven] < frag_file
+            {
+                self.open_generation += 1;
+                next_unproven += 1;
+            }
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2141,7 +2902,12 @@ impl<'a> Resolver<'a> {
             if self.module_has_hidden_values(&frag_path) {
                 self.open_generation += 1;
             }
-            count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
+            // A same-file fragment carries its own declaration range: one file
+            // can declare the same module path in a plain block and an
+            // `[<AutoOpen>]` one, and only the attributed one folds, so the file
+            // index alone would import the plain fragment's members too (codex
+            // round 6).
+            count += self.open_module_values(&frag_path, open_pos, Some(frag_file), frag_range);
         }
         // The straddle winners, re-pushed last so they out-position the submodule
         // pushes. `value_winners` / `ctor_winners` are non-empty only when
@@ -2201,6 +2967,13 @@ impl<'a> Resolver<'a> {
             entry.opened_case = true;
             self.module_frame().entries.push(entry);
             count += 1;
+        }
+        // Every uncertainty at or after the last folded fragment's file. It sits
+        // at the end of the fold, so it stales the whole of it — including the
+        // straddle winners just re-pushed, which come from the direct tier and
+        // are exactly what an unprovable fragment might outrank.
+        if next_unproven < unproven_files.len() {
+            self.open_generation += 1;
         }
         count
     }

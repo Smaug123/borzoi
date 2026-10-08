@@ -59,6 +59,23 @@ fn fixture_env() -> AssemblyEnv {
     AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv")
 }
 
+/// [`fixture_env`] plus the real `FSharp.Core.dll`, for the cases whose subject
+/// is the auto-open fold: the fold acts only on a marker it can *prove* is
+/// `Microsoft.FSharp.Core.AutoOpenAttribute`, so those cases cannot be diffed
+/// against FCS without it (see [`crate::common::fsharp_core_env`]).
+///
+/// The rest of this group keeps the bare [`fixture_env`], and deliberately: its
+/// subject is which names are *shadowable*, and FSharp.Core supplies real extra
+/// shadow candidates. Adding it there would change what those cases measure
+/// rather than correct their reference set.
+fn fixture_env_with_core() -> AssemblyEnv {
+    let bytes = std::fs::read(ensure_fixture_built()).expect("read F# abbreviation fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse F# abbreviation fixture dll");
+    let core =
+        Ecma335Assembly::parse(crate::common::fsharp_core_bytes()).expect("parse FSharp.Core.dll");
+    AssemblyEnv::from_views(&[view, core]).expect("build AssemblyEnv")
+}
+
 /// The main fixture referenced **twice** — two loaded DLLs exporting the same
 /// FQNs, so every top-level name collides across DLLs (including alias *targets*,
 /// which then also defer via target-uniqueness). A coarse multi-DLL behavioural
@@ -1880,7 +1897,7 @@ fn a_project_auto_open_module_defers_a_same_namespace_assembly_type() {
 /// one file. Only this case fails.
 #[test]
 fn a_cross_file_project_auto_open_module_defers_only_a_name_the_project_declares() {
-    let env = fixture_env();
+    let env = fixture_env_with_core();
     let shape = env
         .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
         .expect("Demo.CasePat.Shape in env");
@@ -2165,7 +2182,7 @@ fn a_fully_qualified_path_still_commits_beside_a_project_auto_open_module() {
 ///   bare channel's type index is *not* consulted for a dotted head.
 #[test]
 fn a_project_auto_open_module_defers_a_dotted_head_it_declares_a_module_for() {
-    let env = fixture_env();
+    let env = fixture_env_with_core();
     let shadowed = "namespace Demo.CasePat\n\
                     [<AutoOpen>]\n\
                     module Auto =\n\
@@ -2244,7 +2261,7 @@ fn a_module_abbreviation_in_an_auto_open_module_is_not_a_dotted_head_shadow() {
 /// Only this one fails.
 #[test]
 fn a_cross_file_project_auto_open_module_defers_a_dotted_head_it_declares_a_module_for() {
-    let env = fixture_env();
+    let env = fixture_env_with_core();
     let shape = env
         .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
         .expect("Demo.CasePat.Shape in env");

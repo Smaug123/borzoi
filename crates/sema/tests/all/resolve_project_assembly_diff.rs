@@ -529,9 +529,14 @@ fn assert_merge_sound(label: &str, files: &[(&'static str, &'static str)]) {
     let json = invoke_fcs_dump_project_with_refs(&paths, &[fixture]);
     let fcs_files = parse_fcs_uses_project(&json, &written);
 
+    // FSharp.Core beside the fixture: the oracle above type-checked with it, and
+    // an `[<AutoOpen>]` cell's fold turns on proving the marker is *its*
+    // attribute ([`crate::common::fsharp_core_env`]).
     let bytes = std::fs::read(fixture).expect("read fixture dll");
     let view = Ecma335Assembly::parse(&bytes).expect("parse fixture dll");
-    let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv");
+    let core =
+        Ecma335Assembly::parse(crate::common::fsharp_core_bytes()).expect("parse FSharp.Core.dll");
+    let env = AssemblyEnv::from_views(&[view, core]).expect("build AssemblyEnv");
     let asts: Vec<ImplFile> = written.iter().map(|(_, s)| impl_file(s)).collect();
     let proj = resolve_project(&asts, &env);
     for (p, _) in &written {

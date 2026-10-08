@@ -2942,6 +2942,13 @@ fn observe() -> BTreeMap<String, (Ours, Option<Target>)> {
             Order::ContributorFirst => vec![contributor, decoy],
             Order::DecoyFirst => vec![decoy, contributor],
         };
+        // FSharp.Core goes *last* in both orders, so it cannot perturb the
+        // contributor/decoy precedence this test varies, while still letting a
+        // plant's `[<AutoOpen>]` marker resolve — the proof the fold requires
+        // (see [`crate::common::fsharp_core_env`]).
+        let core = Ecma335Assembly::parse(crate::common::fsharp_core_bytes())
+            .expect("parse FSharp.Core.dll");
+        let views = [views[0].clone(), views[1].clone(), core];
         let env = AssemblyEnv::from_views(&views).expect("build tier AssemblyEnv");
 
         for plant in &plants {

@@ -25,6 +25,21 @@
 //! isolated by FQN. The currency covers targets in the fixtures AND in the
 //! cell's decl files, so "the project half wins" is a positive value on both
 //! sides, not a blind `None`.
+//!
+//! ## What this grid cannot see
+//!
+//! Every `[<AutoOpen>]` marker is **unprovable** in this env: the autoopen
+//! fixture carries an unknowable auto-open surface, which makes every attribute
+//! candidate unrulable. So a cell can exhibit an *unprovable* fragment but never
+//! a **proven** one, and any contest whose outcome turns on the two being
+//! distinguished — chiefly which of a proven and an unprovable fragment folds
+//! later — declines here no matter what the resolver does. Such cells would be
+//! green before and after a fix, so they do not belong in the grid; they live in
+//! `resolve_autoopen` under `common::fsharp_core_env()`, where the marker
+//! resolves.
+//!
+//! What the grid *does* pin is the unprovable fragment against the namespace's
+//! own direct tier, which needs no proven contestant.
 
 use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
@@ -35,6 +50,25 @@ const PJ_AUTOMOD: &str = "namespace Demo.PjFold.AutoMod\n\n[<AutoOpen>]\nmodule 
 const PJ_CLASS: &str =
     "namespace Demo.PjFold.ClassShape\ntype PjClass() =\n    static member PjStat = 9\n";
 const PJ_MIX_MOD: &str = "module Demo.PjMix.NsOnly\n\nlet pjModVal () = 10\n";
+/// A decl file whose namespace supplies one name **twice**: directly, as a
+/// union case, and from an `[<AutoOpen>]` module declared after it. FCS folds
+/// the module last, so the module's value wins — probed across two files with
+/// `dotnet fsi --exec`, which prints the module's `2`, not the case.
+///
+/// This is the cross-file half of the unprovable-marker contest. A later file's
+/// `open` sees the namespace's direct tier and the module's, and must not
+/// commit the direct tier merely because it cannot rule on the marker: the
+/// exported *proven* fragments alone would leave the case uncontested, which is
+/// a wrong go-to-definition rather than a gap.
+const PJ_UNPROVEN: &str = "namespace Demo.PjUnproven.Contest\n\ntype PjHolder =\n    \
+                           | PjContested\n\n[<AutoOpen>]\nmodule PjAutoLate =\n    \
+                           let PjContested = 2\n";
+/// [`PJ_UNPROVEN`] minus the auto-open module — the non-vacuity control. With
+/// no fragment to be unsure about, the direct case must still commit on both
+/// sides, so a decline on the contested cell is that fragment's doing and not a
+/// blanket refusal of the shape.
+const PJ_DIRECT_ONLY: &str = "namespace Demo.PjUnproven.Direct\n\ntype PjHolder2 =\n    \
+                              | PjDirectOnly\n";
 
 const CELLS: &[Cell] = &[
     // ---- project namespace half carries an exception ----
@@ -43,6 +77,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_EXN],
         label: "pj-exn / assembly module-half value, expression",
         body: &["open Demo.PjFold.Exn"],
+        after: &[],
         probe: "mhPjExn",
         position: Position::Expr,
     },
@@ -51,6 +86,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_EXN],
         label: "pj-exn / project exception, expression",
         body: &["open Demo.PjFold.Exn"],
+        after: &[],
         probe: "PjExn",
         position: Position::Expr,
     },
@@ -59,6 +95,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_EXN],
         label: "pj-exn / project exception, pattern",
         body: &["open Demo.PjFold.Exn"],
+        after: &[],
         probe: "PjExn",
         position: Position::PatternCtor,
     },
@@ -68,6 +105,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_UNION],
         label: "pj-union / assembly module-half value, expression",
         body: &["open Demo.PjFold.Union"],
+        after: &[],
         probe: "mhPjUnion",
         position: Position::Expr,
     },
@@ -76,6 +114,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_UNION],
         label: "pj-union / project case, expression",
         body: &["open Demo.PjFold.Union"],
+        after: &[],
         probe: "PjCaseB",
         position: Position::Expr,
     },
@@ -84,6 +123,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_UNION],
         label: "pj-union / project case, pattern",
         body: &["open Demo.PjFold.Union"],
+        after: &[],
         probe: "PjCaseB",
         position: Position::PatternCtor,
     },
@@ -94,6 +134,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_AUTOMOD],
         label: "pj-auto / assembly module-half value, expression",
         body: &["open Demo.PjFold.AutoMod"],
+        after: &[],
         probe: "mhPjAuto",
         position: Position::Expr,
     },
@@ -102,6 +143,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_AUTOMOD],
         label: "pj-auto / project auto-open value, expression",
         body: &["open Demo.PjFold.AutoMod"],
+        after: &[],
         probe: "pjAutoSolo",
         position: Position::Expr,
     },
@@ -112,6 +154,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_AUTOMOD],
         label: "pj-auto / colliding value, expression",
         body: &["open Demo.PjFold.AutoMod"],
+        after: &[],
         probe: "pjAutoVal",
         position: Position::Expr,
     },
@@ -121,6 +164,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_CLASS],
         label: "pj-class / assembly module-half value, expression",
         body: &["open Demo.PjFold.ClassShape"],
+        after: &[],
         probe: "mhPjClass",
         position: Position::Expr,
     },
@@ -129,6 +173,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_CLASS],
         label: "pj-class-dotted / static under the project type head, expression",
         body: &["open Demo.PjFold.ClassShape"],
+        after: &[],
         probe: "PjClass.PjStat",
         position: Position::Expr,
     },
@@ -138,6 +183,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_MIX_MOD],
         label: "pj-mix / project module value, expression",
         body: &["open Demo.PjMix.NsOnly"],
+        after: &[],
         probe: "pjModVal",
         position: Position::Expr,
     },
@@ -146,6 +192,7 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_MIX_MOD],
         label: "pj-mix / assembly namespace exception, expression",
         body: &["open Demo.PjMix.NsOnly"],
+        after: &[],
         probe: "PjNsExn",
         position: Position::Expr,
     },
@@ -154,7 +201,28 @@ const CELLS: &[Cell] = &[
         decls: &[PJ_MIX_MOD],
         label: "pj-mix-dotted / assembly namespace type static, expression",
         body: &["open Demo.PjMix.NsOnly"],
+        after: &[],
         probe: "PjNsClass.PjNsStat",
+        position: Position::Expr,
+    },
+    // ---- an earlier file's UNPROVABLE auto-open fragment contests the
+    //      namespace's own direct tier ----
+    Cell {
+        container: Container::Anon,
+        decls: &[PJ_UNPROVEN],
+        label: "pj-unproven / direct case contested by an auto-open fragment, expression",
+        body: &["open Demo.PjUnproven.Contest"],
+        after: &[],
+        probe: "PjContested",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Anon,
+        decls: &[PJ_DIRECT_ONLY],
+        label: "pj-unproven / uncontested direct case, expression",
+        body: &["open Demo.PjUnproven.Direct"],
+        after: &[],
+        probe: "PjDirectOnly",
         position: Position::Expr,
     },
 ];
@@ -167,6 +235,22 @@ const CELLS: &[Cell] = &[
 /// folded as a recursive `open_project_namespace_values` (§7's "machinery"
 /// slice) and the `cross_kind` arm was deleted — they are no longer gaps.
 const KNOWN_GAPS: &[(&str, &str)] = &[
+    (
+        "pj-auto / assembly module-half value, expression",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "pj-auto / project auto-open value, expression",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "pj-auto / colliding value, expression",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "pj-unproven / direct case contested by an auto-open fragment, expression",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the contested name declines rather than committing the namespace's direct case, which is what FCS does NOT bind (see the FCS pin)",
+    ),
     (
         "pj-class-dotted / static under the project type head, expression",
         "a PROJECT type's static member is not modelled — sema resolves members of \
@@ -192,9 +276,27 @@ fn project_half_matches_fcs_on_every_cell() {
     // PROJECT declaration site (decl 0's `pjAutoVal` binder) — the assembly
     // module-half member rendering (`Demo.PjFold.AutoMod.pjAutoVal`) fails it.
     let pj_auto_val = PJ_AUTOMOD.find("pjAutoVal").expect("decl text");
-    let fcs_pins = [(
-        "pj-auto / colliding value, expression",
-        format!("pj:0:{}..{}", pj_auto_val, pj_auto_val + "pjAutoVal".len()),
-    )];
+    // Same reasoning for the unprovable-marker contest: the gap entry says only
+    // that FCS resolved *something*, and the whole claim is WHICH of the two
+    // same-named declarations it picked. Pin it to the auto-open module's
+    // binder — the direct union case's site fails it, which is exactly the wrong
+    // target this family guards.
+    let pj_contested_val = PJ_UNPROVEN
+        .rfind("PjContested")
+        .expect("the auto-open module's binder");
+    let fcs_pins = [
+        (
+            "pj-auto / colliding value, expression",
+            format!("pj:0:{}..{}", pj_auto_val, pj_auto_val + "pjAutoVal".len()),
+        ),
+        (
+            "pj-unproven / direct case contested by an auto-open fragment, expression",
+            format!(
+                "pj:0:{}..{}",
+                pj_contested_val,
+                pj_contested_val + "PjContested".len()
+            ),
+        ),
+    ];
     run_matrix(CELLS, KNOWN_GAPS, &fcs_pins, "project_half_matrix");
 }

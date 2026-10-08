@@ -259,7 +259,7 @@ fn project_auto_open_module_through_open_marks_annotation_shadowable() {
         "module M\nopen Ns\nlet x : int64 = 0L\n",
     ];
     let asts: Vec<ImplFile> = files.iter().map(|src| impl_file(src)).collect();
-    let project = resolve_project(&asts, &AssemblyEnv::default());
+    let project = resolve_project(&asts, crate::common::fsharp_core_env());
     assert_shadowable_type(project.file(1), files[1], "int64", 0);
 }
 
@@ -270,7 +270,11 @@ fn project_auto_open_module_through_enclosing_namespace_marks_annotation_shadowa
         "namespace Ns\nmodule M =\n    let x : int64 = 0L\n",
     ];
     let asts: Vec<ImplFile> = files.iter().map(|src| impl_file(src)).collect();
-    let project = resolve_project(&asts, &AssemblyEnv::default());
+    // FSharp.Core, because the fold turns on proving the marker is *its*
+    // `AutoOpenAttribute` (see [`crate::common::fsharp_core_env`]). The rest of
+    // this group keeps the empty env on purpose: its subject is which names are
+    // shadowable, and FSharp.Core supplies real extra shadow candidates.
+    let project = resolve_project(&asts, crate::common::fsharp_core_env());
     assert_shadowable_type(project.file(1), files[1], "int64", 0);
 }
 
