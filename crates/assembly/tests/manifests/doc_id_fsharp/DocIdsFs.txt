@@ -58,6 +58,7 @@ hit P:DocIdsFs.Funcs.Inner.deep <= Method deep()
 hit P:DocIdsFs.Funcs.Limit <= Field Limit()
 hit P:DocIdsFs.Funcs.answer <= Method answer()
 hit P:DocIdsFs.Funcs.counter <= Method counter()
+hit P:DocIdsFs.Hidden.Elided.V <= Field V()
 hit P:DocIdsFs.Hidden.Renamed.A(System.Int32) <= Property B(System.Int32)
 hit P:DocIdsFs.Hidden.Renamed.B(System.String) <= Property D(System.String)
 hit P:DocIdsFs.Hidden.RenamedAlike.A(System.Int32) <= Property B(System.Int32)
@@ -88,6 +89,7 @@ hit T:DocIdsFs.Funcs
 hit T:DocIdsFs.Funcs.Inner
 hit T:DocIdsFs.Handler
 hit T:DocIdsFs.Hidden
+hit T:DocIdsFs.Hidden.Elided
 hit T:DocIdsFs.Hidden.Renamed
 hit T:DocIdsFs.Hidden.RenamedAlike
 hit T:DocIdsFs.IShape
@@ -108,7 +110,8 @@ hit T:DocIdsFs.Tree`1.Leaf
 hit T:DocIdsFs.Tree`1.Node
 hit T:DocIdsFs.Widget
 hit T:DocIdsFs.m
-keys 114
+keys 117
+miss M:DocIdsFs.Hidden.Elided.Corner(System.Int32[0:, 0:])
 miss M:DocIdsFs.Hidden.RankShared(System.Int32[0:])
 miss M:DocIdsFs.IShape.add_Fired(System.EventHandler)
 miss M:DocIdsFs.IShape.remove_Fired(System.EventHandler)

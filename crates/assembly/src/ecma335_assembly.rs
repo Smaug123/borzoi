@@ -401,7 +401,11 @@ impl Ecma335Assembly {
                     // borrow the CCU, so they run before the measure overlay.
                     if authoritative {
                         crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu)?;
-                        crate::fsharp_pickle_merge::apply_module_member_projection(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_module_member_projection(
+                            &mut out,
+                            &ccu,
+                            &self.physical_methods(),
+                        )?;
                     }
                     // F# measure overlay (7.8b): use the pickled
                     // `TyparKind::Measure` markers to upgrade matching
@@ -452,7 +456,11 @@ impl Ecma335Assembly {
                         // members (module members get theirs from the member
                         // list above). Authoritative-only, like the other
                         // overlays that locate a row by a reconstructed name key.
-                        crate::fsharp_pickle_merge::apply_type_member_doc_sigs(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_type_member_doc_sigs(
+                            &mut out,
+                            &ccu,
+                            &self.physical_methods(),
+                        )?;
                         // F#-only typar constraints (`when 'T : comparison` and
                         // friends), which have no IL encoding at all.
                         //
@@ -493,6 +501,27 @@ impl Ecma335Assembly {
                 fsharp_signature_non_authoritative: !authoritative,
             },
         ))
+    }
+
+    /// Every `MethodDef`'s IL slot, by token — the physical census the doc-key
+    /// overlays count, which sees the methods the member projection refuses or
+    /// elides.
+    fn physical_methods(&self) -> crate::fsharp_pickle_merge::PhysicalMethods {
+        self.image
+            .type_defs
+            .iter()
+            .flat_map(|td| &td.methods)
+            .map(|m| {
+                (
+                    m.token,
+                    crate::fsharp_pickle_merge::PhysicalMethod {
+                        name: m.name.clone(),
+                        params: m.signature.as_ref().ok().map(|s| s.parameters.len()),
+                        is_static: m.is_static,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// The assembly-level `FSharpInterfaceDataVersionAttribute` version triple,

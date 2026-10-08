@@ -41,3 +41,15 @@ type RenamedAlike =
     /// Compiled as the IL property `D`.
     [<CompiledName("D")>]
     member B: i: int -> int with get
+
+/// A record whose documented member the projection elides, beside a hidden
+/// overload of the same name and arity.
+type Elided =
+    {
+        /// The value.
+        V: int
+    }
+
+    /// The elided overload.
+    [<System.Runtime.CompilerServices.CompilerGenerated>]
+    member Corner: a: int[,,] -> int

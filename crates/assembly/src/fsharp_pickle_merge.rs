@@ -1474,6 +1474,19 @@ enum ClaimShape {
     Unknown,
 }
 
+/// Whether a physical method implements the claim slot `(name, shape)`: a
+/// value binding by its static getter, a function by name and arity, a val
+/// without `ValReprInfo` by name.
+fn physical_claim_slot_matches(m: &PhysicalMethod, name: &str, shape: ClaimShape) -> bool {
+    match shape {
+        ClaimShape::Value => {
+            m.name.strip_prefix("get_") == Some(name) && m.params.is_none_or(|n| n == 0)
+        }
+        ClaimShape::Function(n) => m.name == name && m.params.is_none_or(|p| p == n),
+        ClaimShape::Unknown => m.name == name,
+    }
+}
+
 /// Whether a projected member occupies the claim slot `(name, shape)`.
 fn claim_slot_matches(slot: &Option<Member>, name: &str, shape: ClaimShape) -> bool {
     let Some(Member::Method(m)) = slot else {
@@ -1609,7 +1622,11 @@ struct GroupFacts {
 ///   val claims, are both **recorded** on
 ///   [`skipped_members`](crate::Entity::skipped_members) — loud, bounded
 ///   uncertainty instead of a silent wrong member list.
-fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
+fn rebuild_module_member_list(
+    ecma: &mut Entity,
+    target: &ModuleMemberTarget,
+    physical: &PhysicalMethods,
+) {
     // Unanimity-of-facts per claim group (see [`GroupFacts`]).
     let mut groups: HashMap<(&str, ClaimShape), GroupFacts> = HashMap::new();
     for v in &target.vals {
@@ -1653,8 +1670,16 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
         .into_iter()
         .map(Some)
         .collect();
-    // Per claim slot, how many vals claim it and how many projected methods
-    // occupy it before any claim is made — the doc key's ambiguity test.
+    // The names the member projection refused (recorded before this rebuild
+    // adds its own skips), and per claim slot, how many vals claim it and how
+    // many physical methods implement it — the doc key's ambiguity test,
+    // counted physically because the projection can elide a val's own method
+    // without a record (`[<CompilerGenerated>]`) and leave a hidden one.
+    let refused: std::collections::HashSet<String> = ecma
+        .skipped_members
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
     let mut vals_per_slot: HashMap<(&str, ClaimShape), usize> = HashMap::new();
     for v in target.vals.iter().filter(|v| !v.is_literal) {
         *vals_per_slot
@@ -1664,9 +1689,11 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
     let slot_candidates: HashMap<(&str, ClaimShape), usize> = vals_per_slot
         .keys()
         .map(|&(name, shape)| {
-            let n = pool
+            let n = ecma
+                .method_def_tokens
                 .iter()
-                .filter(|slot| claim_slot_matches(slot, name, shape))
+                .filter_map(|t| physical.get(t))
+                .filter(|m| physical_claim_slot_matches(m, name, shape))
                 .count();
             ((name, shape), n)
         })
@@ -1796,10 +1823,12 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 // holds more methods in the slot than vals claim it, the extra is
                 // a member the signature hides, and which method is the val's is
                 // a guess the key's parameter types cannot always settle (fsc's
-                // array-rank spelling changed across versions).
+                // array-rank spelling changed across versions). A refused method
+                // of the slot's name vetoes it too.
                 let key = facts.xml_doc_sig.clone().flatten();
-                let unambiguous =
-                    slot_candidates.get(&(name, shape)) == vals_per_slot.get(&(name, shape));
+                let unambiguous = slot_candidates.get(&(name, shape))
+                    == vals_per_slot.get(&(name, shape))
+                    && !refused.contains(name);
                 m.xml_doc_sig = key.filter(|k| {
                     unambiguous && crate::doc_id::recorded_method_key_fits(k, &m, v.measure_typars)
                 });
@@ -1871,6 +1900,7 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
 pub(crate) fn apply_module_member_projection(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    physical: &PhysicalMethods,
 ) -> Result<(), ImportError> {
     for target in collect_module_member_targets(pickled)? {
         let Some(ecma) = find_entity_mut(entities, &target.namespace, &target.type_chain) else {
@@ -1879,7 +1909,7 @@ pub(crate) fn apply_module_member_projection(
         if !matches!(ecma.kind, EntityKind::Module) {
             continue;
         }
-        rebuild_module_member_list(ecma, &target);
+        rebuild_module_member_list(ecma, &target, physical);
     }
     Ok(())
 }
@@ -3064,13 +3094,19 @@ enum DocSlot {
         arity: usize,
         is_static: bool,
     },
+    /// A property's getter. `name` is the IL property's (a `[<CompiledName>]`
+    /// renames it), `accessor` the getter method's — which keeps the val's
+    /// own name (`member A` compiled as `B` has property `B`, getter `get_A`).
     Getter {
         name: String,
+        accessor: String,
         index_arity: usize,
         is_static: bool,
     },
+    /// A property's setter; see [`DocSlot::Getter`].
     Setter {
         name: String,
+        accessor: String,
         index_arity: usize,
         is_static: bool,
     },
@@ -3130,11 +3166,19 @@ fn member_doc_slot(pickled: &PickledCcu, v: &PickledVal) -> Option<DocSlot> {
         },
         PickledMemberKind::PropertyGet => DocSlot::Getter {
             name: renamed.or(v.logical_name.strip_prefix("get_"))?.to_string(),
+            accessor: v
+                .compiled_name
+                .clone()
+                .unwrap_or_else(|| v.logical_name.clone()),
             index_arity: args,
             is_static,
         },
         PickledMemberKind::PropertySet => DocSlot::Setter {
             name: renamed.or(v.logical_name.strip_prefix("set_"))?.to_string(),
+            accessor: v
+                .compiled_name
+                .clone()
+                .unwrap_or_else(|| v.logical_name.clone()),
             index_arity: args.checked_sub(1)?,
             is_static,
         },
@@ -3159,6 +3203,7 @@ fn occupies(member: &Member, slot: &DocSlot) -> bool {
                 name,
                 index_arity,
                 is_static,
+                ..
             },
         ) => {
             p.has_getter
@@ -3172,6 +3217,7 @@ fn occupies(member: &Member, slot: &DocSlot) -> bool {
                 name,
                 index_arity,
                 is_static,
+                ..
             },
         ) => {
             p.has_setter
@@ -3187,6 +3233,7 @@ fn occupies(member: &Member, slot: &DocSlot) -> bool {
                 name,
                 index_arity: 0,
                 is_static,
+                ..
             },
         ) => e.name == *name && e.is_static == *is_static,
         (Member::Property(p), DocSlot::ValField(name)) => {
@@ -3242,6 +3289,7 @@ struct DocKey {
 pub(crate) fn apply_type_member_doc_sigs(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    physical: &PhysicalMethods,
 ) -> Result<(), ImportError> {
     // A type's member vals are declared in its *enclosing* module or
     // namespace's val list, each naming the type as its apparent parent (the
@@ -3400,14 +3448,76 @@ pub(crate) fn apply_type_member_doc_sigs(
         if ecma.kind == EntityKind::Module {
             continue;
         }
-        stamp_doc_sigs(ecma, &target.keys);
+        stamp_doc_sigs(ecma, &target.keys, physical);
     }
     Ok(())
 }
 
+/// One physical `MethodDef`'s IL slot, keyed by its metadata token: what the
+/// doc-key stamp counts to decide a slot is unambiguous, including methods the
+/// member projection refuses or deliberately elides — which the projected
+/// member list cannot show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PhysicalMethod {
+    pub(crate) name: String,
+    /// `None` when the signature does not decode: the method may then occupy a
+    /// slot of any arity.
+    pub(crate) params: Option<usize>,
+    pub(crate) is_static: bool,
+}
+
+/// Every `MethodDef` of an image, by token.
+pub(crate) type PhysicalMethods = HashMap<u32, PhysicalMethod>;
+
+/// How many of `entity`'s physical methods implement `slot`: a method by name,
+/// arity and staticness; a getter or setter by its accessor method; a `val`
+/// field by its getter. A `[<CLIEvent>]` property's getter slot is an IL event
+/// instead, implemented by its `add_` accessor.
+fn physical_occupants(entity: &Entity, slot: &DocSlot, physical: &PhysicalMethods) -> usize {
+    let (name, params, is_static) = match slot {
+        DocSlot::Method {
+            name,
+            arity,
+            is_static,
+        } => (name.clone(), *arity, *is_static),
+        DocSlot::Getter {
+            accessor,
+            index_arity,
+            is_static,
+            ..
+        } => (accessor.clone(), *index_arity, *is_static),
+        DocSlot::Setter {
+            accessor,
+            index_arity,
+            is_static,
+            ..
+        } => (accessor.clone(), index_arity + 1, *is_static),
+        DocSlot::ValField(name) => (format!("get_{name}"), 0, false),
+    };
+    let count = |name: &str, params: usize| {
+        entity
+            .method_def_tokens
+            .iter()
+            .filter_map(|t| physical.get(t))
+            .filter(|m| {
+                m.name == name && m.is_static == is_static && m.params.is_none_or(|n| n == params)
+            })
+            .count()
+    };
+    let event_adders = match slot {
+        DocSlot::Getter {
+            name,
+            index_arity: 0,
+            ..
+        } => count(&format!("add_{name}"), 1),
+        _ => 0,
+    };
+    count(&name, params) + event_adders
+}
+
 /// Stamp `entity`'s members from one type's pickled keys; see
 /// [`apply_type_member_doc_sigs`] for when a slot is unambiguous.
-fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
+fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
     // Per slot: how many vals claim it, and their key if they all agree.
     #[allow(clippy::type_complexity)]
     let mut slots: HashMap<&DocSlot, (usize, Option<(Option<&String>, usize)>)> = HashMap::new();
@@ -3452,9 +3562,13 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
             DocSlot::Setter { .. } => crate::doc_id::KeyedAs::Setter,
             _ => crate::doc_id::KeyedAs::Member,
         };
-        // The key encodes the val's parameter types, so it refutes a member
-        // that merely shares the slot (`doc_id::recorded_key_fits`).
+        // Every method implementing the slot must be a claimed val's —
+        // counted physically, since the member projection can elide the val's
+        // own member without a record and leave a signature-hidden one in its
+        // place. And the key encodes the val's parameter types, so it refutes a
+        // member that merely shares the slot (`doc_id::recorded_key_fits`).
         if occupants.len() != vals
+            || physical_occupants(entity, slot, physical) != vals
             || occupants
                 .iter()
                 .any(|m| !crate::doc_id::recorded_key_fits(key, m, keyed_as, erased_typars))
@@ -4778,7 +4892,8 @@ mod tests {
             e.members = members;
             e
         }];
-        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        apply_module_member_projection(&mut entities, &ccu, &PhysicalMethods::new())
+            .expect("member projection");
         entities.into_iter().next().expect("one entity")
     }
 
@@ -5278,7 +5393,8 @@ mod tests {
             },
         ];
 
-        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        apply_module_member_projection(&mut entities, &ccu, &PhysicalMethods::new())
+            .expect("member projection");
 
         assert!(
             is_extension(&entities[0], "Counter.Tripled"),
@@ -5332,7 +5448,8 @@ mod tests {
             ];
             e
         }];
-        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        apply_module_member_projection(&mut entities, &ccu, &PhysicalMethods::new())
+            .expect("member projection");
         entities
     }
 
@@ -5523,7 +5640,8 @@ mod tests {
             ];
             e
         }];
-        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        apply_module_member_projection(&mut entities, &ccu, &PhysicalMethods::new())
+            .expect("member projection");
         let entity = entities.into_iter().next().expect("one entity");
 
         let method = |name: &str, params: usize| {
@@ -5561,7 +5679,10 @@ mod tests {
     /// claim group stamps its val's pickled `XmlDocSig`, an undocumented val
     /// (empty sig) stamps nothing, and a same-`(name, shape)` group whose
     /// documented overloads carry different keys under-sets — handing either
-    /// method the other's key would show the sibling's docs.
+    /// method the other's key would show the sibling's docs. A val whose own
+    /// method the projection elided, beside a hidden method of the same slot,
+    /// stamps nothing either: the physical census counts two methods for one
+    /// val, though only the hidden one is projected.
     #[test]
     fn member_list_stamps_doc_sigs_by_claim_group() {
         let mut value = ext_test_val_arity(None, 0, None, &[]);
@@ -5575,11 +5696,14 @@ mod tests {
         let mut b = ext_test_val_arity(Some("Shared"), 0, None, &[1]);
         b.logical_name = "second".to_string();
         b.xmldoc_sig = "M:NS.M.Shared(System.String)".to_string();
+        let mut lone = ext_test_val_arity(Some("Lone"), 0, None, &[1]);
+        lone.logical_name = "lone".to_string();
+        lone.xmldoc_sig = "M:NS.M.Lone(System.Int32)".to_string();
 
         let module = make_entity(
             "M",
             PickledTyconRepr::NoRepr,
-            module_with_vals(vec![0, 1, 2, 3]),
+            module_with_vals(vec![0, 1, 2, 3, 4]),
         );
         let mut ns_modul = empty_modul_typ();
         ns_modul.entities = vec![2];
@@ -5587,8 +5711,33 @@ mod tests {
         let mut root_modul = empty_modul_typ();
         root_modul.entities = vec![1];
         let root = make_entity("Test", PickledTyconRepr::NoRepr, root_modul);
-        let ccu = make_ccu(vec![root, ns, module], vec![value, bare, a, b], 0);
+        let ccu = make_ccu(vec![root, ns, module], vec![value, bare, a, b, lone], 0);
 
+        // The physical methods: one per projected member, plus `lone`'s own
+        // `Lone`, which the projection elided — the projected `Lone` is a
+        // hidden helper.
+        let physical_slots = [
+            ("get_answer", 0),
+            ("bare", 1),
+            ("Shared", 1),
+            ("Shared", 1),
+            ("Lone", 1),
+            ("Lone", 1),
+        ];
+        let physical: PhysicalMethods = physical_slots
+            .iter()
+            .enumerate()
+            .map(|(i, (name, params))| {
+                (
+                    i as u32,
+                    PhysicalMethod {
+                        name: name.to_string(),
+                        params: Some(*params),
+                        is_static: true,
+                    },
+                )
+            })
+            .collect();
         let mut entities = vec![{
             let mut e = make_ecma_entity(vec!["NS"], "M", EntityKind::Module);
             e.members = vec![
@@ -5596,10 +5745,12 @@ mod tests {
                 make_ecma_method_arity("bare", 1),
                 make_ecma_method_arity("Shared", 1),
                 make_ecma_method_arity("Shared", 1),
+                make_ecma_method_arity("Lone", 1),
             ];
+            e.method_def_tokens = (0..physical_slots.len() as u32).collect();
             e
         }];
-        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        apply_module_member_projection(&mut entities, &ccu, &physical).expect("member projection");
         let entity = entities.into_iter().next().expect("one entity");
         let sigs: Vec<(&str, Option<&str>)> = entity
             .members
@@ -5616,6 +5767,7 @@ mod tests {
                 ("bare", None),
                 ("Shared", None),
                 ("Shared", None),
+                ("Lone", None),
             ]
         );
     }
@@ -5637,7 +5789,10 @@ mod tests {
     #[derive(Debug, Clone)]
     struct DocSlotItem {
         name: u8,
-        params: Vec<bool>,
+        /// Parameter types: `System.Int32`, `System.String`, and 2-D and 3-D
+        /// `int` arrays — whose keys, in current fsc's spelling, the parameter
+        /// check alone cannot always tell apart.
+        params: Vec<u8>,
         is_static: bool,
         val: Option<(bool, ValMember)>,
     }
@@ -5650,7 +5805,7 @@ mod tests {
         ];
         (
             0u8..2,
-            proptest::collection::vec(any::<bool>(), 0..3),
+            proptest::collection::vec(0u8..4, 0..3),
             any::<bool>(),
             proptest::option::of((any::<bool>(), member)),
         )
@@ -5663,6 +5818,10 @@ mod tests {
     }
 
     proptest! {
+        // The hazards need two items in one slot with particular fates, so the
+        // default case count reaches them only sometimes.
+        #![proptest_config(ProptestConfig::with_cases(4096))]
+
         /// Soundness of the type-member stamp against a generated ground truth.
         /// Whatever mix of overloads, undocumented vals, refused or silently
         /// elided members and signature-hidden IL members a type holds, a member
@@ -5678,7 +5837,12 @@ mod tests {
                 .into_iter()
                 .filter(|i| seen.insert((i.name, i.params.clone(), i.is_static)))
                 .collect();
-            let ty = |p: bool| if p { "System.String" } else { "System.Int32" };
+            let ty = |p: u8| match p {
+                0 => "System.Int32",
+                1 => "System.String",
+                2 => "System.Int32[0:]",
+                _ => "System.Int32[0:, 0:]",
+            };
             let key_of = |i: &DocSlotItem| {
                 let params: Vec<&str> = i.params.iter().map(|p| ty(*p)).collect();
                 if params.is_empty() {
@@ -5696,7 +5860,18 @@ mod tests {
                         .iter()
                         .map(|p| Parameter {
                             name: None,
-                            ty: TypeRef::Primitive(if *p { Primitive::String } else { Primitive::I4 }),
+                            ty: match p {
+                                0 => TypeRef::Primitive(Primitive::I4),
+                                1 => TypeRef::Primitive(Primitive::String),
+                                rank => TypeRef::Array {
+                                    element: Box::new(crate::model::NullableType::oblivious(TypeRef::Primitive(
+                                        Primitive::I4,
+                                    ))),
+                                    rank: *rank,
+                                    sizes: Vec::new(),
+                                    lower_bounds: Vec::new(),
+                                },
+                            },
                             is_byref: false,
                             is_out: false,
                             is_readonly_ref: false,
@@ -5709,6 +5884,23 @@ mod tests {
                 m
             };
             let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Class);
+            // Every item is a physical MethodDef, whatever the projection made
+            // of it.
+            let physical: PhysicalMethods = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    (
+                        i as u32,
+                        PhysicalMethod {
+                            name: format!("M{}", item.name),
+                            params: Some(item.params.len()),
+                            is_static: item.is_static,
+                        },
+                    )
+                })
+                .collect();
+            entity.method_def_tokens = (0..items.len() as u32).collect();
             let mut keys = Vec::new();
             // The key each projected member truly carries: `Some(k)` for the
             // kept member of a val keyed `k`, `None` otherwise.
@@ -5741,7 +5933,7 @@ mod tests {
                     }
                 }
             }
-            stamp_doc_sigs(&mut entity, &keys);
+            stamp_doc_sigs(&mut entity, &keys, &physical);
             for (member, truth) in entity.members.iter().zip(&truth) {
                 let Member::Method(m) = member else {
                     unreachable!("the generator builds methods only")
@@ -6016,7 +6208,8 @@ mod tests {
             e.members = vec![make_ecma_method("KeepMe")];
             e
         }];
-        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        apply_module_member_projection(&mut entities, &ccu, &PhysicalMethods::new())
+            .expect("member projection");
         assert_eq!(entities[0].members.len(), 1, "class members untouched");
         assert!(entities[0].skipped_members.is_empty());
     }
@@ -6118,7 +6311,8 @@ mod tests {
         let root = make_entity("Test", PickledTyconRepr::NoRepr, root_modul);
         let ccu = make_ccu(vec![root, a, b], Vec::new(), 0);
 
-        let err = apply_module_member_projection(&mut [], &ccu).unwrap_err();
+        let err =
+            apply_module_member_projection(&mut [], &ccu, &PhysicalMethods::new()).unwrap_err();
         match err {
             ImportError::PickleEntityCycle { stamp } => assert_eq!(stamp, 1),
             other => panic!("expected PickleEntityCycle, got {other:?}"),

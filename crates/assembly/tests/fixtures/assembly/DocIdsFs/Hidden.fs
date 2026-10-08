@@ -39,3 +39,13 @@ type RenamedAlike() =
     [<CompiledName("D")>]
     member _.B
         with get (i: int) = i + 1
+
+type Elided =
+    { V: int }
+
+    // `[<CompilerGenerated>]` makes the projection elide this documented
+    // overload without a record; the signature hides the other.
+    [<CompilerGenerated>]
+    member r.Corner(a: int[,,]) = a.[0, 0, 0] + r.V
+
+    member internal r.Corner(a: int[,]) = a.[0, 0] + r.V
