@@ -442,3 +442,13 @@ fn a_generic_type_name_under_new_is_the_types() {
     assert_eq!(fcs, &[" The type."]);
     assert_eq!(verdict, &Verdict::Agree { attached: true });
 }
+
+#[test]
+fn a_qualifier_of_an_attributed_member_keeps_the_types_doc() {
+    let src = "module M\n/// The type.\ntype T =\n    [<System.Obsolete(\"o\")>]\n    static member M = 1\nlet x = T.M\n";
+    let sites = every(src, "T");
+    let qualifier = src.find("T.M").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == qualifier).expect("graded");
+    assert_eq!(fcs, &[" The type."]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
+}
