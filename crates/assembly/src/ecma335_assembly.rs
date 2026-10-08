@@ -3011,6 +3011,7 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
         })
     }
 

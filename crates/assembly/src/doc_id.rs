@@ -156,7 +156,8 @@ pub fn member_doc_id(decl: &TypeDocName, member: &Member) -> String {
     let recorded = match member {
         Member::Method(m) => m.xml_doc_sig.as_ref(),
         Member::Property(p) => p.xml_doc_sig.as_ref().or(p.setter_xml_doc_sig.as_ref()),
-        Member::Field(_) | Member::Event(_) => None,
+        Member::Event(e) => e.xml_doc_sig.as_ref(),
+        Member::Field(_) => None,
     };
     match recorded {
         Some(sig) => sig.clone(),
@@ -771,6 +772,7 @@ mod tests {
             custom_attrs: Vec::new(),
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
         })
     }
 

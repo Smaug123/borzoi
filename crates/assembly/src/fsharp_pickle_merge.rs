@@ -3108,6 +3108,16 @@ fn occupies(member: &Member, slot: &DocSlot) -> bool {
                 && p.parameters.len() == *index_arity
                 && p.is_static == *is_static
         }
+        // A `[<CLIEvent>]` property compiles to an IL event, not a property;
+        // its getter val carries the event's key.
+        (
+            Member::Event(e),
+            DocSlot::Getter {
+                name,
+                index_arity: 0,
+                is_static,
+            },
+        ) => e.name == *name && e.is_static == *is_static,
         (Member::Property(p), DocSlot::ValField(name)) => {
             p.name == *name && p.parameters.is_empty() && !p.is_static
         }
@@ -3337,6 +3347,7 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[(DocSlot, Option<String>)]) {
                 (Member::Property(p), DocSlot::Setter { .. }) => {
                     p.setter_xml_doc_sig = Some(key.clone())
                 }
+                (Member::Event(e), DocSlot::Getter { .. }) => e.xml_doc_sig = Some(key.clone()),
                 _ => unreachable!("`occupies` pairs each slot with its member kind"),
             }
         }
