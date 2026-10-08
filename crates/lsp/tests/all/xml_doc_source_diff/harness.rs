@@ -78,6 +78,9 @@ pub struct OracleUse {
     pub name: String,
     pub kind: String,
     pub range: FcsRange,
+    #[serde(default)]
+    pub is_constructor: bool,
+    pub is_from_definition: bool,
     pub unprocessed: Option<Vec<String>>,
     pub elaborated: Option<Vec<String>>,
     pub from_file: bool,
@@ -207,8 +210,9 @@ pub enum Verdict {
     Diverge { ours: Vec<String>, fcs: Vec<String> },
     /// Our lines agree but our elaboration does not.
     ElaborationDiverges { ours: Vec<String>, fcs: Vec<String> },
-    /// FCS reports several symbols at this range with different docs and none
-    /// is the kind our binder is.
+    /// FCS reports several symbols at this range with different docs. The
+    /// oracle's answer is chosen without regard to what we resolved, so this is
+    /// not resolved by picking the record of our own kind.
     OracleAmbiguous,
     /// FCS reports no use at this range.
     Unpaired,
@@ -222,31 +226,19 @@ pub struct Graded {
     pub name: String,
     pub def_kind: DefKind,
     pub is_definition: bool,
+    /// FCS checked the occurrence's file with no error, so its silence or its
+    /// disagreement at a site is semantics, not recovery.
+    pub fcs_clean: bool,
     pub verdict: Verdict,
     /// Our attached lines (blank ones read as none), when we attached.
     pub ours: Option<Vec<String>>,
     /// The lines of the FCS use this occurrence was paired with.
     pub fcs_lines: Option<Vec<String>>,
+    /// Every FCS record at the site, for triage: kind, constructor-ness, lines.
+    pub fcs_records: Vec<String>,
     /// Our answer rendered, when we attached one: `Ok` the tree parsed, `Err`
     /// why hover shows nothing for it.
     pub render: Option<Result<(), SourceRenderError>>,
-}
-
-/// The FCS symbol kind an FCS use of our binder of `kind` carries.
-fn expected_kind(kind: DefKind) -> &'static [&'static str] {
-    match kind {
-        DefKind::Type => &["entity"],
-        DefKind::ExceptionCase => &["entity", "unioncase"],
-        DefKind::UnionCase => &["unioncase"],
-        DefKind::EnumCase => &["field"],
-        DefKind::ActivePatternCase => &["activepatterncase"],
-        DefKind::TypeParam => &["genericparameter"],
-        DefKind::Value { .. }
-        | DefKind::ActivePattern
-        | DefKind::Member
-        | DefKind::Parameter
-        | DefKind::PatternLocal => &["member"],
-    }
 }
 
 /// Grade every occurrence our resolver recorded in every file of `ours`
@@ -269,11 +261,13 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
             by_range.entry((start, end)).or_default().push(u);
             by_end.entry(end).or_default().push(u);
         }
-        let mut occurrences: Vec<(TextRange, Resolution)> = ours
-            .resolved
-            .file(i)
+        // Attribute names are resolved into their own map, and hover reaches
+        // them like any other occurrence.
+        let resolved_file = ours.resolved.file(i);
+        let mut occurrences: Vec<(TextRange, Resolution)> = resolved_file
             .resolutions()
             .iter()
+            .chain(resolved_file.attribute_resolutions().iter())
             .map(|(r, res)| (*r, *res))
             .collect();
         occurrences.sort_by_key(|(r, _)| (r.start(), r.end()));
@@ -285,6 +279,10 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
                 continue;
             };
             let key = (usize::from(range.start()), usize::from(range.end()));
+            // FCS's record at exactly our range, or else — FCS spans a dotted
+            // access differently from us (`x.M` against `M`) — every record
+            // ending where ours does and lying inside it. Chosen by position
+            // alone: what we resolved never picks the oracle's answer.
             let candidates: Vec<&OracleUse> = match by_range.get(&key) {
                 Some(c) => c.clone(),
                 None => by_end
@@ -292,11 +290,11 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
                     .cloned()
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|u| expected_kind(def.kind).contains(&u.kind.as_str()))
+                    .filter(|u| offset(u.range.start) >= key.0)
                     .collect(),
             };
             let is_definition = def.range == range;
-            let (verdict, fcs_lines) = judge(def.kind, &doc, &candidates);
+            let (verdict, fcs_lines) = judge(&doc, &candidates);
             let render = match &doc {
                 SourceDoc::Attached(lines) => Some(member_element(lines).map(|_| ())),
                 SourceDoc::Declined(_) => None,
@@ -312,9 +310,21 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
                 name: def.name.clone(),
                 def_kind: def.kind,
                 is_definition,
+                fcs_clean: !oracle_file.has_errors(),
                 verdict,
                 ours: ours_lines,
                 fcs_lines,
+                fcs_records: candidates
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{}{} {:?}",
+                            c.kind,
+                            if c.is_constructor { " (ctor)" } else { "" },
+                            c.lines()
+                        )
+                    })
+                    .collect(),
                 render,
             });
         }
@@ -322,28 +332,8 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
     out
 }
 
-fn judge(
-    kind: DefKind,
-    doc: &SourceDoc,
-    candidates: &[&OracleUse],
-) -> (Verdict, Option<Vec<String>>) {
-    let chosen: Option<&OracleUse> = if candidates.is_empty() {
-        None
-    } else if candidates
-        .iter()
-        .all(|c| c.lines() == candidates[0].lines())
-    {
-        Some(candidates[0])
-    } else {
-        let of_kind: Vec<_> = candidates
-            .iter()
-            .filter(|c| expected_kind(kind).contains(&c.kind.as_str()))
-            .collect();
-        // Several uses of the expected kind (one symbol reported twice) still
-        // name one doc when they agree on it.
-        (!of_kind.is_empty() && of_kind.iter().all(|c| c.lines() == of_kind[0].lines()))
-            .then(|| *of_kind[0])
-    };
+fn judge(doc: &SourceDoc, candidates: &[&OracleUse]) -> (Verdict, Option<Vec<String>>) {
+    let chosen = fcs_answer(candidates);
     if let Some(fcs) = chosen {
         assert!(
             !fcs.from_file && fcs.error.is_none(),
@@ -388,6 +378,48 @@ fn judge(
     (verdict, fcs_lines)
 }
 
+/// FCS's own answer at a site, read from its records alone — never from what
+/// we resolved there.
+///
+/// Usually every record agrees. Where they do not, two structural facts of the
+/// records decide, both about what FCS's name resolution bound:
+/// - a **defining** occurrence names what it declares, and a type's name also
+///   defines its primary constructor there, so the type's own record (the
+///   defining entity) answers;
+/// - at a use, a **constructor** record means the use is a constructor call
+///   (`new T()`, `T()`, `[<T>]`): FCS binds the constructor, so the
+///   constructors' records answer.
+///
+/// Anything else that disagrees has no answer (`None`).
+pub fn fcs_answer<'a>(candidates: &[&'a OracleUse]) -> Option<&'a OracleUse> {
+    let agreed = |records: &[&'a OracleUse]| {
+        records
+            .first()
+            .filter(|first| records.iter().all(|c| c.lines() == first.lines()))
+            .copied()
+    };
+    if let Some(answer) = agreed(candidates) {
+        return Some(answer);
+    }
+    let defining_entities: Vec<_> = candidates
+        .iter()
+        .filter(|c| c.is_from_definition && c.kind == "entity")
+        .copied()
+        .collect();
+    if !defining_entities.is_empty() {
+        return agreed(&defining_entities);
+    }
+    let constructors: Vec<_> = candidates
+        .iter()
+        .filter(|c| c.is_constructor && !c.is_from_definition)
+        .copied()
+        .collect();
+    if !constructors.is_empty() {
+        return agreed(&constructors);
+    }
+    None
+}
+
 /// A census of graded verdicts by kind, for printing.
 pub fn census(graded: &[Graded]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
@@ -422,15 +454,18 @@ pub fn census(graded: &[Graded]) -> BTreeMap<String, usize> {
     counts
 }
 
-/// Everything that must not happen: a divergence of either kind.
+/// Everything that must not happen: a divergence of either kind, and — in a
+/// file FCS checks cleanly, where its records are semantics rather than
+/// recovery — a doc we show where FCS records nothing, or any site where FCS's
+/// records disagree among themselves (we cannot be exact there).
 pub fn failures(graded: &[Graded]) -> Vec<&Graded> {
     graded
         .iter()
-        .filter(|g| {
-            matches!(
-                g.verdict,
-                Verdict::Diverge { .. } | Verdict::ElaborationDiverges { .. }
-            )
+        .filter(|g| match g.verdict {
+            Verdict::Diverge { .. } | Verdict::ElaborationDiverges { .. } => true,
+            Verdict::Unpaired => g.fcs_clean && g.ours.as_deref().is_some_and(|l| !l.is_empty()),
+            Verdict::OracleAmbiguous => g.fcs_clean,
+            Verdict::Agree { .. } | Verdict::Declined(_) => false,
         })
         .collect()
 }
@@ -475,7 +510,7 @@ pub fn describe(files: &[(&str, &str)], g: &Graded) -> String {
     let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
     let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
     format!(
-        "{} `{}` ({:?}, {}) at {}:{}: {:?}\n  line: {}",
+        "{} `{}` ({:?}, {}) at {}:{}: {:?}\n  FCS records: {:?}\n  line: {}",
         files[g.file].0,
         g.name,
         g.def_kind,
@@ -483,6 +518,7 @@ pub fn describe(files: &[(&str, &str)], g: &Graded) -> String {
         files[g.file].0,
         start,
         g.verdict,
+        g.fcs_records,
         &text[line_start..line_end],
     )
 }

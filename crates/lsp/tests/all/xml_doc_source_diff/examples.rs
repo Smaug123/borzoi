@@ -147,54 +147,6 @@ fn an_attribute_after_the_doc_keeps_it_and_one_before_loses_it() {
 }
 
 #[test]
-fn constructor_calls_are_graded_against_fcs() {
-    let src =
-        "module M\n/// The type.\ntype K() =\n    member _.P = 1\nlet a = K()\nlet b = new K()\n";
-    let files = [("M.fs", src)];
-    let (graded, _) = run_fixture(&files, &[]);
-    let calls: Vec<_> = graded
-        .iter()
-        .filter(|g| g.name == "K" && !g.is_definition)
-        .map(|g| {
-            (
-                usize::from(g.range.start()),
-                g.verdict.clone(),
-                g.fcs_lines.clone(),
-            )
-        })
-        .collect();
-    eprintln!("constructor-call occurrences: {calls:?}");
-    assert!(super::harness::failures(&graded).is_empty());
-}
-
-/// Every graded occurrence of `name`, as (byte offset, verdict, FCS lines).
-fn occurrences(src: &str, name: &str) -> Vec<(usize, Verdict, Vec<String>)> {
-    let files = [("M.fs", src)];
-    let (graded, _) = run_fixture(&files, &[]);
-    graded
-        .into_iter()
-        .filter(|g| g.name == name)
-        .map(|g| {
-            (
-                usize::from(g.range.start()),
-                g.verdict,
-                g.fcs_lines.unwrap_or_default(),
-            )
-        })
-        .collect()
-}
-
-/// The verdict at the occurrence of a type name starting at byte `at`, with
-/// FCS's lines there, from graded `sites`.
-fn site(sites: &[(usize, Verdict, Vec<String>)], at: usize) -> (Verdict, Vec<String>) {
-    let (_, verdict, fcs) = sites
-        .iter()
-        .find(|(offset, _, _)| *offset == at)
-        .unwrap_or_else(|| panic!("no graded site at {at}: {sites:?}"));
-    (verdict.clone(), fcs.clone())
-}
-
-#[test]
 fn a_use_whose_type_argument_count_differs_from_its_resolution_declines() {
     // Resolution reads `CT<int>` as the non-generic `CT` (#323); FCS binds the
     // generic one. The bare `CT` agrees with both, so it keeps its doc.
@@ -304,4 +256,160 @@ fn a_leading_tab_is_not_trimmed_by_the_implicit_summary_rule() {
     // wrapped in an implicit `<summary>` and the `<summary>` text escaped.
     let src = "module M\n///\t\n///<summary>x</summary>\nlet v = 1\n";
     assert_attached(src, "v", &["\t", "<summary>x</summary>"]);
+}
+
+/// FCS's lines and our verdict at every graded occurrence of `name`, in source
+/// order, for a one-file fixture FCS checks cleanly.
+fn every(src: &str, name: &str) -> Vec<(usize, bool, Verdict, Vec<String>)> {
+    let files = [("M.fs", src)];
+    let (graded, fcs) = run_fixture(&files, &[]);
+    assert!(!fcs[0].has_errors(), "fixture does not compile:\n{src}");
+    assert!(super::harness::failures(&graded).is_empty(), "{graded:#?}");
+    graded
+        .into_iter()
+        .filter(|g| g.name == name)
+        .map(|g| {
+            (
+                usize::from(g.range.start()),
+                g.is_definition,
+                g.verdict,
+                g.fcs_lines.unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_constructor_call_shows_the_primary_constructors_own_doc() {
+    // At `new K()` / `K()` FCS binds the constructor, whose doc is the block
+    // between the type's name and its parameters — not the type's.
+    let src = "module M\n/// The type.\ntype K\n    /// The constructor.\n    (x: int) =\n    member _.P = x\nlet a = new K(1)\nlet b : K = a\n";
+    let sites = every(src, "K");
+    let call = src.find("K(1)").unwrap();
+    let annotation = src.find("K = a").unwrap();
+    let definition = src.find("K\n").unwrap();
+    for (at, is_def, verdict, fcs) in &sites {
+        let expected: &[&str] = if *at == call {
+            &[" The constructor."]
+        } else {
+            &[" The type."]
+        };
+        assert_eq!(fcs, expected, "FCS at {at} (definition: {is_def})");
+        assert_eq!(verdict, &Verdict::Agree { attached: true }, "at {at}");
+    }
+    let at: Vec<_> = sites.iter().map(|s| s.0).collect();
+    assert!(
+        at.contains(&call) && at.contains(&annotation) && at.contains(&definition),
+        "{sites:?}"
+    );
+}
+
+#[test]
+fn a_call_of_a_type_with_explicit_constructors_declines() {
+    let src = "module M\n/// T\ntype K(x: int) =\n    /// ctor\n    new() = K(1)\n    member _.P = x\nlet a = new K()\nlet b = new K(2)\n";
+    let sites = every(src, "K");
+    let calls: Vec<_> = sites.iter().filter(|(_, def, _, _)| !def).collect();
+    assert!(!calls.is_empty());
+    for (at, _, verdict, _) in calls {
+        assert_eq!(
+            verdict,
+            &Verdict::Declined(SourceDocDecline::ExplicitConstructors),
+            "at {at}"
+        );
+    }
+}
+
+#[test]
+fn an_attribute_name_shows_the_attribute_constructors_doc() {
+    let src = "module M\n/// attr\ntype DocAttribute\n    /// pctor\n    () =\n    inherit System.Attribute()\n[<Doc>]\nlet a = 1\n[<DocAttribute>]\nlet b = 2\n";
+    let sites = every(src, "DocAttribute");
+    let uses: Vec<_> = sites.iter().filter(|(_, def, _, _)| !def).collect();
+    assert_eq!(uses.len(), 2, "{sites:?}");
+    for (at, _, verdict, fcs) in uses {
+        assert_eq!(fcs, &[" pctor"], "at {at}");
+        assert_eq!(verdict, &Verdict::Agree { attached: true }, "at {at}");
+    }
+}
+
+#[test]
+fn a_type_in_type_argument_positions_keeps_its_doc() {
+    let src = "module M\n/// rec\ntype R = { V: int }\nlet a : R list = []\nlet b = System.Collections.Generic.Stack<R>()\nlet c = Unchecked.defaultof<R>\nlet d : System.Collections.Generic.Dictionary<string, R> = null\nlet e : (R * int) list = []\n/// ms\n[<Measure>]\ntype ms\nlet f (x: float<ms>) = x\n";
+    for name in ["R", "ms"] {
+        let sites = every(src, name);
+        assert!(sites.len() >= 2, "{name}: {sites:?}");
+        for (at, _, verdict, _) in &sites {
+            assert_eq!(
+                verdict,
+                &Verdict::Agree { attached: true },
+                "{name} at {at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_qualifier_whose_member_only_a_generic_namesake_declares_shows_no_doc() {
+    // `CN.M` binds `CN<'a>`, the one declaring `M` (#323).
+    let src = "module M\n/// plain\ntype CN =\n    static member Other = 0\n/// generic\ntype CN<'a> =\n    static member M = 1\nlet x = CN.M\n";
+    let sites = every(src, "CN");
+    let use_site = src.find("CN.M").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
+    assert_eq!(fcs, &[" generic"]);
+    assert!(matches!(verdict, Verdict::Declined(_)), "{verdict:?}");
+}
+
+#[test]
+fn an_accessors_trailing_doc_and_a_doc_after_type_are_not_attached() {
+    // Measured against FCS 43.12: `with /// d` before `get` adds nothing to
+    // the property's doc, and a doc between `type` and the type's attributes
+    // is dropped (the `type` keyword's grab wins, even when empty).
+    let accessor = "module M\ntype PA() =\n    /// outer\n    static member Acc\n        with /// inner\n             get () = 1\nlet x = PA.Acc\n";
+    let sites = every(accessor, "Acc");
+    assert!(!sites.is_empty());
+    for (_, _, verdict, fcs) in &sites {
+        assert_eq!(fcs, &[" outer"]);
+        assert_eq!(verdict, &Verdict::Agree { attached: true });
+    }
+    let inner = "module M\ntype\n    /// inner\n    [<System.Obsolete(\"o\")>] TI = int\nlet x = (1 : TI)\n";
+    for (_, _, verdict, fcs) in every(inner, "TI") {
+        assert_eq!(fcs, Vec::<String>::new());
+        assert_eq!(verdict, Verdict::Agree { attached: false });
+    }
+}
+
+#[test]
+fn an_augmentation_head_shows_the_augmented_types_doc() {
+    let src = "module M\n/// g\ntype G() =\n    member _.P = 1\n/// aug\ntype G with\n    member _.Q = 2\n";
+    let sites = every(src, "G");
+    let head = src.rfind("G with").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == head).expect("graded");
+    assert_eq!(fcs, &[" g"]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
+}
+
+/// Every graded occurrence of `name`, as (byte offset, verdict, FCS lines).
+fn occurrences(src: &str, name: &str) -> Vec<(usize, Verdict, Vec<String>)> {
+    let files = [("M.fs", src)];
+    let (graded, _) = run_fixture(&files, &[]);
+    graded
+        .into_iter()
+        .filter(|g| g.name == name)
+        .map(|g| {
+            (
+                usize::from(g.range.start()),
+                g.verdict,
+                g.fcs_lines.unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// The verdict at the occurrence of a type name starting at byte `at`, with
+/// FCS's lines there, from graded `sites`.
+fn site(sites: &[(usize, Verdict, Vec<String>)], at: usize) -> (Verdict, Vec<String>) {
+    let (_, verdict, fcs) = sites
+        .iter()
+        .find(|(offset, _, _)| *offset == at)
+        .unwrap_or_else(|| panic!("no graded site at {at}: {sites:?}"));
+    (verdict.clone(), fcs.clone())
 }

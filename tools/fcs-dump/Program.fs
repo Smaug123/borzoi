@@ -6883,6 +6883,10 @@ let private projectXmlDocUse (u: FSharpSymbolUse) =
         match u.Symbol with
         | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsCompilerGenerated with _ -> false)
         | _ -> false
+    let isConstructor =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsConstructor with _ -> false)
+        | _ -> false
     let unprocessed, elaborated, fromFile, error =
         try
             match sourceSymbolXmlDoc u.Symbol with
@@ -6898,6 +6902,7 @@ let private projectXmlDocUse (u: FSharpSymbolUse) =
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
        IsCompilerGenerated = isCompilerGenerated
+       IsConstructor = isConstructor
        Unprocessed = unprocessed
        Elaborated = elaborated
        FromFile = fromFile

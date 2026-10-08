@@ -59,6 +59,8 @@ enum Piece {
     },
     /// A warning directive, consumed by the lexer like a conditional one.
     Nowarn,
+    /// A doc line indented by a tab.
+    TabDoc(usize),
 }
 
 impl Piece {
@@ -106,6 +108,13 @@ impl Piece {
                 out.push_str("#endif\n");
             }
             Piece::Nowarn => out.push_str("#nowarn \"40\"\n"),
+            Piece::TabDoc(i) => {
+                out.push_str(indent);
+                out.push('\t');
+                out.push_str("///");
+                out.push_str(DOC_TEXTS[*i]);
+                out.push('\n');
+            }
             Piece::IfElse { dead, live } => {
                 out.push_str("#if UNDEFINED_X\n");
                 for i in dead {
@@ -161,6 +170,17 @@ enum Template {
     NestedModule,
     NamedArguments,
     ArityNamesakes,
+    ExplicitConstructor,
+    PrimaryConstructorDoc,
+    AttributeType,
+    TypeArgumentPositions,
+    Measure,
+    QualifierNamesakes,
+    AccessorDoc,
+    InnerTypeDoc,
+    ValField,
+    AutoOpenModule,
+    RecModule,
 }
 
 const TEMPLATES: &[Template] = &[
@@ -194,6 +214,17 @@ const TEMPLATES: &[Template] = &[
     Template::NestedModule,
     Template::NamedArguments,
     Template::ArityNamesakes,
+    Template::ExplicitConstructor,
+    Template::PrimaryConstructorDoc,
+    Template::AttributeType,
+    Template::TypeArgumentPositions,
+    Template::Measure,
+    Template::QualifierNamesakes,
+    Template::AccessorDoc,
+    Template::InnerTypeDoc,
+    Template::ValField,
+    Template::AutoOpenModule,
+    Template::RecModule,
 ];
 
 /// How many inner prelude slots a template has.
@@ -420,6 +451,109 @@ impl Item {
                     "type AN{n} = int\nlet _ = ([1] : AN{n}<int>), (1 : AN{n})"
                 ));
             }
+            // Constructor calls bind the constructor: an explicit `new`'s doc.
+            Template::ExplicitConstructor => {
+                attr(out);
+                out.push_str(&format!("type X{n}(a: int) =\n"));
+                slot(0, "    ", out);
+                out.push_str(&format!(
+                    "    new() = X{n}(1)\n    member _.A = a\nlet _ = new X{n}(), X{n}(2), new X{n}(3)"
+                ));
+            }
+            // The primary constructor's own doc, between the name and `(`.
+            Template::PrimaryConstructorDoc => {
+                attr(out);
+                out.push_str(&format!("type Y{n}\n"));
+                slot(0, "    ", out);
+                out.push_str(&format!(
+                    "    (a: int) =\n    member _.A = a\nlet _ = new Y{n}(1), Y{n}(2), (Y{n} : int -> Y{n})"
+                ));
+            }
+            // An attribute's name is a constructor call of the attribute type.
+            Template::AttributeType => {
+                attr(out);
+                out.push_str(&format!("type Doc{n}Attribute\n"));
+                slot(0, "    ", out);
+                out.push_str(&format!(
+                    "    () =\n    inherit System.Attribute()\n[<Doc{n}>]\nlet attributed{n} = 1\n[<Doc{n}Attribute>]\nlet attributedFull{n} = 2"
+                ));
+            }
+            // A documented type in argument positions of other types' applications.
+            Template::TypeArgumentPositions => {
+                attr(out);
+                out.push_str(&format!("type TA{n} = {{ V{n}: int }}\n"));
+                out.push_str(&format!(
+                    "let ta{n} : TA{n} list = []\nlet tb{n} = System.Collections.Generic.Stack<TA{n}>()\n\
+                     let tc{n} = Unchecked.defaultof<TA{n}>\n\
+                     let td{n} : System.Collections.Generic.Dictionary<string, TA{n}> = null\n\
+                     let te{n} : (TA{n} * int) list = []"
+                ));
+            }
+            Template::Measure => {
+                out.push_str("[<Measure>]\n");
+                slot(0, "", out);
+                out.push_str(&format!(
+                    "type ms{n}\nlet me{n} = 1.0<ms{n}>\nlet mf{n} (x: float<ms{n}>) = x"
+                ));
+            }
+            // `CN.M` binds whichever `CN` declares `M`: here the generic one.
+            Template::QualifierNamesakes => {
+                attr(out);
+                out.push_str(&format!("type CN{n} =\n    static member Other{n} = 0\n"));
+                slot(0, "", out);
+                out.push_str(&format!(
+                    "type CN{n}<'a> =\n    static member M{n} = 1\nlet _ = CN{n}.M{n}, CN{n}.Other{n}"
+                ));
+            }
+            // A doc on an accessor, merged by FCS into the property's.
+            Template::AccessorDoc => {
+                out.push_str(&format!("type PA{n}() =\n"));
+                slot(0, "    ", out);
+                // `with /// d` then the accessor aligned under it: the only
+                // layout the offside rule accepts for a doc before `get`.
+                let accessor_doc = self
+                    .slots
+                    .get(1)
+                    .and_then(|s| {
+                        s.iter().find_map(|p| match p {
+                            Piece::Doc(i) => Some(*i),
+                            _ => None,
+                        })
+                    })
+                    .map_or(String::new(), |i| format!(" ///{}", DOC_TEXTS[i]));
+                out.push_str(&format!(
+                    "    static member Acc{n}\n        with{accessor_doc}\n             get () = 1\nlet _ = PA{n}.Acc{n}"
+                ));
+            }
+            // A doc between `type` and the type's own attributes.
+            Template::InnerTypeDoc => {
+                out.push_str("type\n");
+                slot(0, "    ", out);
+                out.push_str(&format!(
+                    "    [<System.Obsolete(\"o\")>] TI{n} = int\nlet _ = (1 : TI{n})"
+                ));
+            }
+            Template::ValField => {
+                out.push_str(&format!("type VF{n} =\n"));
+                slot(0, "    ", out);
+                out.push_str(&format!(
+                    "    val mutable F{n}: int\n    new() = {{ F{n} = 1 }}\nlet _ = VF{n}().F{n}"
+                ));
+            }
+            Template::AutoOpenModule => {
+                out.push_str("[<AutoOpen>]\n");
+                slot(0, "", out);
+                out.push_str(&format!("module AO{n} =\n"));
+                slot(1, "    ", out);
+                out.push_str(&format!("    let ao{n} = 1\nlet _ = ao{n}"));
+            }
+            Template::RecModule => {
+                out.push_str(&format!("module rec MR{n} =\n"));
+                slot(0, "    ", out);
+                out.push_str(&format!("    let mv{n} : MT{n} = 1\n"));
+                slot(1, "    ", out);
+                out.push_str(&format!("    type MT{n} = int\nlet _ = MR{n}.mv{n}"));
+            }
             Template::StaticLet => {
                 out.push_str(&format!("type H{n}() =\n"));
                 slot(0, "    ", out);
@@ -500,6 +634,7 @@ fn hazards() -> Vec<Vec<Piece>> {
             live: vec![0],
         }],
         vec![Doc(0), Nowarn, Doc(3)],
+        vec![TabDoc(0)],
         vec![Doc(15)],
     ]
 }
@@ -632,6 +767,7 @@ fn piece() -> impl Strategy<Value = Piece> {
         1 => Just(Piece::Block),
         1 => Just(Piece::BlockMultiline),
         1 => Just(Piece::Nowarn),
+        1 => (0..DOC_TEXTS.len()).prop_map(Piece::TabDoc),
         1 => (any::<bool>(), proptest::collection::vec(doc.clone(), 0..3))
             .prop_map(|(live, inner)| Piece::IfDef { live, inner }),
         1 => (

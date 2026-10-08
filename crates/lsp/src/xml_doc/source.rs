@@ -109,11 +109,24 @@ pub enum SourceDocDecline {
     /// the first.
     SameNameDeclarations,
     /// A use of a type supplies a different number of type arguments than the
-    /// type resolution chose declares (or a shape whose count is not read).
-    /// Resolution does not yet choose among same-named types by arity (#323),
-    /// so FCS binds another type there — a source namesake or a referenced
-    /// assembly's (`Action<int>` against a project's `type Action`).
+    /// type resolution chose declares. Resolution does not yet choose among
+    /// same-named types by arity (#323), so FCS binds another type there — a
+    /// source namesake or a referenced assembly's (`Action<int>` against a
+    /// project's `type Action`).
     ArityMismatch,
+    /// `T.M` where the type resolution chose declares no `M`: FCS looks `M`
+    /// up in every same-named type (`NameResolution`'s arity-sorted tycon
+    /// list), so it binds another `T` — one that declares `M`.
+    MemberNotDeclared,
+    /// A constructor call (`new T()`, `T()`, `[<T>]`) of a type with explicit
+    /// constructors: FCS binds the constructor overload resolution picks, and
+    /// shows its doc.
+    ExplicitConstructors,
+    /// A constructor-shaped use of a type that declares no constructor.
+    NoConstructor,
+    /// A type name in a position not classified (a nested-type path, a
+    /// parenthesised qualifier).
+    UnmodelledOccurrence,
     /// The occurrence is the left of `=` in a parenthesised application
     /// argument — a named argument when the callee is a method or constructor,
     /// which FCS binds to the parameter, not to the value resolution found
@@ -200,7 +213,7 @@ impl SourceDocIndex {
     /// The `///` lines FCS keys at `grab`: the trivia run between the previous
     /// real token and `grab`, folded through the collector's state machine.
     fn block_before(&self, grab: &SyntaxToken) -> Result<Vec<String>, SourceDocDecline> {
-        let at = self.index_of(grab);
+        let at = self.index_of(grab).ok_or(SourceDocDecline::NoDeclaration)?;
         let mut start = at;
         while start > 0 && !is_real(&self.tokens[start - 1]) {
             start -= 1;
@@ -247,23 +260,104 @@ impl SourceDocIndex {
         Ok(lines)
     }
 
-    /// The generic arity of the type definition `def` names.
-    fn type_arity_of(&self, def: &Def) -> Option<usize> {
+    /// The type definition `def` names.
+    fn type_defn_of(&self, def: &Def) -> Option<SyntaxNode> {
         let element = covering(&self.root, def.range)?;
-        ancestors(&element)
-            .find(|n| n.kind() == SyntaxKind::TYPE_DEFN)
-            .map(|defn| type_arity(&defn))
+        ancestors(&element).find(|n| n.kind() == SyntaxKind::TYPE_DEFN)
     }
 
-    fn index_of(&self, token: &SyntaxToken) -> usize {
+    /// Whether the type definition `def` names declares a member, union case
+    /// or enum case named `name` — what FCS looks a `T.name` up in.
+    fn type_declares(&self, def: &Def, name: &str) -> bool {
+        let Some(defn) = self.type_defn_of(def) else {
+            return false;
+        };
+        let name = unticked(name);
+        defn.descendants().any(|n| {
+            let declared = match n.kind() {
+                SyntaxKind::UNION_CASE | SyntaxKind::ENUM_CASE | SyntaxKind::AUTO_PROPERTY => n
+                    .children_with_tokens()
+                    .filter_map(NodeOrToken::into_token)
+                    .find(|t| t.kind() == SyntaxKind::IDENT_TOK),
+                SyntaxKind::MEMBER_DEFN | SyntaxKind::GET_SET_MEMBER => n
+                    .descendants()
+                    .find(|c| c.kind() == SyntaxKind::LONG_IDENT)
+                    .and_then(|lid| {
+                        lid.children_with_tokens()
+                            .filter_map(NodeOrToken::into_token)
+                            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                            .last()
+                    }),
+                _ => None,
+            };
+            declared.is_some_and(|t| unticked(t.text()) == name)
+        })
+    }
+
+    /// The constructors of the type definition `def` names.
+    fn constructors(&self, def: &Def) -> Constructors {
+        let Some(defn) = self.type_defn_of(def) else {
+            return Constructors::None;
+        };
+        let explicit = defn
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::OBJECT_MODEL_REPR)
+            .flat_map(|repr| repr.children())
+            .any(|member| {
+                // `new(…) = …`: a `NEW_TOK` heading the member's name path
+                // (not the `new` of a construction expression in its body).
+                member
+                    .descendants_with_tokens()
+                    .filter_map(NodeOrToken::into_token)
+                    .any(|t| {
+                        t.kind() == SyntaxKind::NEW_TOK
+                            && t.parent()
+                                .is_some_and(|p| p.kind() == SyntaxKind::LONG_IDENT)
+                    })
+            });
+        if explicit {
+            return Constructors::Explicit;
+        }
+        if !defn
+            .children()
+            .any(|c| c.kind() == SyntaxKind::IMPLICIT_CTOR)
+        {
+            return Constructors::None;
+        }
+        // `grabXmlDoc (parseState, $2, 2)` in the primary-constructor rule: the
+        // block before the first token after the type's name and parameters —
+        // its attributes, its accessibility, or its `(`.
+        let after_name = defn
+            .children()
+            .filter(|c| matches!(c.kind(), SyntaxKind::LONG_IDENT | SyntaxKind::TYPAR_DECLS))
+            .map(|c| c.text_range().end())
+            .max();
+        let grab = defn
+            .descendants_with_tokens()
+            .filter_map(NodeOrToken::into_token)
+            .filter(is_real)
+            .find(|t| after_name.is_some_and(|end| t.text_range().start() >= end));
+        Constructors::Primary(match grab {
+            Some(token) => match self.block_before(&token) {
+                Ok(lines) => SourceDoc::Attached(lines),
+                Err(why) => SourceDoc::Declined(why),
+            },
+            None => SourceDoc::Declined(SourceDocDecline::NoDeclaration),
+        })
+    }
+
+    /// `token`'s position in this file's token list, or `None` for a token of
+    /// another tree.
+    fn index_of(&self, token: &SyntaxToken) -> Option<usize> {
         let start = token.text_range().start();
-        let mut i = self
+        let from = self
             .tokens
             .partition_point(|t| t.text_range().start() < start);
-        while self.tokens[i] != *token {
-            i += 1;
-        }
-        i
+        self.tokens[from..]
+            .iter()
+            .take_while(|t| t.text_range().start() == start)
+            .position(|t| t == token)
+            .map(|i| from + i)
     }
 
     /// Which token `def`'s declaration grabs at, or `None` for a binder FCS
@@ -632,39 +726,163 @@ pub fn member_text(elaborated: &[String]) -> String {
     text
 }
 
-/// The type-argument count an occurrence of a type name at `at` supplies:
-/// `T<a, b>` (and `T<a>.M` in an expression) supplies two (one), the postfix
-/// `a T` one, and a bare `T` none. `None` when the shape is not one of those.
-fn requested_arity(root: &SyntaxNode, at: TextRange) -> Option<usize> {
+/// What an occurrence of a type's name is, as far as which symbol FCS binds
+/// there: the type itself, a qualifier of one of its members, or one of its
+/// constructors. Each carries the type-argument count the occurrence supplies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypeOccurrence {
+    /// A type-position use (`x: T`, `T<a>`, `a T`, or an argument of another
+    /// type's application, which is bare), or an augmentation head
+    /// (`type T with`): FCS binds the type.
+    Type { arity: usize },
+    /// `T.M` / `T<a>.M` in an expression: FCS binds whichever same-named type
+    /// declares `M`.
+    Qualifier { arity: usize, member: String },
+    /// `new T(…)`, `T(…)`, a first-class `T`, `inherit T(…)`, or an attribute
+    /// `[<T>]`: FCS binds one of the type's constructors.
+    Constructor { arity: usize },
+}
+
+/// Classify the occurrence of a type name at `at`, or `None` for a shape not
+/// listed in [`TypeOccurrence`].
+fn classify_type_occurrence(root: &SyntaxNode, at: TextRange) -> Option<TypeOccurrence> {
     if !root.text_range().contains_range(at) {
         return None;
     }
-    let head = ancestors(&root.covering_element(at)).find(|n| {
+    let element = root.covering_element(at);
+    let host = ancestors(&element).find(|n| {
         matches!(
             n.kind(),
-            SyntaxKind::LONG_IDENT_TYPE | SyntaxKind::IDENT_EXPR | SyntaxKind::LONG_IDENT_EXPR
+            SyntaxKind::LONG_IDENT_TYPE
+                | SyntaxKind::IDENT_EXPR
+                | SyntaxKind::LONG_IDENT_EXPR
+                | SyntaxKind::ATTRIBUTE
+                | SyntaxKind::TYPE_DEFN
+                | SyntaxKind::LONG_IDENT_PAT
         )
     })?;
-    let Some(app) = head
-        .parent()
-        .filter(|p| matches!(p.kind(), SyntaxKind::APP_TYPE | SyntaxKind::TYPE_APP_EXPR))
-    else {
-        return Some(0);
-    };
-    let args: Vec<SyntaxNode> = app.children().filter(|c| *c != head).collect();
-    let prefix = app.children().next().as_ref() == Some(&head);
+    // The path the occurrence sits in, and whether it is the path's last
+    // segment (`N.T` is the type `T`; the `T` of `T.M` qualifies `M`).
+    let path = host
+        .children()
+        .find(|c| c.kind() == SyntaxKind::LONG_IDENT)
+        .or_else(|| (host.kind() == SyntaxKind::IDENT_EXPR).then(|| host.clone()))?;
+    let idents: Vec<SyntaxToken> = path
+        .children_with_tokens()
+        .filter_map(NodeOrToken::into_token)
+        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        .collect();
+    let position = idents
+        .iter()
+        .position(|t| t.text_range().end() == at.end())?;
+    let last = position + 1 == idents.len();
+    match host.kind() {
+        SyntaxKind::TYPE_DEFN => {
+            // Only an augmentation head names an existing type; a definition's
+            // own name is its defining occurrence, handled before this.
+            (last && host.children().any(|c| c.kind() == SyntaxKind::LONG_IDENT)).then(|| {
+                TypeOccurrence::Type {
+                    arity: type_arity(&host),
+                }
+            })
+        }
+        SyntaxKind::ATTRIBUTE => last.then_some(TypeOccurrence::Constructor { arity: 0 }),
+        // A pattern `T.Case …`: the type qualifies the case.
+        SyntaxKind::LONG_IDENT_PAT => (!last).then(|| TypeOccurrence::Qualifier {
+            arity: 0,
+            member: idents[position + 1].text().to_string(),
+        }),
+        SyntaxKind::LONG_IDENT_TYPE => {
+            if !last {
+                return None;
+            }
+            let parent = host.parent()?;
+            let (applied, arity) = match parent.kind() {
+                SyntaxKind::APP_TYPE => match applied_arity(&parent, &host) {
+                    // The applied head carries the application's count.
+                    Some(n) => (parent.clone(), n),
+                    // Any other child is an argument: a bare use of its own.
+                    None => (host.clone(), 0),
+                },
+                _ => (host.clone(), 0),
+            };
+            let constructed = applied.parent().is_some_and(|p| {
+                matches!(p.kind(), SyntaxKind::NEW_EXPR | SyntaxKind::INHERIT_MEMBER)
+            });
+            Some(if constructed {
+                TypeOccurrence::Constructor { arity }
+            } else {
+                TypeOccurrence::Type { arity }
+            })
+        }
+        // An expression: `T`, `T(…)`, `T.M`, `T<a>`, `T<a>.M`.
+        _ => {
+            if !last {
+                return Some(TypeOccurrence::Qualifier {
+                    arity: 0,
+                    member: idents[position + 1].text().to_string(),
+                });
+            }
+            let parent = host.parent()?;
+            if parent.kind() != SyntaxKind::TYPE_APP_EXPR {
+                return Some(TypeOccurrence::Constructor { arity: 0 });
+            }
+            if parent.first_child().as_ref() != Some(&host) {
+                return None;
+            }
+            let arity = parent.children().filter(|c| *c != host).count();
+            match parent.parent() {
+                Some(dot) if dot.kind() == SyntaxKind::DOT_GET_EXPR => {
+                    let member = dot
+                        .children()
+                        .find(|c| c.kind() == SyntaxKind::LONG_IDENT)?
+                        .children_with_tokens()
+                        .filter_map(NodeOrToken::into_token)
+                        .find(|t| t.kind() == SyntaxKind::IDENT_TOK)?
+                        .text()
+                        .to_string();
+                    Some(TypeOccurrence::Qualifier { arity, member })
+                }
+                _ => Some(TypeOccurrence::Constructor { arity }),
+            }
+        }
+    }
+}
+
+/// The type-argument count `app` (an `APP_TYPE`) applies to `head`, when
+/// `head` is the applied type: the first child of `T<a, b>`, the last of the
+/// postfix `a T`. `None` when `head` is one of the arguments.
+fn applied_arity(app: &SyntaxNode, head: &SyntaxNode) -> Option<usize> {
+    let children: Vec<SyntaxNode> = app.children().collect();
     let angle = app
         .children_with_tokens()
         .any(|e| e.kind() == SyntaxKind::LESS_TOK);
-    match (prefix, angle) {
-        // `T<a, b>`: every other child node is an argument.
-        (true, true) => Some(args.len()),
-        // `a T`: one argument (a parenthesised tuple of them is not modelled).
-        (false, false) if app.children().last().as_ref() == Some(&head) && args.len() == 1 => {
-            (args[0].kind() != SyntaxKind::PAREN_TYPE).then_some(1)
-        }
-        _ => None,
+    if angle {
+        (children.first() == Some(head)).then(|| children.len() - 1)
+    } else if children.last() == Some(head) && children.len() == 2 {
+        // `a T`, or `(a, b) T` — a parenthesised tuple of arguments.
+        let arg = &children[0];
+        Some(if arg.kind() == SyntaxKind::PAREN_TYPE {
+            arg.children()
+                .find(|c| c.kind() == SyntaxKind::TUPLE_TYPE)
+                .map_or(1, |t| t.children().count())
+        } else {
+            1
+        })
+    } else {
+        None
     }
+}
+
+/// The constructors a type definition declares, as far as which one a call
+/// binds.
+enum Constructors {
+    /// Only the primary constructor, whose doc is this.
+    Primary(SourceDoc),
+    /// Some explicit `new`: which one a call binds is overload resolution.
+    Explicit,
+    /// No constructor in the definition.
+    None,
 }
 
 /// The generic arity a `TYPE_DEFN` declares: its type-parameter declarations.
@@ -824,13 +1042,36 @@ impl<'a> ProjectDocs<'a> {
             .or_insert_with(|| SourceDocIndex::new(project_file.file.syntax()));
         let at_definition = file == from && at == def.range;
         if def.kind == DefKind::Type && !at_definition {
-            let declared = index.type_arity_of(def);
-            let requested = self
+            let declared = index.type_defn_of(def).map(|d| type_arity(&d));
+            let occurrence = self
                 .files
                 .get(from)
-                .and_then(|f| requested_arity(f.file.syntax(), at));
-            if declared.is_none() || declared != requested {
-                return Some(SourceDoc::Declined(SourceDocDecline::ArityMismatch));
+                .and_then(|f| classify_type_occurrence(f.file.syntax(), at));
+            let decline = |why| Some(SourceDoc::Declined(why));
+            match occurrence {
+                None => return decline(SourceDocDecline::UnmodelledOccurrence),
+                Some(
+                    TypeOccurrence::Type { arity }
+                    | TypeOccurrence::Qualifier { arity, .. }
+                    | TypeOccurrence::Constructor { arity },
+                ) if Some(arity) != declared => {
+                    return decline(SourceDocDecline::ArityMismatch);
+                }
+                Some(TypeOccurrence::Type { .. }) => {}
+                Some(TypeOccurrence::Qualifier { member, .. }) => {
+                    if !index.type_declares(def, &member) {
+                        return decline(SourceDocDecline::MemberNotDeclared);
+                    }
+                }
+                Some(TypeOccurrence::Constructor { .. }) => {
+                    return Some(match index.constructors(def) {
+                        Constructors::Primary(doc) => doc,
+                        Constructors::Explicit => {
+                            SourceDoc::Declined(SourceDocDecline::ExplicitConstructors)
+                        }
+                        Constructors::None => SourceDoc::Declined(SourceDocDecline::NoConstructor),
+                    });
+                }
             }
         }
         Some(match index.doc_for(def) {
