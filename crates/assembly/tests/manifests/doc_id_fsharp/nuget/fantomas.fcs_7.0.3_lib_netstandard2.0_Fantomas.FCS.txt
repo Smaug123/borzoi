@@ -1,17 +1,11 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 3124
+hits 3134
 keys 3168
-miss F:Internal.Utilities.Text.Lexing.Position.AbsoluteOffset
-miss F:Internal.Utilities.Text.Lexing.Position.FileIndex
-miss F:Internal.Utilities.Text.Lexing.Position.Line
-miss F:Internal.Utilities.Text.Lexing.Position.OriginalLine
-miss F:Internal.Utilities.Text.Lexing.Position.StartOfLineAbsoluteOffset
 miss M:Internal.Utilities.Library.NameMap.layerAdditive``3(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Collections.FSharpList{``0},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Collections.FSharpList{``0}}},Microsoft.FSharp.Collections.FSharpMap{``2,``1},Microsoft.FSharp.Collections.FSharpMap{``2,Microsoft.FSharp.Collections.FSharpList{``0}})
 miss M:Internal.Utilities.Library.NameMap.subfold2``4(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``1,``2}},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``2,``2}}}},Microsoft.FSharp.Collections.FSharpMap{``0,``3},Microsoft.FSharp.Collections.FSharpMap{``0,``1},``2)
 miss M:Internal.Utilities.Library.NameMap.union``2(Microsoft.FSharp.Core.FSharpFunc{System.Collections.Generic.IEnumerable{``0},``1},System.Collections.Generic.IEnumerable{Microsoft.FSharp.Collections.FSharpMap{System.String,``0}})
-miss P:FSComp.SR.SwallowResourceText(System.Boolean)
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeRef.BasicQualifiedName
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeRef.Enclosing
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeRef.FullName
@@ -23,10 +17,6 @@ miss P:Fantomas.FCS.AbstractIL.IL.ILTypeSpec.GenericArgs
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeSpec.Name
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeSpec.Scope
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeSpec.TypeRef
-miss P:Internal.Utilities.Collections.HashMultiMap`2.Item(`0,`1)
-miss P:Internal.Utilities.Text.Lexing.LexBuffer`1.EndPos(Internal.Utilities.Text.Lexing.Position)
-miss P:Internal.Utilities.Text.Lexing.LexBuffer`1.IsPastEndOfStream(System.Boolean)
-miss P:Internal.Utilities.Text.Lexing.LexBuffer`1.StartPos(Internal.Utilities.Text.Lexing.Position)
 miss T:Fantomas.FCS.AbstractIL.IL.ILArrayBound
 miss T:Fantomas.FCS.AbstractIL.IL.ILArrayBounds
 miss T:Fantomas.FCS.AbstractIL.IL.ILCodeLabel
