@@ -124,6 +124,9 @@ enum Construct {
     RespeltItemType,
     RespeltPropertyName,
     RespeltCondition,
+    /// An import whose gate reads a property the walk declined to model, so
+    /// the walk cannot know whether the real build brings the file in.
+    ImportUndecided,
 }
 
 /// Constructs the evaluator declines by design, each with the reason. A
@@ -139,6 +142,11 @@ const KNOWN_DECLINES: &[(Construct, &str)] = &[
          `collect_element_text` cannot tell a CDATA space from insignificant \
          literal whitespace and declines any body holding CDATA. The decline \
          cascades to every condition and body that reads the property.",
+    ),
+    (
+        Construct::ImportUndecided,
+        "the gate reads a CDATA-declined value, so every property the import \
+         could write is unpinned, by design (`undecided_gate_root`).",
     ),
     (
         Construct::CompileRemove,
@@ -180,6 +188,7 @@ const CONSTRUCTS: &[Construct] = &[
     Construct::RespeltItemType,
     Construct::RespeltPropertyName,
     Construct::RespeltCondition,
+    Construct::ImportUndecided,
 ];
 
 /// Attribute-value escaping: the generator's own text, made safe inside `"…"`.
@@ -484,6 +493,21 @@ impl Gen<'_> {
 
     fn import(&mut self) -> String {
         self.mark(Construct::Import);
+        if self.known_declines && self.chance(3) {
+            // A gate on a value the walk declines (CDATA), either way round,
+            // so the import is skipped by the walk and followed by MSBuild or
+            // the reverse.
+            self.mark(Construct::ImportUndecided);
+            self.mark(Construct::XmlCdata);
+            self.mark(Construct::ImportConditioned);
+            let file = if self.chance(2) { "a.props" } else { "b.props" };
+            let test = if self.chance(2) { "x" } else { "" };
+            let r = self.reference("Alpha");
+            return format!(
+                "  <PropertyGroup>\n    <Alpha><![CDATA[x]]></Alpha>\n  </PropertyGroup>\n  \
+                 <Import Project=\"{file}\" Condition=\"'{r}' == '{test}'\" />\n"
+            );
+        }
         let pick = self.rng.below(5);
         match pick {
             0 => "  <Import Project=\"a.props\" />\n".to_string(),
@@ -877,12 +901,311 @@ fn assert_obligations(census: &Census, min_documents: usize) {
     }
 }
 
+/// An `<Import>` the walk cannot decide exactly — its gate reads a property
+/// whose value the walk does not know, or its path does — may bring in or leave
+/// out a whole file of property writes. Whichever way the walk resolves it, no
+/// property that file could write may be committed. The soak found this; each
+/// case pins MSBuild's value, so a case that stopped demonstrating its route
+/// would fail rather than pass vacuously.
+///
+/// `Alpha` and `Sel` are written as CDATA, which the walk declines to model,
+/// so they are the unknown values the gates read.
+#[test]
+fn undecided_imports_hide_no_property_writes() {
+    const WRITES_DIR: &str =
+        "<Project>\n  <PropertyGroup>\n    <Dir>after</Dir>\n  </PropertyGroup>\n</Project>\n";
+    const APPENDS_DIR: &str = "<Project>\n  <PropertyGroup>\n    <Dir>$(Dir);more</Dir>\n  </PropertyGroup>\n</Project>\n";
+    const OPTS_OUT_CONFIGURATION: &str =
+        "<Project TreatAsLocalProperty=\"Configuration\">\n</Project>\n";
+    const OPTS_OUT_AND_WRITES_CONFIGURATION: &str = "<Project TreatAsLocalProperty=\"Configuration\">\n  <PropertyGroup>\n    <Configuration>FromImport</Configuration>\n  </PropertyGroup>\n</Project>\n";
+    const IMPORTS_C: &str = "<Project>\n  <Import Project=\"c.props\" />\n</Project>\n";
+    const WRITES_GAMMA: &str =
+        "<Project>\n  <PropertyGroup>\n    <Gamma>after</Gamma>\n  </PropertyGroup>\n</Project>\n";
+    let prelude = "  <PropertyGroup>\n    <Alpha><![CDATA[x]]></Alpha>\n    <Sel><![CDATA[b]]></Sel>\n    <Dir>before</Dir>\n    <Gamma>before</Gamma>\n  </PropertyGroup>\n";
+    /// (name, the import, files, the name to pin, MSBuild's value)
+    type ImportCase = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+        &'static str,
+    );
+    let cases: &[ImportCase] = &[
+        (
+            "skipped by an undecided gate",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n",
+            &[("b.props", WRITES_DIR)],
+            "Dir",
+            "after",
+        ),
+        (
+            "followed under an undecided gate",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == ''\" />\n",
+            &[("b.props", WRITES_DIR)],
+            "Dir",
+            "before",
+        ),
+        (
+            "path selected by an undecided property",
+            "  <Import Project=\"$(Sel).props\" Condition=\"Exists('$(Sel).props')\" />\n",
+            &[("b.props", WRITES_DIR)],
+            "Dir",
+            "after",
+        ),
+        (
+            "an ImportGroup skipped by an undecided gate",
+            "  <ImportGroup Condition=\"'$(Alpha)' == 'x'\">\n    <Import Project=\"b.props\" />\n  </ImportGroup>\n",
+            &[("b.props", WRITES_DIR)],
+            "Dir",
+            "after",
+        ),
+        // Whether a later import of the same file runs or is skipped as a
+        // duplicate depends on whether the undecided one ran.
+        (
+            "a later import of a file an undecided gate followed",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == ''\" />\n  <PropertyGroup>\n    <Dir>mid</Dir>\n  </PropertyGroup>\n  <Import Project=\"b.props\" />\n",
+            &[("b.props", APPENDS_DIR)],
+            "Dir",
+            "mid;more",
+        ),
+        (
+            "a later import of a file an undecided gate skipped",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n  <PropertyGroup>\n    <Dir>mid</Dir>\n  </PropertyGroup>\n  <Import Project=\"b.props\" />\n",
+            &[("b.props", APPENDS_DIR)],
+            "Dir",
+            "mid",
+        ),
+        // An import's `TreatAsLocalProperty` outlives it, so whether a later
+        // write to a global lands depends on whether the import ran.
+        (
+            "an opt-out behind an undecided gate",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == ''\" />\n  <PropertyGroup>\n    <Configuration>local</Configuration>\n    <Gamma>$(Configuration)</Gamma>\n  </PropertyGroup>\n",
+            &[("b.props", OPTS_OUT_CONFIGURATION)],
+            "Gamma",
+            "Debug",
+        ),
+        // Hidden content that opts a global out *and* writes it.
+        (
+            "a global opted out and written behind an undecided gate",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n  <PropertyGroup>\n    <Gamma>$(Configuration)</Gamma>\n  </PropertyGroup>\n",
+            &[("b.props", OPTS_OUT_AND_WRITES_CONFIGURATION)],
+            "Gamma",
+            "FromImport",
+        ),
+        (
+            "a write two imports deep",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n",
+            &[("b.props", IMPORTS_C), ("c.props", WRITES_GAMMA)],
+            "Gamma",
+            "after",
+        ),
+    ];
+    let mut oracle = Oracle::spawn();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    // Every case runs under the global the opt-out case needs; none of the
+    // others reads it.
+    let globals = vec![("Configuration".to_string(), "Debug".to_string())];
+    let mut failures = Vec::new();
+    for (index, (name, import, files, pinned, expected)) in cases.iter().enumerate() {
+        let dir = root.join(format!("case{index}"));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for (file, contents) in *files {
+            std::fs::write(dir.join(file), contents).expect("write import");
+        }
+        let case = Case {
+            xml: format!("<Project>\n{prelude}{import}</Project>\n"),
+            files: files
+                .iter()
+                .map(|(f, c)| ((*f).to_string(), (*c).to_string()))
+                .collect(),
+            constructs: BTreeSet::new(),
+        };
+        let theirs = oracle
+            .project(
+                &case.xml,
+                &[(*pinned).to_string()],
+                Some(&dir.join("Demo.fsproj")),
+                &globals,
+            )
+            .expect("MSBuild evaluates every case");
+        assert_eq!(
+            theirs[*pinned], *expected,
+            "{name}: the pinned MSBuild value is wrong, so the case does not take \
+             its route"
+        );
+        let outcome = check(&mut oracle, &dir, &case, &globals);
+        failures.extend(
+            outcome
+                .violations
+                .into_iter()
+                .map(|(kind, witness)| format!("{name}: {kind}\n{witness}")),
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Parse `xml` as `dir/Demo.fsproj` under `globals`, with imports followed.
+fn parse_at(dir: &Path, xml: &str, globals: &[(&str, &str)]) -> ParsedProject {
+    let project_path = dir.join("Demo.fsproj");
+    std::fs::write(&project_path, xml).expect("write project");
+    let extra: HashMap<String, String> = globals
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    parse_fsproj_with_imports(
+        xml,
+        &project_path,
+        &extra,
+        &common::oracle_environment(),
+        None,
+        None,
+    )
+    .expect("well-formed")
+}
+
+/// The bounds on what an undecided import's hidden content is taken to touch:
+/// each pins one way of over- or under-reaching that the rest of this file
+/// cannot see, because it is either a decline (invisible to
+/// certain-implies-exact) or outside the oracle's reach.
+#[test]
+fn undecided_imports_reach_only_what_they_can() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    let cdata_alpha = "  <PropertyGroup>\n    <Alpha><![CDATA[x]]></Alpha>\n  </PropertyGroup>\n";
+
+    // An opt-out of a name that is *not* a protected global changes nothing:
+    // the later write lands either way, so it stays committed.
+    let dir = root.join("opt-out-of-a-non-global");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("b.props"),
+        "<Project TreatAsLocalProperty=\"AssemblyName\">\n</Project>\n",
+    )
+    .unwrap();
+    let parsed = parse_at(
+        &dir,
+        &format!(
+            "<Project>\n{cdata_alpha}  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == ''\" />\n  <PropertyGroup>\n    <AssemblyName>App</AssemblyName>\n  </PropertyGroup>\n</Project>\n"
+        ),
+        &[],
+    );
+    assert!(
+        !parsed.property_provenance_untrusted("AssemblyName"),
+        "an opt-out of a name no global protects cannot make its later write conditional"
+    );
+
+    // A `<DefineConstants>` write that lands only because an undecided import
+    // opted the global out: the `#if` symbol set is uncertain, not just the
+    // property's provenance.
+    let dir = root.join("opt-out-of-define-constants");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("b.props"),
+        "<Project TreatAsLocalProperty=\"DefineConstants\">\n</Project>\n",
+    )
+    .unwrap();
+    let parsed = parse_at(
+        &dir,
+        &format!(
+            "<Project>\n{cdata_alpha}  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == ''\" />\n  <PropertyGroup>\n    <DefineConstants>LOCAL</DefineConstants>\n  </PropertyGroup>\n</Project>\n"
+        ),
+        &[("DefineConstants", "GLOBAL")],
+    );
+    assert!(
+        parsed.define_constants_uncertain,
+        "defines {:?} committed although the write's landing depends on an undecided import",
+        parsed.define_constants
+    );
+
+    // …and so is one written by an import the walk skipped and MSBuild may
+    // not have.
+    let dir = root.join("skipped-define-constants-write");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("b.props"),
+        "<Project>\n  <PropertyGroup>\n    <DefineConstants>HIDDEN</DefineConstants>\n  </PropertyGroup>\n</Project>\n",
+    )
+    .unwrap();
+    let parsed = parse_at(
+        &dir,
+        &format!(
+            "<Project>\n{cdata_alpha}  <PropertyGroup>\n    <DefineConstants>SEEN</DefineConstants>\n  </PropertyGroup>\n  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n</Project>\n"
+        ),
+        &[],
+    );
+    assert!(
+        parsed.define_constants_uncertain,
+        "defines {:?} committed although a skipped undecided import writes them",
+        parsed.define_constants
+    );
+
+    // Pure mode follows no import, so it must not read one either: the result
+    // cannot depend on what the file on disk says.
+    let dir = root.join("pure-mode");
+    std::fs::create_dir_all(&dir).unwrap();
+    let xml = "<Project>\n  <PropertyGroup>\n    <Dir>before</Dir>\n  </PropertyGroup>\n  <ImportGroup Condition=\"Exists('b.props')\">\n    <Import Project=\"b.props\" />\n  </ImportGroup>\n</Project>\n";
+    let pure = |contents: &str| {
+        std::fs::write(dir.join("b.props"), contents).unwrap();
+        borzoi_msbuild::parse_fsproj(
+            xml,
+            &dir.join("Demo.fsproj"),
+            &HashMap::new(),
+            &common::oracle_environment(),
+        )
+        .expect("well-formed")
+    };
+    let a = pure("<Project/>\n");
+    let b = pure("<Project><PropertyGroup><Dir>after</Dir></PropertyGroup></Project>\n");
+    assert_eq!(
+        a.untrusted_properties, b.untrusted_properties,
+        "the pure parser read an import's contents"
+    );
+
+    // Content that imports the same files over and over is scanned once per
+    // file: a chain nine deep with five repeats at each level is 5^8 reads
+    // without that, and nine with it.
+    let dir = root.join("repeated-imports");
+    std::fs::create_dir_all(&dir).unwrap();
+    for level in 0..9 {
+        let body = if level == 8 {
+            "  <PropertyGroup>\n    <Dir>deep</Dir>\n  </PropertyGroup>\n".to_string()
+        } else {
+            (0..5)
+                .map(|_| format!("  <Import Project=\"l{}.props\" />\n", level + 1))
+                .collect()
+        };
+        std::fs::write(
+            dir.join(format!("l{level}.props")),
+            format!("<Project>\n{body}</Project>\n"),
+        )
+        .unwrap();
+    }
+    let started = std::time::Instant::now();
+    let parsed = parse_at(
+        &dir,
+        &format!(
+            "<Project>\n{cdata_alpha}  <PropertyGroup>\n    <Dir>before</Dir>\n  </PropertyGroup>\n  <Import Project=\"l0.props\" Condition=\"'$(Alpha)' == 'x'\" />\n</Project>\n"
+        ),
+        &[],
+    );
+    assert!(
+        parsed.property_provenance_untrusted("Dir"),
+        "the write nine imports deep was not found"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "scanning the hidden content took {:?}",
+        started.elapsed()
+    );
+}
+
 /// The grammar sweep at a fixed seed.
 #[test]
 fn generated_documents_are_exact_and_committed() {
     let mut oracle = Oracle::spawn();
     let mut rng = SplitMix64(0xf5_9a0a_c0de);
-    let census = sweep(&mut oracle, &mut rng, 240);
+    let census = sweep(&mut oracle, &mut rng, 1000);
     report(&census);
     assert_obligations(&census, 10);
 }
