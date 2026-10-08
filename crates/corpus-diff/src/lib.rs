@@ -1586,7 +1586,7 @@ impl SkippedUses {
 /// forward direction, or one of our own answers in the reverse one.
 ///
 /// The per-item twin of [`Comparison`]'s counts, and their only source: every
-/// count is incremented by [`Comparison::record`] from the outcome of the item it
+/// count is incremented by `Comparison::record` from the outcome of the item it
 /// pushes, so the ledger and the totals cannot disagree. The exact manifest
 /// (`manifest::project_corpus_manifest`) is rendered from the ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1609,7 +1609,7 @@ pub enum Graded {
     Assembly,
 }
 
-/// What the LSP served where it made no claim — see [`ServedAnswer::Declined`].
+/// What the LSP served at a record's cursor where it made no claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServedDecline {
     /// No surface recorded anything containing the cursor.
