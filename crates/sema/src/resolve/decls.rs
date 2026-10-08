@@ -6,6 +6,7 @@ use borzoi_cst::syntax::{
 
 use crate::def::DefId;
 
+use super::lookup::ChildFolds;
 use super::model::{
     AutoOpenVerdict, CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, OpenOpacity,
     OpenTrace, Resolution, SlotClass,
@@ -926,6 +927,25 @@ impl<'a> Resolver<'a> {
                 self.latest_open_pos = self
                     .latest_open_pos
                     .max(open.syntax().text_range().start().into());
+                // An open whose head names a module nested in a fold-back may
+                // reach it among other modules of that name, which the
+                // shortening tiers cannot order
+                // ([`Resolver::fold_back_open_is_contested`]). Then no name it
+                // brings, and none it might shadow, can be adjudicated: stale
+                // everything before it, and treat what is opened from here on as
+                // opaque. A `global.`-rooted path shortens through nothing.
+                let rooted = open
+                    .long_ident()
+                    .and_then(|li| li.idents().next())
+                    .is_some_and(|t| t.text() == "global");
+                if !rooted
+                    && let Some(head) = trace_path.first()
+                    && self.fold_back_open_is_contested(head)
+                {
+                    self.open_generation += 1;
+                    self.opaque_value_open = true;
+                    self.opaque_dotted_open = true;
+                }
                 if open.is_type() {
                     // The opened type is the `ty()` child (a `Type`), not
                     // `long_ident()`. (Our parser does not accept a `global`-
@@ -1546,7 +1566,7 @@ impl<'a> Resolver<'a> {
                             && !(path.as_slice() == self.enclosing_namespace()
                                 && gp.as_slice() == self.enclosing_namespace())
                         {
-                            self.open_project_namespace_values(gp, pos);
+                            self.open_project_namespace_values(gp, pos, ChildFolds::Exact);
                         }
 
                         // -- The project module half (highest: FCS folds the
@@ -1571,7 +1591,14 @@ impl<'a> Resolver<'a> {
                             // M (every fragment, every file) into scope, so no
                             // per-fragment restriction — that is only for a fragment
                             // reached implicitly by opening its enclosing namespace.
-                            self.open_module_values(gp, pos, None, None);
+                            // …and then M's `[<AutoOpen>]` submodules, recursively:
+                            // FCS opens a module's contents and then each auto-open
+                            // module nested in it (`AddModuleOrNamespaceRefsToNameEnv`),
+                            // exactly as it does for a namespace, so `open M` binds
+                            // `M.Auto.f` over an earlier `f`. Folded as declines
+                            // ([`ChildFolds::Declined`]): the names they bring
+                            // shadow whatever was in scope, and none commits.
+                            self.open_project_namespace_values(gp, pos, ChildFolds::Declined);
                             self.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
@@ -1753,6 +1780,7 @@ impl<'a> Resolver<'a> {
         let saved_container_path = self.container_path.clone();
         let saved_imports = self.imports.clone();
         let saved_open_shortening_prefixes = self.open_shortening_prefixes.clone();
+        let saved_fold_back_prefixes = self.fold_back_prefixes.clone();
         let saved_incomplete_open_prefixes = self.incomplete_open_prefixes.clone();
         let saved_explicit_open_prefixes = self.explicit_open_prefixes.clone();
         let saved_module_open_prefixes = self.module_open_prefixes.clone();
@@ -1823,6 +1851,7 @@ impl<'a> Resolver<'a> {
         self.module_open_prefixes = saved_module_open_prefixes;
         self.assembly_open_prefixes = saved_assembly_open_prefixes;
         self.open_shortening_prefixes = saved_open_shortening_prefixes;
+        self.fold_back_prefixes = saved_fold_back_prefixes;
         self.incomplete_open_prefixes = saved_incomplete_open_prefixes;
         self.open_generation = saved_open_generation;
         self.pattern_suppressed_case_ids = saved_pattern_suppressed_case_ids;
@@ -2032,33 +2061,24 @@ impl<'a> Resolver<'a> {
             self.open_generation += 1;
             return;
         }
-        // The same "we cannot say" whether the uncertainty is this module's own
-        // marker or a **descendant's**. FCS folds nested auto-open modules
-        // innermost-last, so an unprovable child would take names from the
-        // parent we *can* enumerate: folding only the provable half commits the
-        // parent's binder where FCS binds the child's (fcs-dump-probed —
-        // `Root.Parent.Child.X`, not `Root.Parent.X`).
-        //
-        // A descendant fragment is same-file by construction, so this reads the
-        // file's own declaration list rather than the cross-file fold list.
-        if verdict == AutoOpenVerdict::Unproven
-            || self.unprovable_fragment_within(nm.syntax().text_range())
-        {
-            // We cannot fold (the marker might not be FSharp.Core's) and we
-            // cannot merely *decline to fold* either (it might be): returning
-            // here would leave an enclosing `open`'s same-named value standing
-            // and commit it, a wrong go-to-definition wherever FCS binds this
-            // module's member instead. The generation barrier is the "we cannot
-            // say" that covers both — it stales every earlier opened entry, so
-            // a contested name defers rather than resolving to the wrong side
-            // of a fold we could not adjudicate.
-            self.open_generation += 1;
-            return;
-        }
+        // An unprovable marker still folds, but as a decline: we cannot fold
+        // (the marker might not be FSharp.Core's) and we cannot merely *decline
+        // to fold* either (it might be) — returning here would leave an
+        // enclosing binder of the same name standing and commit it, a wrong
+        // go-to-definition wherever FCS binds this module's member instead. The
+        // two readings disagree on exactly the names the module contributes, so
+        // the fold names them and declines each one
+        // ([`Self::fold_own_auto_open_module`]'s uncertain fragments); every
+        // other name keeps its binder.
         let mut qualified = self.container_path.clone();
         qualified.extend(segs);
         let pos = u32::from(nm.syntax().text_range().end());
-        self.fold_own_auto_open_module(&qualified, pos, nm.syntax().text_range());
+        self.fold_own_auto_open_module(
+            &qualified,
+            pos,
+            nm.syntax().text_range(),
+            verdict == AutoOpenVerdict::Proven,
+        );
     }
 
     /// Record a project-introduced *name* — a nested module

@@ -3366,3 +3366,297 @@ fn an_unprovable_descendant_declines_the_parents_fold_back() {
          binder, or this test proves nothing; got {control_res:?}"
     );
 }
+
+/// An unprovable marker declines **by name**: only the names the module would
+/// contribute are uncertain, so every other name in scope keeps its binder.
+///
+/// If the module opens, a use binds its member; if it does not, the use binds
+/// whatever was in scope before. The two readings disagree exactly on the names
+/// the module declares, so those decline and nothing else may. A generation
+/// barrier instead stales every earlier entry — the enclosing module's own
+/// `let`s and union cases included — which costs uses FCS binds the same way
+/// under both readings.
+///
+/// Two shapes: the module's own marker is unprovable; and a proven parent holds
+/// an unprovable child, where only the child's names are uncertain and a name
+/// the parent alone supplies commits to the parent's binder. The marker is
+/// unprovable because it is written qualified —
+/// `[<Microsoft.FSharp.Core.AutoOpen>]` resolves to no entity we name — and FCS
+/// folds it (see [`an_unprovable_descendant_declines_the_parents_fold_back`]).
+#[test]
+fn an_unprovable_marker_declines_only_the_names_its_module_contributes() {
+    let env = crate::common::fsharp_core_env().clone();
+    // `at` keys on a needle's only occurrence, so each use is written with
+    // the text that follows it.
+    let use_of = |src: &str, needle: &str| {
+        let r = at(src, needle);
+        let name_len = needle.find('\n').unwrap_or(needle.len());
+        TextRange::at(r.start(), u32::try_from(name_len).unwrap().into())
+    };
+    let resolve_use = |src: &str, needle: &str| {
+        let rf = resolve(src, &env);
+        let res = rf.resolution_at(use_of(src, needle));
+        let def = res
+            .and_then(|r| rf.resolved_def(r))
+            .map(|d| usize::from(d.range.start()));
+        (res, def)
+    };
+
+    let own = "module Root\n\ntype U =\n    | Case\n\nlet outer = 1\nlet shared = 0\n\n\
+               [<Microsoft.FSharp.Core.AutoOpen>]\nmodule M =\n    let shared = 2\n\n\
+               let a = outer\nlet b = Case\nlet c = shared\n";
+    let (res, def) = resolve_use(own, "outer\nlet b");
+    assert_eq!(
+        def,
+        own.find("outer = 1"),
+        "the module declares no `outer`, so both readings bind the enclosing \
+         one; got {res:?}"
+    );
+    let (res, def) = resolve_use(own, "Case\nlet c");
+    assert_eq!(
+        def,
+        own.find("Case\n"),
+        "the module declares no `Case`, so both readings bind the union case; \
+         got {res:?}"
+    );
+    let (res, _) = resolve_use(own, "shared\n");
+    assert!(
+        matches!(res, Some(Resolution::Deferred(_))),
+        "the module may supply `shared` (FCS binds `M.shared`), so the use must \
+         decline; got {res:?}"
+    );
+
+    let nested = "module Root\n\nlet onlyParent = 0\nlet shared = 0\n\n[<AutoOpen>]\n\
+                  module Parent =\n    let onlyParent = 1\n    let shared = 1\n    \
+                  [<Microsoft.FSharp.Core.AutoOpen>]\n    module Child =\n        \
+                  let shared = 2\n\nlet a = onlyParent\nlet b = shared\n";
+    let (res, def) = resolve_use(nested, "onlyParent\nlet b");
+    assert_eq!(
+        def,
+        nested.find("onlyParent = 1"),
+        "the proven parent supplies `onlyParent` and the child does not, so it \
+         commits to the parent's binder; got {res:?}"
+    );
+    let (res, _) = resolve_use(nested, "shared\n");
+    assert!(
+        matches!(res, Some(Resolution::Deferred(_))),
+        "the unprovable child may supply `shared` and folds after its parent \
+         (FCS binds `Parent.Child.shared`), so the use must decline; got {res:?}"
+    );
+}
+
+/// The same two shapes **across a file boundary**, reached by a later file's
+/// `open` of the namespace — the fold every earlier file's fragments go
+/// through.
+///
+/// An earlier file exports its unprovable fragments separately from its proven
+/// ones, so the later fold must still list them, uncertain, in their place:
+/// a proven parent's member stands only where its unprovable child supplies
+/// nothing of that name, and the namespace's own union case only where no
+/// unprovable fragment does.
+#[test]
+fn an_earlier_files_unprovable_fragment_declines_only_the_names_it_contributes() {
+    let env = crate::common::fsharp_core_env().clone();
+    let src0 = "namespace N\n\ntype U =\n    | Case\n    | Shadowed\n\n\
+                [<AutoOpen>]\nmodule Parent =\n    let onlyParent = 0\n    let shared = 0\n    \
+                [<Microsoft.FSharp.Core.AutoOpen>]\n    module Child =\n        \
+                let shared = 1\n        let Shadowed = 1\n";
+    let src1 = "module User\n\nopen N\n\nlet a = onlyParent\nlet b = shared\nlet c = Case\n\
+                let d = Shadowed\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let resolve_use = |needle: &str| {
+        let r = at(src1, needle);
+        let name_len = needle.find('\n').unwrap_or(needle.len());
+        let res = proj.file(1).resolution_at(TextRange::at(
+            r.start(),
+            u32::try_from(name_len).unwrap().into(),
+        ));
+        let def = res
+            .and_then(|r| proj.item_def(r))
+            .map(|(f, d)| (f, usize::from(d.range.start())));
+        (res, def)
+    };
+    for needle in ["shared\n", "Shadowed\n"] {
+        let (res, _) = resolve_use(needle);
+        assert!(
+            matches!(res, Some(Resolution::Deferred(_))),
+            "the unprovable child may supply {needle:?} (FCS binds \
+             `N.Parent.Child`'s), so the use must decline; got {res:?}"
+        );
+    }
+    let (res, def) = resolve_use("onlyParent\n");
+    assert_eq!(
+        def,
+        src0.find("onlyParent = 0").map(|p| (0, p)),
+        "only the proven parent supplies `onlyParent`; got {res:?}"
+    );
+    let (res, def) = resolve_use("Case\n");
+    assert_eq!(
+        def,
+        src0.find("Case\n").map(|p| (0, p)),
+        "no fragment supplies `Case`, so the namespace's union case stands; got {res:?}"
+    );
+}
+
+/// An earlier file's proven and unprovable fragments fold in **declaration
+/// order**, not proven-first: a proven module declared after an unprovable one
+/// in the same file folds after it, and takes a name both supply under either
+/// reading of the earlier marker.
+#[test]
+fn an_earlier_files_fragments_fold_in_declaration_order_whatever_their_verdict() {
+    let env = crate::common::fsharp_core_env().clone();
+    let src0 = "namespace N\n\n[<Microsoft.FSharp.Core.AutoOpen>]\nmodule Unprovable =\n    \
+                let X = 1\n\n[<AutoOpen>]\nmodule Proven =\n    let X = 2\n";
+    let src1 = "module User\n\nopen N\n\nlet a = X\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let r = at(src1, "X\n");
+    let res = proj
+        .file(1)
+        .resolution_at(TextRange::at(r.start(), 1.into()));
+    let def = res
+        .and_then(|r| proj.item_def(r))
+        .map(|(f, d)| (f, usize::from(d.range.start())));
+    assert_eq!(
+        def,
+        src0.find("X = 2").map(|p| (0, p)),
+        "`Proven` folds after `Unprovable`, so FCS binds `N.Proven.X` whether or \
+         not the earlier module opens; got {res:?}"
+    );
+}
+
+/// The fold-back brings a module's **nested modules** into scope under their
+/// short names, as an `open` of it would, so a later `open Inner` reaches
+/// `A.Inner` and its `target` outranks the folded `A.target` (fcs-dump: the
+/// use binds `Root.A.Inner.target`). The `open` declines rather than commits
+/// — a module the block declares after the fold would take the short name
+/// instead — so the checkable claim is that the folded `A.target` does not
+/// stand.
+///
+/// With an unprovable marker the same `open` may reach `A.Inner` or nothing,
+/// so no name it might supply may resolve past it: here `onlyInner`, which only
+/// `Inner` declares, must not bind the enclosing `let onlyInner`. And a module
+/// the block declares **after** the fold takes the short name from it: FCS's
+/// `open Inner` then reaches `Root.Inner`, never `Root.A.Inner`.
+#[test]
+fn a_folded_modules_nested_module_can_be_opened_by_its_short_name() {
+    let env = crate::common::fsharp_core_env().clone();
+    let binder = |src: &str, needle: &str| {
+        let rf = resolve(src, &env);
+        let r = at(src, needle);
+        let res = rf.resolution_at(TextRange::at(
+            r.start(),
+            u32::try_from(needle.find('\n').unwrap_or(needle.len()))
+                .unwrap()
+                .into(),
+        ));
+        let def = res
+            .and_then(|r| rf.resolved_def(r))
+            .map(|d| usize::from(d.range.start()));
+        (res, def)
+    };
+    let proven = "module Root\n\n[<AutoOpen>]\nmodule A =\n    let target = 1\n    \
+                  module Inner =\n        let target = 2\n\nopen Inner\n\nlet use1 = target\n";
+    let (res, def) = binder(proven, "target\n");
+    assert_ne!(
+        def,
+        proven.find("target = 1"),
+        "`open Inner` reaches `A.Inner` through the fold, so FCS binds \
+         `Root.A.Inner.target`; the folded `A.target` is a wrong target; got {res:?}"
+    );
+
+    let later = "module Root\n\n[<AutoOpen>]\nmodule A =\n    module Inner =\n        \
+                 let target = 1\n\nmodule Inner =\n    let target = 2\n\nopen Inner\n\n\
+                 let use1 = target\n";
+    let (res, def) = binder(later, "target\n");
+    assert_ne!(
+        def,
+        later.find("target = 1"),
+        "the later `module Inner` takes the short name, so FCS binds \
+         `Root.Inner.target`; `Root.A.Inner.target` is a wrong target; got {res:?}"
+    );
+
+    // A later `open` reaching a third `Inner` does not settle the others: FCS's
+    // `open Inner` opens every module of that name, and `Root.Inner` supplies
+    // `target` after the fold's `A.Inner` does.
+    let third = "module Root\n\n[<AutoOpen>]\nmodule A =\n    module Inner =\n        \
+                 let target = 1\n\nmodule Inner =\n    let target = 2\n\nmodule Other =\n    \
+                 module Inner =\n        let unrelated = 3\n\nopen Other\nopen Inner\n\n\
+                 let probe = target\n";
+    let (res, def) = binder(third, "target\n");
+    assert_ne!(
+        def,
+        third.find("target = 1"),
+        "FCS binds `Root.Inner.target`; `Root.A.Inner.target` is a wrong target; \
+         got {res:?}"
+    );
+
+    let unprovable = "module Root\n\nlet onlyInner = 0\n\n[<Microsoft.FSharp.Core.AutoOpen>]\n\
+                      module A =\n    module Inner =\n        let onlyInner = 2\n\nopen Inner\n\n\
+                      let use1 = onlyInner\n";
+    let (res, def) = binder(unprovable, "onlyInner\n");
+    assert_ne!(
+        def,
+        unprovable.find("onlyInner = 0"),
+        "if `A` opens, `open Inner` reaches `A.Inner` and FCS binds its \
+         `onlyInner`; the enclosing one is a wrong target; got {res:?}"
+    );
+}
+
+/// The kind ladder orders members **within** one block, never across blocks:
+/// FCS folds an opened namespace's blocks in declaration order, so a later
+/// block's exception takes a name from an earlier block's union case even
+/// though, within one block, a case outranks an exception.
+#[test]
+fn the_kind_ladder_does_not_reorder_a_namespaces_blocks() {
+    let env = crate::common::fsharp_core_env().clone();
+    let src = "namespace Demo\n\ntype Holder =\n    | Target\n\nnamespace Demo\n\n\
+               exception Target of int\n\nnamespace Other\n\nopen Demo\n\nmodule M =\n    \
+               let x = Target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Target").expect("the use");
+    let res = rf.resolution_at(TextRange::at(
+        u32::try_from(start).unwrap().into(),
+        6.into(),
+    ));
+    let def = res
+        .and_then(|r| rf.resolved_def(r))
+        .map(|d| usize::from(d.range.start()));
+    assert_ne!(
+        def,
+        src.find("Target\n"),
+        "the later block's exception takes the name, as FCS binds it; the \
+         earlier block's case is a wrong target; got {res:?}"
+    );
+}
+
+/// An earlier file's `[<AutoOpen>]` module whose marker is unprovable still
+/// vetoes a **type** reference it may supply: here an assembly declares
+/// `Demo.CasePat.Shape`, the earlier file's `Auto` declares its own `Shape`, and
+/// FCS (`Auto` opening) binds `Demo.CasePat.Auto.Shape` in a later file's
+/// annotation. The assembly's type is a wrong target.
+#[test]
+fn an_earlier_files_unprovable_module_vetoes_the_types_it_may_supply() {
+    let bytes = std::fs::read(ensure_abbrev_fixture_built()).expect("read abbrev fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse abbrev fixture");
+    let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+    let src0 = "namespace Demo.CasePat\n\n[<Microsoft.FSharp.Core.AutoOpen>]\nmodule Auto =\n    \
+                type Shape =\n        | Local\n";
+    let src1 = "namespace Demo.CasePat\n\nmodule User =\n    let f (s: Shape) = 0\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let res = proj.file(1).resolution_at(at(src1, "Shape"));
+    assert!(
+        !matches!(res, Some(Resolution::Entity(_))),
+        "the earlier file's `Auto` may supply `Shape`, and FCS binds \
+         `Demo.CasePat.Auto.Shape`; the assembly's `Demo.CasePat.Shape` is a wrong \
+         target; got {res:?}"
+    );
+    // Non-vacuity: with no such module the annotation commits the assembly type.
+    let plain = "namespace Demo.CasePat\n\nmodule Other =\n    let unrelated = 0\n";
+    let control = resolve_project(&[impl_file(plain), impl_file(src1)], &env);
+    let control_res = control.file(1).resolution_at(at(src1, "Shape"));
+    assert!(
+        matches!(control_res, Some(Resolution::Entity(_))),
+        "without the earlier module the assembly's `Shape` must commit, or this \
+         test proves nothing; got {control_res:?}"
+    );
+}

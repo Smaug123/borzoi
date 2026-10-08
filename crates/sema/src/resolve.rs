@@ -401,6 +401,7 @@ pub fn resolve_file(
         // `[<AutoOpen>]` modules as shortening prefixes too
         // (`Resolver::auto_open_shortening_prefixes`).
         r.open_shortening_prefixes = implicit_shortening_prefixes(r.assemblies);
+        r.fold_back_prefixes = Vec::new();
         // Block-scoped like every other open state: an incomplete module opened in one
         // top-level block must not veto a sibling block's opens (review round 11).
         r.incomplete_open_prefixes = Vec::new();
@@ -1923,6 +1924,7 @@ impl<'a> Resolver<'a> {
             imports: implicit_open_groups(assemblies),
             implicit_import_count: implicit_open_groups(assemblies).len(),
             open_shortening_prefixes: implicit_shortening_prefixes(assemblies),
+            fold_back_prefixes: Vec::new(),
             incomplete_open_prefixes: Vec::new(),
             explicit_open_prefixes: Vec::new(),
             module_open_prefixes: Vec::new(),
@@ -2877,9 +2879,9 @@ mod export_decl_tests {
         let mut pi = ProjectItems::default();
         pi.extend_with(&rf, None, None);
         assert!(
-            pi.auto_open_module_paths.is_empty(),
+            pi.auto_open_fragment_verdicts.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
-            pi.auto_open_module_paths
+            pi.auto_open_fragment_verdicts
         );
 
         // A *non-private* auto-open module, by contrast, is recorded and exported
@@ -2899,7 +2901,10 @@ mod export_decl_tests {
         );
         let mut pi2 = ProjectItems::default();
         pi2.extend_with(&rf2, None, None);
-        assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
+        assert_eq!(
+            pi2.auto_open_fragment_verdicts,
+            vec![(segs(&["M"]), 0, true)]
+        );
     }
 
     #[test]

@@ -65,9 +65,48 @@ struct Contribution {
     pos: TextSize,
     nameable: bool,
 }
+
+/// How [`Resolver::open_project_namespace_values`] folds the `[<AutoOpen>]`
+/// fragments under the container it opens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ChildFolds {
+    /// Each proven fragment commits what it contributes; an unprovable one
+    /// declines it.
+    Exact,
+    /// Every fragment declines what it contributes, proven or not — the names
+    /// shadow whatever was in scope before, and none commits.
+    ///
+    /// An explicit `open M` of a project module folds M's auto-open submodules
+    /// this way. Committing them would run them through the member ordering of
+    /// a fold reached from outside the fragment's own block, which
+    /// `auto_open_member_sweep` shows is wrong in places: against a
+    /// constructible type the block declares after the open, and among an
+    /// earlier file's same-named members of different kinds. A decline claims
+    /// no target, so it is sound whatever that ordering gets wrong.
+    Declined,
+}
+
+/// One `[<AutoOpen>]` module fragment a fold walks: the members `path` declares
+/// in Compile-order file `file`, folded at that file.
+#[derive(Clone, Debug)]
+struct FoldFragment {
+    path: Vec<String>,
+    file: usize,
+    /// The declaration's own text range, for a same-file fragment: one file can
+    /// declare the same module path in a plain block and an `[<AutoOpen>]` one,
+    /// and only the attributed one folds. `None` for an earlier file's fragment,
+    /// which is per-fragment by construction.
+    range: Option<TextRange>,
+    /// Whether the fragment provably folds: its marker, and every enclosing
+    /// fragment's on the way to it, resolved to FSharp.Core's
+    /// `AutoOpenAttribute`. An unproven fragment may or may not fold, so a fold
+    /// pushes what it contributes and then declines every one of those entries
+    /// ([`Resolver::decline_entries_from`]).
+    proven: bool,
+}
 use super::state::{
-    ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
-    ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
+    ActivePatternShape, AssemblyPath, CaseTier, FoldBackPrefix, OpenInterpretation, Resolver,
+    SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -1107,7 +1146,7 @@ impl<'a> Resolver<'a> {
         // so that on a shared name the project entry wins by position.
         if project_ns {
             let before = self.module_frame().entries.len();
-            self.open_project_namespace_values(&namespace, 0);
+            self.open_project_namespace_values(&namespace, 0, ChildFolds::Exact);
             self.demote_block_local_shadowed_entries(before);
             // A project `[<AutoOpen>]` module here that holds a **nested module**
             // can be shortened through: FCS enters that submodule under its short
@@ -1155,6 +1194,17 @@ impl<'a> Resolver<'a> {
             || self.preceding.modules_with_hidden_values.contains(mp)
     }
 
+    /// [`Self::module_has_hidden_values`] as an `[<AutoOpen>]` **fold** must
+    /// read it: an earlier file's marker for an unprovable child does not
+    /// count, because the fold lists that child itself and declines its names
+    /// by name ([`ProjectItems::fold_hidden_value_modules`](super::model::ProjectItems::fold_hidden_value_modules)).
+    /// This file never pushes such a marker — its own unprovable fragments are
+    /// folded uncertainly where they are declared.
+    fn module_has_fold_hidden_values(&self, mp: &[String]) -> bool {
+        self.modules_with_hidden_values.contains(mp)
+            || self.preceding.fold_hidden_value_modules.contains(mp)
+    }
+
     /// The qualified paths of `[<AutoOpen>]` modules directly under `container`
     /// (see [`super::model::is_directly_in`]) — the **distinct paths**, from
     /// earlier files' non-`private` ones ([`ProjectItems::auto_open_modules_directly_in`](super::model::ProjectItems::auto_open_modules_directly_in),
@@ -1179,82 +1229,15 @@ impl<'a> Resolver<'a> {
     /// lexical position — starts with `container` (the candidate's direct
     /// parent). `preceding`'s half needs no such check: it is already
     /// privacy-filtered at the file/export boundary.
-    /// The **Compile-order file indices** at which an `[<AutoOpen>]`-spelled
-    /// module directly in `container` has an **unprovable** marker, ascending.
-    ///
-    /// Such a module is filtered out of every fold list here — it might not open,
-    /// so folding it would name members FCS never brings into scope — but its
-    /// absence from the list is not the same as its absence from the program. It
-    /// might open, and then the names it contributes outrank everything folded
-    /// **before it**: the namespace's own direct tier, and every proven fragment
-    /// at an earlier file (probed: FCS binds `N.A.X`, not the direct case
-    /// `N.H.X`; and across three files it binds the *later* unprovable
-    /// fragment's value over the earlier proven one's).
-    ///
-    /// So the answer is a list of positions, not a flag. The fold walks
-    /// fragments in file order and raises a generation barrier as it passes each
-    /// of these, which stales exactly what precedes the uncertainty and leaves a
-    /// fragment folded after it — which outranks it either way — standing. A
-    /// single pre-loop barrier instead staled only the direct tier, and the loop
-    /// then re-pushed every proven fragment into the fresh generation, so an
-    /// earlier proven fragment won a contest FCS gives the later unprovable one.
-    ///
-    /// Within one file the position is not resolved further: an unprovable
-    /// fragment at file `f` stales the whole of `f`'s fold, including proven
-    /// fragments declared after it. That over-declines and never over-commits.
-    ///
-    /// The fold-back's generation barrier does not cover any of this: it
-    /// protects the declaring block only, and a later `namespace` block folds
-    /// afresh. Both halves of the project are asked — an earlier file's
-    /// unprovable fragment reaches this contest exactly as a same-file one does
-    /// ([`ProjectItems::unproven_auto_open_fragment_files_in`](super::model::ProjectItems::unproven_auto_open_fragment_files_in)).
-    pub(super) fn unproven_auto_open_fragment_files_in(&self, container: &[String]) -> Vec<usize> {
-        let current = self.preceding.num_files();
-        let mut out = self
-            .preceding
-            .unproven_auto_open_fragment_files_in(container);
-        out.extend(
-            self.auto_open_module_paths
-                .iter()
-                .filter(|d| {
-                    !d.commits()
-                        && super::model::is_directly_in(&d.path, container)
-                        && (!d.private || self.container_path.starts_with(container))
-                })
-                .map(|_| current),
-        );
-        out.sort_unstable();
-        out
-    }
-
-    /// Whether an `[<AutoOpen>]`-spelled module declared **inside** `range` has
-    /// an unprovable marker.
-    ///
-    /// The fold-back's descendant question. Every fragment it would fold lies
-    /// lexically within the module block being folded, so containment in this
-    /// file's own declaration list answers it exactly — no cross-file half, and
-    /// no dependence on the fold list, which filters unprovable fragments out.
-    ///
-    /// Accessibility is deliberately not consulted: a `private` submodule is
-    /// still folded into its own parent, which is precisely the scope this
-    /// question is about.
-    pub(super) fn unprovable_fragment_within(&self, range: TextRange) -> bool {
-        self.auto_open_module_paths
-            .iter()
-            .any(|d| !d.commits() && range.contains_range(d.range))
-    }
-
     pub(super) fn project_auto_open_submodules_in(&self, container: &[String]) -> Vec<Vec<String>> {
         let mut out: Vec<Vec<String>> = self.preceding.auto_open_modules_directly_in(container);
         out.extend(
             self.auto_open_module_paths
                 .iter()
                 .filter(|d| {
-                    // A COMMIT consumer: an unproven marker is filtered out
-                    // here, and the fold-back's generation barrier is what
-                    // declines the names it would have contributed.
-                    d.commits()
-                        && super::model::is_directly_in(&d.path, container)
+                    // Every consumer of this list over-defers, so an
+                    // unprovable marker counts: it may open.
+                    super::model::is_directly_in(&d.path, container)
                         && (!d.private || self.container_path.starts_with(container))
                 })
                 .map(|d| d.path.clone()),
@@ -1263,10 +1246,10 @@ impl<'a> Resolver<'a> {
     }
 
     /// The `[<AutoOpen>]` **fragments** declared *directly* in `container`, as
-    /// `(path, file, range)` triples — the same-file half (this file, at
+    /// [`FoldFragment`]s — the same-file half (this file, at
     /// [`ProjectItems::num_files`](super::model::ProjectItems::num_files), privacy-filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`]) plus the already-filtered
-    /// earlier-file half ([`ProjectItems::auto_open_fragments_directly_in`](super::model::ProjectItems::auto_open_fragments_directly_in)). A
+    /// earlier-file half ([`ProjectItems::auto_open_fragment_verdicts_directly_in`](super::model::ProjectItems::auto_open_fragment_verdicts_directly_in)). A
     /// module with fragments in several files appears once per fragment — the
     /// per-fragment provenance the file-ordered fold reads (Stage 5).
     ///
@@ -1275,33 +1258,43 @@ impl<'a> Resolver<'a> {
     /// in a plain block and an `[<AutoOpen>]` one, and only the attributed one
     /// folds, so the file index alone is too coarse an identity there. An
     /// earlier file's fragments are already per-fragment by construction.
-    fn auto_open_fragments_directly_in(
-        &self,
-        container: &[String],
-    ) -> Vec<(Vec<String>, usize, Option<TextRange>)> {
-        let mut out: Vec<(Vec<String>, usize, Option<TextRange>)> = self
+    ///
+    /// A fragment whose marker is unprovable is listed too, with `proven:
+    /// false`, from either half and in declaration order: the fold declines
+    /// what it contributes rather than dropping it, so no consumer can
+    /// enumerate the proven half alone.
+    fn auto_open_fragments_directly_in(&self, container: &[String]) -> Vec<FoldFragment> {
+        let mut out: Vec<FoldFragment> = self
             .preceding
-            .auto_open_fragments_directly_in(container)
+            .auto_open_fragment_verdicts_directly_in(container)
             .into_iter()
-            .map(|(p, f)| (p, f, None))
+            .map(|(path, file, proven)| FoldFragment {
+                path,
+                file,
+                range: None,
+                proven,
+            })
             .collect();
         let current = self.preceding.num_files();
         out.extend(
             self.auto_open_module_paths
                 .iter()
                 .filter(|d| {
-                    // A COMMIT consumer, as above.
-                    d.commits()
-                        && super::model::is_directly_in(&d.path, container)
+                    super::model::is_directly_in(&d.path, container)
                         && (!d.private || self.container_path.starts_with(container))
                 })
-                .map(|d| (d.path.clone(), current, Some(d.range))),
+                .map(|d| FoldFragment {
+                    path: d.path.clone(),
+                    file: current,
+                    range: Some(d.range),
+                    proven: d.commits(),
+                }),
         );
         out
     }
 
     /// Every `[<AutoOpen>]` fragment reachable by opening `namespace`, as
-    /// `(module_path, file)` pairs in **Compile-order file order** (Stage 5). This
+    /// [`FoldFragment`]s in **Compile-order file order** (Stage 5). This
     /// is the fold list `open <namespace>` walks: each fragment contributes its
     /// *own-file* members (folded at `file`), and a name contested across fragments
     /// resolves by latest file — so the natural push order (this list) already
@@ -1317,39 +1310,37 @@ impl<'a> Resolver<'a> {
     /// fragments at any file. The final sort is stable, so within a file the
     /// recursion's parent-before-child order (a child folds after its parent)
     /// survives.
-    fn auto_open_fragments_reachable(
-        &self,
-        namespace: &[String],
-    ) -> Vec<(Vec<String>, usize, Option<TextRange>)> {
-        fn collect(
-            resolver: &Resolver<'_>,
-            path: &[String],
-            file: usize,
-            range: Option<TextRange>,
-            out: &mut Vec<(Vec<String>, usize, Option<TextRange>)>,
-        ) {
-            out.push((path.to_vec(), file, range));
-            // Children of *this* block: fragments directly in `path` at the SAME
-            // file `file` (a nested module lives in its parent block's file).
-            for (child, cf, crange) in resolver.auto_open_fragments_directly_in(path) {
+    ///
+    /// A fragment is [`FoldFragment::proven`] only when its own marker and
+    /// every ancestor's in the list are: an unprovable parent may not open, and
+    /// then nothing beneath it folds either.
+    fn auto_open_fragments_reachable(&self, namespace: &[String]) -> Vec<FoldFragment> {
+        fn collect(resolver: &Resolver<'_>, fragment: FoldFragment, out: &mut Vec<FoldFragment>) {
+            // Children of *this* block: fragments directly in its path at the
+            // SAME file (a nested module lives in its parent block's file).
+            let children = resolver.auto_open_fragments_directly_in(&fragment.path);
+            let (file, range, proven) = (fragment.file, fragment.range, fragment.proven);
+            out.push(fragment);
+            for child in children {
                 // A child belongs to the parent FRAGMENT that lexically declares
                 // it, not merely to the parent path in this file: one file can
-                // hold two fragments of `path`, and only one of them declares
+                // hold two fragments of the path, and only one of them declares
                 // this child (codex round 8).
-                let same_fragment = match (range, crange) {
+                let same_fragment = match (range, child.range) {
                     (Some(parent), Some(child_range)) => parent.contains_range(child_range),
                     _ => true,
                 };
-                if cf == file && same_fragment {
-                    collect(resolver, &child, file, crange, out);
+                if child.file == file && same_fragment {
+                    let proven = proven && child.proven;
+                    collect(resolver, FoldFragment { proven, ..child }, out);
                 }
             }
         }
-        let mut out: Vec<(Vec<String>, usize, Option<TextRange>)> = Vec::new();
-        for (path, file, range) in self.auto_open_fragments_directly_in(namespace) {
-            collect(self, &path, file, range, &mut out);
+        let mut out: Vec<FoldFragment> = Vec::new();
+        for fragment in self.auto_open_fragments_directly_in(namespace) {
+            collect(self, fragment, &mut out);
         }
-        out.sort_by_key(|(_, file, _)| *file);
+        out.sort_by_key(|f| f.file);
         out
     }
 
@@ -1391,11 +1382,24 @@ impl<'a> Resolver<'a> {
     /// `a_module_abbreviation_in_an_auto_open_module_is_not_a_dotted_head_shadow`).
     /// Lending the module's short name as a shortening prefix is task #30,
     /// declined for the implicit fold on the same terms.
+    ///
+    /// `proven` is whether this module's own marker is provably FSharp.Core's
+    /// ([`AutoOpenVerdict`](super::model::AutoOpenVerdict)). A fragment whose
+    /// marker — or any ancestor's, up to this module — is unprovable folds
+    /// **uncertainly**: it pushes exactly what a proven fold would, and every
+    /// entry it pushed then declines ([`Self::decline_entries_from`]). If the
+    /// fragment opens, the use binds its member; if not, it binds whatever was
+    /// in scope before; the two disagree on exactly the names the fragment
+    /// contributes, so those decline and every other name keeps its binder.
+    /// The order is the proven fold's too, so a proven fragment folded *after*
+    /// an uncertain one still takes the names it supplies — it outranks the
+    /// uncertain one under either reading.
     pub(super) fn fold_own_auto_open_module(
         &mut self,
         path: &[String],
         pos: u32,
         range: TextRange,
+        proven: bool,
     ) {
         // [`Self::latest_open_pos`] is deliberately NOT advanced. Its single
         // consumer is the attribute-candidate guard, which distrusts an in-file
@@ -1407,21 +1411,30 @@ impl<'a> Resolver<'a> {
         // frontier as well only re-opens the gap that guard was built to close
         // (codex round 3).
         let current_file = self.preceding.num_files();
-        // Each descendant keeps its OWN range, and only descendants declared
-        // *inside* this fragment come along: an earlier plain `Parent` fragment
-        // can hold an `[<AutoOpen>] Child` whose members belong to that parent,
-        // not to this one (codex round 8).
-        let mut fragments: Vec<(Vec<String>, TextRange)> = vec![(path.to_vec(), range)];
+        // The module first, then each `[<AutoOpen>]`-spelled descendant declared
+        // **inside** it, parent before child, each keeping its OWN range: an
+        // earlier plain `Parent` fragment can hold an `[<AutoOpen>] Child` whose
+        // members belong to that parent, not to this one (codex round 8). An
+        // unprovable descendant is listed, uncertain, rather than left out —
+        // leaving it out would let the proven parent's same-named member stand
+        // where FCS binds the child's (fcs-dump-probed — `Root.Parent.Child.X`,
+        // not `Root.Parent.X`).
+        let mut fragments: Vec<(Vec<String>, TextRange, bool)> =
+            vec![(path.to_vec(), range, proven)];
         fragments.extend(
             self.auto_open_fragments_reachable(path)
                 .into_iter()
-                .filter_map(|(p, file, frag_range)| {
-                    let frag_range = frag_range?;
-                    (file == current_file && range.contains_range(frag_range))
-                        .then_some((p, frag_range))
+                .filter_map(|f| {
+                    let frag_range = f.range?;
+                    (f.file == current_file && range.contains_range(frag_range)).then_some((
+                        f.path,
+                        frag_range,
+                        proven && f.proven,
+                    ))
                 }),
         );
-        for (frag, frag_range) in fragments {
+        for (frag, frag_range, frag_proven) in fragments {
+            let first_pushed = self.module_frame().entries.len();
             // What this fragment contributes under each contested name, in
             // FCS's fold order — see [`Self::fragment_contributions`]. The last
             // contribution wins, and a contribution sema cannot *name* (a type
@@ -1518,6 +1531,106 @@ impl<'a> Resolver<'a> {
                     .collect();
                 self.module_frame().entries.extend(entries);
             }
+            if !frag_proven {
+                self.decline_entries_from(first_pushed);
+            }
+            // The fragment's nested modules enter scope under their short
+            // names, as for an `open` of it, so a later `open Inner` reaches
+            // `frag.Inner` (fcs-dump: its `target` outranks the fragment's own)
+            // among every other module called `Inner` in reach. The shortening
+            // tiers cannot order those, so such an `open` declines instead
+            // ([`Self::fold_back_open_is_contested`]).
+            let shortening_len = self.open_shortening_prefixes.len();
+            self.fold_back_prefixes.push(FoldBackPrefix {
+                path: frag,
+                shortening_len,
+            });
+        }
+    }
+
+    /// Whether an `open` whose path starts with `head` might reach a module
+    /// nested in a fold-back ([`Self::fold_back_prefixes`]) — which the
+    /// shortening tiers cannot resolve, so the caller declines the open.
+    ///
+    /// FCS's `open Inner` opens **every** module the name `Inner` reaches, in
+    /// the order they entered scope, and the latest supplier of each name wins
+    /// (fcs-dump reports a use of each at the `open`). A fold brings the
+    /// fragment's nested modules in at the fold's position, so it is one more
+    /// such route, ordered against modules declared or opened after it. The
+    /// tiers pick one module rather than ordering several, and lending the
+    /// fragment as a prefix made that pick wrong three ways (codex reviews):
+    /// against a module of the same name declared after the fold, against a
+    /// later `open` whose `Inner` lacks the name, and through a referenced
+    /// assembly's module at the fragment's path.
+    ///
+    /// So the only open let through is one every route sends to the same
+    /// module, and which the tiers already resolve there: each fold-back route
+    /// to `head` is the module an explicit `open` of the fragment, written
+    /// after the fold, also reaches, and no other project module of that name
+    /// is in reach.
+    pub(super) fn fold_back_open_is_contested(&self, head: &str) -> bool {
+        let reading = |prefix: &[String]| {
+            let mut path = prefix.to_vec();
+            path.push(head.to_string());
+            path
+        };
+        let fold_routes: Vec<(&FoldBackPrefix, Vec<String>)> = self
+            .fold_back_prefixes
+            .iter()
+            .map(|fold| (fold, reading(&fold.path)))
+            .filter(|(_, path)| self.real_nested_module_exports.contains(path))
+            .collect();
+        if fold_routes.is_empty() {
+            return false;
+        }
+        // Every reading of `head` the open could otherwise take: through an
+        // `open` prefix, or through a container enclosing this site.
+        let mut readings: Vec<Vec<String>> = self
+            .open_shortening_prefixes
+            .iter()
+            .map(|prefix| reading(&prefix.path))
+            .chain((0..=self.container_path.len()).map(|k| reading(&self.container_path[..k])))
+            .filter(|path| self.is_project_module_path(path))
+            .collect();
+        readings.extend(fold_routes.iter().map(|(_, path)| path.clone()));
+        readings.sort();
+        readings.dedup();
+        let one_module = readings.len() == 1;
+        let each_reopened_later = fold_routes.iter().all(|(fold, _)| {
+            self.open_shortening_prefixes[fold.shortening_len..]
+                .iter()
+                .any(|prefix| prefix.path == fold.path)
+        });
+        !(one_module && each_reopened_later)
+    }
+
+    /// Turn every module-frame entry pushed since index `first` into a
+    /// decline: the fold that pushed them is uncertain
+    /// ([`Self::fold_own_auto_open_module`]).
+    ///
+    /// The entries keep their names, order, generation and namespace, so they
+    /// shadow exactly what the certain fold would have shadowed; only the
+    /// target goes. A case entry is marked [`ScopeEntry::opened_case`]: the
+    /// name may occupy the constructor namespace, so a pattern reference must
+    /// stop at it with no target rather than scan **past** a `Deferred` it reads
+    /// as a non-case to whatever case was in scope before (codex round 1 on the
+    /// fold-back).
+    fn decline_entries_from(&mut self, first: usize) {
+        let frame = self
+            .scopes
+            .last()
+            .expect("module frame pushed in resolve_file");
+        let pushed: Vec<bool> = frame.entries[first..]
+            .iter()
+            .map(|e| {
+                e.opened_case
+                    || e.pattern_only
+                    || self.case_classification(e.resolution) == Some(true)
+            })
+            .collect();
+        for (entry, is_case) in self.module_frame().entries[first..].iter_mut().zip(pushed) {
+            entry.resolution = Resolution::Deferred(DeferredReason::UnboundName);
+            entry.opened_case |= is_case;
         }
     }
 
@@ -1888,8 +2001,12 @@ impl<'a> Resolver<'a> {
     /// hidden child, so the child's unenumerable name can shadow them; bumping
     /// before the container's own push instead would stamp those entries with
     /// the new generation too, and they would never go stale.
+    ///
+    /// The fold's own reading of the markers
+    /// ([`Self::module_has_fold_hidden_values`]): an unprovable child is one of
+    /// the submodules recursed into, so its container owes no barrier for it.
     pub(super) fn namespace_fold_has_hidden_values(&self, namespace: &[String]) -> bool {
-        self.module_has_hidden_values(namespace)
+        self.module_has_fold_hidden_values(namespace)
             || self
                 .project_auto_open_submodules_in(namespace)
                 .iter()
@@ -2007,11 +2124,23 @@ impl<'a> Resolver<'a> {
     /// augmentation's; and a name a module supplies from several files takes the
     /// **latest** such fragment (the file-`max`). With the fold exact, the caller
     /// lets a genuinely later submodule win instead of conservatively deferring.
+    ///
+    /// An unprovable fragment contributes as though it opened. The straddle
+    /// rule then answers the "it opens" reading: a direct winner out-files the
+    /// fragment, so it wins under the other reading too and may commit; a
+    /// fragment winner wins by its own push, which the fold turns into a decline
+    /// ([`Self::decline_entries_from`]) — the readings disagree there.
     fn submodule_contributions_at(&self, path: &[String]) -> HashMap<String, SubmoduleFold> {
         let site = self.container_path.clone();
         let mut out: HashMap<String, SubmoduleFold> = HashMap::new();
         let current = self.preceding.num_files();
-        for (sub, file, range) in self.auto_open_fragments_reachable(path) {
+        for FoldFragment {
+            path: sub,
+            file,
+            range,
+            ..
+        } in self.auto_open_fragments_reachable(path)
+        {
             // The names this fragment declares in *its* file (ids unused here —
             // only the fold position matters): earlier files from the per-file
             // cross-file queries, the current file from `self.items`.
@@ -2503,8 +2632,35 @@ impl<'a> Resolver<'a> {
         // too). Record value names in `seen_values`, same-file case names in
         // `seen_ctors`. No same-file dedup: a name exported twice at a path (a case
         // and a later same-named `let`) keeps both, so latest-wins `lookup` picks
-        // the later one — but by [`fold_rank`], not by source order.
-        let mut same_file: Vec<(u8, ScopeEntry)> = Vec::new();
+        // the later one — but by [`fold_rank`] within one block, and by block
+        // order across blocks.
+        //
+        // FCS folds a path declared in several top-level blocks of this file
+        // block by block, in declaration order, and applies the kind ladder
+        // within each, so a later block's exception takes a name from an
+        // earlier block's union case (fcs-dump-probed) although a case
+        // outranks an exception in one block. Every top-level header pushes a
+        // header decl, in source order, so the number of header positions at or
+        // before a member's binder is its block's ordinal.
+        let block_starts: Vec<TextSize> = self
+            .export_decls
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.kind,
+                    ExportDeclKind::Namespace | ExportDeclKind::Module { header: true, .. }
+                )
+            })
+            .map(|d| d.pos)
+            .collect();
+        let block_of = |item: &ExportedItem| match item.def {
+            ExportDef::Own(id) => {
+                let pos = self.defs[id.index()].range.start();
+                block_starts.partition_point(|s| *s <= pos)
+            }
+            ExportDef::Sig { .. } => 0,
+        };
+        let mut same_file: Vec<((usize, u8), ScopeEntry)> = Vec::new();
         for item in &self.items {
             if let Some(q) = &item.qualified
                 && q.len() == module_path.len() + 1
@@ -2530,12 +2686,13 @@ impl<'a> Resolver<'a> {
                 let mut entry =
                     ScopeEntry::opened(name, Resolution::Item(item.id), generation, open_pos);
                 entry.maybe_constant_pattern = item.attributed;
-                same_file.push((fold_rank(item.case_kind()), entry));
+                same_file.push(((block_of(item), fold_rank(item.case_kind())), entry));
             }
         }
-        // A **stable** sort by rank alone: within one rank the members keep their
-        // source order, so a later same-named value still shadows an earlier one.
-        same_file.sort_by_key(|(rank, _)| *rank);
+        // A **stable** sort by (block, rank): within one rank of one block the
+        // members keep their source order, so a later same-named value still
+        // shadows an earlier one.
+        same_file.sort_by_key(|(key, _)| *key);
         entries.extend(same_file.into_iter().map(|(_, entry)| entry));
         // The cross-file member sets. A plain `open M` (`fragment_file == None`)
         // takes the latest **accessible** export per path across every earlier
@@ -2643,11 +2800,13 @@ impl<'a> Resolver<'a> {
     /// child", covering `namespace`'s own entries and any earlier sibling but
     /// never a later one.
     ///
-    /// **Not** used for a plain project *module* open (`has_project_module` in
-    /// `decls.rs`'s `ModuleDecl::Open` arm still calls
-    /// [`Self::open_module_values`] directly) — recursing there is a separate,
-    /// unscoped gap this slice does not touch (`docs/assembly-module-open-plan.md`
-    /// §7 only prices the namespace flavor).
+    /// A plain project *module* open (`has_project_module` in `decls.rs`'s
+    /// `ModuleDecl::Open` arm) folds through here too: FCS opens a module's
+    /// contents and then each `[<AutoOpen>]` module nested in it, exactly as for
+    /// a namespace (`AddModuleOrNamespaceRefsToNameEnv`), so `open M` binds
+    /// `M.Auto.f` over an earlier `f`. A module has no direct tier of its own to
+    /// straddle ([`Self::is_project_namespace_path`] gates that half off), so
+    /// only the recursion applies.
     ///
     /// Before recursing into each `[<AutoOpen>]` submodule, this pushes a
     /// `Deferred` override for that submodule's own constructible type names
@@ -2711,6 +2870,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         namespace: &[String],
         open_pos: u32,
+        children: ChildFolds,
     ) -> usize {
         // Cross-tier straddle: a name declared BOTH at this namespace's own
         // direct tier and by one of its `[<AutoOpen>]` submodules is folded by
@@ -2850,32 +3010,20 @@ impl<'a> Resolver<'a> {
         // per-module-path recursion folded all of a module's members at the
         // module's list position, mis-ordering multi-file/nested fragments.)
         let mut count = self.open_module_values(namespace, open_pos, None, None);
-        // An unprovable marker in this namespace makes the contest unadjudicable
-        // for everything folded *before* it: the fragment is not in the list
-        // below (it might not open), but what precedes it must not stand either
-        // (it might, and then it outranks them). The generation barrier is the
-        // same "we cannot say" the fold-back raises, applied where a later block
-        // folds afresh and the fold-back's barrier no longer reaches.
-        //
-        // Its POSITION is what the barrier has to respect
-        // ([`Self::unproven_auto_open_fragment_files_in`]). The direct tier just
-        // folded precedes every fragment, so any unprovable fragment stales it;
-        // a proven fragment at an earlier file is staled only by an unprovable
-        // one that comes after it; and one folded later outranks the uncertainty
-        // anyway, so it survives.
-        let unproven_files = self.unproven_auto_open_fragment_files_in(namespace);
-        let mut next_unproven = 0usize;
-        for (frag_path, frag_file, frag_range) in self.auto_open_fragments_reachable(namespace) {
-            // Every uncertainty strictly *before* this fragment's file applies
-            // now, so this fragment is pushed into a generation that has already
-            // staled them. A same-file uncertainty is deliberately not resolved
-            // here: it is flushed after the loop, which stales the whole file's
-            // fold rather than guessing at declaration order within it.
-            while next_unproven < unproven_files.len() && unproven_files[next_unproven] < frag_file
-            {
-                self.open_generation += 1;
-                next_unproven += 1;
-            }
+        // An unprovable fragment is in this list too, in its Compile-order
+        // place, and declines by name what it contributes (below): what was
+        // folded before it loses those names under one reading of its marker
+        // and keeps them under the other, while a fragment folded after it
+        // outranks it under both.
+        for fragment in self.auto_open_fragments_reachable(namespace) {
+            let FoldFragment {
+                path: frag_path,
+                file: frag_file,
+                range: frag_range,
+                proven,
+            } = fragment;
+            let frag_proven = proven && children == ChildFolds::Exact;
+            let first_pushed = self.module_frame().entries.len();
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2899,7 +3047,7 @@ impl<'a> Resolver<'a> {
             // A fragment bringing value-space names we cannot enumerate (an active
             // pattern, an alias, an `extern`) bumps the generation before it folds,
             // so its unenumerable name shadows (stales) everything folded earlier.
-            if self.module_has_hidden_values(&frag_path) {
+            if self.module_has_fold_hidden_values(&frag_path) {
                 self.open_generation += 1;
             }
             // A same-file fragment carries its own declaration range: one file
@@ -2908,6 +3056,13 @@ impl<'a> Resolver<'a> {
             // index alone would import the plain fragment's members too (codex
             // round 6).
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file), frag_range);
+            // An unprovable fragment folds as a decline of exactly what it
+            // contributes ([`Self::decline_entries_from`]): what precedes it
+            // loses those names under one reading, and keeps them under the
+            // other.
+            if !frag_proven {
+                self.decline_entries_from(first_pushed);
+            }
         }
         // The straddle winners, re-pushed last so they out-position the submodule
         // pushes. `value_winners` / `ctor_winners` are non-empty only when
@@ -2967,13 +3122,6 @@ impl<'a> Resolver<'a> {
             entry.opened_case = true;
             self.module_frame().entries.push(entry);
             count += 1;
-        }
-        // Every uncertainty at or after the last folded fragment's file. It sits
-        // at the end of the fold, so it stales the whole of it — including the
-        // straddle winners just re-pushed, which come from the direct tier and
-        // are exactly what an unprovable fragment might outrank.
-        if next_unproven < unproven_files.len() {
-            self.open_generation += 1;
         }
         count
     }

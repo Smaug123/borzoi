@@ -202,6 +202,44 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   agreement. Against `main` that grid gives 182 disagreements, 114 of them
   wrong targets; with the fold and the ladder, 70 disagreements and none.
 
+  The fold acts on the **attribute, not its spelling**: a module folds only
+  when its `[<AutoOpen>]` resolves to FSharp.Core's `AutoOpenAttribute`
+  (`AutoOpenVerdict`). Any other resolution — a project type, an opened
+  assembly's type, a written qualifier the attribute resolver defers — leaves
+  the marker *unprovable*, because a type of that name may abbreviate the core
+  marker and FCS chases abbreviations. An unprovable fragment is neither folded
+  nor dropped. It stays in every fold list in its place, uncertain, and folds
+  as a **decline of exactly the names it contributes**: under one reading of
+  the marker a use binds the fragment's member, under the other whatever was in
+  scope before, and the two readings disagree on precisely those names. So a
+  proven parent's member still commits where an unprovable child supplies
+  nothing of that name, and the enclosing module's own `let`s and union cases
+  keep their binders. The same list, in declaration order, serves the
+  same-file fold-back, a later block's or file's namespace fold, and an
+  explicit `open M`, which folds M's `[<AutoOpen>]` submodules after M's own
+  contents, as FCS does (`AddModuleOrNamespaceRefsToNameEnv`). The marker an
+  earlier file pushes onto an unprovable fragment's container stays for every
+  consumer that does not enumerate the fragment, and a fold, which does, owes
+  it no barrier (`fold_hidden_value_modules`).
+
+  `auto_open_member_sweep` crosses its member grid with the **channel** a
+  fragment reaches the probe through: the fold-back, an `open` of a same-file
+  module holding it, the same from a later file, and an `open` of an earlier
+  file's namespace. The fold-back commits and agrees with FCS on every cell.
+  An explicit `open M` folds M's submodules as declines (`ChildFolds::Declined`)
+  rather than commits, because the namespace fold's member ordering is wrong
+  for a fragment opened from outside its own block. The namespace channel
+  shows it: 116 disagreements, identical on `main`, from a constructible type
+  the opening block declares after the `open`, which does not take the name
+  back, and from an earlier file's same-named members, which are not ranked by
+  kind. That channel is swept by an ignored test until those are fixed.
+
+  `resolve_scope_gen_diff` holds this from the other side: its generated
+  programs `open` sibling modules before an `[<AutoOpen>]` one, which defers the
+  attribute (an opened project module could supply an `AutoOpenAttribute`), so
+  the uncertain fold is exercised constantly, and a must-commit use of a name
+  it does not contribute must still commit.
+
   The project half lends no **shortening prefix** (task #30), which is the one
   place this channel still gives ground. Where a project `[<AutoOpen>]` module
   in the namespace nests a module, `open Inner` reaches it in FCS and not in us,
