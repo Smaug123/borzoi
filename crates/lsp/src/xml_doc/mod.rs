@@ -18,6 +18,7 @@ pub mod file;
 pub mod key;
 pub mod lookup;
 pub mod markdown;
+mod pairing;
 pub mod render;
 pub mod source;
 pub mod tree;
