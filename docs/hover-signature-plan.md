@@ -153,8 +153,16 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   well-formed XML (FSharp.Core 4.3–4.5's stray `</returns>`, unclosed `<p>` in
   old `System.*` packages); the whole file is refused rather than partially
   read.
-- **Project-local `///` comments** are not rendered yet; the renderer takes a
-  `DocElement` tree and does not care where it came from.
+- **Project-local `///` comments** are rendered (`xml_doc::source`): the
+  lines FCS attaches to the declaration — its lexer's grab points and the
+  parser's grab token, both reproduced and pinned by the
+  `xml_doc_source_diff` differential — elaborated by FCS's implicit-`<summary>`
+  rule into the `<member>` element fsc would write. What declines: an
+  implementation-file use of a signed symbol whose implementation doc is blank
+  (FCS shows the `.fsi`'s, which is not located yet), a `(*)` inside a block
+  comment or a `#line` before the declaration, a lone carriage return after a
+  `///` line, a file with parse errors, and an orphan buffer (single-file
+  hover renders no documentation).
 - **Doc-ID misses** are the generator's: the explicit-interface `@`/`,` and
   `nint` drift (`docs/xmldoc-explicit-interface-plan.md`, Stages 2 and 4) and
   FSharp.Core's `M:`/`T:` residue

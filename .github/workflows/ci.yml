@@ -814,6 +814,17 @@ jobs:
           nix develop --command cargo test -p borzoi --test all \
             xml_doc_shipped_sweep:: -- --ignored --nocapture
 
+      - name: Gate on the source XML-doc corpus differential
+        if: steps.gate.outputs.run == 'true'
+        # Hover's project-local `///` documentation against FCS over a sample of
+        # `BORZOI_CORPUS`: wherever hover would show a doc, FCS attaches exactly
+        # those lines; every decline is pinned in the checked-in manifest.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi --test all \
+            xml_doc_source_diff::corpus:: -- --ignored --nocapture
+
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
     needs: changes

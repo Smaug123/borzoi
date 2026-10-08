@@ -21,9 +21,11 @@
 //! referenced-assembly symbol then carries its **XML documentation** — the
 //! whole entry, not only the summary — read from the `.xml` beside the DLL the
 //! env read and rendered to Markdown by [`crate::xml_doc`], after a thematic
-//! break. A project-local *value* binder additionally shows its inferred type
-//! where inference has one (3.2b-1: literal-bound values and the chains they
-//! feed). Remaining richer hover is tracked in `docs/hover-signature-plan.md`.
+//! break. A project-local symbol carries its `///` documentation the same way,
+//! where FCS provably attaches one ([`crate::xml_doc::source`]). A project-local
+//! *value* binder additionally shows its inferred type where inference has one
+//! (3.2b-1: literal-bound values and the chains they feed). Remaining richer
+//! hover is tracked in `docs/hover-signature-plan.md`.
 
 use std::sync::Arc;
 
@@ -56,6 +58,7 @@ use crate::xml_doc::key::DocTarget;
 use crate::xml_doc::lookup::DocLookup;
 use crate::xml_doc::markdown::to_markdown;
 use crate::xml_doc::render::render_member;
+use crate::xml_doc::source::{self, ProjectDocs, SourceDoc};
 
 /// Run the hover handler. Returns `None` only when there's no buffer or the
 /// cursor is on nothing name-like. A symbol we *can* describe yields its
@@ -286,7 +289,11 @@ fn project_hover(
             let ty = file
                 .resolved_def_id(res)
                 .and_then(|def| inferred.def_type(def));
-            hover_body(semantic, &resolved, file, res, &Arc::default(), ty)
+            hover_body(semantic, &resolved, file, res, &Arc::default(), ty).map(|mut body| {
+                body.documentation =
+                    source_documentation(&parses.files, &resolved, target_file_idx, res);
+                body
+            })
         };
         if let Some(body) = body {
             return Some(make_hover(body, text, range));
@@ -435,8 +442,47 @@ fn documentation(
     }
 }
 
+/// The rendered `///` documentation of a project-local symbol — what `res`, an
+/// occurrence in Compile-order file `from`, resolves to — or `None` when FCS
+/// attaches none, it is blank, or we cannot establish exactly what FCS attaches
+/// (each reason logged; see [`SourceDoc`]).
+fn source_documentation(
+    files: &[borzoi_sema::ProjectFile],
+    resolved: &ResolvedProject,
+    from: usize,
+    res: Resolution,
+) -> Option<RenderedDoc> {
+    match ProjectDocs::new(files, resolved).doc(from, res)? {
+        SourceDoc::Attached(lines) => match source::member_element(&lines) {
+            Ok(member) => {
+                let (blocks, report) = render_member(&member);
+                if !report.unknown_tags.is_empty()
+                    || report.unresolved_inheritdoc
+                    || report.unresolved_include
+                {
+                    tracing::debug!(
+                        ?res,
+                        ?report,
+                        "source documentation rendered with fallbacks"
+                    );
+                }
+                RenderedDoc::new(to_markdown(&blocks))
+            }
+            Err(why) => {
+                tracing::debug!(?res, ?why, "source documentation not rendered");
+                None
+            }
+        },
+        SourceDoc::Declined(why) => {
+            tracing::debug!(?res, ?why, "source documentation declined");
+            None
+        }
+    }
+}
+
 /// A hover's Markdown: the signature-and-provenance text this module builds,
-/// and, for a referenced-assembly symbol, its rendered documentation.
+/// and, for a referenced-assembly or project-local symbol, its rendered
+/// documentation.
 ///
 /// They are kept apart until [`make_hover`] joins them because they are checked
 /// differently: the signature is subject to [`quotes_are_fenced`], a whole-text
