@@ -87,6 +87,13 @@ pub enum DiagnosticKind {
     /// Wildcard characters (`*`, `?`) in an `Include` attribute. Phase 1
     /// does not expand globs (plan D3).
     UnsupportedGlob { pattern: String },
+    /// The glob resolver could not reproduce MSBuild's expansion of this
+    /// `Include` (with its excludes) exactly, so it spliced nothing — see
+    /// [`crate::GlobDecline`].
+    GlobDeclined {
+        include: String,
+        reason: crate::GlobDecline,
+    },
     /// `$(Name)` appeared but `Name` wasn't defined anywhere we could see —
     /// not in the project file's already-walked `<PropertyGroup>` elements,
     /// not in the caller's `extra_properties`, and not in the reserved

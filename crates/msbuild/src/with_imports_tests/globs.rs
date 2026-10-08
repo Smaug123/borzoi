@@ -47,7 +47,7 @@ fn parse_capturing_glob(
             include: req.include.to_string(),
             excludes: req.excludes.to_vec(),
         });
-        out.clone()
+        Ok(out.clone())
     };
     let result = parse_fsproj_with_imports(
         source,

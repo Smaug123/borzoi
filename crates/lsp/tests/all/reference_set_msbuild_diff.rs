@@ -39,7 +39,7 @@
 //!
 //! ## Hermetic invocation
 //!
-//! Like `glob_msbuild_diff`, the `dotnet` children run with a stripped
+//! The `dotnet` children run with a stripped
 //! environment (only `PATH`/`HOME`/`TMPDIR` and `DOTNET_*`/`NUGET_*`), and the
 //! fixtures live under `CARGO_TARGET_TMPDIR` with no `global.json` /
 //! `Directory.Build.*` above them, so MSBuild uses the host SDK and the
