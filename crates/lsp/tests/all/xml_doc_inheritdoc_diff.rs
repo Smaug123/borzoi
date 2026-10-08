@@ -89,10 +89,25 @@ pub struct Dep<'a> {
 /// [`fixture`], with `Fx` compiled against dependency assemblies built from
 /// `deps` (each against System.Runtime alone).
 pub fn fixture_with(source: &str, deps: &[Dep<'_>]) -> Result<Fixture, Vec<String>> {
+    fixture_over(source, deps, true)
+}
+
+/// [`fixture`], compiled against System.Runtime but with a reference set
+/// (env and Roslyn alike) that leaves it out: no core library, so no
+/// primitive type binds.
+pub fn fixture_without_core_library(source: &str) -> Result<Fixture, Vec<String>> {
+    fixture_over(source, &[], false)
+}
+
+fn fixture_over(source: &str, deps: &[Dep<'_>], core: bool) -> Result<Fixture, Vec<String>> {
     let dir = TempDir::new().unwrap();
     let runtime = ensure_system_runtime_dll();
     let mut compile_against: Vec<(PathBuf, Option<&str>)> = vec![(runtime.clone(), None)];
-    let mut references = vec![runtime.clone()];
+    let mut references = if core {
+        vec![runtime.clone()]
+    } else {
+        Vec::new()
+    };
     let mut built: Vec<PathBuf> = Vec::new();
     for (i, dep) in deps.iter().enumerate() {
         let dep_dir = dir.path().join(format!("dep{i}"));
@@ -198,6 +213,9 @@ public class D : B
 
     /// <inheritdoc cref="B.M(int)" path="/remarks"/>
     public int PathRemarks() => 0;
+
+    /// <inheritdoc cref="B.M(int)" xml:lang="en"/>
+    public int LangCref() => 0;
 
     /// <summary>Own words.</summary>
     /// <inheritdoc cref="B.M(int)" path="/example"/>
@@ -531,6 +549,13 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
         matches!(v.get("M:F.D.PathSelectsNothing"), Some(Verdict::Declined { cause, roslyn_left_it: false }) if cause == "NothingSelected"),
         "{:?}",
         v.get("M:F.D.PathSelectsNothing")
+    );
+    // An unnamespaced <inheritdoc> with a namespaced attribute: Roslyn expands
+    // it; the expansion, which matches by qualified name, declines.
+    assert!(
+        matches!(v.get("M:F.D.LangCref"), Some(Verdict::Declined { cause, .. }) if cause == "Namespaced"),
+        "{:?}",
+        v.get("M:F.D.LangCref")
     );
     for key in [
         "M:F.D.Cycle",
@@ -895,4 +920,69 @@ public class Derived : Hi.Mid
         "{:?}",
         v.get("M:F.Derived.M")
     );
+}
+
+/// A reference set without its core library: to Roslyn every primitive is an
+/// error type, so a `cref` ID naming `System.Int32` binds nothing and a type
+/// argument `int` has no documentation ID. Neither may be committed here.
+#[test]
+fn without_a_core_library_no_primitive_binds() {
+    let fx = fixture_without_core_library(
+        r#"
+namespace F;
+
+/// <summary>The base.</summary>
+public class B
+{
+    /// <summary>B.M.</summary>
+    public void M(int x) { }
+
+    /// <summary>B.N.</summary>
+    public void N() { }
+}
+
+/// <summary>A generic.</summary>
+public class G<T>
+{
+    /// <summary>G.V of <typeparamref name="T"/>.</summary>
+    public virtual void V() { }
+}
+
+/// <summary>A closed derivation.</summary>
+public class GI : G<int>
+{
+    /// <inheritdoc/>
+    public override void V() { }
+}
+
+/// <summary>A user.</summary>
+public class U
+{
+    /// <inheritdoc cref="M:F.B.M(System.Int32)"/>
+    public void A() { }
+
+    /// <inheritdoc cref="M:F.B.N"/>
+    public void C() { }
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("no core library");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("M:F.U.C"), Some(Verdict::Agrees)),
+        "{:?}",
+        v.get("M:F.U.C")
+    );
+    for key in ["M:F.U.A", "M:F.GI.V"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Declined { .. })),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
 }

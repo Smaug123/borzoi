@@ -24,17 +24,27 @@ pub enum DocNode {
 ///
 /// Names are local names: no doc-comment tag is namespaced, and a stray default
 /// namespace on an ancestor must not stop `<summary>` from being a summary.
-/// What the local name forgets is kept as one bit, [`Self::namespaced`]: the
-/// renderer ignores it, but `<inheritdoc>` expansion reproduces a consumer
-/// (Roslyn) for which a namespaced `<inheritdoc>`, `cref` or path step is a
-/// different name, so it declines wherever the bit is set.
+/// What the local names forget is kept as [`Self::namespaced`]: the renderer
+/// ignores it, but `<inheritdoc>` expansion reproduces a consumer (Roslyn) for
+/// which a namespaced `<inheritdoc>`, `cref` or path step is a different name,
+/// so it declines wherever a namespace touches the tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocElement {
     pub name: String,
     pub attributes: Vec<(String, String)>,
     pub children: Vec<DocNode>,
-    /// The element, or one of its attributes, has a non-empty namespace URI.
-    pub namespaced: bool,
+    pub namespaced: Namespacing,
+}
+
+/// Where a non-empty namespace URI touches one element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Namespacing {
+    /// Neither the element's name nor any attribute's.
+    None,
+    /// Some attribute's name (`xml:lang`), not the element's.
+    Attributes,
+    /// The element's own name (whatever its attributes').
+    Element,
 }
 
 impl DocElement {
@@ -85,8 +95,13 @@ impl DocElement {
                 .map(|a| (a.name().to_string(), a.value().to_string()))
                 .collect(),
             children,
-            namespaced: node.tag_name().namespace().is_some()
-                || node.attributes().any(|a| a.namespace().is_some()),
+            namespaced: if node.tag_name().namespace().is_some() {
+                Namespacing::Element
+            } else if node.attributes().any(|a| a.namespace().is_some()) {
+                Namespacing::Attributes
+            } else {
+                Namespacing::None
+            },
         })
     }
 
@@ -96,13 +111,13 @@ impl DocElement {
             name: name.to_string(),
             attributes,
             children,
-            namespaced: false,
+            namespaced: Namespacing::None,
         }
     }
 
-    /// Whether this element or any descendant is [`Self::namespaced`].
+    /// Whether a namespace touches this element or any descendant.
     pub fn any_namespaced(&self) -> bool {
-        self.namespaced
+        self.namespaced != Namespacing::None
             || self.children.iter().any(|c| match c {
                 DocNode::Element(e) => e.any_namespaced(),
                 DocNode::Text(_) => false,
