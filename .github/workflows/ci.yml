@@ -1086,6 +1086,18 @@ jobs:
             cargo test -p borzoi-assembly --test all projection_skip_sweep:: \
             -- --ignored --nocapture
 
+      - name: Gate on whole-project source docs
+        # Hover's project-local `///` docs over the same restored projects,
+        # loaded through the LSP's runtime path (Compile order, reference
+        # closure, signature-aware fold) with FCS reading exactly the same
+        # references: where hover would show a doc, FCS attaches exactly it,
+        # and the outcome is pinned in `xml_doc_source_projects.txt`.
+        run: |
+          nix develop --command env \
+            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
+            cargo test -p borzoi --test all xml_doc_source_diff::project::pinned \
+            -- --ignored --nocapture
+
   all-required-checks-complete:
     if: ${{ always() }}
     needs:
