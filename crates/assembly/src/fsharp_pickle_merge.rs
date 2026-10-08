@@ -3551,10 +3551,29 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMetho
             entry.1 = None;
         }
     }
+    // How many distinct slots reach each projected member's key, per key it
+    // carries (a property's setter key is its own). A member two slots both
+    // reach — one IL property that two `[<CompiledName>]`-renamed getters
+    // share, only one of them its accessor — is no slot's provably, so
+    // neither may stamp it.
+    let is_setter = |slot: &DocSlot| matches!(slot, DocSlot::Setter { .. });
+    let mut claims: HashMap<(usize, bool), usize> = HashMap::new();
+    for slot in slots.keys() {
+        for (i, m) in entity.members.iter().enumerate() {
+            if occupies(m, slot) {
+                *claims.entry((i, is_setter(slot))).or_default() += 1;
+            }
+        }
+    }
     for (slot, (vals, fact)) in slots {
         let Some((Some(key), erased_typars)) = fact else {
             continue;
         };
+        if entity.members.iter().enumerate().any(|(i, m)| {
+            occupies(m, slot) && claims.get(&(i, is_setter(slot))).is_some_and(|&n| n > 1)
+        }) {
+            continue;
+        }
         // A val's own member can be missing from the projection — refused and
         // recorded as skipped, or deliberately elided — while a member the
         // signature file hides sits in the same slot. The count below cannot
