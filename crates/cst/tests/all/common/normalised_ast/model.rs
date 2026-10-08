@@ -608,6 +608,9 @@ pub enum NormalisedMember {
     /// trivia are elided.
     GetSetMember {
         name: Vec<String>,
+        /// `static member P with get …` — FCS's `SynMemberFlags.IsInstance =
+        /// false` on the accessor bindings.
+        is_static: bool,
         get: Option<NormalisedAccessor>,
         set: Option<NormalisedAccessor>,
     },
@@ -1137,6 +1140,20 @@ pub enum NormalisedExpr {
     App {
         is_atomic: bool,
         is_infix: bool,
+        /// The adjacent bracket indexer `xs[i]`, which F# checks as an
+        /// indexed lookup rather than an application. FCS's tree carries no
+        /// flag for it: the checker's `isAdjacentListExpr`
+        /// (`CheckExpressions.fs`) recognises an `Atomic` application whose
+        /// argument is a list (`ArrayOrList(false, …)` or
+        /// `ArrayOrListComputed(false, …)`), and that is how
+        /// [`from_fcs`](super::from_fcs) derives it. Our side reads
+        /// [`AppExpr::is_bracket_indexer`](borzoi_cst::syntax::AppExpr::is_bracket_indexer),
+        /// the accessor the type inferrer consults, which reads the parser's
+        /// marker token rather than the argument's shape. (The checker's other
+        /// arm, a `NonAtomic` application whose list argument is merely
+        /// range-adjacent, as in `(f x)[1]`, is a checking rule, not a parse
+        /// fact.)
+        bracket_indexer: bool,
         func: Box<NormalisedExpr>,
         arg: Box<NormalisedExpr>,
     },

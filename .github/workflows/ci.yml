@@ -101,6 +101,16 @@ jobs:
       - name: Test change detection
         run: bash tools/ci/detect-changes.test.sh
 
+      # The parser differential must compare every typed-AST accessor sema and
+      # the LSP read (crates/cst/tests/all/common/accessor_coverage.rs). The
+      # check reads their sources, so it belongs to no one crate's change
+      # filter: a sema-only change can break it. FCS-free, so it runs here,
+      # ungated; the fixture half, which needs fcs-dump, runs with test-cst.
+      - name: Check the parser oracle covers what its consumers read
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all accessor_coverage:: \
+            -- --skip accessor_fixtures_match_fcs
+
   fcs-dump:
     name: Build fcs-dump
     needs: changes
