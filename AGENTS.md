@@ -350,7 +350,7 @@ nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ign
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~15 s
-nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s
+nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s
 nix develop -c cargo test -p borzoi-msbuild --test sdk_chain_decline_attribution -- --ignored  # ~1 s
 ```
 
