@@ -4,5 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc a2b2b501186f029bd5e37e09027c5e34ce4c5c9b8009c7345965e377df09b78c # shrinks to items = [Hidden { slot: (1, 1, false), is_public: true }, Val { slot: (1, 1, false), key: Some(0), is_public: true, kept: false }]
-cc 29cab70a29cda415edf6dc50385fcae391648231fea2c5faaa00713afd11dccb # shrinks to items = [Val { slot: (0, 0, false), key: Some(0), is_public: true, kept: true }, Hidden { slot: (0, 0, false), is_public: true }]
+cc 5572f24e7fc87dce988352c4b75f307a29bd119d5481481fabeff7be5dcd8d43 # shrinks to items = [DocSlotItem { name: 0, params: [false, false], is_static: true, val: Some((true, Elided)) }, DocSlotItem { name: 0, params: [false, true], is_static: true, val: None }]
