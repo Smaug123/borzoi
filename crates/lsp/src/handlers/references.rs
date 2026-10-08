@@ -440,8 +440,10 @@ fn single_file_references(
 /// label, but the callee's type is still needed to identify its parameter.
 /// Explicit construction and object expressions carry the same argument shape
 /// directly on their `New` / `ObjExpr` nodes. Find-references makes no claim for
-/// these label ranges. The ordinary resolver remains untouched: definition,
-/// hover, and non-reference consumers retain both equality operands.
+/// these label ranges. The resolver already leaves a label unresolved unless the
+/// callee is provably a function, where `name = value` is an equality and both
+/// operands resolve (`Resolver::resolve_method_args` in `borzoi-sema`); this
+/// filter is coarser, dropping the left operand of such an equality too.
 fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
     let mut ranges = HashSet::new();
     for expression in root.descendants().filter_map(Expr::cast) {

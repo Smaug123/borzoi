@@ -60,6 +60,7 @@ mod resolve_incomplete_projection;
 mod resolve_incremental_diff;
 mod resolve_member_bodies;
 mod resolve_module_opens;
+mod resolve_named_args_diff;
 mod resolve_nested_modules;
 mod resolve_project;
 mod resolve_project_assembly_diff;
