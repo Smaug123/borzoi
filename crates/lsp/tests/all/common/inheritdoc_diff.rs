@@ -116,6 +116,15 @@ pub fn compare_assembly(
                         // leaves the entry as it is — and this harness picks
                         // entries by a looser test than the expansion's own,
                         // so a spelling the expansion misses is caught here.
+                        // Roslyn showing no documentation at all (its provider
+                        // has no entry for the key) is a claim we contradict
+                        // by showing any.
+                        Outcome::Inherited | Outcome::NoInheritdoc if xml.trim().is_empty() => {
+                            Verdict::Disagrees {
+                                ours: format!("{:#?}", expansion.member),
+                                roslyn: "(no documentation)".to_string(),
+                            }
+                        }
                         Outcome::Inherited | Outcome::NoInheritdoc => {
                             let roslyn = parse(xml);
                             if roslyn == expansion.member.clone().normalized() {
@@ -129,7 +138,7 @@ pub fn compare_assembly(
                         }
                         Outcome::Declined(why) => Verdict::Declined {
                             cause: bucket(&why),
-                            roslyn_left_it: has_inheritdoc(&parse(xml)),
+                            roslyn_left_it: !xml.trim().is_empty() && has_inheritdoc(&parse(xml)),
                         },
                     }
                 }

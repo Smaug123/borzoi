@@ -1453,6 +1453,13 @@ pub struct MethodLike {
     /// implements must treat that as unknown when this is set.
     #[cfg_attr(feature = "serde", serde(default))]
     pub has_other_method_impl: bool,
+    /// The projection ignored an optional custom modifier (`modopt`) somewhere
+    /// in this member's signature, as ECMA-335 II.7.1.1 permits. Roslyn's
+    /// runtime signature comparers do not ignore one, so a consumer
+    /// reproducing those comparisons cannot tell this signature from the same
+    /// one without it (#339).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub drops_optional_modifier: bool,
 }
 
 /// The vtable facts of one property or event accessor. C# reads a property
@@ -1857,6 +1864,13 @@ pub struct Property {
     /// (an absent one omitted).
     #[cfg_attr(feature = "serde", serde(default))]
     pub accessor_slots: Vec<AccessorSlot>,
+    /// The projection ignored an optional custom modifier (`modopt`) somewhere
+    /// in this member's signature, as ECMA-335 II.7.1.1 permits. Roslyn's
+    /// runtime signature comparers do not ignore one, so a consumer
+    /// reproducing those comparisons cannot tell this signature from the same
+    /// one without it (#339).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub drops_optional_modifier: bool,
 }
 
 /// An event, projected to the LSP-shaped surface rather than the raw

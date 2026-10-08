@@ -165,9 +165,11 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   unification lands them, which the model cannot see); and a base-constructor
   match over `object`, native-sized integers or tuples, whose `dynamic`,
   `nint` and element-name attributes Roslyn's constructor rule compares.
-  Not seen at all: `modopt`s, which the projection drops by policy, so two
-  signatures differing only in one compare equal here and not to Roslyn's
-  runtime comparers (C# never emits such a pair; #339).
+  Also declining as classes, each found by the metadata generator
+  (`xml_doc_inheritdoc_metadata_diff`): a compared signature carrying a
+  `modopt` the projection drops (it records that it dropped one, #339); a
+  primitive without a core library; and an implicitly implemented property
+  or event whose accessors are not named by the convention.
 - **`<include>` is not resolved** (same marker; NuGet only, and there is
   nothing to resolve against: 27,144 elements in 27 files, every one naming a
   `doc\*.uex` file that no package ships).

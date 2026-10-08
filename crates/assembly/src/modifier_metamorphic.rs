@@ -171,7 +171,8 @@ enum Scope {
 }
 
 /// **P1**: decorating every signature node with an unrecognised `modopt` must
-/// not move the projection at all.
+/// not move the projection, beyond each decorated method and property
+/// recording that it dropped one (`drops_optional_modifier`, #339).
 ///
 /// The modifier names a type the projector has no policy for, which is the
 /// whole point: II.7.1.1 licenses dropping exactly those.
@@ -814,6 +815,27 @@ fn member_name(m: &Member) -> &str {
     }
 }
 
+/// Whether `m` records a dropped `modopt`; `None` for a member kind whose
+/// signature cannot carry one in the model (a field, an event).
+fn drops_optional_modifier(m: &Member) -> Option<bool> {
+    match m {
+        Member::Method(m) => Some(m.drops_optional_modifier),
+        Member::Property(p) => Some(p.drops_optional_modifier),
+        Member::Field(_) | Member::Event(_) => None,
+    }
+}
+
+/// `m` with its dropped-`modopt` record cleared.
+fn without_dropped_modifier(m: &Member) -> Member {
+    let mut m = m.clone();
+    match &mut m {
+        Member::Method(m) => m.drops_optional_modifier = false,
+        Member::Property(p) => p.drops_optional_modifier = false,
+        Member::Field(_) | Member::Event(_) => {}
+    }
+    m
+}
+
 /// Structural diff of two `Entity` trees, reporting the *first* divergence per
 /// entity rather than a wall of `Debug`.
 fn diff_entities(
@@ -844,13 +866,22 @@ fn diff_entities(
                 b.members.len(),
                 d.members.len()
             ));
-        } else if b.members != d.members {
+        } else {
             for (bm, dm) in b.members.iter().zip(&d.members) {
+                // The one thing decoration moves: the record that a `modopt`
+                // was dropped, which every decorated signature must carry.
+                if !drops_optional_modifier(dm).unwrap_or(true) {
+                    findings.push(format!(
+                        "{here}.{}: a decorated signature does not record its dropped `modopt`",
+                        member_name(dm)
+                    ));
+                }
+                let (bm, dm) = (without_dropped_modifier(bm), without_dropped_modifier(dm));
                 if bm != dm {
                     findings.push(format!(
                         "{here}.{}: member projection moved under `modopt` decoration:\n  \
                          baseline:  {bm:?}\n  decorated: {dm:?}",
-                        member_name(bm)
+                        member_name(&bm)
                     ));
                 }
             }

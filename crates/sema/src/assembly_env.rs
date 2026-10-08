@@ -675,6 +675,8 @@ pub struct AssemblyEnv {
     /// this). Shared across clones via `Arc` (same data ⇒ same results);
     /// `RwLock` because the env is queried from multiple threads.
     abbreviation_chase_cache: AbbreviationChaseCache,
+    /// [`Self::primitive_binds`]'s core library, computed on first use.
+    core_library: std::sync::OnceLock<Option<HashSet<String>>>,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -2069,6 +2071,67 @@ impl AssemblyEnv {
         }
         let id = self.assembly_provenance(handle)?;
         Some(matches!(without.as_slice(), [only] if *only == id.0 as usize))
+    }
+
+    /// Whether the primitive `p` binds as Roslyn's special types do: to a
+    /// `System` type of the reference set's core library — the one loaded DLL
+    /// with no assembly references ([`Self::is_core_library`]), which must
+    /// also be the sole loaded assembly defining `System.Object`. Without one,
+    /// to Roslyn every primitive is an error type.
+    pub fn primitive_binds(&self, p: borzoi_assembly::Primitive) -> bool {
+        use borzoi_assembly::Primitive;
+        let name = match p {
+            Primitive::Void => "Void",
+            Primitive::Bool => "Boolean",
+            Primitive::Char => "Char",
+            Primitive::I1 => "SByte",
+            Primitive::U1 => "Byte",
+            Primitive::I2 => "Int16",
+            Primitive::U2 => "UInt16",
+            Primitive::I4 => "Int32",
+            Primitive::U4 => "UInt32",
+            Primitive::I8 => "Int64",
+            Primitive::U8 => "UInt64",
+            Primitive::R4 => "Single",
+            Primitive::R8 => "Double",
+            Primitive::IntPtr => "IntPtr",
+            Primitive::UIntPtr => "UIntPtr",
+            Primitive::Object => "Object",
+            Primitive::String => "String",
+        };
+        self.core_library
+            .get_or_init(|| self.core_library_types())
+            .as_ref()
+            .is_some_and(|types| types.contains(name))
+    }
+
+    /// The names of the `System` types the core library defines (see
+    /// [`Self::primitive_binds`]); `None` when there is no core library.
+    fn core_library_types(&self) -> Option<HashSet<String>> {
+        let in_system = |h: EntityHandle| {
+            let e = self.entity(h);
+            e.namespace.len() == 1 && e.namespace[0] == "System" && e.generic_parameters.is_empty()
+        };
+        let mut objects = self
+            .top_level_types
+            .iter()
+            .copied()
+            .filter(|&h| in_system(h) && self.entity(h).name == "Object");
+        let (Some(object), None) = (objects.next(), objects.next()) else {
+            return None;
+        };
+        if self.is_core_library(object) != Some(true) {
+            return None;
+        }
+        let core = self.assembly_provenance(object)?;
+        Some(
+            self.top_level_types
+                .iter()
+                .copied()
+                .filter(|&h| in_system(h) && self.assembly_provenance(h) == Some(core))
+                .map(|h| self.entity(h).name.clone())
+                .collect(),
+        )
     }
 
     /// The total number of interned entities (top-level + nested).
@@ -6793,6 +6856,7 @@ mod from_views_tests {
             custom_attrs: vec![],
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            drops_optional_modifier: false,
             accessor_slots: Vec::new(),
         })
     }

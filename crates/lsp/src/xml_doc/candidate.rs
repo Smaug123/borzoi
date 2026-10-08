@@ -186,6 +186,9 @@ impl Instantiation {
 /// every comparison over such a type declines.
 pub fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<String> {
     Some(match ty {
+        // A primitive is the core library's special type; without one it is
+        // an error type to Roslyn, whose comparisons are not modelled.
+        TypeRef::Primitive(p) if !env.primitive_binds(*p) => return None,
         TypeRef::Primitive(_) | TypeRef::Var { .. } => type_enc(ty),
         TypeRef::Named { type_args, .. } => {
             let head = match env.il_type_definition(from, ty) {
@@ -208,6 +211,7 @@ pub fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<S
             type_key(env, from, &element.ty)?
         ),
         TypeRef::Ptr(Some(inner)) => format!("{}*", type_key(env, from, inner)?),
+        TypeRef::Ptr(None) if !env.primitive_binds(Primitive::Void) => return None,
         TypeRef::Ptr(None) => "void*".to_string(),
         // A read-only byref is `modreq(InAttribute)` over the byref, which
         // Roslyn's runtime comparers see.
@@ -307,6 +311,13 @@ pub enum Undecidable {
     /// `object` (or `dynamic`), a native-sized integer (or `nint`), a tuple
     /// (its element names) — carried in an attribute the model does not keep.
     AttributeCarriedDistinction,
+    /// A compared signature carries an optional custom modifier (`modopt`)
+    /// the projection drops, and Roslyn's runtime comparers compare (#339).
+    DroppedModifier,
+    /// A property or event, implemented implicitly, where some accessor
+    /// involved is not named by the `get_`/`set_`/`add_`/`remove_`
+    /// convention.
+    UnconventionalAccessors,
 }
 
 impl From<Undecidable> for Candidate {
@@ -650,6 +661,14 @@ fn signature(
     inst: &Instantiation,
     byrefs: Byrefs,
 ) -> Result<Signature, Undecidable> {
+    let dropped = match member {
+        Member::Method(m) => m.drops_optional_modifier,
+        Member::Property(p) => p.drops_optional_modifier,
+        Member::Event(_) | Member::Field(_) => false,
+    };
+    if dropped {
+        return Err(Undecidable::DroppedModifier);
+    }
     signature_of(env, declaring, member, inst, byrefs).ok_or(Undecidable::TypeIdentity)
 }
 
@@ -954,6 +973,33 @@ fn may_name(implemented: &ImplementedMember, name: &str) -> bool {
     }
 }
 
+/// Whether a property's or event's accessors are named by the convention:
+/// `get_P`/`set_P`, `add_E`/`remove_E`/`raise_E` (for an explicit
+/// implementation `I.P`, `I.get_P`). Methods and fields trivially are.
+fn conventional_accessors(member: &Member) -> bool {
+    let (name, slots, prefixes): (&str, &[borzoi_assembly::AccessorSlot], &[&str]) = match member {
+        Member::Property(p) => (&p.name, &p.accessor_slots, &["get_", "set_"]),
+        Member::Event(e) => (&e.name, &e.accessor_slots, &["add_", "remove_", "raise_"]),
+        Member::Method(_) | Member::Field(_) => return true,
+    };
+    // An explicit implementation's name is qualified (`I.P`), and so are
+    // its accessors' (`I.get_P`).
+    let (qualifier, simple) = match name.rsplit_once('.') {
+        Some((q, simple)) => (Some(q), simple),
+        None => (None, name),
+    };
+    slots.iter().all(|s| {
+        let unqualified = match qualifier {
+            Some(q) => s
+                .name
+                .strip_prefix(q)
+                .and_then(|rest| rest.strip_prefix('.')),
+            None => Some(s.name.as_str()),
+        };
+        unqualified.is_some_and(|u| prefixes.iter().any(|p| u.strip_prefix(p) == Some(simple)))
+    })
+}
+
 /// Whether `handle` dropped a member named `name` while projecting.
 fn has_skipped(env: &AssemblyEnv, handle: EntityHandle, name: &str) -> bool {
     env.entity(handle)
@@ -1092,11 +1138,22 @@ fn implementable(member: &Member) -> Implementable {
     }
 }
 
+/// Roslyn reads a PE method as virtual, abstract or an override unless it is
+/// `virtual final newslot`: a fresh slot sealed at once, which C# sees as an
+/// ordinary method. (`virtual final` reusing a slot is a sealed override,
+/// which still counts.)
 fn is_overridable(member: &Member) -> bool {
+    let slot = |virtual_: bool, final_: bool, newslot: bool| virtual_ && !(final_ && newslot);
     match member {
-        Member::Method(m) => m.is_virtual,
-        Member::Property(p) => p.accessor_slots.iter().any(|s| s.is_virtual),
-        Member::Event(e) => e.accessor_slots.iter().any(|s| s.is_virtual),
+        Member::Method(m) => slot(m.is_virtual, m.is_final, m.is_newslot),
+        Member::Property(p) => p
+            .accessor_slots
+            .iter()
+            .any(|s| slot(s.is_virtual, s.is_final, s.is_newslot)),
+        Member::Event(e) => e
+            .accessor_slots
+            .iter()
+            .any(|s| slot(s.is_virtual, s.is_final, s.is_newslot)),
         Member::Field(_) => false,
     }
 }
@@ -1360,6 +1417,18 @@ fn interface_candidate(
     }
     if has_skipped(env, parent, name) {
         return Undecidable::Shadowed.into();
+    }
+    // A property or event implements an interface's implicitly by name here,
+    // but at run time each accessor implements the interface *method* of its
+    // own name, and Roslyn reconciles the two in ways not modelled. They agree
+    // when every accessor involved is named by the convention.
+    let accessors_conventional =
+        |h: EntityHandle| members(env, h).all(|(_, m)| conventional_accessors(m));
+    if matches!(member, Member::Property(_) | Member::Event(_))
+        && (!accessors_conventional(parent)
+            || interfaces.iter().any(|i| !accessors_conventional(i.def)))
+    {
+        return Undecidable::UnconventionalAccessors.into();
     }
     for iface in &interfaces {
         // Roslyn looks for an implicit implementation on a type only from

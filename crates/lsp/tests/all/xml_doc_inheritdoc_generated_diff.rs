@@ -1636,7 +1636,7 @@ fn the_generators_reach_every_dimension() {
         );
     }
     let mut reach: BTreeMap<Dim, Reach> = BTreeMap::new();
-    sample("hierarchies", program(), 24, 60, &mut reach);
+    sample("hierarchies", program(), 24, 50, &mut reach);
     sample("override chains", override_chain(), 16, 15, &mut reach);
     for d in ALL_DIMS {
         let r = reach.get(&d);
@@ -1646,6 +1646,11 @@ fn the_generators_reach_every_dimension() {
     for d in ALL_DIMS {
         match reach.get(&d) {
             Some(r) if r.expanded > 0 => {}
+            // Without a core library every primitive is an error type to
+            // Roslyn, and every generated signature holds one: the
+            // expansion declines them as a class, so the dimension need only
+            // be compared.
+            Some(r) if d == Dim::NoCoreLibrary && r.compared > 0 => {}
             other => dead.push(format!("{d:?}: {other:?}")),
         }
     }

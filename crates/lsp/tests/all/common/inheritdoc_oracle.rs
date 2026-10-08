@@ -251,6 +251,14 @@ impl Oracle {
         }));
     }
 
+    /// Write an assembly from a description (the oracle's `emit` op, see
+    /// `tools/inheritdoc-oracle/Emit.cs`); `request` carries everything
+    /// but the op.
+    pub fn emit(&mut self, mut request: serde_json::Value) {
+        request["op"] = serde_json::json!("emit");
+        self.request(&request);
+    }
+
     pub fn xpath(&mut self, xml: &str, path: &str) -> Option<String> {
         let r = self.request(&serde_json::json!({ "op": "xpath", "xml": xml, "path": path }));
         (r["ok"].as_bool() == Some(true))

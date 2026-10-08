@@ -137,6 +137,12 @@ fn fixture_over(source: &str, deps: &[Dep<'_>], core: bool) -> Result<Fixture, V
             .unwrap()
             .compile_aliased(source, "Fx", dir.path(), &compile_against)?;
     references.push(dll.clone());
+    Ok(fixture_from(dir, dll, references))
+}
+
+/// The fixture over `references` (files under `dir`, which it keeps alive),
+/// comparing `dll`'s entries.
+pub fn fixture_from(dir: TempDir, dll: PathBuf, references: Vec<PathBuf>) -> Fixture {
     // The runtime's on-disk projection cache, in a directory of this test
     // binary's own: the reference pack is projected once, not per fixture.
     static CACHE: std::sync::OnceLock<(TempDir, AssemblyCache)> = std::sync::OnceLock::new();
@@ -146,12 +152,12 @@ fn fixture_over(source: &str, deps: &[Dep<'_>], core: bool) -> Result<Fixture, V
         (dir, cache)
     });
     let (env, _) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), cache);
-    Ok(Fixture {
+    Fixture {
         _dir: dir,
         dll,
         references,
         env: Arc::new(env),
-    })
+    }
 }
 
 /// Compare `fx`'s entries. The doc caches are shared across the binary's

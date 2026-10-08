@@ -52,6 +52,9 @@
 //     property's), for fixtures `compile` cannot make.
 //     -> {"ok":true}
 //
+//   {"op":"emit",..}
+//     Write an assembly from a JSON description (see Emit.cs).
+//
 // Any per-request exception is reported as {"error":..} on that line; the
 // process itself never dies mid-batch.
 
@@ -286,6 +289,8 @@ internal static class Program
                 File.WriteAllBytes(Path.Combine(outDir, name + ".xml"), xml.ToArray());
                 return new JsonObject { ["ok"] = true };
             }
+            case "emit":
+                return Emit.Run(request);
             case "swap-method-names":
             {
                 // Exchange the `Name` columns of the two `MethodDef` rows named

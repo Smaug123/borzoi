@@ -47,6 +47,7 @@ mod sdk_resolution_override_classification;
 mod watched_assembly_refresh_e2e;
 mod xml_doc_inheritdoc_diff;
 mod xml_doc_inheritdoc_generated_diff;
+mod xml_doc_inheritdoc_metadata_diff;
 mod xml_doc_inheritdoc_sweep;
 mod xml_doc_inheritdoc_xpath_diff;
 mod xml_doc_shipped_sweep;

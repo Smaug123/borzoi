@@ -2438,6 +2438,13 @@ impl Ecma335Assembly {
         let implements = self.project_implements(m);
         let unclassified_impls = self.project_unclassified(m);
         let has_other_method_impl = self.has_other_method_impl(m);
+        let drops_optional_modifier = match &sig.return_type {
+            RetType::Void(mods) => mods.iter().any(|m| !m.required),
+            RetType::Type(t) => carries_optional_modifier(t),
+        } || sig
+            .parameters
+            .iter()
+            .any(|p| carries_optional_modifier(&p.ty));
 
         Ok(MethodLike {
             name: m.name.clone(),
@@ -2493,6 +2500,7 @@ impl Ecma335Assembly {
             implements,
             unclassified_impls,
             has_other_method_impl,
+            drops_optional_modifier,
         })
     }
 
@@ -2942,6 +2950,13 @@ impl Ecma335Assembly {
             implements,
             unclassified_impls,
             accessor_slots: self.accessor_slots(&unique_accessors),
+            drops_optional_modifier: p.signature.as_ref().is_ok_and(carries_optional_modifier)
+                || proj_getter
+                    .as_ref()
+                    .is_some_and(|g| g.drops_optional_modifier)
+                || proj_setter
+                    .as_ref()
+                    .is_some_and(|s| s.drops_optional_modifier),
         })
     }
 
@@ -4269,6 +4284,25 @@ fn arity_suffix(name: &str) -> usize {
 
 /// Project the reader's raw assembly identity onto the `Entity`-level model,
 /// deriving the `PublicKeyToken` (the model carries the token, not the key).
+/// Whether a signature position carries an optional custom modifier, at any
+/// depth — what the projector drops (II.7.1.1).
+fn carries_optional_modifier(t: &ModifiedType) -> bool {
+    t.mods.iter().any(|m| !m.required)
+        || match &t.ty {
+            TypeSig::Generic { args, .. } => args.iter().any(carries_optional_modifier),
+            TypeSig::SzArray(e) | TypeSig::ByRef(e) | TypeSig::Ptr(Some(e)) => {
+                carries_optional_modifier(e)
+            }
+            TypeSig::Array { element, .. } => carries_optional_modifier(element),
+            TypeSig::Primitive(_)
+            | TypeSig::Named { .. }
+            | TypeSig::TypeVar(_)
+            | TypeSig::MethodVar(_)
+            | TypeSig::Ptr(None)
+            | TypeSig::TypedByRef => false,
+        }
+}
+
 fn project_identity(raw: &RawAssemblyIdentity) -> AssemblyIdentity {
     AssemblyIdentity {
         name: raw.name.clone(),

@@ -824,7 +824,8 @@ jobs:
         # few dozen cases each).
         run: |
           nix develop --command cargo test -p borzoi --test all -- --ignored --nocapture \
-            xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_generated_diff::deep_
+            xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_generated_diff::deep_ \
+            xml_doc_inheritdoc_metadata_diff::deep_
 
   test-sidecar:
     name: Test csharp-sidecar (xUnit)

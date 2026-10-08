@@ -831,6 +831,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            drops_optional_modifier: false,
             has_other_method_impl: false,
         }
     }
