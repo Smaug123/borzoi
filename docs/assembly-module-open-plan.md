@@ -145,8 +145,8 @@ delegates, abbreviation markers, RQA struct unions, dropped types, undecodable m
 unknowable pickles). That is one mistake, not seven: **no blacklist can name what the
 model does not represent** (a `[<Literal>]` was projected as *no member at all* —
 invisible). Two consequences, both implemented: **fix the model, not the consumer** (a
-module `[<Literal>]` is now projected, `is_module_literal` elides it in the differential
-normaliser), and **default to conservative** (anything the fold cannot enumerate raises
+module `[<Literal>]` is now projected, and the entities differential compares it as the
+static field fsc emits), and **default to conservative** (anything the fold cannot enumerate raises
 the barrier). Corollary caught the hard way: `[<AutoOpen>]` is a per-*attribute* hazard,
 not per-*kind* — `CanAutoOpenTyconRef` auto-opens any non-generic F# **type** (record,
 class, interface, RQA union) carrying the attribute, so the auto-open check sits ahead of

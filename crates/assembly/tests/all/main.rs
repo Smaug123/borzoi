@@ -16,6 +16,7 @@ mod display_type;
 mod doc_id_diff;
 mod doc_id_fsharp_core_diff;
 mod explicit_interface;
+mod fact_matrix_diff;
 mod fail_loud;
 mod fsharp_pickle_diff;
 mod fsharp_pickle_fail_loud;

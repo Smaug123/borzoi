@@ -20,6 +20,11 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use borzoi_assembly::Ecma335Assembly;
+use borzoi_assembly::test_support::{
+    DeclinedArgGroups, NormalisedAssembly, elide_declined_arg_groups, normalise_view,
+    parse_fcs_dump,
+};
 use borzoi_spawn::BoundedCommand;
 use tempfile::TempDir;
 
@@ -661,4 +666,254 @@ pub fn dotnet_build_captured(project_dir: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&out.stderr),
         ))
     }
+}
+
+// ============================================================================
+// The real-DLL entities differential
+// ============================================================================
+
+/// What a differential requires of the methods whose argument-group count our
+/// projection declined (see `test_support::elide_declined_arg_groups`). A decline
+/// is legitimate only where the projection has no source for the fact, so each
+/// call site states where that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgGroupObligation {
+    /// A non-F# assembly: every method is provably one group, so nothing may
+    /// decline.
+    AllCommit,
+    /// An F# assembly: a module's members read their count from the signature
+    /// pickle, so a decline on a `Module`-kind entity is a lost fact. A type's
+    /// members, which no overlay covers, may decline.
+    ModulesCommit,
+}
+
+/// A differential that agreed: our normalised tree (for the caller's own
+/// non-vacuity checks — agreement on a fact neither side shows proves nothing)
+/// and the argument-group declines, already held to the obligation.
+pub struct Agreement {
+    pub ours: NormalisedAssembly,
+    pub declines: Vec<DeclinedArgGroups>,
+}
+
+/// Project `dll` through our reader and through `fcs-dump entities`, reconcile
+/// argument-group declines, and compare. The projection must degrade nothing:
+/// a skipped type or F# overlay changes the tree without failing, so it is a
+/// failure here. On disagreement, the message shows the divergent region.
+pub fn diff_dll(dll: &Path, obligation: ArgGroupObligation) -> Result<Agreement, String> {
+    diff_dll_inner(dll, obligation, None)
+}
+
+/// [`diff_dll`] for an assembly whose host signature pickle is known not to
+/// decode: exactly one overlay skip, with a reason containing
+/// `expected_reason`, is required (so the test goes red, and says why, once the
+/// decoder handles the shape).
+pub fn diff_dll_expecting_overlay_skip(
+    dll: &Path,
+    obligation: ArgGroupObligation,
+    expected_reason: &str,
+) -> Result<Agreement, String> {
+    diff_dll_inner(dll, obligation, Some(expected_reason))
+}
+
+fn diff_dll_inner(
+    dll: &Path,
+    obligation: ArgGroupObligation,
+    expected_skip: Option<&str>,
+) -> Result<Agreement, String> {
+    let bytes = std::fs::read(dll).map_err(|e| format!("read {}: {e}", dll.display()))?;
+    let view = Ecma335Assembly::parse(&bytes)
+        .map_err(|e| format!("Ecma335Assembly::parse {}: {e:?}", dll.display()))?;
+    let (ours, skips) =
+        normalise_view(&view).map_err(|e| format!("normalise {}: {e:?}", dll.display()))?;
+    let skip_ok = skips.dropped_types.is_empty()
+        && match expected_skip {
+            None => skips.skipped_fsharp_overlays.is_empty(),
+            Some(reason) => matches!(
+                skips.skipped_fsharp_overlays.as_slice(),
+                [only] if only.reason.contains(reason)
+            ),
+        };
+    if !skip_ok {
+        return Err(format!(
+            "{}: projection skips {skips:#?}, expected {}",
+            dll.display(),
+            match expected_skip {
+                None => "none".to_string(),
+                Some(r) => format!("one overlay skip containing `{r}`"),
+            },
+        ));
+    }
+    let mut fcs = parse_fcs_dump(&invoke_fcs_dump("entities", dll));
+    let declines = elide_declined_arg_groups(&ours, &mut fcs);
+    if ours != fcs {
+        return Err(format!(
+            "{} normalised assemblies diverge (ours {} entities, fcs {}):\n{}",
+            dll.display(),
+            ours.entities.len(),
+            fcs.entities.len(),
+            divergent_region(&format!("{ours:#?}"), &format!("{fcs:#?}")),
+        ));
+    }
+    let forbidden: Vec<_> = declines
+        .iter()
+        .filter(|d| match obligation {
+            ArgGroupObligation::AllCommit => true,
+            ArgGroupObligation::ModulesCommit => d.entity_kind.rsplit(' ').next() == Some("Module"),
+        })
+        .collect();
+    if !forbidden.is_empty() {
+        return Err(format!(
+            "{}: argument-group count declined where the projection must commit \
+             ({obligation:?}):\n{forbidden:#?}",
+            dll.display(),
+        ));
+    }
+    Ok(Agreement { ours, declines })
+}
+
+/// [`diff_dll`], panicking on any failure.
+pub fn assert_dll_projections_agree(dll: &Path, obligation: ArgGroupObligation) -> Agreement {
+    diff_dll(dll, obligation).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// The region where two pretty-printed dumps differ: the lines between their
+/// common prefix and common suffix, with context, each side marked. Whole-tree
+/// dumps run to thousands of lines; this is the part a reader needs.
+fn divergent_region(ours: &str, fcs: &str) -> String {
+    const CONTEXT: usize = 12;
+    let a: Vec<&str> = ours.lines().collect();
+    let b: Vec<&str> = fcs.lines().collect();
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut out = String::new();
+    for line in &a[prefix.saturating_sub(CONTEXT)..prefix] {
+        out.push_str(&format!("  {line}\n"));
+    }
+    let (ra, rb) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
+    // A line-level LCS over the region, so interleaved differences read as
+    // such; past a size bound, the region is shown as two blocks instead.
+    if ra.len().saturating_mul(rb.len()) <= 4_000_000 {
+        let mut lcs = vec![vec![0u32; rb.len() + 1]; ra.len() + 1];
+        for i in (0..ra.len()).rev() {
+            for j in (0..rb.len()).rev() {
+                lcs[i][j] = if ra[i] == rb[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < ra.len() || j < rb.len() {
+            if i < ra.len() && j < rb.len() && ra[i] == rb[j] {
+                out.push_str(&format!("  {}\n", ra[i]));
+                i += 1;
+                j += 1;
+            } else if j < rb.len() && (i == ra.len() || lcs[i][j + 1] >= lcs[i + 1][j]) {
+                out.push_str(&format!("+ {}\n", rb[j]));
+                j += 1;
+            } else {
+                out.push_str(&format!("- {}\n", ra[i]));
+                i += 1;
+            }
+        }
+    } else {
+        for line in ra {
+            out.push_str(&format!("- {line}\n"));
+        }
+        for line in rb {
+            out.push_str(&format!("+ {line}\n"));
+        }
+    }
+    let tail = a.len() - suffix;
+    for line in &a[tail..(tail + CONTEXT).min(a.len())] {
+        out.push_str(&format!("  {line}\n"));
+    }
+    out.push_str("(- ours, + fcs)\n");
+    out
+}
+
+/// The language of a generated source file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lang {
+    FSharp,
+    CSharp,
+}
+
+/// `(project file, source file, project XML)` for a generated source. Mirrors
+/// the fixture projects' shape (same TFM, deterministic, no docs/PDB) so a
+/// generated build behaves exactly like a pinned fixture.
+fn generated_project(lang: Lang) -> (&'static str, &'static str, String) {
+    let (proj, source, items) = match lang {
+        Lang::FSharp => (
+            "Generated.fsproj",
+            "Library.fs",
+            "<ItemGroup>\n    <Compile Include=\"Library.fs\" />\n  </ItemGroup>",
+        ),
+        // The C# SDK globs `*.cs`; listing the file again is a duplicate-item error.
+        Lang::CSharp => ("Generated.csproj", "Library.cs", ""),
+    };
+    let xml = format!(
+        r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Generated</AssemblyName>
+    <RootNamespace>Generated</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+  {items}
+</Project>
+"#
+    );
+    (proj, source, xml)
+}
+
+/// Compile `source` to a DLL in a content-addressed directory under
+/// `CARGO_TARGET_TMPDIR`, returning the DLL path. Re-running the same source
+/// (a proptest shrink step revisiting a candidate, a rerun of a deterministic
+/// matrix) hits the cache. The key hashes the language and the source; on the
+/// (theoretical) collision the stored source differs and we rebuild over the
+/// top, so a collision costs time, not correctness.
+pub fn compile_generated(lang: Lang, source: &str) -> Result<PathBuf, String> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let (proj, file, xml) = generated_project(lang);
+    let mut hasher = DefaultHasher::new();
+    proj.hash(&mut hasher);
+    source.hash(&mut hasher);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("generative-source-diff")
+        .join(format!("{:016x}-{}", hasher.finish(), source.len()));
+    let dll = dir
+        .join("bin")
+        .join("Release")
+        .join("net10.0")
+        .join("Generated.dll");
+    let src = dir.join(file);
+    let cached = dll.is_file()
+        && std::fs::read_to_string(&src)
+            .map(|prev| prev == source)
+            .unwrap_or(false);
+    if cached {
+        return Ok(dll);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    std::fs::write(dir.join(proj), xml).map_err(|e| format!("write {proj}: {e}"))?;
+    std::fs::write(&src, source).map_err(|e| format!("write {file}: {e}"))?;
+    dotnet_build_captured(&dir)?;
+    if !dll.is_file() {
+        return Err(format!(
+            "dotnet build succeeded but {} was not produced",
+            dll.display()
+        ));
+    }
+    Ok(dll)
 }

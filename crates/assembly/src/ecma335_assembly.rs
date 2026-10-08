@@ -3199,9 +3199,7 @@ impl Ecma335Assembly {
                 // an *invisible* bare name: a consumer could neither resolve it nor even
                 // know to be conservative about it (the hole the Slice-A review of
                 // `docs/assembly-module-open-plan.md` exposed). Keep the literal; the
-                // pickle-driven member list claims it (`rebuild_module_member_list`),
-                // and the differential normaliser elides it, mirroring what fcs-dump
-                // renders.
+                // pickle-driven member list claims it (`rebuild_module_member_list`).
                 //
                 // A *non-literal* module field is compiler scaffolding FCS does not
                 // surface (a mutable `let`'s backing store is reached through its
