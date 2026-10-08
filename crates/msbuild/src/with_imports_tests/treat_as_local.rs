@@ -10,7 +10,7 @@ fn imported_root_treat_as_local_property_unprotects_global() {
     // specific global properties out of read-only treatment so the
     // body can reassign them. The attribute applies to whichever
     // `<Project>` element carries it — including an imported file's
-    // root — and only for the scope of that file. Without honouring
+    // root — from that point to the end of the evaluation. Without honouring
     // this on imports, a Directory.Build.props that legitimately
     // overrides a caller-supplied global (a common pattern for
     // pinning `Configuration` or `RestoreSources` in repo defaults)
@@ -48,14 +48,14 @@ fn imported_root_treat_as_local_property_unprotects_global() {
 }
 
 #[test]
-fn imported_root_treat_as_local_property_does_not_leak_outside_file() {
-    // Scope check: `TreatAsLocalProperty` on an imported file only
-    // affects that file's body. After the import returns, the entry
-    // project's writes to the same name must still be discarded as
-    // protected — otherwise an opt-out in some upstream
-    // Directory.Build.props would silently unprotect a global for
-    // the entire walk, which is a quieter divergence but the same
-    // class of bug.
+fn imported_root_treat_as_local_property_outlives_the_file() {
+    // Scope check: `TreatAsLocalProperty` on an imported file unprotects
+    // the name for the *rest of the evaluation*. MSBuild adds the names to
+    // one per-evaluation set (`Evaluator.PerformDepthFirstPass` →
+    // `GlobalPropertiesToTreatAsLocal`) that is never cleared, so once
+    // Directory.Build.props has opted `Foo` out, the entry project's later
+    // write wins over the global. Oracle-pinned by
+    // `fsproj_global_perturbation_diff`'s `treat-as-local-outlives-its-import`.
     let tmp = TempDir::new().unwrap();
     write_at(
         tmp.path(),
@@ -75,12 +75,12 @@ fn imported_root_treat_as_local_property_does_not_leak_outside_file() {
     let mut extras = HashMap::new();
     extras.insert("Foo".to_string(), "global".to_string());
     let result = parse_file_with_extras(&project_path, extras);
-    // The entry project did NOT list Foo on its own root, so the
-    // protection should be back in force by the time we walk the
-    // body. The write must be discarded.
-    assert!(
-        !result.properties.contains_key("Foo"),
-        "entry-project write to Foo should remain discarded; properties: {:?}",
+    // The entry project did not list Foo on its own root, but the import's
+    // opt-out still stands when its body is walked: the write wins.
+    assert_eq!(
+        result.properties.get("Foo").map(String::as_str),
+        Some("entry-write"),
+        "entry-project write to Foo must win once an import opted it out; properties: {:?}",
         result.properties,
     );
 }
@@ -91,16 +91,15 @@ fn imported_treat_as_local_unprotects_empty_gate_global_and_imports() {
     // `ImportDirectoryBuildProps` is normally sticky-empty (read-only,
     // so MSBuild's default-fill cannot write `true` through it →
     // Directory.Build.props is skipped). But `TreatAsLocalProperty`
-    // makes the named global locally writable for the scope of the
-    // file that declares it — at which point the default-fill *can*
+    // makes the named global locally writable from the file that
+    // declares it onwards — at which point the default-fill *can*
     // write through, flipping the empty value to `true` and importing
     // Directory.Build.props after all.
     //
     // We model `TreatAsLocalProperty` by removing the name from the
-    // protected set for that file's scope, so the sticky-global gate
-    // must honour that same scoping: a name unprotected by an imported
-    // root is no longer a read-only global there. The only gate inside
-    // such an unprotect window is the deferred nested-`Sdk.props` fire
+    // protected set, so the sticky-global gate must honour that too: a
+    // name unprotected by an imported root is no longer a read-only
+    // global. The gate this drives is the deferred nested-`Sdk.props` fire
     // of Directory.Build.props, so we drive it: the entry project has
     // no SDK of its own, but its body imports a file that declares
     // `Sdk="MySdk"` *and* `TreatAsLocalProperty="ImportDirectoryBuildProps"`.
@@ -118,7 +117,7 @@ fn imported_treat_as_local_unprotects_empty_gate_global_and_imports() {
         write_synthetic_sdk(tmp.path(), "MySdk", "<Project/>", "<Project/>");
     // The body-imported file carries both the SDK (so the deferred
     // fire reaches its `Sdk.props`) and the `TreatAsLocalProperty`
-    // opt-out (so the empty global is locally writable in its scope).
+    // opt-out (so the empty global is locally writable from there on).
     write_at(
         tmp.path(),
         "inner.props",
