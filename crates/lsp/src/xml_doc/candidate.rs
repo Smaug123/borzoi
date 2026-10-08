@@ -176,9 +176,9 @@ impl Instantiation {
 /// assemblies may define the same full name — and, for one no loaded assembly
 /// defines, by the full identity of the assembly the reference names, which
 /// is what Roslyn's missing-type symbols compare by. `ty` must name its
-/// assemblies explicitly (see [`qualify`]); `None` where the binding is
+/// assemblies explicitly (every same-module reference qualified); `None` where the binding is
 /// ambiguous or uncertain.
-pub(crate) fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<String> {
+pub fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<String> {
     Some(match ty {
         TypeRef::Primitive(_) | TypeRef::Var { .. } => type_enc(ty),
         TypeRef::Named {
