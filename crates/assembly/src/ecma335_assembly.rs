@@ -510,11 +510,12 @@ impl Ecma335Assembly {
         self.image
             .type_defs
             .iter()
-            .flat_map(|td| &td.methods)
-            .map(|m| {
+            .flat_map(|td| td.methods.iter().map(move |m| (td, m)))
+            .map(|(td, m)| {
                 (
                     m.token,
                     crate::fsharp_pickle_merge::PhysicalMethod {
+                        declaring_type: td.name.name.clone(),
                         name: m.name.clone(),
                         params: m.signature.as_ref().ok().map(|s| s.parameters.len()),
                         is_static: m.is_static,

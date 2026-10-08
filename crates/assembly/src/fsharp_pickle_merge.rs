@@ -3248,6 +3248,9 @@ struct TypeDocSigTarget {
     namespace: Vec<String>,
     type_chain: Vec<String>,
     arity: usize,
+    /// The type's own TypeDef name, arity suffix and all (`C`1`): what the
+    /// row the lossy key finds must physically be called.
+    il_name: String,
     /// Each member val's (or `val` field's) slot and pickled key, in pickle
     /// order. A slot can repeat: same-name, same-arity overloads share one.
     keys: Vec<DocKey>,
@@ -3371,6 +3374,10 @@ pub(crate) fn apply_type_member_doc_sigs(
                     namespace: namespace.to_vec(),
                     type_chain: chain,
                     arity: entity.typars.len(),
+                    il_name: entity
+                        .compiled_name
+                        .clone()
+                        .unwrap_or_else(|| entity.logical_name.clone()),
                     keys,
                 },
             );
@@ -3448,6 +3455,19 @@ pub(crate) fn apply_type_member_doc_sigs(
         if ecma.kind == EntityKind::Module {
             continue;
         }
+        // The key `(namespace, containers, stripped name, arity)` is lossy
+        // (#145): with this type's own row dropped from the projection, a
+        // `[<CompiledName("C`2")>] type D<'T>` sits at `C<'T>`'s key. The
+        // physical TypeDef name, arity suffix included, tells them apart.
+        let declared_here = !ecma.method_def_tokens.is_empty()
+            && ecma.method_def_tokens.iter().all(|t| {
+                physical
+                    .get(t)
+                    .is_some_and(|m| m.declaring_type == target.il_name)
+            });
+        if !declared_here {
+            continue;
+        }
         stamp_doc_sigs(ecma, &target.keys, physical);
     }
     Ok(())
@@ -3459,6 +3479,8 @@ pub(crate) fn apply_type_member_doc_sigs(
 /// member list cannot show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PhysicalMethod {
+    /// The declaring TypeDef's own name, arity suffix included (`C`1`).
+    pub(crate) declaring_type: String,
     pub(crate) name: String,
     /// `None` when the signature does not decode: the method may then occupy a
     /// slot of any arity.
@@ -5731,6 +5753,7 @@ mod tests {
                 (
                     i as u32,
                     PhysicalMethod {
+                        declaring_type: "M".to_string(),
                         name: name.to_string(),
                         params: Some(*params),
                         is_static: true,
@@ -5893,6 +5916,7 @@ mod tests {
                     (
                         i as u32,
                         PhysicalMethod {
+                            declaring_type: "T".to_string(),
                             name: format!("M{}", item.name),
                             params: Some(item.params.len()),
                             is_static: item.is_static,
