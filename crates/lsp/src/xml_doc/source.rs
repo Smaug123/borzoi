@@ -64,6 +64,7 @@ use borzoi_sema::{
 use rowan::{NodeOrToken, TextRange};
 
 use super::depth::{BoundedParseError, parse_bounded};
+use super::pairing::{self, Declarations, Pairing};
 use super::tree::{DocElement, TooDeep};
 
 /// What FCS attaches to one source declaration, or why we will not say.
@@ -105,10 +106,15 @@ pub enum SourceDocDecline {
     /// grabs from.
     ParseErrors,
     /// The declaration is in an implementation file a signature constrains,
-    /// and its own doc is blank: FCS then shows the signature's doc
-    /// (`Val.XmlDoc` falls back to `val_other_xmldoc`, set during signature
-    /// conformance), which is not located here.
-    SignatureFallback,
+    /// and FCS shows the signature's doc there (the implementation's is blank,
+    /// or the use is in another file), but no single signature declaration
+    /// pairs with it by container, kind and name — an overloaded member, two
+    /// same-named declarations, or none.
+    SignaturePairingAmbiguous,
+    /// As [`Self::SignaturePairingAmbiguous`], for a declaration on a surface
+    /// the pairing does not model (an active pattern, a declaration shape not
+    /// keyed).
+    SignatureSurfaceUnmodelled,
     /// The type declares another case of this name, an error FCS resolves to
     /// the first.
     SameNameDeclarations,
@@ -139,11 +145,6 @@ pub enum SourceDocDecline {
     /// which FCS binds to the parameter, not to the value resolution found
     /// (#324).
     NamedArgumentCandidate,
-    /// A use in another file reached a declaration of an implementation file a
-    /// signature constrains. FCS binds such a use to the *signature's* symbol,
-    /// whose doc is the signature's alone, so the implementation's doc is not
-    /// the answer.
-    ThroughSignature,
 }
 
 /// A declaration shape [`SourceDocDecline::UnmodelledDeclaration`] names.
@@ -301,23 +302,7 @@ impl SourceDocIndex {
                     .children_with_tokens()
                     .filter_map(NodeOrToken::into_token)
                     .find(|t| t.kind() == SyntaxKind::IDENT_TOK),
-                // The member's head path — not an attribute's, which comes
-                // first in the tree.
-                SyntaxKind::MEMBER_DEFN | SyntaxKind::GET_SET_MEMBER => n
-                    .descendants()
-                    .find(|c| {
-                        c.kind() == SyntaxKind::LONG_IDENT
-                            && !c
-                                .ancestors()
-                                .take_while(|a| a != &n)
-                                .any(|a| a.kind() == SyntaxKind::ATTRIBUTE_LIST)
-                    })
-                    .and_then(|lid| {
-                        lid.children_with_tokens()
-                            .filter_map(NodeOrToken::into_token)
-                            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
-                            .last()
-                    }),
+                SyntaxKind::MEMBER_DEFN | SyntaxKind::GET_SET_MEMBER => member_name_token(&n),
                 _ => None,
             };
             declared.is_some_and(|t| unticked(t.text()) == name)
@@ -379,14 +364,17 @@ fn first_real_token(node: &SyntaxNode) -> Option<SyntaxToken> {
         .find(is_real)
 }
 
-fn covering(root: &SyntaxNode, range: TextRange) -> Option<NodeOrToken<SyntaxNode, SyntaxToken>> {
+pub(super) fn covering(
+    root: &SyntaxNode,
+    range: TextRange,
+) -> Option<NodeOrToken<SyntaxNode, SyntaxToken>> {
     if !root.text_range().contains_range(range) {
         return None;
     }
     Some(root.covering_element(range))
 }
 
-fn ancestors(
+pub(super) fn ancestors(
     element: &NodeOrToken<SyntaxNode, SyntaxToken>,
 ) -> impl Iterator<Item = SyntaxNode> + use<> {
     let start = match element {
@@ -448,7 +436,10 @@ fn binding_rule(
 /// Whether the value binder at `range` is a self identifier — the `x` of
 /// `member x.M` or of `type T() as x` — which FCS binds as an undocumented
 /// local.
-fn is_self_identifier(element: &NodeOrToken<SyntaxNode, SyntaxToken>, range: TextRange) -> bool {
+pub(super) fn is_self_identifier(
+    element: &NodeOrToken<SyntaxNode, SyntaxToken>,
+    range: TextRange,
+) -> bool {
     if let NodeOrToken::Token(t) = element
         && t.parent()
             .is_some_and(|p| p.kind() == SyntaxKind::IMPLICIT_CTOR)
@@ -506,7 +497,7 @@ fn val_rule(decl: &SyntaxNode, range: TextRange) -> Result<GrabRule, SourceDocDe
 /// of a destructuring head (`let a, b`, `let (c, d) as e`, `let Some s`).
 /// Every value a binding's head binds carries the binding's doc in FCS.
 /// (Function parameters are [`DefKind::Parameter`] and never reach here.)
-fn in_head_pattern(binding: &SyntaxNode, range: TextRange) -> bool {
+pub(super) fn in_head_pattern(binding: &SyntaxNode, range: TextRange) -> bool {
     binding
         .children()
         .find(|n| n.kind() != SyntaxKind::ATTRIBUTE_LIST)
@@ -593,7 +584,7 @@ fn is_case_name(case: &SyntaxNode, range: TextRange) -> bool {
 
 /// The identifier `node` declares (its direct `IDENT_TOK` children, joined
 /// with `.`), double backticks stripped: `` ``A`` `` and `A` are one name.
-fn ident_text(node: &SyntaxNode) -> String {
+pub(super) fn ident_text(node: &SyntaxNode) -> String {
     node.children_with_tokens()
         .filter_map(NodeOrToken::into_token)
         .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
@@ -603,7 +594,7 @@ fn ident_text(node: &SyntaxNode) -> String {
 }
 
 /// `name` with surrounding double backticks stripped.
-fn unticked(name: &str) -> String {
+pub(super) fn unticked(name: &str) -> String {
     name.strip_prefix("``")
         .and_then(|t| t.strip_suffix("``"))
         .unwrap_or(name)
@@ -630,7 +621,8 @@ fn exception_rule(
 }
 
 /// A member definition — a method, a property (with or without explicit
-/// accessors), an auto-property: its first attribute or modifier or keyword.
+/// accessors), an auto-property — or a signature's member: its first
+/// attribute or modifier or keyword.
 fn member_rule(
     element: &NodeOrToken<SyntaxNode, SyntaxToken>,
 ) -> Result<GrabRule, SourceDocDecline> {
@@ -638,12 +630,36 @@ fn member_rule(
         .find(|n| {
             matches!(
                 n.kind(),
-                SyntaxKind::MEMBER_DEFN | SyntaxKind::AUTO_PROPERTY | SyntaxKind::GET_SET_MEMBER
+                SyntaxKind::MEMBER_DEFN
+                    | SyntaxKind::AUTO_PROPERTY
+                    | SyntaxKind::GET_SET_MEMBER
+                    | SyntaxKind::MEMBER_SIG
             )
         })
         .ok_or(SourceDocDecline::NoDeclaration)?;
     let first = first_real_token(&member).ok_or(SourceDocDecline::NoDeclaration)?;
     Ok(GrabRule::At(first))
+}
+
+/// The name a member definition (`MEMBER_DEFN`, `GET_SET_MEMBER`) declares:
+/// the last identifier of its head path — not an attribute's, which comes
+/// first in the tree. `None` for a constructor, whose head is `new`.
+pub(super) fn member_name_token(member: &SyntaxNode) -> Option<SyntaxToken> {
+    member
+        .descendants()
+        .find(|c| {
+            c.kind() == SyntaxKind::LONG_IDENT
+                && !c
+                    .ancestors()
+                    .take_while(|a| a != member)
+                    .any(|a| a.kind() == SyntaxKind::ATTRIBUTE_LIST)
+        })
+        .and_then(|lid| {
+            lid.children_with_tokens()
+                .filter_map(NodeOrToken::into_token)
+                .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                .last()
+        })
 }
 
 /// FCS's `XmlDoc.IsEmpty`: every line is blank (`String.IsNullOrWhiteSpace`,
@@ -902,7 +918,7 @@ fn qualification(root: &SyntaxNode, at: TextRange) -> Option<Qualification> {
 }
 
 /// The generic arity a `TYPE_DEFN` declares: its type-parameter declarations.
-fn type_arity(defn: &SyntaxNode) -> usize {
+pub(super) fn type_arity(defn: &SyntaxNode) -> usize {
     defn.children()
         .filter(|n| n.kind() == SyntaxKind::TYPAR_DECLS)
         .flat_map(|decls| decls.children())
@@ -998,14 +1014,16 @@ pub fn member_element(lines: &[String]) -> Result<DocElement, SourceRenderError>
 /// implementation's `Val` shows its own doc, or the signature's when its own is
 /// blank; a use in another file binds the signature's `Val`, which shows the
 /// signature's doc only. So a resolution into a signature file is answered from
-/// the signature, one into its own (paired) implementation file from the
-/// implementation when that doc is not blank, and anything that would need the
-/// other file's doc declines.
+/// the signature; one into its own (paired) implementation file from the
+/// implementation when that doc is not blank, and otherwise from the signature
+/// declaration FCS pairs it with (`xml_doc::pairing`); one from another file into
+/// such an implementation from that signature declaration alone.
 pub struct ProjectDocs<'a> {
     files: &'a [ProjectFile],
     resolved: &'a ResolvedProject,
     partners: Vec<Option<usize>>,
     indexes: HashMap<usize, SourceDocIndex>,
+    declarations: HashMap<usize, Declarations>,
 }
 
 impl<'a> ProjectDocs<'a> {
@@ -1016,6 +1034,7 @@ impl<'a> ProjectDocs<'a> {
             resolved,
             partners: signature_partners(files),
             indexes: HashMap::new(),
+            declarations: HashMap::new(),
         }
     }
 
@@ -1047,11 +1066,10 @@ impl<'a> ProjectDocs<'a> {
                 SourceDocDecline::NamedArgumentCandidate,
             ));
         }
-        let constrained = matches!(project_file.file, SourceFile::Impl(_))
-            && self.partners.get(file).copied().flatten().is_some();
-        if constrained && file != from {
-            return Some(SourceDoc::Declined(SourceDocDecline::ThroughSignature));
-        }
+        let signature = match project_file.file {
+            SourceFile::Impl(_) => self.partners.get(file).copied().flatten(),
+            SourceFile::Sig(_) => None,
+        };
         let index = self
             .indexes
             .entry(file)
@@ -1112,12 +1130,61 @@ impl<'a> ProjectDocs<'a> {
                 }
             }
         }
-        Some(match index.doc_for(def) {
-            SourceDoc::Attached(lines) if constrained && is_blank(&lines) => {
-                SourceDoc::Declined(SourceDocDecline::SignatureFallback)
+        let own = index.doc_for(def);
+        let Some(signature) = signature else {
+            return Some(own);
+        };
+        // The implementation's own doc, unless it is blank; a use in another
+        // file binds the signature's symbol, whose doc is the signature's.
+        if file == from && !matches!(&own, SourceDoc::Attached(lines) if is_blank(lines)) {
+            return Some(own);
+        }
+        Some(match self.partner(file, signature, def) {
+            Ok(Pairing::Paired(partner)) => self.doc_in(signature, &partner),
+            Ok(Pairing::NoPartner) if file == from => own,
+            Ok(Pairing::NoPartner | Pairing::Ambiguous) => {
+                SourceDoc::Declined(SourceDocDecline::SignaturePairingAmbiguous)
             }
-            other => other,
+            Ok(Pairing::Unmodelled) => {
+                SourceDoc::Declined(SourceDocDecline::SignatureSurfaceUnmodelled)
+            }
+            Err(why) => SourceDoc::Declined(why),
         })
+    }
+
+    /// Whom FCS pairs `def`, a binder of implementation file `file`, with in
+    /// its signature, file `signature`.
+    fn partner(
+        &mut self,
+        file: usize,
+        signature: usize,
+        def: &Def,
+    ) -> Result<Pairing, SourceDocDecline> {
+        let sig_file = &self.files[signature];
+        if !sig_file.recovery.clean_through(sig_file.file.syntax()) {
+            return Err(SourceDocDecline::ParseErrors);
+        }
+        for f in [file, signature] {
+            let root = self.files[f].file.syntax();
+            self.declarations
+                .entry(f)
+                .or_insert_with(|| Declarations::new(root));
+        }
+        Ok(pairing::pair(
+            self.files[file].file.syntax(),
+            def,
+            &self.declarations[&file],
+            &self.declarations[&signature],
+        ))
+    }
+
+    /// The doc of `def`, a binder of file `file`.
+    fn doc_in(&mut self, file: usize, def: &Def) -> SourceDoc {
+        let root = self.files[file].file.syntax();
+        self.indexes
+            .entry(file)
+            .or_insert_with(|| SourceDocIndex::new(root))
+            .doc_for(def)
     }
 }
 

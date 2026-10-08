@@ -2,91 +2,15 @@
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi --test all xml_doc_source_diff::project::pinned -- --ignored
 TypeEquality/TypeEquality/Teq.fs declined NoDeclaration fcs-none x10
-TypeEquality/TypeEquality/Teq.fs declined SignatureFallback fcs-none x323
-TypeEquality/TypeEquality/Teq.fs:101:13 seq Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:104:13 mapKey Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:107:13 mapValue Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:110:13 map Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:112:18 mapKey Value { is_function: true } use declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:113:18 mapValue Value { is_function: true } use declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:115:13 resultOk Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:118:13 resultError Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:121:13 result Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:123:18 resultOk Value { is_function: true } use declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:124:18 resultError Value { is_function: true } use declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:175:13 async Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:178:13 asyncOf Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:95:13 set Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/Teq.fs:98:13 setOf Value { is_function: true } def declined SignatureFallback fcs-doc
-TypeEquality/TypeEquality/TypeEquality.fsproj oracle-errors=0 agree-doc=118 cross-file-doc=0 agree-none=0
+TypeEquality/TypeEquality/TypeEquality.fsproj oracle-errors=0 agree-doc=133 cross-file-doc=0 agree-none=323
 WoofWare.Expect/WoofWare.Expect/Domain.fs declined ArityMismatch fcs-none x7
 WoofWare.Expect/WoofWare.Expect/Domain.fs declined QualifierArityMismatch fcs-none x7
 WoofWare.Expect/WoofWare.Expect/Dot.fs:51:15 IFileSystem Type use declined ConstructorCall fcs-doc
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj oracle-errors=0 agree-doc=211 cross-file-doc=8 agree-none=1702
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs declined SignatureFallback fcs-none x176
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:104:29 maxHeightAllowed Value { is_function: true } use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:138:9 setHeight Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:142:25 maxHeightAllowed Value { is_function: true } use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:163:13 setHeight Value { is_function: true } use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:165:9 adjustHeights Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:46:9 maxHeightSeen Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:50:9 maxHeightAllowed Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/AdjustHeightsHeap.fs:71:34 maxHeightAllowed Value { is_function: true } use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/ArrayFold.fs declined SignatureFallback fcs-none x24
-WoofWare.Incremental/WoofWare.Incremental/Bind.fs declined SignatureFallback fcs-none x45
-WoofWare.Incremental/WoofWare.Incremental/Bind.fs:6:9 isValid Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs declined SignatureFallback fcs-none x56
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:18:9 create Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:19:9 ofCompare Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:20:9 ofEqual Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:21:24 Cutoff Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:21:9 never Value { is_function: false } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:22:25 Cutoff Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:22:9 always Value { is_function: false } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:23:47 Cutoff Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:23:9 polyEqual Value { is_function: false } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:25:30 Cutoff Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:34:9 physEqual Value { is_function: false } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:36:51 Cutoff Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Cutoff.fs:4:9 Cutoff Type def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/DotUserInfo.fs declined SignatureFallback fcs-none x90
 WoofWare.Incremental/WoofWare.Incremental/Expert.fs declined NamedArgumentCandidate fcs-none x2
-WoofWare.Incremental/WoofWare.Incremental/Expert.fs declined SignatureFallback fcs-none x123
-WoofWare.Incremental/WoofWare.Incremental/Expert.fs:101:9 addChildEdge Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Expert.fs:67:9 create Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Expert1.fs declined SignatureFallback fcs-none x60
-WoofWare.Incremental/WoofWare.Incremental/Expert1.fs:29:9 create Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/ForAnalyzer.fs declined SignatureFallback fcs-none x146
 WoofWare.Incremental/WoofWare.Incremental/Incremental.fs declined ConstructorCall fcs-none x3
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs declined SignatureFallback fcs-none x371
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:12:6 Observer Type def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:355:9 make Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:42:23 Observer Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:42:9 toString Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:44:48 Observer Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:45:43 Observer Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:47:40 Observer Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Incremental.fs:47:9 observing Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/IncrementalBuilder.fs declined SignatureFallback fcs-none x47
-WoofWare.Incremental/WoofWare.Incremental/IncrementalBuilder.fs:18:39 IncrementalBuilder Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/IncrementalBuilder.fs:18:9 create Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/IncrementalBuilder.fs:4:6 IncrementalBuilder Type def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/InternalObserver.fs declined SignatureFallback fcs-none x110
-WoofWare.Incremental/WoofWare.Incremental/Kind.fs declined SignatureFallback fcs-none x158
-WoofWare.Incremental/WoofWare.Incremental/NodeToDot.fs declined SignatureFallback fcs-none x92
-WoofWare.Incremental/WoofWare.Incremental/Observer.fs declined SignatureFallback fcs-none x27
 WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined ArityMismatch fcs-none x14
 WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined QualifierArityMismatch fcs-none x14
-WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined SignatureFallback fcs-none x87
-WoofWare.Incremental/WoofWare.Incremental/RaisedException.fs declined SignatureFallback fcs-none x15
-WoofWare.Incremental/WoofWare.Incremental/RecomputeHeap.fs declined SignatureFallback fcs-none x240
-WoofWare.Incremental/WoofWare.Incremental/RecomputeHeap.fs:11:9 maxHeightAllowed Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/RecomputeHeap.fs:133:31 maxHeightAllowed Value { is_function: true } use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/RecomputeHeap.fs:166:36 maxHeightAllowed Value { is_function: true } use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/RecomputeHeap.fs:191:36 maxHeightAllowed Value { is_function: true } use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/RecomputeHeap.fs:65:9 setMaxHeightAllowed Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/ReduceBalanced.fs declined SignatureFallback fcs-none x30
-WoofWare.Incremental/WoofWare.Incremental/Scope.fs declined SignatureFallback fcs-none x37
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs declined QualifierArityMismatch fcs-none x10
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:27:39 Sequence Type use declined ArityMismatch fcs-doc
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:30:50 Sequence Type use declined ArityMismatch fcs-doc
@@ -98,44 +22,10 @@ WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:56:11 Sequence Type use de
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:57:11 Sequence Type use declined ArityMismatch fcs-doc
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:58:11 Sequence Type use declined ArityMismatch fcs-doc
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:78:9 Sequence Type use declined ArityMismatch fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Skeleton/Skeleton.fs declined SignatureFallback fcs-none x284
-WoofWare.Incremental/WoofWare.Incremental/Skeleton/Skeleton.fs:186:9 toDot Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Skeleton/Skeleton.fs:191:14 Skeleton Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Skeleton/Skeleton.fs:28:34 Skeleton Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Skeleton/Skeleton.fs:68:9 snapshot Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/Skeleton/Skeleton.fs:9:6 Skeleton Type def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs declined SignatureFallback fcs-none x10
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:11:9 none Value { is_function: false } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:12:9 zero Value { is_function: false } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:13:9 isNone Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:14:9 isSome Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:15:9 add1 Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:16:20 StabilizationNum Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:16:54 stab Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:16:9 toInt Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:18:9 invariant Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:4:6 stab Type def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:6:29 stab Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StabilizationNum.fs:6:6 StabilizationNum Type def declined SignatureFallback fcs-doc
 WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined ArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined QualifierArityMismatch fcs-none
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs declined SignatureFallback fcs-none x44
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:15:22 StepFunction Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:15:9 init Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:16:23 StepFunction Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:16:9 steps Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:23:24 StepFunction Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:23:9 value Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:25:9 constant Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:31:9 create Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:40:74 StepFunction Type use declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:40:9 createFromSequence Value { is_function: true } def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunction.fs:6:6 StepFunction Type def declined SignatureFallback fcs-doc
-WoofWare.Incremental/WoofWare.Incremental/StepFunctionNode.fs declined SignatureFallback fcs-none x53
 WoofWare.Incremental/WoofWare.Incremental/Types.fs declined ConstructorCall fcs-none x7
-WoofWare.Incremental/WoofWare.Incremental/UnorderedArrayFold.fs declined SignatureFallback fcs-none x144
-WoofWare.Incremental/WoofWare.Incremental/Var.fs declined SignatureFallback fcs-none x23
-WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj oracle-errors=0 agree-doc=98 cross-file-doc=3 agree-none=3845
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj oracle-errors=0 agree-doc=167 cross-file-doc=3 agree-none=6337
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj oracle-errors=0 agree-doc=98 cross-file-doc=8 agree-none=758
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:156:11 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:157:11 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
