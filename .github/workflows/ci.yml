@@ -301,6 +301,21 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             parser_corpus_diff:: -- --ignored --nocapture
 
+      - name: Gate on parser recovery under deliberate damage
+        if: steps.gate.outputs.run == 'true'
+        # The corpus above is well-formed, so it grades recovery only on the
+        # files that are broken on purpose. This manufactures the broken state
+        # an editor buffer is in: delete one token (or the member name after a
+        # `.`) from each clean file, then require every declaration outside the
+        # damage to survive unchanged, and grade a sample against FCS, pinned in
+        # `crates/cst/tests/manifests/recovery_sweep.txt`. See
+        # docs/parser-recovery-oracle.md.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            recovery_sweep:: -- --ignored --nocapture
+
       - name: Sweep the parser for panics on adversarial input
         if: steps.gate.outputs.run == 'true'
         # The corpus above is the F# compiler's own sources: well-formed by

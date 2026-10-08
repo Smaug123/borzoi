@@ -368,6 +368,14 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
             }
+            Expr::DotMissing(e) => {
+                // A member access cut off after its dot (`(f x).`). The
+                // receiver references enclosing bindings; the missing member
+                // names nothing.
+                if let Some(receiver) = e.receiver() {
+                    self.resolve_expr(&receiver);
+                }
+            }
             Expr::LibraryOnlyFieldGet(e) => {
                 // A library-only cons-cell field read `obj.( :: ).<int>`
                 // (FSharp.Core). The object references an enclosing binding, so

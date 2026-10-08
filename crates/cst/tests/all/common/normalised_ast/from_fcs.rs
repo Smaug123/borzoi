@@ -33,6 +33,43 @@ pub fn normalise_fcs_dump(json: &str) -> NormalisedRoot {
     fcs_parsed_input(parse_tree)
 }
 
+/// One `SynModuleOrNamespace`'s header — [`fcs_module`] with `decls` left
+/// empty. The FCS-side twin of `from_cst::impl_module_header`.
+pub fn fcs_impl_module_header(v: &Value) -> NormalisedModule {
+    let (kind, is_rec, attributes, access) = fcs_module_header(v);
+    NormalisedModule {
+        kind,
+        is_rec,
+        attributes,
+        access,
+        decls: Vec::new(),
+    }
+}
+
+/// The signature-file counterpart of [`fcs_impl_module_header`].
+pub fn fcs_sig_module_header(v: &Value) -> NormalisedSigModule {
+    let (kind, is_rec, attributes, access) = fcs_module_header(v);
+    NormalisedSigModule {
+        kind,
+        is_rec,
+        attributes,
+        access,
+        decls: Vec::new(),
+    }
+}
+
+/// One `SynModuleDecl` as a recovered-tree comparison unit: [`fcs_decl`],
+/// except that a nested module projects its header alone. The FCS-side twin of
+/// `from_cst::impl_decl_unit`.
+pub fn fcs_impl_decl_unit(v: &Value) -> NormalisedDecl {
+    fcs_decl_with(v, false)
+}
+
+/// The signature-file counterpart of [`fcs_impl_decl_unit`].
+pub fn fcs_sig_decl_unit(v: &Value) -> NormalisedSigDecl {
+    fcs_sig_decl_with(v, false)
+}
+
 fn fcs_parsed_input(v: &Value) -> NormalisedRoot {
     let case = case_name(v);
     match case {
@@ -85,6 +122,12 @@ fn fcs_sig_module(v: &Value) -> NormalisedSigModule {
 /// range)`; 10.13b adds `NestedModule` and `ModuleAbbrev` — both share the
 /// impl-side `SynModuleDecl` field layout, so the projections mirror [`fcs_decl`].
 fn fcs_sig_decl(v: &Value) -> NormalisedSigDecl {
+    fcs_sig_decl_with(v, true)
+}
+
+/// [`fcs_sig_decl`], projecting a nested module's body only when `recurse`
+/// (see [`fcs_sig_decl_unit`]).
+fn fcs_sig_decl_with(v: &Value, recurse: bool) -> NormalisedSigDecl {
     match case_name(v) {
         "Open" => {
             let target = &fields(v)[0];
@@ -115,6 +158,7 @@ fn fcs_sig_decl(v: &Value) -> NormalisedSigDecl {
                 .as_array()
                 .expect("SynModuleSigDecl.NestedModule field 2 (moduleDecls) must be array")
                 .iter()
+                .filter(|_| recurse)
                 .map(fcs_sig_decl)
                 .collect();
             NormalisedSigDecl::NestedModule {
@@ -516,6 +560,12 @@ fn fcs_syn_long_ident_segments(syn_long_ident: &Value) -> Vec<String> {
 }
 
 fn fcs_decl(v: &Value) -> NormalisedDecl {
+    fcs_decl_with(v, true)
+}
+
+/// [`fcs_decl`], projecting a nested module's body only when `recurse` (see
+/// [`fcs_impl_decl_unit`]).
+fn fcs_decl_with(v: &Value, recurse: bool) -> NormalisedDecl {
     let case = case_name(v);
     match case {
         "Expr" => {
@@ -579,6 +629,7 @@ fn fcs_decl(v: &Value) -> NormalisedDecl {
                 .as_array()
                 .expect("SynModuleDecl.NestedModule field 2 (decls) must be array")
                 .iter()
+                .filter(|_| recurse)
                 .map(fcs_decl)
                 .collect();
             NormalisedDecl::NestedModule {
@@ -1862,6 +1913,9 @@ fn fcs_syn_long_ident(v: &Value) -> Vec<String> {
 fn fcs_pat(v: &Value) -> NormalisedPat {
     let case = case_name(v);
     match case {
+        // `SynPat.FromParseError(pat, range)` — the survivor of a failed
+        // pattern.
+        "FromParseError" => NormalisedPat::FromParseError(Box::new(fcs_pat(&fields(v)[0]))),
         "Wild" => {
             // `SynPat.Wild(range)` — single-field DU case carrying only
             // the range. Our normaliser elides ranges, so the variant has
@@ -3078,6 +3132,18 @@ fn fcs_expr(v: &Value) -> NormalisedExpr {
                 expr2: Box::new(fcs_expr(&f[3])),
             }
         }
+        "FromParseError" => {
+            // `SynExpr.FromParseError(expr, range)` — the survivor of a failed
+            // expression. See the model variant for which CST shapes match it.
+            NormalisedExpr::FromParseError(Box::new(fcs_expr(&fields(v)[0])))
+        }
+        "DiscardAfterMissingQualificationAfterDot" => {
+            // `SynExpr.DiscardAfterMissingQualificationAfterDot(expr, dotRange,
+            // range)` — `expr.` with nothing after the dot.
+            NormalisedExpr::DiscardAfterMissingQualificationAfterDot(Box::new(fcs_expr(
+                &fields(v)[0],
+            )))
+        }
         "ArbitraryAfterError" => {
             // `SynExpr.ArbitraryAfterError of debugStr: string * range`
             // (`SyntaxTree.fsi`) — FCS's error-recovery placeholder for a
@@ -3252,6 +3318,8 @@ fn fcs_syn_string_kind(v: &Value) -> SynStringKind {
 fn fcs_type(v: &Value) -> NormalisedType {
     let case = case_name(v);
     match case {
+        // `SynType.FromParseError(range)` — a required type the source omits.
+        "FromParseError" => NormalisedType::FromParseError,
         "LongIdent" => {
             // `SynType.LongIdent of longDotId: SynLongIdent`. Field 0 is
             // the SynLongIdent. Same projection as `SynExpr.LongIdent`.

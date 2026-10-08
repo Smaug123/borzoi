@@ -476,6 +476,10 @@ pub const EXPR_NODES: &[Node] = &[
         kinds: &[],
     },
     Node {
+        name: "DotMissingExpr",
+        kinds: &[],
+    },
+    Node {
         name: "ComputationExpr",
         kinds: &[],
     },
@@ -587,6 +591,7 @@ pub const EXPR_ENUMS: &[Enum] = &[Enum {
         ("TraitCall", "TraitCallExpr"),
         ("StaticOptimization", "StaticOptimizationExpr"),
         ("LibraryOnlyFieldGet", "LibraryOnlyFieldGetExpr"),
+        ("DotMissing", "DotMissingExpr"),
         ("Computation", "ComputationExpr"),
         ("Record", "RecordExpr"),
         ("AnonRecd", "AnonRecdExpr"),

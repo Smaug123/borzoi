@@ -928,6 +928,15 @@ pub enum NormalisedArgPats {
 /// [`Tuple`]: NormalisedPat::Tuple
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalisedPat {
+    /// `SynPat.FromParseError(pat, range)` — FCS's marker that `pat` is what
+    /// survived a pattern that failed to parse (`patFromParseError`, e.g. a
+    /// binding head with nothing after `let`). Our CST has no node that marks a
+    /// failed pattern, so [`from_cst`](super::from_cst) never builds it, and a
+    /// tree holding one is never [`Exact`](crate::common::recovery::Relation)
+    /// against ours. The unit containing it is damaged on both sides (FCS
+    /// reports the error that made it), so the recovered-tree relation does not
+    /// compare it.
+    FromParseError(Box<NormalisedPat>),
     /// `SynPat.Named(SynIdent(idText, _), isThisVal=false, accessibility, _)`.
     /// The single string is the FCS `idText` (backticks stripped). A binding
     /// head's `accessibility` (`let private x`) is *not* projected here — it is
@@ -1692,6 +1701,23 @@ pub enum NormalisedExpr {
     /// `debugStr` and range are elided, so this is a shape-only "the expression
     /// here didn't parse" marker — the diff currency for Phase 11 recovery.
     Error,
+    /// `SynExpr.FromParseError(expr, range)` — FCS's marker that `expr` is what
+    /// survived an expression that failed to parse (`exprFromParseError`, e.g.
+    /// the contents of an unclosed `(`). Our parser marks that failure by the
+    /// missing closer, so [`from_cst`](super::from_cst) builds this for a paren
+    /// expression whose `)` is absent. The other FCS productions that wrap (a
+    /// binding RHS followed by junk, a `_.` dot-lambda) have no node on our
+    /// side and are never built from the CST.
+    FromParseError(Box<NormalisedExpr>),
+    /// `SynExpr.DiscardAfterMissingQualificationAfterDot(expr, dotRange,
+    /// range)` — `expr.` with nothing after the dot: the shape an editor is in
+    /// while the user types a member access, and so the one completion is
+    /// driven by. `expr` is the receiver (FCS's `mkSynDotMissing`). Our CST
+    /// keeps an identifier-path receiver as a `LONG_IDENT_EXPR` whose
+    /// `LONG_IDENT` ends in the dot (`foo.`, `A.B.`), and wraps any other
+    /// receiver (`(f x).`, `foo.Bar(1).`) in a `DOT_MISSING_EXPR`; both
+    /// project here.
+    DiscardAfterMissingQualificationAfterDot(Box<NormalisedExpr>),
 }
 
 /// One `SynStaticOptimizationConstraint` (`SyntaxTree.fsi:1048`) — a single
@@ -1761,6 +1787,13 @@ pub enum NormalisedInterpPart {
 /// applications on non-`path` roots.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalisedType {
+    /// `SynType.FromParseError(range)` — FCS's placeholder for a type the
+    /// grammar requires but the source omits (`x :` with nothing after the
+    /// colon, a union-case field `of int *` missing its last element). Our CST
+    /// leaves the required type child out, and
+    /// [`from_cst`](super::from_cst) projects that absence here at the slots
+    /// where FCS's grammar fills the hole with `FromParseError`.
+    FromParseError,
     /// `SynType.LongIdent(SynLongIdent)` — `int`, `A.B.C`. The
     /// `Vec<String>` is the path segments (backticks stripped), mirroring
     /// the LongIdent projection used for `SynExpr.LongIdent`.
