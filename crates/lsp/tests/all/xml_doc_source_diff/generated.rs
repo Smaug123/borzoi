@@ -513,7 +513,7 @@ impl Item {
                 out.push_str(&format!("    static member M{n} = 1\n"));
                 slot(1, "    ", out);
                 out.push_str(&format!(
-                    "    static member Both{n} = 1\nlet _ = CN{n}.M{n}, CN{n}.Other{n}, CN{n}.Both{n}, CN<int>.Both{n}"
+                    "    static member Both{n} = 1\nlet _ = CN{n}.M{n}, CN{n}.Other{n}, CN{n}.Both{n}, CN{n}<int>.Both{n}"
                 ));
             }
             // A struct's call may bind its generated parameterless constructor.
@@ -661,7 +661,15 @@ fn hazards() -> Vec<Vec<Piece>> {
 
 /// The whole cross product as one project: one file per (hazard, attribute)
 /// pair, every template in each, every slot carrying the hazard.
-fn table() -> Vec<(String, String)> {
+/// One table file: its name, its text, and whether FCS must check it with no
+/// error — every file but those whose hazard is itself an error (a tab).
+struct TableFile {
+    name: String,
+    text: String,
+    must_compile: bool,
+}
+
+fn table() -> Vec<TableFile> {
     let mut files = Vec::new();
     for (h, hazard) in hazards().into_iter().enumerate() {
         for attr in [false, true] {
@@ -679,7 +687,11 @@ fn table() -> Vec<(String, String)> {
                     trailing: (t % 2 == 1 && !hazard.is_empty()).then_some(h % DOC_TEXTS.len()),
                 })
                 .collect();
-            files.push((format!("M{module}.fs"), render_file(module, &items)));
+            files.push(TableFile {
+                name: format!("M{module}.fs"),
+                text: render_file(module, &items),
+                must_compile: !hazard.iter().any(|p| matches!(p, Piece::TabDoc(_))),
+            });
         }
     }
     files
@@ -734,21 +746,27 @@ fn generated_table_agrees_with_fcs() {
     let owned = table();
     let files: Vec<(&str, &str)> = owned
         .iter()
-        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .map(|f| (f.name.as_str(), f.text.as_str()))
         .collect();
     let (graded, fcs) = run_fixture(&files, &["DEFINED_X"]);
     let census = census(&graded);
     eprintln!("source-doc table census: {census:#?}");
-    for f in &fcs {
+    // A file FCS rejects grades only divergences (its records are recovery),
+    // so a template that fails to compile would quietly switch off the
+    // clean-file gates for its whole file.
+    for (file, f) in owned.iter().zip(&fcs) {
         let errors: Vec<_> = f
             .diagnostics
             .iter()
             .filter(|d| d.severity == "Error")
             .map(|d| format!("FS{:04} {}", d.error_number, d.message))
             .collect();
-        if !errors.is_empty() {
-            eprintln!("FCS errors in {}: {errors:?}", f.path);
-        }
+        assert!(
+            !file.must_compile || errors.is_empty(),
+            "table file {} must compile: {errors:?}\n{}",
+            file.name,
+            file.text
+        );
     }
     assert_no_failures(&files, &graded);
     // Non-vacuity: the table must actually commit, for every declaration kind
