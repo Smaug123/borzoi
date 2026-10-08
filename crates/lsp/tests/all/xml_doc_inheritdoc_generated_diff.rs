@@ -47,6 +47,57 @@ impl Ty {
     }
 }
 
+/// How a parameter is passed: by value, `ref`, or `in` (which carries a
+/// custom modifier Roslyn's comparers see on a virtual member).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefKind {
+    Value,
+    Ref,
+    In,
+}
+
+/// A method's one parameter `x`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Param {
+    ty: Ty,
+    rk: RefKind,
+}
+
+impl Param {
+    fn render(self) -> String {
+        match self.rk {
+            RefKind::Value => self.ty.render().to_string(),
+            RefKind::Ref => format!("ref {}", self.ty.render()),
+            RefKind::In => format!("in {}", self.ty.render()),
+        }
+    }
+
+    fn subst(self, arg: Ty) -> Param {
+        Param {
+            ty: self.ty.subst(arg),
+            rk: self.rk,
+        }
+    }
+
+    /// What C# forbids two members of one type to differ by alone: the type
+    /// and whether it is passed by reference at all.
+    fn shape(self) -> (Ty, bool) {
+        (self.ty, self.rk != RefKind::Value)
+    }
+}
+
+fn param(generic: bool) -> impl Strategy<Value = Param> {
+    (
+        ty(generic),
+        prop_oneof![
+            4 => Just(RefKind::Value),
+            1 => Just(RefKind::Ref),
+            1 => Just(RefKind::In),
+        ],
+    )
+        .prop_map(|(ty, rk)| Param { ty, rk })
+}
+
 /// How a symbol is documented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Doc {
@@ -122,10 +173,18 @@ struct IfaceSpec {
     base: Option<(usize, Ty)>,
     /// Methods `N{i}`: return and parameter types, their docs, and whether
     /// (and how) they carry a default implementation.
-    methods: Vec<(Ty, Ty, Doc, Body)>,
+    methods: Vec<(Ty, Param, Doc, Body)>,
     property: Option<(Ty, Doc)>,
     doc: Doc,
 }
+
+/// A class's new virtual method: return type, parameter, doc, and the
+/// inherited method (by position) it overloads and whether by ref-kind alone.
+type OwnMethod = (Ty, Param, Doc, Option<(usize, bool)>);
+
+/// The members a class implements implicitly, by name and parameter shape,
+/// with the exact return and parameter each was declared with.
+type ImplicitMembers = BTreeMap<(String, Option<(&'static str, bool)>), String>;
 
 #[derive(Debug, Clone)]
 struct ClassSpec {
@@ -137,11 +196,10 @@ struct ClassSpec {
     interfaces: Vec<(usize, Ty, bool)>,
     /// Per inherited virtual member, by position: skip, override, or `new`.
     inherited: Vec<(u8, Doc)>,
-    /// New virtual methods `M{class}_{i}`.
-    /// New virtual methods: `M{class}_{i}`, or — when the index names an
-    /// inherited method and the parameter type differs from every inherited
-    /// one of that name — an overload of it.
-    own: Vec<(Ty, Ty, Doc, Option<usize>)>,
+    /// New virtual methods: `M{class}_{i}`, or — when the overload names an
+    /// inherited method and the parameter differs from every inherited one of
+    /// that name — an overload of it (with `flip`, by ref-kind alone).
+    own: Vec<OwnMethod>,
     /// Docs for interface implementations, by position (cycled).
     impl_docs: Vec<Doc>,
     ctor_doc: Doc,
@@ -164,7 +222,7 @@ fn program() -> impl Strategy<Value = Program> {
                 } else {
                     prop::option::of((0..i, ty(generic))).boxed()
                 },
-                prop::collection::vec((ty(generic), ty(generic), iface_doc(), body()), 1..3),
+                prop::collection::vec((ty(generic), param(generic), iface_doc(), body()), 1..3),
                 prop::option::of((ty(generic), iface_doc())),
                 doc(),
             )
@@ -189,7 +247,12 @@ fn program() -> impl Strategy<Value = Program> {
                 prop::collection::vec((0..2usize, ty(generic), any::<bool>()), 0..3),
                 prop::collection::vec((0..5u8, doc()), 0..6),
                 prop::collection::vec(
-                    (ty(generic), ty(generic), doc(), prop::option::of(0..4usize)),
+                    (
+                        ty(generic),
+                        param(generic),
+                        doc(),
+                        prop::option::of((0..4usize, prop::bool::weighted(0.6))),
+                    ),
                     0..3,
                 ),
                 prop::collection::vec(doc(), 1..6),
@@ -285,7 +348,7 @@ fn render_doc(
 struct Sig {
     name: String,
     ret: Ty,
-    param: Option<Ty>,
+    param: Option<Param>,
 }
 
 /// One interface instance in a class's closure: the interface and its
@@ -408,7 +471,7 @@ fn render(p: &Program) -> String {
                         Sig {
                             name: s.name.clone(),
                             ret: sub(s.ret),
-                            param: s.param.map(sub),
+                            param: s.param.map(|q| if base.generic { q.subst(arg) } else { q }),
                         }
                     })
                     .collect()
@@ -452,6 +515,9 @@ fn render(p: &Program) -> String {
         writeln!(out, "    public C{k}(int x){chain} {{ }}").unwrap();
 
         let mut mine: Vec<Sig> = Vec::new();
+        // What this class itself declares: C# forbids two of its own methods
+        // to differ only by ref-kind.
+        let mut declared_here: Vec<Sig> = Vec::new();
         for (j, s) in inherited.iter().enumerate() {
             let (choice, d) = c.inherited.get(j).copied().unwrap_or((0, Doc::None));
             let param = s.param.expect("virtual methods take x");
@@ -475,6 +541,7 @@ fn render(p: &Program) -> String {
                     )
                     .unwrap();
                     mine.push(s.clone());
+                    declared_here.push(s.clone());
                 }
                 2 => {
                     render_doc(
@@ -495,22 +562,49 @@ fn render(p: &Program) -> String {
                     )
                     .unwrap();
                     mine.push(s.clone());
+                    declared_here.push(s.clone());
                 }
                 _ => mine.push(s.clone()),
             }
         }
         for (j, (ret, param, d, overload)) in c.own.iter().enumerate() {
+            // With `flip`, the overload takes the inherited method's own
+            // parameter type by another ref-kind — the shape where only the
+            // ref-kind (and the `in` modifier) tells two signatures apart.
+            let flipped = overload.and_then(|(o, flip)| {
+                let s = inherited.get(o % inherited.len().max(1))?;
+                let q = s.param?;
+                flip.then_some(Param {
+                    ty: q.ty,
+                    rk: match q.rk {
+                        RefKind::Value => RefKind::Ref,
+                        RefKind::Ref => RefKind::In,
+                        RefKind::In => RefKind::Ref,
+                    },
+                })
+            });
+            let param = &flipped.unwrap_or(*param);
+            // A ref-kind overload is documented in full: it is a wrong answer
+            // only when it has text to show.
             // An overload of an inherited name, when no method of the name
-            // already takes this parameter — and neither parameter is `T`,
-            // which a derived instantiation could make collide.
+            // takes exactly this parameter, none declared here differs from
+            // it by ref-kind alone, and neither parameter is `T`, which a
+            // derived instantiation could make collide. An inherited method
+            // differing by ref-kind alone is allowed: that is the shape where
+            // Roslyn's comparers see the `in` modifier.
             let overloaded = overload
-                .and_then(|o| inherited.get(o % inherited.len().max(1)))
+                .and_then(|(o, _)| inherited.get(o % inherited.len().max(1)))
                 .filter(|s| {
-                    *param != Ty::T
+                    let named = |m: &&Sig| m.name == s.name;
+                    param.ty != Ty::T
                         && mine
                             .iter()
-                            .filter(|m| m.name == s.name)
-                            .all(|m| m.param != Some(*param) && m.param != Some(Ty::T))
+                            .filter(named)
+                            .all(|m| m.param.is_some_and(|q| q != *param && q.ty != Ty::T))
+                        && declared_here
+                            .iter()
+                            .filter(named)
+                            .all(|m| m.param.is_some_and(|q| q.shape() != param.shape()))
                 });
             let name = match overloaded {
                 Some(s) => s.name.clone(),
@@ -518,7 +612,7 @@ fn render(p: &Program) -> String {
             };
             render_doc(
                 &mut out,
-                *d,
+                if flipped.is_some() { Doc::Full } else { *d },
                 &format!("C{k}.{name}"),
                 c.generic,
                 true,
@@ -532,16 +626,18 @@ fn render(p: &Program) -> String {
                 param.render()
             )
             .unwrap();
-            mine.push(Sig {
+            let sig = Sig {
                 name,
                 ret: *ret,
                 param: Some(*param),
-            });
+            };
+            mine.push(sig.clone());
+            declared_here.push(sig);
         }
         // Interface members: implicit ones are shared by every instance that
         // needs the same name and parameter; one with the same parameter but
         // another return type must be explicit.
-        let mut implicit: BTreeMap<(String, Option<&'static str>), &'static str> = BTreeMap::new();
+        let mut implicit: ImplicitMembers = BTreeMap::new();
         let mut doc_cursor = 0;
         let mut next_doc = || {
             let d = c.impl_docs[doc_cursor % c.impl_docs.len()];
@@ -554,10 +650,19 @@ fn render(p: &Program) -> String {
                 let sub = |t: Ty| if spec.generic { t.subst(darg) } else { t };
                 let qualifier = iface_name(d, spec.generic, darg);
                 for (m, (ret, param, _, body)) in spec.methods.iter().enumerate() {
-                    let (ret, param) = (sub(*ret), sub(*param));
+                    let ret = sub(*ret);
+                    let param = if spec.generic {
+                        param.subst(darg)
+                    } else {
+                        *param
+                    };
                     let name = format!("N{m}");
-                    let key = (name.clone(), Some(param.render()));
-                    let clash = implicit.get(&key).is_some_and(|r| *r != ret.render());
+                    let key = (
+                        name.clone(),
+                        Some((param.ty.render(), param.rk != RefKind::Value)),
+                    );
+                    let exact = format!("{} {}", ret.render(), param.render());
+                    let clash = implicit.get(&key).is_some_and(|r| *r != exact);
                     // A sealed or private default cannot be implemented, so
                     // not explicitly either: a same-named public member is
                     // declared (unrelated to it) unless that would clash.
@@ -587,7 +692,7 @@ fn render(p: &Program) -> String {
                     } else if let std::collections::btree_map::Entry::Vacant(e) =
                         implicit.entry(key)
                     {
-                        e.insert(ret.render());
+                        e.insert(exact);
                         render_doc(
                             &mut out,
                             doc,
@@ -625,7 +730,7 @@ fn render(p: &Program) -> String {
                     } else if let std::collections::btree_map::Entry::Vacant(e) =
                         implicit.entry(key)
                     {
-                        e.insert(t.render());
+                        e.insert(t.render().to_string());
                         render_doc(
                             &mut out,
                             doc,
@@ -658,6 +763,78 @@ fn run(p: &Program) -> Result<Census, Vec<String>> {
     Ok(census)
 }
 
+/// Override chains that stress signature comparison: `C2 : C1 : C0`, where
+/// `C1` overloads `C0`'s methods by parameter type and by ref-kind alone, and
+/// `C2` overrides what it inherits with `<inheritdoc/>`. Every method above
+/// `C2` is documented in full, so inheriting from the wrong overload shows.
+fn override_chain() -> impl Strategy<Value = Program> {
+    let iface = IfaceSpec {
+        generic: false,
+        base: None,
+        methods: vec![(
+            Ty::Int,
+            Param {
+                ty: Ty::Int,
+                rk: RefKind::Value,
+            },
+            Doc::Full,
+            Body::Abstract,
+        )],
+        property: None,
+        doc: Doc::Full,
+    };
+    let class = |base: Option<usize>, overloads: bool, inherit: Doc| {
+        any::<bool>().prop_flat_map(move |generic| {
+            (
+                Just(generic),
+                match base {
+                    Some(b) => ty(generic).prop_map(move |t| Some((b, t))).boxed(),
+                    None => Just(None).boxed(),
+                },
+                prop::collection::vec(
+                    (
+                        prop_oneof![1 => Just(0u8), 3 => Just(1u8), 1 => Just(2u8)],
+                        Just(inherit),
+                    ),
+                    0..6,
+                ),
+                prop::collection::vec(
+                    (
+                        ty(generic),
+                        param(generic),
+                        Just(Doc::Full),
+                        if overloads {
+                            prop::option::of((0..4usize, any::<bool>())).boxed()
+                        } else {
+                            Just(None).boxed()
+                        },
+                    ),
+                    1..4,
+                ),
+            )
+                .prop_map(move |(generic, base, inherited, own)| ClassSpec {
+                    generic,
+                    base,
+                    interfaces: Vec::new(),
+                    inherited,
+                    own,
+                    impl_docs: vec![Doc::Full],
+                    ctor_doc: Doc::Full,
+                    doc: Doc::Full,
+                })
+        })
+    };
+    (
+        class(None, false, Doc::Full),
+        class(Some(0), true, Doc::Full),
+        class(Some(1), true, Doc::Bare),
+    )
+        .prop_map(move |(c0, c1, c2)| Program {
+            interfaces: vec![iface.clone(), iface.clone()],
+            classes: vec![c0, c1, c2],
+        })
+}
+
 proptest! {
     #[test]
     fn generated_hierarchies_expand_exactly_as_roslyn(p in program()) {
@@ -666,40 +843,48 @@ proptest! {
         // that rare.
         let _ = run(&p);
     }
+
+    #[test]
+    fn generated_override_chains_expand_exactly_as_roslyn(p in override_chain()) {
+        let _ = run(&p);
+    }
 }
 
 /// The generator mostly writes valid C#, and the comparison mostly expands:
 /// without this the property could pass on programs that do not compile or
 /// entries that all decline.
 #[test]
-fn the_generator_compiles_and_expands() {
-    use proptest::strategy::ValueTree;
+fn the_generators_compile_and_expand() {
+    use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
-    let mut runner = TestRunner::deterministic();
-    let strategy = program();
-    let (mut compiled, mut total) = (0, 0);
-    let mut census = Census::default();
-    let mut errors: Vec<String> = Vec::new();
-    for _ in 0..20 {
-        let p = strategy.new_tree(&mut runner).unwrap().current();
-        total += 1;
-        match run(&p) {
-            Ok(c) => {
-                compiled += 1;
-                census.merge(c);
+    fn sample(name: &str, strategy: impl Strategy<Value = Program>, min_expanded: usize) {
+        let mut runner = TestRunner::deterministic();
+        let (mut compiled, mut total) = (0, 0);
+        let mut census = Census::default();
+        let mut errors: Vec<String> = Vec::new();
+        for _ in 0..20 {
+            let p = strategy.new_tree(&mut runner).unwrap().current();
+            total += 1;
+            match run(&p) {
+                Ok(c) => {
+                    compiled += 1;
+                    census.merge(c);
+                }
+                Err(e) => errors.extend(e.into_iter().take(2)),
             }
-            Err(e) => errors.extend(e.into_iter().take(2)),
         }
+        census.print(&format!("{name} (liveness sample)"));
+        assert!(
+            compiled * 10 >= total * 9,
+            "{name}: only {compiled}/{total} generated programs compile; e.g. {errors:#?}"
+        );
+        let expanded = census.agrees;
+        let declined = census.declined_total();
+        assert!(
+            expanded >= min_expanded,
+            "{name}: too few expansions: {expanded} expanded, {declined} declined"
+        );
     }
-    census.print("generated (liveness sample)");
-    assert!(
-        compiled * 10 >= total * 9,
-        "only {compiled}/{total} generated programs compile; e.g. {errors:#?}"
-    );
-    let expanded = census.agrees;
-    let declined = census.declined_total();
-    assert!(
-        expanded >= 80,
-        "too few expansions: {expanded} expanded, {declined} declined"
-    );
+    sample("hierarchies", program(), 60);
+    sample("override chains", override_chain(), 20);
 }

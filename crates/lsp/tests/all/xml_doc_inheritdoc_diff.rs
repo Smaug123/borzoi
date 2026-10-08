@@ -349,6 +349,44 @@ public class Spell : B
     protected void RaiseSpell() => Changed?.Invoke(this, System.EventArgs.Empty);
 }
 
+/// <summary>Ref-kinds: an `in` overload between a `ref` method and its
+/// override.</summary>
+public class RB
+{
+    /// <summary>RB.M, by ref.</summary>
+    public virtual void M(ref int x) { }
+}
+
+/// <summary>Adds the `in` overload.</summary>
+public class RC : RB
+{
+    /// <summary>RC.M, by in: not what RD.M overrides.</summary>
+    public virtual void M(in int x) { }
+}
+
+/// <summary>Overrides the `ref` one.</summary>
+public class RD : RC
+{
+    /// <inheritdoc/>
+    public override void M(ref int x) { }
+}
+
+/// <summary>A read-only ref return.</summary>
+public interface IRet
+{
+    /// <summary>IRet.M, returning a read-only ref.</summary>
+    ref readonly int M() => throw null!;
+}
+
+/// <summary>A writable ref return: not IRet.M's implementation.</summary>
+public class Ret : IRet
+{
+    private int f;
+
+    /// <inheritdoc/>
+    public ref int M() => ref f;
+}
+
 /// <summary>Default interface members.</summary>
 public interface IDim
 {
@@ -446,6 +484,7 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
         "E:F.Spell.Changed",
         "M:F.Dim.V",
         "M:F.Dim.A",
+        "M:F.RD.M(System.Int32@)",
     ];
     let mut wrong = Vec::new();
     for key in must_expand {
@@ -454,7 +493,13 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
             other => wrong.push(format!("{key}: {other:?}")),
         }
     }
-    for key in ["M:F.D.Cycle", "T:F.SNoCandidate", "M:F.Dim.S", "M:F.Dim.P"] {
+    for key in [
+        "M:F.D.Cycle",
+        "T:F.SNoCandidate",
+        "M:F.Dim.S",
+        "M:F.Dim.P",
+        "M:F.Ret.M",
+    ] {
         if !matches!(v.get(key), Some(Verdict::Declined { .. })) {
             wrong.push(format!("{key} should decline: {:?}", v.get(key)));
         }

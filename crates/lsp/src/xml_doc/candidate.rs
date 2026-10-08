@@ -219,7 +219,13 @@ pub(crate) fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> O
         ),
         TypeRef::Ptr(Some(inner)) => format!("{}*", type_key(env, from, inner)?),
         TypeRef::Ptr(None) => "void*".to_string(),
-        TypeRef::ByRef { inner, .. } => format!("{}&", type_key(env, from, inner)?),
+        // A read-only byref is `modreq(InAttribute)` over the byref, which
+        // Roslyn's runtime comparers see.
+        TypeRef::ByRef { inner, readonly } => format!(
+            "{}&{}",
+            type_key(env, from, inner)?,
+            if *readonly { " readonly" } else { "" }
+        ),
     })
 }
 
@@ -628,9 +634,12 @@ fn is_static(member: &Member) -> bool {
 /// How a comparison treats byref parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Byrefs {
-    /// Roslyn's override comparer: `ref` and `out` differ.
+    /// Roslyn's override comparer (`RuntimePlusRefOutSignatureComparer`):
+    /// `ref`, `out` and `in` all differ.
     RefOutDistinct,
-    /// Roslyn's implicit-implementation comparer: any byref is `@`.
+    /// Roslyn's implicit-implementation comparer
+    /// (`RuntimeImplicitImplementationComparer`): ref-kinds match, but the
+    /// `in` modifier is still a custom modifier it compares.
     RefOutSame,
     /// `IsSameSignature` (base constructors): types only.
     Ignored,
@@ -686,13 +695,25 @@ fn signature_of(
                 .iter()
                 .map(|p| {
                     let mut s = enc(&p.ty)?;
+                    // Both runtime comparers see an `in` parameter's
+                    // `modreq(InAttribute)` (C# emits it on every virtual
+                    // member, the only kind compared here); the override
+                    // comparer also tells `ref` from `out`.
                     match byrefs {
                         Byrefs::Ignored => {}
-                        Byrefs::RefOutSame if p.is_byref => s.push('@'),
+                        Byrefs::RefOutSame if p.is_byref => {
+                            s.push('@');
+                            if p.is_readonly_ref {
+                                s.push_str("in");
+                            }
+                        }
                         Byrefs::RefOutDistinct if p.is_byref => {
                             s.push('@');
                             if p.is_out {
                                 s.push_str("out");
+                            }
+                            if p.is_readonly_ref {
+                                s.push_str("in");
                             }
                         }
                         _ => {}
@@ -1371,10 +1392,12 @@ fn interface_candidate(
                     Member::Event(x) => &x.implements,
                     Member::Field(_) => return false,
                 };
+                // An entry whose interface does not bind may be this one.
                 implements.iter().any(|i| {
                     may_name(&i.member, name)
                         && bind(env, parent, inst, &i.interface)
-                            .is_ok_and(|(def, inst)| Iface { def, inst }.key() == iface.key())
+                            .ok()
+                            .is_none_or(|(def, inst)| Iface { def, inst }.key() == iface.key())
                 })
             });
             if explicitly {
