@@ -75,6 +75,27 @@ fn doc() -> impl Strategy<Value = Doc> {
     ]
 }
 
+/// How an interface method is declared: abstract, or with a default
+/// implementation that a class member can implement (virtual) or cannot
+/// (sealed, private) — the last two leave a same-named public class member
+/// unrelated to the interface's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Body {
+    Abstract,
+    Virtual,
+    Sealed,
+    Private,
+}
+
+fn body() -> impl Strategy<Value = Body> {
+    prop_oneof![
+        4 => Just(Body::Abstract),
+        1 => Just(Body::Virtual),
+        1 => Just(Body::Sealed),
+        1 => Just(Body::Private),
+    ]
+}
+
 /// Docs for interface members — the roots most inheritance ends at — so
 /// mostly written out in full.
 fn iface_doc() -> impl Strategy<Value = Doc> {
@@ -99,8 +120,9 @@ struct IfaceSpec {
     generic: bool,
     /// A base interface (an earlier one) and its type argument.
     base: Option<(usize, Ty)>,
-    /// Methods `N{i}`: return and parameter types, and their docs.
-    methods: Vec<(Ty, Ty, Doc)>,
+    /// Methods `N{i}`: return and parameter types, their docs, and whether
+    /// (and how) they carry a default implementation.
+    methods: Vec<(Ty, Ty, Doc, Body)>,
     property: Option<(Ty, Doc)>,
     doc: Doc,
 }
@@ -142,7 +164,7 @@ fn program() -> impl Strategy<Value = Program> {
                 } else {
                     prop::option::of((0..i, ty(generic))).boxed()
                 },
-                prop::collection::vec((ty(generic), ty(generic), iface_doc()), 1..3),
+                prop::collection::vec((ty(generic), ty(generic), iface_doc(), body()), 1..3),
                 prop::option::of((ty(generic), iface_doc())),
                 doc(),
             )
@@ -329,7 +351,7 @@ fn render(p: &Program) -> String {
             .map(|(b, arg)| format!(" : {}", iface_name(b, p.interfaces[b].generic, arg)))
             .unwrap_or_default();
         writeln!(out, "public interface I{i}{tp}{base}\n{{").unwrap();
-        for (m, (ret, param, d)) in spec.methods.iter().enumerate() {
+        for (m, (ret, param, d, body)) in spec.methods.iter().enumerate() {
             render_doc(
                 &mut out,
                 *d,
@@ -339,7 +361,16 @@ fn render(p: &Program) -> String {
                 true,
                 &class_crefs,
             );
-            writeln!(out, "    {} N{m}({} x);", ret.render(), param.render()).unwrap();
+            let (ret, param) = (ret.render(), param.render());
+            match body {
+                Body::Abstract => writeln!(out, "    {ret} N{m}({param} x);"),
+                Body::Virtual => writeln!(out, "    {ret} N{m}({param} x) => default!;"),
+                Body::Sealed => {
+                    writeln!(out, "    public sealed {ret} N{m}({param} x) => default!;")
+                }
+                Body::Private => writeln!(out, "    private {ret} N{m}({param} x) => default!;"),
+            }
+            .unwrap();
         }
         if let Some((t, d)) = spec.property {
             render_doc(
@@ -522,12 +553,19 @@ fn render(p: &Program) -> String {
                 let spec = &p.interfaces[d];
                 let sub = |t: Ty| if spec.generic { t.subst(darg) } else { t };
                 let qualifier = iface_name(d, spec.generic, darg);
-                for (m, (ret, param, _)) in spec.methods.iter().enumerate() {
+                for (m, (ret, param, _, body)) in spec.methods.iter().enumerate() {
                     let (ret, param) = (sub(*ret), sub(*param));
                     let name = format!("N{m}");
                     let key = (name.clone(), Some(param.render()));
-                    let explicit =
-                        explicit || implicit.get(&key).is_some_and(|r| *r != ret.render());
+                    let clash = implicit.get(&key).is_some_and(|r| *r != ret.render());
+                    // A sealed or private default cannot be implemented, so
+                    // not explicitly either: a same-named public member is
+                    // declared (unrelated to it) unless that would clash.
+                    let unimplementable = matches!(body, Body::Sealed | Body::Private);
+                    if unimplementable && clash {
+                        continue;
+                    }
+                    let explicit = !unimplementable && (explicit || clash);
                     let doc = next_doc();
                     if explicit {
                         render_doc(

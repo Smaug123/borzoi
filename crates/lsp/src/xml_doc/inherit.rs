@@ -208,11 +208,7 @@ pub fn is_inheritdoc(element: &DocElement) -> bool {
 type VisitKey = (DocTarget, EntityHandle, Vec<String>);
 
 fn visit_key(at: &Reached) -> VisitKey {
-    (
-        at.target,
-        at.inst.context,
-        at.inst.args.iter().map(type_enc).collect(),
-    )
+    (at.target, at.inst.context, at.inst.key().to_vec())
 }
 
 struct Walk<'a> {

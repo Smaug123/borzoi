@@ -40,23 +40,54 @@ pub fn fixture(source: &str) -> Result<Fixture, Vec<String>> {
 /// `dependency` that the reference set then leaves out — the shape of a
 /// package whose dependency was not restored.
 pub fn fixture_missing(source: &str, dependency: Option<&str>) -> Result<Fixture, Vec<String>> {
+    let deps: Vec<Dep<'_>> = dependency
+        .map(|source| Dep {
+            name: "Dep",
+            source,
+            alias: None,
+            referenced: false,
+        })
+        .into_iter()
+        .collect();
+    fixture_with(source, &deps)
+}
+
+/// A dependency assembly of a fixture.
+pub struct Dep<'a> {
+    pub name: &'a str,
+    pub source: &'a str,
+    /// The `extern alias` `Fx` reaches it through, if any.
+    pub alias: Option<&'a str>,
+    /// Whether the reference set (env and Roslyn alike) includes it.
+    pub referenced: bool,
+}
+
+/// [`fixture`], with `Fx` compiled against dependency assemblies built from
+/// `deps` (each against System.Runtime alone).
+pub fn fixture_with(source: &str, deps: &[Dep<'_>]) -> Result<Fixture, Vec<String>> {
     let dir = TempDir::new().unwrap();
     let runtime = ensure_system_runtime_dll();
-    let mut compile_against = vec![runtime.clone()];
-    if let Some(dependency) = dependency {
-        let dep_dir = dir.path().join("dep");
-        compile_against.push(oracle().lock().unwrap().compile(
-            dependency,
-            "Dep",
+    let mut compile_against: Vec<(PathBuf, Option<&str>)> = vec![(runtime.clone(), None)];
+    let mut references = vec![runtime.clone()];
+    for dep in deps {
+        let dep_dir = dir.path().join(dep.name);
+        let dll = oracle().lock().unwrap().compile(
+            dep.source,
+            dep.name,
             &dep_dir,
             std::slice::from_ref(&runtime),
-        )?);
+        )?;
+        compile_against.push((dll.clone(), dep.alias));
+        if dep.referenced {
+            references.push(dll);
+        }
     }
-    let dll = oracle()
-        .lock()
-        .unwrap()
-        .compile(source, "Fx", dir.path(), &compile_against)?;
-    let references = vec![runtime, dll.clone()];
+    let dll =
+        oracle()
+            .lock()
+            .unwrap()
+            .compile_aliased(source, "Fx", dir.path(), &compile_against)?;
+    references.push(dll.clone());
     // The runtime's on-disk projection cache, in a directory of this test
     // binary's own: the reference pack is projected once, not per fixture.
     static CACHE: std::sync::OnceLock<(TempDir, AssemblyCache)> = std::sync::OnceLock::new();
@@ -310,6 +341,44 @@ public class Spell : B
 
     /// <inheritdoc xmlns="urn:x"/>
     public override string P { get => ""; set { } }
+
+    /// <ınheritdoc/>
+    public override event System.EventHandler? Changed;
+
+    /// <summary>Spell raises.</summary>
+    protected void RaiseSpell() => Changed?.Invoke(this, System.EventArgs.Empty);
+}
+
+/// <summary>Default interface members.</summary>
+public interface IDim
+{
+    /// <summary>IDim.S, sealed: implemented by nothing.</summary>
+    public sealed void S() { }
+
+    /// <summary>IDim.P, private: implemented by nothing.</summary>
+    private void P() { }
+
+    /// <summary>IDim.V, a virtual default.</summary>
+    void V() { }
+
+    /// <summary>IDim.A, abstract.</summary>
+    void A();
+}
+
+/// <summary>Members named like IDim's.</summary>
+public class Dim : IDim
+{
+    /// <inheritdoc/>
+    public void S() { }
+
+    /// <inheritdoc/>
+    public void P() { }
+
+    /// <inheritdoc/>
+    public void V() { }
+
+    /// <inheritdoc/>
+    public void A() { }
 }
 
 /// <summary>A struct.</summary>
@@ -374,6 +443,9 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
         "M:F.Spell.#ctor(System.String)",
         "M:F.Spell.M(System.Int32)",
         "P:F.Spell.P",
+        "E:F.Spell.Changed",
+        "M:F.Dim.V",
+        "M:F.Dim.A",
     ];
     let mut wrong = Vec::new();
     for key in must_expand {
@@ -382,7 +454,7 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
             other => wrong.push(format!("{key}: {other:?}")),
         }
     }
-    for key in ["M:F.D.Cycle", "T:F.SNoCandidate"] {
+    for key in ["M:F.D.Cycle", "T:F.SNoCandidate", "M:F.Dim.S", "M:F.Dim.P"] {
         if !matches!(v.get(key), Some(Verdict::Declined { .. })) {
             wrong.push(format!("{key} should decline: {:?}", v.get(key)));
         }
@@ -438,5 +510,69 @@ public class User
         matches!(v.get("M:F.User.Plain"), Some(Verdict::Agrees)),
         "{:?}",
         v.get("M:F.User.Plain")
+    );
+}
+
+/// Two assemblies defining the same full type name: a signature's types are
+/// compared by the definition they bind to, as Roslyn compares them, not by
+/// name — `Mid.M(B::N.T)` is an overload, not what `Derived.M(A::N.T)`
+/// overrides.
+#[test]
+fn same_named_types_from_two_assemblies_are_different_types() {
+    let t = "namespace N; public class T { }";
+    let fx = fixture_with(
+        r#"
+extern alias A;
+extern alias B;
+
+namespace F;
+
+/// <summary>The base.</summary>
+public class Base
+{
+    /// <summary>Base.M, taking A's T.</summary>
+    public virtual void M(A::N.T t) { }
+}
+
+/// <summary>The middle.</summary>
+public class Mid : Base
+{
+    /// <summary>Mid.M, taking B's T: an overload.</summary>
+    public virtual void M(B::N.T t) { }
+}
+
+/// <summary>The derived.</summary>
+public class Derived : Mid
+{
+    /// <inheritdoc/>
+    public override void M(A::N.T t) { }
+}
+"#,
+        &[
+            Dep {
+                name: "DepA",
+                source: t,
+                alias: Some("A"),
+                referenced: true,
+            },
+            Dep {
+                name: "DepB",
+                source: t,
+                alias: Some("B"),
+                referenced: true,
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("same-named types");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("M:F.Derived.M(N.T)"), Some(Verdict::Agrees)),
+        "{:?}",
+        v.get("M:F.Derived.M(N.T)")
     );
 }

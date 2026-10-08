@@ -156,29 +156,13 @@ impl DocElement {
 
 /// .NET's `OrdinalIgnoreCase` equality of an element name against an ASCII
 /// lower-case word — how C# compares documentation element names
-/// (`DocumentationCommentXmlNames.ElementEquals`): per character, equal, or
-/// equal once upper-cased by its simple mapping, which also lets `ı` (U+0131,
-/// upper-casing to `I`) stand for `i`.
+/// (`DocumentationCommentXmlNames.ElementEquals`). For the words asked about
+/// (`inheritdoc`, `member`, `doc`) that is ASCII case-folding: .NET maps no
+/// other character onto their letters (`ı`, U+0131, upper-cases to `I` by
+/// Unicode but is not `OrdinalIgnoreCase`-equal to `i`).
 pub fn name_is(name: &str, word: &str) -> bool {
     debug_assert!(word.bytes().all(|b| b.is_ascii_lowercase()));
-    let mut a = name.chars();
-    let mut b = word.chars();
-    loop {
-        match (a.next(), b.next()) {
-            (None, None) => return true,
-            (Some(x), Some(y)) => {
-                let mut upper = x.to_uppercase();
-                let single = match (upper.next(), upper.next()) {
-                    (Some(u), None) => u,
-                    _ => return false,
-                };
-                if x != y && single != y.to_ascii_uppercase() {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-    }
+    name.eq_ignore_ascii_case(word)
 }
 
 /// The deepest element nesting (below the converted element) a [`DocElement`]
