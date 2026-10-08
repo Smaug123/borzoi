@@ -528,10 +528,12 @@ fn binds_throughout(
 }
 
 /// The names of the `System` types the reference set's core library defines:
-/// the library Roslyn binds its special types — every primitive — into. That
-/// is the sole loaded assembly defining `System.Object`; `None` when no single
-/// assembly does, and to Roslyn every primitive may then be an error type,
-/// which no documentation ID binds to and whose own ID is an error ID.
+/// the library Roslyn binds its special types — every primitive — into. Roslyn
+/// takes as core library the one referenced assembly with no assembly
+/// references of its own ([`AssemblyEnv::is_core_library`]); here it must also
+/// be the sole loaded assembly defining `System.Object`. `None` otherwise, and
+/// to Roslyn every primitive may then be an error type, which no documentation
+/// ID binds to and whose own ID is an error ID.
 fn core_library_types(env: &AssemblyEnv) -> Option<HashSet<String>> {
     let in_system = |h: EntityHandle| {
         let e = env.entity(h);
@@ -545,6 +547,9 @@ fn core_library_types(env: &AssemblyEnv) -> Option<HashSet<String>> {
     let (Some(object), None) = (objects.next(), objects.next()) else {
         return None;
     };
+    if env.is_core_library(object) != Some(true) {
+        return None;
+    }
     let core = env.assembly_path(object)?;
     Some(
         env.top_level_handles()

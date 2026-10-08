@@ -653,6 +653,10 @@ pub struct AssemblyEnv {
     /// through its forwarder, exactly as the CLR's loader does (FSharp.Core's
     /// pickle names its BCL targets through the `netstandard` CCU).
     assembly_forwarders: Vec<HashMap<(String, String), String>>,
+    /// Per-[`AssemblyId`], in lockstep with [`Self::assemblies`]: whether the
+    /// DLL's manifest references other assemblies (`AssemblyRef` rows).
+    /// `None` where the build path did not read it.
+    assembly_has_references: Vec<Option<bool>>,
     /// Memo for [`Self::resolve_abbreviation_target`] /
     /// [`Self::resolve_abbreviation_tycon`], keyed by `(marker, allow_args)`.
     /// The chase is a pure function of the env's immutable entity data, but
@@ -852,6 +856,10 @@ pub struct AssemblyProjectionInput {
     /// ([`borzoi_assembly::EcmaView::type_forwarders`]) — how an abbreviation
     /// target chase continues out of a facade assembly (`netstandard`).
     pub type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
+    /// Whether the manifest references other assemblies
+    /// ([`borzoi_assembly::EcmaView::assembly_refs`] non-empty); `None` when
+    /// not read.
+    pub has_assembly_references: Option<bool>,
 }
 
 /// Whether entity `e`'s **logical name** — its IL `name` or its `source_name` —
@@ -1059,6 +1067,7 @@ impl AssemblyEnv {
                         auto_opens,
                         manifest_identity: None,
                         type_forwarders: Vec::new(),
+                        has_assembly_references: None,
                     }
                 })
                 .collect(),
@@ -1093,11 +1102,13 @@ impl AssemblyEnv {
                 auto_opens: raw_auto_opens,
                 manifest_identity,
                 type_forwarders,
+                has_assembly_references,
             } = input;
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(Some(path));
+            env.assembly_has_references.push(has_assembly_references);
             env.assembly_forwarders.push(
                 type_forwarders
                     .into_iter()
@@ -1407,6 +1418,8 @@ impl AssemblyEnv {
             // Every view is a distinct loaded DLL with a known identity — register
             // it (even a rootless one) so a referenced-CCU name is counted per DLL.
             env.assembly_identities.push(Some(view.identity().clone()));
+            env.assembly_has_references
+                .push(Some(!view.assembly_refs().is_empty()));
             env.assembly_forwarders.push(
                 view.type_forwarders()?
                     .into_iter()
@@ -2003,6 +2016,29 @@ impl AssemblyEnv {
         self.assembly_provenance(handle)
             .and_then(|id| self.assemblies.get(id.0 as usize))
             .and_then(|p| p.as_deref())
+    }
+
+    /// Whether `handle`'s DLL is the reference set's core library as Roslyn
+    /// picks it: the one loaded DLL whose manifest references no other
+    /// assembly. `Some(false)` when another DLL is that one, or when none or
+    /// several are; `None` when it cannot be told — some DLL's references were
+    /// not read, or a DLL the env cannot name is present.
+    pub fn is_core_library(&self, handle: EntityHandle) -> Option<bool> {
+        if self.assembly_identities_incomplete
+            || self.assembly_has_references.len() != self.assemblies.len()
+        {
+            return None;
+        }
+        let mut without = Vec::new();
+        for (i, has) in self.assembly_has_references.iter().enumerate() {
+            match has {
+                None => return None,
+                Some(false) => without.push(i),
+                Some(true) => {}
+            }
+        }
+        let id = self.assembly_provenance(handle)?;
+        Some(matches!(without.as_slice(), [only] if *only == id.0 as usize))
     }
 
     /// The total number of interned entities (top-level + nested).
@@ -7176,6 +7212,7 @@ mod from_views_tests {
             auto_opens: Vec::new(),
             manifest_identity: Some(ident("Lib")),
             type_forwarders: Vec::new(),
+            has_assembly_references: None,
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
             input("Contributor.dll", vec![widget, marker]),
@@ -7326,6 +7363,7 @@ mod from_views_tests {
             auto_opens: Vec::new(),
             manifest_identity: Some(ident(dll)),
             type_forwarders: forwarders,
+            has_assembly_references: None,
         }
     }
 

@@ -167,7 +167,7 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   `nint` and element-name attributes Roslyn's constructor rule compares.
   Not seen at all: `modopt`s, which the projection drops by policy, so two
   signatures differing only in one compare equal here and not to Roslyn's
-  runtime comparers (C# never emits such a pair).
+  runtime comparers (C# never emits such a pair; #339).
 - **`<include>` is not resolved** (same marker; NuGet only, and there is
   nothing to resolve against: 27,144 elements in 27 files, every one naming a
   `doc\*.uex` file that no package ships).

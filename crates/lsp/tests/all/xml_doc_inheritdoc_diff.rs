@@ -986,3 +986,64 @@ public class U
         );
     }
 }
+
+/// Roslyn's core library is the referenced assembly with no assembly
+/// references of its own. An assembly that defines `System.Object` (and
+/// `System.Int32`) while referencing another is not one: to Roslyn every
+/// primitive is still an error type, so the `cref` naming `System.Int32` binds
+/// nothing and must not be committed.
+#[test]
+fn a_system_object_definer_with_references_is_not_the_core_library() {
+    let fx = fixture_without_core_library(
+        r#"
+namespace System
+{
+    /// <summary>A look-alike root type.</summary>
+    public class Object { }
+
+    /// <summary>A look-alike integer.</summary>
+    public struct Int32 { }
+}
+
+namespace F
+{
+    /// <summary>The base.</summary>
+    public class B
+    {
+        /// <summary>B.M.</summary>
+        public void M(int x) { }
+
+        /// <summary>B.N.</summary>
+        public void N() { }
+    }
+
+    /// <summary>A user.</summary>
+    public class U
+    {
+        /// <inheritdoc cref="M:F.B.M(System.Int32)"/>
+        public void A() { }
+
+        /// <inheritdoc cref="M:F.B.N"/>
+        public void C() { }
+    }
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("System.Object defined by an assembly with references");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("M:F.U.C"), Some(Verdict::Agrees)),
+        "{:?}",
+        v.get("M:F.U.C")
+    );
+    assert!(
+        matches!(v.get("M:F.U.A"), Some(Verdict::Declined { .. })),
+        "{:?}",
+        v.get("M:F.U.A")
+    );
+}
