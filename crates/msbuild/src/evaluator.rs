@@ -2537,8 +2537,8 @@ impl<'r> State<'r> {
     ///
     /// A name only counts as sticky while it is *also* still protected:
     /// an imported root's `TreatAsLocalProperty` unprotects a global for
-    /// that file's scope (removing it from [`State::protected`]), which
-    /// makes it locally writable there — so the default-fill *can* write
+    /// the rest of the evaluation (removing it from [`State::protected`]),
+    /// which makes it locally writable from there on — so the default-fill *can* write
     /// through and the sticky-global short-circuit must stand down. This
     /// keeps the gate decision in lockstep with the `TreatAsLocalProperty`
     /// model `walk_external_file` already implements via `protected`.
@@ -5795,13 +5795,13 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // `/elsewhere/local.props`. `canon` is still used (above) for
     // `walked_files` — the one place resolved identity matters.
     let file_dir: PathBuf = path.parent().map(Path::to_path_buf).unwrap_or_default();
-    // `TreatAsLocalProperty` on an imported root unprotects names
-    // for the scope of that file. MSBuild specifies it only applies
-    // to *global* properties — not reserved well-known names — so
-    // we exclude names in `state.reserved` from the unprotection.
-    // Track exactly what we removed so the corresponding restore
-    // doesn't re-add names that the entry project itself had marked
-    // local (and which therefore were never in `state.protected`).
+    // `TreatAsLocalProperty` on an imported root unprotects names for the
+    // **rest of the evaluation**, not just this file: MSBuild adds them to one
+    // per-evaluation set (`Evaluator.PerformDepthFirstPass` →
+    // `GlobalPropertiesToTreatAsLocal`) that is never cleared, so a write after
+    // the import — in this file, a later import, or the entry document — beats
+    // the global. It applies only to *global* properties, not reserved
+    // well-known names, so names in `state.reserved` stay protected.
     let imported_overrides = collect_local_overrides(doc.root_element());
     // Record the opt-out regardless of whether this walk had a matching global
     // to unprotect: the question a consumer asks is "could the document have
@@ -5810,10 +5810,11 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     state
         .locally_overridable
         .extend(imported_overrides.iter().cloned());
-    let unprotected: Vec<String> = imported_overrides
-        .into_iter()
-        .filter(|name| !state.reserved.contains(name) && state.protected.remove(name))
-        .collect();
+    for name in imported_overrides {
+        if !state.reserved.contains(&name) {
+            state.protected.remove(&name);
+        }
+    }
     // Nested SDK roots are spliced through the same machinery the
     // entry project uses: `resolve_project_sdk` returns paths on a
     // happy resolve and pushes the appropriate diagnostic for every
@@ -5898,9 +5899,6 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     walk_doc_body(doc.root_element(), &file_dir, state);
     if let Some(paths) = nested_sdk.as_ref() {
         walk_external_file(&paths.targets, doc.root_element().range(), state);
-    }
-    for name in unprotected {
-        state.protected.insert(name);
     }
     state.import_site_span = saved_import_site_span;
     state.in_sdk_subtree = saved_in_sdk_subtree;
