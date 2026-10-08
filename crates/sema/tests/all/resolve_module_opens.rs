@@ -17,8 +17,7 @@
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
-    resolve_project,
+    ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file, resolve_project,
 };
 use rowan::TextRange;
 
@@ -34,7 +33,7 @@ fn resolve(src: &str) -> ResolvedFile {
     resolve_file(
         &file,
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery,
     )
 }
@@ -142,7 +141,10 @@ fn open_project_module_resolves_cross_file_value() {
     // value `foo` into unqualified scope.
     let src1 = "module Shared\nlet foo = 1\n";
     let src2 = "module Other\nopen Shared\nlet y = foo\n";
-    let proj = resolve_project(&[impl_file(src1), impl_file(src2)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src1), impl_file(src2)],
+        crate::common::fsharp_core_env(),
+    );
 
     let i = src2.rfind("foo").expect("`foo` use");
     let use_range = TextRange::new(
@@ -177,7 +179,10 @@ fn dotted_head_through_open_module_does_not_mis_route_cross_file() {
     // (we defer; never a wrong cross-file Item).
     let src1 = "module Sub\nlet bar = 99\n";
     let src2 = "namespace Demo\nmodule Shared =\n    module Sub =\n        let bar = 7\nmodule N =\n    open Shared\n    let y = Sub.bar\n";
-    let proj = resolve_project(&[impl_file(src1), impl_file(src2)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src1), impl_file(src2)],
+        crate::common::fsharp_core_env(),
+    );
     let rf = proj.file(1);
 
     // Nothing in `Sub.bar` may resolve to a cross-file (file0) item.
@@ -215,7 +220,10 @@ fn cross_file_alias_open_stays_conservative() {
     let src0 = "namespace Demo\nmodule Other =\n    let foo = 9\nmodule Target =\n    let foo = 5\nmodule Alias = Target\n";
     let src1 =
         "namespace App\nmodule N =\n    open Demo.Other\n    open Demo.Alias\n    let y = foo\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
 
     let i = src1.rfind("foo").expect("`foo` use");
     let use_range = TextRange::new(
@@ -401,7 +409,7 @@ fn later_namespace_open_wins_over_earlier_module_open() {
     let src_c = "namespace C\nmodule N =\n    open A.Container\n    open B\n    open Shared\n    let y = foo\n";
     let proj = resolve_project(
         &[impl_file(src_a), impl_file(src_b), impl_file(src_c)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
 
     let i = src_c.rfind("foo").expect("`foo` use");
@@ -433,7 +441,10 @@ fn global_qualified_open_resolves_to_the_root_module() {
     // `open global.Root` brings file0's `v` into scope (FCS: decl in file0).
     let src1 = "module Root\nlet v = 1\n";
     let src2 = "namespace N\nmodule Root =\n    let v = 2\nmodule Inner =\n    open global.Root\n    let y = v\n";
-    let proj = resolve_project(&[impl_file(src1), impl_file(src2)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src1), impl_file(src2)],
+        crate::common::fsharp_core_env(),
+    );
 
     let i = src2.rfind("v").expect("`v` use"); // `let y = v`
     let use_range = TextRange::new(
@@ -491,7 +502,10 @@ fn an_auto_open_submodule_active_pattern_wins_over_an_earlier_same_named_excepti
     // and staled the exception). The resolution now agrees with FCS exactly.
     let src1 = "namespace Probe\n\nexception Red of int\n\n[<AutoOpen>]\nmodule Sub =\n    let (|Red|_|) (x: int) = if x = 0 then Some () else None\n";
     let src2 = "open Probe\nlet f x =\n    match x with\n    | Red -> 1\n    | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src1), impl_file(src2)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src1), impl_file(src2)],
+        crate::common::fsharp_core_env(),
+    );
 
     let i = src2.rfind("Red").expect("`Red` pattern use");
     let use_range = TextRange::new(
@@ -532,7 +546,10 @@ fn an_auto_open_submodule_active_pattern_wins_over_an_earlier_same_named_excepti
 fn a_later_auto_open_submodules_type_evicts_an_earlier_ones_value() {
     let src1 = "namespace Probe\n\n[<AutoOpen>]\nmodule A =\n    let Clash () = 1\n\n[<AutoOpen>]\nmodule B =\n    type Clash() =\n        member _.X = 2\n";
     let src2 = "open Probe\nlet y = Clash ()\n";
-    let proj = resolve_project(&[impl_file(src1), impl_file(src2)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src1), impl_file(src2)],
+        crate::common::fsharp_core_env(),
+    );
 
     let i = src2.find("Clash").expect("`Clash` use");
     let use_range = TextRange::new(
@@ -560,7 +577,10 @@ fn a_later_auto_open_submodules_type_evicts_an_earlier_ones_value() {
 fn current_files_own_auto_open_submodule_wins_over_an_earlier_files() {
     let src0 = "namespace Probe\n\n[<AutoOpen>]\nmodule Zebra =\n    let clash () = 1\n";
     let src1 = "namespace Probe\n\n[<AutoOpen>]\nmodule Alpha =\n    let clash () = 2\n\nnamespace Other\n\nmodule Client =\n    open Probe\n    let y = clash\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
 
     let i = src1.rfind("clash").expect("`clash` use");
     let use_range = TextRange::new(
@@ -607,7 +627,7 @@ fn later_compile_order_auto_open_submodule_wins_a_collision_across_two_preceding
     let src2 = "namespace Other\n\nmodule Client =\n    open Probe\n    let y = clash\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
 
     let i = src2.rfind("clash").expect("`clash` use");
@@ -716,7 +736,7 @@ fn a_cross_file_later_direct_case_wins_over_an_earlier_auto_open_value() {
     let src2 = "namespace Other\n\nmodule Client =\n    open Probe\n    let y = Clash\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("Clash").expect("`Clash` use");
     let use_range = TextRange::new(
@@ -746,7 +766,7 @@ fn a_cross_file_later_direct_case_wins_in_pattern_position() {
     let src2 = "namespace Other\n\nmodule Client =\n    open Probe\n    let f x =\n        match x with\n        | Clash _ -> 1\n        | _ -> 0\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("Clash").expect("`Clash` pattern use");
     let use_range = TextRange::new(
@@ -781,7 +801,7 @@ fn a_cross_file_later_auto_open_value_wins_over_a_direct_case() {
     let src2 = "namespace Other\n\nmodule Client =\n    open Probe\n    let y = Clash\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("Clash").expect("`Clash` use");
     let use_range = TextRange::new(
@@ -824,7 +844,7 @@ fn a_plain_augmented_member_does_not_shadow_a_direct_case() {
             impl_file(src2),
             impl_file(src3),
         ],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src3.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -867,7 +887,7 @@ fn an_extern_bearing_auto_open_submodule_defers_the_straddle() {
             impl_file(src2),
             impl_file(src3),
         ],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src3.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -895,7 +915,7 @@ fn a_cross_file_later_auto_open_case_wins_a_straddle_in_both_namespaces() {
     let src2 = "namespace Other\n\nmodule Client =\n    open Probe\n    let y = Clash\n    let f x =\n        match x with\n        | Clash _ -> 1\n        | _ -> 0\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     for (label, use_idx) in [("expression", 0usize), ("pattern", 1usize)] {
         let res = proj
@@ -924,7 +944,7 @@ fn a_plain_augmented_member_with_no_direct_case_is_unbound() {
     let src2 = "namespace Z\n\nmodule O =\n    open N\n    let y = X\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -952,7 +972,7 @@ fn an_auto_open_augmented_member_is_brought_into_scope() {
     let src2 = "namespace Z\n\nmodule O =\n    open N\n    let y = X\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -1017,7 +1037,7 @@ fn a_same_file_auto_open_value_wins_the_expression_over_a_direct_case() {
     let src0 = "namespace N\n\nexception X of int\n\n[<AutoOpen>]\nmodule A =\n    let X = 0\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(STRADDLE_USER)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let (file_idx, def_range) =
         resolved_target(&proj, 1, straddle_expr_use()).expect("expr `X` resolves cross-file");
@@ -1037,7 +1057,7 @@ fn a_same_file_direct_case_wins_the_pattern_over_an_auto_open_value() {
     let src0 = "namespace N\n\nexception X of int\n\n[<AutoOpen>]\nmodule A =\n    let X = 0\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(STRADDLE_USER)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let (file_idx, def_range) =
         resolved_target(&proj, 1, straddle_pat_use()).expect("pattern `X` resolves cross-file");
@@ -1060,7 +1080,7 @@ fn a_same_file_straddle_is_block_order_independent() {
     let src0 = "namespace N\n\n[<AutoOpen>]\nmodule A =\n    let X = 0\n\nexception X of int\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(STRADDLE_USER)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     // `find('X')` is now the auto-open `let X` (declared first); `rfind('X')` the
     // direct exception (declared second).
@@ -1092,7 +1112,7 @@ fn a_same_file_auto_open_case_wins_both_namespaces() {
     let src0 = "namespace N\n\nexception X of int\n\n[<AutoOpen>]\nmodule A =\n    exception X of string\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(STRADDLE_USER)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let auto_open = one_char(src0.rfind('X').expect("auto-open `exception X`"));
     let (expr_file, expr_def) =
@@ -1112,7 +1132,10 @@ fn a_same_file_auto_open_case_wins_both_namespaces() {
 fn an_open_from_outside_hides_a_modules_private_value() {
     let src0 = "namespace N\nmodule M =\n    let private secret = 1\n";
     let src1 = "namespace N\nmodule Other =\n    open M\n    let y = secret\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let i = src1.rfind("secret").expect("`secret` use");
     let use_range = TextRange::new(
         u32::try_from(i).unwrap().into(),
@@ -1131,7 +1154,10 @@ fn an_open_from_outside_hides_a_modules_private_value() {
 fn an_open_from_outside_still_sees_a_modules_public_value() {
     let src0 = "namespace N\nmodule M =\n    let shared = 1\n";
     let src1 = "namespace N\nmodule Other =\n    open M\n    let y = shared\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let i = src1.rfind("shared").expect("`shared` use");
     let use_range = TextRange::new(
         u32::try_from(i).unwrap().into(),
@@ -1169,7 +1195,7 @@ fn a_private_redeclaration_does_not_hide_the_surviving_public_export() {
             impl_file(src_a),
             impl_file(src2),
         ],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -1202,7 +1228,7 @@ fn a_public_redeclaration_over_an_earlier_private_wins_from_outside() {
     let src2 = "namespace Z\nmodule O =\n    open N.M\n    let y = X\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -1235,7 +1261,7 @@ fn an_inherited_private_case_is_not_committed_through_a_collapsed_open() {
     let src2 = "namespace Z\nmodule O =\n    open N.M\n    let x = X\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -1263,7 +1289,7 @@ fn a_public_union_case_survives_a_private_value_collapse() {
     let src2 = "namespace Z\nmodule O =\n    open N.M\n    let x = X\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -1291,7 +1317,10 @@ fn a_public_union_case_survives_a_private_value_collapse() {
 fn a_module_private_value_resolves_from_a_sibling_in_the_namespace() {
     let src0 = "namespace N\nmodule private M =\n    let X = 1\n";
     let src1 = "namespace N\nmodule Other =\n    open M\n    let y = X\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let i = src1.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
         u32::try_from(i).unwrap().into(),
@@ -1320,7 +1349,7 @@ fn a_module_private_value_shadows_a_fallback_open_from_a_sibling() {
     let src2 = "namespace N\nmodule Other =\n    open A.F\n    open M\n    let y = X\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src_a), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
@@ -1356,7 +1385,7 @@ fn a_value_in_a_private_module_is_not_recovered_through_a_collapsed_open() {
     let src2 = "namespace Z\nmodule O =\n    open N.M\n    let x = X\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let i = src2.rfind("X").expect("`X` use");
     let use_range = TextRange::new(
