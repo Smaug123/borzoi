@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a2b2b501186f029bd5e37e09027c5e34ce4c5c9b8009c7345965e377df09b78c # shrinks to items = [Hidden { slot: (1, 1, false), is_public: true }, Val { slot: (1, 1, false), key: Some(0), is_public: true, kept: false }]
+cc 29cab70a29cda415edf6dc50385fcae391648231fea2c5faaa00713afd11dccb # shrinks to items = [Val { slot: (0, 0, false), key: Some(0), is_public: true, kept: true }, Hidden { slot: (0, 0, false), is_public: true }]
