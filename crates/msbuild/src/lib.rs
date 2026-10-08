@@ -38,6 +38,7 @@ pub use diagnostic::{
     PackageReferenceUncertaintyCauseKind, StructuralCompileItemUncertainty,
     StructuralPackageReferenceUncertainty,
 };
+pub use glob::GlobDecline;
 pub use imports::detect_implicit_imports;
 /// Escape text that entered from *outside* MSBuild's escaped-value domain — a
 /// filesystem path, a computed toolset seed — so that seeding it as a property
@@ -199,9 +200,12 @@ pub struct GlobRequest<'a> {
 /// Returns the final, ordered list of absolute paths to splice as items
 /// — each already joined onto [`GlobRequest::base_dir`], with excludes
 /// applied and ordering finalised (F# compile order is load-bearing, so
-/// the resolver owns a deterministic order). An empty result means the
-/// element contributed no files; the evaluator emits no diagnostic for
-/// that (MSBuild is silent when a glob matches nothing).
+/// the resolver owns the order, and it must be MSBuild's). An empty result
+/// means the element contributed no files; the evaluator emits no
+/// diagnostic for that (MSBuild is silent when a glob matches nothing).
+/// A [`GlobDecline`] means the resolver cannot reproduce MSBuild's list:
+/// the evaluator records [`DiagnosticKind::GlobDeclined`] and marks the
+/// item set uncertain rather than splice a guess.
 ///
 /// Expanding globs requires touching the filesystem (and matching
 /// MSBuild's `FileMatcher` semantics), which is policy the parser stays
@@ -211,7 +215,7 @@ pub struct GlobRequest<'a> {
 /// supplies no resolver, a wildcard `Include` surfaces as
 /// [`DiagnosticKind::UnsupportedGlob`] and an `Exclude` as
 /// [`DiagnosticKind::UnsupportedItemOperation`] (the phase-8 behaviour).
-pub type GlobResolver<'r> = dyn Fn(&GlobRequest<'_>) -> Vec<PathBuf> + 'r;
+pub type GlobResolver<'r> = dyn Fn(&GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> + 'r;
 
 /// Which item element produced a [`ResolvedItem`]. This is provenance, not
 /// the whole ordering model: F#'s effective source order also considers
@@ -583,12 +587,14 @@ pub struct ParsedProject {
     /// otherwise falls back to per-file handling) should gate on this, not
     /// `is_partial`.
     ///
-    /// **SDK provenance.** Compile-affecting uncertainty in the entry SDK's own
-    /// installation tree is *tolerated* (not counted), because that tree's
-    /// conditional default-item machinery is present in every project and never
-    /// decides which hand-written sources compile. The same uncertainty in the
-    /// entry project or a user-authored import (`Directory.Build.*`, an explicit
-    /// `<Import>`) is respected.
+    /// **SDK provenance.** Inside the entry SDK's own installation tree, a
+    /// Compile operation whose own gate is a clean false — it runs in no build —
+    /// is tolerated, and so is its group's gate: the SDK's default-item
+    /// machinery is full of those, gated on properties we cannot always pin. An
+    /// SDK Compile operation that *can* run is honoured exactly like a
+    /// user-authored one, because it can decide which sources compile: the
+    /// default `**/*.fs` glob runs whenever `EnableDefaultCompileItems` ends up
+    /// `true`, and puts its files in front of the project's own list.
     ///
     /// **Known gaps** (deliberately *not* flagged; each is an "under-resolve,
     /// possibly wrong in a rare contrived case" rather than a common hazard):
@@ -600,6 +606,10 @@ pub struct ParsedProject {
     /// - A user `<Import>` skipped by an *unsupported/undefined condition*
     ///   (rather than an unresolved path or a missing file, both of which *are*
     ///   flagged) could hide Compile items.
+    /// - A *structural* failure inside the SDK tree — an SDK sub-import we
+    ///   cannot follow — is still tolerated, though such an import could carry
+    ///   a Compile operation that runs. Flagging it today declines 7 of the
+    ///   pinned corpus's 62 compared projects.
     /// - A `<Target>` that mutates `@(Compile)` (adds/removes items at build
     ///   time) is *deliberately* not flagged. We never run targets, so a
     ///   target-added source is invisible — but this is the common, intended

@@ -20,11 +20,10 @@
 //!   exists (MSBuild passes literal includes through unconditionally); an
 //!   `Exclude` that matches it still removes it.
 //! - A **wildcard** fragment is expanded against the filesystem enumerated
-//!   under its fixed (wildcard-free) prefix, with excludes applied, sorted
-//!   lexicographically within the fragment (our deterministic stand-in for
-//!   MSBuild's filesystem enumeration order — see the `crate::glob` module).
-//!   The prefix may climb out of the project (`../shared/*.fs`) or be
-//!   absolute (`/opt/lib/*.fs`).
+//!   under its fixed (wildcard-free) prefix, with excludes applied, in
+//!   MSBuild's `OrdinalIgnoreCase` order within the fragment (see the
+//!   `crate::glob` module). The prefix may climb out of the project
+//!   (`../shared/*.fs`) or be absolute (`/opt/lib/*.fs`).
 //! - **Excludes** are matched in the same absolute frame as the candidates:
 //!   a relative exclude is anchored at the project directory, an absolute
 //!   one kept as-is. So a relative include with an absolute exclude (e.g.
@@ -37,23 +36,34 @@
 //!
 //! ## Correctness envelope
 //!
+//! The resolver commits a list only when it is MSBuild's list; otherwise it
+//! returns a [`GlobDecline`] and the evaluator marks the item set uncertain.
+//!
 //! - Recursive (`**`) globs descend at most `MAX_GLOB_DEPTH` components
-//!   to bound runaway enumeration; deeper files are not matched.
-//! - Symlinked **files** are enumerated (MSBuild includes them); symlinked
-//!   **directories** are not recursed into (bounds symlink-cycle blowups).
+//!   to bound runaway enumeration; meeting a directory at that depth
+//!   declines ([`GlobDecline::DepthLimit`]).
+//! - Symlinked **files** and **directories** are followed, as MSBuild
+//!   follows them (probed), and listed under the link's name. A link back to
+//!   a directory already on the walk's path is a cycle, which declines
+//!   ([`GlobDecline::SymlinkCycle`]) rather than guess what MSBuild does.
+//! - Selection and order decline where ASCII case or a non-ASCII name would
+//!   decide them (see `crate::glob`).
 
 use std::path::{Path, PathBuf};
 
 use crate::GlobRequest;
 
-use crate::glob::{Pattern, select, split_glob_root, split_segments};
+use crate::glob::{
+    GlobDecline, Pattern, select, split_glob_root, split_segments, survives_excludes,
+};
 
 /// Maximum number of path components a recursive (`**`) glob descends.
 const MAX_GLOB_DEPTH: usize = 64;
 
 /// Expand one [`GlobRequest`] into the ordered list of absolute paths to
-/// splice as items. Suitable as a [`crate::GlobResolver`].
-pub fn resolve(req: &GlobRequest<'_>) -> Vec<PathBuf> {
+/// splice as items — exactly MSBuild's list, or a [`GlobDecline`] saying why
+/// it cannot be reproduced. Suitable as a [`crate::GlobResolver`].
+pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
     // The base directory is a *literal* filesystem path (it may legitimately
     // contain `*`/`?` on a case-sensitive Unix filesystem), so it is split
     // into literal segments once and never parsed as a glob. Every relative
@@ -123,13 +133,14 @@ pub fn resolve(req: &GlobRequest<'_>) -> Vec<PathBuf> {
             // A `**`-free tail matches files at one fixed depth below the
             // walk root, so there is no point descending further.
             let depth = frag_root.tail_depth.unwrap_or(MAX_GLOB_DEPTH);
+            let recursive = frag_root.tail_depth.is_none();
             // Re-attach the literal prefix to each enumerated path so keys,
             // include pattern, and excludes all live in one frame. `select`
             // matches/orders them and returns leading-`/`-stripped absolute
             // strings (its `split_segments` drops the empty root segment),
             // which we re-root at `/`.
             let prefix = anchor_segs.join("/");
-            let keys: Vec<String> = enumerate_files(&walk_root, depth)
+            let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive)?
                 .into_iter()
                 .map(|rel| {
                     if prefix.is_empty() {
@@ -140,7 +151,7 @@ pub fn resolve(req: &GlobRequest<'_>) -> Vec<PathBuf> {
                 })
                 .collect();
             let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-            for key in select(&key_refs, std::slice::from_ref(&pat), &excludes) {
+            for key in select(&key_refs, std::slice::from_ref(&pat), &excludes)? {
                 out.push(Path::new("/").join(&key));
             }
         } else {
@@ -151,12 +162,12 @@ pub fn resolve(req: &GlobRequest<'_>) -> Vec<PathBuf> {
             // `PathBuf` via `base_dir.join` (an absolute `norm` replaces the
             // base, a relative one extends it).
             let key = anchor_segs.join("/");
-            if !excludes.iter().any(|e| e.matches(&key)) {
+            if survives_excludes(&excludes, &key)? {
                 out.push(req.base_dir.join(&norm));
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Build an absolute path from a glob root's leading wildcard-free segments
@@ -177,28 +188,58 @@ fn abs_from_segments(prefix: &[String]) -> PathBuf {
 
 /// Recursively list files under `base`, returning their `/`-joined paths
 /// relative to `base`. A file at depth `d` (i.e. with `d` path segments)
-/// is included only when `d <= max_depth`. Symlinked files are enumerated
-/// but directory symlinks are not recursed into, and unreadable directories
-/// are skipped (see the module's correctness envelope).
-fn enumerate_files(base: &Path, max_depth: usize) -> Vec<String> {
+/// is included only when `d <= max_depth`. Symlinked files and directories
+/// are followed, as MSBuild follows them, and listed under the link's own
+/// name; unreadable directories are skipped. Declines where the walk would
+/// miss files MSBuild might see: a directory left unvisited at the depth
+/// bound of a `recursive` walk, or a symlink cycle (see the module's
+/// correctness envelope).
+fn enumerate_files(
+    base: &Path,
+    max_depth: usize,
+    recursive: bool,
+) -> Result<Vec<String>, GlobDecline> {
     let mut out = Vec::new();
-    walk(base, "", 0, max_depth, &mut out);
-    out
+    let mut ancestors: Vec<PathBuf> = std::fs::canonicalize(base).into_iter().collect();
+    walk(base, "", 0, max_depth, recursive, &mut ancestors, &mut out)?;
+    Ok(out)
 }
 
-fn walk(dir: &Path, prefix: &str, depth: usize, max_depth: usize, out: &mut Vec<String>) {
+/// One directory of [`enumerate_files`]. `ancestors` holds the canonical path
+/// of every directory on the way down to `dir`, `dir` included, so a link
+/// back to one of them is recognised as a cycle.
+fn walk(
+    dir: &Path,
+    prefix: &str,
+    depth: usize,
+    max_depth: usize,
+    recursive: bool,
+    ancestors: &mut Vec<PathBuf>,
+    out: &mut Vec<String>,
+) -> Result<(), GlobDecline> {
     if depth >= max_depth {
-        return;
+        if recursive {
+            return Err(GlobDecline::DepthLimit {
+                dir: dir.to_string_lossy().into_owned(),
+            });
+        }
+        return Ok(());
     }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     for entry in entries.flatten() {
-        // `DirEntry::file_type` does not follow symlinks.
-        let file_type = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
+        // `DirEntry::file_type` does not follow symlinks; `fs::metadata` does.
+        let is_dir = match entry.file_type() {
+            Ok(t) if t.is_file() => false,
+            Ok(t) if t.is_dir() => true,
+            Ok(t) if t.is_symlink() => match std::fs::metadata(entry.path()) {
+                Ok(m) if m.is_file() => false,
+                Ok(m) if m.is_dir() => true,
+                _ => continue,
+            },
+            _ => continue,
         };
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -207,24 +248,29 @@ fn walk(dir: &Path, prefix: &str, depth: usize, max_depth: usize, out: &mut Vec<
         } else {
             format!("{prefix}/{name}")
         };
-        if file_type.is_file() {
+        if !is_dir {
             out.push(rel);
-        } else if file_type.is_dir() {
-            walk(&entry.path(), &rel, depth + 1, max_depth, out);
-        } else if file_type.is_symlink() {
-            // MSBuild's wildcard expansion includes symlinked *files*, so
-            // follow the link (`fs::metadata`, unlike `file_type`, resolves
-            // it) and emit it when the target is a file. Symlinked
-            // directories are deliberately *not* recursed into — that bounds
-            // symlink-cycle blowups (see the module's correctness envelope).
-            if std::fs::metadata(entry.path())
-                .map(|m| m.is_file())
-                .unwrap_or(false)
-            {
-                out.push(rel);
-            }
+            continue;
         }
+        // Only a directory the walk will actually enter can close a cycle.
+        if depth + 1 >= max_depth && !recursive {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if ancestors.contains(&canonical) {
+            return Err(GlobDecline::SymlinkCycle {
+                path: path.to_string_lossy().into_owned(),
+            });
+        }
+        ancestors.push(canonical);
+        let walked = walk(&path, &rel, depth + 1, max_depth, recursive, ancestors, out);
+        ancestors.pop();
+        walked?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -264,6 +310,7 @@ mod tests {
             excludes: &excludes,
         };
         resolve(&req)
+            .expect("the fixture is decidable")
             .into_iter()
             .map(|p| {
                 p.strip_prefix(base)
@@ -375,7 +422,10 @@ mod tests {
             include: "a.fs",
             excludes: &excludes,
         };
-        assert_eq!(resolve(&req), vec![tmp.path().join("a.fs")]);
+        assert_eq!(
+            resolve(&req).expect("the fixture is decidable"),
+            vec![tmp.path().join("a.fs")]
+        );
     }
 
     // ----- Globs rooted outside the project directory -----
@@ -394,7 +444,11 @@ mod tests {
             include,
             excludes: &excludes,
         };
-        resolve(&req).into_iter().map(canon).collect()
+        resolve(&req)
+            .expect("the fixture is decidable")
+            .into_iter()
+            .map(canon)
+            .collect()
     }
 
     #[test]
@@ -437,9 +491,8 @@ mod tests {
         // Include's own (project-relative, `..`-preserving) frame, *not* by
         // collapsing to a canonical absolute path. So an absolute exclude
         // does NOT cross-match a `../shared/*.fs` include — both siblings
-        // survive. This is verified against real `dotnet msbuild` by
-        // `parent_relative_glob_absolute_exclude_is_noop` in the
-        // glob_msbuild_diff oracle; the contrast (a same-frame relative
+        // survive. This is verified against real MSBuild by the
+        // parent-relative corners of `tests/glob_msbuild_diff.rs`; the contrast (a same-frame relative
         // exclude *does* filter) is `parent_relative_glob_honours_exclude`
         // above.
         let tmp = TempDir::new().unwrap();
@@ -466,9 +519,8 @@ mod tests {
         // legal on Unix) must be treated literally: `*.fs` enumerates the
         // real `a*b` directory and must not let the `*` in the name match a
         // sibling `axb`. Folding base_dir into the glob string would
-        // over-match the sibling. Pinned against `dotnet msbuild` by
-        // `base_dir_wildcard_is_literal_not_glob` in the glob_msbuild_diff
-        // oracle.
+        // over-match the sibling. Pinned against real MSBuild by the
+        // literal-base corner of `tests/glob_msbuild_diff.rs`.
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("a*b");
         let sibling = tmp.path().join("axb");
@@ -518,21 +570,6 @@ mod tests {
         symlink(&target, base.join("linked.fs")).unwrap();
         fs::write(base.join("a.fs"), b"// f\n").unwrap();
         assert_eq!(run_rel(base, "*.fs", &[]), ["a.fs", "linked.fs"]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlinked_directory_is_not_recursed() {
-        // Directory symlinks are deliberately not recursed (cycle
-        // protection), so a recursive glob does not pull files through them.
-        use std::os::unix::fs::symlink;
-        let ext = TempDir::new().unwrap();
-        fs::write(ext.path().join("hidden.fs"), b"// f\n").unwrap();
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-        symlink(ext.path(), base.join("linkdir")).unwrap();
-        fs::write(base.join("a.fs"), b"// f\n").unwrap();
-        assert_eq!(run_rel(base, "**/*.fs", &[]), ["a.fs"]);
     }
 
     // ----- Exclude anchoring (relative vs absolute frames) -----
@@ -621,7 +658,9 @@ mod tests {
                     .filter(|p| naive_match(frag, p) && !excluded(p))
                     .map(|p| split_norm(p).join("/"))
                     .collect();
-                m.sort();
+                // MSBuild's `OrdinalIgnoreCase`; the generated names are
+                // ASCII and case-distinct, so this is total and decidable.
+                m.sort_by_key(|p| p.to_ascii_uppercase());
                 out.extend(m.into_iter().map(|p| base.join(p)));
             } else {
                 let n = frag.replace('\\', "/");
@@ -736,7 +775,7 @@ mod tests {
                 include: &sc.include,
                 excludes: &sc.excludes,
             };
-            let got = resolve(&req);
+            let got = resolve(&req).expect("the fixture is decidable");
             let want = reference(tmp.path(), &sc.files, &sc.include, &sc.excludes);
             assert_eq!(
                 got, want,
@@ -775,5 +814,64 @@ mod tests {
             ghost_passed >= 5,
             "ghost literals rarely passed through: {ghost_passed}/{n}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_directory_is_followed_under_the_links_name() {
+        // Probed (dotnet 10.0.301): MSBuild's `**` descends into a symlinked
+        // directory and reports its files under the link's path.
+        let ext = TempDir::new().unwrap();
+        fs::write(ext.path().join("hidden.fs"), b"// f\n").unwrap();
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        std::os::unix::fs::symlink(ext.path(), base.join("linkdir")).unwrap();
+        fs::write(base.join("a.fs"), b"// f\n").unwrap();
+        assert_eq!(run_rel(base, "**/*.fs", &[]), ["a.fs", "linkdir/hidden.fs"]);
+        assert_eq!(run_rel(base, "*/*.fs", &[]), ["linkdir/hidden.fs"]);
+        // An excluded link costs nothing.
+        assert_eq!(run_rel(base, "**/*.fs", &["linkdir/**"]), ["a.fs"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_cycle_declines() {
+        let tmp = fixture();
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("sub/back")).unwrap();
+        let excludes: Vec<String> = Vec::new();
+        let req = GlobRequest {
+            base_dir: tmp.path(),
+            include: "**/*.fs",
+            excludes: &excludes,
+        };
+        assert!(matches!(
+            resolve(&req),
+            Err(GlobDecline::SymlinkCycle { .. })
+        ));
+        // A single-level glob never descends, so the cycle decides nothing.
+        let req = GlobRequest {
+            base_dir: tmp.path(),
+            include: "*.fs",
+            excludes: &excludes,
+        };
+        assert_eq!(resolve(&req).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_recursive_walk_that_reaches_the_depth_bound_declines() {
+        let tmp = TempDir::new().unwrap();
+        let mut deep = tmp.path().to_path_buf();
+        for _ in 0..=MAX_GLOB_DEPTH {
+            deep.push("d");
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("x.fs"), b"// f\n").unwrap();
+        let excludes: Vec<String> = Vec::new();
+        let req = GlobRequest {
+            base_dir: tmp.path(),
+            include: "**/*.fs",
+            excludes: &excludes,
+        };
+        assert!(matches!(resolve(&req), Err(GlobDecline::DepthLimit { .. })));
     }
 }

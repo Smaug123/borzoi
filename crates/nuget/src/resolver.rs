@@ -7,7 +7,8 @@
 //! # The algorithm
 //!
 //! This is NuGet's `PackageReference` resolution — `RemoteDependencyWalker`
-//! plus `GraphOperations.Analyze`, which is what `dotnet restore` itself runs —
+//! plus `GraphOperations.Analyze`, the legacy dependency resolver that
+//! `dotnet restore` runs under `RestoreUseLegacyDependencyResolver` —
 //! restricted to what a warm cache can answer. Three rules, in NuGet's terms:
 //!
 //! - **Nearest wins.** A dependency edge is *eclipsed* when an ancestor already
@@ -18,8 +19,12 @@
 //!   neither-is-an-ancestor-of-the-other positions, both survive and the
 //!   *highest* selected version wins.
 //! - **A nearer-but-lower edge is a downgrade.** If the eclipsing ancestor's
-//!   range is *lower* than the deeper one, restore reports NU1605 and fails —
-//!   unless the version it settled on happens to satisfy the deeper range anyway.
+//!   range is *lower* than the deeper one, the deeper edge is dropped as
+//!   *potentially* downgraded, and a second pass decides: it is held to the
+//!   ancestor edge on that package that *survived* the walk (not the declared
+//!   one that marked it), and restore reports NU1605 and fails only if that
+//!   edge is lower, resolves outside the deeper range, and is the accepted
+//!   version (`downgrade_is_relevant`).
 //!
 //! # What the losers cost us
 //!
@@ -65,6 +70,13 @@
 //! asset filters are unmodelled and decline — but only when they sit on a
 //! version the graph actually settled on, since restore does not look inside a
 //! package it rejected either.
+//!
+//! One failure is *not* yet declined on: cousin conflicts whose outcomes depend
+//! on each other, where each conflict's winner sits beneath the other's loser.
+//! Restore's conflict pass can settle neither and fails with NU1106, but the
+//! walk never expands a loser, so it cannot see the dependence and commits a
+//! closure. `mutually_dependent_cousin_conflicts_fail_restore` in
+//! `tests/all/resolver_diff.rs` pins it, ignored until it is fixed.
 
 use crate::{
     InstalledPackage, NuGetFramework, NuGetVersion, PackageId, PackageIdentity, PackagePaths,
@@ -430,25 +442,80 @@ fn finish(walk: Walk, cache: &mut PackageCache) -> Result<ResolvedPackageClosure
     }
 
     // NU1605: a nearer edge that pins the package below what a deeper one needs.
-    // Restore only counts it when the *accepted* version fails to satisfy the
-    // deeper range — the package may have been bumped into range anyway, by a
-    // cousin or by a feed that had nothing lower.
-    for (id, range) in &walk.downgrades {
-        match walk.selected.get(id) {
-            Some(version) if range.satisfies(version) => {}
-            Some(version) => {
-                return Err(ResolveDecline::Downgrade {
-                    id: id.clone(),
-                    selected: Box::new(version.clone()),
-                    required: Box::new(range.clone()),
-                });
-            }
-            // The eclipsing edge was itself dropped, so nothing pins the package.
-            None => {}
+    for downgrade in &walk.downgrades {
+        // The package left the closure altogether, so nothing pins it.
+        let Some(selected) = walk.selected.get(&downgrade.id) else {
+            continue;
+        };
+        if downgrade_is_relevant(&walk, downgrade, selected) {
+            return Err(ResolveDecline::Downgrade {
+                id: downgrade.id.clone(),
+                selected: Box::new(selected.clone()),
+                required: Box::new(downgrade.range.clone()),
+            });
         }
     }
 
     Ok(ResolvedPackageClosure { packages })
+}
+
+/// `GraphOperations.CheckCycleAndNearestWins` plus `IsRelevantDowngrade`: does
+/// restore fail this potentially-downgraded edge with NU1605?
+///
+/// The walk marks an edge potentially downgraded on the *nearest* ancestor that
+/// declares the same package lower. Restore's verdict is a second, separate
+/// pass, and it looks at different edges: every ancestor from the parent up to
+/// the root, at the edges that *survived* the walk there (an eclipsed edge
+/// never becomes a node, so it is not a candidate), in that order, each
+/// overriding the last. An ancestor edge at least as high as this one clears
+/// it; a lower one whose own resolved version still satisfies this range leaves
+/// the verdict as it was; any other lower one makes it a downgrade *to that
+/// edge*. And the downgrade only fails restore if that edge is accepted, which
+/// is to say it settled on the winning version.
+///
+/// The order rarely matters: an edge survives only when no ancestor above it
+/// declares the same package, so an ancestor chain holds at most one surviving
+/// edge per package unless one dependency list names a package twice. The loop
+/// follows NuGet's order regardless.
+///
+/// Every surviving edge's resolved version is its lower bound: [`finish`] has
+/// already declined if that bound is not on disk, which is the only way restore
+/// could have resolved the edge higher.
+///
+/// A floating deeper range is held to the settled version directly, as a
+/// conservative stand-in. NuGet compares floats by their release prefix, which
+/// [`is_at_least`] does not model, and only this direction of error is safe:
+/// it can decline where restore succeeds, never the reverse.
+fn downgrade_is_relevant(
+    walk: &Walk,
+    downgrade: &PotentialDowngrade,
+    selected: &NuGetVersion,
+) -> bool {
+    if downgrade.range.is_floating() {
+        return !downgrade.range.satisfies(selected);
+    }
+
+    let mut held_to: Option<NuGetVersion> = None;
+    let mut ancestor = Some(downgrade.parent);
+    while let Some(index) = ancestor {
+        for (id, range) in &walk.surviving[index] {
+            if id != &downgrade.id {
+                continue;
+            }
+            if is_at_least(range, &downgrade.range) {
+                held_to = None;
+                continue;
+            }
+            let resolved =
+                exact_lower_bound(id, range).expect("every surviving edge has a lower bound");
+            if !downgrade.range.satisfies(&resolved) {
+                held_to = Some(resolved);
+            }
+        }
+        ancestor = walk.parents[index];
+    }
+
+    held_to.is_some_and(|version| &version == selected)
 }
 
 /// One node of the walked dependency tree.
@@ -479,12 +546,27 @@ struct Walk {
     selected: BTreeMap<PackageId, NuGetVersion>,
     /// Edges dropped as potential downgrades, to be adjudicated once the
     /// selected versions are known.
-    downgrades: Vec<(PackageId, VersionRange)>,
+    downgrades: Vec<PotentialDowngrade>,
+    /// Node index → its parent's index, `None` for the synthetic root.
+    parents: Vec<Option<usize>>,
+    /// Node index → the edges that survived the walk there (those classified
+    /// [`Verdict::Acceptable`]), whether or not the walk then expanded them.
+    /// These are the nodes restore's tree holds below that node, and so the
+    /// candidates its downgrade check compares against.
+    surviving: Vec<Vec<(PackageId, VersionRange)>>,
     cycle: Option<Vec<PackageId>>,
     /// Packages whose dependency list we cannot model, held rather than raised:
     /// a version that is still moving may be one restore rejects, and restore
     /// never looks at a rejected package's dependencies either.
     shapes: BTreeMap<(PackageId, String), ShapeError>,
+}
+
+/// An edge the walk dropped because an ancestor declares the same package lower.
+struct PotentialDowngrade {
+    id: PackageId,
+    range: VersionRange,
+    /// The node whose dependency this edge is.
+    parent: usize,
 }
 
 /// What NuGet's `CalculateDependencyResult` says about one candidate edge.
@@ -512,6 +594,8 @@ fn walk(
         edges: BTreeMap::new(),
         selected: BTreeMap::new(),
         downgrades: Vec::new(),
+        parents: Vec::new(),
+        surviving: vec![Vec::new()],
         cycle: None,
         shapes: BTreeMap::new(),
     };
@@ -535,7 +619,11 @@ fn walk(
                     continue;
                 }
                 Verdict::PotentiallyDowngraded => {
-                    walk.downgrades.push((id.clone(), range.clone()));
+                    walk.downgrades.push(PotentialDowngrade {
+                        id: id.clone(),
+                        range: range.clone(),
+                        parent: node,
+                    });
                     continue;
                 }
                 Verdict::Acceptable => {}
@@ -553,6 +641,7 @@ fn walk(
                 .entry(id.clone())
                 .or_default()
                 .push(range.clone());
+            walk.surviving[node].push((id.clone(), range.clone()));
 
             // Expand *only the winner's occurrence*. A node whose lower bound is
             // below the settled version is one restore resolves to a lower
@@ -577,9 +666,11 @@ fn walk(
                 parent: Some(node),
                 dep_index,
             });
+            walk.surviving.push(Vec::new());
             stack.push(nodes.len() - 1);
         }
     }
+    walk.parents = nodes.iter().map(|node| node.parent).collect();
 
     // The settled version is the greatest lower bound among the *surviving
     // edges of this round*, recomputed from scratch. Carrying the previous

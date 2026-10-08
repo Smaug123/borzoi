@@ -794,6 +794,11 @@ fn render_diagnostic_kind(kind: &DiagnosticKind) -> String {
         DiagnosticKind::UnsupportedGlob { pattern } => {
             format!("a wildcard include `{pattern}` I don't expand")
         }
+        DiagnosticKind::GlobDeclined { include, reason } => {
+            format!(
+                "a wildcard include `{include}` whose MSBuild expansion I can't reproduce: {reason}"
+            )
+        }
         DiagnosticKind::UndefinedProperty { name } => {
             format!("`$({name})` isn't defined anywhere I can see")
         }

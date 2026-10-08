@@ -203,6 +203,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `infer_corpus_diff` | one per sampled file, and one per commit (agree or error-recovered, with both types when they differ). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
+| `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside. |
 
 An alt-binder entry says whether FCS checked its file cleanly (`fcs-clean`) or
 with errors (`fcs-check-errors`). In the latter it is usually FCS's isolation
@@ -233,10 +234,24 @@ had to be pinned for that:
   fail the sweep (`borzoi_oracle_harness::corpus_key`).
 
 The comparison helper is `borzoi_oracle_harness::manifest`, and the corpus key
-spelling `borzoi_oracle_harness::corpus_key`, both deliberately outside `sema`. The other crates' corpus gates still assert one-sided counts with slack
-— `cst`'s `MAX_WE_ACCEPT_FCS_REJECTS`, `assembly`'s `bcl_ref_pack_sweep`, the
-`corpus-diff` job's lack of an answered floor — and are the next candidates for
-it.
+spelling `borzoi_oracle_harness::corpus_key`, both deliberately outside `sema`.
+
+The whole-project gate (`ci.yml`'s `corpus-diff` job) uses the same helper over
+the pinned *project* corpus, with
+`crates/corpus-diff/manifests/project_corpus.txt` (see
+`docs/project-corpus-diff-runner.md`). Its corpus is a set of Git checkouts
+rather than a store path, so keys are taken relative to the checkouts' root, and
+its manifest has one more kind of line: each project's verdict, so a project
+that silently moves from comparable to skipped fails the gate. It used to have
+only a divergence ceiling, which a change making the LSP answer *nothing* for
+locals passed — project matches fell from 14,304 to 2,702 and the job stayed
+green. Regenerate it with
+`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`, run outside
+`nix develop`; the script materialises the corpus first when run locally.
+
+The other crates' corpus gates still assert one-sided counts with slack —
+`cst`'s `MAX_WE_ACCEPT_FCS_REJECTS`, `assembly`'s `bcl_ref_pack_sweep` — and are
+the next candidates for it.
 
 Two things follow for anyone adding a sweep:
 
@@ -562,6 +577,11 @@ BORZOI_PROJECT_LIST=/tmp/candidate/PATH/TO.fsproj \
   nix develop -c cargo run -p borzoi-corpus-diff
 ```
 
+Adding (or re-pinning) a project changes what the gate's manifest records, so
+the same pull request regenerates it
+(`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`) and the
+new project's lines are part of its diff.
+
 Not every revision survives this, and an old one is likelier not to: a project
 that pins `FSharp.Core` with `Include` while the SDK also adds it implicitly
 fails restore outright under the .NET 10 SDK (`NU1504`, duplicate
@@ -570,9 +590,8 @@ and it is exactly the kind of thing a stale fork pin walks into.
 
 ### Measurement, not gate
 
-The runner's own ratchets (`BORZOI_PROJECT_EXPECT_DIVERGENCES` and friends) are
-a gate, and they gate in `ci.yml`'s `corpus-diff` job, on the pull request,
-before the commit lands. This job is a measurement. It therefore does not fail
+The runner's own gates (zero divergences, then the exact manifest) gate in
+`ci.yml`'s `corpus-diff` job, on the pull request, before the commit lands. This job is a measurement. It therefore does not fail
 on the runner's exit code, because doing so would withhold the observation in
 exactly the run that found something. Divergence counts ride in `statistics` and
 the series carries the finding.

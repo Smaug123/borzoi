@@ -4,7 +4,9 @@
 //! `selectDependencyGroup`, …) pin the pieces; this file pins the *whole*
 //! offline resolve against the genuine PackageReference restore engine — the
 //! `resolve` op drives `RemoteDependencyWalker` + `GraphOperations.Analyze`,
-//! exactly what `dotnet restore` runs for an SDK-style project.
+//! NuGet's legacy dependency resolver. The .NET 10 SDK defaults to a separate
+//! resolver, and the two disagree on at least one graph
+//! (`mutually_dependent_cousin_conflicts_fail_restore`).
 //!
 //! The correctness policy (`docs/nuget-restore-plan.md`) is "resolve
 //! identically or degrade": whenever `resolve_offline` returns a closure it
@@ -30,10 +32,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use crate::common::{Oracle, SplitMix64};
+use crate::common::{Oracle, SplitMix64, gen_version_string};
 use borzoi_nuget::{
     DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId, PackageIdentity,
-    PackagePaths, VersionRange, resolve_offline,
+    PackagePaths, ResolveDecline, VersionRange, resolve_offline,
 };
 use serde_json::json;
 
@@ -220,17 +222,168 @@ fn oracle_set(oracle_packages: &serde_json::Value) -> BTreeSet<(String, String)>
         .collect()
 }
 
-/// The soundness check: run both sides over the same graph and require that a
-/// resolved closure exactly matches restore's. A decline asserts nothing.
+/// Why `dotnet restore` produced no closure, as the oracle reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RestoreFailure {
+    /// NU1101/NU1102: an accepted dependency has no package to resolve to.
+    Missing,
+    /// NU1108.
+    Cycle,
+    /// NU1106: cousin conflicts that each decide the other, so restore's
+    /// conflict pass can settle neither.
+    Undecided,
+    /// NU1107.
+    Conflict,
+    /// NU1605.
+    Downgrade,
+}
+
+/// What `dotnet restore` did with a graph: the one outcome class it lands in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RestoreOutcome {
+    Resolved(BTreeSet<(String, String)>),
+    Failed(RestoreFailure),
+}
+
+impl RestoreOutcome {
+    fn parse(response: &serde_json::Value) -> RestoreOutcome {
+        if response["resolved"]
+            .as_bool()
+            .expect("oracle resolved flag")
+        {
+            return RestoreOutcome::Resolved(oracle_set(&response["packages"]));
+        }
+        let reason = response["reason"].as_str().expect("oracle failure reason");
+        RestoreOutcome::Failed(match reason {
+            "missing" => RestoreFailure::Missing,
+            "cycle" => RestoreFailure::Cycle,
+            "undecided" => RestoreFailure::Undecided,
+            "conflict" => RestoreFailure::Conflict,
+            "downgrade" => RestoreFailure::Downgrade,
+            other => panic!("unknown oracle failure reason {other:?}"),
+        })
+    }
+
+    fn class(&self) -> &'static str {
+        match self {
+            RestoreOutcome::Resolved(_) => "resolved",
+            RestoreOutcome::Failed(RestoreFailure::Missing) => "missing",
+            RestoreOutcome::Failed(RestoreFailure::Cycle) => "cycle",
+            RestoreOutcome::Failed(RestoreFailure::Undecided) => "undecided",
+            RestoreOutcome::Failed(RestoreFailure::Conflict) => "conflict",
+            RestoreOutcome::Failed(RestoreFailure::Downgrade) => "downgrade",
+        }
+    }
+}
+
+/// What `resolve_offline` did with a graph, split by what it *claims*.
 ///
-/// Returns the pair `(resolved_here, oracle_resolved)` so callers writing
-/// hand scenarios can additionally assert the *expected* branch was taken.
-fn assert_sound(
+/// A closure claims to be restore's closure. Three declines claim more than "we
+/// cannot tell": that restore itself fails, and why. Every other decline claims
+/// nothing about restore at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OurOutcome {
+    Resolved(BTreeSet<(String, String)>),
+    ClaimsRestoreFails(RestoreFailure),
+    Declined(&'static str),
+}
+
+impl OurOutcome {
+    fn of(result: &Result<borzoi_nuget::ResolvedPackageClosure, ResolveDecline>) -> OurOutcome {
+        let decline = match result {
+            Ok(closure) => return OurOutcome::Resolved(closure_set(closure)),
+            Err(decline) => decline,
+        };
+        match decline {
+            ResolveDecline::DependencyCycle { .. } => {
+                OurOutcome::ClaimsRestoreFails(RestoreFailure::Cycle)
+            }
+            ResolveDecline::VersionConflict { .. } => {
+                OurOutcome::ClaimsRestoreFails(RestoreFailure::Conflict)
+            }
+            ResolveDecline::Downgrade { .. } => {
+                OurOutcome::ClaimsRestoreFails(RestoreFailure::Downgrade)
+            }
+            ResolveDecline::UnsupportedProjectFramework { .. } => {
+                OurOutcome::Declined("unsupported-framework")
+            }
+            ResolveDecline::FloatingRange { .. } => OurOutcome::Declined("floating"),
+            ResolveDecline::OpenLowerBound { .. } => OurOutcome::Declined("open-lower"),
+            ResolveDecline::ExclusiveLowerBound { .. } => OurOutcome::Declined("exclusive-lower"),
+            ResolveDecline::UnsatisfiedLowerBound { .. } => {
+                OurOutcome::Declined("unsatisfied-lower")
+            }
+            ResolveDecline::PackageRead { .. } => OurOutcome::Declined("package-read"),
+            ResolveDecline::DependencyAssetFilterUnsupported { .. } => {
+                OurOutcome::Declined("asset-filter")
+            }
+            ResolveDecline::DependencyWithoutRange { .. } => OurOutcome::Declined("no-range"),
+            ResolveDecline::UnresolvableLosingEdge { .. } => OurOutcome::Declined("losing-edge"),
+            ResolveDecline::GraphTooLarge => OurOutcome::Declined("too-large"),
+        }
+    }
+
+    fn class(&self) -> String {
+        match self {
+            OurOutcome::Resolved(_) => "resolved".to_owned(),
+            OurOutcome::ClaimsRestoreFails(failure) => {
+                format!("claims-{}", RestoreOutcome::Failed(*failure).class())
+            }
+            OurOutcome::Declined(why) => format!("declined-{why}"),
+        }
+    }
+}
+
+/// Both sides' outcome on one graph.
+struct Comparison {
+    ours: OurOutcome,
+    restore: RestoreOutcome,
+}
+
+/// Render a graph in full, so a generated failure can be lifted straight into a
+/// hand-written scenario.
+fn describe(tfm: &str, packages: &[Pkg], direct: &[(&str, &str)]) -> String {
+    let mut out = format!("tfm={tfm}\ndirect={direct:?}\n");
+    for pkg in packages {
+        let marker = if pkg.committed { "" } else { " (uncommitted)" };
+        out.push_str(&format!("  {} {}{marker}\n", pkg.id, pkg.version));
+        for group in &pkg.groups {
+            let deps = group
+                .deps
+                .iter()
+                .map(|dep| {
+                    let filter = if dep.include.is_some() || dep.exclude.is_some() {
+                        " +filter"
+                    } else {
+                        ""
+                    };
+                    format!("{} {}{filter}", dep.id, dep.range)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("    [{:?}] {deps}\n", group.tfm));
+        }
+    }
+    out
+}
+
+/// The differential: run both sides over the same graph and compare their
+/// outcome *classes*, not only their package sets.
+///
+/// - A closure must be restore's closure, exactly; and restore must have
+///   produced one at all. A version conflict, downgrade, cycle or missing
+///   package on restore's side therefore requires a decline on ours.
+/// - A decline that claims restore fails (a cycle, conflict or downgrade
+///   diagnosis) must be right that restore fails. Which of restore's errors it
+///   reports first is not compared: the two sides check in different orders,
+///   and a graph with two faults may be reported by either.
+/// - Any other decline makes no claim, and is always permitted.
+fn compare(
     oracle: &mut Oracle,
     tfm: &str,
     packages: &[Pkg],
     direct: &[(&str, &str)],
-) -> (bool, bool) {
+) -> Comparison {
     let root = tempfile::tempdir().expect("root");
     let universe = materialize(root.path(), packages);
 
@@ -249,34 +402,55 @@ fn assert_sound(
         "packages": universe,
         "direct": direct_json,
     }));
-    let oracle_resolved = response["resolved"]
-        .as_bool()
-        .expect("oracle resolved flag");
+    let restore = RestoreOutcome::parse(&response);
+    let result = resolve_offline(root.path(), &framework(tfm), &direct_reqs);
+    let ours = OurOutcome::of(&result);
 
-    let rust = resolve_offline(root.path(), &framework(tfm), &direct_reqs);
-
-    match &rust {
-        Ok(closure) => {
-            assert!(
-                oracle_resolved,
-                "resolve_offline produced a closure but `dotnet restore` would fail \
-                 (reason {:?}); over-resolution violates the correctness policy.\n\
-                 direct={direct:?}\nclosure={:?}",
-                response["reason"],
-                closure_set(closure),
-            );
+    match (&ours, &restore) {
+        (OurOutcome::Resolved(mine), RestoreOutcome::Resolved(theirs)) => {
             assert_eq!(
-                closure_set(closure),
-                oracle_set(&response["packages"]),
-                "resolved closure differs from `dotnet restore`.\ndirect={direct:?}",
+                mine,
+                theirs,
+                "resolved closure differs from `dotnet restore`.\n{}",
+                describe(tfm, packages, direct),
             );
         }
-        Err(_) => {
-            // Declining is always sound: we under-resolve, never mis-resolve.
+        (OurOutcome::Resolved(mine), RestoreOutcome::Failed(failure)) => {
+            panic!(
+                "resolve_offline produced a closure but `dotnet restore` fails ({failure:?}); \
+                 over-resolution violates the correctness policy.\nclosure={mine:?}\n{}",
+                describe(tfm, packages, direct),
+            );
         }
+        (OurOutcome::ClaimsRestoreFails(claim), RestoreOutcome::Resolved(theirs)) => {
+            panic!(
+                "resolve_offline declined claiming restore fails ({claim:?}), but `dotnet \
+                 restore` resolves.\ndecline={}\nrestore={theirs:?}\n{}",
+                result.as_ref().expect_err("a claim is a decline"),
+                describe(tfm, packages, direct),
+            );
+        }
+        (OurOutcome::ClaimsRestoreFails(_), RestoreOutcome::Failed(_))
+        | (OurOutcome::Declined(_), _) => {}
     }
 
-    (rust.is_ok(), oracle_resolved)
+    Comparison { ours, restore }
+}
+
+/// [`compare`], returning the pair `(resolved_here, oracle_resolved)` so callers
+/// writing hand scenarios can additionally assert the *expected* branch was
+/// taken.
+fn assert_sound(
+    oracle: &mut Oracle,
+    tfm: &str,
+    packages: &[Pkg],
+    direct: &[(&str, &str)],
+) -> (bool, bool) {
+    let comparison = compare(oracle, tfm, packages, direct);
+    (
+        matches!(comparison.ours, OurOutcome::Resolved(_)),
+        matches!(comparison.restore, RestoreOutcome::Resolved(_)),
+    )
 }
 
 // ============================================================================
@@ -797,33 +971,6 @@ fn randomised_soundness_sweep() {
     }
 }
 
-/// Deeper fresh-seed exploration; `#[ignore]`d because each graph runs a real
-/// restore walk. Run with `--ignored --nocapture` when hunting for divergences
-/// the fixed-seed sweep didn't reach.
-#[test]
-#[ignore]
-fn randomised_soundness_soak() {
-    let mut oracle = Oracle::spawn();
-    for seed in 0..40u64 {
-        let mut rng = SplitMix64(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(1));
-        for _ in 0..80 {
-            // Both shapes: the single-version graphs the earlier slices swept,
-            // and the multi-version ones whose conflicts slice 6b resolves.
-            let g = if rng.below(2) == 0 {
-                generate(&mut rng)
-            } else {
-                generate_multi_version(&mut rng)
-            };
-            let direct = g
-                .direct
-                .iter()
-                .map(|(id_, range_)| (id_.as_str(), range_.as_str()))
-                .collect::<Vec<_>>();
-            assert_sound(&mut oracle, &g.tfm, &g.packages, &direct);
-        }
-    }
-}
-
 // ============================================================================
 // Completeness on the version-consistent, acyclic, committed sub-envelope.
 // Here we must *not* decline: both sides resolve, to the identical closure.
@@ -1083,6 +1230,522 @@ fn a_resolved_closure_never_reads_the_versions_it_rejected() {
 }
 
 // ============================================================================
+// Wide graphs: the version and range vocabulary real nuspecs use
+// ============================================================================
+
+/// One graph's versions: distinct under NuGet equality, sorted ascending, each
+/// with the spelling it was generated as.
+///
+/// Drawn from the parser soak's [`gen_version_string`] rather than from a
+/// hand-picked list, so graphs meet multi-digit and four-part versions, numeric
+/// and alphanumeric prerelease labels, build metadata, and non-normalised
+/// spellings (`01.0`, `1.0.0.0`): the space the version differential already
+/// pins one string at a time. Spellings are restricted to the characters a
+/// nuspec attribute and a nupkg file name carry verbatim. The whitespace- and
+/// noise-bearing ones exist to exercise the version parser, which
+/// `version_diff` does.
+fn gen_version_pool(rng: &mut SplitMix64, want: usize) -> Vec<(String, NuGetVersion)> {
+    let mut pool: Vec<(String, NuGetVersion)> = Vec::new();
+    for _ in 0..want * 500 {
+        if pool.len() == want {
+            break;
+        }
+        let spelling = gen_version_string(rng);
+        let plain = !spelling.is_empty()
+            && spelling
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+        if !plain {
+            continue;
+        }
+        let Ok(parsed) = NuGetVersion::parse(&spelling) else {
+            continue;
+        };
+        if pool.iter().any(|(_, existing)| existing == &parsed) {
+            continue;
+        }
+        pool.push((spelling, parsed));
+    }
+    assert_eq!(pool.len(), want, "version pool generator degenerated");
+    pool.sort_by(|a, b| a.1.cmp(&b.1));
+    pool
+}
+
+/// One edge's range over `pool`, aimed at a target whose committed versions are
+/// the pool indices `committed` (sorted, non-empty).
+///
+/// The bounds are drawn from the pool, so they land on, between and around the
+/// versions that exist: that is what makes a bounded range exclude the version
+/// the graph settles on (restore's NU1107), and a nearer edge pin a package
+/// below what a deeper one needs (NU1605). Bounds are spelled either as
+/// generated or normalised, so a non-normalised spelling meets its normal form.
+///
+/// A `clean` range is one the resolver's envelope admits: an inclusive lower
+/// bound on a committed version. Otherwise the vocabulary adds the shapes it
+/// declines (exclusive and open lower bounds, floats, a lower bound that is not
+/// on disk), which matter wherever they *survive*, and also wherever they sit
+/// on an eclipsed or rejected edge and must not.
+fn gen_wide_range(
+    rng: &mut SplitMix64,
+    pool: &[(String, NuGetVersion)],
+    committed: &[usize],
+    clean: bool,
+) -> String {
+    let spell = |rng: &mut SplitMix64, index: usize| -> String {
+        if rng.below(2) == 0 {
+            pool[index].0.clone()
+        } else {
+            pool[index].1.to_normalized_string()
+        }
+    };
+    let close = |rng: &mut SplitMix64| if rng.below(2) == 0 { ')' } else { ']' };
+
+    let low = *rng.pick(committed);
+    let above: Vec<usize> = ((low + 1)..pool.len()).collect();
+    let absent: Vec<usize> = (0..pool.len()).filter(|i| !committed.contains(i)).collect();
+
+    match rng.below(if clean { 65 } else { 100 }) {
+        // Inclusive lower bound, unbounded above.
+        0..=14 => format!("[{}, )", spell(rng, low)),
+        // The bare-version spelling: NuGet's "this version or higher".
+        15..=24 => spell(rng, low),
+        // Exact pin.
+        25..=37 => format!("[{}]", spell(rng, low)),
+        // Bounded, inclusive lower: `[1.0, 2.0)` and `[1.0, 2.0]`.
+        38..=64 => match above.is_empty() {
+            true => format!("[{}, )", spell(rng, low)),
+            false => {
+                let high = *rng.pick(&above);
+                format!("[{}, {}{}", spell(rng, low), spell(rng, high), close(rng))
+            }
+        },
+        // Exclusive lower bound, with or without an upper one.
+        65..=70 => match above.is_empty() || rng.below(2) == 0 {
+            true => format!("({}, )", spell(rng, low)),
+            false => {
+                let high = *rng.pick(&above);
+                format!("({}, {}{}", spell(rng, low), spell(rng, high), close(rng))
+            }
+        },
+        // No lower bound at all.
+        71..=74 => format!("(, {}{}", spell(rng, low), close(rng)),
+        // A lower bound that is not on disk: restore resolves the edge to the
+        // lowest committed version above it, if any.
+        75..=84 => match absent.is_empty() {
+            true => format!("[{}, )", spell(rng, low)),
+            false => {
+                let missing = *rng.pick(&absent);
+                let above_missing: Vec<usize> = ((missing + 1)..pool.len()).collect();
+                if above_missing.is_empty() || rng.below(2) == 0 {
+                    format!("[{}, )", spell(rng, missing))
+                } else {
+                    let high = *rng.pick(&above_missing);
+                    format!(
+                        "[{}, {}{}",
+                        spell(rng, missing),
+                        spell(rng, high),
+                        close(rng)
+                    )
+                }
+            }
+        },
+        // Floating, in the shapes nuspecs and project files use.
+        85..=92 => {
+            let v = &pool[low].1;
+            match rng.below(5) {
+                0 => "*".to_owned(),
+                1 => format!("{}.*", v.major()),
+                2 => format!("{}.{}.*", v.major(), v.minor()),
+                3 => format!("{}.{}.{}-*", v.major(), v.minor(), v.patch()),
+                _ => format!("[{}.*, )", v.major()),
+            }
+        }
+        _ => format!("[{}, )", spell(rng, low)),
+    }
+}
+
+/// Graphs over a [`gen_version_pool`] and [`gen_wide_range`]s: several versions
+/// per id, dense acyclic edges (so diamonds and cousins are the norm), and a
+/// sprinkling of back-edges, asset filters and multi-TFM groups.
+///
+/// Half the graphs are *clean*: every range is inside the resolver's envelope
+/// and every version is committed, so the sweep's budget goes on the outcomes
+/// restore itself decides between (a closure, a conflict, a downgrade, a
+/// cycle). The other half add the declined range shapes and uncommitted
+/// versions, whose every placement must still decline or be ignored exactly as
+/// restore ignores it.
+fn generate_wide(rng: &mut SplitMix64) -> Generated {
+    let clean = rng.below(2) == 0;
+    let pool_size = 5 + rng.below(3);
+    let pool = gen_version_pool(rng, pool_size);
+    let ids = 3 + rng.below(4);
+
+    // Each id's committed versions, as sorted pool indices.
+    let versions: Vec<Vec<usize>> = (0..ids)
+        .map(|_| {
+            let want = 1 + rng.below(4);
+            let mut chosen: Vec<usize> = Vec::new();
+            while chosen.len() < want {
+                let index = rng.below(pool.len());
+                if !chosen.contains(&index) {
+                    chosen.push(index);
+                }
+            }
+            chosen.sort_unstable();
+            chosen
+        })
+        .collect();
+
+    let mut packages = Vec::new();
+    for (node, node_versions) in versions.iter().enumerate() {
+        for &index in node_versions {
+            let mut deps = Vec::new();
+            for (target, target_versions) in versions.iter().enumerate() {
+                let forward = target > node && rng.below(2) == 0;
+                let back = target <= node && rng.below(60) == 0;
+                if !(forward || back) {
+                    continue;
+                }
+                let mut dep = Dep::new(
+                    &maybe_recase(rng, &format!("P{target}")),
+                    &gen_wide_range(rng, &pool, target_versions, clean),
+                );
+                if rng.below(80) == 0 {
+                    dep.include = Some("compile".to_owned());
+                }
+                deps.push(dep);
+            }
+            let groups = if rng.below(10) == 0 {
+                vec![
+                    Group {
+                        tfm: Some("net6.0".to_owned()),
+                        deps,
+                    },
+                    Group {
+                        tfm: Some("netstandard2.0".to_owned()),
+                        deps: vec![],
+                    },
+                ]
+            } else {
+                vec![Group {
+                    tfm: Some("net8.0".to_owned()),
+                    deps,
+                }]
+            };
+            packages.push(Pkg {
+                id: format!("P{node}"),
+                version: pool[index].0.clone(),
+                groups,
+                committed: clean || rng.below(15) != 0,
+            });
+        }
+    }
+
+    // One to three distinct direct requirements, biased towards the roots of the
+    // DAG so that most of the graph is reachable.
+    let mut direct = Vec::new();
+    let mut chosen: Vec<usize> = Vec::new();
+    for _ in 0..(1 + rng.below(3)) {
+        let target = rng.below(ids.min(3));
+        if chosen.contains(&target) {
+            continue;
+        }
+        chosen.push(target);
+        direct.push((
+            maybe_recase(rng, &format!("P{target}")),
+            gen_wide_range(rng, &pool, &versions[target], clean),
+        ));
+    }
+
+    Generated {
+        tfm: "net8.0".to_owned(),
+        packages,
+        direct,
+    }
+}
+
+impl Generated {
+    fn compare(&self, oracle: &mut Oracle) -> Comparison {
+        let direct = self
+            .direct
+            .iter()
+            .map(|(id_, range_)| (id_.as_str(), range_.as_str()))
+            .collect::<Vec<_>>();
+        compare(oracle, &self.tfm, &self.packages, &direct)
+    }
+
+    /// Every range in the graph, direct and transitive, with the id it targets.
+    fn ranges(&self) -> impl Iterator<Item = (&str, &str)> {
+        let transitive = self.packages.iter().flat_map(|pkg| {
+            pkg.groups
+                .iter()
+                .flat_map(|group| group.deps.iter())
+                .map(|dep| (dep.id.as_str(), dep.range.as_str()))
+        });
+        self.direct
+            .iter()
+            .map(|(id_, range_)| (id_.as_str(), range_.as_str()))
+            .chain(transitive)
+    }
+
+    /// The shapes a generated graph is meant to exercise, for the census.
+    fn features(&self) -> Features {
+        let parsed: Vec<VersionRange> = self.ranges().map(|(_, range_)| range(range_)).collect();
+        let package_versions: Vec<NuGetVersion> = self
+            .packages
+            .iter()
+            .map(|pkg| version(&pkg.version))
+            .collect();
+
+        // A diamond: some id reached from two distinct parents (the project
+        // itself counting as one).
+        let mut parents: std::collections::BTreeMap<String, BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (id_, _) in &self.direct {
+            parents
+                .entry(id_.to_ascii_lowercase())
+                .or_default()
+                .insert(String::new());
+        }
+        for pkg in &self.packages {
+            for dep in pkg.groups.iter().flat_map(|group| group.deps.iter()) {
+                parents
+                    .entry(dep.id.to_ascii_lowercase())
+                    .or_default()
+                    .insert(pkg.id.to_ascii_lowercase());
+            }
+        }
+
+        Features {
+            bounded: parsed.iter().any(|r| {
+                !r.is_floating()
+                    && r.has_lower_bound()
+                    && r.has_upper_bound()
+                    && r.min_version() != r.max_version()
+            }),
+            exact: parsed.iter().any(|r| {
+                !r.is_floating() && r.has_upper_bound() && r.min_version() == r.max_version()
+            }),
+            prerelease: package_versions.iter().any(NuGetVersion::is_prerelease),
+            four_part: package_versions.iter().any(|v| v.revision() != 0),
+            multi_digit: package_versions.iter().any(|v| {
+                [v.major(), v.minor(), v.patch(), v.revision()]
+                    .iter()
+                    .any(|&part| part >= 10)
+            }),
+            diamond: parents.values().any(|from| from.len() >= 2),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Features {
+    /// An edge with distinct lower and upper bounds: `[1.0, 2.0)`.
+    bounded: bool,
+    /// An exact pin: `[1.2.3]`.
+    exact: bool,
+    prerelease: bool,
+    four_part: bool,
+    multi_digit: bool,
+    diamond: bool,
+}
+
+/// What a sweep over generated graphs actually reached. Agreement on a shape the
+/// generator never builds is vacuous, so each sweep asserts floors on this.
+#[derive(Debug, Default)]
+struct Census {
+    graphs: usize,
+    /// Restore's outcome class.
+    restore: std::collections::BTreeMap<&'static str, usize>,
+    /// Our outcome class, against restore's.
+    pairs: std::collections::BTreeMap<(String, &'static str), usize>,
+    /// Graphs both sides resolved, by the shapes they contain.
+    resolved_with: FeatureCounts,
+    /// Graphs restore fails with a version conflict or a downgrade, by the
+    /// shapes they contain.
+    conflict_or_downgrade_with: FeatureCounts,
+}
+
+#[derive(Debug, Default)]
+struct FeatureCounts {
+    bounded: usize,
+    exact: usize,
+    prerelease: usize,
+    four_part: usize,
+    multi_digit: usize,
+    diamond: usize,
+}
+
+impl FeatureCounts {
+    fn add(&mut self, features: Features) {
+        self.bounded += usize::from(features.bounded);
+        self.exact += usize::from(features.exact);
+        self.prerelease += usize::from(features.prerelease);
+        self.four_part += usize::from(features.four_part);
+        self.multi_digit += usize::from(features.multi_digit);
+        self.diamond += usize::from(features.diamond);
+    }
+
+    fn min(&self) -> usize {
+        [
+            self.bounded,
+            self.exact,
+            self.prerelease,
+            self.four_part,
+            self.multi_digit,
+            self.diamond,
+        ]
+        .into_iter()
+        .min()
+        .expect("non-empty")
+    }
+}
+
+impl Census {
+    fn record(&mut self, generated: &Generated, comparison: &Comparison) {
+        self.graphs += 1;
+        let restore = comparison.restore.class();
+        *self.restore.entry(restore).or_default() += 1;
+        *self
+            .pairs
+            .entry((comparison.ours.class(), restore))
+            .or_default() += 1;
+
+        let features = generated.features();
+        if matches!(comparison.ours, OurOutcome::Resolved(_)) {
+            self.resolved_with.add(features);
+        }
+        if matches!(
+            comparison.restore,
+            RestoreOutcome::Failed(RestoreFailure::Conflict | RestoreFailure::Downgrade)
+        ) {
+            self.conflict_or_downgrade_with.add(features);
+        }
+    }
+
+    fn restore_count(&self, class: &str) -> usize {
+        self.restore.get(class).copied().unwrap_or(0)
+    }
+
+    fn ours_resolved(&self) -> usize {
+        self.pairs
+            .iter()
+            .filter(|((ours, _), _)| ours == "resolved")
+            .map(|(_, count)| count)
+            .sum()
+    }
+
+    /// Fail unless every outcome class and every shape appears at least `floor`
+    /// times where it matters: in graphs both sides resolve (so a closure
+    /// containing the shape was compared), and in graphs restore fails on a
+    /// conflict or downgrade (so a decline was required in its presence).
+    fn assert_floors(&self, floor: usize) {
+        eprintln!("census over {} graphs", self.graphs);
+        eprintln!("  restore outcome: {:?}", self.restore);
+        for ((ours, restore), count) in &self.pairs {
+            eprintln!("  ours {ours:<28} restore {restore:<10} {count}");
+        }
+        eprintln!("  both resolved, containing: {:?}", self.resolved_with);
+        eprintln!(
+            "  restore conflict/downgrade, containing: {:?}",
+            self.conflict_or_downgrade_with
+        );
+        for class in ["resolved", "missing", "cycle", "conflict", "downgrade"] {
+            assert!(
+                self.restore_count(class) >= floor,
+                "generator degenerated: restore outcome {class:?} reached only {} time(s) \
+                 in {} graphs (floor {floor})",
+                self.restore_count(class),
+                self.graphs,
+            );
+        }
+        assert!(
+            self.ours_resolved() >= floor,
+            "generator degenerated: only {} closure(s) to compare (floor {floor})",
+            self.ours_resolved(),
+        );
+        assert!(
+            self.resolved_with.min() >= floor,
+            "generator degenerated: some shape is never in a compared closure \
+             (floor {floor}): {:?}",
+            self.resolved_with,
+        );
+        assert!(
+            self.conflict_or_downgrade_with.min() >= floor,
+            "generator degenerated: some shape is never in a graph restore rejects \
+             (floor {floor}): {:?}",
+            self.conflict_or_downgrade_with,
+        );
+    }
+}
+
+#[test]
+fn wide_graphs_resolve_identically() {
+    let mut oracle = Oracle::spawn();
+    let mut census = Census::default();
+    for seed in [0x31de_u64, 0xB0DE, 0x7A11, 0x5CA1E] {
+        let mut rng = SplitMix64(seed);
+        for _ in 0..150 {
+            let g = generate_wide(&mut rng);
+            let comparison = g.compare(&mut oracle);
+            census.record(&g, &comparison);
+        }
+    }
+    census.assert_floors(10);
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok().map(|value| {
+        value
+            .parse()
+            .unwrap_or_else(|e| panic!("{name}={value:?} is not a u64: {e}"))
+    })
+}
+
+/// Fresh-seed exploration over every generator; `#[ignore]`d because each graph
+/// runs a real restore walk. CI runs it on every relevant change.
+///
+/// The seed is the wall clock unless `BORZOI_NUGET_RESOLVER_SOAK_SEED` fixes
+/// it, and is printed first so a failure reproduces;
+/// `BORZOI_NUGET_RESOLVER_SOAK_GRAPHS` sets the volume.
+#[test]
+#[ignore = "fresh-seed soak; CI runs it, run it locally when touching the resolver"]
+fn randomised_soundness_soak() {
+    let seed = env_u64("BORZOI_NUGET_RESOLVER_SOAK_SEED").unwrap_or_else(|| {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos() as u64
+    });
+    let graphs = env_u64("BORZOI_NUGET_RESOLVER_SOAK_GRAPHS").unwrap_or(3000) as usize;
+    println!("resolver soak seed: {seed} (graphs={graphs})");
+
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(seed);
+    let mut census = Census::default();
+    for _ in 0..graphs {
+        // The single-version graphs, the multi-version ones whose conflicts
+        // slice 6b resolves, and the wide vocabulary. Only the last is counted:
+        // the floors below are about the shapes it exists to reach.
+        match rng.below(4) {
+            0 => {
+                generate(&mut rng).compare(&mut oracle);
+            }
+            1 => {
+                generate_multi_version(&mut rng).compare(&mut oracle);
+            }
+            _ => {
+                let g = generate_wide(&mut rng);
+                let comparison = g.compare(&mut oracle);
+                census.record(&g, &comparison);
+            }
+        }
+    }
+    census.assert_floors(graphs / 300);
+}
+
+// ============================================================================
 // The two over-resolutions review found, pinned
 // ============================================================================
 
@@ -1176,4 +1839,148 @@ fn an_asset_filter_on_a_rejected_version_does_not_decline() {
         rust,
         "P 1.0 is rejected, so its unmodelled asset filter is never read"
     );
+}
+
+// ============================================================================
+// Downgrade adjudication: which nearer edge a potential downgrade is held to
+// ============================================================================
+
+/// The nearer edge that makes a deeper one *potentially* downgraded need not be
+/// the one restore finally holds it to.
+///
+/// `P1 → G[2.0]` is potentially downgraded by its grandparent's `P0 → G[1.0]`.
+/// But that edge is itself eclipsed by the direct `G[3.0]`, so restore never
+/// creates its node. Restore's downgrade check looks at the ancestors' edges
+/// that *survived*, which here is only the root's `G[3.0]`. That is at least
+/// `[2.0]`, so there is no downgrade and restore resolves
+/// `{P0, P1, G 3.0}`. Comparing `[2.0]` against the settled `G 3.0` instead
+/// reports a downgrade restore never reports. Found by
+/// `wide_graphs_resolve_identically`.
+#[test]
+fn a_downgrade_is_judged_against_surviving_edges_not_declared_ones() {
+    let mut oracle = Oracle::spawn();
+    let (rust, oracle_ok) = assert_sound(
+        &mut oracle,
+        "net8.0",
+        &[
+            Pkg::simple(
+                "P0",
+                "1.0.0",
+                vec![Dep::new("P1", "[1.0.0, )"), Dep::new("G", "[1.0.0]")],
+            ),
+            Pkg::simple("P1", "1.0.0", vec![Dep::new("G", "[2.0.0]")]),
+            Pkg::simple("G", "1.0.0", vec![]),
+            Pkg::simple("G", "2.0.0", vec![]),
+            Pkg::simple("G", "3.0.0", vec![]),
+        ],
+        &[("P0", "[1.0.0, )"), ("G", "[3.0.0]")],
+    );
+    assert!(oracle_ok, "restore holds P1's G edge to the root's G[3.0]");
+    assert!(rust, "and so must we: there is no downgrade to decline on");
+}
+
+/// A downgrade restore records against a nearer edge that then *loses* its
+/// conflict is not one restore fails on: only a downgrade to the accepted
+/// version counts.
+///
+/// `B → G[1.0]` sits beside `B → C`, so `C → G[2.0, 3.0)` is potentially
+/// downgraded by it; and `A → G[3.0]` is a cousin that raises G to 3.0, so
+/// B's edge loses. The settled G 3.0 is outside C's `[2.0, 3.0)`, but restore
+/// does not fail, because the version it would have downgraded C to was
+/// rejected.
+#[test]
+fn a_downgrade_to_a_rejected_version_does_not_fail_restore() {
+    let mut oracle = Oracle::spawn();
+    let (rust, oracle_ok) = assert_sound(
+        &mut oracle,
+        "net8.0",
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("G", "[3.0.0, )")]),
+            Pkg::simple(
+                "B",
+                "1.0.0",
+                vec![Dep::new("C", "[1.0.0, )"), Dep::new("G", "[1.0.0, )")],
+            ),
+            Pkg::simple("C", "1.0.0", vec![Dep::new("G", "[2.0.0, 3.0.0)")]),
+            Pkg::simple("G", "1.0.0", vec![]),
+            Pkg::simple("G", "2.0.0", vec![]),
+            Pkg::simple("G", "3.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert!(
+        oracle_ok,
+        "restore rejects B's G 1.0, so its downgrade of C is moot"
+    );
+    assert!(rust, "and so must we");
+}
+
+/// The control for the two above: the same shape with the nearer edge
+/// *accepted* is a real NU1605, and both sides must fail it.
+#[test]
+fn a_downgrade_to_the_accepted_version_fails_on_both_sides() {
+    let mut oracle = Oracle::spawn();
+    let (rust, oracle_ok) = assert_sound(
+        &mut oracle,
+        "net8.0",
+        &[
+            Pkg::simple(
+                "B",
+                "1.0.0",
+                vec![Dep::new("C", "[1.0.0, )"), Dep::new("G", "[1.0.0, )")],
+            ),
+            Pkg::simple("C", "1.0.0", vec![Dep::new("G", "[2.0.0, 3.0.0)")]),
+            Pkg::simple("G", "1.0.0", vec![]),
+            Pkg::simple("G", "2.0.0", vec![]),
+        ],
+        &[("B", "[1.0.0, )")],
+    );
+    assert!(!oracle_ok, "restore fails the downgrade (NU1605)");
+    assert!(!rust, "and so must we");
+}
+
+// ============================================================================
+// Ambiguous cousins: conflicts restore cannot settle
+// ============================================================================
+
+/// Two cousin conflicts that each decide the other.
+///
+/// `A → X[1.0] → Y[3.0]` and `B → Y[1.0] → X[2.0]`: X 2.0 wins only if Y 1.0
+/// (its parent) does, and Y 3.0 wins only if X 1.0 (its parent) does. The
+/// legacy restore engine's conflict pass (`GraphOperations.TryResolveConflicts`,
+/// what the oracle runs) accepts neither, and a real `dotnet restore` with
+/// `RestoreUseLegacyDependencyResolver=true` fails it with NU1106 on .NET 8 and
+/// .NET 10 alike. The .NET 10 default resolver instead writes
+/// `{A, B, X 1.0, Y 3.0}`. `resolve_offline` settles on `{A, B, X 2.0, Y 1.0}`,
+/// which neither engine produces: whichever cousin the walk reaches first
+/// raises its package, and a losing occurrence's subtree, which is never
+/// expanded, is exactly what would show the two conflicts depend on each other.
+///
+/// Ignored because it is a live over-resolution with no fix in this change:
+/// detecting the dependence means reading the losers' dependencies, which the
+/// resolver is designed never to do (see
+/// `a_resolved_closure_never_reads_the_versions_it_rejected`), and which
+/// engine's answer is the reference is undecided.
+#[test]
+#[ignore = "live over-resolution: mutually dependent cousin conflicts (NU1106)"]
+fn mutually_dependent_cousin_conflicts_fail_restore() {
+    let mut oracle = Oracle::spawn();
+    let (rust, oracle_ok) = assert_sound(
+        &mut oracle,
+        "net8.0",
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[1.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("Y", "[1.0.0, )")]),
+            Pkg::simple("X", "1.0.0", vec![Dep::new("Y", "[3.0.0, )")]),
+            Pkg::simple("X", "2.0.0", vec![]),
+            Pkg::simple("Y", "1.0.0", vec![Dep::new("X", "[2.0.0, )")]),
+            Pkg::simple("Y", "3.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert!(
+        !oracle_ok,
+        "the legacy engine leaves X and Y undecided (NU1106)"
+    );
+    assert!(!rust, "and so we must decline");
 }
