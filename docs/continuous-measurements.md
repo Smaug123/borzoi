@@ -223,6 +223,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
 | `fsproj_msbuild_corpus_diff` (msbuild) | one per pinned `.fsproj`, `<project>\t<outcomes>`: a project-level `error(...)`, or each facet's `match`, `decline(<first cause>)` or `skip(<reason>)`. A tab separates the two because a path may contain a space. A run over a project list checks just the listed projects' entries. |
 | `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
+| `doc_id_csharp/<pack>` (assembly) | per targeting pack (`Microsoft.NETCore.App.Ref`, `Microsoft.AspNetCore.App.Ref`): the pack version; one per DLL with its shipped-key and hit counts, or `no-xml`; one per shipped doc key our generated IDs miss, with its mechanically decided cause (a docs-pipeline spelling such as `ei-at-separator`, or an absence such as `type-absent`); and one per ID two members generate. A miss no cause explains fails before the manifest is read. |
 
 The cst manifests count their dominant bucket for the same reason
 `resolve_corpus_diff` counts matches: every other file is listed by path, so a
