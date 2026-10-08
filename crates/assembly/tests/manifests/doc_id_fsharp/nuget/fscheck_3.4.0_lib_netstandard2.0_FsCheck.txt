@@ -1,0 +1,28 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
+hits 408
+keys 430
+miss F:FsCheck.Rnd.Gamma
+miss F:FsCheck.Rnd.Seed
+miss M:FsCheck.Internals.Shrink.signedNumber``5(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{FsCheck.Internals.Numeric.MaxValue,``0}},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{FsCheck.Internals.Numeric.MinValue,``0}},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``2},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``3},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``0},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``4},Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Core.FSharpFunc{``3,``1}},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``1,``4}},Microsoft.FSharp.Core.FSharpFunc{``4,Microsoft.FSharp.Core.FSharpFunc{``1,``4}},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``4,``0}},Microsoft.FSharp.Core.FSharpFunc{``0,``0},``0)
+miss M:FsCheck.Internals.Shrink.unsignedNumber``6(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``2},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``3},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``0},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``4},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``5},Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Core.FSharpFunc{``3,``1}},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``1,``4}},Microsoft.FSharp.Core.FSharpFunc{``4,Microsoft.FSharp.Core.FSharpFunc{``1,``4}},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``4,``5}},``0)
+miss P:FsCheck.Config.Default
+miss P:FsCheck.Config.EndSize
+miss P:FsCheck.Config.Every
+miss P:FsCheck.Config.EveryShrink
+miss P:FsCheck.Config.MaxRejected
+miss P:FsCheck.Config.MaxTest
+miss P:FsCheck.Config.Name
+miss P:FsCheck.Config.ParallelRunConfig
+miss P:FsCheck.Config.Quick
+miss P:FsCheck.Config.QuickThrowOnFailure
+miss P:FsCheck.Config.QuietOnSuccess
+miss P:FsCheck.Config.Replay
+miss P:FsCheck.Config.Runner
+miss P:FsCheck.Config.StartSize
+miss P:FsCheck.Config.Verbose
+miss P:FsCheck.Config.VerboseThrowOnFailure
+miss P:FsCheck.Outcome.Shrink
+miss P:FsCheck.ParallelRunConfig.MaxDegreeOfParallelism
+pickle undecodable: unsupported pickle tag 9 in u_ty tag 9 (Anon — no MiniLibFs fixture exercises it)

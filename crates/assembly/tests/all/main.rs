@@ -14,7 +14,7 @@ mod bcl_ref_pack_sweep;
 mod display_member;
 mod display_type;
 mod doc_id_diff;
-mod doc_id_fsharp_core_diff;
+mod doc_id_fsharp_diff;
 mod explicit_interface;
 mod fail_loud;
 mod fsharp_pickle_diff;

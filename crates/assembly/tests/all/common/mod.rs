@@ -600,6 +600,33 @@ pub fn ensure_doc_ids_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the DocIdsFs F# fixture once and return the path to the produced
+/// `.dll`. The sibling `DocIdsFs.xml` holds the F# compiler's documentation
+/// comment IDs — fsc writes them with the same functions FCS uses to compute
+/// `XmlDocSig` — for every declaration in the fixture, each of which carries a
+/// `///` comment.
+pub fn ensure_doc_ids_fs_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("DocIdsFs", "DocIdsFs.dll"))
+        .1
+        .as_path()
+}
+
+/// The `tools/fcs-dump` build output directory. Besides `fcs-dump.dll` it holds
+/// the F#-compiled assemblies fcs-dump references — `FSharp.Core`,
+/// `FSharp.Compiler.Service`, `FSharp.DependencyManager.Nuget`,
+/// `FSharp.SystemTextJson` — each beside the doc XML its package ships
+/// (`CopyDocumentationFilesFromPackages`). Their versions are pinned by
+/// `fcs-dump.fsproj`, so this is a host-independent corpus of real F#
+/// libraries with their compilers' own doc keys.
+pub fn fcs_dump_bin_dir() -> PathBuf {
+    ensure_fcs_dump_built()
+        .parent()
+        .expect("fcs-dump.dll has a parent dir")
+        .to_path_buf()
+}
+
 /// Build the MetadataEmitter tool once and run it for `shape`, returning the
 /// raw PE bytes it writes to stdout.
 ///
