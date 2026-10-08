@@ -1,0 +1,13 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
+dup M:System.Text.Json.Serialization.JsonListConverter.CanConvert(System.Type) x2
+dup M:System.Text.Json.Serialization.JsonMapConverter.CanConvert(System.Type) x2
+dup M:System.Text.Json.Serialization.JsonRecordConverter.CanConvert(System.Type) x2
+dup M:System.Text.Json.Serialization.JsonSetConverter.CanConvert(System.Type) x2
+dup M:System.Text.Json.Serialization.JsonTupleConverter.CanConvert(System.Type) x2
+dup M:System.Text.Json.Serialization.JsonUnionConverter.CanConvert(System.Type) x2
+hits 71
+keys 72
+miss P:System.Text.Json.Serialization.JsonNameAttribute.Field(System.String)
+pickle decoded

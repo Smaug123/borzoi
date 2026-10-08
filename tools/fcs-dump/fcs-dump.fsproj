@@ -10,6 +10,12 @@
     <!-- The SDK auto-references FSharp.Core at its bundled version; we want
          to pin a newer patch to satisfy FCS, so opt out of the implicit ref. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+    <!-- Copy each package's doc XML beside its DLL in the build output. The
+         borzoi-assembly doc-ID differential (`doc_id_fsharp_diff.rs`) grades
+         the F#-compiled references below against the keys their compiler
+         wrote, and this output directory is the one place every lane has
+         them at pinned versions. -->
+    <CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>
   </PropertyGroup>
 
   <ItemGroup>
