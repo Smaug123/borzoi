@@ -5,34 +5,42 @@
 //! `<member name="…">` per documented type/member, keyed by a *documentation
 //! comment ID string* (ECMA-334 / the C# spec, §"Processing the documentation
 //! file"): `T:System.Console`, `M:System.Console.WriteLine(System.String)`,
-//! `P:`, `F:`, `E:`. The format is a function of **metadata**, not source
-//! language — Roslyn (for the BCL) and the F# compiler (for `FSharp.Core`) both
-//! emit the same standard IDs for the same IL shape — so we can reconstruct an
-//! ID from our own [`Entity`]/[`Member`] model and it matches the file's key
-//! regardless of which compiler wrote the assembly. That decouples doc lookup
-//! from FCS entirely. (The ID *format* is language-agnostic; the caveat is that
-//! our F# member *projection* re-interprets some members away from their IL
-//! kind — see "Limitations".)
+//! `P:`, `F:`, `E:`.
 //!
-//! This module is the *generation* half (slice 1): a pure
-//! [`Entity`]/[`Member`] → ID-string function. Finding and parsing the `.xml`,
-//! and wiring the result into hover, are later slices.
+//! Two compilers write the keys we must match, in two dialects. Roslyn keys
+//! every member from its IL metadata, so for a C#/BCL assembly the ID is a
+//! function of the [`Entity`]/[`Member`] model and this module computes it. The
+//! F# compiler keys a member from its *F#* signature (`XmlDocSigOfVal` and
+//! friends in `TypedTreeOps`): SRTP witness parameters prepended, a
+//! two-dimensional array as `[0:]`, measure types erased but measure type
+//! parameters counted, no `~` on a conversion operator, an extension member
+//! under its extension container with its dots kept, a record field and a
+//! settable property's setter keyed `P:`, a union case `T:`. Much of that is not
+//! recoverable from IL — but fsc pickles the key it wrote for every documented
+//! val, record field and union case into the assembly's signature data, and the
+//! projection carries it on the member ([`crate::MethodLike::xml_doc_sig`] and
+//! its siblings on [`crate::Property`] and [`crate::Event`]). Where a member
+//! carries one, its ID *is* that string; everything else is computed.
 //!
-//! ## What the rules are
+//! This module is the *generation* half: a pure [`Entity`]/[`Member`] →
+//! ID-string function. Finding and parsing the `.xml` is the consumer's.
 //!
-//! Mirrors the F# compiler's IL reader path (`GetXmlDocSigOf*` in
+//! ## The computed rules
+//!
+//! Mirrors Roslyn (and the F# compiler's IL reader path, `GetXmlDocSigOf*` in
 //! `Checking/InfoReader.fs`, which keys off `ILTypeRef.FullName`), validated
-//! against real Roslyn-emitted `.xml` files rather than against FCS's own
-//! *generation* path — the latter encodes multidimensional arrays
-//! nonconformantly (`[0:]` for a 2-D array) and so cannot find their docs.
+//! against real Roslyn-emitted `.xml` files.
 //!
 //! - **Prefixes**: `T:` type, `M:` method, `P:` property, `F:` field, `E:`
-//!   event.
+//!   event — except that an F# record's instance fields and an F# module's
+//!   literals key `P:`, as fsc keys them.
 //! - **Type full name**: namespace segments and the enclosing-type chain joined
 //!   with `.` (never `+`), each type segment keeping its `` `n `` arity suffix.
 //!   The arity on a segment counts the generic parameters *introduced at that
 //!   level* — a nested type subtracts its encloser's cumulative arity (so
 //!   `Dictionary`2.Enumerator`, not `Dictionary`2.Enumerator`2`).
+//! - **Union cases**: `T:<union>.<case>` for each case
+//!   [`Entity::union_cases`] knows ([`union_case_doc_id`]).
 //! - **Member name**: `.` becomes `#`, so `.ctor` → `#ctor`; an explicit
 //!   interface implementation, whose name embeds the constructed interface
 //!   (`ICollection<System.Int32>.Add`), additionally maps `<`/`>` to `{`/`}`
@@ -56,27 +64,27 @@
 //!
 //! ## Limitations
 //!
-//! The generator is faithful whenever the [`Member`]/[`TypeRef`] it is handed
-//! reflects the *IL metadata* shape — always the case for C#/BCL assemblies,
-//! which the differential test (`tests/all/doc_id_diff.rs`) pins against Roslyn's
-//! own `.xml`.
+//! For a C#/BCL assembly the computed ID is faithful (`tests/all/doc_id_diff.rs`
+//! pins it against Roslyn's own `.xml`). For an F#-compiled one, the F# dialect
+//! is reproduced exactly where the projection could tie a member to its pickled
+//! key; `tests/all/doc_id_fsharp_diff.rs` grades every key of real F# libraries
+//! against fsc's own XML and pins what still misses in an exact manifest. A
+//! member left without its pickled key falls back to the computed (Roslyn)
+//! form, which for the F# dialect's shapes is not the key: a member of an
+//! assembly whose signature pickle does not decode, a same-name same-arity
+//! overload group whose keys cannot be told apart, and an entity or member the
+//! projection does not carry at all (type and measure abbreviations without a
+//! marker, non-public union cases, members fsc compiles as statics such as
+//! `FSharpOption.IsSome`).
 //!
-//! For an **F#-projected** assembly the [`Member`] variant is the FCS
-//! *source-level* kind, not the IL kind. The one place that mis-keyed a doc ID —
-//! a module value (an IL *property* like `Operators.NaN`) rebranded to
-//! [`Member::Method`] — is handled: `project_fsharp_members` marks the
-//! getter-rebranded value with [`crate::MethodLike::module_value`], so this
-//! generator keys it `P:` (the prefix the F# compiler's own XML uses), pinned by
-//! `tests/all/doc_id_fsharp_core_diff.rs`. (The record/exception field-backed
-//! property → [`Member::Field`] rebrand needs no such handling: the F# compiler
-//! keys those `F:` too, so our rebrand already matches.)
-//!
-//! Remaining `FSharp.Core` doc-ID gaps are *not* member-rebranding and are
-//! tracked separately in `docs/completed/fsharp-member-rebranding-docid-plan.md`: generic
-//! module methods / F# array-bound encoding (`M:`), type-name keys (`T:`), and
-//! FCS-surfaced type properties the projection drops.
+//! The ID format cannot tell every pair of members apart — a static and an
+//! instance method with one signature share an ID, and fsc sometimes writes one
+//! key for two members — so a consumer must treat an ID that two members of an
+//! assembly generate as belonging to neither.
 
-use crate::model::{Entity, Member, Parameter, Primitive, TypeRef};
+use crate::model::{
+    Entity, EntityKind, Field, Member, MethodLike, Parameter, Primitive, TypeRef, UnionCases,
+};
 
 /// The XML-doc *type name* of a type: the text after the `T:` prefix, e.g.
 /// `System.Collections.Generic.Dictionary`2`. Produced by [`type_doc_name`] and
@@ -87,6 +95,9 @@ use crate::model::{Entity, Member, Parameter, Primitive, TypeRef};
 pub struct TypeDocName {
     full: String,
     cumulative_arity: usize,
+    /// The type's kind, which decides one F#-specific prefix: fsc keys the
+    /// fields of a record and the literals of a module as properties (`P:`).
+    kind: EntityKind,
 }
 
 impl TypeDocName {
@@ -136,13 +147,52 @@ pub fn type_doc_name(entity: &Entity, enclosing: Option<&TypeDocName>) -> TypeDo
     TypeDocName {
         full,
         cumulative_arity,
+        kind: entity.kind,
     }
 }
 
 /// The documentation comment ID of `member`, declared on the type named by
 /// `decl`. Total over the four [`Member`] kinds: methods (incl. constructors
 /// and conversion operators), fields, properties (incl. indexers), and events.
+///
+/// A member that carries the key the F# compiler recorded for it
+/// ([`crate::MethodLike::xml_doc_sig`], [`crate::Property::xml_doc_sig`]) is
+/// keyed by that, verbatim; a property known only by its setter's key is keyed
+/// by that one. Everything else is computed from the signature. This is the
+/// member's preferred ID; [`member_doc_ids`] lists every ID it is keyed by.
 pub fn member_doc_id(decl: &TypeDocName, member: &Member) -> String {
+    let recorded = match member {
+        Member::Method(m) => m.xml_doc_sig.as_ref(),
+        Member::Property(p) => p.xml_doc_sig.as_ref().or(p.setter_xml_doc_sig.as_ref()),
+        Member::Event(e) => e.xml_doc_sig.as_ref(),
+        Member::Field(_) => None,
+    };
+    match recorded {
+        Some(sig) => sig.clone(),
+        None => computed_member_doc_id(decl, member),
+    }
+}
+
+/// Every documentation comment ID `member` is keyed by, [`member_doc_id`]'s
+/// first. A member has one, except a settable F# property: fsc keys its getter
+/// and its setter separately (`P:N.T.Count` and `P:N.T.Count(System.Int32)`),
+/// both with the property's documentation.
+pub fn member_doc_ids(decl: &TypeDocName, member: &Member) -> Vec<String> {
+    let primary = member_doc_id(decl, member);
+    let mut ids = vec![primary];
+    if let Member::Property(p) = member
+        && let Some(setter) = &p.setter_xml_doc_sig
+        && *setter != ids[0]
+    {
+        ids.push(setter.clone());
+    }
+    ids
+}
+
+/// The documentation comment ID of `member`, computed from its signature in the
+/// standard (Roslyn) form, with the F#-specific field prefixes of
+/// [`field_keys_as_property`].
+fn computed_member_doc_id(decl: &TypeDocName, member: &Member) -> String {
     match member {
         Member::Method(m) => {
             let name = escape_member_name(&m.name);
@@ -171,7 +221,14 @@ pub fn member_doc_id(decl: &TypeDocName, member: &Member) -> String {
                 decl.full
             )
         }
-        Member::Field(f) => format!("F:{}.{}", decl.full, escape_member_name(&f.name)),
+        Member::Field(f) => {
+            let prefix = if field_keys_as_property(decl.kind, f) {
+                'P'
+            } else {
+                'F'
+            };
+            format!("{prefix}:{}.{}", decl.full, escape_member_name(&f.name))
+        }
         Member::Property(p) => {
             // An indexer's index parameters are encoded just like a method's
             // parameter list; an ordinary property has none and emits no parens.
@@ -200,10 +257,256 @@ pub fn walk_doc_ids(entity: &Entity, enclosing: Option<&TypeDocName>, f: &mut im
     let decl = type_doc_name(entity, enclosing);
     f(decl.type_id());
     for member in &entity.members {
-        f(member_doc_id(&decl, member));
+        for id in member_doc_ids(&decl, member) {
+            f(id);
+        }
+    }
+    if let UnionCases::Known(cases) = &entity.union_cases {
+        for case in cases {
+            // fsc's class-per-case representation nests a class named after a
+            // case that carries fields, and that class's type key *is* the
+            // case's key — so it is walked below, as the nested type.
+            if !entity.nested_types.iter().any(|n| n.name == *case) {
+                f(union_case_doc_id(&decl, case));
+            }
+        }
     }
     for nested in &entity.nested_types {
         walk_doc_ids(nested, Some(&decl), f);
+    }
+}
+
+/// The documentation comment ID of the union case `case` (its F# name) of the
+/// union named by `decl`. fsc keys a case as a type nested in its union
+/// (`XmlDocSigOfUnionCase`): ``T:Microsoft.FSharp.Core.FSharpOption`1.Some``.
+pub fn union_case_doc_id(decl: &TypeDocName, case: &str) -> String {
+    format!("T:{}.{case}", decl.full)
+}
+
+/// Whether fsc keys this field `P:` rather than `F:`.
+///
+/// A record's instance fields are exposed as properties, and fsc keys them so
+/// (`XmlDocFileWriter`: `tc.IsRecordTycon && not rf.IsStatic` →
+/// `XmlDocSigOfProperty`): ``P:Microsoft.FSharp.Core.FSharpRef`1.contents``. A
+/// module's only projected fields are its `[<Literal>]` values, which fsc keys
+/// as the zero-argument values they are (`XmlDocSigOfVal`: no curried
+/// arguments and no type parameters → `P:`). An exception's fields, and a
+/// class's or struct's fields, keep `F:`.
+fn field_keys_as_property(kind: EntityKind, field: &Field) -> bool {
+    match kind {
+        EntityKind::Record => !field.is_static,
+        EntityKind::Module => true,
+        _ => false,
+    }
+}
+
+/// Which of a member's IL signatures a recorded key is checked against: a
+/// property's setter key lists the assigned value after the index parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyedAs {
+    /// A method, a property's getter, an event, or a field.
+    Member,
+    /// A property's setter.
+    Setter,
+}
+
+/// Whether `key`, a documentation-comment ID the F# compiler recorded for some
+/// val, is consistent with `member`'s IL signature — a necessary condition for
+/// it being *this* member's key, checked before the projection hands it over.
+///
+/// The projection ties a pickled val to a projected member by name, arity and
+/// staticness, and that tie is lossy: a member the signature file hides can sit
+/// in the val's slot while the val's own member is missing from the projection.
+/// The key encodes the val's parameter types, so it can refute the tie: the
+/// key's parameters must be the member's, read in fsc's dialect —
+///
+/// - fsc may prepend SRTP witness parameters, each an `FSharpFunc`, to a
+///   method's own;
+/// - current fsc writes a rank-`r` array with `r - 1` dimension specs (`[0:]`
+///   for 2-D), older fsc and Roslyn with `r`, so a key's `d` specs fit an IL
+///   rank of `d` or `d + 1` (a vector, `[]`, only a vector);
+/// - older fsc writes a byref parameter as the `byref<'T, 'Kind>` (or `inref`,
+///   `outref`) abbreviation, the IL as `'T@`;
+/// - fsc writes a `nativeptr<'T>` as a pointer (`` ``0* ``), the IL as
+///   `System.IntPtr`; and it keeps the `voidptr` and `ilsigptr<'T>`
+///   abbreviations the IL spells `System.Void*` and `` ``0* ``;
+/// - a key's method generic arity counts the val's measure type parameters,
+///   which IL erases: it must lie between the IL arity and the IL arity plus
+///   `erased_typars`, the val's measure type parameters per its pickle.
+///
+/// Everything else must agree exactly. A parameter shape outside these rules
+/// (a flattened 8-tuple, say) refutes a correct tie too, which costs that
+/// member its key and nothing else.
+pub(crate) fn recorded_key_fits(
+    key: &str,
+    member: &Member,
+    keyed_as: KeyedAs,
+    erased_typars: usize,
+) -> bool {
+    match (member, keyed_as) {
+        (Member::Method(m), KeyedAs::Member) => recorded_method_key_fits(key, m, erased_typars),
+        (Member::Property(p), _) => {
+            let mut params: Vec<String> =
+                p.parameters.iter().map(|ip| type_enc(&ip.ty.ty)).collect();
+            if keyed_as == KeyedAs::Setter {
+                params.push(type_enc(&p.ty));
+            }
+            key_fits(key, &params, 0, 0, false)
+        }
+        (Member::Event(_) | Member::Field(_), KeyedAs::Member) => key_fits(key, &[], 0, 0, false),
+        (_, KeyedAs::Setter) => false,
+    }
+}
+
+/// [`recorded_key_fits`] for a method.
+pub(crate) fn recorded_method_key_fits(
+    key: &str,
+    method: &MethodLike,
+    erased_typars: usize,
+) -> bool {
+    let params: Vec<String> = method.signature.parameters.iter().map(param_enc).collect();
+    key_fits(
+        key,
+        &params,
+        method.generic_parameters.len(),
+        erased_typars,
+        true,
+    )
+}
+
+fn key_fits(
+    key: &str,
+    il_params: &[String],
+    il_generic_arity: usize,
+    erased_typars: usize,
+    is_method: bool,
+) -> bool {
+    let Some((name, key_params)) = split_key(key) else {
+        return false;
+    };
+    let key_generic_arity = name
+        .rsplit_once("``")
+        .and_then(|(_, n)| n.parse::<usize>().ok())
+        .unwrap_or(0);
+    if key_generic_arity < il_generic_arity
+        || key_generic_arity > il_generic_arity + erased_typars
+        || key_params.len() < il_params.len()
+    {
+        return false;
+    }
+    let (witnesses, own) = key_params.split_at(key_params.len() - il_params.len());
+    if !witnesses.is_empty()
+        && !(is_method
+            && witnesses
+                .iter()
+                .all(|w| w.starts_with("Microsoft.FSharp.Core.FSharpFunc{")))
+    {
+        return false;
+    }
+    own.iter().zip(il_params).all(|(k, il)| param_fits(k, il))
+}
+
+/// Whether one key parameter, in fsc's dialect, names the IL parameter `il`
+/// (see [`recorded_key_fits`]).
+fn param_fits(key: &str, il: &str) -> bool {
+    if arrays_fit(key, il) {
+        return true;
+    }
+    if il == "System.IntPtr" && key.ends_with('*') {
+        return true;
+    }
+    if key == "Microsoft.FSharp.Core.voidptr" && il == "System.Void*" {
+        return true;
+    }
+    // `ilsigptr<'T>` is the IL's `'T*`; older compilers spell a byref as the
+    // `byref<'T, 'Kind>` / `inref<'T>` / `outref<'T>` abbreviation, the IL `'T@`.
+    let first_arg = |abbrev: &str| -> Option<&str> {
+        let inner = key.strip_prefix(abbrev)?.strip_suffix('}')?;
+        Some(split_top_level(inner).into_iter().next().unwrap_or(inner))
+    };
+    if let Some(t) = first_arg("Microsoft.FSharp.Core.ilsigptr{") {
+        return il.strip_suffix('*').is_some_and(|i| param_fits(t, i));
+    }
+    for abbrev in [
+        "Microsoft.FSharp.Core.byref{",
+        "Microsoft.FSharp.Core.inref{",
+        "Microsoft.FSharp.Core.outref{",
+    ] {
+        if let Some(t) = first_arg(abbrev) {
+            return il.strip_suffix('@').is_some_and(|i| param_fits(t, i));
+        }
+    }
+    false
+}
+
+/// A key's text before its parameter list (prefix and name, generic arity
+/// included) and its top-level parameter types; `None` for a key whose
+/// parentheses do not close at its end.
+fn split_key(key: &str) -> Option<(&str, Vec<&str>)> {
+    let Some(open) = key.find('(') else {
+        return Some((key, Vec::new()));
+    };
+    let inner = key[open + 1..].strip_suffix(')')?;
+    Some((&key[..open], split_top_level(inner)))
+}
+
+/// Split an encoded type list at its top-level commas — those outside any
+/// `{…}` type arguments or `[…]` array dimensions.
+fn split_top_level(list: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    for (i, c) in list.char_indices() {
+        match c {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&list[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&list[start..]);
+    parts
+}
+
+/// Whether an encoded key type and IL type agree everywhere outside their
+/// array suffixes, and each array suffix pair fits: a vector (`[]`) only a
+/// vector, and a key's `d` dimension specs an IL rank of `d` or `d + 1` (see
+/// [`recorded_key_fits`]).
+fn arrays_fit(key: &str, il: &str) -> bool {
+    let (mut key, mut il) = (key, il);
+    loop {
+        match (key.find('['), il.find('[')) {
+            (None, None) => return key == il,
+            (Some(k), Some(i)) => {
+                if key[..k] != il[..i] {
+                    return false;
+                }
+                let (Some(kc), Some(ic)) = (key[k..].find(']'), il[i..].find(']')) else {
+                    return false;
+                };
+                let specs = |dims: &str| {
+                    if dims.trim().is_empty() {
+                        0
+                    } else {
+                        dims.split(',').count()
+                    }
+                };
+                let (d, r) = (specs(&key[k + 1..k + kc]), specs(&il[i + 1..i + ic]));
+                let fits = if d == 0 || r == 0 {
+                    d == r
+                } else {
+                    d == r || d + 1 == r
+                };
+                if !fits {
+                    return false;
+                }
+                key = &key[k + kc + 1..];
+                il = &il[i + ic + 1..];
+            }
+            _ => return false,
+        }
     }
 }
 
@@ -628,6 +931,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
         })
     }
 
@@ -670,6 +974,8 @@ mod tests {
             custom_attrs: Vec::new(),
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
+            setter_xml_doc_sig: None,
         })
     }
 
@@ -684,6 +990,7 @@ mod tests {
             custom_attrs: Vec::new(),
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
         })
     }
 
@@ -1025,12 +1332,12 @@ mod tests {
     #[test]
     fn explicit_interface_name_keeps_concrete_multi_arg_separator() {
         // A *multi-argument* generic interface instantiated with concrete types
-        // keeps the `,` separator between the constructed arguments — Roslyn does
-        // *not* rewrite it (the `@` separator only appears when the arguments are
-        // the implementing type's own type *parameters*; that case is a separate,
-        // not-yet-handled shape). An explicit impl of `ILookup<int,string>.Get`
-        // keys as `…ILookup{System#Int32,System#String}#Get`. (Verified end-to-end
-        // against Roslyn by `doc_id_diff.rs`.)
+        // keeps the `,` separator between the constructed arguments, as fresh
+        // Roslyn writes it: an explicit impl of `ILookup<int,string>.Get` keys as
+        // `…ILookup{System#Int32,System#String}#Get`. (Verified end-to-end against
+        // Roslyn by `doc_id_diff.rs`. The `Microsoft.NETCore.App.Ref` packs' XML
+        // spells every such separator `@`, concrete arguments included — a lookup
+        // concern, `docs/xmldoc-explicit-interface-plan.md`.)
         let d = decl(&["Ns"], "IntStringLookup", 0);
         let m = method(
             "Ns.ILookup<System.Int32,System.String>.Get",
@@ -1132,6 +1439,208 @@ mod tests {
         assert_eq!(
             member_doc_id(&d, &field("Value", prim(Primitive::I4))),
             "F:N.C.Value"
+        );
+    }
+
+    #[test]
+    fn record_instance_field_keys_as_property() {
+        // fsc exposes a record field as a property and keys it so
+        // (``P:Microsoft.FSharp.Core.FSharpRef`1.contents``); a static field of
+        // the same record, a class field and an exception field keep `F:`.
+        let mut record = ent(&["N"], "R", 0);
+        record.kind = EntityKind::Record;
+        let d = type_doc_name(&record, None);
+        assert_eq!(
+            member_doc_id(&d, &field("contents", prim(Primitive::I4))),
+            "P:N.R.contents"
+        );
+        let Member::Field(mut stat) = field("cache", prim(Primitive::I4)) else {
+            unreachable!("field() builds a Member::Field")
+        };
+        stat.is_static = true;
+        assert_eq!(member_doc_id(&d, &Member::Field(stat)), "F:N.R.cache");
+        for kind in [EntityKind::Class, EntityKind::Struct, EntityKind::Exception] {
+            let mut e = ent(&["N"], "C", 0);
+            e.kind = kind;
+            assert_eq!(
+                member_doc_id(&type_doc_name(&e, None), &field("x", prim(Primitive::I4))),
+                "F:N.C.x",
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_doc_sig_is_used_verbatim() {
+        // A key the F# compiler recorded wins over the computed one: here the
+        // SRTP witness parameter fsc prepends, which no IL signature shows.
+        let d = decl(&["N"], "M", 0);
+        let Member::Method(mut m) = method(
+            "twice",
+            1,
+            vec![param(TypeRef::Var {
+                index: 0,
+                is_method: true,
+            })],
+            prim(Primitive::Void),
+        ) else {
+            unreachable!("method() builds a Member::Method")
+        };
+        assert_eq!(
+            member_doc_id(&d, &Member::Method(m.clone())),
+            "M:N.M.twice``1(``0)"
+        );
+        let recorded = "M:N.M.twice``1(Microsoft.FSharp.Core.FSharpFunc{``0,``0},``0)";
+        m.xml_doc_sig = Some(recorded.to_string());
+        let m = Member::Method(m);
+        assert_eq!(member_doc_id(&d, &m), recorded);
+        assert_eq!(member_doc_ids(&d, &m), vec![recorded.to_string()]);
+    }
+
+    #[test]
+    fn recorded_key_fits_reads_fscs_dialect_and_refutes_other_signatures() {
+        let tvar = |index| TypeRef::Var {
+            index,
+            is_method: true,
+        };
+        let m = |params: Vec<Parameter>, arity| method("f", arity, params, prim(Primitive::Void));
+        let fits = |key: &str, member: &Member| recorded_key_fits(key, member, KeyedAs::Member, 0);
+        // Same parameters.
+        let int_f = m(vec![param(prim(Primitive::I4))], 0);
+        assert!(fits("M:N.M.f(System.Int32)", &int_f));
+        // A different parameter type, or count, refutes the tie.
+        assert!(!fits("M:N.M.f(System.String)", &int_f));
+        assert!(!fits("M:N.M.f", &int_f));
+        // SRTP witnesses lead the key's own parameters — only `FSharpFunc`s,
+        // and only on a method.
+        let srtp = m(vec![param(tvar(0))], 2);
+        assert!(fits(
+            "M:N.M.twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,``1},``0)",
+            &srtp
+        ));
+        assert!(!fits("M:N.M.twice``2(System.String,``0)", &srtp));
+        // The key's generic arity counts the val's erased measure parameters —
+        // and only those — and never falls short of the IL's.
+        assert!(recorded_key_fits(
+            "M:N.M.f``1(System.Int32)",
+            &int_f,
+            KeyedAs::Member,
+            1
+        ));
+        assert!(!fits("M:N.M.f``1(System.Int32)", &int_f));
+        assert!(!fits("M:N.M.f(``0)", &srtp));
+        // A multidimensional rank fits in either fsc dialect (`d` or `d + 1`
+        // dimension specs for rank `d + 1`); a vector is not multidimensional.
+        let md = m(vec![param(md_array(prim(Primitive::I4), 2))], 0);
+        assert!(fits("M:N.M.f(System.Int32[0:])", &md));
+        assert!(fits("M:N.M.f(System.Int32[0:, 0:])", &md));
+        assert!(!fits("M:N.M.f(System.Int32[])", &md));
+        let md3 = m(vec![param(md_array(prim(Primitive::I4), 3))], 0);
+        assert!(!fits("M:N.M.f(System.Int32[0:])", &md3));
+        // Older fsc's byref abbreviation; `nativeptr<'T>`; `voidptr`.
+        let byref = m(vec![byref_param(prim(Primitive::I4))], 0);
+        assert!(fits("M:N.M.f(System.Int32@)", &byref));
+        assert!(fits(
+            "M:N.M.f(Microsoft.FSharp.Core.byref{System.Int32,Microsoft.FSharp.Core.ByRefKinds.InOut})",
+            &byref
+        ));
+        let intptr = m(vec![param(prim(Primitive::IntPtr))], 1);
+        assert!(fits("M:N.M.f``1(``0*)", &intptr));
+        let voidptr = m(vec![param(TypeRef::Ptr(None))], 0);
+        assert!(fits("M:N.M.f(Microsoft.FSharp.Core.voidptr)", &voidptr));
+        // A setter's key carries the assigned value after the index parameters.
+        let Member::Property(mut p) =
+            property("Item", prim(Primitive::String), vec![prim(Primitive::I4)])
+        else {
+            unreachable!("property() builds a Member::Property")
+        };
+        p.has_setter = true;
+        let p = Member::Property(p);
+        assert!(recorded_key_fits(
+            "P:N.T.Item(System.Int32)",
+            &p,
+            KeyedAs::Member,
+            0
+        ));
+        assert!(recorded_key_fits(
+            "P:N.T.Item(System.Int32,System.String)",
+            &p,
+            KeyedAs::Setter,
+            0
+        ));
+        assert!(!recorded_key_fits(
+            "P:N.T.Item(System.String)",
+            &p,
+            KeyedAs::Member,
+            0
+        ));
+    }
+
+    #[test]
+    fn settable_property_is_keyed_by_getter_and_setter() {
+        let d = decl(&["N"], "W", 0);
+        let Member::Property(mut p) = property("Count", prim(Primitive::I4), vec![]) else {
+            unreachable!("property() builds a Member::Property")
+        };
+        p.has_setter = true;
+        // Nothing recorded: one computed key.
+        assert_eq!(
+            member_doc_ids(&d, &Member::Property(p.clone())),
+            vec!["P:N.W.Count".to_string()]
+        );
+        // Both accessors recorded: the getter's first.
+        p.xml_doc_sig = Some("P:N.W.Count".to_string());
+        p.setter_xml_doc_sig = Some("P:N.W.Count(System.Int32)".to_string());
+        assert_eq!(
+            member_doc_ids(&d, &Member::Property(p.clone())),
+            vec![
+                "P:N.W.Count".to_string(),
+                "P:N.W.Count(System.Int32)".to_string()
+            ]
+        );
+        // Write-only: the setter's key is the property's only one.
+        p.has_getter = false;
+        p.xml_doc_sig = None;
+        let p = Member::Property(p);
+        assert_eq!(member_doc_id(&d, &p), "P:N.W.Count(System.Int32)");
+        assert_eq!(
+            member_doc_ids(&d, &p),
+            vec!["P:N.W.Count(System.Int32)".to_string()]
+        );
+    }
+
+    #[test]
+    fn module_literal_keys_as_property() {
+        // A module's `[<Literal>]` is a zero-argument value to fsc: `P:`.
+        let mut module = ent(&["N"], "M", 0);
+        module.kind = EntityKind::Module;
+        assert_eq!(
+            member_doc_id(
+                &type_doc_name(&module, None),
+                &field("Limit", prim(Primitive::I4))
+            ),
+            "P:N.M.Limit"
+        );
+    }
+
+    #[test]
+    fn walk_keys_union_cases_as_nested_types() {
+        // Each known case keys `T:<union>.<case>`; a case whose class-per-case
+        // carrier is a nested type is keyed once, by that type.
+        let mut union = ent(&["N"], "Shape", 0);
+        union.kind = EntityKind::Union;
+        union.union_cases = UnionCases::Known(vec!["Circle".into(), "Empty".into()]);
+        union.nested_types.push(ent(&[], "Circle", 0));
+        let mut ids = Vec::new();
+        walk_doc_ids(&union, None, &mut |id| ids.push(id));
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "T:N.Shape".to_string(),
+                "T:N.Shape.Circle".to_string(),
+                "T:N.Shape.Empty".to_string(),
+            ]
         );
     }
 

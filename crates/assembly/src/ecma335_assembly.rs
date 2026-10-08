@@ -401,7 +401,11 @@ impl Ecma335Assembly {
                     // borrow the CCU, so they run before the measure overlay.
                     if authoritative {
                         crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu)?;
-                        crate::fsharp_pickle_merge::apply_module_member_projection(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_module_member_projection(
+                            &mut out,
+                            &ccu,
+                            &self.physical_methods(),
+                        )?;
                     }
                     // F# measure overlay (7.8b): use the pickled
                     // `TyparKind::Measure` markers to upgrade matching
@@ -448,6 +452,15 @@ impl Ecma335Assembly {
                     // `fsharp_abbreviations_unknowable`).
                     crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
                     if authoritative {
+                        // The doc-comment keys fsc pickled for each type's
+                        // members (module members get theirs from the member
+                        // list above). Authoritative-only, like the other
+                        // overlays that locate a row by a reconstructed name key.
+                        crate::fsharp_pickle_merge::apply_type_member_doc_sigs(
+                            &mut out,
+                            &ccu,
+                            &self.physical_methods(),
+                        )?;
                         // F#-only typar constraints (`when 'T : comparison` and
                         // friends), which have no IL encoding at all.
                         //
@@ -488,6 +501,37 @@ impl Ecma335Assembly {
                 fsharp_signature_non_authoritative: !authoritative,
             },
         ))
+    }
+
+    /// Every `MethodDef`'s IL slot, by token — the physical census the doc-key
+    /// overlays count, which sees the methods the member projection refuses or
+    /// elides.
+    fn physical_methods(&self) -> crate::fsharp_pickle_merge::PhysicalMethods {
+        let mut out = crate::fsharp_pickle_merge::PhysicalMethods::new();
+        for td in &self.image.type_defs {
+            // Which property each accessor method backs, by its index in
+            // `td.methods`.
+            let mut accessor_of: std::collections::HashMap<u32, &str> =
+                std::collections::HashMap::new();
+            for p in &td.properties {
+                for accessor in p.getter.iter().chain(p.setter.iter()) {
+                    accessor_of.insert(accessor.0, p.name.as_str());
+                }
+            }
+            for (i, m) in td.methods.iter().enumerate() {
+                out.insert(
+                    m.token,
+                    crate::fsharp_pickle_merge::PhysicalMethod {
+                        declaring_type: td.name.name.clone(),
+                        name: m.name.clone(),
+                        params: m.signature.as_ref().ok().map(|s| s.parameters.len()),
+                        is_static: m.is_static,
+                        accessor_of: accessor_of.get(&(i as u32)).map(|p| p.to_string()),
+                    },
+                );
+            }
+        }
+        out
     }
 
     /// The assembly-level `FSharpInterfaceDataVersionAttribute` version triple,
@@ -2479,6 +2523,7 @@ impl Ecma335Assembly {
             metadata_token: m.token,
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
         })
     }
 
@@ -2901,6 +2946,8 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
+            setter_xml_doc_sig: None,
         })
     }
 
@@ -3003,6 +3050,7 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
         })
     }
 

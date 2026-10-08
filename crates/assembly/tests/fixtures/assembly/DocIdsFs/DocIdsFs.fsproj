@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>DocIdsFs</AssemblyName>
+    <RootNamespace>DocIdsFs</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- The whole point of this fixture: fsc writes the sidecar `DocIdsFs.xml`
+         whose `<member name>` keys are the F# compiler's documentation comment
+         IDs, the oracle the doc-id generator is diffed against. Every
+         declaration in `Library.fs` carries a `///` comment, so every shape the
+         fixture exercises has a key. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- `nativeptr` parameters (FS0009) are one of the shapes under test. -->
+    <NoWarn>$(NoWarn);9;51</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+    <Compile Include="Hidden.fsi" />
+    <Compile Include="Hidden.fs" />
+  </ItemGroup>
+
+</Project>

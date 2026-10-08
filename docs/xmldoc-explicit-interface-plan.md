@@ -15,8 +15,8 @@
 - **Base doc-ID generator** (PR #586, [`crates/assembly/src/doc_id.rs`](../crates/assembly/src/doc_id.rs)).
   Escapes explicit-interface member names by string transform (`.`→`#`,
   `<>`→`{}`) and stays **fresh-Roslyn-faithful**, keeping `,` between concrete
-  interface type-arguments. Pinned by `doc_id_diff` (and
-  `doc_id_fsharp_core_diff`).
+  interface type-arguments. Pinned by `doc_id_diff` (and, for F#-compiled
+  assemblies, `doc_id_fsharp_diff`).
 - **Stage 1 — structured model** (PR #619, then hardened over several review
   rounds). `MethodLike` / `Property` / `Event` in `model.rs` carry:
   - `implements: Vec<InterfaceMemberImpl>` — a **proven-only** channel; each
@@ -74,28 +74,30 @@ M:…Dictionary`2.System#Collections#Generic#ICollection{System#Collections#Gene
   kept, `,` separator, type parameters as **indices** (`` `0,`1 ``). This is
   today's `type_enc`, already correct.
 
-Empirical findings from a sweep of the net10.0 ref pack:
+Empirical findings, from every installed ref pack (`Microsoft.NETCore.App.Ref`
+and `Microsoft.AspNetCore.App.Ref` 3.0 through 11.0-preview, NETStandard 2.1)
+and the whole NuGet cache:
 
-1. **Shipped vs fresh disagree.** Shipped ref-pack XML uses `@` for
-   type-parameter args in the member-name portion; current Roslyn (our
-   `doc_id_diff` fixtures compile fresh) uses `,`. A freshly-compiled
-   `Wrapper<A,B> : ILookup<A,B>` keys as `…ILookup{A,B}#Get`. You cannot make a
-   single generated string match both oracles for this shape.
-2. **Concrete args are unobserved in shipped XML.** The core BCL ref packs
-   contain *no* multi-argument member-name portions with concrete
-   (`System#`-qualified) arguments — every multi-arg case is between type
-   parameters (`TKey@TValue`). So `@` is evidenced **only** for type parameters;
-   fresh Roslyn gives `,` for the concrete case.
+1. **Shipped vs fresh disagree, and the separator follows the producer.**
+   `Microsoft.NETCore.App.Ref` XML uses `@` between the interface's arguments in
+   the member-name portion, in every version from 3.0 to 11.0; the ASP.NET packs
+   use `,`; NuGet packages built by dotnet/runtime's docs pipeline
+   (`System.Collections.Immutable`, `System.Text.Json`, `Microsoft.Bcl.*`) use
+   `@`, Roslyn-built ones mostly `,`. Fresh Roslyn (our `doc_id_diff` fixtures
+   compile fresh) uses `,`: `Wrapper<A,B> : ILookup<A,B>` keys as
+   `…ILookup{A,B}#Get`. No single generated string matches both dialects.
+2. **The `@` covers concrete arguments too.** The `@` packs use it whatever the
+   arguments are — 3,119 all-concrete keys in the .NET 10 pack alone, e.g.
+   `System.Byte.System#Numerics#IAdditionOperators{System#Byte@System#Byte@System#Byte}#op_Addition(…)`.
+   So the alternate spelling flips *every* separator inside the interface's
+   braces, not just those between type parameters.
 3. Brace-`@` (interface type-arg separator, e.g. `{TKey@TValue}`) must be
    distinguished from byref-parameter `@` (brace depth 0, e.g.
    `(System.Int32@)`), which the generator already emits correctly.
 
 The member-name portion is stored standalone in `MethodLike.name` (the parameter
-list lives in `signature`), so a one-line `,`→`@` in `escape_member_name` is
-mechanically possible, but finding (2) makes a blind all-commas→`@` unsafe for
-the unobserved concrete case. Stage 1's structured model exists precisely so the
-lookup layer can distinguish each argument's kind rather than string-transform
-blindly.
+list lives in `signature`), so the alternate spelling is a string transform of
+that portion alone.
 
 ### Decision (2026-06-28): the generator is not the fix; Stage 3 is rejected
 
@@ -138,14 +140,11 @@ parses with our reader, and asserts `shipped-keys ⊆ our-ids`. Scope the assert
 to currently-passing kinds (or assert the gap explicitly) so the explicit-
 interface `@` keys show as the *known gap* the lookup tolerance must close.
 
-Fixture candidates from the net10.0 `Microsoft.NETCore.App.Ref` pack sweep (107
-assemblies with sibling `.xml`; the reader parsed 90, failed loud on 17):
-**12 assemblies' XML carries the brace-`@` shape; 5 fully parse** and are usable
-fixtures — `System.Collections.Concurrent` (9 brace-`@` keys),
-`System.Net.Http` (22), `System.Runtime.Numerics` (4),
-`System.Text.RegularExpressions` (1), `System.Threading.Tasks.Dataflow` (12). In
-all of them 100% of the brace-`@` keys are currently *not* reproduced by the
-generator. `System.Collections.Concurrent` (9 keys) is the compact choice.
+The reader parses and enumerates every one of the 107 net10.0
+`Microsoft.NETCore.App.Ref` assemblies that ship a sibling `.xml`, so any of
+them is a usable fixture; the brace-`@` keys in each are not reproduced by the
+generator. `System.Collections.Concurrent` (9 brace-`@` keys) is the compact
+choice.
 
 ### Stage 4 — lookup tolerance for separator version drift (the chosen fix)
 
@@ -162,12 +161,6 @@ differential reproduces the type-parameter `@` keys once tolerance is in.
 
 ### Remaining lookup-spike questions
 
-- **Concrete multi-arg in shipped XML** — search broader packs (ASP.NET,
-  `System.Linq.*`, `System.Text.Json`) for any concrete-arg explicit-interface
-  key; confirms whether concrete → `,` holds for shipped, validating the
-  per-arg-kind rule.
-- **Is `@` stable across shipped .NET versions?** If it flips, Stage 4 becomes
-  mandatory rather than optional.
 - **Explicit-event fixture coverage** — property coverage is resolved by Stage
   1's structured field; an explicit-event fixture remains a useful test gap if
   the lookup slice needs it.

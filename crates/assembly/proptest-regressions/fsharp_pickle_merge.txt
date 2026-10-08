@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5572f24e7fc87dce988352c4b75f307a29bd119d5481481fabeff7be5dcd8d43 # shrinks to items = [DocSlotItem { name: 0, params: [false, false], is_static: true, val: Some((true, Elided)) }, DocSlotItem { name: 0, params: [false, true], is_static: true, val: None }]
+cc 7a84c6e49233e83f897c1b0b010ec1cd6997661b72e170997839296cc99e4fce # shrinks to items = [DocSlotItem { name: 1, params: [3], is_static: false, val: Some((true, Elided)) }, DocSlotItem { name: 1, params: [2], is_static: false, val: None }]
