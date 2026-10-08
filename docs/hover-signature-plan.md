@@ -165,9 +165,10 @@ member of an F#-compiled assembly (below), all show no documentation, and are di
   renders no documentation), and the type occurrences where FCS binds
   something other than the type resolution chose: a different type-argument
   count, a `T.M` whose `M` the type does not declare (#323), a named
-  argument's name (#324), and a constructor call of a type with explicit
-  constructors (a call of a primary-constructor type shows that constructor's
-  own doc, as FCS does). The signature fallback is #319.
+  argument's name (#324), and every constructor call (`new T()`, `T()`,
+  `[<T>]`), where FCS binds the constructor overload resolution picks and
+  shows its doc — almost always empty (all 47 in the gated corpus sample).
+  The signature fallback is #319.
 - **An F#-compiled assembly's members show nothing** — FSharp.Core's
   included; its types and modules do. fsc keys a member from its F#
   signature, not its IL: a measure type parameter counts towards the generic
