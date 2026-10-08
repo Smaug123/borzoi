@@ -673,6 +673,9 @@ impl<'src> Parser<'src> {
         // scaffolding so the body top level still reads as depth 0.
         let mut depth = 0i32;
         let mut depth_pos = self.pos;
+        // The end of the line of the last token the generic error arm below
+        // bumped as stray: an expression start before it is debris.
+        let mut debris_until = 0usize;
         while let Some((res, span)) = self.peek().cloned() {
             self.advance_block_depth(&mut depth, &mut depth_pos);
             // A verbose-syntax `module X = begin … end` body ends at the real
@@ -1256,7 +1259,16 @@ impl<'src> Parser<'src> {
                 continue;
             }
             if self.peek_is_expr_start() {
-                if needs_sep {
+                // `depth > 0`: inside an offside block this body did not open
+                // and no declaration owns — the remains of a construct a
+                // declaration parser abandoned part-way (a type whose member
+                // did not parse leaves the rest of its body here). Those
+                // tokens sit deeper than this body's offside line, so they
+                // cannot begin a declaration of it; FCS never makes one of
+                // them either. Likewise the rest of the line after a stray
+                // token (`debris_until`). Same handling as a same-line
+                // continuation.
+                if needs_sep || depth > 0 || span.start < debris_until {
                     // Same-line continuation that couldn't be absorbed by
                     // the prior decl. Record an error and bump as ERROR;
                     // keep `needs_sep` true so any further dangling raws on
@@ -1295,8 +1307,13 @@ impl<'src> Parser<'src> {
                 // decl, or EOF). Ground-truthed against the filtered stream for
                 // single-decl, multi-decl, expr-body, open-body, empty-body,
                 // and doubly-nested bodies.
+                // `depth > 0`: the `OBLOCKEND` closes a block opened inside
+                // this body that no declaration claimed (the remains of an
+                // abandoned construct, see the expression-start arm above),
+                // not the body itself.
                 if scope == BodyScope::Nested
                     && *v == Virtual::BlockEnd
+                    && depth <= 0
                     && !matches!(
                         self.next_non_trivia_filtered_after_pos(),
                         Some(FilteredToken::Virtual(Virtual::DeclEnd))
@@ -1333,8 +1350,15 @@ impl<'src> Parser<'src> {
                 Err(e) => format!("lex error: {e:?}"),
                 _ => "unexpected token".to_string(),
             };
+            let stray_end = span.end;
             self.errors.push(ParseError { message, span });
             self.bump_into(SyntaxKind::ERROR);
+            // The rest of this line belongs to whatever the stray token began
+            // (`member this.P = 1` outside a type), so it is not a fresh
+            // declaration either.
+            debris_until = self.source[stray_end..]
+                .find('\n')
+                .map_or(self.source.len(), |nl| stray_end + nl);
             seen_decl = true;
             seen_non_hash_decl = true;
         }

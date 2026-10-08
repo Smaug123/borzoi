@@ -246,7 +246,7 @@ fn collect_cst_nested_sig_module(
     }
 }
 
-fn impl_decl_kind(decl: &ModuleDecl) -> &'static str {
+pub(super) fn impl_decl_kind(decl: &ModuleDecl) -> &'static str {
     match decl {
         ModuleDecl::Expr(_) => "Expr",
         ModuleDecl::Let(_) => "Let",
@@ -263,7 +263,7 @@ fn impl_decl_kind(decl: &ModuleDecl) -> &'static str {
     }
 }
 
-fn sig_decl_kind(decl: &SigDecl) -> &'static str {
+pub(super) fn sig_decl_kind(decl: &SigDecl) -> &'static str {
     match decl {
         SigDecl::Open(_) => "Open",
         SigDecl::NestedModule(_) => "NestedModule",
@@ -451,7 +451,7 @@ fn sig_module_ast_range(
     )
 }
 
-fn impl_decl_ast_range(decl: &ModuleDecl) -> Range<usize> {
+pub(super) fn impl_decl_ast_range(decl: &ModuleDecl) -> Range<usize> {
     let mut range = match decl {
         ModuleDecl::HashDirective(hash) => hash_directive_source_range(hash.syntax()),
         ModuleDecl::Exception(exception) => exception_decl_source_range(exception),
@@ -464,7 +464,7 @@ fn impl_decl_ast_range(decl: &ModuleDecl) -> Range<usize> {
     node_ast_range_from_source_range(decl.syntax(), range, impl_decl_owns_xml_doc(decl), false)
 }
 
-fn sig_decl_ast_range(decl: &SigDecl) -> Range<usize> {
+pub(super) fn sig_decl_ast_range(decl: &SigDecl) -> Range<usize> {
     let mut range = match decl {
         SigDecl::HashDirective(hash) => hash_directive_source_range(hash.syntax()),
         SigDecl::Types(types) => {
@@ -751,13 +751,26 @@ fn hash_directive_is_argumentless(node: &SyntaxNode) -> bool {
     saw_name
 }
 
-fn immediately_following_semisemi_end(node: &SyntaxNode, end: usize) -> Option<usize> {
+/// The first significant (non-trivia, non-empty) token of `node`'s tree that
+/// starts at or after `offset`. Walks forward from `offset` rather than from the
+/// root: the recovered-tree sweeps call this once per declaration, and a scan
+/// from the root makes that quadratic in the file.
+fn first_significant_token_from(node: &SyntaxNode, offset: usize) -> Option<SyntaxToken> {
     let root = node.ancestors().last().unwrap_or_else(|| node.clone());
-    root.descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|token| !token.kind().is_trivia())
-        .filter(|token| !token.text_range().is_empty())
-        .find(|token| usize::from(token.text_range().start()) >= end)
+    let at = rowan::TextSize::try_from(offset).expect("offset fits a TextSize");
+    if at >= root.text_range().end() {
+        return None;
+    }
+    let first = root.token_at_offset(at).left_biased()?;
+    std::iter::successors(Some(first), |t| t.next_token()).find(|token| {
+        !token.kind().is_trivia()
+            && !token.text_range().is_empty()
+            && usize::from(token.text_range().start()) >= offset
+    })
+}
+
+fn immediately_following_semisemi_end(node: &SyntaxNode, end: usize) -> Option<usize> {
+    first_significant_token_from(node, end)
         .filter(|token| {
             token.kind() == SyntaxKind::SEMISEMI_TOK
                 && usize::from(token.text_range().start()) == end
@@ -766,12 +779,7 @@ fn immediately_following_semisemi_end(node: &SyntaxNode, end: usize) -> Option<u
 }
 
 fn immediately_following_same_line_in_end(node: &SyntaxNode, end: usize) -> Option<usize> {
-    let root = node.ancestors().last().unwrap_or_else(|| node.clone());
-    root.descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|token| !token.kind().is_trivia())
-        .filter(|token| !token.text_range().is_empty())
-        .find(|token| usize::from(token.text_range().start()) >= end)
+    first_significant_token_from(node, end)
         .filter(|token| {
             token.kind() == SyntaxKind::IN_TOK
                 && !has_newline_between(node, end, usize::from(token.text_range().start()))
@@ -852,7 +860,7 @@ fn bodyless_sig_type_typars_trim_end(types: &TypeDefnsDecl) -> Option<usize> {
         .map(|token| usize::from(token.text_range().end()))
 }
 
-fn node_source_range(node: &SyntaxNode) -> Range<usize> {
+pub(super) fn node_source_range(node: &SyntaxNode) -> Range<usize> {
     let mut tokens = node
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
@@ -925,10 +933,15 @@ fn trailing_end_closes_nonempty_object_model_body(end: &SyntaxToken) -> bool {
 
 fn has_newline_between(node: &SyntaxNode, start: usize, end: usize) -> bool {
     let root = node.ancestors().last().unwrap_or_else(|| node.clone());
-    root.text()
-        .to_string()
-        .get(start..end)
-        .is_some_and(|text| text.contains('\n'))
+    let len = usize::from(root.text_range().len());
+    if start > end || end > len {
+        return false;
+    }
+    let range = rowan::TextRange::new(
+        rowan::TextSize::try_from(start).expect("offset fits a TextSize"),
+        rowan::TextSize::try_from(end).expect("offset fits a TextSize"),
+    );
+    root.text().slice(range).contains_char('\n')
 }
 
 fn root_text_end(node: &SyntaxNode) -> usize {
@@ -962,15 +975,21 @@ fn has_non_trivia_tokens(node: &SyntaxNode) -> bool {
 
 fn leading_xml_doc_start(node: &SyntaxNode, node_start: usize) -> Option<usize> {
     let root = node.ancestors().last().unwrap_or_else(|| node.clone());
-    let preceding_tokens: Vec<_> = root
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
+    // Walk back from `node_start` rather than forward from the root: the
+    // recovered-tree sweeps call this once per declaration, and a forward scan
+    // makes that quadratic in the file.
+    let offset = rowan::TextSize::try_from(node_start).expect("offset fits a TextSize");
+    let at = if offset >= root.text_range().end() {
+        root.last_token()
+    } else {
+        root.token_at_offset(offset).left_biased()
+    };
+    let preceding_tokens = std::iter::successors(at, |t| t.prev_token())
         .filter(|token| !token.text_range().is_empty())
-        .take_while(|token| usize::from(token.text_range().end()) <= node_start)
-        .collect();
+        .filter(|token| usize::from(token.text_range().end()) <= node_start);
 
     let mut start = None;
-    for token in preceding_tokens.iter().rev() {
+    for token in preceding_tokens {
         match token.kind() {
             SyntaxKind::LINE_COMMENT if is_xml_doc_comment(token.text()) => {
                 start = Some(usize::from(token.text_range().start()));
@@ -995,7 +1014,7 @@ fn is_xml_doc_comment(text: &str) -> bool {
     text.starts_with("///") && !text.starts_with("////")
 }
 
-fn is_light_hash_directive(node: &SyntaxNode) -> bool {
+pub(super) fn is_light_hash_directive(node: &SyntaxNode) -> bool {
     if !HashDirectiveDecl::can_cast(node.kind()) {
         return false;
     }
@@ -1127,7 +1146,7 @@ fn collect_fcs_sig_decl(
     }
 }
 
-fn fcs_impl_decl_range<'a>(kind: &str, fields: &'a [Value]) -> &'a Value {
+pub(super) fn fcs_impl_decl_range<'a>(kind: &str, fields: &'a [Value]) -> &'a Value {
     match kind {
         "Expr" | "Open" | "Types" | "Exception" | "Attributes" | "HashDirective" => &fields[1],
         "Let" | "ModuleAbbrev" => &fields[2],
@@ -1136,7 +1155,7 @@ fn fcs_impl_decl_range<'a>(kind: &str, fields: &'a [Value]) -> &'a Value {
     }
 }
 
-fn fcs_sig_decl_range<'a>(kind: &str, fields: &'a [Value]) -> &'a Value {
+pub(super) fn fcs_sig_decl_range<'a>(kind: &str, fields: &'a [Value]) -> &'a Value {
     match kind {
         "Open" | "Val" | "Types" | "Exception" | "HashDirective" => &fields[1],
         "ModuleAbbrev" => &fields[2],
@@ -1159,7 +1178,7 @@ fn push_fcs_fact(
     });
 }
 
-fn fcs_byte_range(range: &Value, line_index: &LineIndex<'_>) -> Range<usize> {
+pub(super) fn fcs_byte_range(range: &Value, line_index: &LineIndex<'_>) -> Range<usize> {
     let start = range.get("Start").expect("FCS range missing Start");
     let end = range.get("End").expect("FCS range missing End");
     let start_line = start
