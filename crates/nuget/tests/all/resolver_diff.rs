@@ -380,6 +380,9 @@ impl OurOutcome {
             ResolveDecline::TransitivePotentialDowngrade { .. } => {
                 OurOutcome::Declined("transitive-potential-downgrade")
             }
+            ResolveDecline::FloatingRangeComparison { .. } => {
+                OurOutcome::Declined("floating-comparison")
+            }
             ResolveDecline::GraphTooLarge => OurOutcome::Declined("too-large"),
         }
     }
@@ -491,8 +494,14 @@ fn compare(
                 );
             }
             (OurOutcome::ClaimsLegacyFails(claim), theirs) if engine == "legacy" => {
+                // A version conflict is NU1107, or NU1106 when the legacy conflict
+                // pass leaves the conflicting package undecided rather than
+                // settling it and then finding the range unsatisfied.
+                let right = theirs.fails_with(*claim)
+                    || (*claim == RestoreFailure::Conflict
+                        && theirs.fails_with(RestoreFailure::Undecided));
                 assert!(
-                    theirs.fails_with(*claim),
+                    right,
                     "resolve_offline declined claiming the legacy engine fails with {claim:?}, \
                      but it {}.\ndecline={}\n{}",
                     match theirs {
@@ -1244,7 +1253,11 @@ fn multi_version_graphs_resolve_identically() {
     // price of committing only to what both engines write; any other decline
     // here is a completeness bug. The rest of the corpus is graphs restore
     // itself fails, and there we must fail too, which `compare` has checked.
-    let envelope = ["loser-not-a-leaf", "transitive-potential-downgrade"];
+    let envelope = [
+        "loser-not-a-leaf",
+        "transitive-potential-downgrade",
+        "floating-comparison",
+    ];
     let other: Vec<_> = restore_only
         .iter()
         .filter(|(why, _)| !envelope.contains(why))
@@ -2211,4 +2224,42 @@ fn a_potential_downgrade_the_engines_adjudicate_differently() {
         comparison.ours,
         OurOutcome::Declined("transitive-potential-downgrade")
     );
+}
+
+/// A floating range in an eclipse comparison, which NuGet decides by the float's
+/// release prefix (`RemoteDependencyWalker.IsGreaterThanOrEqualTo`) and
+/// `is_at_least` does not model.
+///
+/// `P0 → P2 *` sits beside `P0 → P1`, and `P1 → P2[3.0]` is checked against it:
+/// NuGet treats a bare `*` as at least as high as anything, so the deeper edge
+/// is eclipsed and the legacy engine writes `{P0, P1, P2 2.0}`. Comparing the
+/// float's resolved minimum instead makes the deeper edge a potential
+/// downgrade, and reports an NU1605 the legacy engine never reports. (The
+/// default engine does fail it, with NU1605.) Found by the fresh-seed soak.
+#[test]
+fn a_floating_range_in_an_eclipse_comparison_declines() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "P0",
+                "1.0.0",
+                vec![Dep::new("P1", "[1.0.0]"), Dep::new("P2", "*")],
+            ),
+            Pkg::simple("P1", "1.0.0", vec![Dep::new("P2", "[3.0.0, )")]),
+            Pkg::simple("P2", "2.0.0", vec![]),
+            Pkg::simple("P2", "3.0.0", vec![]),
+        ],
+        &[("P0", "[1.0.0]"), ("P2", "2.0.0")],
+    );
+    assert_eq!(
+        comparison.restore.legacy,
+        resolved_to(&[("p0", "1.0.0"), ("p1", "1.0.0"), ("p2", "2.0.0")])
+    );
+    assert_eq!(
+        comparison.restore.default,
+        failed_with(&[RestoreFailure::Downgrade])
+    );
+    assert_eq!(comparison.ours, OurOutcome::Declined("floating-comparison"));
 }
