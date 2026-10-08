@@ -22,6 +22,7 @@ pub mod spawn;
 pub mod telemetry;
 mod tfm_policy;
 pub mod workspace;
+pub mod xml_doc;
 
 #[cfg(test)]
 mod test_trace;

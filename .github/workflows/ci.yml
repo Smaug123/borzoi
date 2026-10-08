@@ -804,6 +804,16 @@ jobs:
           nix develop --command cargo test -p borzoi --test all \
             parser_corpus_sweep:: -- --ignored --nocapture
 
+      - name: Gate on the shipped XML-doc sweep
+        if: steps.gate.outputs.run == 'true'
+        # Hover's XML-doc reader and renderer over every doc file the SDK ships
+        # (the reference pack and FSharp.Core): each indexes, each entry renders
+        # with no Markdown structure leaking from its text, and no tag in them
+        # falls back to plain text. The SDK comes from `nix develop`.
+        run: |
+          nix develop --command cargo test -p borzoi --test all \
+            xml_doc_shipped_sweep:: -- --ignored --nocapture
+
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
     needs: changes

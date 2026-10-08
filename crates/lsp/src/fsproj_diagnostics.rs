@@ -679,6 +679,11 @@ fn message(kind: &DiagnosticKind) -> String {
         DiagnosticKind::UnsupportedGlob { pattern } => {
             format!("glob pattern not expanded: {pattern}")
         }
+        DiagnosticKind::GlobDeclined { include, reason } => {
+            format!(
+                "glob not expanded, because MSBuild's result is not reproducible: {include} ({reason})"
+            )
+        }
         DiagnosticKind::UndefinedProperty { name } => {
             format!("$({name}) is not defined — substituted as empty")
         }

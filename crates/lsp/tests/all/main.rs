@@ -15,7 +15,6 @@ mod csharp_sidecar_bundled_e2e;
 mod definition_availability_incomplete;
 mod fcs_bridge;
 mod fsharp_name_lexes_back;
-mod glob_msbuild_diff;
 mod goto_source_fsharp_core;
 mod goto_source_sidecar;
 mod handlers_completion;
@@ -45,6 +44,7 @@ mod sdk_resolution_exactness_diff;
 mod sdk_resolution_oracle;
 mod sdk_resolution_override_classification;
 mod watched_assembly_refresh_e2e;
+mod xml_doc_shipped_sweep;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is
 /// silently never compiled or run. See the module for why that is worth a test.
