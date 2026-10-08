@@ -3552,9 +3552,11 @@ impl<'src> Parser<'src> {
     /// `expr.[index]` → [`SyntaxKind::DOT_INDEXED_GET_EXPR`] (FCS
     /// `DotIndexedGet`). The head sits at `cp` (FCS's `objectExpr`); the
     /// bracketed expression is `indexArgs` (a `Tuple` for `arr.[i, j]`). The
-    /// index is parsed as a full `parse_expr`; a range/slice index
-    /// (`arr.[1..3]`) is deferred and errors at the `..`. The closer `]` is a
-    /// real `RBRACK_TOK` — unlike `)`, the lex-filter does not swallow it.
+    /// index is FCS's `typedSequentialExpr` (`atomicExprQualification: LBRACK
+    /// typedSequentialExpr RBRACK`, `pars.fsy`), so a multi-line body of
+    /// offside-separated statements (`Array.[⏎ yield 1⏎ yield 2⏎ ]`) is one
+    /// `Sequential` index, as in a list literal. The closer `]` is a real
+    /// `RBRACK_TOK` — unlike `)`, the lex-filter does not swallow it.
     fn parse_dot_indexed_get_tail(&mut self, cp: rowan::Checkpoint) {
         self.builder.start_node_at(
             cp,
@@ -3566,18 +3568,7 @@ impl<'src> Parser<'src> {
         // expression start) or an open-lower slice (`arr.[..^1]`, lex-filter-split
         // to `..` then `^1`, both ordinary expression starts), so the plain
         // expression-start gate covers them.
-        if self.peek_is_expr_start() {
-            self.parse_expr();
-        } else {
-            let span = self
-                .peek()
-                .map(|(_, s)| s.clone())
-                .unwrap_or_else(|| self.source.len()..self.source.len());
-            self.errors.push(ParseError {
-                message: "expected an index expression after `.[`".to_string(),
-                span,
-            });
-        }
+        self.parse_seq_block_body("expected an index expression after `.[`");
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::RBrack)), _))
