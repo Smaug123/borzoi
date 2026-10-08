@@ -110,6 +110,16 @@ passes explicit cache roots and typed direct package inputs into the resolver.
   merge upward, decline on downgrade (NU1605) / conflict (NU1107) / cycle
   (NU1108). Multi-version differential (900 graphs, zero false declines) plus a
   rejected-version-*presence* (never contents) property.
+- **Slice 6c** — both restore engines. The oracle's `restore` op runs a real
+  restore through `RestoreRunner`, under the legacy resolver and under the
+  .NET 10 SDK's default `DependencyGraphResolver` (calibrated against real
+  `dotnet restore` on 80 generated graphs, 40 of them ones the engines
+  disagree on). A closure is committed only where both engines write it:
+  `engines_agree` declines unless every losing version is a leaf of the legacy
+  tree and every potential downgrade is of a direct reference. That reads each
+  loser's dependency list (and nothing below it), so the "never contents"
+  property is now "only the dependency list". Cost on the generated sweeps:
+  about 1.5% of wide-vocabulary closures and 5% of multi-version ones.
 - **Slice 7** — compile-asset selection (`crates/nuget/src/assets.rs`):
   `ManagedCodeConventions` restricted to the compile patterns + the nuspec
   `<references>` allow-list. Ref-beats-lib at *group* level, `lib/any` ≠

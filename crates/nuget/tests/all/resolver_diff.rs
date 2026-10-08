@@ -3,21 +3,23 @@
 //! The per-primitive oracle ops (`parseVersion`, `parseRange`,
 //! `selectDependencyGroup`, …) pin the pieces; this file pins the *whole*
 //! offline resolve against the genuine PackageReference restore engine — the
-//! `resolve` op drives `RemoteDependencyWalker` + `GraphOperations.Analyze`,
-//! NuGet's legacy dependency resolver. The .NET 10 SDK defaults to a separate
-//! resolver, and the two disagree on at least one graph
-//! (`mutually_dependent_cousin_conflicts_fail_restore`).
+//! `restore` op runs a real restore through `RestoreRunner`, once with NuGet's
+//! legacy dependency resolver (`RestoreUseLegacyDependencyResolver`) and once
+//! with the .NET 10 SDK's default `DependencyGraphResolver`. The two engines
+//! disagree on roughly one generated graph in ten, so the contract is stated
+//! against both: a closure must be the one both engines write.
 //!
 //! The correctness policy (`docs/nuget-restore-plan.md`) is "resolve
 //! identically or degrade": whenever `resolve_offline` returns a closure it
 //! must be *exactly* the closure restore would produce, and otherwise it may
 //! decline. So the load-bearing invariant here is **soundness**:
 //!
-//!   `resolve_offline` returns `Ok(S)`  ⟹  restore also succeeds, with the
-//!                                          same package set `S`.
+//!   `resolve_offline` returns `Ok(S)`  ⟹  both engines succeed, each with
+//!                                          the same package set `S`.
 //!
-//! A decline is always permitted (we under-resolve, never mis-resolve), so the
-//! `Err` branch asserts nothing against the oracle. A second, narrower sweep
+//! A decline is always permitted (we under-resolve, never mis-resolve). The
+//! only declines checked against the oracle are the three that name a legacy
+//! engine error, which must be one the legacy engine reports. A second, narrower sweep
 //! (`completeness_on_consistent_acyclic_envelope`) additionally requires that
 //! we *do* resolve on the version-consistent, acyclic, fully-committed graphs
 //! that sit squarely inside the current envelope — extending the naive
@@ -222,69 +224,122 @@ fn oracle_set(oracle_packages: &serde_json::Value) -> BTreeSet<(String, String)>
         .collect()
 }
 
-/// Why `dotnet restore` produced no closure, as the oracle reports it.
+/// One of the restore errors `resolve_offline`'s outcome classes are drawn
+/// from, by its NuGet code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RestoreFailure {
-    /// NU1101/NU1102: an accepted dependency has no package to resolve to.
+    /// NU1101/NU1102/NU1103: a dependency has no package to resolve to.
     Missing,
     /// NU1108.
     Cycle,
-    /// NU1106: cousin conflicts that each decide the other, so restore's
-    /// conflict pass can settle neither.
+    /// NU1106: conflicting requests the resolver could not settle.
     Undecided,
     /// NU1107.
     Conflict,
-    /// NU1605.
+    /// NU1605, an error under the SDK's default `WarningsAsErrors`.
     Downgrade,
 }
 
-/// What `dotnet restore` did with a graph: the one outcome class it lands in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RestoreOutcome {
-    Resolved(BTreeSet<(String, String)>),
-    Failed(RestoreFailure),
+impl RestoreFailure {
+    fn from_code(code: &str) -> RestoreFailure {
+        match code {
+            "NU1101" | "NU1102" | "NU1103" => RestoreFailure::Missing,
+            "NU1108" => RestoreFailure::Cycle,
+            "NU1106" => RestoreFailure::Undecided,
+            "NU1107" => RestoreFailure::Conflict,
+            "NU1605" => RestoreFailure::Downgrade,
+            other => panic!("restore failed with {other}, which no outcome class covers"),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            RestoreFailure::Missing => "missing",
+            RestoreFailure::Cycle => "cycle",
+            RestoreFailure::Undecided => "undecided",
+            RestoreFailure::Conflict => "conflict",
+            RestoreFailure::Downgrade => "downgrade",
+        }
+    }
 }
 
-impl RestoreOutcome {
-    fn parse(response: &serde_json::Value) -> RestoreOutcome {
+/// What one restore engine did with a graph: the closure it wrote, or every
+/// error it failed with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EngineOutcome {
+    Resolved(BTreeSet<(String, String)>),
+    Failed(BTreeSet<RestoreFailure>),
+}
+
+impl EngineOutcome {
+    fn parse(response: &serde_json::Value) -> EngineOutcome {
         if response["resolved"]
             .as_bool()
             .expect("oracle resolved flag")
         {
-            return RestoreOutcome::Resolved(oracle_set(&response["packages"]));
+            return EngineOutcome::Resolved(oracle_set(&response["packages"]));
         }
-        let reason = response["reason"].as_str().expect("oracle failure reason");
-        RestoreOutcome::Failed(match reason {
-            "missing" => RestoreFailure::Missing,
-            "cycle" => RestoreFailure::Cycle,
-            "undecided" => RestoreFailure::Undecided,
-            "conflict" => RestoreFailure::Conflict,
-            "downgrade" => RestoreFailure::Downgrade,
-            other => panic!("unknown oracle failure reason {other:?}"),
-        })
+        let errors: BTreeSet<RestoreFailure> = response["errors"]
+            .as_array()
+            .expect("oracle error codes")
+            .iter()
+            .map(|code| RestoreFailure::from_code(code.as_str().expect("error code")))
+            .collect();
+        assert!(!errors.is_empty(), "a failed restore reports an error");
+        EngineOutcome::Failed(errors)
     }
 
-    fn class(&self) -> &'static str {
+    /// One label for the census: `resolved`, or the failures joined.
+    fn class(&self) -> String {
         match self {
-            RestoreOutcome::Resolved(_) => "resolved",
-            RestoreOutcome::Failed(RestoreFailure::Missing) => "missing",
-            RestoreOutcome::Failed(RestoreFailure::Cycle) => "cycle",
-            RestoreOutcome::Failed(RestoreFailure::Undecided) => "undecided",
-            RestoreOutcome::Failed(RestoreFailure::Conflict) => "conflict",
-            RestoreOutcome::Failed(RestoreFailure::Downgrade) => "downgrade",
+            EngineOutcome::Resolved(_) => "resolved".to_owned(),
+            EngineOutcome::Failed(failures) => failures
+                .iter()
+                .map(|failure| failure.name())
+                .collect::<Vec<_>>()
+                .join("+"),
+        }
+    }
+
+    fn fails_with(&self, failure: RestoreFailure) -> bool {
+        matches!(self, EngineOutcome::Failed(failures) if failures.contains(&failure))
+    }
+}
+
+/// What `dotnet restore` did with a graph, under each of NuGet's two dependency
+/// resolvers: the legacy one (`RestoreUseLegacyDependencyResolver`) and the
+/// .NET 10 SDK's default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreOutcome {
+    legacy: EngineOutcome,
+    default: EngineOutcome,
+}
+
+impl RestoreOutcome {
+    fn engines(&self) -> [(&'static str, &EngineOutcome); 2] {
+        [("legacy", &self.legacy), ("default", &self.default)]
+    }
+
+    /// The closure both engines write, if they write the same one.
+    fn agreed_closure(&self) -> Option<&BTreeSet<(String, String)>> {
+        match (&self.legacy, &self.default) {
+            (EngineOutcome::Resolved(a), EngineOutcome::Resolved(b)) if a == b => Some(a),
+            _ => None,
         }
     }
 }
 
 /// What `resolve_offline` did with a graph, split by what it *claims*.
 ///
-/// A closure claims to be restore's closure. Three declines claim more than "we
-/// cannot tell": that restore itself fails, and why. Every other decline claims
-/// nothing about restore at all.
+/// A closure claims to be the closure both restore engines write. Three declines
+/// claim more than "we cannot tell": that the *legacy* engine fails, and with
+/// which error. They claim nothing about the default engine, which may resolve
+/// the same graph or fail it differently. Every other decline claims nothing at
+/// all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OurOutcome {
     Resolved(BTreeSet<(String, String)>),
-    ClaimsRestoreFails(RestoreFailure),
+    ClaimsLegacyFails(RestoreFailure),
     Declined(&'static str),
 }
 
@@ -296,13 +351,13 @@ impl OurOutcome {
         };
         match decline {
             ResolveDecline::DependencyCycle { .. } => {
-                OurOutcome::ClaimsRestoreFails(RestoreFailure::Cycle)
+                OurOutcome::ClaimsLegacyFails(RestoreFailure::Cycle)
             }
             ResolveDecline::VersionConflict { .. } => {
-                OurOutcome::ClaimsRestoreFails(RestoreFailure::Conflict)
+                OurOutcome::ClaimsLegacyFails(RestoreFailure::Conflict)
             }
             ResolveDecline::Downgrade { .. } => {
-                OurOutcome::ClaimsRestoreFails(RestoreFailure::Downgrade)
+                OurOutcome::ClaimsLegacyFails(RestoreFailure::Downgrade)
             }
             ResolveDecline::UnsupportedProjectFramework { .. } => {
                 OurOutcome::Declined("unsupported-framework")
@@ -319,6 +374,15 @@ impl OurOutcome {
             }
             ResolveDecline::DependencyWithoutRange { .. } => OurOutcome::Declined("no-range"),
             ResolveDecline::UnresolvableLosingEdge { .. } => OurOutcome::Declined("losing-edge"),
+            ResolveDecline::LosingVersionNotALeaf { .. } => {
+                OurOutcome::Declined("loser-not-a-leaf")
+            }
+            ResolveDecline::TransitivePotentialDowngrade { .. } => {
+                OurOutcome::Declined("transitive-potential-downgrade")
+            }
+            ResolveDecline::FloatingRangeComparison { .. } => {
+                OurOutcome::Declined("floating-comparison")
+            }
             ResolveDecline::GraphTooLarge => OurOutcome::Declined("too-large"),
         }
     }
@@ -326,8 +390,8 @@ impl OurOutcome {
     fn class(&self) -> String {
         match self {
             OurOutcome::Resolved(_) => "resolved".to_owned(),
-            OurOutcome::ClaimsRestoreFails(failure) => {
-                format!("claims-{}", RestoreOutcome::Failed(*failure).class())
+            OurOutcome::ClaimsLegacyFails(failure) => {
+                format!("claims-legacy-{}", failure.name())
             }
             OurOutcome::Declined(why) => format!("declined-{why}"),
         }
@@ -367,16 +431,15 @@ fn describe(tfm: &str, packages: &[Pkg], direct: &[(&str, &str)]) -> String {
     out
 }
 
-/// The differential: run both sides over the same graph and compare their
-/// outcome *classes*, not only their package sets.
+/// The differential: run `resolve_offline` and both restore engines over the
+/// same graph and compare their outcome *classes*, not only their package sets.
 ///
-/// - A closure must be restore's closure, exactly; and restore must have
-///   produced one at all. A version conflict, downgrade, cycle or missing
-///   package on restore's side therefore requires a decline on ours.
-/// - A decline that claims restore fails (a cycle, conflict or downgrade
-///   diagnosis) must be right that restore fails. Which of restore's errors it
-///   reports first is not compared: the two sides check in different orders,
-///   and a graph with two faults may be reported by either.
+/// - A closure must be the closure *both* engines write. Where either engine
+///   fails, or the two write different closures, we must decline.
+/// - A decline that claims the legacy engine fails (a cycle, conflict or
+///   downgrade diagnosis) must be right: the legacy engine must fail, with that
+///   error among the ones it reports. The claim says nothing about the default
+///   engine, which the resolver does not model beyond knowing where it agrees.
 /// - Any other decline makes no claim, and is always permitted.
 fn compare(
     oracle: &mut Oracle,
@@ -396,42 +459,61 @@ fn compare(
         .map(|(id_, range_)| json!({ "id": id_, "range": range_ }))
         .collect::<Vec<_>>();
 
-    let response = oracle.request(&json!({
-        "op": "resolve",
-        "framework": tfm,
-        "packages": universe,
-        "direct": direct_json,
-    }));
-    let restore = RestoreOutcome::parse(&response);
+    let mut restore_with = |engine: &str| {
+        EngineOutcome::parse(&oracle.request(&json!({
+            "op": "restore",
+            "engine": engine,
+            "framework": tfm,
+            "packages": universe,
+            "direct": direct_json,
+        })))
+    };
+    let restore = RestoreOutcome {
+        legacy: restore_with("legacy"),
+        default: restore_with("default"),
+    };
     let result = resolve_offline(root.path(), &framework(tfm), &direct_reqs);
     let ours = OurOutcome::of(&result);
 
-    match (&ours, &restore) {
-        (OurOutcome::Resolved(mine), RestoreOutcome::Resolved(theirs)) => {
-            assert_eq!(
-                mine,
-                theirs,
-                "resolved closure differs from `dotnet restore`.\n{}",
-                describe(tfm, packages, direct),
-            );
+    for (engine, outcome) in restore.engines() {
+        match (&ours, outcome) {
+            (OurOutcome::Resolved(mine), EngineOutcome::Resolved(theirs)) => {
+                assert_eq!(
+                    mine,
+                    theirs,
+                    "resolved closure differs from `dotnet restore` ({engine} engine).\n{}",
+                    describe(tfm, packages, direct),
+                );
+            }
+            (OurOutcome::Resolved(mine), EngineOutcome::Failed(failures)) => {
+                panic!(
+                    "resolve_offline produced a closure but `dotnet restore` fails ({engine} \
+                     engine: {failures:?}); over-resolution violates the correctness policy.\n\
+                     closure={mine:?}\n{}",
+                    describe(tfm, packages, direct),
+                );
+            }
+            (OurOutcome::ClaimsLegacyFails(claim), theirs) if engine == "legacy" => {
+                // A version conflict is NU1107, or NU1106 when the legacy conflict
+                // pass leaves the conflicting package undecided rather than
+                // settling it and then finding the range unsatisfied.
+                let right = theirs.fails_with(*claim)
+                    || (*claim == RestoreFailure::Conflict
+                        && theirs.fails_with(RestoreFailure::Undecided));
+                assert!(
+                    right,
+                    "resolve_offline declined claiming the legacy engine fails with {claim:?}, \
+                     but it {}.\ndecline={}\n{}",
+                    match theirs {
+                        EngineOutcome::Resolved(set) => format!("resolves to {set:?}"),
+                        EngineOutcome::Failed(failures) => format!("fails with {failures:?}"),
+                    },
+                    result.as_ref().expect_err("a claim is a decline"),
+                    describe(tfm, packages, direct),
+                );
+            }
+            (OurOutcome::ClaimsLegacyFails(_), _) | (OurOutcome::Declined(_), _) => {}
         }
-        (OurOutcome::Resolved(mine), RestoreOutcome::Failed(failure)) => {
-            panic!(
-                "resolve_offline produced a closure but `dotnet restore` fails ({failure:?}); \
-                 over-resolution violates the correctness policy.\nclosure={mine:?}\n{}",
-                describe(tfm, packages, direct),
-            );
-        }
-        (OurOutcome::ClaimsRestoreFails(claim), RestoreOutcome::Resolved(theirs)) => {
-            panic!(
-                "resolve_offline declined claiming restore fails ({claim:?}), but `dotnet \
-                 restore` resolves.\ndecline={}\nrestore={theirs:?}\n{}",
-                result.as_ref().expect_err("a claim is a decline"),
-                describe(tfm, packages, direct),
-            );
-        }
-        (OurOutcome::ClaimsRestoreFails(_), RestoreOutcome::Failed(_))
-        | (OurOutcome::Declined(_), _) => {}
     }
 
     Comparison { ours, restore }
@@ -449,8 +531,28 @@ fn assert_sound(
     let comparison = compare(oracle, tfm, packages, direct);
     (
         matches!(comparison.ours, OurOutcome::Resolved(_)),
-        matches!(comparison.restore, RestoreOutcome::Resolved(_)),
+        comparison.restore.agreed_closure().is_some(),
     )
+}
+
+/// [`compare`] on a `net8.0` hand scenario, for asserting each side's outcome.
+fn scenario(oracle: &mut Oracle, packages: &[Pkg], direct: &[(&str, &str)]) -> Comparison {
+    compare(oracle, "net8.0", packages, direct)
+}
+
+/// An engine outcome that resolved to `packages`, given as `(id, version)`.
+fn resolved_to(packages: &[(&str, &str)]) -> EngineOutcome {
+    EngineOutcome::Resolved(
+        packages
+            .iter()
+            .map(|(id_, version_)| (id_.to_ascii_lowercase(), (*version_).to_owned()))
+            .collect(),
+    )
+}
+
+/// An engine outcome that failed with exactly `failures`.
+fn failed_with(failures: &[RestoreFailure]) -> EngineOutcome {
+    EngineOutcome::Failed(failures.iter().copied().collect())
 }
 
 // ============================================================================
@@ -543,15 +645,18 @@ fn dependency_cycle_must_not_resolve() {
     );
 }
 
+/// A cycle below a version that loses its conflict still fails a legacy restore.
+///
+/// `A → G[1.0] → H → G[1.0]` is a cycle, and `B → G[2.0]` makes G 1.0 lose, so
+/// the cycle sits on a rejected branch. The legacy engine reports NU1108 all the
+/// same; the default engine writes `{A, B, G 2.0}`. Both checked against a real
+/// `dotnet restore`: .NET 8, and .NET 10 with and without
+/// `RestoreUseLegacyDependencyResolver`. The engines disagree, so we decline.
 #[test]
-fn cycle_confined_to_rejected_branch_still_resolves() {
-    // A→G[1.0,)→H→G[1.0,) is a cycle, but B→G[2.0,) makes restore pick G 2.0
-    // and reject the whole G 1.0 branch (cycle included), so restore succeeds
-    // with {A,B,G 2.0}. A graph-wide cycle count would wrongly report `cycle`.
+fn a_cycle_below_a_rejected_version_fails_legacy_restore() {
     let mut oracle = Oracle::spawn();
-    let (rust, oracle_ok) = assert_sound(
+    let comparison = scenario(
         &mut oracle,
-        "net8.0",
         &[
             Pkg::simple("A", "1.0.0", vec![Dep::new("G", "[1.0.0, )")]),
             Pkg::simple("B", "1.0.0", vec![Dep::new("G", "[2.0.0, )")]),
@@ -561,25 +666,29 @@ fn cycle_confined_to_rejected_branch_still_resolves() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert!(
-        rust,
-        "G resolves to 2.0, so G 1.0's branch — cycle and all — is never walked"
+    assert_eq!(
+        comparison.restore.legacy,
+        failed_with(&[RestoreFailure::Cycle])
     );
-    assert!(
-        oracle_ok,
-        "restore resolves G to 2.0; the rejected G 1.0's cycle is irrelevant"
+    assert_eq!(
+        comparison.restore.default,
+        resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")])
     );
+    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
 }
 
+/// What the leaf-loser rule costs: a graph both engines resolve, declined.
+///
+/// `B → G[2.0]` makes G 1.0 lose, so the K conflict inside G 1.0's subtree never
+/// bites, and both engines write `{A, B, G 2.0}`. But G 1.0 has dependencies
+/// that would become nodes of the legacy tree, and from G 1.0's dependency list
+/// alone this graph cannot be told from `mutually_dependent_cousin_conflicts_fail_restore`,
+/// where the loser's subtree is exactly what the engines disagree over.
 #[test]
-fn conflict_confined_to_rejected_branch_still_resolves() {
-    // B→G[2.0,) makes restore reject the whole G 1.0 branch, so the
-    // unresolvable K conflict inside G 1.0's subtree never bites — restore
-    // succeeds with {A,B,G 2.0}. Verified against a real `dotnet restore`.
+fn a_losing_version_with_dependencies_declines() {
     let mut oracle = Oracle::spawn();
-    let (rust, oracle_ok) = assert_sound(
+    let comparison = scenario(
         &mut oracle,
-        "net8.0",
         &[
             Pkg::simple("A", "1.0.0", vec![Dep::new("G", "[1.0.0, )")]),
             Pkg::simple("B", "1.0.0", vec![Dep::new("G", "[2.0.0, )")]),
@@ -595,14 +704,10 @@ fn conflict_confined_to_rejected_branch_still_resolves() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert!(
-        rust,
-        "G resolves to 2.0, so the K conflict inside G 1.0's branch is never seen"
-    );
-    assert!(
-        oracle_ok,
-        "restore resolves G to 2.0; the rejected branch's K conflict is irrelevant"
-    );
+    let both = resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")]);
+    assert_eq!(comparison.restore.legacy, both);
+    assert_eq!(comparison.restore.default, both);
+    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
 }
 
 #[test]
@@ -723,16 +828,16 @@ fn dependency_asset_filter_we_decline_restore_resolves() {
     );
 }
 
+/// A missing package below a rejected version does not fail restore.
+///
+/// A→G[1.0,) and B→G[2.0,): restore merges G to 2.0 and *rejects* G 1.0, so
+/// G 1.0's missing dependency dangles off a rejected branch and both engines
+/// still write `{A, B, G 2.0}`. G 1.0 is not a leaf, so we decline.
 #[test]
 fn rejected_branch_missing_dependency_does_not_fail_restore() {
-    // A→G[1.0,) and B→G[2.0,): restore merges G to 2.0 and *rejects* G 1.0, so
-    // G 1.0's missing dependency dangles off a rejected branch and never
-    // reaches the output — restore still succeeds. The oracle must not report
-    // `missing` here (a graph-wide "any unresolved node" scan would).
     let mut oracle = Oracle::spawn();
-    let (rust, oracle_ok) = assert_sound(
+    let comparison = scenario(
         &mut oracle,
-        "net8.0",
         &[
             Pkg::simple("A", "1.0.0", vec![Dep::new("G", "[1.0.0, )")]),
             Pkg::simple("B", "1.0.0", vec![Dep::new("G", "[2.0.0, )")]),
@@ -741,14 +846,10 @@ fn rejected_branch_missing_dependency_does_not_fail_restore() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert!(
-        rust,
-        "G resolves to 2.0, so G 1.0's missing dependency is never looked for"
-    );
-    assert!(
-        oracle_ok,
-        "restore resolves G to 2.0; the rejected G 1.0's missing dep is irrelevant"
-    );
+    let both = resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")]);
+    assert_eq!(comparison.restore.legacy, both);
+    assert_eq!(comparison.restore.default, both);
+    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
 }
 
 #[test]
@@ -1121,40 +1222,49 @@ fn generate_multi_version(rng: &mut SplitMix64) -> Generated {
 fn multi_version_graphs_resolve_identically() {
     let mut oracle = Oracle::spawn();
     let mut resolved = 0usize;
-    let mut restore_only = 0usize;
     let mut total = 0usize;
+    // Graphs both engines resolve identically that we decline, by why.
+    let mut restore_only: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
 
     for seed in [0x6b_u64, 0xBEEF, 0x0DDBA11, 0xFACE, 0xC0DE, 0x5EED] {
         let mut rng = SplitMix64(seed);
         for _ in 0..150 {
-            let g = generate_multi_version(&mut rng);
-            let direct = g
-                .direct
-                .iter()
-                .map(|(id_, range_)| (id_.as_str(), range_.as_str()))
-                .collect::<Vec<_>>();
-            // `assert_sound` is the whole check: if we produce a closure it must
-            // be restore's, exactly, and restore must have produced one at all.
-            let (rust, oracle_ok) = assert_sound(&mut oracle, &g.tfm, &g.packages, &direct);
+            // `compare` is the soundness check: if we produce a closure it must
+            // be the one both engines write.
+            let comparison = generate_multi_version(&mut rng).compare(&mut oracle);
             total += 1;
-            if rust {
-                resolved += 1;
-            } else if oracle_ok {
-                restore_only += 1;
+            match comparison.ours {
+                OurOutcome::Resolved(_) => resolved += 1,
+                OurOutcome::Declined(why) if comparison.restore.agreed_closure().is_some() => {
+                    *restore_only.entry(why).or_default() += 1;
+                }
+                _ => {}
             }
         }
     }
 
-    eprintln!("multi-version: {resolved}/{total} resolved, {restore_only} restore-only declines");
+    eprintln!("multi-version: {resolved}/{total} resolved, restore-only declines {restore_only:?}");
 
     // Completeness, stated as strongly as it goes: on graphs whose every version
-    // is on disk, we resolve *everything restore resolves*. The rest of the
-    // corpus is graphs restore itself fails — random ranges over several
-    // versions conflict often — and there we must fail too, which `assert_sound`
-    // has already checked.
-    assert_eq!(
-        restore_only, 0,
-        "declined {restore_only} graph(s) that `dotnet restore` resolves"
+    // is on disk, we resolve everything both engines resolve to the same
+    // closure, except where the engine-agreement envelope declines (see
+    // `engines_agree` in `resolver.rs`). That envelope is the one deliberate
+    // price of committing only to what both engines write; any other decline
+    // here is a completeness bug. The rest of the corpus is graphs restore
+    // itself fails, and there we must fail too, which `compare` has checked.
+    let envelope = [
+        "loser-not-a-leaf",
+        "transitive-potential-downgrade",
+        "floating-comparison",
+    ];
+    let other: Vec<_> = restore_only
+        .iter()
+        .filter(|(why, _)| !envelope.contains(why))
+        .collect();
+    assert!(
+        other.is_empty(),
+        "declined graph(s) both engines resolve, outside the engine-agreement envelope: {other:?}"
     );
     // And a sweep that resolved nothing would satisfy that vacuously.
     assert!(
@@ -1165,20 +1275,24 @@ fn multi_version_graphs_resolve_identically() {
 
 /// What a resolved closure needs from the versions it *rejected*, stated exactly.
 ///
-/// The design first claimed it needed nothing at all — that a loser's subtree is
-/// rejected wholesale, so its version could be absent. That is half right, and
-/// the half that is wrong is an over-resolution (see
-/// `a_losing_path_does_not_contribute_its_winners_dependencies`): a losing
-/// version's *presence* is what tells us restore rejected the edge rather than
-/// bumping it up to the winner.
+/// A losing version's *presence* is what tells us restore rejected the edge
+/// rather than bumping it up to the winner (see
+/// `a_losing_path_does_not_contribute_its_winners_dependencies`). Of its
+/// contents, only its dependency list is read, to check it is a leaf of the
+/// legacy tree (`engines_agree`); nothing below a loser is read at all, which
+/// is as much of a rejected branch as the default engine's restore installs.
 ///
-/// Its *contents*, though, are genuinely never read — restore does not look
-/// inside a package it rejected either. So: resolve, delete the nuspec of every
-/// version the closure does not name (leaving the commit marker), and resolve
-/// again. The closure must be identical, and it must still *be* a closure.
+/// So, for every version the closure does not name, delete its nuspec (leaving
+/// the commit marker) and resolve again. The answer must be the same closure,
+/// or a decline that names that very package as unreadable: never a different
+/// closure, and never another decline. Then delete together every nuspec whose
+/// absence changed nothing: those are versions the resolver never read, and
+/// still the closure must be identical.
 #[test]
-fn a_resolved_closure_never_reads_the_versions_it_rejected() {
-    let mut checked = 0usize;
+fn a_resolved_closure_reads_only_the_dependency_lists_of_the_versions_it_rejected() {
+    let mut closures = 0usize;
+    let mut never_read = 0usize;
+    let mut losers_read = 0usize;
 
     for seed in [0x6b_c0_u64, 0xD00D, 0x5AFE, 0xFEED, 0xB0B5] {
         let mut rng = SplitMix64(seed);
@@ -1192,12 +1306,15 @@ fn a_resolved_closure_never_reads_the_versions_it_rejected() {
                 .iter()
                 .map(|(id_, range_)| req(id_, range_))
                 .collect::<Vec<_>>();
+            let resolve = || resolve_offline(root.path(), &framework(&g.tfm), &direct);
 
-            let Ok(closure) = resolve_offline(root.path(), &framework(&g.tfm), &direct) else {
+            let Ok(closure) = resolve() else {
                 continue;
             };
             let before = closure_set(&closure);
+            closures += 1;
 
+            let mut unread = Vec::new();
             for pkg in &g.packages {
                 let key = (
                     pkg.id.to_ascii_lowercase(),
@@ -1207,26 +1324,58 @@ fn a_resolved_closure_never_reads_the_versions_it_rejected() {
                     continue;
                 }
                 let identity = PackageIdentity::new(id(&pkg.id), version(&pkg.version));
-                let paths = PackagePaths::new(root.path(), &identity);
-                let _ = fs::remove_file(&paths.nuspec_path);
+                let nuspec = PackagePaths::new(root.path(), &identity).nuspec_path;
+                let contents = fs::read(&nuspec).expect("nuspec");
+                fs::remove_file(&nuspec).expect("remove nuspec");
+
+                match resolve() {
+                    Ok(after) => {
+                        assert_eq!(
+                            before,
+                            closure_set(&after),
+                            "closure changed once {identity:?}'s nuspec left the cache"
+                        );
+                        unread.push(nuspec.clone());
+                        never_read += 1;
+                    }
+                    Err(ResolveDecline::PackageRead { identity: read, .. }) if read == identity => {
+                        losers_read += 1;
+                    }
+                    Err(other) => panic!(
+                        "deleting {identity:?}'s nuspec turned a closure into another decline: \
+                         {other}"
+                    ),
+                }
+                fs::write(&nuspec, contents).expect("restore nuspec");
             }
 
-            let after = resolve_offline(root.path(), &framework(&g.tfm), &direct)
-                .expect("a rejected version's contents are never read");
+            for nuspec in &unread {
+                fs::remove_file(nuspec).expect("remove nuspec");
+            }
+            let after = resolve().expect("versions never read, deleted together");
             assert_eq!(
                 before,
                 closure_set(&after),
-                "closure changed once the rejected versions' nuspecs left the cache"
+                "closure changed once every never-read nuspec left the cache"
             );
-            checked += 1;
         }
     }
 
-    assert!(
-        checked > 40,
-        "generator degenerated: only {checked} graphs resolved to prune"
+    eprintln!(
+        "{closures} closures: {never_read} rejected version(s) never read, {losers_read} \
+         losers' dependency lists read"
     );
-    eprintln!("stripped and re-resolved {checked} closures");
+    // Both halves must actually happen: a sweep with no losers would say nothing
+    // about what a loser costs, and one where every rejected version is read
+    // would say nothing about what is spared.
+    assert!(
+        closures > 40,
+        "generator degenerated: only {closures} graphs resolved to prune"
+    );
+    assert!(
+        never_read > 40 && losers_read > 10,
+        "generator degenerated: {never_read} never read, {losers_read} losers read"
+    );
 }
 
 // ============================================================================
@@ -1555,10 +1704,16 @@ struct Features {
 #[derive(Debug, Default)]
 struct Census {
     graphs: usize,
-    /// Restore's outcome class.
-    restore: std::collections::BTreeMap<&'static str, usize>,
+    /// Restore's outcome class under each engine, as `legacy/default`.
+    restore: std::collections::BTreeMap<String, usize>,
+    /// Graphs on which each engine fails with each error.
+    failures: std::collections::BTreeMap<(&'static str, RestoreFailure), usize>,
+    /// Graphs both engines resolve to the same closure.
+    engines_agree_resolved: usize,
+    /// Graphs on which the engines' outcomes differ.
+    engines_disagree: usize,
     /// Our outcome class, against restore's.
-    pairs: std::collections::BTreeMap<(String, &'static str), usize>,
+    pairs: std::collections::BTreeMap<(String, String), usize>,
     /// Graphs both sides resolved, by the shapes they contain.
     resolved_with: FeatureCounts,
     /// Graphs restore fails with a version conflict or a downgrade, by the
@@ -1604,8 +1759,12 @@ impl FeatureCounts {
 impl Census {
     fn record(&mut self, generated: &Generated, comparison: &Comparison) {
         self.graphs += 1;
-        let restore = comparison.restore.class();
-        *self.restore.entry(restore).or_default() += 1;
+        let restore = format!(
+            "{}/{}",
+            comparison.restore.legacy.class(),
+            comparison.restore.default.class()
+        );
+        *self.restore.entry(restore.clone()).or_default() += 1;
         *self
             .pairs
             .entry((comparison.ours.class(), restore))
@@ -1615,16 +1774,27 @@ impl Census {
         if matches!(comparison.ours, OurOutcome::Resolved(_)) {
             self.resolved_with.add(features);
         }
-        if matches!(
-            comparison.restore,
-            RestoreOutcome::Failed(RestoreFailure::Conflict | RestoreFailure::Downgrade)
-        ) {
+        let rejected = comparison.restore.engines().iter().any(|(_, outcome)| {
+            outcome.fails_with(RestoreFailure::Conflict)
+                || outcome.fails_with(RestoreFailure::Downgrade)
+        });
+        if rejected {
             self.conflict_or_downgrade_with.add(features);
         }
-    }
 
-    fn restore_count(&self, class: &str) -> usize {
-        self.restore.get(class).copied().unwrap_or(0)
+        for (engine, outcome) in comparison.restore.engines() {
+            if let EngineOutcome::Failed(failures) = outcome {
+                for failure in failures {
+                    *self.failures.entry((engine, *failure)).or_default() += 1;
+                }
+            }
+        }
+        if comparison.restore.agreed_closure().is_some() {
+            self.engines_agree_resolved += 1;
+        }
+        if comparison.restore.legacy != comparison.restore.default {
+            self.engines_disagree += 1;
+        }
     }
 
     fn ours_resolved(&self) -> usize {
@@ -1640,24 +1810,39 @@ impl Census {
     /// containing the shape was compared), and in graphs restore fails on a
     /// conflict or downgrade (so a decline was required in its presence).
     fn assert_floors(&self, floor: usize) {
-        eprintln!("census over {} graphs", self.graphs);
-        eprintln!("  restore outcome: {:?}", self.restore);
+        eprintln!(
+            "census over {} graphs ({} the engines disagree on)",
+            self.graphs, self.engines_disagree
+        );
         for ((ours, restore), count) in &self.pairs {
-            eprintln!("  ours {ours:<28} restore {restore:<10} {count}");
+            eprintln!("  ours {ours:<28} restore (legacy/default) {restore:<24} {count}");
         }
         eprintln!("  both resolved, containing: {:?}", self.resolved_with);
         eprintln!(
             "  restore conflict/downgrade, containing: {:?}",
             self.conflict_or_downgrade_with
         );
-        for class in ["resolved", "missing", "cycle", "conflict", "downgrade"] {
-            assert!(
-                self.restore_count(class) >= floor,
-                "generator degenerated: restore outcome {class:?} reached only {} time(s) \
-                 in {} graphs (floor {floor})",
-                self.restore_count(class),
-                self.graphs,
-            );
+        assert!(
+            self.engines_agree_resolved >= floor,
+            "generator degenerated: both engines resolved only {} of {} graphs (floor {floor})",
+            self.engines_agree_resolved,
+            self.graphs,
+        );
+        for engine in ["legacy", "default"] {
+            for failure in [
+                RestoreFailure::Missing,
+                RestoreFailure::Cycle,
+                RestoreFailure::Conflict,
+                RestoreFailure::Downgrade,
+            ] {
+                let count = self.failures.get(&(engine, failure)).copied().unwrap_or(0);
+                assert!(
+                    count >= floor,
+                    "generator degenerated: the {engine} engine fails with {failure:?} only \
+                     {count} time(s) in {} graphs (floor {floor})",
+                    self.graphs,
+                );
+            }
         }
         assert!(
             self.ours_resolved() >= floor,
@@ -1787,15 +1972,16 @@ fn a_losing_path_does_not_contribute_its_winners_dependencies() {
 
 /// A settled version must be recomputed from the surviving edges, not carried
 /// forward. `A → P[1]` and `B → P[2]` make P settle at 2.0, at which point P 1's
-/// `G[3]` edge is gone and only P 2's `G[1]` remains — so G must *fall* to 1.0.
-/// Carrying the previous round's map forward (which only ever rose) left G at
-/// 3.0, a closure restore never produces.
+/// `G[3]` edge is gone and only P 2's `G[1]` remains — so G must *fall* to 1.0,
+/// and both engines write G 1.0. Carrying the previous round's map forward
+/// (which only ever rose) left G at 3.0, a closure restore never produces. P 1
+/// loses with a dependency that would be a node, so today the graph declines;
+/// the falling G is still what `walk` must compute before that check runs.
 #[test]
 fn a_settled_version_falls_when_the_edge_that_raised_it_disappears() {
     let mut oracle = Oracle::spawn();
-    let (rust, oracle_ok) = assert_sound(
+    let comparison = scenario(
         &mut oracle,
-        "net8.0",
         &[
             Pkg::simple("A", "1.0.0", vec![Dep::new("P", "[1.0.0, )")]),
             Pkg::simple("B", "1.0.0", vec![Dep::new("P", "[2.0.0, )")]),
@@ -1806,25 +1992,31 @@ fn a_settled_version_falls_when_the_edge_that_raised_it_disappears() {
         ],
         &[("B", "[1.0.0, )"), ("A", "[1.0.0, )")],
     );
-    // `assert_sound` has already required our closure to equal restore's; this
-    // additionally requires that we produced one at all.
-    assert!(oracle_ok, "restore resolves this graph");
-    assert!(rust, "and so must we, with G at 1.0.0 rather than 3.0.0");
+    let both = resolved_to(&[
+        ("a", "1.0.0"),
+        ("b", "1.0.0"),
+        ("g", "1.0.0"),
+        ("p", "2.0.0"),
+    ]);
+    assert_eq!(comparison.restore.legacy, both);
+    assert_eq!(comparison.restore.default, both);
+    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
 }
 
-/// A dependency shape we cannot model, on a version restore *rejects*, must not
-/// decline: restore never looks inside a rejected package either. Before, the
-/// walk raised immediately, so the answer depended on which direct requirement
-/// the traversal happened to reach first.
+/// A dependency shape we cannot model, on a version restore *rejects*, is never
+/// raised as that shape's decline: restore does not adjudicate a rejected
+/// package's dependencies, and before the walk settles the answer would depend
+/// on which direct requirement it reached first. The loser's dependency on G
+/// would still be a node of the legacy tree, so the graph declines as a loser
+/// that is not a leaf, whatever order the walk took.
 #[test]
-fn an_asset_filter_on_a_rejected_version_does_not_decline() {
+fn an_asset_filter_on_a_rejected_version_is_judged_as_a_loser() {
     let mut oracle = Oracle::spawn();
     let mut filtered = Dep::new("G", "[1.0.0, )");
     filtered.include = Some("compile".to_owned());
 
-    let (rust, oracle_ok) = assert_sound(
+    let comparison = scenario(
         &mut oracle,
-        "net8.0",
         &[
             Pkg::simple("A", "1.0.0", vec![Dep::new("P", "[1.0.0, )")]),
             Pkg::simple("B", "1.0.0", vec![Dep::new("P", "[2.0.0, )")]),
@@ -1834,11 +2026,10 @@ fn an_asset_filter_on_a_rejected_version_does_not_decline() {
         ],
         &[("B", "[1.0.0, )"), ("A", "[1.0.0, )")],
     );
-    assert!(oracle_ok, "restore rejects P 1.0 and resolves");
-    assert!(
-        rust,
-        "P 1.0 is rejected, so its unmodelled asset filter is never read"
-    );
+    let both = resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("p", "2.0.0")]);
+    assert_eq!(comparison.restore.legacy, both);
+    assert_eq!(comparison.restore.default, both);
+    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
 }
 
 // ============================================================================
@@ -1885,15 +2076,14 @@ fn a_downgrade_is_judged_against_surviving_edges_not_declared_ones() {
 ///
 /// `B → G[1.0]` sits beside `B → C`, so `C → G[2.0, 3.0)` is potentially
 /// downgraded by it; and `A → G[3.0]` is a cousin that raises G to 3.0, so
-/// B's edge loses. The settled G 3.0 is outside C's `[2.0, 3.0)`, but restore
-/// does not fail, because the version it would have downgraded C to was
-/// rejected.
+/// B's edge loses. Both engines write `{A, B, C, G 3.0}`. G is not a direct
+/// reference, and a potential downgrade of a transitive package is where the
+/// engines' adjudications part ways, so we decline.
 #[test]
 fn a_downgrade_to_a_rejected_version_does_not_fail_restore() {
     let mut oracle = Oracle::spawn();
-    let (rust, oracle_ok) = assert_sound(
+    let comparison = scenario(
         &mut oracle,
-        "net8.0",
         &[
             Pkg::simple("A", "1.0.0", vec![Dep::new("G", "[3.0.0, )")]),
             Pkg::simple(
@@ -1908,11 +2098,18 @@ fn a_downgrade_to_a_rejected_version_does_not_fail_restore() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert!(
-        oracle_ok,
-        "restore rejects B's G 1.0, so its downgrade of C is moot"
+    let both = resolved_to(&[
+        ("a", "1.0.0"),
+        ("b", "1.0.0"),
+        ("c", "1.0.0"),
+        ("g", "3.0.0"),
+    ]);
+    assert_eq!(comparison.restore.legacy, both);
+    assert_eq!(comparison.restore.default, both);
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("transitive-potential-downgrade")
     );
-    assert!(rust, "and so must we");
 }
 
 /// The control for the two above: the same shape with the nearer edge
@@ -1947,27 +2144,15 @@ fn a_downgrade_to_the_accepted_version_fails_on_both_sides() {
 ///
 /// `A → X[1.0] → Y[3.0]` and `B → Y[1.0] → X[2.0]`: X 2.0 wins only if Y 1.0
 /// (its parent) does, and Y 3.0 wins only if X 1.0 (its parent) does. The
-/// legacy restore engine's conflict pass (`GraphOperations.TryResolveConflicts`,
-/// what the oracle runs) accepts neither, and a real `dotnet restore` with
-/// `RestoreUseLegacyDependencyResolver=true` fails it with NU1106 on .NET 8 and
-/// .NET 10 alike. The .NET 10 default resolver instead writes
-/// `{A, B, X 1.0, Y 3.0}`. `resolve_offline` settles on `{A, B, X 2.0, Y 1.0}`,
-/// which neither engine produces: whichever cousin the walk reaches first
-/// raises its package, and a losing occurrence's subtree, which is never
-/// expanded, is exactly what would show the two conflicts depend on each other.
-///
-/// Ignored because it is a live over-resolution with no fix in this change:
-/// detecting the dependence means reading the losers' dependencies, which the
-/// resolver is designed never to do (see
-/// `a_resolved_closure_never_reads_the_versions_it_rejected`), and which
-/// engine's answer is the reference is undecided.
+/// legacy engine's conflict pass accepts neither and fails with NU1106; the
+/// default engine writes `{A, B, X 1.0, Y 3.0}`. Both checked against a real
+/// `dotnet restore` on .NET 8 and on .NET 10 with each resolver. The losers X
+/// 1.0 and Y 1.0 each have a dependency that would be a node, so we decline.
 #[test]
-#[ignore = "live over-resolution: mutually dependent cousin conflicts (NU1106)"]
 fn mutually_dependent_cousin_conflicts_fail_restore() {
     let mut oracle = Oracle::spawn();
-    let (rust, oracle_ok) = assert_sound(
+    let comparison = scenario(
         &mut oracle,
-        "net8.0",
         &[
             Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[1.0.0, )")]),
             Pkg::simple("B", "1.0.0", vec![Dep::new("Y", "[1.0.0, )")]),
@@ -1978,9 +2163,103 @@ fn mutually_dependent_cousin_conflicts_fail_restore() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert!(
-        !oracle_ok,
-        "the legacy engine leaves X and Y undecided (NU1106)"
+    assert_eq!(
+        comparison.restore.legacy,
+        failed_with(&[RestoreFailure::Undecided])
     );
-    assert!(!rust, "and so we must decline");
+    assert_eq!(
+        comparison.restore.default,
+        resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("x", "1.0.0"),
+            ("y", "3.0.0")
+        ])
+    );
+    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+}
+
+/// A potential downgrade of a transitive package, which the two engines
+/// adjudicate differently.
+///
+/// `P2 → P4[1.0]` sits beside `P2 → P3`, so P3's `P4[2.0]` is potentially
+/// downgraded under P2; P1 reaches the same P3 through a different range, and
+/// under P1 the `P4[2.0]` edge survives and raises P4 to 2.0. The legacy engine
+/// writes `{P1, P2, P3, P4 2.0}`. The default engine walks P3 once, under P2,
+/// keeps P4 1.0 and fails with NU1605. Both checked against a real
+/// `dotnet restore` on .NET 10. Without the transitive-downgrade rule in
+/// `engines_agree` we commit the legacy closure.
+#[test]
+fn a_potential_downgrade_the_engines_adjudicate_differently() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "P2",
+                "1.0.0",
+                vec![Dep::new("P3", "[1.0.0, )"), Dep::new("P4", "[1.0.0, )")],
+            ),
+            Pkg::simple("P1", "1.0.0", vec![Dep::new("P3", "[1.0.0, 2.0.0)")]),
+            Pkg::simple("P3", "1.0.0", vec![Dep::new("P4", "[2.0.0]")]),
+            Pkg::simple("P4", "1.0.0", vec![]),
+            Pkg::simple("P4", "2.0.0", vec![]),
+        ],
+        &[("P2", "[1.0.0, )"), ("P1", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.restore.legacy,
+        resolved_to(&[
+            ("p1", "1.0.0"),
+            ("p2", "1.0.0"),
+            ("p3", "1.0.0"),
+            ("p4", "2.0.0")
+        ])
+    );
+    assert_eq!(
+        comparison.restore.default,
+        failed_with(&[RestoreFailure::Downgrade])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("transitive-potential-downgrade")
+    );
+}
+
+/// A floating range in an eclipse comparison, which NuGet decides by the float's
+/// release prefix (`RemoteDependencyWalker.IsGreaterThanOrEqualTo`) and
+/// `is_at_least` does not model.
+///
+/// `P0 → P2 *` sits beside `P0 → P1`, and `P1 → P2[3.0]` is checked against it:
+/// NuGet treats a bare `*` as at least as high as anything, so the deeper edge
+/// is eclipsed and the legacy engine writes `{P0, P1, P2 2.0}`. Comparing the
+/// float's resolved minimum instead makes the deeper edge a potential
+/// downgrade, and reports an NU1605 the legacy engine never reports. (The
+/// default engine does fail it, with NU1605.) Found by the fresh-seed soak.
+#[test]
+fn a_floating_range_in_an_eclipse_comparison_declines() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "P0",
+                "1.0.0",
+                vec![Dep::new("P1", "[1.0.0]"), Dep::new("P2", "*")],
+            ),
+            Pkg::simple("P1", "1.0.0", vec![Dep::new("P2", "[3.0.0, )")]),
+            Pkg::simple("P2", "2.0.0", vec![]),
+            Pkg::simple("P2", "3.0.0", vec![]),
+        ],
+        &[("P0", "[1.0.0]"), ("P2", "2.0.0")],
+    );
+    assert_eq!(
+        comparison.restore.legacy,
+        resolved_to(&[("p0", "1.0.0"), ("p1", "1.0.0"), ("p2", "2.0.0")])
+    );
+    assert_eq!(
+        comparison.restore.default,
+        failed_with(&[RestoreFailure::Downgrade])
+    );
+    assert_eq!(comparison.ours, OurOutcome::Declined("floating-comparison"));
 }

@@ -18,12 +18,11 @@
     <PackageReference Include="NuGet.Versioning" Version="7.6.0" />
     <PackageReference Include="NuGet.Frameworks" Version="7.6.0" />
     <PackageReference Include="NuGet.Packaging" Version="7.6.0" />
-    <!-- The genuine PackageReference restore engine, for the end-to-end
-         `resolve` op: RemoteDependencyWalker + GraphOperations.Analyze is
-         exactly what `dotnet restore` runs for SDK-style projects.
-         NuGet.Commands supplies SourceRepositoryDependencyProvider;
-         NuGet.DependencyResolver.Core the walker/analysis; NuGet.Protocol the
-         local-folder feed. -->
+    <!-- The genuine restore, for the end-to-end `restore` op: NuGet.Commands
+         supplies RestoreRunner and both dependency resolvers (the legacy
+         walker lives in NuGet.DependencyResolver.Core); NuGet.Protocol the
+         local-folder feed. 7.6.0 is the NuGet the .NET 10.0.301 SDK bundles,
+         so the op runs the same resolvers `dotnet restore` does. -->
     <PackageReference Include="NuGet.Commands" Version="7.6.0" />
     <PackageReference Include="NuGet.DependencyResolver.Core" Version="7.6.0" />
     <PackageReference Include="NuGet.Protocol" Version="7.6.0" />

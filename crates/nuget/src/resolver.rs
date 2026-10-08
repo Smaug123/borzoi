@@ -6,10 +6,13 @@
 //!
 //! # The algorithm
 //!
-//! This is NuGet's `PackageReference` resolution — `RemoteDependencyWalker`
-//! plus `GraphOperations.Analyze`, the legacy dependency resolver that
-//! `dotnet restore` runs under `RestoreUseLegacyDependencyResolver` —
-//! restricted to what a warm cache can answer. Three rules, in NuGet's terms:
+//! This is NuGet's `PackageReference` resolution as the legacy dependency
+//! resolver does it — `RemoteDependencyWalker` plus `GraphOperations.Analyze`,
+//! which `dotnet restore` runs under `RestoreUseLegacyDependencyResolver` —
+//! restricted to what a warm cache can answer, and further restricted to the
+//! graphs on which the .NET 10 SDK's default resolver (`DependencyGraphResolver`)
+//! writes the same closure (see *Correctness envelope*). Three rules, in NuGet's
+//! terms:
 //!
 //! - **Nearest wins.** A dependency edge is *eclipsed* when an ancestor already
 //!   depends on the same package with a range whose lower bound is at least as
@@ -52,7 +55,9 @@
 //! downgrade restore fails on into a closure. Hence:
 //!
 //! - A losing edge's lower bound must be **committed** (its presence is the
-//!   proof that restore rejected it), though its *contents* are never read.
+//!   proof that restore rejected it). Of its contents only the dependency list
+//!   is read, to check that the loser is a leaf of restore's tree (see
+//!   *Correctness envelope*); nothing below it is.
 //! - Only the winner's occurrence of a package is ever expanded.
 //!
 //! This is exact, not a heuristic — `tests/all/resolver_diff.rs` diffs it against the
@@ -64,19 +69,23 @@
 //! Ranges must be non-floating with an inclusive lower bound (a floating range's
 //! answer lives in feed state we cannot see). The selected version must be
 //! committed on disk, as must the lower bound of any edge that loses to it.
-//! Anything restore would *fail* on — a live cycle (NU1108), a version conflict
-//! (NU1107), a relevant downgrade (NU1605) — we decline on, because a failed
-//! restore has no closure to reproduce. Dependency-level `include`/`exclude`
-//! asset filters are unmodelled and decline — but only when they sit on a
-//! version the graph actually settled on, since restore does not look inside a
-//! package it rejected either.
+//! Anything the legacy engine would *fail* on — a cycle (NU1108), a version
+//! conflict (NU1107), a relevant downgrade (NU1605) — we decline on, because a
+//! failed restore has no closure to reproduce. Those declines name the legacy
+//! engine's error; the default engine may resolve the same graph or fail it
+//! differently, so they claim nothing about it. Dependency-level
+//! `include`/`exclude` asset filters are unmodelled and decline — but only when
+//! they sit on a version the graph actually settled on, since restore does not
+//! look inside a package it rejected either.
 //!
-//! One failure is *not* yet declined on: cousin conflicts whose outcomes depend
-//! on each other, where each conflict's winner sits beneath the other's loser.
-//! Restore's conflict pass can settle neither and fails with NU1106, but the
-//! walk never expands a loser, so it cannot see the dependence and commits a
-//! closure. `mutually_dependent_cousin_conflicts_fail_restore` in
-//! `tests/all/resolver_diff.rs` pins it, ignored until it is fixed.
+//! A closure is committed only where *both* restore engines would write it.
+//! The engines differ in how they treat a conflict's losers and in how they
+//! adjudicate potential downgrades, so `engines_agree` declines unless every
+//! losing version is a leaf of the legacy tree and every potential downgrade is
+//! of a direct reference. A loser with a subtree is also where the legacy
+//! engine itself turns on what the walk never expanded: cousin conflicts that
+//! each decide the other (NU1106), and cycles below a rejected version, which
+//! it fails on all the same (NU1108).
 
 use crate::{
     InstalledPackage, NuGetFramework, NuGetVersion, PackageId, PackageIdentity, PackagePaths,
@@ -152,15 +161,19 @@ pub enum ResolveDecline {
         identity: PackageIdentity,
         source: Box<PackageReadError>,
     },
-    /// Restore would fail with NU1107: a surviving edge's range does not accept
-    /// the version the graph settled on.
+    /// The legacy restore engine fails with a version conflict: a surviving
+    /// edge's range does not accept the version the graph settled on. That is
+    /// NU1107, or NU1106 when the conflict leaves the engine's conflict pass
+    /// unable to settle the package at all. The default engine may resolve the
+    /// graph, or fail it differently.
     VersionConflict {
         id: PackageId,
         selected: Box<NuGetVersion>,
         range: Box<VersionRange>,
     },
-    /// Restore would fail with NU1605: a nearer edge pinned the package below
-    /// what a deeper one needs.
+    /// The legacy restore engine fails with NU1605: a nearer edge pinned the
+    /// package below what a deeper one needs. The default engine may resolve the
+    /// graph, or fail it differently.
     Downgrade {
         id: PackageId,
         selected: Box<NuGetVersion>,
@@ -174,7 +187,8 @@ pub enum ResolveDecline {
         package: PackageIdentity,
         dependency: PackageId,
     },
-    /// Restore would fail with NU1108.
+    /// The legacy restore engine fails with NU1108. The default engine may resolve
+    /// the graph, or fail it differently.
     DependencyCycle {
         cycle: Vec<PackageId>,
     },
@@ -188,6 +202,28 @@ pub enum ResolveDecline {
         id: PackageId,
         range: Box<VersionRange>,
         selected: Box<NuGetVersion>,
+    },
+    /// A version that loses its conflict has a dependency that would become a
+    /// node of the legacy engine's tree (or a shape we do not model), so the
+    /// restore engines' verdicts can depend on a subtree the walk never
+    /// expanded. See `engines_agree`.
+    LosingVersionNotALeaf {
+        loser: PackageIdentity,
+        dependency: PackageId,
+    },
+    /// Whether an edge is eclipsed turned on a floating range, which NuGet
+    /// compares by its release prefix and we do not model. A float that
+    /// survives the walk declines as [`ResolveDecline::FloatingRange`]; this
+    /// is one that only took part in an ancestor comparison.
+    FloatingRangeComparison {
+        id: PackageId,
+        range: Box<VersionRange>,
+    },
+    /// A potential downgrade of a package that is not a direct reference, which
+    /// the two restore engines adjudicate differently. See `engines_agree`.
+    TransitivePotentialDowngrade {
+        id: PackageId,
+        range: Box<VersionRange>,
     },
     /// The dependency tree grew past the resolver's node bound, or the selected
     /// versions did not settle within its round bound. A pathological graph can
@@ -236,7 +272,7 @@ impl fmt::Display for ResolveDecline {
                 write!(
                     f,
                     "package {id} settled on version {selected}, which does not satisfy {range} \
-                     (restore would fail with NU1107)"
+                     (the legacy restore engine fails with NU1107 or NU1106)"
                 )
             }
             ResolveDecline::Downgrade {
@@ -247,7 +283,7 @@ impl fmt::Display for ResolveDecline {
                 write!(
                     f,
                     "package {id} is pinned to {selected} by a nearer dependency, below the \
-                     {required} a deeper one needs (restore would fail with NU1605)"
+                     {required} a deeper one needs (the legacy restore engine fails with NU1605)"
                 )
             }
             ResolveDecline::DependencyAssetFilterUnsupported {
@@ -288,6 +324,28 @@ impl fmt::Display for ResolveDecline {
                     "package {id} settled on {selected}, but the lower bound of the losing edge                      {range} is not on disk, so we cannot tell what restore resolved it to"
                 )
             }
+            ResolveDecline::LosingVersionNotALeaf { loser, dependency } => {
+                write!(
+                    f,
+                    "package {} {} loses its conflict but depends on {dependency}, a subtree \
+                     the restore engines may resolve differently",
+                    loser.id, loser.version
+                )
+            }
+            ResolveDecline::FloatingRangeComparison { id, range } => {
+                write!(
+                    f,
+                    "whether the edge {id} {range} is eclipsed turns on a floating range, which \
+                     NuGet compares by its release prefix"
+                )
+            }
+            ResolveDecline::TransitivePotentialDowngrade { id, range } => {
+                write!(
+                    f,
+                    "a nearer dependency may downgrade package {id} below {range}, which the \
+                     restore engines adjudicate differently"
+                )
+            }
             ResolveDecline::GraphTooLarge => {
                 f.write_str("dependency graph did not settle within the resolver's bounds")
             }
@@ -326,7 +384,7 @@ pub fn resolve_offline(
         let walk = walk(direct, &selected, &mut cache)?;
 
         if walk.selected == selected {
-            return finish(walk, &mut cache);
+            return finish(walk, direct, &mut cache);
         }
         selected = walk.selected;
     }
@@ -336,7 +394,11 @@ pub fn resolve_offline(
 
 /// Turn a settled walk into a closure, having first ruled out everything restore
 /// would have failed on.
-fn finish(walk: Walk, cache: &mut PackageCache) -> Result<ResolvedPackageClosure, ResolveDecline> {
+fn finish(
+    walk: Walk,
+    direct: &[DirectPackageRequirement],
+    cache: &mut PackageCache,
+) -> Result<ResolvedPackageClosure, ResolveDecline> {
     // Reads come first, and not merely for a tidier error. A selected version
     // that is not committed means restore resolved that edge against a feed
     // version we cannot see — so the version is wrong, the walk expanded that
@@ -420,6 +482,11 @@ fn finish(walk: Walk, cache: &mut PackageCache) -> Result<ResolvedPackageClosure
         }
     }
 
+    // Outside this envelope the two restore engines can part ways, and the
+    // legacy engine's own verdict can rest on subtrees the walk never expanded,
+    // so neither a closure nor a diagnosis would be trustworthy.
+    engines_agree(&walk, direct, cache)?;
+
     if let Some(cycle) = walk.cycle {
         return Err(ResolveDecline::DependencyCycle { cycle });
     }
@@ -459,6 +526,120 @@ fn finish(walk: Walk, cache: &mut PackageCache) -> Result<ResolvedPackageClosure
     Ok(ResolvedPackageClosure { packages })
 }
 
+/// The envelope in which NuGet's two dependency resolvers — the legacy
+/// `RemoteDependencyWalker` and the .NET 10 SDK's default
+/// `DependencyGraphResolver` — are known to reach the same verdict, and in which
+/// the legacy verdict depends only on what the walk read.
+///
+/// - **Every losing version is a leaf.** The legacy engine creates a node for a
+///   losing edge and walks its subtree before conflict resolution rejects it, so
+///   that subtree can raise a cousin dispute neither conflict pass can settle
+///   (NU1106 for legacy, a different closure for the default engine), or hold a
+///   cycle the legacy engine fails on even though the branch is rejected
+///   (NU1108). A loser none of whose dependencies would become a walked node —
+///   each is eclipsed by an ancestor, or a potential downgrade, which restore
+///   keeps only as a leaf — has no subtree, so none of that can happen. This reads each loser's
+///   dependency list, but nothing below it: the default engine's restore
+///   installs exactly that much of a rejected branch.
+/// - **No eclipse verdict turns on a floating range.** NuGet compares floats by
+///   their release prefix (`RemoteDependencyWalker.IsGreaterThanOrEqualTo`),
+///   which [`is_at_least`] does not model.
+/// - **Potential downgrades are of direct references only.** The legacy engine
+///   adjudicates a potential downgrade against its ancestors' edges; the
+///   default one, against whichever version its breadth-first walk chose first
+///   and may since have evicted. They agree when the package is a direct
+///   reference, which the default engine never evicts and whose root edge
+///   settles the legacy verdict.
+///
+/// This envelope is empirical: of the candidate envelopes swept against both
+/// engines (`tests/all/resolver_diff.rs`), it is the widest that showed no
+/// closure either engine disagrees with, and that differential is what keeps
+/// it honest. Narrower ones (no losers at all, no potential downgrades at all)
+/// cost more; wider ones (any potential downgrade below the selected version)
+/// committed closures the default engine rejects.
+fn engines_agree(
+    walk: &Walk,
+    direct: &[DirectPackageRequirement],
+    cache: &mut PackageCache,
+) -> Result<(), ResolveDecline> {
+    let is_direct = |id: &PackageId| direct.iter().any(|requirement| &requirement.id == id);
+
+    if let Some((id, range)) = &walk.float_compared {
+        return Err(ResolveDecline::FloatingRangeComparison {
+            id: id.clone(),
+            range: Box::new(range.clone()),
+        });
+    }
+
+    if let Some(downgrade) = walk.downgrades.iter().find(|d| !is_direct(&d.id)) {
+        return Err(ResolveDecline::TransitivePotentialDowngrade {
+            id: downgrade.id.clone(),
+            range: Box::new(downgrade.range.clone()),
+        });
+    }
+
+    // One scratch copy of the tree for every loser: each loser is pushed as a
+    // temporary node to classify its dependencies against its own ancestors,
+    // and popped again, so the cost is one copy rather than one per loser.
+    let mut nodes = walk.nodes.clone();
+    for loser in &walk.losers {
+        let Some(cached) = cache.get(&loser.identity) else {
+            let source = cache
+                .take_error(&loser.identity)
+                .expect("a package that did not read has an error");
+            return Err(ResolveDecline::PackageRead {
+                identity: loser.identity.clone(),
+                source: Box::new(source),
+            });
+        };
+        let dependencies = cached.dependencies.clone();
+
+        if dependencies.is_empty() {
+            continue;
+        }
+        nodes.push(Node {
+            id: Some(loser.identity.id.clone()),
+            parent: Some(loser.parent),
+            dep_index: loser.dep_index,
+        });
+        let loser_node = nodes.len() - 1;
+
+        for dependency in &dependencies {
+            let not_a_leaf = || ResolveDecline::LosingVersionNotALeaf {
+                loser: loser.identity.clone(),
+                dependency: dependency.id.clone(),
+            };
+            if dependency.include.is_some() || dependency.exclude.is_some() {
+                return Err(not_a_leaf());
+            }
+            let Some(range) = &dependency.version_range else {
+                return Err(not_a_leaf());
+            };
+            match classify(
+                &nodes,
+                loser_node,
+                &dependency.id,
+                range,
+                direct,
+                &walk.selected,
+                cache,
+            ) {
+                // A potential downgrade becomes a leaf node, removed before
+                // conflict resolution; and one below a rejected version is never
+                // a relevant downgrade, since restore requires its parents to be
+                // accepted.
+                Verdict::Eclipsed | Verdict::PotentiallyDowngraded => {}
+                Verdict::Cycle | Verdict::Acceptable | Verdict::FloatCompared => {
+                    return Err(not_a_leaf());
+                }
+            }
+        }
+        nodes.pop();
+    }
+
+    Ok(())
+}
+
 /// `GraphOperations.CheckCycleAndNearestWins` plus `IsRelevantDowngrade`: does
 /// restore fail this potentially-downgraded edge with NU1605?
 ///
@@ -482,18 +663,18 @@ fn finish(walk: Walk, cache: &mut PackageCache) -> Result<ResolvedPackageClosure
 /// already declined if that bound is not on disk, which is the only way restore
 /// could have resolved the edge higher.
 ///
-/// A floating deeper range is held to the settled version directly, as a
-/// conservative stand-in. NuGet compares floats by their release prefix, which
-/// [`is_at_least`] does not model, and only this direction of error is safe:
-/// it can decline where restore succeeds, never the reverse.
+/// Neither range here floats: an eclipse comparison involving a float is
+/// [`Verdict::FloatCompared`], never a potential downgrade, and a surviving edge
+/// that floats has already declined.
 fn downgrade_is_relevant(
     walk: &Walk,
     downgrade: &PotentialDowngrade,
     selected: &NuGetVersion,
 ) -> bool {
-    if downgrade.range.is_floating() {
-        return !downgrade.range.satisfies(selected);
-    }
+    assert!(
+        !downgrade.range.is_floating(),
+        "a floating edge is never classified as a potential downgrade"
+    );
 
     let mut held_to: Option<NuGetVersion> = None;
     let mut ancestor = Some(downgrade.parent);
@@ -519,6 +700,7 @@ fn downgrade_is_relevant(
 }
 
 /// One node of the walked dependency tree.
+#[derive(Clone)]
 struct Node {
     /// `None` for the synthetic root: the project itself is not a package.
     id: Option<PackageId>,
@@ -555,10 +737,26 @@ struct Walk {
     /// candidates its downgrade check compares against.
     surviving: Vec<Vec<(PackageId, VersionRange)>>,
     cycle: Option<Vec<PackageId>>,
+    /// The first edge whose eclipse verdict turned on a floating range.
+    float_compared: Option<(PackageId, VersionRange)>,
+    /// Every edge that survived the walk but lost to a higher version of its
+    /// package, so was never expanded.
+    losers: Vec<Loser>,
+    /// The walked tree, for classifying a loser's dependencies in place.
+    nodes: Vec<Node>,
     /// Packages whose dependency list we cannot model, held rather than raised:
     /// a version that is still moving may be one restore rejects, and restore
     /// never looks at a rejected package's dependencies either.
     shapes: BTreeMap<(PackageId, String), ShapeError>,
+}
+
+/// A surviving edge whose lower bound lost to a higher version of its package.
+struct Loser {
+    identity: PackageIdentity,
+    /// The node whose dependency this edge is.
+    parent: usize,
+    /// The edge's position in that node's dependency list.
+    dep_index: usize,
 }
 
 /// An edge the walk dropped because an ancestor declares the same package lower.
@@ -578,6 +776,10 @@ enum Verdict {
     /// An ancestor requires this package *lower* than we do.
     PotentiallyDowngraded,
     Cycle,
+    /// The ancestor's edge or this one floats. NuGet then decides eclipse by the
+    /// float's release prefix, which [`is_at_least`] does not model, so the
+    /// verdict is unknown.
+    FloatCompared,
 }
 
 fn walk(
@@ -597,6 +799,9 @@ fn walk(
         parents: Vec::new(),
         surviving: vec![Vec::new()],
         cycle: None,
+        float_compared: None,
+        losers: Vec::new(),
+        nodes: Vec::new(),
         shapes: BTreeMap::new(),
     };
 
@@ -612,6 +817,12 @@ fn walk(
         for (dep_index, (id, range)) in dependencies.iter().enumerate() {
             match classify(&nodes, node, id, range, direct, &current, cache) {
                 Verdict::Eclipsed => continue,
+                Verdict::FloatCompared => {
+                    if walk.float_compared.is_none() {
+                        walk.float_compared = Some((id.clone(), range.clone()));
+                    }
+                    continue;
+                }
                 Verdict::Cycle => {
                     if walk.cycle.is_none() {
                         walk.cycle = Some(cycle_path(&nodes, node, id));
@@ -655,6 +866,11 @@ fn walk(
                 .get(id)
                 .is_some_and(|version| version == &lower_bound);
             if !winner {
+                walk.losers.push(Loser {
+                    identity: PackageIdentity::new(id.clone(), lower_bound),
+                    parent: node,
+                    dep_index,
+                });
                 continue;
             }
 
@@ -671,6 +887,7 @@ fn walk(
         }
     }
     walk.parents = nodes.iter().map(|node| node.parent).collect();
+    walk.nodes = nodes;
 
     // The settled version is the greatest lower bound among the *surviving
     // edges of this round*, recomputed from scratch. Carrying the previous
@@ -799,6 +1016,9 @@ fn classify(
             if sibling_id != id {
                 continue;
             }
+            if sibling_range.is_floating() || range.is_floating() {
+                return Verdict::FloatCompared;
+            }
             return if is_at_least(sibling_range, range) {
                 Verdict::Eclipsed
             } else {
@@ -855,9 +1075,10 @@ fn all_versions_range() -> VersionRange {
     VersionRange::parse("(, )").expect("literal all-versions range parses")
 }
 
-/// `RemoteDependencyWalker.IsGreaterThanOrEqualTo`: is the *nearer* edge's lower
-/// bound at least the deeper one's? Floating ranges are out of the envelope and
-/// decline before this is reached.
+/// `RemoteDependencyWalker.IsGreaterThanOrEqualTo` for non-floating ranges: is
+/// the *nearer* edge's lower bound at least the deeper one's? NuGet compares a
+/// floating range by its release prefix instead; [`classify`] reports that case
+/// as [`Verdict::FloatCompared`] rather than calling this.
 fn is_at_least(nearer: &VersionRange, deeper: &VersionRange) -> bool {
     let Some(near_min) = nearer.min_version() else {
         // No lower bound at all accepts everything the deeper edge could want.
