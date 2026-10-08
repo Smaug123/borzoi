@@ -27,6 +27,9 @@ use borzoi_assembly::{
 use crate::def::SemanticClass;
 use crate::resolve::ActivePatternShape;
 
+mod il_types;
+pub use il_types::IlTypeDefinition;
+
 /// Fuel bound for chasing a chain of type-abbreviation markers
 /// (`type A = B; type B = C; …`) in [`AssemblyEnv::resolve_abbreviation_target`].
 /// Real alias chains are short; the bound only stops a pathological or crafted
@@ -2887,6 +2890,16 @@ impl AssemblyEnv {
     /// eligibility filter (a module cannot be a terminal type) must decline to
     /// *exclude* it for the same reason, or it would drop a genuine
     /// type-position contestant from a cross-DLL contest (codex review).
+    /// Whether `handle`'s assembly carries an **authoritative F# signature** —
+    /// so its entities and members are projected in F#'s source-level view
+    /// (record fields as fields, module values as methods, accessors folded
+    /// away) rather than as the IL a metadata consumer such as Roslyn reads.
+    /// `false` for a C#/VB/BCL assembly, and for an F# one whose pickle could
+    /// not be used (whose projection is then the IL one).
+    pub fn has_authoritative_fsharp_signature(&self, handle: EntityHandle) -> bool {
+        !self.fsharp_signature_unreliable(handle)
+    }
+
     pub fn is_authoritative_module(&self, handle: EntityHandle) -> bool {
         self.entity(handle).kind == EntityKind::Module && !self.fsharp_signature_unreliable(handle)
     }
@@ -3766,6 +3779,14 @@ impl AssemblyEnv {
     /// unreliable. The applicability matcher's named-argument affirmation reads this.
     pub(crate) fn namespace_has_dropped_type(&self, namespace: &[String]) -> bool {
         self.namespaces_with_dropped_types.contains(namespace)
+    }
+
+    /// Whether some referenced assembly dropped an undecodable type in the
+    /// namespace `handle` lives in (a nested type's is its top-level
+    /// encloser's) — so a consumer committing to `handle` as *the* type of its
+    /// name there cannot rule out a same-named one it never saw.
+    pub fn dropped_a_type_beside(&self, handle: EntityHandle) -> bool {
+        self.namespace_has_dropped_type(&self.nodes[handle.index()].owning_namespace)
     }
 
     /// Whether a dropped type sits in **any namespace this module path could be split

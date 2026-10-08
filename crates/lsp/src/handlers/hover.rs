@@ -20,8 +20,9 @@
 //! whose source the LSP can't open still reports where it lives. A
 //! referenced-assembly symbol then carries its **XML documentation** — the
 //! whole entry, not only the summary — read from the `.xml` beside the DLL the
-//! env read and rendered to Markdown by [`crate::xml_doc`], after a thematic
-//! break. A project-local *value* binder additionally shows its inferred type
+//! env read, its `<inheritdoc>` elements expanded as Roslyn's IDE expands them
+//! where that can be done exactly, and rendered to Markdown by
+//! [`crate::xml_doc`], after a thematic break. A project-local *value* binder additionally shows its inferred type
 //! where inference has one (3.2b-1: literal-bound values and the chains they
 //! feed). Remaining richer hover is tracked in `docs/hover-signature-plan.md`.
 
@@ -52,8 +53,8 @@ use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
 use crate::semantic::SemanticState;
 use crate::server::State;
+use crate::xml_doc::inherit::Outcome;
 use crate::xml_doc::key::DocTarget;
-use crate::xml_doc::lookup::DocLookup;
 use crate::xml_doc::markdown::to_markdown;
 use crate::xml_doc::render::render_member;
 
@@ -406,16 +407,22 @@ fn hover_body(
 }
 
 /// The rendered XML documentation of a referenced-assembly symbol, or `None`
-/// when the lookup found none — for whichever of the reasons [`DocLookup`]
-/// distinguishes, which is logged — or the entry renders to nothing.
+/// when the lookup found none — for whichever of the reasons [`DocLookup`](crate::xml_doc::lookup::DocLookup)
+/// distinguishes, which is logged — or the entry renders to nothing. Its
+/// `<inheritdoc>` elements are expanded where that can be done exactly; where
+/// it cannot, the entry renders unexpanded, with the marker in place, and the
+/// typed reason is logged.
 fn documentation(
     semantic: &mut SemanticState,
     env: &Arc<AssemblyEnv>,
     target: DocTarget,
 ) -> Option<RenderedDoc> {
     match semantic.xml_doc(env, target) {
-        DocLookup::Found(member) => {
-            let (blocks, report) = render_member(&member);
+        Ok(expansion) => {
+            if let Outcome::Declined(why) = &expansion.outcome {
+                tracing::debug!(?target, ?why, "<inheritdoc> not expanded");
+            }
+            let (blocks, report) = render_member(&expansion.member);
             if !report.unknown_tags.is_empty()
                 || report.unresolved_inheritdoc
                 || report.unresolved_include
@@ -428,7 +435,7 @@ fn documentation(
             }
             RenderedDoc::new(to_markdown(&blocks))
         }
-        other => {
+        Err(other) => {
             tracing::debug!(?target, outcome = ?other, "no XML documentation");
             None
         }

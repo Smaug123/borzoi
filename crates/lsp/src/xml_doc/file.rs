@@ -28,8 +28,8 @@
 //! `xml_doc_shipped_sweep` test checks the equivalence on every entry of every
 //! shipped file.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -45,6 +45,12 @@ pub struct DocFile {
     /// file has no such element (it is optional in practice).
     assembly: Option<String>,
     entries: HashMap<String, DocEntry>,
+    /// Keys whose entry Roslyn's `XmlDocumentationProvider` would read
+    /// differently from this index: a key carried by a `<member>` nested
+    /// inside another (Roslyn reads the outer one whole and never indexes the
+    /// inner), or by a `<member>` outside any `<members>` (Roslyn indexes every
+    /// `<member>`, last one wins). See [`Self::read_as_roslyn_reads`].
+    roslyn_divergent: HashSet<String>,
 }
 
 /// What the index knows about one documentation-comment ID.
@@ -133,6 +139,30 @@ impl DocFile {
             .next();
 
         let mut entries: HashMap<String, DocEntry> = HashMap::new();
+        // Roslyn's provider indexes every element whose *qualified* name is
+        // `member`, under `<members>` or not, except one inside another, which
+        // it reads as part of the outer. This index takes `<member>`s by local
+        // name under `<members>`, nested ones included — and re-parses each
+        // entry on its own, losing a namespace declared outside it. Any
+        // `member` element outside the overlap, or in a namespace, marks its
+        // key as read differently.
+        let mut roslyn_divergent: HashSet<String> = HashSet::new();
+        for member in root
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "member")
+        {
+            let indexed_here = member.tag_name().namespace().is_none()
+                && member.ancestors().any(|a| a.has_tag_name("members"));
+            let nested = member
+                .ancestors()
+                .skip(1)
+                .any(|a| a.is_element() && a.tag_name().name() == "member");
+            if (!indexed_here || nested)
+                && let Some(key) = member.attribute("name")
+            {
+                roslyn_divergent.insert(key.to_string());
+            }
+        }
         // Entries are the `<member>` elements under a `<members>` element
         // anywhere in the `<doc>` — including one nested inside another entry
         // (seen in NuGet packages), which documents its own key. The outer
@@ -169,7 +199,21 @@ impl DocFile {
             text,
             assembly,
             entries,
+            roslyn_divergent,
         })
+    }
+
+    /// Whether Roslyn's `XmlDocumentationProvider` reads the entry for `key`
+    /// exactly as [`Self::entry`] does — including, for a key this index has
+    /// no entry for, whether Roslyn also has none. It indexes every element
+    /// named `member` (last one wins) and reads each outer one whole, so the
+    /// two agree unless the key also sits on a nested `<member>`, one outside
+    /// `<members>`, or a namespaced one. `<inheritdoc>` expansion reproduces
+    /// Roslyn, so it reads — and reads the absence of — only entries for which
+    /// this holds. (A namespaced element *inside* an entry is the expansion's
+    /// own concern: it declines on one.)
+    pub fn read_as_roslyn_reads(&self, key: &str) -> bool {
+        !self.roslyn_divergent.contains(key)
     }
 
     /// The assembly simple name the file declares, if it declares one.
@@ -250,6 +294,44 @@ mod tests {
         keys.sort();
         assert_eq!(keys, ["T:A", "T:Inner"]);
         assert_eq!(unique_element(&doc, "T:Inner").text_content(), "i");
+    }
+
+    /// Roslyn's provider indexes every element named `member` (last wins) and
+    /// reads an outer one whole, never indexing the one inside it: a key on a
+    /// nested, unlisted or namespaced `<member>` is read differently there —
+    /// and for a key this index lacks, Roslyn may have an entry.
+    #[test]
+    fn keys_roslyn_reads_differently_are_marked() {
+        let doc = DocFile::parse(
+            r#"<doc><members>
+            <member name="T:A"><summary>a</summary><member name="T:Inner"><summary>i</summary></member></member>
+            <member name="T:Plain"><summary>p</summary></member>
+            </members><member name="T:Stray"/></doc>"#,
+        )
+        .unwrap();
+        assert!(doc.read_as_roslyn_reads("T:A"));
+        assert!(doc.read_as_roslyn_reads("T:Plain"));
+        assert!(doc.read_as_roslyn_reads("T:Absent"));
+        assert!(!doc.read_as_roslyn_reads("T:Inner"));
+        assert_eq!(doc.entry("T:Stray"), None);
+        assert!(!doc.read_as_roslyn_reads("T:Stray"));
+        // A default namespace on `<members>` puts its entries in it: Roslyn
+        // reads the namespace into every element of the entry, while this
+        // index's re-parse of the entry alone never sees it.
+        let defaulted = DocFile::parse(
+            r#"<doc><members xmlns="urn:x"><member name="T:A"><summary/></member></members></doc>"#,
+        )
+        .unwrap();
+        assert!(defaulted.entry("T:A").is_some());
+        assert!(!defaulted.read_as_roslyn_reads("T:A"));
+        // A signed file's namespaced `<Signature>` is beside the entries,
+        // not in them.
+        let signed = DocFile::parse(
+            r#"<doc><members><member name="T:A"><summary/></member></members>
+            <Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo/></Signature></doc>"#,
+        )
+        .unwrap();
+        assert!(signed.read_as_roslyn_reads("T:A"));
     }
 
     /// A nested entry colliding with a top-level one is ambiguous like any

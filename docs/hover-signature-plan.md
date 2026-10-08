@@ -138,17 +138,31 @@ the same assembly also generates (the doc-ID format is not injective: `T:A.B`
 names both a type `B` in namespace `A` and one nested in type `A`), all show
 no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaining:
 
-- **`<inheritdoc>` is not resolved.** It renders an explicit "(Documentation
-  inherited from … is not shown.)" marker in place, so a partial entry never
-  reads as complete. Neither the NETCore reference pack nor FSharp.Core uses
-  it, but the ASP.NET Core pack has 2,312 (nearly all the entry's only
-  content) and ~2.7% of NuGet-cache entries carry one (a third with a `cref`;
-  C# 14 extension members point theirs at `<G>$…` skeleton keys, so they show
-  nothing at all until it is resolved). Resolving it means following the
-  `cref`, or the implicit base/interface member, through the env — its own
-  slice.
+- **`<inheritdoc>` is expanded as Roslyn's IDE expands it, or marked.**
+  `xml_doc::inherit` reproduces `GetDocumentationComment(…, expandInheritdoc:
+  true)`: each element is replaced in place by the XPath-selected nodes of the
+  `cref`'s or the implicit candidate's (overridden member, implemented
+  interface member, base constructor, base type) own expanded entry, with
+  `<typeparamref>` rewritten to the type argument it is reached with, and an
+  undocumented override or implementation inheriting automatically. Roslyn
+  merges nothing — an entry with its own summary and a top-level
+  `<inheritdoc/>` holds both summaries — and neither does this. Where the
+  answer is not exactly Roslyn's (a type that does not bind, a candidate the
+  env cannot settle, a `path` outside the modelled XPath, a cycle, a missing
+  inherited entry), the entry renders unexpanded with the marker, and the
+  typed `inherit::Decline` is logged. Held to Roslyn by
+  `tools/inheritdoc-oracle`: 2,105 ASP.NET Core entries expand identically
+  and none differently; of the 140 declines, Roslyn itself leaves the element
+  in 117, shows nothing for 21 (an undocumented inherited symbol), and needs
+  `InternalsVisibleTo` for 2. Over the NuGet cache (highest version of each
+  package, referenced with both packs but not its own dependencies), 6,946
+  expand identically and none differently, C# 14 extension members' `cref`s
+  into their `<G>$` skeletons included (all 66 of CliWrap's inheritdoc entries
+  but one cycle). Not modelled: default-interface-member implementations, and
+  `InternalsVisibleTo` (an internal member of another assembly declines).
 - **`<include>` is not resolved** (same marker; NuGet only, and there is
-  nothing to resolve against: the included file is not shipped).
+  nothing to resolve against: 27,144 elements in 27 files, every one naming a
+  `doc\*.uex` file that no package ships).
 - **Malformed files show nothing.** ~0.3% of NuGet-cache doc files are not
   well-formed XML (FSharp.Core 4.3–4.5's stray `</returns>`, unclosed `<p>` in
   old `System.*` packages); the whole file is refused rather than partially

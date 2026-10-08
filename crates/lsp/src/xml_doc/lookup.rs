@@ -17,7 +17,7 @@ use std::time::SystemTime;
 use borzoi_sema::AssemblyEnv;
 
 use super::file::{DocEntry, DocFile, DocFileError, EntryError};
-use super::key::{DocTarget, KeyCensus, KeyError, doc_key};
+use super::key::{DocIdIndex, DocTarget, KeyCensus, KeyError, doc_key};
 use super::tree::DocElement;
 
 /// The outcome of looking up one symbol's documentation.
@@ -171,6 +171,69 @@ impl KeyCensusCache {
     }
 }
 
+/// The env-wide [`DocIdIndex`] of each env asked about, validated by env
+/// identity exactly as [`KeyCensusCache`] is. Built only when an
+/// `<inheritdoc cref="…">` needs it; the few envs a session alternates between
+/// keep theirs, and an entry whose env is gone is dropped on the next build.
+#[derive(Debug, Default)]
+pub struct DocIdIndexCache {
+    indices: Vec<(Weak<AssemblyEnv>, Arc<DocIdIndex>)>,
+}
+
+impl DocIdIndexCache {
+    /// The index of `env`.
+    pub fn index(&mut self, env: &Arc<AssemblyEnv>) -> Arc<DocIdIndex> {
+        let me = Arc::downgrade(env);
+        if let Some((_, index)) = self.indices.iter().find(|(of, _)| Weak::ptr_eq(of, &me)) {
+            return index.clone();
+        }
+        self.indices.retain(|(of, _)| of.strong_count() > 0);
+        let index = {
+            let _span = tracing::info_span!("xml_doc_id_index").entered();
+            Arc::new(DocIdIndex::of_env(env))
+        };
+        self.indices.push((me, index.clone()));
+        index
+    }
+
+    /// Drop every index (memory only: correctness rests on env identity).
+    pub fn clear(&mut self) {
+        self.indices.clear();
+    }
+}
+
+/// Everything documentation lookup caches: parsed files, per-assembly key
+/// censuses, and env-wide ID indices.
+#[derive(Debug, Default)]
+pub struct DocSources {
+    pub files: DocFileCache,
+    pub censuses: KeyCensusCache,
+    pub indices: DocIdIndexCache,
+}
+
+impl DocSources {
+    /// Drop every cache (memory only).
+    pub fn clear(&mut self) {
+        self.files.clear();
+        self.censuses.clear();
+        self.indices.clear();
+    }
+
+    /// [`lookup`] through these caches.
+    pub fn lookup(&mut self, env: &Arc<AssemblyEnv>, target: DocTarget) -> DocLookup {
+        lookup(&mut self.files, &mut self.censuses, env, target)
+    }
+
+    /// [`locate`] through these caches.
+    pub fn locate(
+        &mut self,
+        env: &Arc<AssemblyEnv>,
+        target: DocTarget,
+    ) -> Result<Located, DocLookup> {
+        locate(&mut self.files, &mut self.censuses, env, target)
+    }
+}
+
 /// Look up `target`'s documentation in the doc file beside its DLL.
 pub fn lookup(
     files: &mut DocFileCache,
@@ -178,37 +241,55 @@ pub fn lookup(
     env: &Arc<AssemblyEnv>,
     target: DocTarget,
 ) -> DocLookup {
+    match locate(files, censuses, env, target) {
+        Ok(found) => DocLookup::Found(found.member),
+        Err(miss) => miss,
+    }
+}
+
+/// A [`DocLookup::Found`] entry with what it was found in.
+#[derive(Debug, Clone)]
+pub struct Located {
+    pub member: DocElement,
+    pub file: Arc<DocFile>,
+    pub key: String,
+}
+
+/// [`lookup`], keeping the file and key of a found entry.
+pub fn locate(
+    files: &mut DocFileCache,
+    censuses: &mut KeyCensusCache,
+    env: &Arc<AssemblyEnv>,
+    target: DocTarget,
+) -> Result<Located, DocLookup> {
     let owner = target.owner();
     let Some(dll) = env.assembly_path(owner) else {
-        return DocLookup::NoAssemblyPath;
+        return Err(DocLookup::NoAssemblyPath);
     };
     let census = censuses.census(env, dll);
-    let key = match doc_key(env, &census, target) {
-        Ok(key) => key,
-        Err(e) => return DocLookup::Key(e),
-    };
+    let key = doc_key(env, &census, target).map_err(DocLookup::Key)?;
     let path = xml_path_for(dll);
     let file = match files.load(&path) {
         Ok(file) => file,
-        Err(LoadError::NotFound) => return DocLookup::NoXmlFile(path),
-        Err(LoadError::Io(error)) => return DocLookup::Io { path, error },
-        Err(LoadError::Doc(error)) => return DocLookup::Unreadable { path, error },
+        Err(LoadError::NotFound) => return Err(DocLookup::NoXmlFile(path)),
+        Err(LoadError::Io(error)) => return Err(DocLookup::Io { path, error }),
+        Err(LoadError::Doc(error)) => return Err(DocLookup::Unreadable { path, error }),
     };
     let expected = &env.entity(owner).assembly.name;
     if let Some(declared) = file.assembly()
         && !declared.eq_ignore_ascii_case(expected)
     {
-        return DocLookup::OtherAssembly {
+        return Err(DocLookup::OtherAssembly {
             declared: declared.to_string(),
             expected: expected.clone(),
-        };
+        });
     }
     match file.entry(&key) {
-        None => DocLookup::NoEntry { key },
-        Some(DocEntry::Ambiguous) => DocLookup::Ambiguous { key },
+        None => Err(DocLookup::NoEntry { key }),
+        Some(DocEntry::Ambiguous) => Err(DocLookup::Ambiguous { key }),
         Some(DocEntry::Unique(range)) => match file.member_element(range.clone()) {
-            Ok(member) => DocLookup::Found(member),
-            Err(error) => DocLookup::EntryUnreadable { key, error },
+            Ok(member) => Ok(Located { member, file, key }),
+            Err(error) => Err(DocLookup::EntryUnreadable { key, error }),
         },
     }
 }

@@ -69,6 +69,7 @@ project_list="$work/projects.txt"
   echo tools/fcs-dump/fcs-dump.fsproj
   echo tools/nuget-oracle/nuget-oracle.fsproj
   echo tools/msbuild-condition-oracle/msbuild-condition-oracle.fsproj
+  echo tools/inheritdoc-oracle/inheritdoc-oracle.csproj
   find crates/assembly/tests/fixtures/assembly -maxdepth 2 \
     \( -name '*.csproj' -o -name '*.fsproj' \) | sort
   find tools/csharp-sidecar/test-fixtures \
