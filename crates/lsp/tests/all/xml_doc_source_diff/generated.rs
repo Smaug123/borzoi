@@ -159,6 +159,8 @@ enum Template {
     StaticLet,
     Augmentation,
     NestedModule,
+    NamedArguments,
+    ArityNamesakes,
 }
 
 const TEMPLATES: &[Template] = &[
@@ -190,6 +192,8 @@ const TEMPLATES: &[Template] = &[
     Template::StaticLet,
     Template::Augmentation,
     Template::NestedModule,
+    Template::NamedArguments,
+    Template::ArityNamesakes,
 ];
 
 /// How many inner prelude slots a template has.
@@ -393,6 +397,29 @@ impl Item {
                 slot(0, "    ", out);
                 out.push_str(&format!("    let nv{n} = 1\nlet _ = N{n}.nv{n}"));
             }
+            // Named and optional named arguments whose names are also
+            // documented locals (resolution reads them as the locals, #324).
+            Template::NamedArguments => {
+                out.push_str(&format!(
+                    "type NA{n}(q{n}: int, ?o{n}: int) =\n    member _.X = q{n}\nlet call{n} () =\n"
+                ));
+                slot(0, "    ", out);
+                out.push_str(&format!("    let o{n} = 1\n"));
+                slot(1, "    ", out);
+                out.push_str(&format!(
+                    "    let q{n} = 2\n    NA{n}(?o{n} = Some o{n}, q{n} = q{n}), (q{n} = 2)"
+                ));
+            }
+            // Same-named types of different arity (resolution does not choose
+            // between them by arity yet, #323).
+            Template::ArityNamesakes => {
+                attr(out);
+                out.push_str(&format!("type AN{n}<'a> = 'a list\n"));
+                slot(0, "", out);
+                out.push_str(&format!(
+                    "type AN{n} = int\nlet _ = ([1] : AN{n}<int>), (1 : AN{n})"
+                ));
+            }
             Template::StaticLet => {
                 out.push_str(&format!("type H{n}() =\n"));
                 slot(0, "    ", out);
@@ -507,7 +534,10 @@ fn assert_no_failures(files: &[(&str, &str)], graded: &[Graded]) {
     let bad = failures(graded);
     if let Ok(dump) = std::env::var("BORZOI_XMLDOC_DIFF_DUMP") {
         let mut by_shape: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        for g in &bad {
+        let ambiguous = graded
+            .iter()
+            .filter(|g| matches!(g.verdict, Verdict::OracleAmbiguous));
+        for g in bad.iter().copied().chain(ambiguous) {
             by_shape
                 .entry(format!(
                     "{:?} {}",
