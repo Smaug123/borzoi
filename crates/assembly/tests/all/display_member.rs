@@ -244,6 +244,7 @@ fn event(name: &str, delegate_type: TypeRef) -> Event {
         custom_attrs: vec![],
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        xml_doc_sig: None,
     }
 }
 

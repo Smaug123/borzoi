@@ -1,7 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 2305
+hits 2307
 keys 2429
 miss M:Microsoft.FSharp.Collections.FSharpList`1.Cons(`0,Microsoft.FSharp.Collections.FSharpList{`0})
 miss M:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.add_Error(Microsoft.FSharp.Control.FSharpHandler{System.Exception})
@@ -25,8 +25,6 @@ miss M:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.remove_Invalidate(Sy
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(Microsoft.FSharp.Core.FSharpFunc{`0,`1})
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(System.Converter{`0,`1})
 miss M:Microsoft.FSharp.Core.FSharpOption`1.Some(`0)
-miss P:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.Error
-miss P:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.Invalidate
 miss P:Microsoft.FSharp.Core.FSharpOption`1.IsNone
 miss P:Microsoft.FSharp.Core.FSharpOption`1.IsSome
 miss P:Microsoft.FSharp.Core.FSharpRef`1.Value

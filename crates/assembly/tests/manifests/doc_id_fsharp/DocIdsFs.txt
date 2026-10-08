@@ -1,6 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
+hit E:DocIdsFs.IShape.Fired
 hit E:DocIdsFs.Widget.Changed
 hit F:DocIdsFs.Boom.code
 hit F:DocIdsFs.Colour.Green
@@ -98,7 +99,9 @@ hit T:DocIdsFs.Tree`1.Leaf
 hit T:DocIdsFs.Tree`1.Node
 hit T:DocIdsFs.Widget
 hit T:DocIdsFs.m
-keys 101
+keys 104
+miss M:DocIdsFs.IShape.add_Fired(System.EventHandler)
+miss M:DocIdsFs.IShape.remove_Fired(System.EventHandler)
 miss M:DocIdsFs.Widget.add_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
 miss M:DocIdsFs.Widget.remove_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
 miss P:DocIdsFs.Point.Sum

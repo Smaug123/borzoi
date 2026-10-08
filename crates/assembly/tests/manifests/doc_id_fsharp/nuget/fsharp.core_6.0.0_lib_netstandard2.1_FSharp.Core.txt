@@ -2,7 +2,7 @@
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
 dup M:Microsoft.FSharp.Control.TaskBuilder.Run``1(Microsoft.FSharp.Core.CompilerServices.ResumableCode{Microsoft.FSharp.Control.TaskStateMachineData{``0},``0}) x2
-hits 2158
+hits 2160
 keys 2266
 miss M:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.add_Error(Microsoft.FSharp.Control.FSharpHandler{System.Exception})
 miss M:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.remove_Error(Microsoft.FSharp.Control.FSharpHandler{System.Exception})
@@ -10,8 +10,6 @@ miss M:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.add_Invalidate(Syste
 miss M:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.remove_Invalidate(System.EventHandler)
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(Microsoft.FSharp.Core.FSharpFunc{`0,`1})
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(System.Converter{`0,`1})
-miss P:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.Error
-miss P:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.Invalidate
 miss P:Microsoft.FSharp.Core.FSharpOption`1.IsNone
 miss P:Microsoft.FSharp.Core.FSharpOption`1.IsSome
 miss P:Microsoft.FSharp.Core.FSharpRef`1.Value

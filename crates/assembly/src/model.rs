@@ -1887,6 +1887,12 @@ pub struct Event {
     /// cannot prove two external declarations are one member). See
     /// [`MethodLike::unclassified_impls`].
     pub unclassified_impls: Vec<UnclassifiedMethodImpl>,
+    /// The documentation-comment ID the F# compiler recorded in the signature
+    /// pickle for a `[<CLIEvent>]` property's getter, which is the event's key —
+    /// `E:` or, where the attribute sits on an abstract slot, `P:`
+    /// (`P:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.Invalidate`).
+    /// See [`MethodLike::xml_doc_sig`].
+    pub xml_doc_sig: Option<String>,
 }
 
 /// A custom attribute the importer didn't classify into a typed field on

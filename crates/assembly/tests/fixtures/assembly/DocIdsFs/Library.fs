@@ -101,6 +101,9 @@ type IShape =
     abstract Area: float
     /// An abstract method.
     abstract Describe: unit -> string
+    /// An abstract event, which fsc keys `P:`.
+    [<CLIEvent>]
+    abstract Fired: IEvent<System.EventHandler, System.EventArgs>
 
 /// A delegate.
 type Handler = delegate of int -> unit
@@ -116,6 +119,7 @@ type Colour =
 type Widget(name: string) =
     let mutable count = 0
     let changed = Event<int>()
+    let fired = Event<System.EventHandler, System.EventArgs>()
 
     /// A secondary constructor.
     new() = Widget("anon")
@@ -179,6 +183,9 @@ type Widget(name: string) =
     interface IShape with
         member _.Area = 0.0
         member _.Describe() = name
+
+        [<CLIEvent>]
+        member _.Fired = fired.Publish
 
 /// A generic class.
 type Box<'T>(v: 'T) =
