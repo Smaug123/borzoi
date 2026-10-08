@@ -2023,6 +2023,12 @@ impl AssemblyEnv {
         (0..self.nodes.len()).map(EntityHandle::new)
     }
 
+    /// The top-level types of every assembly in the env, in interning order —
+    /// the roots of the trees [`Self::children`] descends.
+    pub fn top_level_handles(&self) -> &[EntityHandle] {
+        &self.top_level_types
+    }
+
     /// Resolve a top-level type by its namespace, simple name, and generic
     /// arity (the number of type arguments; `0` for a non-generic type). `None`
     /// if no referenced assembly declares that type at that arity — never a
@@ -2980,9 +2986,6 @@ impl AssemblyEnv {
         })
     }
 
-    /// The F# source full name of `handle`: namespace segments, enclosing
-    /// entity names for nested types, and the entity's source name when metadata
-    /// records one (`List`, not `ListModule`).
     /// The entities whose names [`Self::entity_full_name`] joins after the
     /// namespace: the enclosing chain outermost-first, ending at `handle`.
     ///
@@ -2992,16 +2995,27 @@ impl AssemblyEnv {
     /// can say which entity any given segment names. (The differential
     /// harnesses use it to decide whether a generic-arity marker FCS wrote onto
     /// a segment is one our own resolution vouches for.)
+    ///
+    /// A handle unreachable from any top-level type yields the one-entry chain
+    /// `[handle]`, the same fallback [`Self::entity_full_name`] takes; a caller
+    /// that must not mistake such a handle for a top-level one asks
+    /// [`Self::enclosing_chain_from_root`] instead.
     pub fn enclosing_chain(&self, handle: EntityHandle) -> Vec<EntityHandle> {
+        self.enclosing_chain_from_root(handle)
+            .unwrap_or_else(|| vec![handle])
+    }
+
+    /// As [`Self::enclosing_chain`], but `None` when `handle` is unreachable
+    /// from every top-level type — so the first entry, when there is one, is
+    /// provably top-level and its namespace provably the chain's.
+    pub fn enclosing_chain_from_root(&self, handle: EntityHandle) -> Option<Vec<EntityHandle>> {
         let mut chain = Vec::new();
         for &root in &self.top_level_types {
             if self.push_enclosing_chain_from(root, handle, &mut chain) {
-                return chain;
+                return Some(chain);
             }
         }
-        // Unreachable from a root: `entity_full_name` falls back to the
-        // entity's own namespace and name, which is a one-entry chain.
-        vec![handle]
+        None
     }
 
     fn push_enclosing_chain_from(
@@ -3023,6 +3037,9 @@ impl AssemblyEnv {
         false
     }
 
+    /// The F# source full name of `handle`: namespace segments, enclosing
+    /// entity names for nested types, and the entity's source name when metadata
+    /// records one (`List`, not `ListModule`).
     pub fn entity_full_name(&self, handle: EntityHandle) -> String {
         let mut segments = Vec::new();
         if self.push_entity_full_name(handle, &mut segments) {
@@ -5736,6 +5753,16 @@ impl AssemblyEnv {
             .iter()
             .position(|m| member_name(m) == name && pred(m))
             .map(MemberIndex::new)
+    }
+
+    /// Every member index of `handle`, in member order — for a sweep over all
+    /// of an entity's members ([`MemberIndex`]'s constructor is private, as
+    /// [`EntityHandle`]'s is; see [`Self::all_handles`]).
+    pub fn member_indices(
+        &self,
+        handle: EntityHandle,
+    ) -> impl Iterator<Item = MemberIndex> + use<> {
+        (0..self.entity(handle).members.len()).map(MemberIndex::new)
     }
 
     /// The member an [`EntityHandle`] + [`MemberIndex`] names.

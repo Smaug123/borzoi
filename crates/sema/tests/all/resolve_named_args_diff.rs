@@ -295,6 +295,73 @@ fn check_program(
     }
 }
 
+/// The declarations of [`implicit_union_field_names_are_labels`]: cases whose
+/// anonymous fields F# names `Item` (a lone field) and `Item1`… (by position
+/// among several), and locals of those names.
+const ITEM_PRELUDE: &str = "\
+module M
+type U =
+    | One of bool
+    | Two of bool * bool
+    | Mixed of bool * b: bool
+let run () =
+    let Item = true
+    let Item1 = true
+    let Item2 = true
+";
+
+/// A union case's anonymous fields are labels too: `One(Item = e)` names the
+/// field F# generated, not a same-named value in scope, while a name that is
+/// not one of the case's fields (`One(Item1 = e)`) is still an equality.
+#[test]
+fn implicit_union_field_names_are_labels() {
+    let calls = [
+        "    One(«Item» = ‹Item›) |> ignore\n",
+        "    Two(«Item1» = ‹Item1›, «Item2» = ‹Item2›) |> ignore\n",
+        "    Mixed(«Item1» = ‹Item1›, «b» = ‹Item2›) |> ignore\n",
+        "    One(‹Item1› = ‹Item1›) |> ignore\n",
+    ];
+    let programs: Vec<Program> = calls
+        .iter()
+        .map(|c| render_after(ITEM_PRELUDE, c))
+        .collect();
+    let paths: Vec<PathBuf> = programs
+        .iter()
+        .map(|p| temp_fs_file("named_args_items", &p.src))
+        .collect();
+    let census = parse_census_jsonl(&invoke_fcs_dump_census(&paths));
+    for p in &paths {
+        let _ = std::fs::remove_file(p);
+    }
+    assert_eq!(census.len(), programs.len(), "one census line per program");
+    let mut wrong = Vec::new();
+    for (program, file) in programs.iter().zip(&census) {
+        let src = &program.src;
+        assert!(
+            file.ok && !file.has_check_errors,
+            "the program must type-check cleanly, or FCS's answer is recovery: {src}"
+        );
+        let uses: Vec<_> = census_resolve_uses(file, src)
+            .into_iter()
+            .filter(|u| !u.is_from_definition && u.start != u.end)
+            .collect();
+        for label in &program.labels {
+            assert!(
+                uses.iter().any(|u| range_of(u.start, u.end) == *label),
+                "FCS reports no use at the label {:?}: {src}",
+                &src[*label]
+            );
+        }
+        check_program(program, &uses, &AssemblyEnv::default(), true, &mut wrong);
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} uses committed to a binder FCS does not name:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 /// A function from an **earlier file** in Compile order is a function head
 /// too, qualified or opened: `a = a` stays an equality, and both operands
 /// resolve. Its proof is the preceding file's export, not this file's arena.

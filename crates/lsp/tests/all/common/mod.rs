@@ -281,6 +281,18 @@ fn fcs_dump_command(subcommand: &str) -> Command {
     }
 }
 
+/// A resident `fcs-dump <subcommand>` oracle (one JSON request per line, one
+/// response line back), built and spawned the same way as every other
+/// `fcs-dump` call here.
+pub fn fcs_dump_batch_child(subcommand: &'static str) -> BatchChild {
+    BatchChild::with_factory(
+        Box::new(move || fcs_dump_command(subcommand)),
+        format!("fcs-dump {subcommand}"),
+        default_timeout(),
+        2,
+    )
+}
+
 /// What `refs` is, relative to the references the oracle would resolve for
 /// itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

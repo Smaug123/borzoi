@@ -66,9 +66,9 @@ const INTERACTIVE: &str = "INTERACTIVE";
 /// parse FCS performs in an IDE — not `fsc`'s batch compile. (`COMPILED` mirrors
 /// `Driver/fsc.fs:514`; `INTERACTIVE` is the script counterpart.)
 ///
-/// `pub(crate)` so the server's non-`file:` buffer fallback shares it rather
-/// than hand-building a now-incomplete `{COMPILED}` set.
-pub(crate) fn implicit_symbols(is_script: bool) -> HashSet<String> {
+/// Public so the server's non-`file:` buffer fallback and the FCS
+/// differentials share it rather than hand-building an incomplete set.
+pub fn implicit_symbols(is_script: bool) -> HashSet<String> {
     let mut s = HashSet::new();
     s.insert(EDITING.to_string());
     s.insert(if is_script { INTERACTIVE } else { COMPILED }.to_string());

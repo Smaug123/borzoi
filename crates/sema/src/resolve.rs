@@ -722,7 +722,7 @@ fn impl_only_files(files: &[ImplFile]) -> Vec<ProjectFile> {
 /// screen is not published (FCS-probed: an unpaired `module M` sig leaves a
 /// same-QNOF-deduplicated impl's members resolving to the impl), and its
 /// partner stays `None`.
-fn pairing_partners(files: &[ProjectFile]) -> Vec<Option<usize>> {
+pub fn signature_partners(files: &[ProjectFile]) -> Vec<Option<usize>> {
     let mut pending: HashMap<&str, usize> = HashMap::new();
     let mut partner = vec![None; files.len()];
     for (i, pf) in files.iter().enumerate() {
@@ -1324,7 +1324,7 @@ fn resolve_project_files_impl(
         "fold horizon {horizon} exceeds the Compile list ({})",
         files.len()
     );
-    let partners = pairing_partners(files);
+    let partners = signature_partners(files);
     let mut preceding = ProjectItems::default();
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(files.len());
     // Accumulate the OV-6 cross-file **extension-source** signal in **Compile
@@ -1683,8 +1683,8 @@ fn resolve_project_files_incremental_impl(
         "fold horizon {horizon} exceeds the Compile list ({})",
         new_files.len()
     );
-    let partners_prev = pairing_partners(prev_files);
-    let partners_new = pairing_partners(new_files);
+    let partners_prev = signature_partners(prev_files);
+    let partners_new = signature_partners(new_files);
     let mut preceding = ProjectItems::default();
     let mut ext = ExtThreading::default();
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(horizon);

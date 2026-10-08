@@ -38,6 +38,8 @@ use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::sidecar_manager::SidecarManager;
 use crate::workspace::{ServedTfm, Workspace};
+use crate::xml_doc::key::DocTarget;
+use crate::xml_doc::lookup::{DocFileCache, DocLookup, KeyCensusCache};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ReferencedAssemblyProjection {
@@ -375,6 +377,15 @@ pub struct SemanticState {
     /// [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`] on a
     /// watched structural or referenced-assembly change.
     pdb_images: HashMap<PathBuf, Option<Arc<[u8]>>>,
+    /// The parsed sidecar `.xml` documentation files hover has read, keyed by
+    /// path. Each entry is validated against the file's `(size, mtime)` on
+    /// every use (see [`DocFileCache`]), so correctness does not depend on any
+    /// invalidation; [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`]
+    /// clear it only to bound memory, alongside the PDB images.
+    xml_docs: DocFileCache,
+    /// Per-assembly doc-ID collision censuses, one per env (see
+    /// [`KeyCensusCache`]); cleared alongside `xml_docs`, for memory.
+    xml_doc_keys: KeyCensusCache,
     /// On-disk cache of each referenced DLL's projected entities, so a warm
     /// server restart skips the parse+project that dominates a cold env build.
     /// **Disabled by default** (so tests and un-opted consumers stay off-disk);
@@ -482,6 +493,8 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
+        self.xml_docs.clear();
+        self.xml_doc_keys.clear();
         // A structural change can stale open buffers' tokens; owe a workspace
         // refresh (the next drain sends it, even with no following fold).
         self.wants_refresh = true;
@@ -504,6 +517,8 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
+        self.xml_docs.clear();
+        self.xml_doc_keys.clear();
         // A referenced-assembly change can stale open buffers' cross-assembly
         // tokens; owe a workspace refresh (sent on the next drain).
         self.wants_refresh = true;
@@ -526,6 +541,13 @@ impl SemanticState {
         let image = compute();
         self.pdb_images.insert(dll.to_path_buf(), image.clone());
         image
+    }
+
+    /// The XML documentation of a referenced-assembly symbol, read from the
+    /// `.xml` beside the DLL `env` read it from (cached per file; see
+    /// [`crate::xml_doc::lookup`]).
+    pub fn xml_doc(&mut self, env: &Arc<AssemblyEnv>, target: DocTarget) -> DocLookup {
+        crate::xml_doc::lookup::lookup(&mut self.xml_docs, &mut self.xml_doc_keys, env, target)
     }
 
     /// Drop the caches for **every** cached project that lists `file` in its
