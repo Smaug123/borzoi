@@ -100,13 +100,6 @@ const PATTERN_DECOY: &str = "the case-pattern walk declines at a prefix holding 
 const NULLARY_CASE: &str = "a nullary union case has neither a carrier type nor a projected member, so the reading owns \
      the path but can name no target";
 
-/// A user-declared `static member` **property** on an F# record is dropped by
-/// `project_fsharp_members` ("all other F#-kind properties are dropped: FCS
-/// surfaces none"), which is true of the compiler's own generated properties and
-/// wrong of this one. The tail then reads absent.
-const DROPPED_STATIC_PROPERTY: &str = "the F#-entity projection drops a user-declared static property on a record, so the tail \
-     reads as absent";
-
 /// The cells where FCS resolves and we decline to name a target, each with the
 /// modelling reason. Keyed `"<plant>/<site>"`.
 ///
@@ -152,41 +145,13 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ("CT1TUED/leaf", NULLARY_CASE),
     ("CT1TUEX/leaf", NULLARY_CASE),
     ("CT1TUPX/leaf", NULLARY_CASE),
-    ("CB0TRED/leaf", DROPPED_STATIC_PROPERTY),
-    ("CB0TREX/leaf", DROPPED_STATIC_PROPERTY),
-    ("CB1TRED/leaf", DROPPED_STATIC_PROPERTY),
-    ("CB1TREX/leaf", DROPPED_STATIC_PROPERTY),
-    ("CT0TRED/leaf", DROPPED_STATIC_PROPERTY),
-    ("CT0TREX/leaf", DROPPED_STATIC_PROPERTY),
-    ("CT1TRED/leaf", DROPPED_STATIC_PROPERTY),
-    ("CT1TREX/leaf", DROPPED_STATIC_PROPERTY),
 ];
 
 /// The cells where we name the **wrong** target, each with the defect it is a
 /// symptom of. Same two-sided ratchet as [`KNOWN_GAPS`], and deliberately a
 /// separate table: a wrong answer is a different kind of debt from a deferral,
 /// and it must be impossible to add one by relaxing a gap row.
-///
-/// All six are the same cause — [`DROPPED_STATIC_PROPERTY`]. The property is
-/// invisible, so *nothing* at the name owns the path and the reading falls back
-/// to a partial; which entity that partial names is then decided by whatever
-/// stands first, and it is the wrong one. With a decoy in scope the wrong one is
-/// the decoy (`…D`); with the companion module present it is the module (`…X`).
-/// The projection is where this must be fixed; no candidate ordering in the
-/// resolver can see a member that is not there.
-///
-/// The two `…X` rows are the ones the *old* `(assembly, full name)` currency
-/// could not see at all: a type and its companion module render the same full
-/// name, so binding the module read as agreement (codex review). They are
-/// evidence for carrying the entity kind, not new breakage.
-const KNOWN_WRONG_TARGETS: &[(&str, &str)] = &[
-    ("CB0TRED/head", DROPPED_STATIC_PROPERTY),
-    ("CB0TREX/head", DROPPED_STATIC_PROPERTY),
-    ("CB1TRED/head", DROPPED_STATIC_PROPERTY),
-    ("CB1TREX/head", DROPPED_STATIC_PROPERTY),
-    ("CT0TRED/head", DROPPED_STATIC_PROPERTY),
-    ("CT1TRED/head", DROPPED_STATIC_PROPERTY),
-];
+const KNOWN_WRONG_TARGETS: &[(&str, &str)] = &[];
 
 /// The currency both oracles report in: the declaring assembly, the symbol's
 /// full name, and — at the **head** — *which* same-named entity it is.
