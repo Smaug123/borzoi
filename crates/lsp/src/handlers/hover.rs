@@ -17,11 +17,15 @@
 //! marker — all declared metadata, needing no inference — and, when the
 //! assembly's PDB records a source position, a `Defined in <file>, line N` line
 //! (`append_defined_in`, via the DLL's embedded or sidecar PDB) so a symbol
-//! whose source the LSP can't open still reports where it lives. A project-local
-//! *value* binder additionally shows its inferred type where inference has one
-//! (3.2b-1: literal-bound values and the chains they feed). Remaining richer
-//! hover (annotated/function-binder types, XML doc summary) is tracked in
-//! `docs/hover-signature-plan.md`.
+//! whose source the LSP can't open still reports where it lives. A
+//! referenced-assembly symbol then carries its **XML documentation** — the
+//! whole entry, not only the summary — read from the `.xml` beside the DLL the
+//! env read and rendered to Markdown by [`crate::xml_doc`], after a thematic
+//! break. A project-local *value* binder additionally shows its inferred type
+//! where inference has one (3.2b-1: literal-bound values and the chains they
+//! feed). Remaining richer hover is tracked in `docs/hover-signature-plan.md`.
+
+use std::sync::Arc;
 
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
@@ -48,6 +52,10 @@ use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
 use crate::semantic::SemanticState;
 use crate::server::State;
+use crate::xml_doc::key::DocTarget;
+use crate::xml_doc::lookup::DocLookup;
+use crate::xml_doc::markdown::to_markdown;
+use crate::xml_doc::render::render_member;
 
 /// Run the hover handler. Returns `None` only when there's no buffer or the
 /// cursor is on nothing name-like. A symbol we *can* describe yields its
@@ -278,7 +286,7 @@ fn project_hover(
             let ty = file
                 .resolved_def_id(res)
                 .and_then(|def| inferred.def_type(def));
-            hover_body(semantic, &resolved, file, res, &AssemblyEnv::default(), ty)
+            hover_body(semantic, &resolved, file, res, &Arc::default(), ty)
         };
         if let Some(body) = body {
             return Some(make_hover(body, text, range));
@@ -355,27 +363,32 @@ fn single_file_hover(
 /// value arms; `None` when inference deferred it or the symbol isn't a binder).
 /// `env` is only read for the referenced-assembly arms
 /// ([`Resolution::Entity`] / [`Resolution::Member`]); the others ignore it.
+/// Those two arms also carry the symbol's XML documentation, where the `.xml`
+/// beside its DLL has an entry for it.
 fn hover_body(
     semantic: &mut SemanticState,
     resolved: &ResolvedProject,
     file: &ResolvedFile,
     res: Resolution,
-    env: &AssemblyEnv,
+    env: &Arc<AssemblyEnv>,
     ty: Option<&Ty>,
-) -> Option<String> {
+) -> Option<HoverBody> {
     match res {
         Resolution::Local(id) => {
             let def = file.def(id);
-            Some(format_def(&def.name, def.kind, ty))
+            Some(format_def(&def.name, def.kind, ty).into())
         }
         Resolution::Item(_) => {
             let (_, def) = resolved.item_def(res)?;
-            Some(format_def(&def.name, def.kind, ty))
+            Some(format_def(&def.name, def.kind, ty).into())
         }
         Resolution::Entity(handle) => {
             let mut body = entity_hover_label(env, handle);
             append_defined_in(&mut body, entity_definition_document(semantic, env, handle));
-            Some(body)
+            Some(HoverBody {
+                signature: body,
+                documentation: documentation(semantic, env, DocTarget::Entity(handle)),
+            })
         }
         Resolution::Member { parent, idx } => {
             let mut body = member_hover_label(env, parent, idx);
@@ -383,9 +396,76 @@ fn hover_body(
                 &mut body,
                 member_definition_document(semantic, env, parent, idx),
             );
-            Some(body)
+            Some(HoverBody {
+                signature: body,
+                documentation: documentation(semantic, env, DocTarget::Member { parent, idx }),
+            })
         }
         Resolution::Deferred(_) | Resolution::Unresolved => None,
+    }
+}
+
+/// The rendered XML documentation of a referenced-assembly symbol, or `None`
+/// when the lookup found none — for whichever of the reasons [`DocLookup`]
+/// distinguishes, which is logged — or the entry renders to nothing.
+fn documentation(
+    semantic: &mut SemanticState,
+    env: &Arc<AssemblyEnv>,
+    target: DocTarget,
+) -> Option<RenderedDoc> {
+    match semantic.xml_doc(env, target) {
+        DocLookup::Found(member) => {
+            let (blocks, report) = render_member(&member);
+            if !report.unknown_tags.is_empty()
+                || report.unresolved_inheritdoc
+                || report.unresolved_include
+            {
+                tracing::debug!(
+                    ?target,
+                    ?report,
+                    "XML documentation rendered with fallbacks"
+                );
+            }
+            RenderedDoc::new(to_markdown(&blocks))
+        }
+        other => {
+            tracing::debug!(?target, outcome = ?other, "no XML documentation");
+            None
+        }
+    }
+}
+
+/// A hover's Markdown: the signature-and-provenance text this module builds,
+/// and, for a referenced-assembly symbol, its rendered documentation.
+///
+/// They are kept apart until [`make_hover`] joins them because they are checked
+/// differently: the signature is subject to [`quotes_are_fenced`], a whole-text
+/// heuristic that is meaningful only because nothing in it is free-form, while
+/// the documentation is author prose (F# examples in it legitimately carry
+/// `` `` `` runs) whose Markdown faithfulness is proven by the renderer's own
+/// round-trip property instead.
+struct HoverBody {
+    signature: String,
+    documentation: Option<RenderedDoc>,
+}
+
+impl From<String> for HoverBody {
+    fn from(signature: String) -> Self {
+        HoverBody {
+            signature,
+            documentation: None,
+        }
+    }
+}
+
+/// Markdown produced by [`to_markdown`] from a documentation tree — never empty.
+/// Only [`RenderedDoc::new`] makes one, so a hover cannot attach documentation
+/// text that did not come through the escaping printer.
+struct RenderedDoc(String);
+
+impl RenderedDoc {
+    fn new(markdown: String) -> Option<Self> {
+        (!markdown.trim().is_empty()).then_some(RenderedDoc(markdown))
     }
 }
 
@@ -956,16 +1036,29 @@ fn quotes_are_fenced(body: &str) -> bool {
         .all(|line| line.contains("```"))
 }
 
-fn make_hover(body: String, text: &str, range: TextRange) -> Hover {
+/// The separator between a hover's signature and its documentation: a
+/// thematic break, so the author's prose reads as distinct from what borzoi
+/// derived from metadata.
+const DOCUMENTATION_SEPARATOR: &str = "\n\n---\n\n";
+
+fn make_hover(body: impl Into<HoverBody>, text: &str, range: TextRange) -> Hover {
+    let HoverBody {
+        signature,
+        documentation,
+    } = body.into();
     debug_assert!(
-        quotes_are_fenced(&body),
+        quotes_are_fenced(&signature),
         "a hover body carries F# backticks on a line Markdown will eat them \
-         from; wrap that part in `code_span`:\n{body}"
+         from; wrap that part in `code_span`:\n{signature}"
     );
+    let value = match documentation {
+        Some(RenderedDoc(doc)) => format!("{signature}{DOCUMENTATION_SEPARATOR}{doc}"),
+        None => signature,
+    };
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: body,
+            value,
         }),
         range: Some(range_to_lsp(text, range)),
     }
