@@ -91,7 +91,7 @@ pub(super) struct SigScreen {
     pub(super) names: HashSet<String>,
     /// Paths of `[<AutoOpen>]` modules the signature declares directly under a
     /// `namespace` fragment. Folded (at the paired implementation's slot) into
-    /// [`ProjectItems::auto_open_module_paths`] so a later file's `open` of
+    /// [`ProjectItems::auto_open_fragment_verdicts`] so a later file's `open` of
     /// the namespace sees the auto-open even when only the signature carries
     /// the attribute (conclusion 6).
     pub(super) auto_open_nested: Vec<Vec<String>>,
@@ -314,31 +314,48 @@ pub struct ProjectItems {
     /// open fold ([`ProjectItems::sig_screened_open_name`]) already covers
     /// exactly what those markers fear.
     pub(super) opaque_hidden_value_modules: HashSet<Vec<String>>,
-    /// Each earlier-file **non-`private`** `[<AutoOpen>]` module *fragment*,
-    /// paired with the Compile-order file that declared it, in Compile order —
-    /// `private` ones are excluded, since F# does not bring a `private` module
-    /// into scope for another file's `open` of its namespace. Opening the
-    /// containing namespace also opens a listed module; because sema does not
-    /// enumerate their nested types, a bare type name under that namespace may
-    /// be shadowed.
+    /// The subset of [`Self::modules_with_hidden_values`] an `[<AutoOpen>]`
+    /// **fold** must barrier for: every marker except the one an unprovable
+    /// child pushes onto its container.
+    ///
+    /// That marker stands for the names the child might contribute, and a fold
+    /// already lists the child itself, uncertain, and declines exactly those
+    /// names at the child's own fold position
+    /// ([`Self::auto_open_fragment_verdicts`]). A barrier for it as well
+    /// would stale every name folded before the container — the namespace's
+    /// own union cases included — which both readings of the child bind the
+    /// same way. Every consumer that does *not* enumerate the child (a
+    /// qualified access through the container, a plain `open` reading) keeps
+    /// the blunter [`Self::modules_with_hidden_values`].
+    pub(super) fold_hidden_value_modules: HashSet<Vec<String>>,
+    /// Every earlier-file non-`private` module *fragment* spelled
+    /// `[<AutoOpen>]`, in declaration order, with its declaring file and
+    /// whether its marker is proven ([`AutoOpenVerdict::Proven`]) — the **only**
+    /// record of them, so no consumer can read the proven half alone. A query
+    /// that ignores the flag gets the veto reading: an unprovable module may
+    /// open, so it counts. Only a fold that would *commit* members filters to
+    /// proven ones. `private` ones are excluded, since F# does not bring a
+    /// `private` module into scope for another file's `open` of its namespace.
     ///
     /// The **file** is the per-fragment auto-open provenance the namespace-fold
     /// reads (Stage 5, `docs/sema-accessibility-collapse-foundation.md`): a
     /// module `A` may have `[<AutoOpen>]` fragments in several files and *plain*
     /// (un-attributed) augmentations in others. Only a member declared in an
     /// `[<AutoOpen>]`-attributed fragment is auto-opened, and it folds at *that
-    /// fragment's* file, so an entry here answers "is `(A, file)` an auto-open
-    /// fragment?" per member. The same path can therefore appear more than once
-    /// here, once per declaring file.
+    /// fragment's* file. The same path can therefore appear more than once
+    /// here, once per declaring file. A `Vec` in Compile order, not a set: when
+    /// two preceding files each declare a clashing auto-open submodule of one
+    /// namespace, the later file's wins the fold.
     ///
-    /// A `Vec`, not a `HashSet` (codex review of §7's machinery slice): when
-    /// two PRECEDING files each declare a same-named-clashing auto-open
-    /// submodule of one namespace, which one's value wins the later `open`'s
-    /// fold is decided by Compile order (later file wins), and a hash set's
-    /// iteration order does not preserve insertion order — it would make the
-    /// winner nondeterministic. [`Self::extend_with`] appends in the same
-    /// Compile-order loop as every other per-file accumulator.
-    pub(super) auto_open_module_paths: Vec<(Vec<String>, usize)>,
+    /// Leaving an unprovable fragment out of a later fold is a wrong answer,
+    /// not a decline. It might open, and then the names it contributes outrank
+    /// everything folded before it: probed (`dotnet fsi --exec`, two files) FCS
+    /// binds the module's `X`, not the namespace's own union case `H.X`; and
+    /// under a proven parent it binds the child's member, not the parent's
+    /// same-named one. So a fold lists it in its place, uncertain, and declines
+    /// exactly the names it contributes
+    /// ([`Resolver::auto_open_fragments_reachable`](super::Resolver)).
+    pub(super) auto_open_fragment_verdicts: Vec<(Vec<String>, usize, bool)>,
     /// The project-global [`ItemId`]s of earlier files' **constructor cases**
     /// (exported non-qualified union / exception constructors —
     /// [`ExportedItem::is_case`]). Lets a later file classify an opened cross-file
@@ -1150,11 +1167,15 @@ impl ProjectItems {
         for hidden in idx.modules_with_hidden_values {
             self.modules_with_hidden_values.insert(hidden);
         }
+        for hidden in idx.fold_hidden_value_modules {
+            self.fold_hidden_value_modules.insert(hidden);
+        }
         for hidden in idx.opaque_hidden_value_modules {
             self.opaque_hidden_value_modules.insert(hidden);
         }
-        for auto_open in idx.auto_open_module_paths {
-            self.auto_open_module_paths.push((auto_open, file_idx));
+        for (path, proven) in idx.auto_open_fragment_verdicts {
+            self.auto_open_fragment_verdicts
+                .push((path, file_idx, proven));
         }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
@@ -1248,39 +1269,42 @@ impl ProjectItems {
         self.namespace_paths.contains(path)
     }
 
-    /// Whether an earlier file exports a direct `[<AutoOpen>]` module under
-    /// `namespace`.
+    /// Whether an earlier file exports a direct `[<AutoOpen>]`-spelled module
+    /// under `namespace`, proven or not — a veto query.
     pub(super) fn has_auto_open_module_in_namespace(&self, namespace: &[String]) -> bool {
         !self.auto_open_modules_directly_in(namespace).is_empty()
     }
 
-    /// The qualified paths of earlier-file **non-`private`** `[<AutoOpen>]`
-    /// modules directly under `container` (see [`is_directly_in`]) — the
-    /// cross-file half of [`Resolver::project_auto_open_submodules_in`](super::Resolver::project_auto_open_submodules_in)
-    /// (`resolve/lookup.rs`), which also collects the same-file half and
-    /// recurses to fold a project namespace's auto-open descendants like the
-    /// assembly namespace half's `[<AutoOpen>]` recursion
-    /// (`AssemblyEnv::open_namespace_fold_surfaces`).
+    /// The qualified paths of earlier-file **non-`private`**
+    /// `[<AutoOpen>]`-spelled modules directly under `container` (see
+    /// [`is_directly_in`]), proven or not — the cross-file half of
+    /// [`Resolver::project_auto_open_submodules_in`](super::Resolver::project_auto_open_submodules_in)
+    /// (`resolve/lookup.rs`), whose every consumer over-defers.
     pub(super) fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
-        self.auto_open_module_paths
+        self.auto_open_fragment_verdicts
             .iter()
-            .filter(|(p, _)| is_directly_in(p, container))
-            .map(|(p, _)| p.clone())
+            .filter(|(p, _, _)| is_directly_in(p, container))
+            .map(|(p, _, _)| p.clone())
             .collect()
     }
 
-    /// The earlier-file non-`private` `[<AutoOpen>]` **fragments** directly in
-    /// `container`, as `(path, file)` pairs (Stage 5). Unlike
+    /// Every earlier-file `[<AutoOpen>]`-spelled fragment directly in
+    /// `container`, proven or not, as `(path, file, proven)` in declaration
+    /// order ([`Self::auto_open_fragment_verdicts`]) (Stage 5). Unlike
     /// [`Self::auto_open_modules_directly_in`] (paths only), it keeps the
     /// declaring file — a module may appear more than once, once per fragment —
     /// which the file-ordered fold and its same-file parent-nesting rule need.
-    pub(super) fn auto_open_fragments_directly_in(
+    ///
+    /// No accessibility check: the list holds only non-`private` declarations,
+    /// since a `private` module is confined to its own declaring container and
+    /// cannot reach another file at all.
+    pub(super) fn auto_open_fragment_verdicts_directly_in(
         &self,
         container: &[String],
-    ) -> Vec<(Vec<String>, usize)> {
-        self.auto_open_module_paths
+    ) -> Vec<(Vec<String>, usize, bool)> {
+        self.auto_open_fragment_verdicts
             .iter()
-            .filter(|(p, _)| is_directly_in(p, container))
+            .filter(|(p, _, _)| is_directly_in(p, container))
             .cloned()
             .collect()
     }
@@ -1298,7 +1322,7 @@ type QualifiedCaseExport = (ItemId, Option<usize>);
 ///
 /// The order-sensitive fields (`value_exports` history, the latest-wins
 /// `type_qualified_cases` / `type_paths` insertion orders, the Compile-order
-/// `auto_open_module_paths`) preserve decl order; the rest fold into a
+/// `auto_open_fragment_verdicts`) preserve decl order; the rest fold into a
 /// `HashSet`/`HashMap`, so their order is irrelevant.
 ///
 /// `PartialEq` is the contribution currency of
@@ -1324,10 +1348,11 @@ struct FileExportIndices {
     real_nested_modules: Vec<Vec<String>>,
     namespace_paths: Vec<Vec<String>>,
     modules_with_hidden_values: Vec<Vec<String>>,
+    fold_hidden_value_modules: Vec<Vec<String>>,
     opaque_hidden_value_modules: Vec<Vec<String>>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
-    auto_open_module_paths: Vec<Vec<String>>,
+    auto_open_fragment_verdicts: Vec<(Vec<String>, bool)>,
 }
 
 /// Where the names a hidden-value marker fears come from — the one question
@@ -1349,6 +1374,14 @@ enum HiddenNames {
 
 /// Record `path` as a hidden-value module, filed by marker provenance.
 fn push_hidden(fi: &mut FileExportIndices, path: Vec<String>, names: HiddenNames) {
+    fi.fold_hidden_value_modules.push(path.clone());
+    push_hidden_outside_folds(fi, path, names);
+}
+
+/// [`push_hidden`] for a marker an `[<AutoOpen>]` fold need not barrier for,
+/// because the fold enumerates what the marker stands for itself — see
+/// [`ProjectItems::fold_hidden_value_modules`].
+fn push_hidden_outside_folds(fi: &mut FileExportIndices, path: Vec<String>, names: HiddenNames) {
     if matches!(names, HiddenNames::Borrowed) {
         fi.opaque_hidden_value_modules.push(path.clone());
     }
@@ -1393,7 +1426,7 @@ impl FileExportIndices {
     /// - **honours the signature's `[<AutoOpen>]`** (conclusion 6): a header
     ///   root the signature attributes stays auto-open even when the
     ///   implementation header is bare, and signature-declared auto-open
-    ///   nested modules join `auto_open_module_paths` (marked hidden, so the
+    ///   nested modules join `auto_open_fragment_verdicts` (marked hidden, so the
     ///   fold's generation barrier fires for them).
     fn from_decls_screened(file: &ResolvedFile, screen: &SigScreen) -> Self {
         Self::derive(file, Some(screen))
@@ -1533,10 +1566,40 @@ impl FileExportIndices {
                         // none.
                         let effective_auto_open = match screen {
                             None => *auto_open,
-                            Some(s) => s.roots.iter().any(|r| r.auto_open && r.path == decl.path),
+                            Some(s) => {
+                                if s.roots.iter().any(|r| r.auto_open && r.path == decl.path) {
+                                    AutoOpenVerdict::Proven
+                                } else {
+                                    AutoOpenVerdict::NotAutoOpen
+                                }
+                            }
                         };
-                        if effective_auto_open && !*private {
-                            fi.auto_open_module_paths.push(decl.path.clone());
+                        if effective_auto_open == AutoOpenVerdict::Proven && !*private {
+                            fi.auto_open_fragment_verdicts
+                                .push((decl.path.clone(), true));
+                        }
+                        // An unproven marker cannot be exported as an auto-open
+                        // path — we would be folding on a guess — but neither
+                        // may a later file treat the module as ordinary and let
+                        // its own enclosing binder take a name this module might
+                        // contribute. The verdict itself travels, so a later
+                        // fold lists the fragment in its place and declines
+                        // exactly its names
+                        // ([`ProjectItems::auto_open_fragment_verdicts`]).
+                        // Every consumer that does not enumerate it sees the
+                        // container hidden instead — the cross-file "we cannot
+                        // enumerate this" — while a fold, which does, owes it no
+                        // barrier ([`ProjectItems::fold_hidden_value_modules`]).
+                        if effective_auto_open == AutoOpenVerdict::Unproven && !*private {
+                            if let Some((_, container)) = decl.path.split_last() {
+                                push_hidden_outside_folds(
+                                    &mut fi,
+                                    container.to_vec(),
+                                    HiddenNames::Borrowed,
+                                );
+                            }
+                            fi.auto_open_fragment_verdicts
+                                .push((decl.path.clone(), false));
                         }
                     }
                 }
@@ -1559,7 +1622,7 @@ impl FileExportIndices {
                         fi.nested_module_paths.push(decl.path.clone());
                     }
                 }
-                ExportDeclKind::Extern { name } => {
+                ExportDeclKind::Extern { name, .. } => {
                     if !anon && !name.is_empty() {
                         let mut shadow = decl.path.clone();
                         shadow.extend(name.iter().cloned());
@@ -1632,7 +1695,7 @@ impl FileExportIndices {
             // — auto-open even when the implementation carries no attribute,
             // and hidden so the namespace fold's barrier fires for them.
             for path in &screen.auto_open_nested {
-                fi.auto_open_module_paths.push(path.clone());
+                fi.auto_open_fragment_verdicts.push((path.clone(), true));
                 push_hidden(&mut fi, path.clone(), HiddenNames::SigDeclared);
             }
             // A signature-declared `[<AutoOpen>]` type publishes members the
@@ -1757,6 +1820,38 @@ pub(super) struct ExportDecl {
     pub(super) kind: ExportDeclKind,
 }
 
+/// What we were able to establish about a module header's `[<AutoOpen>]`
+/// marker.
+///
+/// Three-valued on purpose: **failing to prove the marker is not the same as
+/// proving its absence**, and only the second licenses an enclosing binder to
+/// win. `[<AutoOpen>]` is a *spelling*; the type it names is whatever the file's
+/// scope resolves `AutoOpen`/`AutoOpenAttribute` to, which a project type, an
+/// `open`ed assembly type, or an unknowable auto-open surface can all redirect.
+/// Collapsing this to a `bool` in either direction commits a wrong target:
+///
+/// - reading "not proven" as [`Self::NotAutoOpen`] makes the module ordinary,
+///   so an enclosing `open`'s same-named value wins where FCS binds the
+///   module's own member;
+/// - reading it as [`Self::Proven`] folds members FCS never brings into scope.
+///
+/// [`Self::Unproven`] is the answer that declines instead of guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AutoOpenVerdict {
+    /// A marker resolved to `Microsoft.FSharp.Core.AutoOpenAttribute`. The
+    /// module auto-opens.
+    Proven,
+    /// No `[<AutoOpen>]`-spelled marker at all, or every one present resolved to
+    /// some *other* type. Either way this is an ordinary module, and that is a
+    /// positive finding — an enclosing binder may take the name.
+    NotAutoOpen,
+    /// A marker is spelled `[<AutoOpen>]`, but the walk could not say which type
+    /// it names — so we can claim neither that the module opens nor that it does
+    /// not. Consumers must decline the names it would have contributed rather
+    /// than fall through to whatever was in scope before.
+    Unproven,
+}
+
 /// The typed payload of an [`ExportDecl`]. Each variant corresponds to a
 /// declaration nature and drives a documented set of derivations in
 /// [`ProjectItems::extend_with`].
@@ -1805,10 +1900,10 @@ pub(super) enum ExportDeclKind {
     /// top-level `module`/`namespace`-rooted header (feeds `module_headers`) from a
     /// nested `module X = …` (feeds `real_nested_modules`). `auto_open` / `private`
     /// carry the `[<AutoOpen>]` and `module private` bits so
-    /// `auto_open_module_paths` derives (non-private auto-open modules only).
+    /// `auto_open_fragment_verdicts` derives (non-private auto-open modules only).
     Module {
         header: bool,
-        auto_open: bool,
+        auto_open: AutoOpenVerdict,
         private: bool,
     },
     /// A module abbreviation `module P = Target`. `path` = container + P — both
@@ -1822,7 +1917,13 @@ pub(super) enum ExportDeclKind {
     /// nameless recovery node); `path` + `name` is the nested-module shadow path,
     /// recorded only when `name` is non-empty (matching the legacy
     /// [`record_project_name_shadow`](super::Resolver::record_project_name_shadow) guard).
-    Extern { name: Vec<String> },
+    ///
+    /// `private` carries the prototype's own accessibility (`extern int private
+    /// Marker()` — an `ACCESS_TOK` child of the `EXTERN_DECL`, valid F# and
+    /// fcs-dump-clean). It is visible inside its own module only, so the
+    /// auto-open fold-back must not decline its name in the enclosing scope
+    /// ([`unenumerated_member_names_in`](super::Resolver::unenumerated_member_names_in)).
+    Extern { name: Vec<String>, private: bool },
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
     /// A module-level active-pattern case (Stage 3a). `path` = container + case
@@ -2985,7 +3086,7 @@ impl ResolvedFile {
                     anonymous_root: false,
                     kind: ExportDeclKind::Module {
                         header: true,
-                        auto_open: false,
+                        auto_open: AutoOpenVerdict::NotAutoOpen,
                         private: false,
                     },
                 });

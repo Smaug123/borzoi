@@ -983,3 +983,15 @@ namespace Demo
 
 module RootShortenValue =
     let Leaf = 42
+
+// A *custom* `AutoOpenAttribute`, in a namespace of its own so it reaches a
+// consumer only through an explicit `open`. Opening it makes a bare
+// `[<AutoOpen>]` resolve to this type rather than FSharp.Core's, and FCS then
+// treats the attribute as ordinary: the module it decorates opens nothing.
+// This is the ASSEMBLY-supplied arm of the fold's attribute precondition — the
+// project-supplied arms (same file, and a preceding Compile-order file) need no
+// fixture, so only this one lives here.
+namespace Demo.CustomAttr
+
+type AutoOpenAttribute() =
+    inherit System.Attribute()

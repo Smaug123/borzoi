@@ -78,7 +78,7 @@ fn exposed_val_commits_with_signature_identity() {
             "module B\n\nlet u1 = A.shown\nlet u2 = A.hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -108,7 +108,7 @@ fn open_bare_exposed_val_commits() {
             "module B\n\nopen A\n\nlet u1 = shown\nlet u2 = hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -138,7 +138,7 @@ fn namespace_headed_module_val_commits() {
             "module B\n\nlet u1 = N.A.shown\nlet u2 = N.A.hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -163,7 +163,7 @@ fn headerless_pair_exposes_implicit_module_val() {
             "module B\n\nlet u1 = A.shown\nlet u2 = A.hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -192,7 +192,7 @@ fn visible_union_cases_commit() {
         ),
         ("/p/C.fs", "module C\n\nopen Col\n\nlet u4 = Red\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -233,7 +233,7 @@ fn opaque_type_hides_cases() {
             "module B\n\nlet u1 = Op.Color.Red\nlet u2 = Op.Red\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(
         res_at(&proj, &files, 2, "Op.Color.Red"),
         "type-qualified case of an opaque type",
@@ -262,7 +262,7 @@ fn rqa_union_case_commits_type_qualified_only() {
             "module B\n\nlet u1 = Col.Color.Red\nlet u2 = Col.Green\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -286,7 +286,7 @@ fn enum_cases_commit_type_qualified() {
         ("/p/E.fs", "module E\n\ntype Kind = A = 0 | B = 1\n"),
         ("/p/B.fs", "module B\n\nlet u1 = E.Kind.A\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -312,7 +312,7 @@ fn private_val_is_not_exported() {
         ),
         ("/p/B.fs", "module B\n\nlet u = A.secret\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(res_at(&proj, &files, 2, "A.secret"), "sig-private secret");
 }
 
@@ -328,7 +328,7 @@ fn multi_fragment_earlier_public_fragment_survives() {
         ("/d2/Pair.fs", "module M\n\nlet x = 1\nlet other = 2\n"),
         ("/u/Use.fs", "module Use\n\nlet a = M.x\nlet b = M.other\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 3, "M.x"),
@@ -355,7 +355,7 @@ fn multi_fragment_later_exposed_fragment_wins() {
         ("/d2/Pair.fs", "module M\n\nlet x = 1\n"),
         ("/u/Use.fs", "module Use\n\nlet a = M.x\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -385,7 +385,7 @@ fn auto_open_provenance_is_the_impl_slot() {
         ("/p/NA.fs", "namespace N\n\nmodule A =\n    let shown = 1\n"),
         ("/p/Use.fs", "module Use\n\nopen N\n\nlet u = shown\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -529,7 +529,8 @@ fn exposure_matrix_commits_exactly_the_exposed_surface() {
                     (impl_path.as_str(), impl_src.as_str()),
                     ("/p/Use.fs", use_src.as_str()),
                 ];
-                let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+                let proj =
+                    resolve_project_files(&project(&files), crate::common::fsharp_core_env());
                 let what = format!("{header}/{style}/{}", access.trim());
                 let shown = match style {
                     "qualified" => res_at(&proj, &files, 2, &format!("{dotted}.shown")),
@@ -806,7 +807,7 @@ let u = M.T.CaseC
 ",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -862,7 +863,7 @@ let u = M.x
 ",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -918,7 +919,7 @@ let u = M.x
 ",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(
         res_at(&proj, &files, 4, "M.x"),
         "an earlier export under a later fragment's possibly-exposing screen",
@@ -951,7 +952,7 @@ let u = Md.shown
 ",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -1102,7 +1103,7 @@ fn reversed_interleaving_commits_the_last_materialising_export() {
         ("/p/A.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
         ("/p/Use.fs", "module Use\n\nlet u = N.M.x\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -1134,7 +1135,7 @@ fn reversed_interleaving_defers_to_the_later_impl_screen() {
         ),
         ("/p/Use.fs", "module Use\n\nlet u = N.M.X\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(
         res_at(&proj, &files, 4, "N.M.X"),
         "reversed interleaving: FCS binds A's unmodelled exception, so \
@@ -1157,7 +1158,7 @@ fn in_order_interleaving_commits_the_later_fragment_export() {
         ("/p/B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
         ("/p/Use.fs", "module Use\n\nlet u = N.M.x\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -1326,7 +1327,7 @@ fn fragment_interleaving_matrix_agrees_with_fcs() {
                     .zip(qnofs)
                     .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
                     .collect();
-                let proj = resolve_project_files(&input, &AssemblyEnv::default());
+                let proj = resolve_project_files(&input, crate::common::fsharp_core_env());
                 let _ = std::fs::remove_dir_all(&root);
 
                 let use_idx = written.len() - 1;
@@ -1407,7 +1408,7 @@ fn pending_fragment_does_not_outrank_the_latest_materialised_export() {
         ("/p/Between.fs", "module Between\n\nlet u = N.M.x\n"),
         ("/p/B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -1442,7 +1443,7 @@ fn unmaterialised_export_does_not_cancel_active_screen() {
         ("/p/Between.fs", "module Between\n\nlet u = N.M.X\n"),
         ("/p/B.fs", "namespace N\n\nmodule M =\n    let X = 2\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(
         res_at(&proj, &files, 4, "N.M.X"),
         "a reader between B.fsi and B.fs, under A's still-active screen",
@@ -1523,7 +1524,7 @@ fn sig_val_function_kind_looks_through_constraints_not_parens() {
             "module B\n\nlet u1 = A.f\nlet u2 = A.g\nlet u3 = A.h\nlet u4 = A.v\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     let kind_of = |needle: &str| {
         let res = res_at(&proj, &files, 2, needle).expect("resolved");
         proj.item_def(res).expect("item def").1.kind
@@ -1573,7 +1574,7 @@ fn internal_and_public_vals_commit_with_signature_identity() {
         ("/p/A.fs", "module M\n\nlet shown = 1\nlet seen = 2\n"),
         ("/p/B.fs", "module B\n\nlet u1 = M.shown\nlet u2 = M.seen\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -1602,7 +1603,7 @@ fn module_internal_headers_export_their_surface() {
         ("/p/A.fs", "module M\n\nlet shown = 1\n"),
         ("/p/B.fs", "module B\n\nlet u = M.shown\n"),
     ];
-    let proj = resolve_project_files(&project(&toplevel), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&toplevel), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &toplevel,
@@ -1620,7 +1621,7 @@ fn module_internal_headers_export_their_surface() {
         ("/p/A.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
         ("/p/B.fs", "module B\n\nlet u = N.A.y\n"),
     ];
-    let proj = resolve_project_files(&project(&nsdirect), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&nsdirect), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &nsdirect,
@@ -1646,7 +1647,7 @@ fn private_val_drops_to_the_earlier_public_fragment() {
         ("/p/P.fs", "namespace N\n\nmodule A =\n    let x = 2\n"),
         ("/p/Use.fs", "module Use\n\nlet d = N.A.x\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -1702,7 +1703,7 @@ fn lone_private_val_stays_uncommitted() {
         ("/p/A.fs", "module M\n\nlet x = 1\n"),
         ("/p/B.fs", "module B\n\nlet u = M.x\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(res_at(&proj, &files, 2, "M.x"), "lone private val");
 }
 
@@ -1725,7 +1726,7 @@ fn private_val_beside_an_unmodelled_module_still_falls_through() {
         ),
         ("/p/Use.fs", "module Use\n\nlet d = N.A.X\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -1759,7 +1760,7 @@ fn private_val_is_accessible_to_a_later_same_module_fragment() {
             "namespace N\n\nmodule M =\n    let y = N.M.x\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -2163,7 +2164,7 @@ fn module_private_stays_deferred() {
         ("/p/A.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
         ("/p/B.fs", "module B\n\nlet u = N.A.y\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(res_at(&proj, &files, 2, "N.A.y"), "module private member");
 }
 
@@ -2188,7 +2189,7 @@ fn module_private_is_accessible_to_a_same_namespace_sibling() {
             "namespace N\n\nmodule Other2 =\n    let v = N.A.y\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -2226,7 +2227,7 @@ fn module_private_with_a_private_impl_header_matches() {
         ),
         ("/p/Use.fs", "module Use\n\nlet b = N.A.y\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -2261,7 +2262,7 @@ fn val_private_inside_a_private_module_restricts_to_the_module_subtree() {
             "namespace N\n\nmodule Other =\n    let u = A.y\n    let w = A.p\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -2297,7 +2298,7 @@ fn module_private_drops_to_the_earlier_public_fragment() {
         ),
         ("/p/Use.fs", "module Use\n\nlet d = N.A.y\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
@@ -2331,7 +2332,7 @@ fn dotted_module_private_header_exports_to_its_namespace() {
         ),
         ("/p/Use.fs", "module Use\n\nlet b = N.A.y\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_def_ident(
         &proj,
         &files,
