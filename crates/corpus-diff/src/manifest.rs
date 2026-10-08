@@ -30,9 +30,12 @@
 //! listed too, but the runner's zero-divergence gate fails before the manifest
 //! is consulted, so regenerating it cannot bless one.
 //!
-//! Files and projects are keyed relative to a corpus root
+//! Projects are keyed relative to a corpus root
 //! ([`borzoi_oracle_harness::corpus_key`]), so the manifest names the same item
-//! on every host the corpus is materialised on.
+//! on every host the corpus is materialised on. Every `<file>` above is written
+//! `<project> <path>`, the path relative to the project's directory (or
+//! `root:<path>` for a file outside it): two projects may compile one file, and
+//! each project's results for it are separate facts.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -82,6 +85,24 @@ fn key(root: &Path, path: &Path) -> Result<String, ManifestError> {
     Ok(corpus_relative(root, path))
 }
 
+/// A file's key within one project's entries: `<project key> <file>`, where
+/// `<file>` is relative to the project's directory, or `root:<key>` for a file
+/// outside it (a linked source). Scoped by the project because two projects may
+/// compile the same file, and a regression in one offset by an improvement in
+/// the other must still move a line.
+fn file_key(
+    root: &Path,
+    project: &Path,
+    project_key: &str,
+    path: &Path,
+) -> Result<String, ManifestError> {
+    let file = match project.parent() {
+        Some(dir) if path.starts_with(dir) => corpus_relative(dir, path),
+        _ => format!("root:{}", key(root, path)?),
+    };
+    Ok(format!("{project_key} {file}"))
+}
+
 /// The manifest of `projects`, keyed relative to `root`.
 pub fn project_corpus_manifest(
     projects: &[ProjectRecord],
@@ -123,7 +144,7 @@ pub fn project_corpus_manifest(
                             })?;
                             entries.push(format!(
                                 "{}:{} {:?} {}",
-                                key(root, &item.file)?,
+                                file_key(root, &record.project, &project, &item.file)?,
                                 span(at, item.range),
                                 item.name,
                                 outcome_label(outcome)
@@ -132,7 +153,7 @@ pub fn project_corpus_manifest(
                     }
                 }
                 for (path, _) in sources {
-                    let file = key(root, path)?;
+                    let file = file_key(root, &record.project, &project, path)?;
                     entries.push(match per_file.get(path.as_path()) {
                         Some(counts) if comparison.compared_files.contains(path) => {
                             format!("{file} compared {}", counts.render())
@@ -149,10 +170,10 @@ pub fn project_corpus_manifest(
                 entries.push(format!("{project} skipped {}", skip_label(skip)));
                 if let ProjectSkip::FcsErrors { files } = skip {
                     for file in files {
-                        let file_key = key(root, &file.path)?;
+                        let erroring = file_key(root, &record.project, &project, &file.path)?;
                         for error in &file.errors {
                             entries.push(format!(
-                                "{file_key}:{}:{} fcs-error FS{:04}",
+                                "{erroring}:{}:{} fcs-error FS{:04}",
                                 error.range.start.line,
                                 error.range.start.col + 1,
                                 error.error_number

@@ -327,6 +327,9 @@ The pinned corpus is fixed by revision and both sides are deterministic, so
 
 Matches are counted rather than listed. Every non-match is listed by key, so
 a match lost to a deferral, or traded for one elsewhere, still moves a line.
+File and record lines are scoped by their project (`<project> <path>`), since
+two projects may compile one file and each project's results for it are
+separate facts.
 
 Every movement fails, in either direction: a newly answered use is as much a
 change to acknowledge as a lost one. Acknowledge it by regenerating the

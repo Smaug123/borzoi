@@ -15,11 +15,11 @@ use borzoi_corpus_diff::manifest::{ManifestError, project_corpus_manifest};
 use borzoi_corpus_diff::{
     Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
     Graded, ItemOutcome, LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus,
-    ProjectRecord, ProjectSkip, ProjectUse, ProjectVerdict, SetAside, SkippedUses, UseDecl,
-    check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env, explain_token,
-    fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project,
-    load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
-    project_candidates_from_env, project_corpus_run_options_from_env,
+    ProjectRecord, ProjectSkip, ProjectUse, ProjectVerdict, ServedDecline, SetAside, SkippedUses,
+    UseDecl, check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env,
+    explain_token, fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project,
+    load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
+    parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
@@ -1658,18 +1658,56 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
     assert_eq!(
         manifest.entries(),
         [
-            "A.fs compared match=0 assembly-match=0 attribute=0 member=0 definitions=0",
+            "Erroring/Erroring.fsproj E.fs:3:5 fcs-error FS0039 x2",
+            "Erroring/Erroring.fsproj skipped fcs-errors files=1 errors=2",
+            "Synthetic.fsproj A.fs compared match=0 assembly-match=0 attribute=0 member=0 definitions=0",
             // Our own binder, which the oracle (given nothing for `A.fs`) is
             // silent about.
-            "A.fs:2:5-8 \"foo\" unoracled-definition",
-            "B.fs compared match=1 assembly-match=0 attribute=0 member=0 definitions=1",
-            "B.fs:2:11-17 \"Shared\" project-deferral qualified-access unattributed",
-            "Erroring/E.fs:3:5 fcs-error FS0039 x2",
-            "Erroring/Erroring.fsproj skipped fcs-errors files=1 errors=2",
+            "Synthetic.fsproj A.fs:2:5-8 \"foo\" unoracled-definition",
+            "Synthetic.fsproj B.fs compared match=1 assembly-match=0 attribute=0 member=0 definitions=1",
+            "Synthetic.fsproj B.fs:2:11-17 \"Shared\" project-deferral qualified-access unattributed",
             "Synthetic.fsproj comparable assets=not_checked",
             "Uncertain/Uncertain.fsproj skipped load project-evaluation-failed",
         ]
         .map(String::from)
+    );
+
+    // Two projects compiling one file are separate facts: swapping their
+    // results — a regression in one offset by an improvement in the other —
+    // must move the manifest.
+    let ProjectVerdict::Comparable {
+        assets,
+        sources,
+        comparison,
+    } = &projects[0].verdict
+    else {
+        unreachable!("built comparable above")
+    };
+    let mut declined = (**comparison).clone();
+    for item in &mut declined.ledger {
+        if let ItemOutcome::Match(graded, _) = item.outcome {
+            item.outcome = ItemOutcome::Deferral {
+                graded,
+                served: ServedDecline::Unrecorded,
+                site: None,
+            };
+        }
+    }
+    let pair = |first: &Comparison, second: &Comparison| {
+        [("P.fsproj", first), ("Q.fsproj", second)]
+            .map(|(name, comparison)| ProjectRecord {
+                project: root.join(name),
+                verdict: ProjectVerdict::Comparable {
+                    assets: assets.clone(),
+                    sources: sources.clone(),
+                    comparison: Box::new(comparison.clone()),
+                },
+            })
+            .to_vec()
+    };
+    assert_ne!(
+        project_corpus_manifest(&pair(comparison, &declined), &root),
+        project_corpus_manifest(&pair(&declined, comparison), &root),
     );
 
     // A key is only host-independent relative to the root it was taken from,
