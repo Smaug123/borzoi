@@ -187,7 +187,7 @@ jobs:
             BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
             BORZOI_PROJECT_REPORT_JSONL="$RUNNER_TEMP/reports/project-corpus-diff/report.jsonl" \
             BORZOI_PROJECT_SUMMARY_JSON="$summary" \
-            cargo run --locked -p borzoi-corpus-diff
+            cargo run --locked --profile gate -p borzoi-corpus-diff
           runner_status=$?
           set -e
           # The runner's own ratchets are a gate, and this job is a

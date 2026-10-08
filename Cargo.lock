@@ -167,6 +167,7 @@ dependencies = [
  "borzoi-sema",
  "borzoi-spawn",
  "borzoi-stats",
+ "lsp-server",
  "lsp-types",
  "proptest",
  "rowan",

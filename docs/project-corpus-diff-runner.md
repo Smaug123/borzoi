@@ -79,6 +79,12 @@ Optional project-load settings:
   loader defaults (`Configuration=Debug`, `Platform=AnyCPU`) case-insensitively.
   For the F# repo corpus, use `DISABLE_ARCADE=true` to avoid making the
   name-resolution sweep depend on resolving the repo's pinned Arcade SDK.
+- `BORZOI_HANDLER_SAMPLE_STRIDE`: one record in this many is asked every
+  request-handler question (see
+  [The request handlers, over the protocol](#the-request-handlers-over-the-protocol)).
+  Defaults to `7`; `1` asks every record everything. Any other value asks
+  different questions from the ones the checked-in manifest records, so it is
+  for exploring rather than for the gate.
 
 Optional exact manifest (see [The exact manifest](#the-exact-manifest)):
 
@@ -182,6 +188,50 @@ For each visited project, the runner:
    pattern is enclosed by a use of an unrelated symbol. A reported divergence
    still lists every *overlapping* oracle use, which is what makes it
    diagnosable.
+
+### The request handlers, over the protocol
+
+The comparison above grades what the LSP's serving rule
+(`borzoi::handlers::served_resolution_with_range`) answers at a byte offset.
+That rule sits below the request handlers, so it cannot see what they do
+around it: turn a `(line, UTF-16 column)` position into a byte, render a range
+back, choose the URI a location names, decide what a hover says. A planted bug
+that made UTF-16 columns count bytes passed every gate.
+
+So each comparable project is also put to the real server
+(`crates/corpus-diff/src/handler_diff.rs`), driven as a client drives it: the
+dispatch loop runs behind an in-memory connection, every Compile file is opened
+with `textDocument/didOpen`, and `textDocument/definition`, `hover` and
+`references` are sent as JSON at the first, middle and last character of an FCS
+record. Positions are computed, and answers read back, by an independent UTF-16
+implementation (`crates/corpus-diff/src/utf16.rs`), never the LSP's own. A wrong
+answer fails the run before the manifest is consulted, exactly as a resolver
+divergence does: a location other than FCS's declaration (file, URI or byte
+range), a hover that names another symbol or kind, or whose range does not hold
+the cursor, a reference that is not a use of the symbol, a position that names no
+byte. Where the comparator matched a record, go-to-definition at its last
+character must serve that match.
+
+The corpus is almost all ASCII, where a byte, a character and a UTF-16 unit are
+one number, so the questions are asked again of a **perturbed copy**
+(`crates/corpus-diff/src/perturb.rs`): ASCII letters in comments and plain
+strings are replaced by non-ASCII text of the same UTF-16 width (astral-plane
+characters for pairs, two- and three-byte characters for singles), which moves
+no LSP position, and each file gains a module of backticked non-ASCII names
+used after non-ASCII comments and strings. FCS type-checks the copy: its records
+must be the original's at their mapped places (the edits changed no meaning),
+every original record's answers must be byte-for-byte what the original text
+got, and the appended code is graded against FCS directly. On the pinned corpus
+only the perturbed run sees a UTF-16 bug: the plain run finds none of the
+planted ones.
+
+Every record the comparator matched in the project is asked go-to-definition at
+its last character; everything else is asked of a deterministic one-in-seven
+sample of records, plus every record the perturbation touched. A hover, or a
+definition the resolver declined, costs the server a whole-file inference, and
+the full set would take the better part of an hour. That is also why the gate
+runs under `--profile gate` (optimised, with debug assertions and overflow
+checks kept).
 
 ### Signature files
 
@@ -292,6 +342,8 @@ The CLI and ignored test fail when, checked in this order:
   ratchet fails;
 - more project, assembly, or reverse divergences are reported than
   `BORZOI_PROJECT_MAX_DIVERGENCES` allows;
+- a request handler answered wrongly (see
+  [The request handlers, over the protocol](#the-request-handlers-over-the-protocol));
 - a manifest is configured and the run does not reproduce it exactly.
 
 ## The Exact Manifest
@@ -323,7 +375,15 @@ The pinned corpus is fixed by revision and both sides are deterministic, so
   (`opaque_open@explicit_open`, or `unattributed`), each ambiguous range,
   shadowed constructor record, zero-width or compiler-generated record, and each
   of our or-pattern aliases the oracle is silent about. FCS's own defining
-  occurrences are counted per file instead: they are not uses.
+  occurrences are counted per file instead: they are not uses;
+- per Compile file, copy (`plain` or `perturbed`) and request handler, how many
+  probes came to each outcome (`located`, `declined`, `described`,
+  `explained`, `referenced`, …), and one line for every probe whose answer is
+  not the one the comparator's verdict on its record implies — a handler
+  declining where the comparator matched, answering where it declined, or
+  giving one symbol a different set of references from different uses. A
+  perturbed copy FCS could not check cleanly is `handlers perturbed skipped`,
+  with its errors.
 
 Matches are counted rather than listed. Every non-match is listed by key, so
 a match lost to a deferral, or traded for one elsewhere, still moves a line.
