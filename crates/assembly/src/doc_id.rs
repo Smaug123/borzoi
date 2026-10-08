@@ -5,34 +5,42 @@
 //! `<member name="…">` per documented type/member, keyed by a *documentation
 //! comment ID string* (ECMA-334 / the C# spec, §"Processing the documentation
 //! file"): `T:System.Console`, `M:System.Console.WriteLine(System.String)`,
-//! `P:`, `F:`, `E:`. The format is a function of **metadata**, not source
-//! language — Roslyn (for the BCL) and the F# compiler (for `FSharp.Core`) both
-//! emit the same standard IDs for the same IL shape — so we can reconstruct an
-//! ID from our own [`Entity`]/[`Member`] model and it matches the file's key
-//! regardless of which compiler wrote the assembly. That decouples doc lookup
-//! from FCS entirely. (The ID *format* is language-agnostic; the caveat is that
-//! our F# member *projection* re-interprets some members away from their IL
-//! kind — see "Limitations".)
+//! `P:`, `F:`, `E:`.
 //!
-//! This module is the *generation* half (slice 1): a pure
-//! [`Entity`]/[`Member`] → ID-string function. Finding and parsing the `.xml`,
-//! and wiring the result into hover, are later slices.
+//! Two compilers write the keys we must match, in two dialects. Roslyn keys
+//! every member from its IL metadata, so for a C#/BCL assembly the ID is a
+//! function of the [`Entity`]/[`Member`] model and this module computes it. The
+//! F# compiler keys a member from its *F#* signature (`XmlDocSigOfVal` and
+//! friends in `TypedTreeOps`): SRTP witness parameters prepended, a
+//! two-dimensional array as `[0:]`, measure types erased but measure type
+//! parameters counted, no `~` on a conversion operator, an extension member
+//! under its extension container with its dots kept, a record field and a
+//! settable property's setter keyed `P:`, a union case `T:`. Much of that is not
+//! recoverable from IL — but fsc pickles the key it wrote for every documented
+//! val, record field and union case into the assembly's signature data, and the
+//! projection carries it on the member ([`crate::MethodLike::xml_doc_sig`] and
+//! its siblings on [`crate::Property`] and [`crate::Event`]). Where a member
+//! carries one, its ID *is* that string; everything else is computed.
 //!
-//! ## What the rules are
+//! This module is the *generation* half: a pure [`Entity`]/[`Member`] →
+//! ID-string function. Finding and parsing the `.xml` is the consumer's.
 //!
-//! Mirrors the F# compiler's IL reader path (`GetXmlDocSigOf*` in
+//! ## The computed rules
+//!
+//! Mirrors Roslyn (and the F# compiler's IL reader path, `GetXmlDocSigOf*` in
 //! `Checking/InfoReader.fs`, which keys off `ILTypeRef.FullName`), validated
-//! against real Roslyn-emitted `.xml` files rather than against FCS's own
-//! *generation* path — the latter encodes multidimensional arrays
-//! nonconformantly (`[0:]` for a 2-D array) and so cannot find their docs.
+//! against real Roslyn-emitted `.xml` files.
 //!
 //! - **Prefixes**: `T:` type, `M:` method, `P:` property, `F:` field, `E:`
-//!   event.
+//!   event — except that an F# record's instance fields and an F# module's
+//!   literals key `P:`, as fsc keys them ([`field_keys_as_property`]).
 //! - **Type full name**: namespace segments and the enclosing-type chain joined
 //!   with `.` (never `+`), each type segment keeping its `` `n `` arity suffix.
 //!   The arity on a segment counts the generic parameters *introduced at that
 //!   level* — a nested type subtracts its encloser's cumulative arity (so
 //!   `Dictionary`2.Enumerator`, not `Dictionary`2.Enumerator`2`).
+//! - **Union cases**: `T:<union>.<case>` for each case
+//!   [`Entity::union_cases`] knows ([`union_case_doc_id`]).
 //! - **Member name**: `.` becomes `#`, so `.ctor` → `#ctor`; an explicit
 //!   interface implementation, whose name embeds the constructed interface
 //!   (`ICollection<System.Int32>.Add`), additionally maps `<`/`>` to `{`/`}`
@@ -56,25 +64,23 @@
 //!
 //! ## Limitations
 //!
-//! The generator is faithful whenever the [`Member`]/[`TypeRef`] it is handed
-//! reflects the *IL metadata* shape — always the case for C#/BCL assemblies,
-//! which the differential test (`tests/all/doc_id_diff.rs`) pins against Roslyn's
-//! own `.xml`.
+//! For a C#/BCL assembly the computed ID is faithful (`tests/all/doc_id_diff.rs`
+//! pins it against Roslyn's own `.xml`). For an F#-compiled one, the F# dialect
+//! is reproduced exactly where the projection could tie a member to its pickled
+//! key; `tests/all/doc_id_fsharp_diff.rs` grades every key of real F# libraries
+//! against fsc's own XML and pins what still misses in an exact manifest. A
+//! member left without its pickled key falls back to the computed (Roslyn)
+//! form, which for the F# dialect's shapes is not the key: a member of an
+//! assembly whose signature pickle does not decode, a same-name same-arity
+//! overload group whose keys cannot be told apart, and an entity or member the
+//! projection does not carry at all (type and measure abbreviations without a
+//! marker, non-public union cases, members fsc compiles as statics such as
+//! `FSharpOption.IsSome`).
 //!
-//! For an **F#-projected** assembly the [`Member`] variant is the FCS
-//! *source-level* kind, not the IL kind. The one place that mis-keyed a doc ID —
-//! a module value (an IL *property* like `Operators.NaN`) rebranded to
-//! [`Member::Method`] — is handled: `project_fsharp_members` marks the
-//! getter-rebranded value with [`crate::MethodLike::module_value`], so this
-//! generator keys it `P:` (the prefix the F# compiler's own XML uses), pinned by
-//! `tests/all/doc_id_fsharp_core_diff.rs`. (The record/exception field-backed
-//! property → [`Member::Field`] rebrand needs no such handling: the F# compiler
-//! keys those `F:` too, so our rebrand already matches.)
-//!
-//! Remaining `FSharp.Core` doc-ID gaps are *not* member-rebranding and are
-//! tracked separately in `docs/completed/fsharp-member-rebranding-docid-plan.md`: generic
-//! module methods / F# array-bound encoding (`M:`), type-name keys (`T:`), and
-//! FCS-surfaced type properties the projection drops.
+//! The ID format cannot tell every pair of members apart — a static and an
+//! instance method with one signature share an ID, and fsc sometimes writes one
+//! key for two members — so a consumer must treat an ID that two members of an
+//! assembly generate as belonging to neither.
 
 use crate::model::{Entity, EntityKind, Field, Member, Parameter, Primitive, TypeRef, UnionCases};
 
@@ -1114,12 +1120,12 @@ mod tests {
     #[test]
     fn explicit_interface_name_keeps_concrete_multi_arg_separator() {
         // A *multi-argument* generic interface instantiated with concrete types
-        // keeps the `,` separator between the constructed arguments — Roslyn does
-        // *not* rewrite it (the `@` separator only appears when the arguments are
-        // the implementing type's own type *parameters*; that case is a separate,
-        // not-yet-handled shape). An explicit impl of `ILookup<int,string>.Get`
-        // keys as `…ILookup{System#Int32,System#String}#Get`. (Verified end-to-end
-        // against Roslyn by `doc_id_diff.rs`.)
+        // keeps the `,` separator between the constructed arguments, as fresh
+        // Roslyn writes it: an explicit impl of `ILookup<int,string>.Get` keys as
+        // `…ILookup{System#Int32,System#String}#Get`. (Verified end-to-end against
+        // Roslyn by `doc_id_diff.rs`. The `Microsoft.NETCore.App.Ref` packs' XML
+        // spells every such separator `@`, concrete arguments included — a lookup
+        // concern, `docs/xmldoc-explicit-interface-plan.md`.)
         let d = decl(&["Ns"], "IntStringLookup", 0);
         let m = method(
             "Ns.ILookup<System.Int32,System.String>.Get",

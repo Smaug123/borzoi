@@ -52,10 +52,12 @@ Two findings sharpen the scope:
   `P:Microsoft.FSharp.Core.ExtraTopLevelOperators.query`,
   `P:Microsoft.FSharp.Control.TaskBuilderModule.task`,
   `P:Microsoft.FSharp.Core.LanguagePrimitives.GenericComparer`.
-- **The documented "record/exception field-backed property → `Field`" case is
-  *not* an actual bug.** `F:` misses = 0: the F# compiler's `FSharp.Core.xml`
-  also keys those members as `F:`, so our rebrand already matches. No work is
-  needed there (the doc_id module-doc limitation note overstates it).
+- **The "record field-backed property → `Field`" rebrand mis-keys record
+  fields.** fsc keys a record's instance fields `P:` (`XmlDocFileWriter`:
+  `tc.IsRecordTycon && not rf.IsStatic` → `XmlDocSigOfProperty`), e.g.
+  `P:Microsoft.FSharp.Core.FSharpRef`1.contents`; `F:` misses were 0 only
+  because those keys counted as `P:` misses. Exception fields do key `F:`. The
+  generator keys record fields `P:` (`doc_id::field_keys_as_property`).
 
 ## Why a model change
 
@@ -146,16 +148,15 @@ gaps remain outside this slice.
 
 ---
 
-## Deferred (separate slices, characterized here so they aren't lost)
+## The residual gaps
 
-- **`M:` gap (318).** Generic module methods and F# array-bound encoding — the
-  F# compiler writes `[0:]` for some array params where our generator writes
-  `[]` (and generic-module-method arity/encoding differences). Needs its own
-  characterization + fix.
-- **`T:` gap (157).** Type keys in `FSharp.Core.xml` we don't emit (naming of
-  nested/compiler-shaped types, or types we don't surface). Overlaps the 22
-  unmatched-`P:` declaring types.
-- **Dropped FCS-surfaced type properties (Class 19 / Interface 1).** Union /
-  record / class properties the F# compiler documents but
-  `project_fsharp_members` drops; reproducing their `P:` keys means surfacing
-  them (a model/projection decision beyond doc IDs).
+The `M:` and `T:` gaps this baseline found are closed by reading each
+member's key from the signature pickle rather than computing it: fsc pickles
+the exact key it wrote for every documented val, record field and union case
+(`MethodLike::xml_doc_sig` and its siblings; union-case `T:` keys come from
+`Entity::union_cases`). The F#-compiled differential that grades this, and the
+exact manifest of what still misses, is `crates/assembly/tests/all/doc_id_fsharp_diff.rs`.
+What remains there is mostly entities and members the projection does not
+carry — type and measure abbreviations without a marker, non-public union
+cases, record members, and the union members fsc compiles as statics
+(`FSharpOption.IsSome`, `FSharpList.Cons`).

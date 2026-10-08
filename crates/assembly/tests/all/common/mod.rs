@@ -139,10 +139,8 @@ fn list_sdks() -> std::process::Output {
 
 /// A matching `(FSharp.Core.dll, FSharp.Core.xml)` pair shipped *together* in the
 /// .NET SDK's `FSharp/` directory — the dll and its sibling doc XML are the same
-/// build, so the XML's `<member>` keys correspond to the dll's members (unlike
-/// [`ensure_fsharp_core_dll`], whose NuGet-sourced dll has no sibling XML). Used
-/// by the `doc_id` F#-differential to diff our generated IDs against the F#
-/// compiler's own keys. Located via `dotnet --list-sdks` so it tracks whichever
+/// build, so the XML's `<member>` keys correspond to the dll's members. Located
+/// via `dotnet --list-sdks` so it tracks whichever
 /// SDK the lane provides; panics with a clear message if none carries the pair
 /// (the SDK is already required by the `dotnet build` fixtures, so this holds in
 /// every lane that runs those).
