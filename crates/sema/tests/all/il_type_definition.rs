@@ -206,3 +206,22 @@ fn an_assembly_nothing_loaded_carries_is_not_found() {
         IlTypeDefinition::NotNamed
     );
 }
+
+/// Assembly simple names compare case-insensitively when a binder resolves a
+/// reference: one naming `system.runtime` may bind to the loaded
+/// `System.Runtime`, so it is neither that assembly's type for certain nor
+/// "no loaded assembly has the name".
+#[test]
+fn a_reference_naming_a_loaded_assembly_in_another_case_is_ambiguous() {
+    let env = full_bcl_env();
+    let func = top(env, "Microsoft.FSharp.Core", "FSharpFunc", 2, "FSharp.Core");
+    assert_eq!(
+        env.il_type_definition(func, &named(Some("system.runtime"), "System", "Object")),
+        IlTypeDefinition::Ambiguous
+    );
+    let object = top(env, "System", "Object", 0, "System.Runtime");
+    assert_eq!(
+        env.il_type_definition(func, &named(Some("System.Runtime"), "System", "Object")),
+        IlTypeDefinition::Resolved(object)
+    );
+}

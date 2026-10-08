@@ -22,6 +22,24 @@ use crate::common::ensure_system_runtime_dll;
 use crate::common::inheritdoc_diff::{Census, Compared, Verdict, compare_assembly};
 use crate::common::inheritdoc_oracle::oracle;
 
+/// `dynamic` needs `DynamicAttribute`, which the reference pack keeps in
+/// `System.Linq.Expressions`; a fixture over `System.Runtime` alone declares
+/// its own, as the compiler accepts.
+pub const DYNAMIC_ATTRIBUTE: &str = r#"
+namespace System.Runtime.CompilerServices
+{
+    /// <summary>The compiler's marker for `dynamic`.</summary>
+    public sealed class DynamicAttribute : System.Attribute
+    {
+        /// <summary>A whole-type `dynamic`.</summary>
+        public DynamicAttribute() { }
+
+        /// <summary>A `dynamic` at the flagged positions.</summary>
+        public DynamicAttribute(bool[] transformFlags) { }
+    }
+}
+"#;
+
 /// A compiled fixture and the env over its reference set.
 pub struct Fixture {
     _dir: TempDir,
@@ -46,6 +64,8 @@ pub fn fixture_missing(source: &str, dependency: Option<&str>) -> Result<Fixture
             source,
             alias: None,
             referenced: false,
+            against: &[],
+            visible: true,
         })
         .into_iter()
         .collect();
@@ -60,6 +80,10 @@ pub struct Dep<'a> {
     pub alias: Option<&'a str>,
     /// Whether the reference set (env and Roslyn alike) includes it.
     pub referenced: bool,
+    /// The earlier dependencies (by position) it is compiled against.
+    pub against: &'a [usize],
+    /// Whether `Fx` is compiled against it.
+    pub visible: bool,
 }
 
 /// [`fixture`], with `Fx` compiled against dependency assemblies built from
@@ -69,18 +93,22 @@ pub fn fixture_with(source: &str, deps: &[Dep<'_>]) -> Result<Fixture, Vec<Strin
     let runtime = ensure_system_runtime_dll();
     let mut compile_against: Vec<(PathBuf, Option<&str>)> = vec![(runtime.clone(), None)];
     let mut references = vec![runtime.clone()];
-    for dep in deps {
-        let dep_dir = dir.path().join(dep.name);
-        let dll = oracle().lock().unwrap().compile(
-            dep.source,
-            dep.name,
-            &dep_dir,
-            std::slice::from_ref(&runtime),
-        )?;
-        compile_against.push((dll.clone(), dep.alias));
-        if dep.referenced {
-            references.push(dll);
+    let mut built: Vec<PathBuf> = Vec::new();
+    for (i, dep) in deps.iter().enumerate() {
+        let dep_dir = dir.path().join(format!("dep{i}"));
+        let mut against = vec![runtime.clone()];
+        against.extend(dep.against.iter().map(|&j| built[j].clone()));
+        let dll = oracle()
+            .lock()
+            .unwrap()
+            .compile(dep.source, dep.name, &dep_dir, &against)?;
+        if dep.visible {
+            compile_against.push((dll.clone(), dep.alias));
         }
+        if dep.referenced {
+            references.push(dll.clone());
+        }
+        built.push(dll);
     }
     let dll =
         oracle()
@@ -170,6 +198,10 @@ public class D : B
 
     /// <inheritdoc cref="B.M(int)" path="/remarks"/>
     public int PathRemarks() => 0;
+
+    /// <summary>Own words.</summary>
+    /// <inheritdoc cref="B.M(int)" path="/example"/>
+    public int PathSelectsNothing() => 0;
 
     /// <summary><inheritdoc cref="B.M(int)"/></summary>
     /// <remarks>Own remarks.</remarks>
@@ -493,6 +525,13 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
             other => wrong.push(format!("{key}: {other:?}")),
         }
     }
+    // Roslyn removes an <inheritdoc> whose path selects nothing; hover keeps
+    // it as the marker instead of dropping it silently.
+    assert!(
+        matches!(v.get("M:F.D.PathSelectsNothing"), Some(Verdict::Declined { cause, roslyn_left_it: false }) if cause == "NothingSelected"),
+        "{:?}",
+        v.get("M:F.D.PathSelectsNothing")
+    );
     for key in [
         "M:F.D.Cycle",
         "T:F.SNoCandidate",
@@ -599,12 +638,16 @@ public class Derived : Mid
                 source: t,
                 alias: Some("A"),
                 referenced: true,
+                against: &[],
+                visible: true,
             },
             Dep {
                 name: "DepB",
                 source: t,
                 alias: Some("B"),
                 referenced: true,
+                against: &[],
+                visible: true,
             },
         ],
     )
@@ -619,5 +662,237 @@ public class Derived : Mid
         matches!(v.get("M:F.Derived.M(N.T)"), Some(Verdict::Agrees)),
         "{:?}",
         v.get("M:F.Derived.M(N.T)")
+    );
+}
+
+/// Roslyn's base-constructor rule compares parameter types with the default
+/// symbol comparer, which tells `dynamic` from `object` and one tuple's
+/// element names from another's — distinctions metadata carries only in
+/// attributes. `D(dynamic)` has no base constructor to Roslyn, so the
+/// `B(object)` beside it must not be inherited from.
+#[test]
+fn a_base_constructor_differing_by_an_attribute_carried_distinction_is_not_inherited() {
+    let fx = fixture(
+        &[
+            DYNAMIC_ATTRIBUTE,
+            r#"
+namespace F {
+
+/// <summary>The base.</summary>
+public class B
+{
+    /// <summary>B from an object.</summary>
+    public B(object x) { }
+
+    /// <summary>B from an unnamed tuple.</summary>
+    public B((int, string) t, int y) { }
+
+    /// <summary>B from an IntPtr.</summary>
+    public B(System.IntPtr p, string s) { }
+
+    /// <summary>B from objects.</summary>
+    public B(object[] xs, int y) { }
+
+    /// <summary>B from an int.</summary>
+    public B(int i) { }
+}
+
+/// <summary>The derived.</summary>
+public class D : B
+{
+    /// <inheritdoc/>
+    public D(dynamic x) : base((object)x) { }
+
+    /// <inheritdoc/>
+    public D((int a, string b) t, int y) : base(t, y) { }
+
+    /// <inheritdoc/>
+    public D(nint p, string s) : base(p, s) { }
+
+    /// <inheritdoc/>
+    public D(dynamic[] xs, int y) : base((object[])xs, y) { }
+
+    /// <inheritdoc/>
+    public D(int i) : base(i) { }
+}
+}
+"#,
+        ]
+        .concat(),
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("attribute-carried distinctions");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in [
+        "M:F.D.#ctor(System.Object)",
+        "M:F.D.#ctor(System.ValueTuple{System.Int32,System.String},System.Int32)",
+        "M:F.D.#ctor(System.Object[],System.Int32)",
+    ] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Declined { cause, .. }) if cause == "Undecidable(AttributeCarriedDistinction)"),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+    assert!(
+        matches!(v.get("M:F.D.#ctor(System.Int32)"), Some(Verdict::Agrees)),
+        "{:?}",
+        v.get("M:F.D.#ctor(System.Int32)")
+    );
+}
+
+/// Roslyn finds a `<typeparamref>`'s parameter innermost first — a method's
+/// own, then its type's, then the enclosing types' — and takes the first of
+/// the name. A method `M<T>` of `G<T>` reached as `G<int>.M` refers to its
+/// own `T`, which stays a reference; so does a nested `In<T>` of `O<T>`.
+#[test]
+fn a_shadowing_type_parameter_is_the_innermost() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>A generic base.</summary>
+public class G<T>
+{
+    /// <summary>M of <typeparamref name="T"/>.</summary>
+    public virtual void M<T>(T x) { }
+
+    /// <summary>Q of <typeparamref name="T"/> and <typeparamref name="U"/>.</summary>
+    public virtual void Q<U>(T x, U u) { }
+}
+
+/// <summary>A closed derivation.</summary>
+public class GI : G<int>
+{
+    /// <inheritdoc/>
+    public override void M<T>(T x) { }
+
+    /// <inheritdoc/>
+    public override void Q<U>(int x, U u) { }
+}
+
+/// <summary>An outer generic.</summary>
+public class O<T>
+{
+    /// <summary>An inner generic, shadowing <typeparamref name="T"/>.</summary>
+    public class In<T>
+    {
+        /// <summary>M of <typeparamref name="T"/>.</summary>
+        public virtual void M() { }
+    }
+}
+
+/// <summary>A closed nested derivation.</summary>
+public class OI : O<int>.In<string>
+{
+    /// <inheritdoc/>
+    public override void M() { }
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("shadowing type parameters");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in [
+        "M:F.GI.M``1(``0)",
+        "M:F.GI.Q``1(System.Int32,``0)",
+        "M:F.OI.M",
+    ] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Agrees)),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+}
+
+/// Two references to a type that the loaded assembly of their name lacks,
+/// made against different versions of it: Roslyn binds both into the loaded
+/// assembly, where they name one missing type, so `Derived.M` overrides
+/// `Mid.M`. Comparing the references' versions instead would step past `Mid`
+/// to `Base0`.
+#[test]
+fn references_to_a_missing_type_of_a_loaded_assembly_are_one_type() {
+    let dep = |version: &str, body: &str| {
+        format!(
+            "[assembly: System.Reflection.AssemblyVersion(\"{version}\")]\nnamespace N {{ {body} }}"
+        )
+    };
+    let dep_1 = dep("1.0.0.0", "public class T { }");
+    let dep_2 = dep("2.0.0.0", "public class T { }");
+    let dep_3 = dep("3.0.0.0", "public class Other { }");
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The derived.</summary>
+public class Derived : Hi.Mid
+{
+    /// <inheritdoc/>
+    public override N.T M() => null!;
+}
+"#,
+        &[
+            Dep {
+                name: "Dep",
+                source: &dep_1,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: true,
+            },
+            Dep {
+                name: "Dep",
+                source: &dep_2,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: false,
+            },
+            Dep {
+                name: "Dep",
+                source: &dep_3,
+                alias: None,
+                referenced: true,
+                against: &[],
+                visible: false,
+            },
+            Dep {
+                name: "Lo",
+                source: "namespace Lo {\n/// <summary>The root.</summary>\npublic class Base0 {\n/// <summary>Base0.M.</summary>\npublic virtual N.T M() => null!; } }",
+                alias: None,
+                referenced: true,
+                against: &[0],
+                visible: true,
+            },
+            Dep {
+                name: "Hi",
+                source: "namespace Hi {\n/// <summary>The middle.</summary>\npublic class Mid : Lo.Base0 {\n/// <summary>Mid.M.</summary>\npublic new virtual N.T M() => null!; } }",
+                alias: None,
+                referenced: true,
+                against: &[1, 3],
+                visible: true,
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("missing type of a loaded assembly");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("M:F.Derived.M"), Some(Verdict::Declined { cause, .. }) if cause == "Undecidable(TypeIdentity)"),
+        "{:?}",
+        v.get("M:F.Derived.M")
     );
 }

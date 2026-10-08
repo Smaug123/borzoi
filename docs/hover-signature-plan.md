@@ -148,18 +148,26 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   merges nothing — an entry with its own summary and a top-level
   `<inheritdoc/>` holds both summaries — and neither does this. Where the
   answer is not exactly Roslyn's (a type that does not bind, a candidate the
-  env cannot settle, a `path` outside the modelled XPath, a cycle, a missing
-  inherited entry), the entry renders unexpanded with the marker, and the
-  typed `inherit::Decline` is logged. Held to Roslyn by
-  `tools/inheritdoc-oracle`: 2,105 ASP.NET Core entries expand identically
-  and none differently; of the 140 declines, Roslyn itself leaves the element
-  in 117, shows nothing for 21 (an undocumented inherited symbol), and needs
-  `InternalsVisibleTo` for 2. Over the NuGet cache (highest version of each
-  package, referenced with both packs but not its own dependencies), 6,942
-  expand identically and none differently, C# 14 extension members' `cref`s
-  into their `<G>$` skeletons included (all 66 of CliWrap's inheritdoc entries
-  but one cycle). Not modelled: default-interface-member implementations, and
-  `InternalsVisibleTo` (an internal member of another assembly declines).
+  env cannot settle, a `path` outside the modelled XPath or one selecting
+  nothing, a cycle, a missing inherited entry), the entry renders unexpanded
+  with the marker, and the typed `inherit::Decline` is logged. Held to Roslyn
+  by `tools/inheritdoc-oracle`: 2,104 ASP.NET Core entries expand identically
+  and none differently; of the 141 declines, Roslyn itself leaves the element
+  in 117, shows nothing for 21 (an undocumented inherited symbol), needs
+  `InternalsVisibleTo` for 2, and compares a constructor signature over
+  `object` by an attribute the model does not keep for 1. Over the NuGet
+  cache (highest version of each package, referenced with both packs but not
+  its own dependencies), 6,830 expand identically and none differently, C# 14
+  extension members' `cref`s into their `<G>$` skeletons included. Not
+  modelled, each declining: default-interface-member implementations;
+  `InternalsVisibleTo` (an internal member of another assembly); a signature
+  over a type no loaded assembly defines (Roslyn compares those by where its
+  unification lands them, which the model cannot see); and a base-constructor
+  match over `object`, native-sized integers or tuples, whose `dynamic`,
+  `nint` and element-name attributes Roslyn's constructor rule compares.
+  Not seen at all: `modopt`s, which the projection drops by policy, so two
+  signatures differing only in one compare equal here and not to Roslyn's
+  runtime comparers (C# never emits such a pair).
 - **`<include>` is not resolved** (same marker; NuGet only, and there is
   nothing to resolve against: 27,144 elements in 27 files, every one naming a
   `doc\*.uex` file that no package ships).
