@@ -1341,6 +1341,7 @@ fn interface_receiver_method_call_defers() {
             metadata_token: 0,
             implements: vec![],
             unclassified_impls: vec![],
+            has_other_method_impl: false,
         })
     };
     let iface = |name: &str, members: Vec<Member>, ifaces: Vec<TypeRef>| Entity {
@@ -1473,6 +1474,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         metadata_token: 0,
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        has_other_method_impl: false,
     });
     let class = Entity {
         namespace: vec!["Demo".to_string()],

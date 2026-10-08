@@ -48,12 +48,13 @@ pub use error::ImportError;
 pub use fsharp_pickle::{CcuRef, PickledCcu, PickledHeader, PickledNleRef, unpickle_signature};
 pub use fsharp_pickle_merge::{ModuleMemberTarget, ModuleMemberVal, collect_module_member_targets};
 pub use model::{
-    AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
-    CompilerFeatureRequired, CompilerMessage, ConstantValue, CustomAttr, DefaultMember, Entity,
-    EntityKind, Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind,
-    FsharpSourceRange, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member, MethodLike,
-    MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter,
-    Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeForwarder,
-    TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, Variance, Version,
+    AbbreviationTarget, Access, AccessorSlot, AssemblyIdentity, AssemblyProjectionSkips,
+    Augmentation, CompilerFeatureRequired, CompilerMessage, ConstantValue, CustomAttr,
+    DefaultMember, Entity, EntityKind, Event, Experimental, FSharpConstraints, Field,
+    FsharpOverlayKind, FsharpSourceRange, ImplementedMember, IndexParameter, InterfaceMemberImpl,
+    Member, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete,
+    ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember,
+    SkippedProjectionItem, TypeForwarder, TypeParameter, TypeRef, UnclassifiedMethodImpl,
+    UnionCases, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};

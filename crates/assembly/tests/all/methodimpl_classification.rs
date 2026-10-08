@@ -157,10 +157,9 @@ fn plain_named_body_is_still_an_explicit_impl() {
     // dot. Classification must come from the declaration target (an in-module
     // interface TypeDef), so the impl is surfaced despite the plain name.
     let es = entities("methodimpl_unmangled_body");
-    assert_impl(
-        method(entity(&es, "Widget"), "Impl"),
-        &[("IFoo", method_m("M"))],
-    );
+    let m = method(entity(&es, "Widget"), "Impl");
+    assert_impl(m, &[("IFoo", method_m("M"))]);
+    assert!(!m.has_other_method_impl, "the row is surfaced, not other");
     // The interface's own declaration is not an implementation of anything.
     assert_impl(method(entity(&es, "IFoo"), "M"), &[]);
 }
@@ -359,6 +358,9 @@ fn external_class_decl_is_not_an_explicit_impl() {
         "a decl on a provable ancestor is decided, not unclassified: {:?}",
         m.unclassified_impls,
     );
+    // The redirection itself is recorded: it is what makes the method an
+    // override although its flags may say `newslot`.
+    assert!(m.has_other_method_impl);
 }
 
 #[test]
@@ -627,7 +629,11 @@ fn decl_on_an_unrelated_local_interface_is_skipped() {
     // have. Interface-ness alone is not enough for local parents; membership
     // is required just as for external ones.
     let es = entities("methodimpl_unrelated_local_iface");
-    assert_impl(method(entity(&es, "Widget"), "Impl"), &[]);
+    let m = method(entity(&es, "Widget"), "Impl");
+    assert_impl(m, &[]);
+    // Not published — but not forgotten either: a consumer deciding what
+    // `Impl` overrides or implements must know a row names it.
+    assert!(m.has_other_method_impl);
 }
 
 #[test]

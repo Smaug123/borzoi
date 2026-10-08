@@ -512,6 +512,7 @@ fn decorate_method(m: &mut Method, modifier: CustomMod) {
         attributes: _,
         implements,
         unclassified_impls,
+        has_other_method_impl: _,
     } = m;
     for gp in generic_params {
         decorate_generic_param(gp, modifier);

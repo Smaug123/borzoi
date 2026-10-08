@@ -1104,6 +1104,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            has_other_method_impl: false,
         })
     }
 
@@ -1139,6 +1140,7 @@ mod tests {
             custom_attrs: vec![],
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            accessor_slots: Vec::new(),
         })
     }
 

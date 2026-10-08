@@ -6706,6 +6706,7 @@ mod from_views_tests {
             custom_attrs: vec![],
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            accessor_slots: Vec::new(),
         })
     }
 

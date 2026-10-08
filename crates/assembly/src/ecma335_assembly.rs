@@ -12,13 +12,13 @@ use crate::fsharp_resource::{
     foreign_signature_data_present, is_compressed_kind, primary_signature_resource_for_host,
 };
 use crate::model::{
-    Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
-    CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
-    FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MethodLike, MethodSignature, ModuleValue, Nullability,
-    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
-    SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl,
-    UnionCases, Variance, Version,
+    Access, AccessorSlot, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
+    CompilerFeatureRequired, CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind,
+    Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember,
+    IndexParameter, InterfaceMemberImpl, Member, MethodLike, MethodSignature, ModuleValue,
+    Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
+    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
+    UnclassifiedMethodImpl, UnionCases, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -2425,6 +2425,7 @@ impl Ecma335Assembly {
 
         let implements = self.project_implements(m);
         let unclassified_impls = self.project_unclassified(m);
+        let has_other_method_impl = self.has_other_method_impl(m);
 
         Ok(MethodLike {
             name: m.name.clone(),
@@ -2479,7 +2480,33 @@ impl Ecma335Assembly {
             metadata_token: m.token,
             implements,
             unclassified_impls,
+            has_other_method_impl,
         })
+    }
+
+    /// Whether `m` is the body of a `MethodImpl` row the projection does not
+    /// surface: one the reader did not classify as an interface member
+    /// ([`Method::has_other_method_impl`]), or one whose interface failed to
+    /// project and so was dropped from [`Self::project_implements`] /
+    /// [`Self::project_unclassified`].
+    fn has_other_method_impl(&self, m: &Method) -> bool {
+        m.has_other_method_impl
+            || self.project_implements(m).len() != m.implements.len()
+            || self.project_unclassified(m).len() != m.unclassified_impls.len()
+    }
+
+    /// The [`AccessorSlot`] of each distinct accessor, in the order given.
+    fn accessor_slots(&self, accessors: &[&Method]) -> Vec<AccessorSlot> {
+        accessors
+            .iter()
+            .map(|a| AccessorSlot {
+                is_virtual: a.is_virtual,
+                is_newslot: a.is_new_slot,
+                is_abstract: a.is_abstract,
+                is_final: a.is_final,
+                has_other_method_impl: self.has_other_method_impl(a),
+            })
+            .collect()
     }
 
     /// Project a method's explicit-interface implementations (from its
@@ -2901,6 +2928,7 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            accessor_slots: self.accessor_slots(&unique_accessors),
         })
     }
 
@@ -3003,6 +3031,7 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            accessor_slots: self.accessor_slots(&unique_accessors),
         })
     }
 
@@ -5085,6 +5114,7 @@ mod tests {
             attributes: vec![],
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            has_other_method_impl: false,
         };
 
         let td = TypeDef {
