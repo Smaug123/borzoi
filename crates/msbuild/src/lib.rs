@@ -583,12 +583,14 @@ pub struct ParsedProject {
     /// otherwise falls back to per-file handling) should gate on this, not
     /// `is_partial`.
     ///
-    /// **SDK provenance.** Compile-affecting uncertainty in the entry SDK's own
-    /// installation tree is *tolerated* (not counted), because that tree's
-    /// conditional default-item machinery is present in every project and never
-    /// decides which hand-written sources compile. The same uncertainty in the
-    /// entry project or a user-authored import (`Directory.Build.*`, an explicit
-    /// `<Import>`) is respected.
+    /// **SDK provenance.** Inside the entry SDK's own installation tree, a
+    /// Compile operation whose own gate is a clean false — it runs in no build —
+    /// is tolerated, and so is its group's gate: the SDK's default-item
+    /// machinery is full of those, gated on properties we cannot always pin. An
+    /// SDK Compile operation that *can* run is honoured exactly like a
+    /// user-authored one, because it can decide which sources compile: the
+    /// default `**/*.fs` glob runs whenever `EnableDefaultCompileItems` ends up
+    /// `true`, and puts its files in front of the project's own list.
     ///
     /// **Known gaps** (deliberately *not* flagged; each is an "under-resolve,
     /// possibly wrong in a rare contrived case" rather than a common hazard):
@@ -600,6 +602,10 @@ pub struct ParsedProject {
     /// - A user `<Import>` skipped by an *unsupported/undefined condition*
     ///   (rather than an unresolved path or a missing file, both of which *are*
     ///   flagged) could hide Compile items.
+    /// - A *structural* failure inside the SDK tree — an SDK sub-import we
+    ///   cannot follow — is still tolerated, though such an import could carry
+    ///   a Compile operation that runs. Flagging it today declines 7 of the
+    ///   pinned corpus's 62 compared projects.
     /// - A `<Target>` that mutates `@(Compile)` (adds/removes items at build
     ///   time) is *deliberately* not flagged. We never run targets, so a
     ///   target-added source is invisible — but this is the common, intended
