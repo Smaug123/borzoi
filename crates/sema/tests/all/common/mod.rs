@@ -12,6 +12,7 @@
 #![allow(dead_code)] // each importer uses a different subset.
 
 pub mod companion_corpus;
+pub mod corpus_manifest;
 pub mod fold_matrix;
 pub mod fsharp_member_corpus;
 pub mod generator;
@@ -78,7 +79,7 @@ pub fn project_dir() -> PathBuf {
 
 /// Build the base `fcs-dump <subcommand>` command, without arguments.
 ///
-/// Honours `BORZOI_FCS_DUMP` (path to a pre-built self-contained binary)
+/// Honours `BORZOI_FCS_DUMP` (path to a pre-built framework-dependent binary)
 /// when set; otherwise builds `tools/fcs-dump` **once** per test binary and
 /// execs the resulting assembly on every call. The build-once strategy avoids
 /// the `dotnet run` incremental-build race when N test threads invoke it
@@ -224,7 +225,7 @@ impl BatchPool {
 }
 
 /// Spawn one resident `fcs-dump <subcommand>` child under `timeout` per request,
-/// honouring `BORZOI_FCS_DUMP` (a prebuilt self-contained binary) exactly as
+/// honouring `BORZOI_FCS_DUMP` (a prebuilt framework-dependent binary) exactly as
 /// [`fcs_dump_command`] does, and otherwise `dotnet <fcs-dump.dll>`.
 /// [`BatchChild::with_factory`] (not `spawn`) so the per-request deadline is the
 /// pool's, not the harness's fixed `default_timeout`; `2` attempts matches
@@ -420,6 +421,10 @@ pub struct FileCensus {
     pub path: String,
     #[serde(rename = "Ok")]
     pub ok: bool,
+    /// Whether FCS's check reported any error-severity diagnostic. Required, not
+    /// defaulted: a missing field must not read as "checked cleanly".
+    #[serde(rename = "HasCheckErrors")]
+    pub has_check_errors: bool,
     #[serde(rename = "Uses", default)]
     pub uses: Vec<CensusUse>,
 }
@@ -1498,7 +1503,7 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
 /// `FSharp.Core.dll` into the same output directory as `fcs-dump.dll`, so we
 /// reuse the build-once helper and return the sibling. This lets a sema test
 /// resolve against the genuine shipped FSharp.Core in every lane (the
-/// `BORZOI_FCS_DUMP` self-contained-binary override is *not* honoured
+/// `BORZOI_FCS_DUMP` prebuilt-binary override is *not* honoured
 /// here — the sibling `.dll` only exists in a `dotnet build` output dir, so
 /// this path always builds `fcs-dump`). Mirrors the assembly crate's helper.
 pub fn ensure_fsharp_core_dll() -> PathBuf {

@@ -8,7 +8,7 @@
 //! Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 //!
 //! Set `BORZOI_FCS_DUMP=/path/to/fcs-dump` to point at a pre-built
-//! self-contained binary instead of invoking `dotnet run` (much faster on
+//! framework-dependent binary instead of invoking `dotnet run` (much faster on
 //! repeated invocations). The first invocation in a fresh checkout will
 //! restore NuGet packages — that can take a couple of minutes.
 
