@@ -360,16 +360,19 @@ fails it**: parse one more file cleanly and it goes red until you bump the
 constant, with the date and the new figure. That is deliberate — the corpus is
 content-addressed and the parser deterministic, so there is no drift for a
 one-sided floor to absorb, and a one-sided floor is exactly what rotted 2,401
-files deep while nothing ran the sweep. The same discipline `ci.yml`'s
-`BORZOI_PROJECT_EXPECT_DIVERGENCES` already applies, for the reason stated
-there: a one-sided bound quietly decays into a rubber stamp.
+files deep while nothing ran the sweep. A one-sided bound quietly decays into
+a rubber stamp.
 
-The sema sweeps go one step further and pin every graded *item*, not a count:
-each compares its run against a checked-in manifest
-(`crates/sema/tests/manifests/`) and fails on any movement in either direction,
+The sema sweeps and the whole-project gate (`ci.yml`'s `corpus-diff` job) go
+one step further and pin every graded *item*, not a count: each compares its run
+against a checked-in manifest (`crates/sema/tests/manifests/`,
+`crates/corpus-diff/manifests/`) and fails on any movement in either direction,
 printing a line diff. If every moved line is intended, regenerate with
-`BORZOI_UPDATE_MANIFESTS=1` on the same command (the failure message prints it)
-and commit the manifest diff, so the reviewer sees exactly which items moved.
+`BORZOI_UPDATE_MANIFESTS=1` on the same command (the failure message prints it;
+for the whole-project gate it is
+`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`, run outside
+`nix develop`) and commit the manifest diff, so the reviewer sees exactly which
+items moved.
 Their hard soundness gates (zero divergences) are separate assertions that
 regeneration cannot bless. `docs/continuous-measurements.md` ("Exact
 manifests") has the format and the helper, `borzoi_oracle_harness::manifest`.

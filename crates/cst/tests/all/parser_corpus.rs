@@ -58,8 +58,8 @@ use crate::common::{
 /// reason; **raising it is the good direction and still requires the bump** —
 /// parse one more file cleanly and this fails until the constant records it,
 /// which is what keeps the number honest between measurements. Same discipline
-/// as `ci.yml`'s `BORZOI_PROJECT_EXPECT_DIVERGENCES`, and for the same stated
-/// reason: a one-sided bound quietly decays into a rubber stamp.
+/// as the exact manifests (`docs/continuous-measurements.md`), and for the same
+/// stated reason: a one-sided bound quietly decays into a rubber stamp.
 ///
 /// 5625 on 2026-09-23: three files FCS rejects moved from "we accept" to "both
 /// reject" (`$` in an operator name, and a stray token after a module `let`'s
