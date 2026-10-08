@@ -115,12 +115,19 @@ const MUST_COMMIT: &[RefKind] = &[
 /// landed — and the classifier should go.
 const KNOWN_FOLD_BACK_AT_DEFAULT: usize = 9;
 
-/// Whether a wrong answer at `r` is the known defect that open PR #233 fixes:
-/// sema does not fold an in-file `[<AutoOpen>]` module's values back into its
-/// parent, so a use that FCS binds to the folded value instead binds an
-/// earlier same-named binder the fold hides.
-fn is_known_auto_open_fold_back(r: &PlantedRef) -> bool {
-    r.kind == RefKind::AutoOpenedValue && r.hides_same_name
+/// Whether our answer at `r` is exactly the known defect that open PR #233
+/// fixes: sema does not fold an in-file `[<AutoOpen>]` module's values back
+/// into its parent, so a use that FCS binds to the folded value binds instead
+/// the earlier same-named binder the fold hides — that binder, and no other
+/// wrong answer.
+fn is_known_auto_open_fold_back(g: &Generated, rf: &ResolvedFile, r: &PlantedRef) -> bool {
+    let Some(fallback) = r.fold_back_fallback else {
+        return false;
+    };
+    rf.resolution_at(r.range)
+        .filter(|res| matches!(res, Resolution::Local(_) | Resolution::Item(_)))
+        .and_then(|res| rf.resolved_def(res))
+        .is_some_and(|def| def.range == g.binder_ranges[&fallback])
 }
 
 /// Grade one planted use, or describe the wrong answer.
@@ -169,7 +176,7 @@ fn check_against_generator(g: &Generated) -> Result<Vec<(RefKind, Grade)>, Strin
                 ));
             }
             Ok(gr) => grades.push((r.kind, gr)),
-            Err(_) if is_known_auto_open_fold_back(r) => {}
+            Err(_) if is_known_auto_open_fold_back(g, &rf, r) => {}
             Err(why) => {
                 return Err(format!(
                     "{:?} use {:?} at {:?}: {why}\n{}",
@@ -311,7 +318,7 @@ fn generated_programs_agree_with_fcs() {
             };
             fcs_uses_graded += 1;
             let planted = g.refs.iter().find(|r| r.range == range);
-            if wrong.is_some() && planted.is_some_and(is_known_auto_open_fold_back) {
+            if wrong.is_some() && planted.is_some_and(|r| is_known_auto_open_fold_back(g, &rf, r)) {
                 known_fold_back += 1;
                 continue;
             }
