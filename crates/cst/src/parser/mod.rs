@@ -209,6 +209,25 @@ pub struct Parse {
     pub shape_depends_on_language_version: bool,
 }
 
+/// The message of FCS's FS0597, reported on an application argument that
+/// ends in an adjacent application (`g f(x)`). It is a parse error that keeps
+/// the tree.
+pub const SUCCESSIVE_ARGS_MESSAGE: &str = "Successive arguments should be separated by spaces or tupled, and arguments involving function or method applications should be parenthesized";
+
+/// FCS's `atomicExpr` flag (the `bool` each `atomicExpr` production pairs
+/// with its tree in `pars.fsy`): whether the expression ends in an adjacent
+/// application. `atomicExpr HIGH_PRECEDENCE_PAREN_APP atomicExpr` sets it;
+/// `atomicExpr DOT …`, `atomicExpr QMARK …` and `PREFIX_OP atomicExpr` pass
+/// the receiver's on; every other production clears it. Its only reader is
+/// `argExpr`, which reports [`SUCCESSIVE_ARGS_MESSAGE`] on an argument that
+/// has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+enum EndsInAdjacentApp {
+    Yes,
+    No,
+}
+
 /// A parse-time problem. `span` is a byte range into the input source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
