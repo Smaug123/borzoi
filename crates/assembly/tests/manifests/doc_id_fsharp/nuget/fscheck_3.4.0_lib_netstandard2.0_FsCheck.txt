@@ -1,7 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 408
+hits 409
 keys 430
 miss F:FsCheck.Rnd.Gamma
 miss F:FsCheck.Rnd.Seed
@@ -24,5 +24,4 @@ miss P:FsCheck.Config.StartSize
 miss P:FsCheck.Config.Verbose
 miss P:FsCheck.Config.VerboseThrowOnFailure
 miss P:FsCheck.Outcome.Shrink
-miss P:FsCheck.ParallelRunConfig.MaxDegreeOfParallelism
 pickle undecodable: unsupported pickle tag 9 in u_ty tag 9 (Anon — no MiniLibFs fixture exercises it)

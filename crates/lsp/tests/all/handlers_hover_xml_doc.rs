@@ -485,7 +485,7 @@ mod keys {
     use std::path::Path;
 
     use borzoi::xml_doc::key::{DocTarget, KeyCensus, KeyError, doc_key};
-    use borzoi_assembly::doc_id::{DocIdDialect, walk_doc_ids};
+    use borzoi_assembly::doc_id::{DocIdDialect, TypeDocName, type_doc_name, walk_doc_ids};
     use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity};
     use borzoi_sema::AssemblyEnv;
 
@@ -513,6 +513,16 @@ mod keys {
     /// `dll`'s own dialect.
     fn env_of(dll: &Path, roots: Vec<Entity>) -> AssemblyEnv {
         doc_key_env_of(vec![(dll.to_path_buf(), roots, dialect(dll))])
+    }
+
+    /// The `T:` key of every type in the tree under `entity`. A union case keys
+    /// `T:` too, but is not a type: in the F# dialect it is a member's key.
+    fn type_keys(entity: &Entity, enclosing: Option<&TypeDocName>, out: &mut BTreeSet<String>) {
+        let decl = type_doc_name(entity, enclosing);
+        out.insert(decl.type_id());
+        for nested in &entity.nested_types {
+            type_keys(nested, Some(&decl), out);
+        }
     }
 
     /// Every target the env exposes: each entity, and each member of each.
@@ -577,8 +587,10 @@ mod keys {
             let fsharp = dialect(&dll) == DocIdDialect::FSharp;
             let roots = roots(&dll);
             let mut walked: BTreeMap<String, usize> = BTreeMap::new();
+            let mut types: BTreeSet<String> = BTreeSet::new();
             for root in &roots {
                 walk_doc_ids(root, None, &mut |id| *walked.entry(id).or_default() += 1);
+                type_keys(root, None, &mut types);
             }
             let env = env_of(&dll, roots);
             let (keyed, shared) = key_all(&env);
@@ -586,7 +598,7 @@ mod keys {
             let keyed: BTreeSet<&str> = keyed.keys().map(|k| &k[prefix.len()..]).collect();
             let unique: BTreeSet<&str> = walked
                 .iter()
-                .filter(|(k, n)| **n == 1 && (!fsharp || k.starts_with("T:")))
+                .filter(|(k, n)| **n == 1 && (!fsharp || types.contains(*k)))
                 .map(|(k, _)| k.as_str())
                 .collect();
             assert_eq!(
