@@ -818,7 +818,19 @@ fn eval_static(
 ) -> Result<Value, Unsupported> {
     let args = member.args.as_deref().ok_or(Unsupported)?;
     let member_name = member.name;
-    match type_name {
+    // MSBuild resolves the type name case-insensitively, exactly as it does the
+    // member name: `[system.io.path]::combine(…)` is the same call.
+    const STATIC_TYPES: [&str; 4] = [
+        "MSBuild",
+        "System.IO.Path",
+        "System.Version",
+        "System.String",
+    ];
+    let canonical_type = STATIC_TYPES
+        .into_iter()
+        .find(|t| t.eq_ignore_ascii_case(type_name))
+        .ok_or(Unsupported)?;
+    match canonical_type {
         "MSBuild" => eval_msbuild_static(member_name, args, props, fs, issues),
         "System.IO.Path" if member_name.eq_ignore_ascii_case("Combine") => {
             if !path_args_are_bare(args) {
