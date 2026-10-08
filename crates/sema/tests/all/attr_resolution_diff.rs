@@ -297,6 +297,27 @@ fn assert_attrs_match_fcs_with(
     rf
 }
 
+/// What [`check_attrs_outcomes`] found at one FCS attribute record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttrOutcome {
+    /// FCS sank distinct entities at the range: no claim either way.
+    Ambiguous,
+    /// We declined (no resolution, or `Deferred`).
+    Declined,
+    /// We committed, and the commit names FCS's resolution.
+    Committed,
+}
+
+impl AttrOutcome {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            AttrOutcome::Ambiguous => "ambiguous",
+            AttrOutcome::Declined => "decline",
+            AttrOutcome::Committed => "commit",
+        }
+    }
+}
+
 /// The core certain-implies-exact comparator, shared with the generative and
 /// corpus sweeps (`attr_resolution_sweep`): panics on any disagreement,
 /// returns the agreement (commit) count.
@@ -312,11 +333,27 @@ pub(crate) fn check_attrs_agree(
     oracle: &AttrsOracle,
     check_reverse: bool,
 ) -> usize {
-    let mut commits = 0usize;
+    check_attrs_outcomes(src, env, rf, oracle, check_reverse)
+        .into_iter()
+        .filter(|o| *o == AttrOutcome::Committed)
+        .count()
+}
+
+/// [`check_attrs_agree`], reporting the outcome at each of `oracle.attrs` (in
+/// its order) rather than only the commit count.
+pub(crate) fn check_attrs_outcomes(
+    src: &str,
+    env: &AssemblyEnv,
+    rf: &ResolvedFile,
+    oracle: &AttrsOracle,
+    check_reverse: bool,
+) -> Vec<AttrOutcome> {
+    let mut outcomes = Vec::with_capacity(oracle.attrs.len());
     for a in &oracle.attrs {
         // An ambiguous record (FCS sank distinct entities at the range — the
         // typar special-attribute shape) makes no claim either way.
         if a.ambiguous {
+            outcomes.push(AttrOutcome::Ambiguous);
             continue;
         }
         let span = TextRange::new(
@@ -325,7 +362,7 @@ pub(crate) fn check_attrs_agree(
         );
         match rf.attribute_resolution_at(span) {
             // An honest decline: no claim to check.
-            None | Some(Resolution::Deferred(_)) => {}
+            None | Some(Resolution::Deferred(_)) => outcomes.push(AttrOutcome::Declined),
             Some(res @ Resolution::Entity(_)) => {
                 let (asm, full) = entity_full(env, res);
                 assert_eq!(
@@ -333,7 +370,7 @@ pub(crate) fn check_attrs_agree(
                     (a.assembly.as_deref(), a.full_name.as_deref()),
                     "attribute at {span:?} in {src:?}: we committed a different type"
                 );
-                commits += 1;
+                outcomes.push(AttrOutcome::Committed);
             }
             Some(Resolution::Local(id)) => {
                 let def = rf.def(id);
@@ -343,7 +380,7 @@ pub(crate) fn check_attrs_agree(
                     a.decl,
                     "attribute at {span:?} in {src:?}: we committed a different in-file binder"
                 );
-                commits += 1;
+                outcomes.push(AttrOutcome::Committed);
             }
             Some(other) => {
                 panic!("attribute at {span:?} in {src:?}: impossible verdict {other:?}")
@@ -365,7 +402,7 @@ pub(crate) fn check_attrs_agree(
         }
     }
 
-    commits
+    outcomes
 }
 
 fn assert_attrs_match_fcs(src: &str, env: &AssemblyEnv, expected_commits: usize) -> ResolvedFile {

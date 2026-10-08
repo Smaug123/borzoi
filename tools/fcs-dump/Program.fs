@@ -6865,8 +6865,37 @@ let private usage () =
     eprintfn "  uses-project-batch       resident project oracle: one JSON request/line {paths,refs,defines,langversion}, one compact {Files} response/line"
     2
 
+/// Refuse to run as a self-contained publish. Every script-mode check
+/// (`GetProjectOptionsFromScript … useSdkRefs = true`) takes its framework
+/// references from the runtime this process is running on. Framework-dependent,
+/// that is the SDK's reference pack, the set the differentials are written
+/// against. Self-contained, it is this tool's own publish directory: the
+/// runtime's implementation assemblies (`System.Private.CoreLib`, …) plus
+/// `FSharp.Compiler.Service`, `fcs-dump` itself and their dependencies, so a
+/// corpus file that names `FSharp.Compiler.Syntax` resolves against the real
+/// compiler. The answers stay plausible and silently differ (a ~4% swing in the
+/// resolution corpus sweep), so the only safe response is to stop.
+let private refuseSelfContained () =
+    let normalise (dir: string) =
+        Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+    let coreLib = typeof<obj>.Assembly.Location
+    let selfContained =
+        String.IsNullOrEmpty coreLib
+        || (match Option.ofObj (Path.GetDirectoryName coreLib) with
+            | Some dir -> normalise dir = normalise AppContext.BaseDirectory
+            | None -> true)
+    if selfContained then
+        eprintfn
+            "fcs-dump: refusing to run self-contained (runtime at %s). FCS's script \
+             reference resolution would read this tool's own directory instead of the \
+             SDK reference pack. Publish with --self-contained false, or run the \
+             framework-dependent build (`dotnet fcs-dump.dll`)."
+            (if String.IsNullOrEmpty coreLib then "<single-file bundle>" else coreLib)
+        exit 2
+
 [<EntryPoint>]
 let main argv =
+    refuseSelfContained ()
     match argv with
     | [| "ast"; sourcePath |] ->
         dumpAst (Path.GetFullPath sourcePath) []
