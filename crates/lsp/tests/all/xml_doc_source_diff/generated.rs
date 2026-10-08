@@ -157,6 +157,8 @@ enum Template {
     Local,
     LocalUse,
     StaticLet,
+    Augmentation,
+    NestedModule,
 }
 
 const TEMPLATES: &[Template] = &[
@@ -186,6 +188,8 @@ const TEMPLATES: &[Template] = &[
     Template::Local,
     Template::LocalUse,
     Template::StaticLet,
+    Template::Augmentation,
+    Template::NestedModule,
 ];
 
 /// How many inner prelude slots a template has.
@@ -374,6 +378,20 @@ impl Item {
                 out.push_str(&format!(
                     "    use d{n} = {{ new System.IDisposable with member _.Dispose() = () }}\n    d{n}.Dispose()"
                 ));
+            }
+            Template::Augmentation => {
+                attr(out);
+                out.push_str(&format!("type G{n} =\n    | GA{n}\n"));
+                slot(0, "", out);
+                out.push_str(&format!(
+                    "type G{n} with\n    static member Z{n} = GA{n}\nlet _ = G{n}.Z{n}, (GA{n} : G{n})"
+                ));
+            }
+            Template::NestedModule => {
+                attr(out);
+                out.push_str(&format!("module N{n} =\n"));
+                slot(0, "    ", out);
+                out.push_str(&format!("    let nv{n} = 1\nlet _ = N{n}.nv{n}"));
             }
             Template::StaticLet => {
                 out.push_str(&format!("type H{n}() =\n"));

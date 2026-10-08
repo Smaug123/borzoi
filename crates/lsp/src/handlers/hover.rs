@@ -291,7 +291,7 @@ fn project_hover(
                 .and_then(|def| inferred.def_type(def));
             hover_body(semantic, &resolved, file, res, &Arc::default(), ty).map(|mut body| {
                 body.documentation =
-                    source_documentation(&parses.files, &resolved, target_file_idx, res);
+                    source_documentation(&parses.files, &resolved, target_file_idx, range, res);
                 body
             })
         };
@@ -442,17 +442,18 @@ fn documentation(
     }
 }
 
-/// The rendered `///` documentation of a project-local symbol — what `res`, an
-/// occurrence in Compile-order file `from`, resolves to — or `None` when FCS
+/// The rendered `///` documentation of a project-local symbol — what `res`, the
+/// occurrence at `at` in Compile-order file `from`, resolves to — or `None` when FCS
 /// attaches none, it is blank, or we cannot establish exactly what FCS attaches
 /// (each reason logged; see [`SourceDoc`]).
 fn source_documentation(
     files: &[borzoi_sema::ProjectFile],
     resolved: &ResolvedProject,
     from: usize,
+    at: TextRange,
     res: Resolution,
 ) -> Option<RenderedDoc> {
-    match ProjectDocs::new(files, resolved).doc(from, res)? {
+    match ProjectDocs::new(files, resolved).doc(from, at, res)? {
         SourceDoc::Attached(lines) => match source::member_element(&lines) {
             Ok(member) => {
                 let (blocks, report) = render_member(&member);

@@ -125,9 +125,22 @@ fn source_docs_match_fcs_over_corpus() {
                 manifest.push(format!("{key} skipped unreadable"));
                 continue;
             };
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
-                check_paths(std::slice::from_ref(path), vec![text.clone()], &[])
-            }));
+            // On a thread of its own with a generous stack: the parser and the
+            // resolver recurse with the source's nesting, and the deepest corpus
+            // files overflow a default test thread's 2 MiB in a debug build.
+            let outcome = std::thread::scope(|scope| {
+                std::thread::Builder::new()
+                    .stack_size(256 << 20)
+                    .spawn_scoped(scope, || {
+                        let _silence = silence_panics_here();
+                        catch_unwind(AssertUnwindSafe(|| {
+                            check_paths(std::slice::from_ref(path), vec![text.clone()], &[])
+                        }))
+                    })
+                    .expect("spawn the per-file checker")
+                    .join()
+                    .expect("the per-file checker catches its own panics")
+            });
             let (graded, fcs) = match outcome {
                 Ok(r) => r,
                 Err(_) => {

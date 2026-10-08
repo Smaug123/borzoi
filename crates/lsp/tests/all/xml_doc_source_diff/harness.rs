@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+use borzoi::workspace::implicit_symbols;
 use borzoi::xml_doc::source::{
     ProjectDocs, SourceDoc, SourceDocDecline, SourceRenderError, elaborate, is_blank,
     member_element,
@@ -143,7 +144,10 @@ pub struct OurProject {
 
 impl OurProject {
     pub fn new(paths: &[PathBuf], texts: Vec<String>, defines: &[&str]) -> Self {
-        let symbols: HashSet<String> = defines.iter().map(|d| d.to_string()).collect();
+        // FCS defines `COMPILED` and `EDITING` for a checked `.fs`/`.fsi` on
+        // top of the caller's symbols, as the LSP does; parse the same program.
+        let mut symbols: HashSet<String> = implicit_symbols(false);
+        symbols.extend(defines.iter().map(|d| d.to_string()));
         let mut sources = Vec::new();
         let mut recoveries = Vec::new();
         for (path, text) in paths.iter().zip(&texts) {
@@ -277,7 +281,7 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
             let Some(def) = ours.def_of(i, res) else {
                 continue;
             };
-            let Some(doc) = docs.doc(i, res) else {
+            let Some(doc) = docs.doc(i, range, res) else {
                 continue;
             };
             let key = (usize::from(range.start()), usize::from(range.end()));
