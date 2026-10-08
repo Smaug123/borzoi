@@ -1116,6 +1116,7 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
+            has_other_method_impl: false,
         })
     }
 
@@ -1153,6 +1154,7 @@ mod tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            accessor_slots: Vec::new(),
         })
     }
 

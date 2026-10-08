@@ -6744,6 +6744,7 @@ mod from_views_tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            accessor_slots: Vec::new(),
         })
     }
 
