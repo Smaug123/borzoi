@@ -154,7 +154,11 @@ fn generating_members(types: &[Entity]) -> BTreeMap<String, Vec<String>> {
             let (kind, name, params) = match member {
                 Member::Method(m) => (
                     "Method",
-                    &m.name,
+                    &if m.generic_parameters.is_empty() {
+                        m.name.clone()
+                    } else {
+                        format!("{}<{}>", m.name, m.generic_parameters.len())
+                    },
                     m.signature
                         .parameters
                         .iter()

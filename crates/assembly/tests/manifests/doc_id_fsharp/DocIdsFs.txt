@@ -10,7 +10,7 @@ hit F:DocIdsFs.Fields.Raw <= Field Raw()
 hit F:DocIdsFs.Pos.Col <= Property Col()
 hit F:DocIdsFs.Pos.Line <= Property Line()
 hit F:DocIdsFs.Widget.Label@ <= Field Label@()
-hit M:DocIdsFs.Box`1.Map``1(Microsoft.FSharp.Core.FSharpFunc{`0,``0}) <= Method Map(Microsoft.FSharp.Core.FSharpFunc{`0,``0})
+hit M:DocIdsFs.Box`1.Map``1(Microsoft.FSharp.Core.FSharpFunc{`0,``0}) <= Method Map<1>(Microsoft.FSharp.Core.FSharpFunc{`0,``0})
 hit M:DocIdsFs.Ext.String.Shout(System.String) <= Method String.Shout(System.String)
 hit M:DocIdsFs.Ext.String.get_Blank.Static <= Method String.get_Blank.Static()
 hit M:DocIdsFs.Ext.String.get_Len(System.String) <= Method String.get_Len(System.String)
@@ -22,19 +22,20 @@ hit M:DocIdsFs.Funcs.addc(System.Int32,System.Int32) <= Method addc(System.Int32
 hit M:DocIdsFs.Funcs.apply(Microsoft.FSharp.Core.FSharpFunc{System.Int32,System.Int32},System.Int32) <= Method apply(Microsoft.FSharp.Core.FSharpFunc{System.Int32,System.Int32},System.Int32)
 hit M:DocIdsFs.Funcs.bump(System.Int32@) <= Method bump(System.Int32@)
 hit M:DocIdsFs.Funcs.deref(System.Int32*) <= Method deref(System.Int32*)
-hit M:DocIdsFs.Funcs.empty``1 <= Method empty()
+hit M:DocIdsFs.Funcs.empty``1 <= Method empty<1>()
 hit M:DocIdsFs.Funcs.first(System.Int32[][]) <= Method first(System.Int32[][])
-hit M:DocIdsFs.Funcs.id2``1(``0) <= Method id2(``0)
+hit M:DocIdsFs.Funcs.id2``1(``0) <= Method id2<1>(``0)
 hit M:DocIdsFs.Funcs.inc(System.Int32) <= Method inc(System.Int32)
 hit M:DocIdsFs.Funcs.orZero(Microsoft.FSharp.Core.FSharpOption{System.Int32}) <= Method orZero(Microsoft.FSharp.Core.FSharpOption{System.Int32})
 hit M:DocIdsFs.Funcs.scale(System.Double) <= Method scale(System.Double)
 hit M:DocIdsFs.Funcs.scaleG``1(System.Double) <= Method scaleG(System.Double)
 hit M:DocIdsFs.Funcs.sum2(System.Int32[0:]) <= Method sum2(System.Int32[0:,0:])
 hit M:DocIdsFs.Funcs.sum3(System.Int32[0:, 0:]) <= Method sum3(System.Int32[0:,0:,0:])
-hit M:DocIdsFs.Funcs.twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``0,``1}},``0) <= Method twice(``0)
-hit M:DocIdsFs.Funcs.unitOf``1(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``0}) <= Method unitOf()
+hit M:DocIdsFs.Funcs.twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``0,``1}},``0) <= Method twice<2>(``0)
+hit M:DocIdsFs.Funcs.unitOf``1(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``0}) <= Method unitOf<1>()
 hit M:DocIdsFs.Funcs.|Even|Odd|(System.Int32) <= Method |Even|Odd|(System.Int32)
 hit M:DocIdsFs.Funcs.|Positive|_|(System.Int32) <= Method |Positive|_|(System.Int32)
+hit M:DocIdsFs.Hidden.GenericShared``1(System.Int32) <= Method GenericShared<1>(System.Int32)
 hit M:DocIdsFs.Hidden.Shared(System.Int32) <= Method Shared(System.Int32)
 hit M:DocIdsFs.IShape.Describe <= Method Describe()
 hit M:DocIdsFs.Point.Scale(System.Int32) <= Method Scale(System.Int32)
@@ -47,9 +48,9 @@ hit M:DocIdsFs.Widget.Add(System.String) <= Method Add(System.String)
 hit M:DocIdsFs.Widget.Corner(System.Int32[0:]) <= Method Corner(System.Int32[0:,0:])
 hit M:DocIdsFs.Widget.Curried(System.Int32,System.Int32) <= Method Curried(System.Int32,System.Int32)
 hit M:DocIdsFs.Widget.Dist(System.Double) <= Method Dist(System.Double)
-hit M:DocIdsFs.Widget.Echo``1(``0) <= Method Echo(``0)
+hit M:DocIdsFs.Widget.Echo``1(``0) <= Method Echo<1>(``0)
 hit M:DocIdsFs.Widget.Make(System.String) <= Method Make(System.String)
-hit M:DocIdsFs.Widget.Twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``0,``1}},``0) <= Method Twice(``0)
+hit M:DocIdsFs.Widget.Twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``0,``1}},``0) <= Method Twice<2>(``0)
 hit M:DocIdsFs.Widget.op_Addition(DocIdsFs.Widget,DocIdsFs.Widget) <= Method op_Addition(DocIdsFs.Widget,DocIdsFs.Widget)
 hit M:DocIdsFs.Widget.op_Implicit(DocIdsFs.Widget) <= Method op_Implicit(DocIdsFs.Widget)
 hit P:DocIdsFs.Box`1.Value <= Property Value()
@@ -57,6 +58,10 @@ hit P:DocIdsFs.Funcs.Inner.deep <= Method deep()
 hit P:DocIdsFs.Funcs.Limit <= Field Limit()
 hit P:DocIdsFs.Funcs.answer <= Method answer()
 hit P:DocIdsFs.Funcs.counter <= Method counter()
+hit P:DocIdsFs.Hidden.Renamed.A(System.Int32) <= Property B(System.Int32)
+hit P:DocIdsFs.Hidden.Renamed.B(System.String) <= Property D(System.String)
+hit P:DocIdsFs.Hidden.RenamedAlike.A(System.Int32) <= Property B(System.Int32)
+hit P:DocIdsFs.Hidden.RenamedAlike.B(System.Int32) <= Property D(System.Int32)
 hit P:DocIdsFs.IShape.Area <= Property Area()
 hit P:DocIdsFs.Point.X <= Field X()
 hit P:DocIdsFs.Point.Y <= Field Y()
@@ -84,6 +89,7 @@ hit T:DocIdsFs.Funcs.Inner
 hit T:DocIdsFs.Handler
 hit T:DocIdsFs.Hidden
 hit T:DocIdsFs.Hidden.Renamed
+hit T:DocIdsFs.Hidden.RenamedAlike
 hit T:DocIdsFs.IShape
 hit T:DocIdsFs.IntId
 hit T:DocIdsFs.Pair`1
@@ -102,13 +108,12 @@ hit T:DocIdsFs.Tree`1.Leaf
 hit T:DocIdsFs.Tree`1.Node
 hit T:DocIdsFs.Widget
 hit T:DocIdsFs.m
-keys 109
+keys 114
+miss M:DocIdsFs.Hidden.RankShared(System.Int32[0:])
 miss M:DocIdsFs.IShape.add_Fired(System.EventHandler)
 miss M:DocIdsFs.IShape.remove_Fired(System.EventHandler)
 miss M:DocIdsFs.Widget.add_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
 miss M:DocIdsFs.Widget.remove_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
-miss P:DocIdsFs.Hidden.Renamed.A(System.Int32)
-miss P:DocIdsFs.Hidden.Renamed.B(System.String)
 miss P:DocIdsFs.Point.Sum
 miss T:DocIdsFs.metre
 pickle decoded

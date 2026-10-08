@@ -1284,6 +1284,9 @@ pub struct ModuleMemberVal {
     /// undocumented val, or one compiled without a doc file, both of which
     /// pickle an empty string.
     pub xml_doc_sig: Option<String>,
+    /// How many of the val's type parameters are units of measure: IL erases
+    /// them, but the doc key's generic arity counts them.
+    pub measure_typars: usize,
 }
 
 impl ModuleMemberVal {
@@ -1397,6 +1400,7 @@ fn module_member_vals(
             is_public: v.access.is_empty(),
             definition_range: resolve_definition_range(pickled, v),
             xml_doc_sig: pickled_xml_doc_sig(&v.xmldoc_sig),
+            measure_typars: measure_typar_count(v),
         });
     }
     Ok(out)
@@ -1470,6 +1474,21 @@ enum ClaimShape {
     Unknown,
 }
 
+/// Whether a projected member occupies the claim slot `(name, shape)`.
+fn claim_slot_matches(slot: &Option<Member>, name: &str, shape: ClaimShape) -> bool {
+    let Some(Member::Method(m)) = slot else {
+        return false;
+    };
+    m.name == name
+        && match shape {
+            ClaimShape::Value => m.module_value.is_some(),
+            ClaimShape::Function(n) => {
+                m.module_value.is_none() && m.signature.parameters.len() == n
+            }
+            ClaimShape::Unknown => true,
+        }
+}
+
 fn claim_shape(v: &ModuleMemberVal) -> ClaimShape {
     match (v.arg_group_count, v.il_arity) {
         (Some(0), _) if !v.is_generic => ClaimShape::Value,
@@ -1499,6 +1518,17 @@ fn val_facts(v: &ModuleMemberVal) -> ValFacts {
         arg_group_count: callable_arg_group_count(v),
         xml_doc_sig: v.xml_doc_sig.clone(),
     }
+}
+
+/// How many of a val's type parameters are units of measure — erased from IL,
+/// but counted in its doc key's generic arity.
+fn measure_typar_count(v: &PickledVal) -> usize {
+    v.repr_info.as_ref().map_or(0, |r| {
+        r.typar_repr
+            .iter()
+            .filter(|t| t.kind == TyparKind::Measure)
+            .count()
+    })
 }
 
 /// A pickled `XmlDocSig` as the model carries it: `None` for the empty string
@@ -1623,6 +1653,24 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
         .into_iter()
         .map(Some)
         .collect();
+    // Per claim slot, how many vals claim it and how many projected methods
+    // occupy it before any claim is made — the doc key's ambiguity test.
+    let mut vals_per_slot: HashMap<(&str, ClaimShape), usize> = HashMap::new();
+    for v in target.vals.iter().filter(|v| !v.is_literal) {
+        *vals_per_slot
+            .entry((v.il_name(), claim_shape(v)))
+            .or_default() += 1;
+    }
+    let slot_candidates: HashMap<(&str, ClaimShape), usize> = vals_per_slot
+        .keys()
+        .map(|&(name, shape)| {
+            let n = pool
+                .iter()
+                .filter(|slot| claim_slot_matches(slot, name, shape))
+                .count();
+            ((name, shape), n)
+        })
+        .collect();
     let mut members = Vec::new();
     for v in &target.vals {
         // A `[<Literal>]` val compiles to a **static literal field**, not a method:
@@ -1668,19 +1716,7 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
         }
         let shape = claim_shape(v);
         let name = v.il_name();
-        let matches_slot = |slot: &Option<Member>| -> bool {
-            let Some(Member::Method(m)) = slot else {
-                return false;
-            };
-            m.name == name
-                && match shape {
-                    ClaimShape::Value => m.module_value.is_some(),
-                    ClaimShape::Function(n) => {
-                        m.module_value.is_none() && m.signature.parameters.len() == n
-                    }
-                    ClaimShape::Unknown => true,
-                }
-        };
+        let matches_slot = |slot: &Option<Member>| claim_slot_matches(slot, name, shape);
         // A `.fsi`-gated assembly can hold a *hidden* helper sharing an
         // exported val's compiled name, shape, and arity (the helper is
         // absent from the signature pickle, so nothing else disambiguates).
@@ -1755,8 +1791,18 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 // fit the claimed method's signature: a helper the signature
                 // file hides can share the val's compiled name and arity and be
                 // claimed in place of the val's own method.
+                //
+                // And the claim must be the only one available: when the module
+                // holds more methods in the slot than vals claim it, the extra is
+                // a member the signature hides, and which method is the val's is
+                // a guess the key's parameter types cannot always settle (fsc's
+                // array-rank spelling changed across versions).
                 let key = facts.xml_doc_sig.clone().flatten();
-                m.xml_doc_sig = key.filter(|k| crate::doc_id::recorded_method_key_fits(k, &m));
+                let unambiguous =
+                    slot_candidates.get(&(name, shape)) == vals_per_slot.get(&(name, shape));
+                m.xml_doc_sig = key.filter(|k| {
+                    unambiguous && crate::doc_id::recorded_method_key_fits(k, &m, v.measure_typars)
+                });
                 if facts.extension == Some(true) {
                     m.is_extension_method = true;
                 }
@@ -3034,16 +3080,33 @@ enum DocSlot {
 /// The [`DocSlot`] a type's member val compiles to, or `None` for one with no
 /// slot this overlay stamps: a class constructor, an F#-native extension (it
 /// compiles onto its module, which the module member list keys), a val with no
-/// `ValReprInfo` to count arguments from.
+/// `ValReprInfo` to count arguments from. A `[<CompiledName>]`-renamed val's
+/// slot is named by the attribute: its pickled names are its logical ones,
+/// which would name a *different* IL member (`member A` compiled as `B`
+/// beside `member B` compiled as `D`).
 ///
 /// An instance member's first argument group is the receiver, which the IL
 /// signature does not list; a setter's last argument is the assigned value,
 /// which a property's index parameters do not.
-fn member_doc_slot(v: &PickledVal) -> Option<DocSlot> {
+fn member_doc_slot(pickled: &PickledCcu, v: &PickledVal) -> Option<DocSlot> {
     let info = v.member_info.as_ref()?;
     if v.flags & VAL_FLAGS_IS_EXTENSION_MEMBER != 0 {
         return None;
     }
+    // A `[<CompiledName>]` on a type member renames its IL member (an accessor's
+    // property, too) but not the val's pickled names, so the slot is named by
+    // the attribute. One whose argument cannot be read declines.
+    let renamed = match pickled_attribute(
+        pickled,
+        &v.attribs,
+        &["Microsoft", "FSharp", "Core", "CompiledNameAttribute"],
+    ) {
+        None => None,
+        Some(attr) => match attr.args_unnamed.first().map(pickled_attribute_const) {
+            Some(Some(PickledConst::String(name))) => Some(name.as_str()),
+            _ => return None,
+        },
+    };
     let total: usize = v.repr_info.as_ref()?.arg_repr.iter().map(Vec::len).sum();
     let is_static = !info.flags.is_instance;
     let args = if is_static {
@@ -3051,7 +3114,9 @@ fn member_doc_slot(v: &PickledVal) -> Option<DocSlot> {
     } else {
         total.checked_sub(1)?
     };
-    let compiled = v.compiled_name.as_deref().unwrap_or(&v.logical_name);
+    let compiled = renamed
+        .or(v.compiled_name.as_deref())
+        .unwrap_or(&v.logical_name);
     Some(match info.flags.kind {
         PickledMemberKind::Member => DocSlot::Method {
             name: compiled.to_string(),
@@ -3064,12 +3129,12 @@ fn member_doc_slot(v: &PickledVal) -> Option<DocSlot> {
             is_static: false,
         },
         PickledMemberKind::PropertyGet => DocSlot::Getter {
-            name: v.logical_name.strip_prefix("get_")?.to_string(),
+            name: renamed.or(v.logical_name.strip_prefix("get_"))?.to_string(),
             index_arity: args,
             is_static,
         },
         PickledMemberKind::PropertySet => DocSlot::Setter {
-            name: v.logical_name.strip_prefix("set_")?.to_string(),
+            name: renamed.or(v.logical_name.strip_prefix("set_"))?.to_string(),
             index_arity: args.checked_sub(1)?,
             is_static,
         },
@@ -3147,6 +3212,9 @@ struct DocKey {
     slot: DocSlot,
     /// `None` for an undocumented val.
     key: Option<String>,
+    /// The val's measure type parameters, which IL erases but its key's generic
+    /// arity counts (see `doc_id::recorded_key_fits`).
+    erased_typars: usize,
 }
 
 /// Stamp each F# type's members with the doc-comment key fsc pickled for them
@@ -3204,13 +3272,14 @@ pub(crate) fn apply_type_member_doc_sigs(
                 let Some(info) = &v.member_info else {
                     continue;
                 };
-                if let Some(slot) = member_doc_slot(v) {
+                if let Some(slot) = member_doc_slot(pickled, v) {
                     member_keys
                         .entry(info.apparent_parent.clone())
                         .or_default()
                         .push(DocKey {
                             slot,
                             key: pickled_xml_doc_sig(&v.xmldoc_sig),
+                            erased_typars: measure_typar_count(v),
                         });
                 }
             }
@@ -3242,6 +3311,7 @@ pub(crate) fn apply_type_member_doc_sigs(
                     keys.push(DocKey {
                         slot: DocSlot::ValField(field.ident.name.clone()),
                         key: pickled_xml_doc_sig(&field.xmldoc_sig),
+                        erased_typars: 0,
                     });
                 }
             }
@@ -3339,16 +3409,18 @@ pub(crate) fn apply_type_member_doc_sigs(
 /// [`apply_type_member_doc_sigs`] for when a slot is unambiguous.
 fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
     // Per slot: how many vals claim it, and their key if they all agree.
-    let mut slots: HashMap<&DocSlot, (usize, Option<Option<&String>>)> = HashMap::new();
+    #[allow(clippy::type_complexity)]
+    let mut slots: HashMap<&DocSlot, (usize, Option<(Option<&String>, usize)>)> = HashMap::new();
     for k in keys {
-        let entry = slots.entry(&k.slot).or_insert((0, Some(k.key.as_ref())));
+        let fact = (k.key.as_ref(), k.erased_typars);
+        let entry = slots.entry(&k.slot).or_insert((0, Some(fact)));
         entry.0 += 1;
-        if entry.1 != Some(k.key.as_ref()) {
+        if entry.1 != Some(fact) {
             entry.1 = None;
         }
     }
-    for (slot, (vals, key)) in slots {
-        let Some(Some(key)) = key else {
+    for (slot, (vals, fact)) in slots {
+        let Some((Some(key), erased_typars)) = fact else {
             continue;
         };
         // A val's own member can be missing from the projection — refused and
@@ -3385,7 +3457,7 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
         if occupants.len() != vals
             || occupants
                 .iter()
-                .any(|m| !crate::doc_id::recorded_key_fits(key, m, keyed_as))
+                .any(|m| !crate::doc_id::recorded_key_fits(key, m, keyed_as, erased_typars))
         {
             continue;
         }
@@ -4855,6 +4927,7 @@ mod tests {
                     is_public: true,
                     definition_range: None,
                     xml_doc_sig: None,
+                    measure_typars: 0,
                 },
                 ModuleMemberVal {
                     val_index: 1,
@@ -4871,6 +4944,7 @@ mod tests {
                     is_public: true,
                     definition_range: None,
                     xml_doc_sig: None,
+                    measure_typars: 0,
                 },
                 ModuleMemberVal {
                     val_index: 2,
@@ -4886,6 +4960,7 @@ mod tests {
                     is_public: true,
                     definition_range: None,
                     xml_doc_sig: None,
+                    measure_typars: 0,
                 },
                 ModuleMemberVal {
                     val_index: 3,
@@ -4901,6 +4976,7 @@ mod tests {
                     is_public: true,
                     definition_range: None,
                     xml_doc_sig: None,
+                    measure_typars: 0,
                 },
                 ModuleMemberVal {
                     val_index: 4,
@@ -4916,6 +4992,7 @@ mod tests {
                     is_public: true,
                     definition_range: None,
                     xml_doc_sig: None,
+                    measure_typars: 0,
                 },
             ]
         );
@@ -5645,7 +5722,7 @@ mod tests {
                 match item.val {
                     Some((documented, member)) => {
                         let key = documented.then(|| key_of(item));
-                        keys.push(DocKey { slot, key: key.clone() });
+                        keys.push(DocKey { slot, key: key.clone(), erased_typars: 0 });
                         match member {
                             ValMember::Kept => {
                                 entity.members.push(method_of(item));

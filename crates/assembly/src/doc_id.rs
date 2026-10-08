@@ -322,43 +322,65 @@ pub(crate) enum KeyedAs {
 ///
 /// - fsc may prepend SRTP witness parameters, each an `FSharpFunc`, to a
 ///   method's own;
-/// - a multidimensional array's rank is not compared: current fsc writes a
-///   rank-`r` array with `r - 1` dimension specs (`[0:]` for 2-D), older fsc
-///   and Roslyn with `r`;
+/// - current fsc writes a rank-`r` array with `r - 1` dimension specs (`[0:]`
+///   for 2-D), older fsc and Roslyn with `r`, so a key's `d` specs fit an IL
+///   rank of `d` or `d + 1` (a vector, `[]`, only a vector);
 /// - older fsc writes a byref parameter as the `byref<'T, 'Kind>` (or `inref`,
 ///   `outref`) abbreviation, the IL as `'T@`;
 /// - fsc writes a `nativeptr<'T>` as a pointer (`` ``0* ``), the IL as
 ///   `System.IntPtr`; and it keeps the `voidptr` and `ilsigptr<'T>`
 ///   abbreviations the IL spells `System.Void*` and `` ``0* ``;
 /// - a key's method generic arity counts the val's measure type parameters,
-///   which IL erases, so it may exceed the IL arity but never fall short.
+///   which IL erases: it must lie between the IL arity and the IL arity plus
+///   `erased_typars`, the val's measure type parameters per its pickle.
 ///
 /// Everything else must agree exactly. A parameter shape outside these rules
 /// (a flattened 8-tuple, say) refutes a correct tie too, which costs that
 /// member its key and nothing else.
-pub(crate) fn recorded_key_fits(key: &str, member: &Member, keyed_as: KeyedAs) -> bool {
+pub(crate) fn recorded_key_fits(
+    key: &str,
+    member: &Member,
+    keyed_as: KeyedAs,
+    erased_typars: usize,
+) -> bool {
     match (member, keyed_as) {
-        (Member::Method(m), KeyedAs::Member) => recorded_method_key_fits(key, m),
+        (Member::Method(m), KeyedAs::Member) => recorded_method_key_fits(key, m, erased_typars),
         (Member::Property(p), _) => {
             let mut params: Vec<String> =
                 p.parameters.iter().map(|ip| type_enc(&ip.ty.ty)).collect();
             if keyed_as == KeyedAs::Setter {
                 params.push(type_enc(&p.ty));
             }
-            key_fits(key, &params, 0, false)
+            key_fits(key, &params, 0, 0, false)
         }
-        (Member::Event(_) | Member::Field(_), KeyedAs::Member) => key_fits(key, &[], 0, false),
+        (Member::Event(_) | Member::Field(_), KeyedAs::Member) => key_fits(key, &[], 0, 0, false),
         (_, KeyedAs::Setter) => false,
     }
 }
 
 /// [`recorded_key_fits`] for a method.
-pub(crate) fn recorded_method_key_fits(key: &str, method: &MethodLike) -> bool {
+pub(crate) fn recorded_method_key_fits(
+    key: &str,
+    method: &MethodLike,
+    erased_typars: usize,
+) -> bool {
     let params: Vec<String> = method.signature.parameters.iter().map(param_enc).collect();
-    key_fits(key, &params, method.generic_parameters.len(), true)
+    key_fits(
+        key,
+        &params,
+        method.generic_parameters.len(),
+        erased_typars,
+        true,
+    )
 }
 
-fn key_fits(key: &str, il_params: &[String], il_generic_arity: usize, is_method: bool) -> bool {
+fn key_fits(
+    key: &str,
+    il_params: &[String],
+    il_generic_arity: usize,
+    erased_typars: usize,
+    is_method: bool,
+) -> bool {
     let Some((name, key_params)) = split_key(key) else {
         return false;
     };
@@ -366,7 +388,10 @@ fn key_fits(key: &str, il_params: &[String], il_generic_arity: usize, is_method:
         .rsplit_once("``")
         .and_then(|(_, n)| n.parse::<usize>().ok())
         .unwrap_or(0);
-    if key_generic_arity < il_generic_arity || key_params.len() < il_params.len() {
+    if key_generic_arity < il_generic_arity
+        || key_generic_arity > il_generic_arity + erased_typars
+        || key_params.len() < il_params.len()
+    {
         return false;
     }
     let (witnesses, own) = key_params.split_at(key_params.len() - il_params.len());
@@ -384,7 +409,7 @@ fn key_fits(key: &str, il_params: &[String], il_generic_arity: usize, is_method:
 /// Whether one key parameter, in fsc's dialect, names the IL parameter `il`
 /// (see [`recorded_key_fits`]).
 fn param_fits(key: &str, il: &str) -> bool {
-    if normalise_arrays(key) == normalise_arrays(il) {
+    if arrays_fit(key, il) {
         return true;
     }
     if il == "System.IntPtr" && key.ends_with('*') {
@@ -445,28 +470,44 @@ fn split_top_level(list: &str) -> Vec<&str> {
     parts
 }
 
-/// Rewrite every array suffix in an encoded type to `[]` (a vector) or `[,]`
-/// (any multidimensional array). The rank is dialect-dependent — current fsc
-/// writes `[0:]` for 2-D, older fsc and Roslyn `[0:, 0:]` / `[0:,0:]` — so the
-/// comparison keeps only what every dialect agrees on.
-fn normalise_arrays(ty: &str) -> String {
-    let mut out = String::with_capacity(ty.len());
-    let mut rest = ty;
-    while let Some(open) = rest.find('[') {
-        out.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find(']').map(|c| open + c) else {
-            out.push_str(&rest[open..]);
-            return out;
-        };
-        out.push_str(if rest[open + 1..close].trim().is_empty() {
-            "[]"
-        } else {
-            "[,]"
-        });
-        rest = &rest[close + 1..];
+/// Whether an encoded key type and IL type agree everywhere outside their
+/// array suffixes, and each array suffix pair fits: a vector (`[]`) only a
+/// vector, and a key's `d` dimension specs an IL rank of `d` or `d + 1` (see
+/// [`recorded_key_fits`]).
+fn arrays_fit(key: &str, il: &str) -> bool {
+    let (mut key, mut il) = (key, il);
+    loop {
+        match (key.find('['), il.find('[')) {
+            (None, None) => return key == il,
+            (Some(k), Some(i)) => {
+                if key[..k] != il[..i] {
+                    return false;
+                }
+                let (Some(kc), Some(ic)) = (key[k..].find(']'), il[i..].find(']')) else {
+                    return false;
+                };
+                let specs = |dims: &str| {
+                    if dims.trim().is_empty() {
+                        0
+                    } else {
+                        dims.split(',').count()
+                    }
+                };
+                let (d, r) = (specs(&key[k + 1..k + kc]), specs(&il[i + 1..i + ic]));
+                let fits = if d == 0 || r == 0 {
+                    d == r
+                } else {
+                    d == r || d + 1 == r
+                };
+                if !fits {
+                    return false;
+                }
+                key = &key[k + kc + 1..];
+                il = &il[i + ic + 1..];
+            }
+            _ => return false,
+        }
     }
-    out.push_str(rest);
-    out
 }
 
 /// Encode a parameter list as `(t1,t2,…)`, or the empty string when there are
@@ -1463,7 +1504,7 @@ mod tests {
             is_method: true,
         };
         let m = |params: Vec<Parameter>, arity| method("f", arity, params, prim(Primitive::Void));
-        let fits = |key: &str, member: &Member| recorded_key_fits(key, member, KeyedAs::Member);
+        let fits = |key: &str, member: &Member| recorded_key_fits(key, member, KeyedAs::Member, 0);
         // Same parameters.
         let int_f = m(vec![param(prim(Primitive::I4))], 0);
         assert!(fits("M:N.M.f(System.Int32)", &int_f));
@@ -1472,21 +1513,30 @@ mod tests {
         assert!(!fits("M:N.M.f", &int_f));
         // SRTP witnesses lead the key's own parameters — only `FSharpFunc`s,
         // and only on a method.
-        let srtp = m(vec![param(tvar(0))], 1);
+        let srtp = m(vec![param(tvar(0))], 2);
         assert!(fits(
             "M:N.M.twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,``1},``0)",
             &srtp
         ));
-        assert!(!fits("M:N.M.twice``1(System.String,``0)", &srtp));
-        // The key's generic arity may count erased measure parameters, but
-        // never falls short of the IL's.
-        assert!(fits("M:N.M.f``1(System.Int32)", &int_f));
+        assert!(!fits("M:N.M.twice``2(System.String,``0)", &srtp));
+        // The key's generic arity counts the val's erased measure parameters —
+        // and only those — and never falls short of the IL's.
+        assert!(recorded_key_fits(
+            "M:N.M.f``1(System.Int32)",
+            &int_f,
+            KeyedAs::Member,
+            1
+        ));
+        assert!(!fits("M:N.M.f``1(System.Int32)", &int_f));
         assert!(!fits("M:N.M.f(``0)", &srtp));
-        // Multidimensional arrays in every dialect; a vector is not one.
+        // A multidimensional rank fits in either fsc dialect (`d` or `d + 1`
+        // dimension specs for rank `d + 1`); a vector is not multidimensional.
         let md = m(vec![param(md_array(prim(Primitive::I4), 2))], 0);
         assert!(fits("M:N.M.f(System.Int32[0:])", &md));
         assert!(fits("M:N.M.f(System.Int32[0:, 0:])", &md));
         assert!(!fits("M:N.M.f(System.Int32[])", &md));
+        let md3 = m(vec![param(md_array(prim(Primitive::I4), 3))], 0);
+        assert!(!fits("M:N.M.f(System.Int32[0:])", &md3));
         // Older fsc's byref abbreviation; `nativeptr<'T>`; `voidptr`.
         let byref = m(vec![byref_param(prim(Primitive::I4))], 0);
         assert!(fits("M:N.M.f(System.Int32@)", &byref));
@@ -1509,17 +1559,20 @@ mod tests {
         assert!(recorded_key_fits(
             "P:N.T.Item(System.Int32)",
             &p,
-            KeyedAs::Member
+            KeyedAs::Member,
+            0
         ));
         assert!(recorded_key_fits(
             "P:N.T.Item(System.Int32,System.String)",
             &p,
-            KeyedAs::Setter
+            KeyedAs::Setter,
+            0
         ));
         assert!(!recorded_key_fits(
             "P:N.T.Item(System.String)",
             &p,
-            KeyedAs::Member
+            KeyedAs::Member,
+            0
         ));
     }
 
