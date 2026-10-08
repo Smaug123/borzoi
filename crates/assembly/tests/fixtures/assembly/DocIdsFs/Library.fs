@@ -316,3 +316,18 @@ module Ext =
     type Widget with
         /// An optional extension on a type from this assembly.
         member w.Twice = w.Count * 2
+
+/// An attribute the reader cannot project on a generic parameter.
+type ParamMarker() =
+    inherit System.Attribute()
+
+/// A type the projection drops (its type parameter carries `ParamMarker`).
+type Dropped<[<ParamMarker>] 'T>() =
+    /// A method of the dropped type.
+    member _.Corner(a: int[,]) = a.[0, 0]
+
+// Undocumented, and compiled so that its stripped name and arity collide with
+// `Dropped<'T>`'s: the dropped type's keys must not land on it.
+[<CompiledName("Dropped`2")>]
+type Squatter<'T>() =
+    member _.Corner(a: int[,]) = a.[0, 0] + 1

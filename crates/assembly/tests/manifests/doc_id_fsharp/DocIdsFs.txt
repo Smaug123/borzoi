@@ -83,6 +83,7 @@ hit P:DocIdsFs.Widget.Sink(System.String) <= Property Sink()
 hit T:DocIdsFs.Boom
 hit T:DocIdsFs.Box`1
 hit T:DocIdsFs.Colour
+hit T:DocIdsFs.Dropped`1
 hit T:DocIdsFs.Ext
 hit T:DocIdsFs.Fields
 hit T:DocIdsFs.Funcs
@@ -95,6 +96,7 @@ hit T:DocIdsFs.Hidden.RenamedAlike
 hit T:DocIdsFs.IShape
 hit T:DocIdsFs.IntId
 hit T:DocIdsFs.Pair`1
+hit T:DocIdsFs.ParamMarker
 hit T:DocIdsFs.Point
 hit T:DocIdsFs.Pos
 hit T:DocIdsFs.Quantity
@@ -110,7 +112,8 @@ hit T:DocIdsFs.Tree`1.Leaf
 hit T:DocIdsFs.Tree`1.Node
 hit T:DocIdsFs.Widget
 hit T:DocIdsFs.m
-keys 117
+keys 120
+miss M:DocIdsFs.Dropped`1.Corner(System.Int32[0:])
 miss M:DocIdsFs.Hidden.Elided.Corner(System.Int32[0:, 0:])
 miss M:DocIdsFs.Hidden.RankShared(System.Int32[0:])
 miss M:DocIdsFs.IShape.add_Fired(System.EventHandler)
