@@ -42,6 +42,7 @@ mod parser_diff_compexpr;
 mod parser_diff_cons;
 mod parser_diff_control_flow;
 mod parser_diff_dot_access;
+mod parser_diff_dot_index_spacing;
 mod parser_diff_dot_lambda;
 mod parser_diff_dynamic;
 mod parser_diff_extern;
