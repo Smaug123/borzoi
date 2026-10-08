@@ -300,10 +300,20 @@ impl<'a> Resolver<'a> {
             let name = id_text(&def.name).to_string();
             let range = def.range;
             let id = self.intern(def);
+            // An anonymous field has the name F# generates for it: `Item` when
+            // it is the case's only field, `Item<n>` (its 1-based position)
+            // among several. `Case(Item = e)` names it like any other field.
             let fields = case.full_type().is_none().then(|| {
-                case.fields()
-                    .filter_map(|f| f.ident())
-                    .map(|t| id_text(t.text()).to_string())
+                let fields: Vec<_> = case.fields().collect();
+                let lone = fields.len() == 1;
+                fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| match f.ident() {
+                        Some(t) => id_text(t.text()).to_string(),
+                        None if lone => "Item".to_string(),
+                        None => format!("Item{}", i + 1),
+                    })
                     .collect()
             });
             self.case_field_names.insert(id, fields);

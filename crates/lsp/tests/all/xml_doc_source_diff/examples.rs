@@ -1,0 +1,444 @@
+//! Named cases of the attachment rules, each pinning FCS's own answer as well
+//! as our agreement with it: a differential alone would pass a fixture whose
+//! expectation was backwards. Several are the shrunk counterexamples the
+//! property found against deliberately broken models.
+
+use borzoi::xml_doc::source::SourceDocDecline;
+
+use super::harness::{Graded, OracleFile, Verdict, check_paths, run_fixture};
+
+/// [`run_fixture`] for a fixture FCS rejects: graded all the same.
+fn run_fixture_allowing_errors(files: &[(&str, &str)]) -> (Vec<Graded>, Vec<OracleFile>) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let paths: Vec<_> = files
+        .iter()
+        .map(|(name, text)| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, text).unwrap();
+            p
+        })
+        .collect();
+    check_paths(
+        &paths,
+        files.iter().map(|(_, t)| t.to_string()).collect(),
+        &[],
+    )
+}
+
+/// FCS's lines and our verdict at the definition of the unique binder named
+/// `name` in a one-file project.
+fn at_definition(src: &str, name: &str) -> (Vec<String>, Verdict) {
+    let files = [("M.fs", src)];
+    let (graded, fcs) = run_fixture(&files, &["DEFINED_X"]);
+    for f in &fcs {
+        let errors: Vec<_> = f
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == "Error")
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "fixture does not compile: {errors:?}\n{src}"
+        );
+    }
+    let hits: Vec<_> = graded
+        .into_iter()
+        .filter(|g| g.is_definition && g.name == name)
+        .collect();
+    assert_eq!(hits.len(), 1, "one definition of {name}: {hits:?}");
+    let g = hits.into_iter().next().unwrap();
+    (g.fcs_lines.expect("paired with FCS"), g.verdict)
+}
+
+#[track_caller]
+fn assert_attached(src: &str, name: &str, expected: &[&str]) {
+    let (fcs, verdict) = at_definition(src, name);
+    assert_eq!(fcs, expected, "FCS's doc for {name} in\n{src}");
+    assert_eq!(
+        verdict,
+        Verdict::Agree {
+            attached: !expected.is_empty()
+        },
+        "our doc for {name} in\n{src}"
+    );
+}
+
+#[test]
+fn and_binding_takes_the_doc_before_and_over_the_one_after_it() {
+    let src = "module M\nlet rec f x = g x\n/// outer\nand\n    /// inner\n    g x = f x\n";
+    assert_attached(src, "g", &[" outer"]);
+}
+
+#[test]
+fn and_binding_falls_back_to_the_doc_after_and() {
+    let src = "module M\nlet rec f x = g x\nand\n    /// inner\n    g x = f x\n";
+    assert_attached(src, "g", &[" inner"]);
+}
+
+#[test]
+fn a_blank_doc_before_and_still_hides_the_one_after_it() {
+    let src = "module M\nlet rec f x = g x\n///\nand\n    /// inner\n    g x = f x\n";
+    assert_attached(src, "g", &[]);
+}
+
+#[test]
+fn and_type_falls_back_to_the_doc_after_and() {
+    let src = "module M\ntype T = int\nand\n    /// inner\n    Q = string\n";
+    assert_attached(src, "Q", &[" inner"]);
+}
+
+#[test]
+fn an_ordinary_comment_then_a_doc_line_restarts_the_block() {
+    let src = "module M\nlet a = 1 /// trailing\n// ordinary\n/// real\nlet b = 2\n";
+    assert_attached(src, "b", &[" real"]);
+}
+
+#[test]
+fn an_ordinary_comment_alone_does_not_break_the_block() {
+    let src = "module M\n/// kept\n// ordinary\n(* block *)\nlet b = 2\n";
+    assert_attached(src, "b", &[" kept"]);
+}
+
+#[test]
+fn a_doc_trailing_code_attaches_to_the_next_declaration() {
+    let src = "module M\nlet a = 1 /// trailing\nlet b = 2\n";
+    assert_attached(src, "b", &[" trailing"]);
+    assert_attached(src, "a", &[]);
+}
+
+#[test]
+fn a_union_case_grabs_at_its_bar() {
+    let src = "module M\ntype U =\n    | A\n    /// b\n    | B of int\n";
+    assert_attached(src, "B", &[" b"]);
+    assert_attached(src, "A", &[]);
+}
+
+#[test]
+fn a_bar_less_first_case_grabs_at_its_name() {
+    let src = "module M\ntype U =\n    /// a\n    A of int\n    | B\n";
+    assert_attached(src, "A", &[" a"]);
+}
+
+#[test]
+fn a_dead_region_between_doc_and_declaration_is_invisible() {
+    let src = "module M\n/// a\n#if UNDEFINED_X\n/// dead\n#endif\nlet v = 1\n";
+    assert_attached(src, "v", &[" a"]);
+}
+
+#[test]
+fn a_live_region_contributes_its_doc_lines() {
+    let src = "module M\n/// a\n#if DEFINED_X\n/// live\n#endif\nlet v = 1\n";
+    assert_attached(src, "v", &[" a", " live"]);
+}
+
+#[test]
+fn the_implicit_compiled_symbol_is_defined() {
+    let src = "module M\n/// a\n#if COMPILED\n/// b\n#endif\nlet v = 1\n";
+    assert_attached(src, "v", &[" a", " b"]);
+}
+
+#[test]
+fn an_attribute_after_the_doc_keeps_it_and_one_before_loses_it() {
+    let before = "module M\n/// a\n[<System.Obsolete(\"o\")>]\nlet v = 1\n";
+    assert_attached(before, "v", &[" a"]);
+    let after = "module M\n[<System.Obsolete(\"o\")>]\n/// a\nlet v = 1\n";
+    assert_attached(after, "v", &[]);
+}
+
+#[test]
+fn a_use_whose_type_argument_count_differs_from_its_resolution_declines() {
+    // Resolution reads `CT<int>` as the non-generic `CT` (#323); FCS binds the
+    // generic one. The bare `CT` agrees with both, so it keeps its doc.
+    let src = "module M\n/// generic\ntype CT<'T> = int -> 'T\n/// plain\ntype CT = int -> unit\nlet f (x: CT<int>) = x\nlet g (x: CT) = x\n";
+    let sites = occurrences(src, "CT");
+    let (verdict, fcs) = site(&sites, src.find("CT<int>").unwrap());
+    assert_eq!(fcs, [" generic"]);
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
+    let (verdict, fcs) = site(&sites, src.find("CT) =").unwrap());
+    assert_eq!(fcs, [" plain"]);
+    assert_eq!(verdict, Verdict::Agree { attached: true });
+}
+
+#[test]
+fn an_assembly_namesake_of_another_arity_is_not_shown_the_source_doc() {
+    // `Action<int>` is `System.Action<'T>` to FCS, not the project's `Action`.
+    let src = "module M\nopen System\n/// mine\ntype Action = int\nlet f (x: Action<int>) = x\n";
+    let sites = occurrences(src, "Action");
+    let (verdict, fcs) = site(&sites, src.find("Action<int>").unwrap());
+    assert_eq!(fcs, Vec::<String>::new());
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
+}
+
+#[test]
+fn arity_mismatch_declines_across_reopened_namespaces_and_files() {
+    let src = "namespace N\n/// generic\ntype T<'a> = int -> 'a\nnamespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
+    let sites = occurrences(src, "T");
+    let (verdict, fcs) = site(&sites, src.find("T<int>").unwrap());
+    assert_eq!(fcs, [" generic"]);
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
+
+    let a = "namespace N\n/// generic\ntype T<'a> = int -> 'a\n";
+    let b = "namespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
+    let files = [("A.fs", a), ("B.fs", b)];
+    let (graded, _) = run_fixture(&files, &[]);
+    assert!(super::harness::failures(&graded).is_empty(), "{graded:?}");
+}
+
+#[test]
+fn named_argument_labels_show_no_doc() {
+    // Plain, optional and `new` named arguments whose labels are also
+    // documented locals: FCS binds each label to the parameter.
+    let src = "module M\ntype A(arg: int, ?opt: int) =\n    member _.X = arg\nlet h () =\n    /// local\n    let arg = 1\n    /// local\n    let opt = 2\n    A(arg = arg, ?opt = Some opt), new A(arg = arg)\n";
+    let files = [("M.fs", src)];
+    let (graded, _) = run_fixture(&files, &[]);
+    assert!(super::harness::failures(&graded).is_empty(), "{graded:#?}");
+    for label in [
+        src.find("A(arg =").unwrap() + 2,
+        src.find("?opt =").unwrap() + 1,
+        src.find("new A(arg =").unwrap() + 6,
+    ] {
+        assert!(
+            !graded.iter().any(|g| usize::from(g.range.start()) == label),
+            "the label at {label} is graded, so resolution committed it to something"
+        );
+    }
+}
+
+#[test]
+fn duplicate_union_cases_decline() {
+    let src =
+        "module M\ntype C =\n    /// one\n    | Dup of int\n    /// two\n    | Dup of string\n";
+    let files = [("M.fs", src)];
+    let (graded, _) = run_fixture_allowing_errors(&files);
+    for g in graded.iter().filter(|g| g.name == "Dup") {
+        assert_eq!(
+            g.verdict,
+            Verdict::Declined(SourceDocDecline::SameNameDeclarations)
+        );
+    }
+}
+
+#[test]
+fn a_leading_tab_is_not_trimmed_by_the_implicit_summary_rule() {
+    // FCS trims only spaces: a tab-only line is not empty, so the block is
+    // wrapped in an implicit `<summary>` and the `<summary>` text escaped.
+    let src = "module M\n///\t\n///<summary>x</summary>\nlet v = 1\n";
+    assert_attached(src, "v", &["\t", "<summary>x</summary>"]);
+}
+
+/// FCS's lines and our verdict at every graded occurrence of `name`, in source
+/// order, for a one-file fixture FCS checks cleanly.
+fn every(src: &str, name: &str) -> Vec<(usize, bool, Verdict, Vec<String>)> {
+    let files = [("M.fs", src)];
+    let (graded, fcs) = run_fixture(&files, &[]);
+    assert!(!fcs[0].has_errors(), "fixture does not compile:\n{src}");
+    assert!(super::harness::failures(&graded).is_empty(), "{graded:#?}");
+    graded
+        .into_iter()
+        .filter(|g| g.name == name)
+        .map(|g| {
+            (
+                usize::from(g.range.start()),
+                g.is_definition,
+                g.verdict,
+                g.fcs_lines.unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_type_in_type_argument_positions_keeps_its_doc() {
+    let src = "module M\n/// rec\ntype R = { V: int }\nlet a : R list = []\nlet b = System.Collections.Generic.Stack<R>()\nlet c = Unchecked.defaultof<R>\nlet d : System.Collections.Generic.Dictionary<string, R> = null\nlet e : (R * int) list = []\n/// ms\n[<Measure>]\ntype ms\nlet f (x: float<ms>) = x\n";
+    for name in ["R", "ms"] {
+        let sites = every(src, name);
+        assert!(sites.len() >= 2, "{name}: {sites:?}");
+        for (at, _, verdict, _) in &sites {
+            assert_eq!(
+                verdict,
+                &Verdict::Agree { attached: true },
+                "{name} at {at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_qualifier_whose_member_only_a_generic_namesake_declares_shows_no_doc() {
+    // `CN.M` binds `CN<'a>`, the one declaring `M` (#323).
+    let src = "module M\n/// plain\ntype CN =\n    static member Other = 0\n/// generic\ntype CN<'a> =\n    static member M = 1\nlet x = CN.M\n";
+    let sites = every(src, "CN");
+    let use_site = src.find("CN.M").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
+    assert_eq!(fcs, &[" generic"]);
+    assert!(matches!(verdict, Verdict::Declined(_)), "{verdict:?}");
+}
+
+#[test]
+fn an_accessors_trailing_doc_and_a_doc_after_type_are_not_attached() {
+    // Measured against FCS 43.12: `with /// d` before `get` adds nothing to
+    // the property's doc, and a doc between `type` and the type's attributes
+    // is dropped (the `type` keyword's grab wins, even when empty).
+    let accessor = "module M\ntype PA() =\n    /// outer\n    static member Acc\n        with /// inner\n             get () = 1\nlet x = PA.Acc\n";
+    let sites = every(accessor, "Acc");
+    assert!(!sites.is_empty());
+    for (_, _, verdict, fcs) in &sites {
+        assert_eq!(fcs, &[" outer"]);
+        assert_eq!(verdict, &Verdict::Agree { attached: true });
+    }
+    let inner = "module M\ntype\n    /// inner\n    [<System.Obsolete(\"o\")>] TI = int\nlet x = (1 : TI)\n";
+    for (_, _, verdict, fcs) in every(inner, "TI") {
+        assert_eq!(fcs, Vec::<String>::new());
+        assert_eq!(verdict, Verdict::Agree { attached: false });
+    }
+}
+
+#[test]
+fn an_augmentation_head_shows_the_augmented_types_doc() {
+    let src = "module M\n/// g\ntype G() =\n    member _.P = 1\n/// aug\ntype G with\n    member _.Q = 2\n";
+    let sites = every(src, "G");
+    let head = src.rfind("G with").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == head).expect("graded");
+    assert_eq!(fcs, &[" g"]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
+}
+
+/// Every graded occurrence of `name`, as (byte offset, verdict, FCS lines).
+fn occurrences(src: &str, name: &str) -> Vec<(usize, Verdict, Vec<String>)> {
+    let files = [("M.fs", src)];
+    let (graded, _) = run_fixture(&files, &[]);
+    graded
+        .into_iter()
+        .filter(|g| g.name == name)
+        .map(|g| {
+            (
+                usize::from(g.range.start()),
+                g.verdict,
+                g.fcs_lines.unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// The verdict at the occurrence of a type name starting at byte `at`, with
+/// FCS's lines there, from graded `sites`.
+fn site(sites: &[(usize, Verdict, Vec<String>)], at: usize) -> (Verdict, Vec<String>) {
+    let (_, verdict, fcs) = sites
+        .iter()
+        .find(|(offset, _, _)| *offset == at)
+        .unwrap_or_else(|| panic!("no graded site at {at}: {sites:?}"));
+    (verdict.clone(), fcs.clone())
+}
+
+#[test]
+fn a_member_reached_through_a_namesake_of_another_arity_shows_no_other_doc() {
+    // FCS binds `T.M` to the non-generic `T`'s `M`; resolution may pick the
+    // generic one's. `every` fails on any doc FCS does not attach.
+    let src = "module M\ntype T =\n    /// plain M\n    static member M = 1\ntype T<'a> =\n    /// generic M\n    static member M = 2\nlet x = T.M\n";
+    let sites = every(src, "M");
+    let use_site = src.find("T.M").unwrap();
+    let graded: Vec<_> = sites.iter().filter(|s| s.0 == use_site).collect();
+    assert!(!graded.is_empty(), "{sites:?}");
+    for (_, _, _, fcs) in graded {
+        assert_eq!(fcs, &[" plain M"]);
+    }
+}
+
+#[test]
+fn constructor_calls_decline_and_other_uses_keep_the_types_doc() {
+    // At `new K(1)` / `K(2)` / `[<K>]` FCS binds a constructor and shows *its*
+    // doc (here " The constructor."), which takes overload resolution to
+    // choose; the annotation and the definition are the type's.
+    let src = "module M\n/// The type.\ntype K\n    /// The constructor.\n    (x: int) =\n    inherit System.Attribute()\nlet a = new K(1)\nlet b = K(2)\nlet c : K = a\n[<K(3)>]\nlet d = 0\n";
+    let sites = every(src, "K");
+    let calls = [
+        src.find("K(1)").unwrap(),
+        src.find("K(2)").unwrap(),
+        src.find("K(3)").unwrap(),
+    ];
+    let mut graded_calls = 0;
+    for (at, _, verdict, fcs) in &sites {
+        if calls.contains(at) {
+            graded_calls += 1;
+            assert_eq!(fcs, &[" The constructor."], "FCS at {at}");
+            assert_eq!(
+                verdict,
+                &Verdict::Declined(SourceDocDecline::ConstructorCall),
+                "at {at}"
+            );
+        } else {
+            assert_eq!(fcs, &[" The type."], "FCS at {at}");
+            assert_eq!(verdict, &Verdict::Agree { attached: true }, "at {at}");
+        }
+    }
+    assert!(graded_calls >= 2, "{sites:?}");
+}
+
+#[test]
+fn constructor_calls_of_every_overload_shape_decline() {
+    // Explicit `new`s, a constructor added by an intrinsic augmentation, a
+    // struct's generated parameterless one, and a struct marked through an
+    // attribute alias: none may show the primary constructor's doc.
+    for src in [
+        "module M\n/// T\ntype K(x: int) =\n    /// ctor\n    new() = K(1)\n    member _.P = x\nlet a = new K()\nlet b = new K(2)\n",
+        "module M\n/// T\ntype K\n    /// pctor\n    (x: int) =\n    member _.P = x\ntype K with\n    /// added\n    new() = K(1)\nlet a = new K()\n",
+        "module M\n/// S\n[<Struct>]\ntype S\n    /// pctor\n    (x: int) =\n    member _.X = x\nlet a = new S()\nlet b = new S(1)\n",
+        "module M\ntype SAttribute = Microsoft.FSharp.Core.StructAttribute\n/// S\n[<S>]\ntype T\n    /// pctor\n    (x: int) =\n    member _.X = x\nlet a = new T()\n",
+    ] {
+        for name in ["K", "S", "T"] {
+            for (at, is_def, verdict, _) in every(src, name) {
+                if !is_def && src[at..].starts_with(&format!("{name}(")) {
+                    assert_eq!(
+                        verdict,
+                        Verdict::Declined(SourceDocDecline::ConstructorCall),
+                        "{name} at {at} in\n{src}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_generic_type_name_under_new_is_the_types() {
+    // `new T<int>(1)`: the constructor's record spans `T<int>`, and the name
+    // token is the type's.
+    let src = "module M\n/// The type.\ntype T<'a>\n    /// The constructor.\n    (x: 'a) =\n    member _.X = x\nlet a = new T<int>(1)\n";
+    let sites = every(src, "T");
+    let name = src.find("T<int>").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == name).expect("graded");
+    assert_eq!(fcs, &[" The type."]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
+}
+
+#[test]
+fn a_qualifier_of_an_attributed_member_keeps_the_types_doc() {
+    let src = "module M\n/// The type.\ntype T =\n    [<System.Obsolete(\"o\")>]\n    static member M = 1\nlet x = T.M\n";
+    let sites = every(src, "T");
+    let qualifier = src.find("T.M").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == qualifier).expect("graded");
+    assert_eq!(fcs, &[" The type."]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
+}
+
+#[test]
+fn a_light_directive_inside_a_doc_block_declines() {
+    // FCS's lexer consumes `#light` without a grab point, so both lines
+    // attach; the tree holds it as tokens, so the block cannot be read whole.
+    let src = "module M\n/// first\n#light \"on\"\n/// second\nlet x = 1\n";
+    let (fcs, verdict) = at_definition(src, "x");
+    assert_eq!(fcs, [" first", " second"]);
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::LexerDirective));
+}
+
+#[test]
+fn a_parenthesised_tuple_postfix_argument_is_one_type_argument() {
+    // `(int * string) T` applies `T` to one argument, so FCS binds `T<'a>`;
+    // `every` fails on any doc FCS does not attach (here `T<'a, 'b>`'s).
+    let src = "module M\n/// one\ntype T<'a> = 'a list\n/// two\ntype T<'a, 'b> = 'a * 'b\nlet x : (int * string) T = []\n";
+    let sites = every(src, "T");
+    let use_site = src.rfind("T = []").unwrap();
+    let (_, _, _, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
+    assert_eq!(fcs, &[" one"]);
+}

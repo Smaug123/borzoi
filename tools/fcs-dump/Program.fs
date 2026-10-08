@@ -6840,6 +6840,229 @@ let private dumpTypesCensusBatch () =
     | Some ex -> raise ex
     | None -> ()
 
+// ============================================================================
+// Source XML-doc oracle (`xmldoc-batch`): the `///` documentation FCS attaches
+// to the symbol of every use in the checked sources, keyed by the use's range.
+// ============================================================================
+
+/// The XML documentation FCS reports for a source-defined symbol, or `None` for
+/// a symbol kind that carries none (`FSharpParameter`, …).
+let private sourceSymbolXmlDoc (s: FSharpSymbol) : FSharpXmlDoc option =
+    match s with
+    | :? FSharpEntity as e -> Some e.XmlDoc
+    | :? FSharpUnionCase as c -> Some c.XmlDoc
+    | :? FSharpField as f -> Some f.XmlDoc
+    | :? FSharpGenericParameter as g -> Some g.XmlDoc
+    | :? FSharpMemberOrFunctionOrValue as m -> Some m.XmlDoc
+    | :? FSharpActivePatternCase as a -> Some a.XmlDoc
+    | _ -> None
+
+/// One symbol use — a defining occurrence or any other — and the documentation
+/// FCS attaches to the symbol it binds: what a tooltip at that use shows.
+///
+/// `Unprocessed` is `XmlDoc.UnprocessedLines` — the `///` lines exactly as the
+/// lexer collected them (text after the three slashes) — and `Elaborated` is
+/// `XmlDoc.GetElaboratedXmlLines()`, the same lines after FCS's implicit-`<summary>` rule.
+/// Both are `null` when the symbol has no `FromXmlText` documentation (an empty
+/// list is an *attached-but-empty* doc, which is distinct). `FromFile` marks a
+/// doc FCS would read from an assembly's `.xml` instead: never expected for a
+/// symbol defined in the checked sources, so a consumer should treat it as an
+/// oracle surprise rather than as "no documentation".
+let private projectXmlDocUse (u: FSharpSymbolUse) =
+    let kind =
+        match u.Symbol with
+        | :? FSharpEntity -> "entity"
+        | :? FSharpMemberOrFunctionOrValue -> "member"
+        | :? FSharpUnionCase -> "unioncase"
+        | :? FSharpField -> "field"
+        | :? FSharpActivePatternCase -> "activepatterncase"
+        | :? FSharpGenericParameter -> "genericparameter"
+        | :? FSharpParameter -> "parameter"
+        | _ -> "other"
+    let isCompilerGenerated =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsCompilerGenerated with _ -> false)
+        | _ -> false
+    let isConstructor =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsConstructor with _ -> false)
+        | _ -> false
+    let unprocessed, elaborated, fromFile, error =
+        try
+            match sourceSymbolXmlDoc u.Symbol with
+            | None -> null, null, false, null
+            | Some(FSharpXmlDoc.FromXmlText doc) ->
+                box doc.UnprocessedLines, box (doc.GetElaboratedXmlLines()), false, null
+            | Some(FSharpXmlDoc.FromXmlFile _) -> null, null, true, null
+            | Some FSharpXmlDoc.None -> null, null, false, null
+        with ex ->
+            null, null, false, box ex.Message
+    {| Name = u.Symbol.DisplayName
+       Kind = kind
+       Range = u.Range
+       IsFromDefinition = u.IsFromDefinition
+       IsCompilerGenerated = isCompilerGenerated
+       IsConstructor = isConstructor
+       Unprocessed = unprocessed
+       Elaborated = elaborated
+       FromFile = fromFile
+       Error = error |}
+
+/// The SDK reference switches (FSharp.Core + the runtime reference pack), from
+/// script resolution on the first path the oracle sees, reused for every later
+/// request: the documentation a symbol carries does not depend on which
+/// assemblies are referenced, so one resolution serves every fixture.
+let mutable private xmlDocSdkSwitches: (FSharpProjectOptions * string[]) option = None
+
+let private xmlDocProjectFiles
+    (checker: FSharpChecker)
+    (paths: string[])
+    (refArgs: string[])
+    (exclusiveRefs: bool)
+    (defineArgs: string[])
+    (langVersionArgs: string[])
+    =
+    let baseOpts, switches =
+        match xmlDocSdkSwitches with
+        | Some cached -> cached
+        | None ->
+            let text = SourceText.ofString (File.ReadAllText paths.[0])
+            let so, _ =
+                checker.GetProjectOptionsFromScript(
+                    paths.[0], text, assumeDotNetFramework = false, useSdkRefs = true)
+                |> Async.RunSynchronously
+            let switches =
+                so.OtherOptions
+                |> Array.filter (fun o -> o.StartsWith("-") || o.StartsWith("/"))
+                |> Array.filter (fun o ->
+                    not (o.StartsWith("--langversion:") || o.StartsWith("/langversion:")))
+            xmlDocSdkSwitches <- Some(so, switches)
+            so, switches
+    let projOpts =
+        { baseOpts with
+            ProjectFileName =
+                let dir = Option.ofObj (Path.GetDirectoryName(paths.[0])) |> Option.defaultValue "."
+                Path.Combine(dir, "fcs-dump-xmldoc.fsproj")
+            SourceFiles = paths
+            OtherOptions =
+                // `exclusiveRefs`: the caller's refs are the whole set (a real
+                // project's composed references), so the SDK's own are dropped
+                // and `--noframework` stops FCS looking for one — exactly as
+                // `usesProjectFiles` does.
+                let switches =
+                    if exclusiveRefs then
+                        let kept =
+                            switches
+                            |> Array.filter (fun o ->
+                                not (o.StartsWith("-r:") || o.StartsWith("/r:") || o.StartsWith("--reference:")))
+                        if kept |> Array.contains "--noframework" then kept
+                        else Array.append kept [| "--noframework" |]
+                    else
+                        switches
+                Array.concat [ switches; refArgs; defineArgs; langVersionArgs ]
+            UseScriptResolutionRules = false }
+    paths
+    |> Array.map (fun absolute ->
+        try
+            let sourceText = SourceText.ofString (File.ReadAllText absolute)
+            let parseResults, checkAnswer =
+                checker.ParseAndCheckFileInProject(
+                    absolute, 0, sourceText, projOpts, userOpName = "fcs-dump-xmldoc")
+                |> Async.RunSynchronously
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded r ->
+                let uses =
+                    r.GetAllUsesOfAllSymbolsInFile()
+                    |> Seq.map projectXmlDocUse
+                    |> Seq.toArray
+                {| Path = absolute
+                   Ok = true
+                   Error = ""
+                   Diagnostics =
+                       Array.append parseResults.Diagnostics r.Diagnostics
+                       |> Array.map projectDiagnostic
+                   Uses = uses |}
+            | FSharpCheckFileAnswer.Aborted ->
+                {| Path = absolute
+                   Ok = false
+                   Error = "type-check aborted"
+                   Diagnostics = [||]
+                   Uses = [||] |}
+        with ex ->
+            {| Path = absolute
+               Ok = false
+               Error = ex.Message
+               Diagnostics = [||]
+               Uses = [||] |})
+
+/// Resident source-XML-doc oracle. One JSON request per stdin line —
+/// `{ "paths": [<abs .fs/.fsi>…], "defines": [<sym>…], "langversion": <token|null>,
+/// "refs": [<dll>…], "exclusiveRefs": <bool> }`, Compile order — type-checked as
+/// ONE project against the SDK references plus `refs` (or `refs` alone, when
+/// `exclusiveRefs`), and
+/// one compact `{ "Files": [ { Path, Ok, Error, Diagnostics, Uses } … ] }` line
+/// back, `Uses` holding every symbol use with its symbol's documentation (see
+/// [`projectXmlDocUse`]). Tolerant: a type error is a diagnostic, never an
+/// abort, so a single isolated corpus file is a valid one-path request. A
+/// request-level failure is `{ "BatchError": <msg> }`.
+let private xmlDocBatchCore () =
+    let checker = FSharpChecker.Create()
+    let compact = buildOptionsCompact ()
+    let respond (line: string) : string =
+        try
+            use doc = JsonDocument.Parse(line: string)
+            let root = doc.RootElement
+            let strArray (name: string) : string[] =
+                match root.TryGetProperty(name) with
+                | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                    arr.EnumerateArray()
+                    |> Seq.choose (fun e -> Option.ofObj (e.GetString()))
+                    |> Seq.toArray
+                | _ -> [||]
+            let paths = strArray "paths" |> Array.map Path.GetFullPath
+            if Array.isEmpty paths then
+                failwith "no paths in request"
+            let defineArgs = strArray "defines" |> Array.map (fun d -> "--define:" + d.Trim())
+            let langVersionArgs =
+                match root.TryGetProperty("langversion") with
+                | true, v when v.ValueKind = JsonValueKind.String ->
+                    match Option.ofObj (v.GetString()) with
+                    | Some s when s.Trim() <> "" -> [| "--langversion:" + s.Trim() |]
+                    | _ -> [||]
+                | _ -> [||]
+            let refArgs = strArray "refs" |> Array.toList |> extraRefArgsOf
+            let exclusiveRefs =
+                match root.TryGetProperty("exclusiveRefs") with
+                | true, v when v.ValueKind = JsonValueKind.True -> true
+                | _ -> false
+            let files =
+                xmlDocProjectFiles checker paths refArgs exclusiveRefs defineArgs langVersionArgs
+            JsonSerializer.Serialize({| Files = files |}, compact)
+        with ex ->
+            JsonSerializer.Serialize({| BatchError = ex.Message |}, compact)
+    let mutable line = Console.In.ReadLine()
+    while not (isNull line) do
+        let trimmed = (Option.ofObj line |> Option.defaultValue "").Trim()
+        if trimmed <> "" then
+            Console.Out.WriteLine(respond trimmed)
+            Console.Out.Flush()
+        line <- Console.In.ReadLine()
+
+/// [`xmlDocBatchCore`] on a large-stack thread, as the other resident oracles.
+let private xmlDocBatch () =
+    let mutable captured: exn option = None
+    let worker =
+        System.Threading.Thread(
+            (fun () ->
+                try xmlDocBatchCore ()
+                with ex -> captured <- Some ex),
+            512 * 1024 * 1024)
+    worker.Start()
+    worker.Join()
+    match captured with
+    | Some ex -> raise ex
+    | None -> ()
+
 let private usage () =
     eprintfn "usage: fcs-dump <command> [<source-path>]"
     eprintfn "  ast                      dump ParsedInput as JSON"
@@ -6863,6 +7086,7 @@ let private usage () =
     eprintfn "  overloads <source-path>  dump the chosen overload at each call node (overload-resolution oracle)"
     eprintfn "  file-batch               resident single-file oracle: one JSON request/line {kind,path,refs}, one compact JSON response/line"
     eprintfn "  uses-project-batch       resident project oracle: one JSON request/line {paths,refs,defines,langversion}, one compact {Files} response/line"
+    eprintfn "  xmldoc-batch             resident source-XML-doc oracle: one JSON request/line {paths,defines,langversion}, one compact {Files} response/line"
     2
 
 /// Refuse to run as a self-contained publish. Every script-mode check
@@ -6977,5 +7201,8 @@ let main argv =
         0
     | [| "file-batch" |] ->
         fileBatch ()
+        0
+    | [| "xmldoc-batch" |] ->
+        xmlDocBatch ()
         0
     | _ -> usage ()

@@ -1,8 +1,8 @@
 # Hover: F# member/type signatures
 
 > **Status:** landed. `textDocument/hover` renders a referenced entity/member as
-> an F# signature line with declaring-type + assembly provenance context. Four
-> gaps remain (below); everything else is done. Code comments in
+> an F# signature line with declaring-type + assembly provenance context, and
+> its XML documentation. Four gaps remain (below); everything else is done. Code comments in
 > `crates/lsp/src/handlers/hover.rs` and `crates/assembly/src/display.rs` point
 > here as the tracker for the remaining items.
 
@@ -126,13 +126,54 @@ Hover renders the **F# signature** view. The remaining gaps are facts that view
 would show but the projection cannot currently supply, plus one rendering the
 `type` keyword still over-claims.
 
-### 1. XML doc summaries not wired into hover
+### 1. XML documentation: what remains
 
-`doc_id` generation exists (the `M:`/`P:`/`T:` key derivation), but sidecar
-`.xml` documentation-file lookup and parsing are not wired into the hover
-handler, so no summary text is shown. Requires: locating the companion `.xml`
-next to the resolved assembly, parsing the `<member name="…">` entries, keying
-by `doc_id`, and appending the summary to the hover body.
+Hover shows a referenced-assembly symbol's **complete** XML documentation
+(summary, type parameters, parameters, returns, value, exceptions, permissions,
+remarks, examples, see-also, and any other section under its own name), read
+from the `.xml` beside the DLL the env read and keyed by `doc_id`
+(`crates/lsp/src/xml_doc/`). Lookup is exact-or-nothing: a miss, an ambiguous
+key, a malformed or foreign file, or a symbol whose key some other symbol of
+the same assembly also generates (the doc-ID format is not injective: `T:A.B`
+names both a type `B` in namespace `A` and one nested in type `A`), all show
+no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaining:
+
+- **`<inheritdoc>` is not resolved.** It renders an explicit "(Documentation
+  inherited from … is not shown.)" marker in place, so a partial entry never
+  reads as complete. Neither the NETCore reference pack nor FSharp.Core uses
+  it, but the ASP.NET Core pack has 2,312 (nearly all the entry's only
+  content) and ~2.7% of NuGet-cache entries carry one (a third with a `cref`;
+  C# 14 extension members point theirs at `<G>$…` skeleton keys, so they show
+  nothing at all until it is resolved). Resolving it means following the
+  `cref`, or the implicit base/interface member, through the env — its own
+  slice.
+- **`<include>` is not resolved** (same marker; NuGet only, and there is
+  nothing to resolve against: the included file is not shipped).
+- **Malformed files show nothing.** ~0.3% of NuGet-cache doc files are not
+  well-formed XML (FSharp.Core 4.3–4.5's stray `</returns>`, unclosed `<p>` in
+  old `System.*` packages); the whole file is refused rather than partially
+  read.
+- **Project-local `///` comments** are rendered (`xml_doc::source`): the
+  lines FCS attaches to the declaration — its lexer's grab points and the
+  parser's grab token, both reproduced and pinned by the
+  `xml_doc_source_diff` differential — elaborated by FCS's implicit-`<summary>`
+  rule into the `<member>` element fsc would write. What declines: an
+  implementation-file use of a signed symbol whose implementation doc is blank
+  (FCS shows the `.fsi`'s, which is not located yet), a `(*)` inside a block
+  comment or a `#line` before the declaration, a lone carriage return after a
+  `///` line, a file with parse errors, an orphan buffer (single-file hover
+  renders no documentation), and the type occurrences where FCS binds
+  something other than the type resolution chose: a different type-argument
+  count, a `T.M` whose `M` the type does not declare (#323), and every
+  constructor call (`new T()`, `T()`,
+  `[<T>]`), where FCS binds the constructor overload resolution picks and
+  shows its doc — almost always empty (all 47 in the gated corpus sample).
+  The signature fallback is #319.
+- **Doc-ID misses** are the generator's: the explicit-interface `@`/`,` and
+  `nint` drift (`docs/xmldoc-explicit-interface-plan.md`, Stages 2 and 4) and
+  FSharp.Core's `M:`/`T:` residue
+  (`docs/completed/fsharp-member-rebranding-docid-plan.md`). Each is a missing
+  doc, never a wrong one.
 
 ### 2. A union case's payload and its `[<Obsolete>]` marker
 

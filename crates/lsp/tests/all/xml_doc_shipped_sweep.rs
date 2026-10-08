@@ -284,3 +284,85 @@ fn shipped_doc_files_index_and_render_with_no_fallback() {
         print(&format!("{}", Path::new(&root).display()), &wild);
     }
 }
+
+/// Hover's doc keys are injective over every target a real env exposes: an
+/// env over the whole NETCore reference pack plus FSharp.Core, every entity
+/// and every member keyed with its assembly's census, and no committed key
+/// (within one assembly — one doc file) names two targets. The census is
+/// what makes this hold by construction; the sweep checks it does, and
+/// reports how many targets real assemblies have it refuse.
+#[test]
+#[ignore = "builds an env over the whole reference pack; run with --ignored"]
+fn doc_keys_are_injective_over_a_real_env() {
+    use borzoi::xml_doc::key::{DocTarget, KeyCensus, KeyError, doc_key};
+    use borzoi_assembly::{Ecma335Assembly, EcmaView};
+    use borzoi_sema::AssemblyEnv;
+
+    let pack = ensure_system_runtime_dll()
+        .parent()
+        .expect("ref pack dir")
+        .to_path_buf();
+    let mut dlls: Vec<PathBuf> = std::fs::read_dir(&pack)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "dll"))
+        .collect();
+    dlls.push(sdk_fsharp_core_xml().with_extension("dll"));
+    dlls.sort();
+    let assemblies: Vec<_> = dlls
+        .iter()
+        .filter_map(|dll| {
+            let bytes = std::fs::read(dll).ok()?;
+            let types = Ecma335Assembly::parse(&bytes)
+                .ok()?
+                .enumerate_type_defs()
+                .ok()?;
+            Some((dll.clone(), types))
+        })
+        .collect();
+    assert!(
+        assemblies.len() >= 100,
+        "read {} assemblies",
+        assemblies.len()
+    );
+    let env = AssemblyEnv::from_assemblies(assemblies);
+
+    let mut censuses: BTreeMap<PathBuf, KeyCensus> = BTreeMap::new();
+    let mut keyed: BTreeMap<(PathBuf, String), DocTarget> = BTreeMap::new();
+    let (mut targets, mut shared) = (0usize, 0usize);
+    for handle in env.all_handles() {
+        let dll = env
+            .assembly_path(handle)
+            .expect("path-bearing env")
+            .to_path_buf();
+        let census = censuses
+            .entry(dll.clone())
+            .or_insert_with(|| KeyCensus::of_assembly(&env, &dll));
+        let members = env.member_indices(handle).map(|idx| DocTarget::Member {
+            parent: handle,
+            idx,
+        });
+        for target in std::iter::once(DocTarget::Entity(handle)).chain(members) {
+            targets += 1;
+            match doc_key(&env, census, target) {
+                Ok(key) => {
+                    if let Some(previous) = keyed.insert((dll.clone(), key.clone()), target) {
+                        panic!(
+                            "{key} in {} keys both {previous:?} and {target:?}",
+                            dll.display()
+                        );
+                    }
+                }
+                Err(KeyError::Shared) => shared += 1,
+                Err(KeyError::Unplaced) => panic!("{target:?} is unplaced in a real env"),
+            }
+        }
+    }
+    eprintln!(
+        "{} assemblies, {targets} targets, {} keys committed, {shared} refused as sharing a key",
+        censuses.len(),
+        keyed.len()
+    );
+    assert!(keyed.len() >= 50_000, "keyed only {}", keyed.len());
+}

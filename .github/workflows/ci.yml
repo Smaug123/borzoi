@@ -817,6 +817,17 @@ jobs:
           nix develop --command cargo test -p borzoi --test all \
             xml_doc_shipped_sweep:: -- --ignored --nocapture
 
+      - name: Gate on the source XML-doc corpus differential
+        if: steps.gate.outputs.run == 'true'
+        # Hover's project-local `///` documentation against FCS over a sample of
+        # `BORZOI_CORPUS`: wherever hover would show a doc, FCS attaches exactly
+        # those lines; every decline is pinned in the checked-in manifest.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi --test all \
+            xml_doc_source_diff::corpus:: -- --ignored --nocapture
+
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
     needs: changes
@@ -1052,6 +1063,18 @@ jobs:
           nix develop --command env \
             BORZOI_DLL_SWEEP_ROOT="$RUNNER_TEMP/project-corpus-packages" \
             cargo test -p borzoi-assembly --test all projection_skip_sweep:: \
+            -- --ignored --nocapture
+
+      - name: Gate on whole-project source docs
+        # Hover's project-local `///` docs over the same restored projects,
+        # loaded through the LSP's runtime path (Compile order, reference
+        # closure, signature-aware fold) with FCS reading exactly the same
+        # references: where hover would show a doc, FCS attaches exactly it,
+        # and the outcome is pinned in `xml_doc_source_projects.txt`.
+        run: |
+          nix develop --command env \
+            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
+            cargo test -p borzoi --test all xml_doc_source_diff::project::pinned \
             -- --ignored --nocapture
 
   all-required-checks-complete:
