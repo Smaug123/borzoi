@@ -3486,6 +3486,11 @@ pub(crate) struct PhysicalMethod {
     /// slot of any arity.
     pub(crate) params: Option<usize>,
     pub(crate) is_static: bool,
+    /// The IL property this method is the getter or setter of, if any. A
+    /// `[<CompiledName>]` can make a getter's name lie about its property:
+    /// two getters renamed to one name give one property backed by the
+    /// first, and a second getter that backs nothing.
+    pub(crate) accessor_of: Option<String>,
 }
 
 /// Every `MethodDef` of an image, by token.
@@ -3496,33 +3501,38 @@ pub(crate) type PhysicalMethods = HashMap<u32, PhysicalMethod>;
 /// field by its getter. A `[<CLIEvent>]` property's getter slot is an IL event
 /// instead, implemented by its `add_` accessor.
 fn physical_occupants(entity: &Entity, slot: &DocSlot, physical: &PhysicalMethods) -> usize {
-    let (name, params, is_static) = match slot {
+    // The method's name, arity and staticness, and for an accessor the IL
+    // property it must back.
+    let (method, params, is_static, property) = match slot {
         DocSlot::Method {
             name,
             arity,
             is_static,
-        } => (name.clone(), *arity, *is_static),
+        } => (name.clone(), *arity, *is_static, None),
         DocSlot::Getter {
+            name,
             accessor,
             index_arity,
             is_static,
-            ..
-        } => (accessor.clone(), *index_arity, *is_static),
+        } => (accessor.clone(), *index_arity, *is_static, Some(name)),
         DocSlot::Setter {
+            name,
             accessor,
             index_arity,
             is_static,
-            ..
-        } => (accessor.clone(), index_arity + 1, *is_static),
-        DocSlot::ValField(name) => (format!("get_{name}"), 0, false),
+        } => (accessor.clone(), index_arity + 1, *is_static, Some(name)),
+        DocSlot::ValField(name) => (format!("get_{name}"), 0, false, Some(name)),
     };
-    let count = |name: &str, params: usize| {
+    let count = |name: &str, params: usize, property: Option<&String>| {
         entity
             .method_def_tokens
             .iter()
             .filter_map(|t| physical.get(t))
             .filter(|m| {
-                m.name == name && m.is_static == is_static && m.params.is_none_or(|n| n == params)
+                m.name == name
+                    && m.is_static == is_static
+                    && m.params.is_none_or(|n| n == params)
+                    && property.is_none_or(|p| m.accessor_of.as_ref() == Some(p))
             })
             .count()
     };
@@ -3531,10 +3541,10 @@ fn physical_occupants(entity: &Entity, slot: &DocSlot, physical: &PhysicalMethod
             name,
             index_arity: 0,
             ..
-        } => count(&format!("add_{name}"), 1),
+        } => count(&format!("add_{name}"), 1, None),
         _ => 0,
     };
-    count(&name, params) + event_adders
+    count(&method, params, property) + event_adders
 }
 
 /// Stamp `entity`'s members from one type's pickled keys; see
@@ -5776,6 +5786,7 @@ mod tests {
                         name: name.to_string(),
                         params: Some(*params),
                         is_static: true,
+                        accessor_of: None,
                     },
                 )
             })
@@ -5939,6 +5950,7 @@ mod tests {
                             name: format!("M{}", item.name),
                             params: Some(item.params.len()),
                             is_static: item.is_static,
+                            accessor_of: None,
                         },
                     )
                 })

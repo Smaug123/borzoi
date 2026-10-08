@@ -507,22 +507,31 @@ impl Ecma335Assembly {
     /// overlays count, which sees the methods the member projection refuses or
     /// elides.
     fn physical_methods(&self) -> crate::fsharp_pickle_merge::PhysicalMethods {
-        self.image
-            .type_defs
-            .iter()
-            .flat_map(|td| td.methods.iter().map(move |m| (td, m)))
-            .map(|(td, m)| {
-                (
+        let mut out = crate::fsharp_pickle_merge::PhysicalMethods::new();
+        for td in &self.image.type_defs {
+            // Which property each accessor method backs, by its index in
+            // `td.methods`.
+            let mut accessor_of: std::collections::HashMap<u32, &str> =
+                std::collections::HashMap::new();
+            for p in &td.properties {
+                for accessor in p.getter.iter().chain(p.setter.iter()) {
+                    accessor_of.insert(accessor.0, p.name.as_str());
+                }
+            }
+            for (i, m) in td.methods.iter().enumerate() {
+                out.insert(
                     m.token,
                     crate::fsharp_pickle_merge::PhysicalMethod {
                         declaring_type: td.name.name.clone(),
                         name: m.name.clone(),
                         params: m.signature.as_ref().ok().map(|s| s.parameters.len()),
                         is_static: m.is_static,
+                        accessor_of: accessor_of.get(&(i as u32)).map(|p| p.to_string()),
                     },
-                )
-            })
-            .collect()
+                );
+            }
+        }
+        out
     }
 
     /// The assembly-level `FSharpInterfaceDataVersionAttribute` version triple,
