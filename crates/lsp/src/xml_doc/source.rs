@@ -97,6 +97,10 @@ pub enum SourceDocDecline {
     /// A `#line` directive in the trivia before the grab token: FCS re-keys
     /// every later position by it, which the differential cannot observe.
     LineDirective,
+    /// A `#light` or `#indent` directive at the edge of the trivia before the
+    /// grab token: FCS's lexer consumes it without a grab point, so a block
+    /// continues across it, but the tree holds it as tokens.
+    LexerDirective,
     /// The file did not parse cleanly, so the tree may not be the one FCS
     /// grabs from.
     ParseErrors,
@@ -220,6 +224,21 @@ impl SourceDocIndex {
         let mut start = at;
         while start > 0 && !is_real(&self.tokens[start - 1]) {
             start -= 1;
+        }
+        // `#light` / `#indent`: real tokens in the tree, but consumed by FCS's
+        // lexer with no grab point, so FCS's block may continue past it.
+        if start > 0
+            && let Some(directive) = self.tokens[start - 1]
+                .parent_ancestors()
+                .find(|n| n.kind() == SyntaxKind::HASH_DIRECTIVE_DECL)
+            && directive
+                .children_with_tokens()
+                .filter_map(NodeOrToken::into_token)
+                .any(|t| {
+                    t.kind() == SyntaxKind::IDENT_TOK && matches!(t.text(), "light" | "indent")
+                })
+        {
+            return Err(SourceDocDecline::LexerDirective);
         }
         let run = &self.tokens[start..at];
         let mut lines: Vec<String> = Vec::new();
@@ -826,15 +845,9 @@ fn applied_arity(app: &SyntaxNode, head: &SyntaxNode) -> Option<usize> {
     if angle {
         (children.first() == Some(head)).then(|| children.len() - 1)
     } else if children.last() == Some(head) && children.len() == 2 {
-        // `a T`, or `(a, b) T` — a parenthesised tuple of arguments.
-        let arg = &children[0];
-        Some(if arg.kind() == SyntaxKind::PAREN_TYPE {
-            arg.children()
-                .find(|c| c.kind() == SyntaxKind::TUPLE_TYPE)
-                .map_or(1, |t| t.children().count())
-        } else {
-            1
-        })
+        // `a T`, including `(a * b) T`: one argument, a tuple type or not.
+        // (The comma form `(a, b) T` does not parse here.)
+        Some(1)
     } else {
         None
     }
