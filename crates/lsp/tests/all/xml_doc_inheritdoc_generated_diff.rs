@@ -29,7 +29,9 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
 
 use crate::common::inheritdoc_diff::{Census, Compared, Verdict};
-use crate::xml_doc_inheritdoc_diff::{DYNAMIC_ATTRIBUTE, compare, fixture};
+use crate::xml_doc_inheritdoc_diff::{
+    DYNAMIC_ATTRIBUTE, compare, fixture, fixture_without_core_library,
+};
 
 /// Cases per property in the normal suite: each case is a compilation and an
 /// expansion on the one oracle child, which every case group shares.
@@ -190,9 +192,14 @@ enum Dim {
     PrivateProtected,
     ProtectedInternal,
     Constructor,
+    /// An `<inheritdoc>` spelled otherwise: another case, a namespaced
+    /// attribute, a namespaced element.
+    Spelled,
+    /// A reference set without its core library.
+    NoCoreLibrary,
 }
 
-const ALL_DIMS: [Dim; 18] = [
+const ALL_DIMS: [Dim; 20] = [
     Dim::Object,
     Dim::Dynamic,
     Dim::NInt,
@@ -211,6 +218,8 @@ const ALL_DIMS: [Dim; 18] = [
     Dim::PrivateProtected,
     Dim::ProtectedInternal,
     Dim::Constructor,
+    Dim::Spelled,
+    Dim::NoCoreLibrary,
 ];
 
 fn leaf(generic: bool, method: bool) -> BoxedStrategy<Ty> {
@@ -386,6 +395,29 @@ enum Doc {
     /// `<inheritdoc cref="…"/>` naming the class of this index (mod the
     /// number of classes).
     CrefClass(usize),
+    /// A bare `<inheritdoc/>` spelled otherwise.
+    Spelled(Spelling),
+}
+
+/// How an `<inheritdoc>` may be spelled besides `<inheritdoc/>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spelling {
+    /// `<InheritDoc/>`: C# compares element names ignoring case.
+    Case,
+    /// `<inheritdoc xml:lang="en"/>`: a namespaced attribute.
+    Lang,
+    /// `<inheritdoc xmlns="urn:x"/>`: a namespaced element, which Roslyn
+    /// does not expand.
+    Namespaced,
+}
+
+impl Doc {
+    fn dims(self) -> BTreeSet<Dim> {
+        match self {
+            Doc::Spelled(_) => BTreeSet::from([Dim::Spelled]),
+            _ => BTreeSet::new(),
+        }
+    }
 }
 
 fn doc() -> impl Strategy<Value = Doc> {
@@ -398,6 +430,12 @@ fn doc() -> impl Strategy<Value = Doc> {
         1 => Just(Doc::PathRemarks),
         1 => Just(Doc::PathParam),
         1 => (0..3usize).prop_map(Doc::CrefClass),
+        1 => prop_oneof![
+            Just(Spelling::Case),
+            Just(Spelling::Lang),
+            Just(Spelling::Namespaced),
+        ]
+        .prop_map(Doc::Spelled),
     ]
 }
 
@@ -582,6 +620,8 @@ struct ClassSpec {
 struct Program {
     interfaces: Vec<IfaceSpec>,
     classes: Vec<ClassSpec>,
+    /// Whether the reference set holds the core library (System.Runtime).
+    core: bool,
 }
 
 fn iface_spec(i: usize) -> BoxedStrategy<IfaceSpec> {
@@ -695,10 +735,12 @@ fn program() -> impl Strategy<Value = Program> {
         class_spec(0),
         class_spec(1),
         class_spec(2),
+        prop::bool::weighted(0.75),
     )
-        .prop_map(|(i0, i1, c0, c1, c2)| Program {
+        .prop_map(|(i0, i1, c0, c1, c2, core)| Program {
             interfaces: vec![i0, i1],
             classes: vec![c0, c1, c2],
+            core,
         })
 }
 
@@ -751,6 +793,11 @@ fn render_doc(
             classes[k % classes.len()]
         )
         .unwrap(),
+        Doc::Spelled(Spelling::Case) => writeln!(out, "/// <InheritDoc/>").unwrap(),
+        Doc::Spelled(Spelling::Lang) => writeln!(out, "/// <inheritdoc xml:lang=\"en\"/>").unwrap(),
+        Doc::Spelled(Spelling::Namespaced) => {
+            writeln!(out, "/// <inheritdoc xmlns=\"urn:x\"/>").unwrap()
+        }
     }
 }
 
@@ -883,10 +930,12 @@ fn render(p: &Program) -> (String, Dims) {
          public class Inner<B> { }\n}\n\n",
     );
     let mut dims = Dims::new();
-    let mut note = |owner: &str, name: &str, d: BTreeSet<Dim>| {
-        dims.entry((owner.to_string(), name.to_string()))
-            .or_default()
-            .extend(d);
+    let mut note = |owner: &str, name: &str, doc: Doc, d: BTreeSet<Dim>| {
+        let slot = dims
+            .entry((owner.to_string(), name.to_string()))
+            .or_default();
+        slot.extend(d);
+        slot.extend(doc.dims());
     };
     let class_crefs: Vec<String> = p
         .classes
@@ -903,6 +952,7 @@ fn render(p: &Program) -> (String, Dims) {
     let type_tp = |generic: bool| if generic { vec!["T"] } else { vec![] };
     for (i, spec) in p.interfaces.iter().enumerate() {
         let id = format!("I{i}");
+        note(&id, "", spec.doc, BTreeSet::new());
         render_doc(
             &mut out,
             spec.doc,
@@ -945,12 +995,12 @@ fn render(p: &Program) -> (String, Dims) {
             if im.stat {
                 d.insert(Dim::Static);
             }
-            note(&id, &name, d);
+            note(&id, &name, im.m.doc, d);
         }
-        if let Some((t, d)) = &spec.property {
+        if let Some((t, doc)) = &spec.property {
             render_doc(
                 &mut out,
-                *d,
+                *doc,
                 &format!("I{i}.Q"),
                 &type_tp(spec.generic),
                 false,
@@ -960,7 +1010,7 @@ fn render(p: &Program) -> (String, Dims) {
             writeln!(out, "    {} Q {{ get; }}", t.render("")).unwrap();
             let mut d = BTreeSet::new();
             t.dims(&mut d);
-            note(&id, "Q", d);
+            note(&id, "Q", *doc, d);
         }
         out.push_str("}\n\n");
     }
@@ -970,6 +1020,7 @@ fn render(p: &Program) -> (String, Dims) {
         let id = format!("C{k}");
         let class_tp = type_tp(c.generic);
         render_doc(&mut out, c.doc, &id, &class_tp, false, false, &class_crefs);
+        note(&id, "", c.doc, BTreeSet::new());
         let tp = if c.generic { "<T>" } else { "" };
         let mut supers: Vec<String> = Vec::new();
         let inherited: Vec<Sig> = match &c.base {
@@ -1043,7 +1094,7 @@ fn render(p: &Program) -> (String, Dims) {
         .unwrap();
         let mut d = BTreeSet::from([Dim::Constructor]);
         c.ctor.dims(&mut d);
-        note(&id, "ctor", d);
+        note(&id, "ctor", c.ctor_doc, d);
 
         let mut mine: Vec<Sig> = Vec::new();
         // What this class itself declares: C# forbids two of its own methods
@@ -1085,7 +1136,7 @@ fn render(p: &Program) -> (String, Dims) {
                 body_for(&s.param)
             )
             .unwrap();
-            note(&id, &s.name, s.dims(c.generic));
+            note(&id, &s.name, d, s.dims(c.generic));
             mine.push(s.clone());
             declared_here.push(s.clone());
         }
@@ -1099,10 +1150,14 @@ fn render(p: &Program) -> (String, Dims) {
             });
             let (param, mtp, ret) = match flipped.clone() {
                 Some((q, mtp)) => {
-                    let ret = if mtp.is_none() {
-                        own.m.ret.map(&|t| (*t == Ty::M).then_some(Ty::Int))
-                    } else {
-                        own.m.ret.clone()
+                    // The overload takes the inherited method's type
+                    // parameter, so its return type is redrawn into that
+                    // scope: no method parameter without one, and the type's
+                    // `T` shadowed by a method's `T`.
+                    let ret = match mtp {
+                        None => own.m.ret.map(&|t| (*t == Ty::M).then_some(Ty::Int)),
+                        Some(MName::T) if c.generic => own.m.ret.shadowed(),
+                        Some(_) => own.m.ret.clone(),
                     };
                     let rk = match q.rk {
                         RefKind::Value => RefKind::Ref,
@@ -1147,13 +1202,14 @@ fn render(p: &Program) -> (String, Dims) {
             };
             // A ref-kind overload is documented in full: it is a wrong answer
             // only when it has text to show.
+            let doc = if flipped.is_some() {
+                Doc::Full
+            } else {
+                own.m.doc
+            };
             render_doc(
                 &mut out,
-                if flipped.is_some() {
-                    Doc::Full
-                } else {
-                    own.m.doc
-                },
+                doc,
                 &format!("C{k}.{name}"),
                 &tparams_of(c.generic, mtp),
                 true,
@@ -1169,7 +1225,7 @@ fn render(p: &Program) -> (String, Dims) {
             )
             .unwrap();
             let sig = Sig { name, ..candidate };
-            note(&id, &sig.name, sig.dims(c.generic));
+            note(&id, &sig.name, doc, sig.dims(c.generic));
             mine.push(sig.clone());
             declared_here.push(sig);
         }
@@ -1249,7 +1305,7 @@ fn render(p: &Program) -> (String, Dims) {
                             body_for(&param)
                         )
                         .unwrap();
-                        note(&id, &name, dm);
+                        note(&id, &name, doc, dm.clone());
                     } else if let std::collections::btree_map::Entry::Vacant(e) =
                         implicit.entry(key)
                     {
@@ -1270,7 +1326,7 @@ fn render(p: &Program) -> (String, Dims) {
                             body_for(&param)
                         )
                         .unwrap();
-                        note(&id, &name, dm);
+                        note(&id, &name, doc, dm.clone());
                     }
                 }
                 if let Some((t, _)) = &spec.property {
@@ -1292,7 +1348,7 @@ fn render(p: &Program) -> (String, Dims) {
                             &class_crefs,
                         );
                         writeln!(out, "    {} {qualifier}.Q => default!;", t.render("")).unwrap();
-                        note(&id, "Q", dq);
+                        note(&id, "Q", doc, dq.clone());
                     } else if let std::collections::btree_map::Entry::Vacant(e) =
                         implicit.entry(key)
                     {
@@ -1307,7 +1363,7 @@ fn render(p: &Program) -> (String, Dims) {
                             &class_crefs,
                         );
                         writeln!(out, "    public {} Q => default!;", t.render("")).unwrap();
-                        note(&id, "Q", dq);
+                        note(&id, "Q", doc, dq.clone());
                     }
                 }
             }
@@ -1344,7 +1400,7 @@ fn render(p: &Program) -> (String, Dims) {
             .unwrap();
             let mut d = BTreeSet::from([Dim::Static]);
             s.m.dims(c.generic, &mut d);
-            note(&id, &name, d);
+            note(&id, &name, s.m.doc, d);
         }
         out.push_str("}\n\n");
         virtuals.push(mine);
@@ -1373,9 +1429,18 @@ fn owner_and_name(key: &str) -> (String, String) {
 /// Panics on a disagreement, and on a program the compiler rejects — a
 /// generator that writes invalid C# must be fixed, not sampled around.
 fn run(p: &Program) -> (Vec<Compared>, Dims) {
-    let (source, dims) = render(p);
-    let fx = fixture(&source)
-        .unwrap_or_else(|e| panic!("the generated program does not compile: {e:#?}\n{source}"));
+    let (source, mut dims) = render(p);
+    if !p.core {
+        for d in dims.values_mut() {
+            d.insert(Dim::NoCoreLibrary);
+        }
+    }
+    let fx = if p.core {
+        fixture(&source)
+    } else {
+        fixture_without_core_library(&source)
+    }
+    .unwrap_or_else(|e| panic!("the generated program does not compile: {e:#?}\n{source}"));
     let compared = compare(&fx);
     if let Some(c) = compared
         .iter()
@@ -1474,6 +1539,7 @@ fn override_chain() -> impl Strategy<Value = Program> {
         .prop_map(move |(c0, c1, c2)| Program {
             interfaces: vec![iface.clone(), iface.clone()],
             classes: vec![c0, c1, c2],
+            core: true,
         })
 }
 

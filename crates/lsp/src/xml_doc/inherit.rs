@@ -41,6 +41,7 @@
 //! the element: an `<inheritdoc>` whose inherited text is not shown is marked,
 //! never silently dropped.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use borzoi_assembly::doc_id::type_enc;
@@ -53,7 +54,7 @@ use super::candidate::{
 };
 use super::key::{DocIdIndex, DocTarget, type_name};
 use super::lookup::{DocLookup, DocSources, Located, xml_path_for};
-use super::tree::{DocElement, DocNode, MAX_DEPTH, name_is};
+use super::tree::{DocElement, DocNode, MAX_DEPTH, Namespacing, name_is};
 use super::xpath::{Unsupported, authored_path, default_path};
 
 /// An entry, expanded or not, and how.
@@ -173,6 +174,7 @@ pub fn expand(
         sources,
         env,
         index: None,
+        core: None,
         visited: Vec::new(),
         hops: 0,
         nodes: 0,
@@ -205,9 +207,10 @@ fn has_inheritdoc(element: &DocElement) -> bool {
 /// Roslyn's test: an unnamespaced element named `inheritdoc` in any case —
 /// C# compares documentation element names `OrdinalIgnoreCase`
 /// (`DocumentationCommentXmlNames.ElementEquals`), so `<InheritDoc/>` is
-/// expanded too.
+/// expanded too. A namespaced *attribute* does not change the element's name:
+/// `<inheritdoc xml:lang="en"/>` is expanded.
 pub fn is_inheritdoc(element: &DocElement) -> bool {
-    !element.namespaced && name_is(&element.name, "inheritdoc")
+    element.namespaced != Namespacing::Element && name_is(&element.name, "inheritdoc")
 }
 
 /// What identifies one symbol on a path, as Roslyn's `visitedSymbols` set
@@ -222,12 +225,21 @@ struct Walk<'a> {
     sources: &'a mut DocSources,
     env: &'a Arc<AssemblyEnv>,
     index: Option<Arc<DocIdIndex>>,
+    /// [`core_library_types`], computed on first use.
+    core: Option<Option<Arc<HashSet<String>>>>,
     visited: Vec<VisitKey>,
     hops: usize,
     nodes: usize,
 }
 
 impl Walk<'_> {
+    fn core_library(&mut self) -> Option<Arc<HashSet<String>>> {
+        let env = self.env;
+        self.core
+            .get_or_insert_with(|| core_library_types(env).map(Arc::new))
+            .clone()
+    }
+
     /// `root` (an entry of `at`) with every `<inheritdoc>` rewritten.
     fn expand_entry(&mut self, at: &Reached, root: &DocElement) -> Result<DocElement, Decline> {
         if root.any_namespaced() {
@@ -380,7 +392,14 @@ impl Walk<'_> {
             Err(miss) => return Err(Decline::InheritedDoc(Box::new(miss))),
         };
         let in_scope = type_parameters_in_scope(self.env, target.target);
-        rewrite_type_param_refs(self.env, &target.inst, in_scope.as_deref(), &mut inherited)?;
+        let core = self.core_library();
+        rewrite_type_param_refs(
+            self.env,
+            core.as_deref(),
+            &target.inst,
+            in_scope.as_deref(),
+            &mut inherited,
+        )?;
         let path = match element.attribute("path") {
             Some(path) if !path.is_empty() => authored_path(path),
             _ => {
@@ -452,10 +471,11 @@ impl Walk<'_> {
         // symbols; a parameter type from an assembly the compilation lacks is
         // an error type no ID matches, where the string comparison here would
         // still match.
+        let core = self.core_library();
         if let DocTarget::Member { parent, idx } = target
             && !signature_types(env.member_at(parent, idx))
                 .iter()
-                .all(|t| binds_throughout(env, parent, t))
+                .all(|t| binds_throughout(env, core.as_deref(), parent, t))
         {
             return Err(Decline::Cref(CrefMiss::UnboundSignature));
         }
@@ -479,21 +499,85 @@ fn signature_types(member: &Member) -> Vec<&TypeRef> {
     }
 }
 
-/// Whether every named type in `ty` (written in `from`'s metadata) binds.
-fn binds_throughout(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> bool {
+/// Whether every named type in `ty` (written in `from`'s metadata) binds, and
+/// every primitive is a type of the core library `core` (see
+/// [`core_library_types`]).
+fn binds_throughout(
+    env: &AssemblyEnv,
+    core: Option<&HashSet<String>>,
+    from: EntityHandle,
+    ty: &TypeRef,
+) -> bool {
     match ty {
         TypeRef::Named { type_args, .. } => {
             matches!(
                 env.il_type_definition(from, ty),
                 IlTypeDefinition::Resolved(_)
-            ) && type_args.iter().all(|a| binds_throughout(env, from, &a.ty))
+            ) && type_args
+                .iter()
+                .all(|a| binds_throughout(env, core, from, &a.ty))
         }
-        TypeRef::Array { element, .. } => binds_throughout(env, from, &element.ty),
+        TypeRef::Array { element, .. } => binds_throughout(env, core, from, &element.ty),
         TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
-            binds_throughout(env, from, inner)
+            binds_throughout(env, core, from, inner)
         }
-        TypeRef::Ptr(None) | TypeRef::Primitive(_) | TypeRef::Var { .. } => true,
+        TypeRef::Primitive(p) => primitive_binds(core, *p),
+        TypeRef::Ptr(None) => primitive_binds(core, Primitive::Void),
+        TypeRef::Var { .. } => true,
     }
+}
+
+/// The names of the `System` types the reference set's core library defines:
+/// the library Roslyn binds its special types — every primitive — into. That
+/// is the sole loaded assembly defining `System.Object`; `None` when no single
+/// assembly does, and to Roslyn every primitive may then be an error type,
+/// which no documentation ID binds to and whose own ID is an error ID.
+fn core_library_types(env: &AssemblyEnv) -> Option<HashSet<String>> {
+    let in_system = |h: EntityHandle| {
+        let e = env.entity(h);
+        e.namespace.len() == 1 && e.namespace[0] == "System" && e.generic_parameters.is_empty()
+    };
+    let mut objects = env
+        .top_level_handles()
+        .iter()
+        .copied()
+        .filter(|&h| in_system(h) && env.entity(h).name == "Object");
+    let (Some(object), None) = (objects.next(), objects.next()) else {
+        return None;
+    };
+    let core = env.assembly_path(object)?;
+    Some(
+        env.top_level_handles()
+            .iter()
+            .copied()
+            .filter(|&h| in_system(h) && env.assembly_path(h) == Some(core))
+            .map(|h| env.entity(h).name.clone())
+            .collect(),
+    )
+}
+
+/// Whether the primitive `p` is a type of the core library `core`.
+fn primitive_binds(core: Option<&HashSet<String>>, p: Primitive) -> bool {
+    let name = match p {
+        Primitive::Void => "Void",
+        Primitive::Bool => "Boolean",
+        Primitive::Char => "Char",
+        Primitive::I1 => "SByte",
+        Primitive::U1 => "Byte",
+        Primitive::I2 => "Int16",
+        Primitive::U2 => "UInt16",
+        Primitive::I4 => "Int32",
+        Primitive::U4 => "UInt32",
+        Primitive::I8 => "Int64",
+        Primitive::U8 => "UInt64",
+        Primitive::R4 => "Single",
+        Primitive::R8 => "Double",
+        Primitive::IntPtr => "IntPtr",
+        Primitive::UIntPtr => "UIntPtr",
+        Primitive::Object => "Object",
+        Primitive::String => "String",
+    };
+    core.is_some_and(|c| c.contains(name))
 }
 
 /// Whether Roslyn's PE importer (`MetadataImportOptions.Public`, as for any
@@ -526,6 +610,7 @@ pub fn roslyn_imports(env: &AssemblyEnv, target: DocTarget) -> bool {
 /// `None` where the inherited symbol's type parameters are unknown.
 fn rewrite_type_param_refs(
     env: &AssemblyEnv,
+    core: Option<&HashSet<String>>,
     inst: &Instantiation,
     in_scope: Option<&[(String, ParameterSlot)]>,
     root: &mut DocElement,
@@ -540,7 +625,7 @@ fn rewrite_type_param_refs(
             let in_scope = in_scope.ok_or(Decline::TypeParamRef(TypeArgMiss::Unbound))?;
             let replacement = match in_scope.iter().find(|(n, _)| n == name) {
                 Some((_, ParameterSlot::Type(index))) if *index < inst.args.len() => {
-                    type_argument_id(env, inst, &inst.args[*index])
+                    type_argument_id(env, core, inst, &inst.args[*index])
                         .map_err(Decline::TypeParamRef)?
                 }
                 _ => None,
@@ -554,19 +639,24 @@ fn rewrite_type_param_refs(
                 continue;
             }
         }
-        rewrite_type_param_refs(env, inst, in_scope, e)?;
+        rewrite_type_param_refs(env, core, inst, in_scope, e)?;
     }
     Ok(())
 }
 
 /// The documentation ID Roslyn's `GetDocumentationCommentId` gives a type
 /// argument, or `None` where it gives none or an error ID (a type parameter,
-/// an array, a pointer).
+/// an array, a pointer). A primitive outside the core library `core`, at any
+/// depth, is an error type to Roslyn: its rendering is not modelled.
 fn type_argument_id(
     env: &AssemblyEnv,
+    core: Option<&HashSet<String>>,
     inst: &Instantiation,
     arg: &TypeRef,
 ) -> Result<Option<String>, TypeArgMiss> {
+    if !primitives_bind(core, arg) {
+        return Err(TypeArgMiss::Unbound);
+    }
     match arg {
         TypeRef::Var { .. } | TypeRef::Array { .. } | TypeRef::Ptr(_) | TypeRef::ByRef { .. } => {
             Ok(None)
@@ -607,6 +697,18 @@ fn type_argument_id(
             }
             Ok(Some(format!("T:{}", type_enc(arg))))
         }
+    }
+}
+
+/// Whether every primitive in `ty` is a type of the core library `core`.
+fn primitives_bind(core: Option<&HashSet<String>>, ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Primitive(p) => primitive_binds(core, *p),
+        TypeRef::Named { type_args, .. } => type_args.iter().all(|a| primitives_bind(core, &a.ty)),
+        TypeRef::Array { element, .. } => primitives_bind(core, &element.ty),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => primitives_bind(core, inner),
+        TypeRef::Ptr(None) => primitive_binds(core, Primitive::Void),
+        TypeRef::Var { .. } => true,
     }
 }
 
