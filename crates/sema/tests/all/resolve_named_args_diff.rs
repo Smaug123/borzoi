@@ -43,6 +43,7 @@ type T(a: int) =
     member _.I(a: int) = a
 let g (c: bool) = c
 let h (c: bool) (d: bool) = c && d
+let k<'t> (c: bool) = c
 let run (a: int) (b: int option) =
 ";
 
@@ -66,6 +67,9 @@ const CALLS: &[&str] = &[
     "    g (‹a› = ‹a›)\n",
     "    h true (‹a› = ‹a›)\n",
     "    g (true && (‹a› = ‹a›))\n",
+    // …and through the wrappers that leave the head a function.
+    "    (g) (‹a› = ‹a›)\n",
+    "    k<int> (‹a› = ‹a›)\n",
 ];
 
 /// Calls whose value sides can only be committed once FSharp.Core is

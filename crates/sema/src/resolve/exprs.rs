@@ -970,17 +970,24 @@ impl<'a> Resolver<'a> {
     /// Must be asked after `func` is resolved: it reads the head's recorded
     /// resolution.
     fn applies_an_in_file_value(&self, func: &Expr) -> bool {
-        // A curried application `f a (x = y)` applies whatever `f` is.
+        // A curried application `f a (x = y)` applies whatever `f` is, and so
+        // do `(f) (x = y)` and `f<int> (x = y)`. Seeing through the parens and
+        // the type application can only prove a *value* head, which is applied
+        // as a function however it is wrapped.
         let mut head = func.clone();
-        while let Expr::App(app) = &head {
-            // An infix operator's application is never a method call.
-            if app.is_infix() {
-                return true;
-            }
-            let Some(f) = app.func() else {
+        loop {
+            let next = match &head {
+                // An infix operator's application is never a method call.
+                Expr::App(app) if app.is_infix() => return true,
+                Expr::App(app) => app.func(),
+                Expr::Paren(p) => p.inner(),
+                Expr::TypeApp(t) => t.expr(),
+                _ => break,
+            };
+            let Some(next) = next else {
                 return false;
             };
-            head = f;
+            head = next;
         }
         // What the application applies is what the *whole* path names, which a
         // dotted path records at its whole span (`List.contains`); in
