@@ -14,7 +14,9 @@
 //! the user their member access "needs the receiver's inferred type" while the
 //! real cause is a DLL that would not load.
 
-use borzoi::handlers::definition_availability::{UnavailableReason, classify, explanation_range};
+use borzoi::handlers::definition_availability::{
+    Analysis, UnavailableReason, classify, explanation_range,
+};
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, InferredFile, ProjectItems, ResolvedFile, SyntaxRecovery, infer_file, resolve_file,
@@ -67,7 +69,7 @@ fn an_inference_side_member_reports_the_environmental_cause() {
 
     let (resolved, inferred, root) = analyse(src, &complete);
     assert_eq!(
-        classify(&resolved, Some(&inferred), &root, byte, false),
+        classify(&resolved, Some(&inferred), &root, byte, Analysis::Project),
         None,
         "a navigable member has nothing to explain — else the incomplete half \
          proves nothing"
@@ -75,7 +77,7 @@ fn an_inference_side_member_reports_the_environmental_cause() {
 
     let (resolved, inferred, root) = analyse(src, &incomplete);
     assert_eq!(
-        classify(&resolved, Some(&inferred), &root, byte, false).map(|u| u.reason),
+        classify(&resolved, Some(&inferred), &root, byte, Analysis::Project).map(|u| u.reason),
         Some(UnavailableReason::IncompleteAssemblies),
     );
     // The tooltip covers the member name inference spoke about, not whatever
@@ -99,8 +101,9 @@ fn without_the_side_table_the_same_cursor_is_explained_wrongly() {
     let byte = byte_of(src, "Length");
     let (resolved, inferred, root) = analyse(src, &incomplete);
 
-    let with = classify(&resolved, Some(&inferred), &root, byte, false).map(|u| u.reason);
-    let without = classify(&resolved, None, &root, byte, false).map(|u| u.reason);
+    let with =
+        classify(&resolved, Some(&inferred), &root, byte, Analysis::Project).map(|u| u.reason);
+    let without = classify(&resolved, None, &root, byte, Analysis::Project).map(|u| u.reason);
     assert_eq!(with, Some(UnavailableReason::IncompleteAssemblies));
     assert_ne!(
         with, without,

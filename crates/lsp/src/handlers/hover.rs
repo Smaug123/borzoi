@@ -39,7 +39,7 @@ use rowan::TextRange;
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::goto_source::DefinitionDocument;
 use crate::handlers::definition::{entity_definition_document, member_definition_document};
-use crate::handlers::definition_availability::{classify, explanation_range};
+use crate::handlers::definition_availability::{Analysis, classify, explanation_range};
 use crate::handlers::{
     range_to_lsp, smallest_inferred_type_with_range, smallest_member_resolution_with_range,
     smallest_resolution_with_range,
@@ -84,6 +84,10 @@ pub fn handle(state: &mut State, params: HoverParams) -> Option<Hover> {
 enum ProjectClassify {
     /// The file isn't in an evaluated project; try single-file classification.
     NotInProject,
+    /// The file is a signature Compile item of an evaluated project, which is
+    /// resolved on its own; classify it single-file, without blaming the
+    /// project.
+    Signature,
     /// The file is in an evaluated project; this is the authoritative answer
     /// (`Some` explanation, or `None` = nothing name-like here).
     InProject(Option<Hover>),
@@ -100,7 +104,12 @@ fn definition_unavailable_hover(
 ) -> Option<Hover> {
     match project_unavailable(state, uri, text, byte) {
         ProjectClassify::InProject(hover) => hover,
-        ProjectClassify::NotInProject => single_file_unavailable(state, uri, text, byte),
+        ProjectClassify::NotInProject => {
+            single_file_unavailable(state, uri, text, byte, Analysis::SingleFile)
+        }
+        ProjectClassify::Signature => {
+            single_file_unavailable(state, uri, text, byte, Analysis::Signature)
+        }
     }
 }
 
@@ -147,10 +156,9 @@ fn project_unavailable(
     };
     let file = resolved.file(idx);
     // A `.fsi` Compile slot is inert in Stage 1 (no resolutions, no impl
-    // tree); classify as out-of-project so the caller serves the degraded
-    // single-file answer for a signature buffer.
+    // tree); the caller classifies a signature buffer single-file.
     let Some(impl_file) = parses.files[idx].file.as_impl() else {
-        return ProjectClassify::NotInProject;
+        return ProjectClassify::Signature;
     };
     // The explanation must be about the verdict the LSP would *act* on, and
     // go-to-definition acts on inference's member resolution where the resolver
@@ -171,18 +179,20 @@ fn project_unavailable(
         root,
         text,
         byte,
-        false,
+        Analysis::Project,
     ))
 }
 
-/// Single-file fallback classification for an orphan / unevaluated-project
-/// buffer — mirrors [`single_file_hover`]'s parse + resolve, then classifies
-/// with the degraded flag set (cross-file / assembly symbols are out of reach).
+/// Single-file classification, for an orphan / unevaluated-project buffer or
+/// a signature file — mirrors [`single_file_hover`]'s parse + resolve, then
+/// classifies under `analysis`, which says why cross-file and assembly symbols
+/// are out of reach.
 fn single_file_unavailable(
     state: &mut State,
     uri: &lsp_types::Url,
     text: &str,
     byte: usize,
+    analysis: Analysis,
 ) -> Option<Hover> {
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
@@ -197,7 +207,7 @@ fn single_file_unavailable(
     );
     // No project, so no assembly env worth inferring against: the member
     // side-table would be empty anyway.
-    unavailable_hover(&resolved, None, file.syntax(), text, byte, true)
+    unavailable_hover(&resolved, None, file.syntax(), text, byte, analysis)
 }
 
 /// Turn a [`classify`] verdict into an explanatory hover, anchored to the
@@ -208,9 +218,9 @@ fn unavailable_hover(
     root: &SyntaxNode,
     text: &str,
     byte: usize,
-    degraded_single_file: bool,
+    analysis: Analysis,
 ) -> Option<Hover> {
-    let explanation = classify(file, inferred, root, byte, degraded_single_file)?;
+    let explanation = classify(file, inferred, root, byte, analysis)?;
     let range = explanation_range(file, inferred, root, byte)?;
     Some(make_hover(explanation.explain(), text, range))
 }
