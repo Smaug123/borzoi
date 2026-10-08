@@ -446,7 +446,8 @@ jobs:
         # produced — the soak's own docstring records a real bug that got past
         # them. Its seed is the wall clock, so running it per commit is what
         # buys the coverage: every run explores somewhere new, and a failure
-        # prints the seed to reproduce with `BORZOI_NUGET_SOAK_SEED`.
+        # prints the seed to reproduce with `BORZOI_NUGET_SOAK_SEED` (the
+        # parser soak) or `BORZOI_NUGET_RESOLVER_SOAK_SEED` (the resolver soak).
         #
         # The flip side of a fresh seed is that a failure here need not be
         # caused by the diff in front of you: it can be a latent bug this run

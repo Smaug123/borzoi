@@ -799,14 +799,29 @@ pub struct ResolveDiffUse {
     pub end: usize,
     /// FCS's defining-occurrence flag (a definition is not a name to resolve).
     pub is_from_definition: bool,
-    /// The declaration range as byte offsets *when the declaration lies in this
-    /// file* (file-equality test, as [`parse_fcs_uses`]). `None` for
-    /// referenced-assembly / FSharp.Core declarations — out of the sweep's
-    /// in-file slice.
-    pub decl: Option<(usize, usize)>,
+    /// Where FCS declares the use's symbol, relative to the checked file
+    /// (file-equality test, as [`parse_fcs_uses`]).
+    pub decl: CensusDecl,
     /// What machinery a resolver needs (see [`classify`]); `None` for a defining
-    /// occurrence. The sweep keeps only [`Bucket::B1`].
+    /// occurrence.
     pub bucket: Option<Bucket>,
+}
+
+/// Where FCS declares the symbol a census use resolves to, relative to the
+/// checked file.
+///
+/// Three cases rather than an `Option`, because "declared in another file" and
+/// "FCS gave no declaration" are different claims: the first is evidence that
+/// no binder of this file is the answer, the second is no evidence at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CensusDecl {
+    /// Declared in this file, at this half-open byte range.
+    InFile(usize, usize),
+    /// Declared in a *different* file — a referenced assembly or FSharp.Core.
+    /// FCS checked this file alone, so the target is not a binder of this file.
+    OtherFile,
+    /// FCS reported no declaration location for the symbol.
+    Absent,
 }
 
 /// Normalise one census file's uses against its source text. `source` must be
@@ -819,16 +834,16 @@ pub fn census_resolve_uses(file: &FileCensus, source: &str) -> Vec<ResolveDiffUs
         .iter()
         .map(|u| {
             let (bucket, _tag) = classify(u);
-            let decl = u.decl_range.as_ref().and_then(|d| {
-                // The use's own range is always in the checked file; an in-file
-                // declaration shares that file (see `parse_fcs_uses`).
-                (d.file == u.range.file).then(|| {
-                    (
-                        idx.offset(d.start.line, d.start.col),
-                        idx.offset(d.end.line, d.end.col),
-                    )
-                })
-            });
+            // The use's own range is always in the checked file; an in-file
+            // declaration shares that file (see `parse_fcs_uses`).
+            let decl = match &u.decl_range {
+                None => CensusDecl::Absent,
+                Some(d) if d.file == u.range.file => CensusDecl::InFile(
+                    idx.offset(d.start.line, d.start.col),
+                    idx.offset(d.end.line, d.end.col),
+                ),
+                Some(_) => CensusDecl::OtherFile,
+            };
             ResolveDiffUse {
                 start: idx.offset(u.range.start.line, u.range.start.col),
                 end: idx.offset(u.range.end.line, u.range.end.col),

@@ -55,8 +55,11 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
     let query = params.query.to_lowercase();
 
     // Snapshot the open source buffers up front (clone), releasing the borrow
-    // on `state.docs` so `state` can be taken mutably below.
-    let open_sources: Vec<OpenSource> = state
+    // on `state.docs` so `state` can be taken mutably below. Sorted by URI:
+    // `docs` is a `HashMap`, whose iteration order is randomised per instance,
+    // and this order decides the order projects are searched and so the order
+    // of the response.
+    let mut open_sources: Vec<OpenSource> = state
         .docs
         .iter()
         .filter(|(uri, _)| is_source_uri(uri))
@@ -66,6 +69,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
             text: text.clone(),
         })
         .collect();
+    open_sources.sort_by(|a, b| a.uri.as_str().cmp(b.uri.as_str()));
 
     // Search set: the owning project of each file-backed open buffer, deduped by
     // path *equality* (not byte-identical `PathBuf`, since `owning_project` spells
