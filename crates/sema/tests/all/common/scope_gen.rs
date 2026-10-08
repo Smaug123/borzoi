@@ -25,6 +25,12 @@
 //! shadowing across types (a handler's `x : exn` hiding an `x : int`) is
 //! exercised rather than avoided.
 //!
+//! The model's types are written into the program too: every parameter and
+//! every function and module value carries its `int` annotation. Left to
+//! inference, a recursive function whose body never constrains its result is
+//! generic, and a module value computed from it then violates the value
+//! restriction (`FS0030`), a reject the model would not predict.
+//!
 //! # Scoping facts the model encodes
 //!
 //! Each was checked against FCS before it was relied on:
@@ -652,10 +658,12 @@ impl Gen {
                 .collect();
             let pname = free[self.choice(free.len())];
             params.push(pname);
+            self.s("(");
             let p = self.binder(pname, Ty::Int, Site::Param);
+            self.s(": int)");
             inner.push(&p, Via::Direct);
         }
-        self.s(" =");
+        self.s(" : int =");
         self.nl(indent + 4);
         self.block(&mut inner, indent + 4, 0);
         scope.push(&b, Via::Direct);
@@ -673,7 +681,7 @@ impl Gen {
             .nth(0)
             .map(str::to_string);
         self.form(Form::ModuleLetRec);
-        let group = self.rec_group(scope, indent, &first, second.as_deref(), Site::ModuleLet);
+        let group = self.rec_group(scope, indent, 0, &first, second.as_deref(), Site::ModuleLet);
         for b in group {
             scope.push(&b, Via::Direct);
             self.modules[m].own.push(b);
@@ -686,6 +694,7 @@ impl Gen {
         &mut self,
         scope: &Scope,
         indent: usize,
+        depth: usize,
         first: &str,
         second: Option<&str>,
         site: Site,
@@ -712,7 +721,7 @@ impl Gen {
         if let Some(g) = &g {
             group_scope.push(g, Via::RecGroup);
         }
-        self.rec_body(&group_scope, indent);
+        self.rec_body(&group_scope, indent, depth);
         if let Some(g) = &g {
             self.nl(indent);
             self.s("and ");
@@ -720,23 +729,25 @@ impl Gen {
             self.s(&g.name);
             self.binder_ranges
                 .insert(g.uid, span(start, self.out.len()));
-            self.rec_body(&group_scope, indent);
+            self.rec_body(&group_scope, indent, depth);
         }
         let mut group = vec![f];
         group.extend(g);
         group
     }
 
-    /// ` p =` and an indented body that sees `scope` and its parameter.
-    fn rec_body(&mut self, scope: &Scope, indent: usize) {
-        self.s(" ");
+    /// ` (p: int) : int =` and an indented body, one level deeper than the
+    /// group, that sees `scope` and its parameter.
+    fn rec_body(&mut self, scope: &Scope, indent: usize, depth: usize) {
+        self.s(" (");
         let pname = INT_NAMES[self.choice(INT_NAMES.len())];
         let p = self.binder(pname, Ty::Int, Site::Param);
+        self.s(": int) : int");
         let mut inner = scope.clone();
         inner.push(&p, Via::Direct);
         self.s(" =");
         self.nl(indent + 4);
-        self.block(&mut inner, indent + 4, 0);
+        self.block(&mut inner, indent + 4, depth + 1);
     }
 
     fn nested_module(&mut self, scope: &mut Scope, m: usize, indent: usize, depth: usize) {
@@ -993,10 +1004,10 @@ impl Gen {
         self.s("let ");
         let name = FUN1_NAMES[self.choice(FUN1_NAMES.len())];
         let b = self.binder(name, Ty::Fun1, Site::LocalLet);
-        self.s(" ");
+        self.s(" (");
         let pname = INT_NAMES[self.choice(INT_NAMES.len())];
         let p = self.binder(pname, Ty::Int, Site::Param);
-        self.s(" =");
+        self.s(": int) : int =");
         let mut body = scope.clone();
         body.push(&p, Via::Direct);
         self.nl(indent + 4);
@@ -1014,7 +1025,7 @@ impl Gen {
         } else {
             None
         };
-        let group = self.rec_group(scope, indent, first, second, Site::LocalLet);
+        let group = self.rec_group(scope, indent, depth, first, second, Site::LocalLet);
         let mut inner = scope.clone();
         for b in &group {
             inner.push(b, Via::Direct);
@@ -1397,8 +1408,9 @@ impl Gen {
         self.form(Form::Lambda);
         self.s("(fun ");
         let name = INT_NAMES[self.choice(INT_NAMES.len())];
+        self.s("(");
         let b = self.binder(name, Ty::Int, Site::Lambda);
-        self.s(" -> ");
+        self.s(": int) -> ");
         let mut body = scope.clone();
         body.push(&b, Via::Direct);
         self.simple(&mut body, depth + 1);

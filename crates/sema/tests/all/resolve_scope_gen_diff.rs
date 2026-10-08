@@ -56,7 +56,7 @@ use borzoi_sema::{
 };
 
 /// Seeds checked against FCS by default.
-const DEFAULT_SEEDS: usize = 12;
+const DEFAULT_SEEDS: usize = 24;
 
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);
@@ -113,7 +113,7 @@ const MUST_COMMIT: &[RefKind] = &[
 /// How many uses of the known fold-back class (below) the default seeds
 /// produce. Two-sided: fewer means the defect is (partly) fixed — #233 has
 /// landed — and the classifier should go.
-const KNOWN_FOLD_BACK_AT_DEFAULT: usize = 6;
+const KNOWN_FOLD_BACK_AT_DEFAULT: usize = 9;
 
 /// Whether a wrong answer at `r` is the known defect that open PR #233 fixes:
 /// sema does not fold an in-file `[<AutoOpen>]` module's values back into its
@@ -366,6 +366,27 @@ fn generated_programs_agree_with_fcs() {
         ours_wrong.len(),
         ours_wrong.join("\n")
     );
+}
+
+/// The nesting budget bounds every tape, not just random ones: a constant
+/// tape drives the interpreter down the same branch at every choice, which is
+/// where a budget that one construct forgets to thread shows up, as a program
+/// too deep for the parser. Every constant tape over the choice range must
+/// yield a small program that parses and that the FCS-free property accepts.
+#[test]
+fn constant_tapes_stay_within_the_nesting_budget() {
+    const MAX_LEN: usize = 256 * 1024;
+    for k in 0..32u32 {
+        let g = generate(vec![k; 4095]);
+        assert!(
+            g.src.len() <= MAX_LEN,
+            "the constant tape {k} generated {} bytes",
+            g.src.len()
+        );
+        if let Err(why) = check_against_generator(&g) {
+            panic!("the constant tape {k}: {why}");
+        }
+    }
 }
 
 /// Each form and each kind of planted use appears often enough over a fixed
