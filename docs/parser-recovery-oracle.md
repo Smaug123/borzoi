@@ -139,13 +139,38 @@ declarations of the member bodies there. Likewise, after a token that cannot
 begin a declaration (`member this.P = 1` outside a type), the rest of the line
 becomes a fresh expression declaration. FCS makes a declaration of neither.
 
-Two live defects were found and not fixed. Both are outside recovery proper:
+A dotted indexer's body is FCS's `typedSequentialExpr`, so
+`Array.[⏎ yield 1⏎ yield 2⏎ ]` (with any spacing around the `.`) is one
+`DotIndexedGet` whose index is a `Sequential`.
+`parser_diff_dot_index_spacing` grades that construct under every spacing of
+its `.`, in four contexts, against FCS: verdicts and accepted trees must agree
+outright, and the recovered trees that diverge are pinned cell by cell in
+`crates/cst/tests/manifests/dot_index_spacing.txt`. The member family of
+`recovery_sweep` still leaves out a deletion that leaves `recv. [` or
+`recv. (`: adding either moves the per-file sample onto suffix instabilities
+the family already has and does not reach today (`System.DayOfWeek.` at a line
+end, before a dedent), and `recv. (` loses declarations after it besides. The
+recovered trees that diverge fall into three classes, none of them fixed:
 
-- `Array. [ yield … ]` (a dotted indexer with whitespace and a sequential body)
-  is valid F# that our parser rejects. Its recovery then swallows the next
-  module (`tests/fsharp/typecheck/sigs/pos30.fs`, `Array.ofList [` with the
-  name deleted). The member family therefore excludes a deletion that leaves
-  `recv. [` or `recv. (`.
+- **`recv.()` in an argument.** `.()` lexes as one operator-name token in both
+  lexers. FCS reports it and keeps the enclosing parenthesis
+  (`f(arg = xs.())` is `Paren(FromParseError …)`); our parser loses the
+  parenthesis and swallows the next module.
+- **The rest of a `try` body after a broken statement.** When a statement in a
+  `try` body fails to parse (`let y = xs⏎ .[i]` there, or `recv.()`), the
+  body's remaining statements become module-level declarations. FCS drops
+  them with the `try`.
+- **Contents of a bracket the parser abandoned.** In `let y = xs.⏎ [⏎ yield
+  1⏎ yield 2⏎ ]`, with the bracket's body offside, the stray `[` opens no
+  offside block, and `yield 2` becomes an expression declaration (the
+  largest class above).
+
+Two other live defects are outside recovery proper:
+
+- `g f(x)` (an adjacent application as an argument, and anything built on
+  one: `g f(x).Foo`, `g f(x).[i]`, `g -f(x)`) is FS0597 in FCS's grammar
+  (`argExpr` rejects an `atomicExpr` whose high-precedence flag is set); our
+  parser accepts it.
 - `ENUM_CASE must contain a value expression`, `TYPAR_DECL must contain an
   IDENT_TOK child`, and about twenty other normaliser assertions panic on
   recovered trees. They cost nothing in the relation, because the units are
