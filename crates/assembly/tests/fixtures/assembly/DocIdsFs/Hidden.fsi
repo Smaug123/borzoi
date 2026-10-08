@@ -53,3 +53,13 @@ type Elided =
     /// The elided overload.
     [<System.Runtime.CompilerServices.CompilerGenerated>]
     member Corner: a: int[,,] -> int
+
+/// Two getters renamed to one IL property name, the first hidden: fsc backs
+/// the `Shared` property with the hidden `get_First`, and the documented
+/// `get_Second` backs nothing.
+type SharedHidden =
+    new: unit -> SharedHidden
+
+    /// The documented getter.
+    [<CompiledName("Shared")>]
+    member Second: int

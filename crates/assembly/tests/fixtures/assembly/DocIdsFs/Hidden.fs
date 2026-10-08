@@ -49,3 +49,10 @@ type Elided =
     member r.Corner(a: int[,,]) = a.[0, 0, 0] + r.V
 
     member internal r.Corner(a: int[,]) = a.[0, 0] + r.V
+
+type SharedHidden() =
+    [<CompiledName("Shared")>]
+    member _.First = 1
+
+    [<CompiledName("Shared")>]
+    member _.Second = 2

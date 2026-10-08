@@ -93,6 +93,7 @@ hit T:DocIdsFs.Hidden
 hit T:DocIdsFs.Hidden.Elided
 hit T:DocIdsFs.Hidden.Renamed
 hit T:DocIdsFs.Hidden.RenamedAlike
+hit T:DocIdsFs.Hidden.SharedHidden
 hit T:DocIdsFs.IShape
 hit T:DocIdsFs.IntId
 hit T:DocIdsFs.Pair`1
@@ -113,7 +114,7 @@ hit T:DocIdsFs.Tree`1.Leaf
 hit T:DocIdsFs.Tree`1.Node
 hit T:DocIdsFs.Widget
 hit T:DocIdsFs.m
-keys 123
+keys 125
 miss M:DocIdsFs.Dropped`1.Corner(System.Int32[0:])
 miss M:DocIdsFs.Hidden.Elided.Corner(System.Int32[0:, 0:])
 miss M:DocIdsFs.Hidden.RankShared(System.Int32[0:])
@@ -121,6 +122,7 @@ miss M:DocIdsFs.IShape.add_Fired(System.EventHandler)
 miss M:DocIdsFs.IShape.remove_Fired(System.EventHandler)
 miss M:DocIdsFs.Widget.add_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
 miss M:DocIdsFs.Widget.remove_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
+miss P:DocIdsFs.Hidden.SharedHidden.Second
 miss P:DocIdsFs.Point.Sum
 miss P:DocIdsFs.SharedName.First
 miss P:DocIdsFs.SharedName.Second
