@@ -11,13 +11,15 @@ use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
     UnionCases, Version,
 };
+use borzoi_corpus_diff::manifest::{ManifestError, project_corpus_manifest};
 use borzoi_corpus_diff::{
     Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
-    LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses,
-    UseDecl, check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env,
-    explain_token, fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project,
-    load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
-    parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
+    Graded, ItemOutcome, LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus,
+    ProjectRecord, ProjectSkip, ProjectUse, ProjectVerdict, SetAside, SkippedUses, UseDecl,
+    check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env, explain_token,
+    fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project,
+    load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
+    project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
@@ -341,7 +343,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
     let (decl_start, decl_end) = text_range(sig, "x");
     let (use_start, use_end) = text_range(use_src, "A.x");
 
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: use_path,
@@ -407,7 +409,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
         ..compared.clone()
     };
     let loaded = synthetic_loaded_project(src, AssemblyEnv::from_entities(Vec::new()));
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: path.clone(),
@@ -785,7 +787,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
     // alternative's `_n`.
     let first = src.find("| A _n").expect("first alternative") + 6 - 2;
     let body = src.rfind("_n").expect("body use");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -877,7 +879,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
     let pattern_end = src.find(") ->").expect("pattern end");
     let first = src.find("A _n").expect("first alternative") + 2;
     let body = src.rfind("_n").expect("body use");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -956,7 +958,7 @@ fn comparison_reports_skipped_oracle_categories() {
     let src = "module B\nlet _ = 1\n";
     let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1055,7 +1057,7 @@ fn comparison_matches_assembly_oracle_declarations() {
     let loaded = synthetic_loaded_project(src, synthetic_assembly_env());
     let file = loaded.parses.paths[0].clone();
     let (start, end) = text_range(src, "Demo.Widget.Value");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1114,7 +1116,7 @@ let value = 1
     // attribute name, which is where FCS reports the use.
     let (use_start, use_end) = nth_text_range(src, "Mark", 1);
     let (decl_start, decl_end) = text_range(src, "MarkAttribute");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1194,7 +1196,7 @@ fn a_constructor_record_steps_aside_for_the_name_the_author_wrote() {
         }),
         ..named.clone()
     };
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1251,7 +1253,7 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
         decl: UseDecl::Unlocated,
         ..gradable.clone()
     };
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1313,7 +1315,7 @@ fn a_member_answer_inference_supplies_is_put_to_the_oracle() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1353,7 +1355,7 @@ fn a_member_answer_is_graded_against_the_oracle_span_it_ends() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1374,7 +1376,7 @@ fn a_wrong_member_answer_is_a_divergence() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1403,7 +1405,7 @@ fn a_member_answer_the_oracle_is_silent_about_is_a_reverse_divergence() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1437,7 +1439,7 @@ fn a_member_entry_the_resolver_answers_over_is_not_reported_twice() {
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
     let path = text_range(src, "System.Object.ReferenceEquals");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1465,7 +1467,7 @@ fn comparison_reports_wrong_assembly_resolution() {
     let loaded = synthetic_loaded_project(src, synthetic_assembly_env());
     let file = loaded.parses.paths[0].clone();
     let (start, end) = text_range(src, "Demo.Widget.Value");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1542,7 +1544,7 @@ fn a_qualifier_is_graded_at_the_answer_served_there() {
         start: text_range(lib, "foo").0,
         end: text_range(lib, "foo").1,
     };
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[
             FileUses {
@@ -1568,6 +1570,226 @@ fn a_qualifier_is_graded_at_the_answer_served_there() {
     assert_eq!(comparison.skipped_uses.ambiguous_oracle_range, 0);
 }
 
+/// The exact manifest names every project's verdict, every compared file's
+/// counts, and every graded record that is not a match — and keys all of them
+/// relative to the corpus root, so it reads the same on every host.
+///
+/// Pinned line by line because the format *is* the contract: a manifest whose
+/// lines lost the served verdict, or stopped listing an erroring project's
+/// errors, would still compare equal to itself on every run.
+#[test]
+fn the_manifest_lists_each_verdict_and_every_non_match() {
+    let lib = "module Shared\nlet foo = 1\n";
+    let using = "module Other\nlet bar = Shared.foo\n";
+    let loaded = synthetic_multi_file_project(&[("A.fs", lib), ("B.fs", using)]);
+    let root = PathBuf::from("/tmp/corpus-diff-synthetic-multi");
+    let (a, b) = (
+        loaded.parses.paths[0].clone(),
+        loaded.parses.paths[1].clone(),
+    );
+    let decl = |needle: &str| DeclSite {
+        file: a.clone(),
+        start: text_range(lib, needle).0,
+        end: text_range(lib, needle).1,
+    };
+    let comparison = compare(
+        &loaded,
+        &[
+            FileUses {
+                path: a.clone(),
+                diagnostics: Vec::new(),
+                uses: Vec::new(),
+            },
+            FileUses {
+                path: b.clone(),
+                diagnostics: Vec::new(),
+                uses: vec![
+                    project_use("Shared", text_range(using, "Shared"), decl("Shared")),
+                    project_use("foo", text_range(using, "Shared.foo"), decl("foo")),
+                    ProjectUse {
+                        is_from_definition: true,
+                        ..project_use(
+                            "bar",
+                            text_range(using, "bar"),
+                            DeclSite {
+                                file: b.clone(),
+                                start: text_range(using, "bar").0,
+                                end: text_range(using, "bar").1,
+                            },
+                        )
+                    },
+                ],
+            },
+        ],
+    );
+    let projects = vec![
+        ProjectRecord {
+            project: loaded.project.clone(),
+            verdict: ProjectVerdict::Comparable {
+                assets: ProjectAssetsStatus::NotChecked,
+                sources: loaded
+                    .parses
+                    .paths
+                    .iter()
+                    .cloned()
+                    .zip(loaded.parses.texts.iter().cloned())
+                    .collect(),
+                comparison: Box::new(comparison),
+            },
+        },
+        ProjectRecord {
+            project: root.join("Erroring/Erroring.fsproj"),
+            verdict: ProjectVerdict::Skipped(ProjectSkip::FcsErrors {
+                files: vec![FcsErrorFile {
+                    path: root.join("Erroring/E.fs"),
+                    errors: vec![
+                        fcs_error(39, "not defined", 3, 4),
+                        fcs_error(39, "not defined", 3, 4),
+                    ],
+                }],
+            }),
+        },
+        ProjectRecord {
+            project: root.join("Uncertain/Uncertain.fsproj"),
+            verdict: ProjectVerdict::Skipped(ProjectSkip::Load(LoadSkip::ProjectEvaluationFailed)),
+        },
+    ];
+    let manifest = project_corpus_manifest(&projects, &root).expect("renders");
+    assert_eq!(
+        manifest.entries(),
+        [
+            "A.fs compared match=0 assembly-match=0 attribute=0 member=0 definitions=0",
+            // Our own binder, which the oracle (given nothing for `A.fs`) is
+            // silent about.
+            "A.fs:2:5-8 \"foo\" unoracled-definition",
+            "B.fs compared match=1 assembly-match=0 attribute=0 member=0 definitions=1",
+            "B.fs:2:11-17 \"Shared\" project-deferral qualified-access unattributed",
+            "Erroring/E.fs:3:5 fcs-error FS0039 x2",
+            "Erroring/Erroring.fsproj skipped fcs-errors files=1 errors=2",
+            "Synthetic.fsproj comparable assets=not_checked",
+            "Uncertain/Uncertain.fsproj skipped load project-evaluation-failed",
+        ]
+        .map(String::from)
+    );
+
+    // A key is only host-independent relative to the root it was taken from,
+    // so a project outside that root is refused rather than keyed absolutely.
+    assert_eq!(
+        project_corpus_manifest(&projects, Path::new("/elsewhere")),
+        Err(ManifestError::OutsideRoot {
+            path: loaded.project.clone(),
+            root: PathBuf::from("/elsewhere"),
+        })
+    );
+}
+
+/// [`compare_project_uses`], with its ledger checked against its counts — every
+/// comparison this file makes goes through here, so each fixture's shape is
+/// also a case of that agreement.
+fn compare(loaded: &LoadedProject, fcs: &[FileUses]) -> Comparison {
+    let comparison = compare_project_uses(loaded, fcs);
+    assert_ledger_accounts_for_counts(loaded, &comparison);
+    comparison
+}
+
+/// Every count `comparison` reports is backed by exactly that many ledger items.
+/// The manifest is rendered from the ledger and the report from the counts, so
+/// the two must not tell different stories. The recount here is written out
+/// independently of `Comparison::record` rather than calling it, so a bucket
+/// that one of them misroutes shows up as a disagreement.
+fn assert_ledger_accounts_for_counts(loaded: &LoadedProject, comparison: &Comparison) {
+    let of = |pred: &dyn Fn(&ItemOutcome) -> bool| {
+        comparison
+            .ledger
+            .iter()
+            .filter(|item| pred(&item.outcome))
+            .count()
+    };
+    let graded = |kind: Graded| {
+        move |o: &ItemOutcome| {
+            matches!(o, ItemOutcome::Match(g, _) | ItemOutcome::Divergence(g) if *g == kind)
+                || matches!(o, ItemOutcome::Deferral { graded, .. } if *graded == kind)
+        }
+    };
+    let set_aside = |kind: SetAside| move |o: &ItemOutcome| *o == ItemOutcome::SetAside(kind);
+    assert_eq!(comparison.uses_considered, of(&graded(Graded::Project)));
+    assert_eq!(
+        comparison.assembly_uses_considered,
+        of(&graded(Graded::Assembly))
+    );
+    assert_eq!(
+        comparison.matches,
+        of(&|o| matches!(o, ItemOutcome::Match(Graded::Project, _)))
+    );
+    assert_eq!(
+        comparison.assembly_matches,
+        of(&|o| matches!(o, ItemOutcome::Match(Graded::Assembly, _)))
+    );
+    assert_eq!(
+        comparison.deferrals,
+        of(&|o| matches!(
+            o,
+            ItemOutcome::Deferral {
+                graded: Graded::Project,
+                ..
+            }
+        ))
+    );
+    assert_eq!(
+        comparison.assembly_deferrals,
+        of(&|o| matches!(
+            o,
+            ItemOutcome::Deferral {
+                graded: Graded::Assembly,
+                ..
+            }
+        ))
+    );
+    assert_eq!(
+        comparison.divergences.len(),
+        of(&|o| *o == ItemOutcome::Divergence(Graded::Project))
+    );
+    assert_eq!(
+        comparison.assembly_divergences.len(),
+        of(&|o| *o == ItemOutcome::Divergence(Graded::Assembly))
+    );
+    assert_eq!(
+        comparison.reverse_divergences.len(),
+        of(&|o| *o == ItemOutcome::ReverseDivergence)
+    );
+    assert_eq!(
+        comparison.unoracled_definitions,
+        of(&|o| *o == ItemOutcome::UnoracledDefinition)
+    );
+    assert_eq!(
+        comparison.unoracled_or_pattern_aliases,
+        of(&|o| *o == ItemOutcome::UnoracledOrPatternAlias)
+    );
+    let s = &comparison.skipped_uses;
+    for (count, kind) in [
+        (s.definitions, SetAside::Definition),
+        (s.zero_width, SetAside::ZeroWidth),
+        (s.compiler_generated, SetAside::CompilerGenerated),
+        (s.non_project_declarations, SetAside::NonProjectDeclaration),
+        (
+            s.out_of_project_declarations,
+            SetAside::OutOfProjectDeclaration,
+        ),
+        (s.no_oracle_declaration, SetAside::NoOracleDeclaration),
+        (s.ambiguous_oracle_range, SetAside::AmbiguousOracleRange),
+        (s.shadowed_constructor_use, SetAside::ShadowedConstructorUse),
+    ] {
+        assert_eq!(count, of(&set_aside(kind)), "{kind:?}");
+    }
+    assert!(
+        comparison
+            .ledger
+            .iter()
+            .all(|item| loaded.parses.paths.contains(&item.file)),
+        "every item is keyed by the loaded project's spelling of its file"
+    );
+}
+
 #[test]
 fn comparison_reports_reverse_only_project_resolution() {
     let src = "module B\nlet x = 1\nlet y = x\n";
@@ -1577,7 +1799,7 @@ fn comparison_reports_reverse_only_project_resolution() {
     let (x_def_start, x_def_end) = nth_text_range(src, "x", 0);
     let (y_def_start, y_def_end) = text_range(src, "y");
     let (x_use_start, x_use_end) = nth_text_range(src, "x", 1);
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1745,7 +1967,7 @@ fn tiny_project_matches_fcs() {
         .zip(loaded.parses.texts.iter().cloned())
         .collect();
     let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
-    let comparison = compare_project_uses(&loaded, &fcs);
+    let comparison = compare(&loaded, &fcs);
     assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
     assert_eq!(comparison.divergences, Vec::new());
     assert_eq!(comparison.assembly_divergences, Vec::new());
@@ -1784,7 +2006,7 @@ fn alias_attribute_project_matches_fcs() {
         .zip(loaded.parses.texts.iter().cloned())
         .collect();
     let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
-    let comparison = compare_project_uses(&loaded, &fcs);
+    let comparison = compare(&loaded, &fcs);
     assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
     assert_eq!(comparison.divergences, Vec::new());
     assert_eq!(comparison.assembly_divergences, Vec::new());
@@ -1853,7 +2075,7 @@ fn fcs_reports_a_member_access_over_a_span_our_key_ends() {
         "the spans share their end and nothing else: oracle {reported:?}, ours {member:?}"
     );
 
-    let comparison = compare_project_uses(&loaded, &fcs);
+    let comparison = compare(&loaded, &fcs);
     assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
     assert_eq!(
         comparison.member_commits_compared, 1,
@@ -1871,7 +2093,7 @@ fn project_corpus_resolution_diff() {
     eprint!("{}", render_project_corpus_run_report(&run));
     write_json_report_if_requested(&run.summary);
 
-    check_project_corpus_run(&run, config).unwrap_or_else(|err| {
+    check_project_corpus_run(&run, &config).unwrap_or_else(|err| {
         panic!("{err}\n{}", run.summary.render_text_report());
     });
 }
@@ -2376,18 +2598,18 @@ fn run_attribute_cell(cell: &AttrCell) -> AttrCellOutcome {
         .collect();
     let fcs = parse_project_uses(&json, &sources)
         .unwrap_or_else(|e| panic!("cell {}: parse FCS uses: {e:?}", cell.label));
-    let runner = compare_project_uses(&loaded, &fcs);
+    let runner = compare(&loaded, &fcs);
     let mut relaxed = fcs.clone();
     for file in &mut relaxed {
         file.diagnostics.clear();
     }
-    let forward = compare_project_uses(&loaded, &relaxed);
+    let forward = compare(&loaded, &relaxed);
     let attr = attribute_name_range(&cell.src);
     let mut only_attr = relaxed.clone();
     for file in &mut only_attr {
         file.uses.retain(|u| (u.start, u.end) == attr);
     }
-    let forward_at_attr = compare_project_uses(&loaded, &only_attr);
+    let forward_at_attr = compare(&loaded, &only_attr);
     AttrCellOutcome {
         runner,
         forward,
@@ -2817,7 +3039,7 @@ fn run_qualifier_cell(cell: &QualCell) -> (LoadedProject, Vec<FileUses>, Compari
         .collect();
     let fcs = parse_project_uses(&json, &sources)
         .unwrap_or_else(|e| panic!("cell {}: parse FCS uses: {e:?}", cell.label));
-    let comparison = compare_project_uses(&loaded, &fcs);
+    let comparison = compare(&loaded, &fcs);
     (loaded, fcs, comparison)
 }
 
@@ -2875,7 +3097,7 @@ fn record_contribution(
                 .collect(),
         })
         .collect();
-    let rest = compare_project_uses(loaded, &without);
+    let rest = compare(loaded, &without);
     let graded = |c: &Comparison| c.uses_considered + c.assembly_uses_considered;
     let matched = |c: &Comparison| c.matches + c.assembly_matches;
     (graded(full) - graded(&rest), matched(full) - matched(&rest))

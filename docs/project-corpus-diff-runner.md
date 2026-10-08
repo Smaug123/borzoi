@@ -80,21 +80,20 @@ Optional project-load settings:
   For the F# repo corpus, use `DISABLE_ARCADE=true` to avoid making the
   name-resolution sweep depend on resolving the repo's pinned Arcade SDK.
 
+Optional exact manifest (see [The exact manifest](#the-exact-manifest)):
+
+- `BORZOI_PROJECT_MANIFEST`: a checked-in manifest the run must reproduce
+  exactly. Set `BORZOI_UPDATE_MANIFESTS=1` to rewrite it instead.
+- `BORZOI_PROJECT_MANIFEST_ROOT`: the directory every project and file key in
+  the manifest is relative to. Required with `BORZOI_PROJECT_MANIFEST`, and
+  every visited project must sit under it.
+
 Optional failure ratchets:
 
-- `BORZOI_PROJECT_EXPECT_DIVERGENCES`: the exact divergence counts this corpus
-  is known to produce, spelled `assembly=<n>,project=<n>,reverse=<n>` in any
-  order. All three categories are required. **Two-sided**: a run that diverges
-  more fails, and so does a run that diverges less — so a fix cannot land
-  without bringing the recorded number down with it, and the gate cannot decay
-  into a rubber stamp. Per category rather than a total, because a change that
-  trades a project wrong target for an assembly one moves the total by zero.
-  This is what `ci.yml`'s `corpus-diff` job sets.
 - `BORZOI_PROJECT_MAX_DIVERGENCES`: maximum allowed project, assembly, and
-  reverse divergences combined. Defaults to `0`. The one-sided form; setting it
-  alongside `BORZOI_PROJECT_EXPECT_DIVERGENCES` is a configuration error rather
-  than a precedence rule, since the two are incompatible readings of the same
-  quantity.
+  reverse divergences combined. Defaults to `0`. Must be `0` when a manifest is
+  set: the manifest records state, so a divergence it was allowed to record
+  would be blessed by the next regeneration.
 - `BORZOI_PROJECT_MIN_COMPARABLE`: non-zero minimum number of comparable
   projects.
 - `BORZOI_PROJECT_MAX_SKIPPED`: maximum number of visited projects allowed
@@ -284,7 +283,7 @@ The default soundness gate allows zero divergences.
 
 ## Current Failure Gates
 
-The CLI and ignored test fail when:
+The CLI and ignored test fail when, checked in this order:
 
 - no projects were visited;
 - no project became comparable;
@@ -292,7 +291,61 @@ The CLI and ignored test fail when:
 - a configured comparable-project, skipped-project, skipped-rate, or coverage
   ratchet fails;
 - more project, assembly, or reverse divergences are reported than
-  `BORZOI_PROJECT_MAX_DIVERGENCES` allows.
+  `BORZOI_PROJECT_MAX_DIVERGENCES` allows;
+- a manifest is configured and the run does not reproduce it exactly.
+
+## The Exact Manifest
+
+A divergence ceiling alone says nothing about how much the LSP *answers*. A
+change that made it serve nothing for a cursor on a local kept every
+divergence count at zero and passed — project matches fell from 14,304 to
+2,702 on the pinned corpus. Coverage and comparable-project floors would catch
+that one, but each leaves its own slack, and none can see a movement inside a
+count (one use gained, another lost).
+
+The pinned corpus is fixed by revision and both sides are deterministic, so
+`ci.yml`'s `corpus-diff` job instead checks the run against
+`crates/corpus-diff/manifests/project_corpus.txt`
+(`borzoi_oracle_harness::manifest`; the format is documented in
+`crates/corpus-diff/src/manifest.rs`). It has:
+
+- one line per project: `comparable`, with the assets file's package,
+  framework and project-reference counts, or `skipped` and why. A project FCS
+  type-checks with errors **grades nothing** — an erroring file's records are
+  the compiler's recovery, not its answer — so it is `skipped fcs-errors`, and
+  each error gets its own line. A project that silently stops being comparable
+  therefore fails the gate rather than shrinking the evidence;
+- one line per Compile file: `compared` with its match counts (and how many
+  were served from the attribute map or inference's member table), or
+  `unreported` if FCS said nothing about it;
+- one line per graded record that is **not** a match: each deferral with what
+  the LSP served (`unrecorded`, `qualified-access`, …) and which guard declined
+  (`opaque_open@explicit_open`, or `unattributed`), each ambiguous range,
+  shadowed constructor record, zero-width or compiler-generated record, and each
+  of our or-pattern aliases the oracle is silent about. FCS's own defining
+  occurrences are counted per file instead: they are not uses.
+
+Matches are counted rather than listed. Every non-match is listed by key, so
+a match lost to a deferral, or traded for one elsewhere, still moves a line.
+
+Every movement fails, in either direction: a newly answered use is as much a
+change to acknowledge as a lost one. Acknowledge it by regenerating the
+manifest and committing the diff:
+
+```sh
+BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh
+```
+
+Run that outside `nix develop` (it enters the devshell itself). Run locally, it
+materialises the pinned corpus first, under
+`${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}`, through the
+same `tools/ci/project-corpus.sh` CI uses; it needs to reach nuget.org. Keys are
+relative to that cache's `project-corpus/` directory in both places, so the
+manifest is host-independent.
+
+Zero divergences stays a separate, hard assertion, and it runs first —
+including when regenerating — so a regenerated manifest can never record a wrong
+answer as state.
 
 Missing project assets are reported but do not directly fail the run. They often
 reduce FCS comparability or coverage, so pair long corpus runs with explicit

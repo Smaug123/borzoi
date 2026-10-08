@@ -972,27 +972,6 @@ jobs:
     # cst, sema, assembly, msbuild, nuget and lsp together, so a filter narrow
     # enough to be worth having would be one wrong entry away from skipping the
     # gate silently. The job is ~4 minutes.
-    env:
-      # The divergences this corpus is known to produce, per comparison. A
-      # **two-sided** record: a run that diverges more fails, and so does one
-      # that diverges less, so a fix cannot land without bringing the number
-      # down with it and a one-sided ceiling cannot quietly decay into a rubber
-      # stamp. Per category rather than a total, because a change that trades a
-      # project wrong target for an assembly one moves the total by zero.
-      #
-      # Lowering it is the good direction and needs no ceremony beyond the diff
-      # that earns it. Raising it means this corpus now resolves something to
-      # the wrong declaration and wants a reason in the commit message.
-      #
-      # **Zero, in every direction.** Both sides read one reference set — ours,
-      # netstandard's BCL included — so neither can resolve a name in an
-      # assembly the other cannot see, and the oracle's compiler-generated
-      # values (a destructuring pattern's synthetic parameter, whose use spans
-      # the pattern) are skipped rather than compared against the case the
-      # author actually wrote. Raising any of these means this corpus now
-      # resolves something to the wrong declaration and wants a reason in the
-      # commit message.
-      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=0,project=0,reverse=0"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1024,19 +1003,16 @@ jobs:
         # `stats.yml`'s job: that one records the same numbers into the series
         # and deliberately ignores this status, so without this job nothing ever
         # asserted on them at a decision point.
-        run: |
-          summary="$RUNNER_TEMP/project-corpus-summary.json"
-          nix develop --command env \
-            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
-            BORZOI_PROJECT_SUMMARY_JSON="$summary" \
-            cargo run --locked -p borzoi-corpus-diff
-          # A run that measured less than the whole corpus can satisfy the
-          # expectation by not looking, so assert the coverage separately.
-          comparable="$(jq -er '.statistics.projects.comparable' "$summary")"
-          if [ "$comparable" -ne "$BORZOI_PROJECT_PINNED" ]; then
-            echo "only $comparable of $BORZOI_PROJECT_PINNED pinned projects became comparable" >&2
-            exit 1
-          fi
+        #
+        # Two gates, in order. Zero divergences in every direction is a hard
+        # assertion: both sides read one reference set, so neither can resolve a
+        # name in an assembly the other cannot see. Then the run must reproduce
+        # `crates/corpus-diff/manifests/project_corpus.txt` exactly — every
+        # project's verdict, every file's match counts, every graded record that
+        # is not a match — so a change that makes the LSP answer less, or moves
+        # a project to "skipped", fails here even though it diverges nowhere.
+        # The script header says how to regenerate the manifest.
+        run: bash tools/ci/project-corpus-gate.sh
 
       - name: Gate on whole-assembly projection losses
         # This sweep wants a populated package cache rather than a fixture,
