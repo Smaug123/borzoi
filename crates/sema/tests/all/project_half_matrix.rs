@@ -236,10 +236,6 @@ const CELLS: &[Cell] = &[
 /// slice) and the `cross_kind` arm was deleted — they are no longer gaps.
 const KNOWN_GAPS: &[(&str, &str)] = &[
     (
-        "pj-auto / assembly module-half value, expression",
-        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
-    ),
-    (
         "pj-auto / project auto-open value, expression",
         "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
     ),

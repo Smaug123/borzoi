@@ -472,6 +472,16 @@ pub(super) struct OpenGroup {
     pub(super) readings: Vec<Vec<String>>,
 }
 
+/// One entry in [`Resolver::fold_back_prefixes`]: a fragment folded back into
+/// this scope.
+#[derive(Debug, Clone)]
+pub(super) struct FoldBackPrefix {
+    pub(super) path: Vec<String>,
+    /// [`Resolver::open_shortening_prefixes`]' length at the fold: the prefixes
+    /// from here on were pushed by opens *after* it.
+    pub(super) shortening_len: usize,
+}
+
 /// One entry in [`Resolver::open_shortening_prefixes`]: a container some `open`
 /// (explicit or implicit) brought into scope, under which a later `open`'s path
 /// may be shortened.
@@ -1031,6 +1041,18 @@ pub(super) struct Resolver<'a> {
     /// incomplete prefix goes opaque instead (review round 9). Same block scoping as
     /// [`Self::open_shortening_prefixes`].
     pub(super) incomplete_open_prefixes: Vec<Vec<String>>,
+    /// The `[<AutoOpen>]` fragments folded back into this scope
+    /// ([`Resolver::fold_own_auto_open_module`]).
+    ///
+    /// A fold brings a fragment's nested modules into scope under their short
+    /// names, as an `open` of it would, so a later `open Inner` may reach the
+    /// fragment's `Inner` among every other module of that name in reach —
+    /// which the shortening tiers cannot order. Such an open is not
+    /// adjudicated: it stales everything before it and goes opaque
+    /// ([`Resolver::fold_back_open_is_contested`]). Keyed by the head rather
+    /// than by presence, which keeps the veto off every other relative open.
+    /// Same block scoping as [`Self::open_shortening_prefixes`].
+    pub(super) fold_back_prefixes: Vec<FoldBackPrefix>,
     /// Every in-scope **explicit namespace `open`** (project or assembly — the
     /// kinds that do *not* set an opaque/unmodelled flag and so reach the same-file
     /// module-qualified classifier), as `(source position, canonical opened

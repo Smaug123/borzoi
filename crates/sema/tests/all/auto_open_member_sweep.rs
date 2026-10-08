@@ -34,13 +34,30 @@
 //! [`KNOWN_GAPS`] is the certain-implies-exact ratchet: an entry claims exactly
 //! "FCS resolves the probe in-file and we name nothing". Naming a target, or
 //! FCS falling silent, fails the entry rather than passing it.
+//!
+//! ## The channel
+//!
+//! A fragment's members reach a use through more than the fold-back: an
+//! explicit `open` of the module that holds it folds it too, and so does an
+//! `open` of its namespace from a later file. Each [`Channel`] runs the same
+//! machinery from a different caller, with its own source of members (this
+//! file's items, or an earlier file's exports) and its own eviction ordering,
+//! so the grid crosses every cell with every channel. The fold-back's gaps are
+//! [`KNOWN_GAPS`]; the other channels' are the exact manifest
+//! `tests/manifests/auto_open_member_sweep_channels.txt`, on the same terms.
+//! The namespace channel is not gated: it disagrees with FCS on `main` too (see
+//! `the_namespace_fold_agrees_with_fcs_over_every_member_pair`).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use borzoi_oracle_harness::manifest::Manifest;
+use borzoi_sema::{
+    ProjectItems, Resolution, ResolvedFile, ResolvedProject, SyntaxRecovery, resolve_file,
+    resolve_project,
+};
 use rowan::{TextRange, TextSize};
 
 use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
@@ -215,15 +232,70 @@ impl Probe {
     }
 }
 
-/// One generated cell: a fragment holding `members` in order, probed twice.
+/// How a cell's fragment reaches its probes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Channel {
+    /// The fragment is the enclosing block's own `[<AutoOpen>]` module, folded
+    /// back at its closing position.
+    FoldBack,
+    /// The fragment sits in a plain module of the same file, which the block
+    /// then `open`s: FCS opens the module's contents and then its
+    /// `[<AutoOpen>]` children.
+    OpenSameFile,
+    /// As [`Self::OpenSameFile`], with the module in an earlier file.
+    OpenCrossFile,
+    /// The fragment sits directly in a namespace an earlier file declares, and
+    /// the block `open`s the namespace.
+    NamespaceCrossFile,
+}
+
+impl Channel {
+    /// The channels the gate holds. [`Self::NamespaceCrossFile`] is swept by
+    /// its own ignored test, which documents why.
+    const GATED: &'static [Channel] = &[
+        Channel::FoldBack,
+        Channel::OpenSameFile,
+        Channel::OpenCrossFile,
+    ];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Channel::FoldBack => "fold-back",
+            Channel::OpenSameFile => "open-same-file",
+            Channel::OpenCrossFile => "open-cross-file",
+            Channel::NamespaceCrossFile => "namespace-cross-file",
+        }
+    }
+}
+
+/// One generated cell: a fragment holding `members` in order, probed three
+/// times. The probes sit in the **last** file of `files`.
 struct Cell {
+    channel: Channel,
     label: String,
-    src: String,
+    /// The cell's files, in Compile order.
+    files: Vec<String>,
     /// The probe spans, in [`Probe`] order.
     probes: Vec<(Probe, TextRange)>,
     /// The span of the enclosing `type Nn()` declaration's name — what FCS must
     /// pick for [`Probe::AfterEnclosingType`].
     enclosing_type: TextRange,
+}
+
+impl Cell {
+    /// The file holding the probes.
+    fn src(&self) -> &str {
+        self.files.last().expect("a cell has a file")
+    }
+
+    /// The key a gap is recorded under: `label/probe`, prefixed by the channel
+    /// for every channel but the fold-back, whose keys predate the dimension.
+    fn key(&self, probe: Probe) -> String {
+        match self.channel {
+            Channel::FoldBack => format!("{}/{}", self.label, probe.tag()),
+            other => format!("{}: {}/{}", other.tag(), self.label, probe.tag()),
+        }
+    }
 }
 
 /// The inaccessible members the metamorphic property perturbs each cell with.
@@ -238,8 +310,9 @@ const INVISIBLE: &[&str] = &[
     "type private NnHolderX =\n        | Nn",
 ];
 
-/// Build the whole grid: each shape alone, then every ordered pair.
-fn cells() -> Vec<Cell> {
+/// Build the whole grid over `channels`: each shape alone, then every ordered
+/// pair.
+fn cells(channels: &[Channel]) -> Vec<Cell> {
     let shapes: Vec<Shape> = Member::ALL
         .iter()
         .flat_map(|&kind| {
@@ -261,39 +334,64 @@ fn cells() -> Vec<Cell> {
         }
     }
 
-    sequences
-        .into_iter()
-        .enumerate()
-        .map(|(n, members)| build_cell(n, &members))
-        .collect()
+    let mut out = Vec::new();
+    for &channel in channels {
+        for members in &sequences {
+            let n = out.len();
+            out.push(build_cell(channel, n, members));
+        }
+    }
+    out
 }
 
-fn build_cell(n: usize, members: &[Shape]) -> Cell {
+fn build_cell(channel: Channel, n: usize, members: &[Shape]) -> Cell {
     let label = members
         .iter()
         .map(|s| s.tag())
         .collect::<Vec<_>>()
         .join(" ; ");
 
-    let mut src = String::new();
-    // A distinct top-level module per cell: every probe file joins ONE batched
-    // FCS project, so two cells sharing a module path would be a duplicate
-    // definition poisoning both. The fragment is nested *inside* that module,
-    // so its fold reaches this cell's block and no other — an `[<AutoOpen>]`
-    // module at the shared `Demo.FbSweep` namespace level would reach them all.
-    src.push_str(&format!("module Demo.FbSweep.C{n}\n\n"));
-    // The enclosing binding the fold must take the name back from.
-    src.push_str(&format!("let {NAME} = 99\n\n"));
-    src.push_str("[<AutoOpen>]\n");
-    src.push_str(&format!("module Fold{n} =\n"));
-    for (i, shape) in members.iter().enumerate() {
-        for line in shape.kind.lines(shape.private, i) {
-            src.push_str("    ");
-            src.push_str(&line);
-            src.push('\n');
+    // The fragment itself, at `indent`.
+    let fragment = |indent: &str| {
+        let mut out = format!("{indent}[<AutoOpen>]\n{indent}module Fold{n} =\n");
+        for (i, shape) in members.iter().enumerate() {
+            for line in shape.kind.lines(shape.private, i) {
+                out.push_str(indent);
+                out.push_str("    ");
+                out.push_str(&line);
+                out.push('\n');
+            }
         }
-    }
-    src.push('\n');
+        out.push('\n');
+        out
+    };
+    // Every cell's paths are distinct: every probe file joins ONE batched FCS
+    // project, so two cells sharing a module path would be a duplicate
+    // definition poisoning both, and a fragment at a *shared* namespace would
+    // reach every cell. Each block writes the enclosing binding the fold must
+    // take the name back from before the fragment reaches it.
+    let enclosing = format!("let {NAME} = 99\n\n");
+    let (mut files, mut src) = match channel {
+        Channel::FoldBack => (
+            Vec::new(),
+            format!("module Demo.FbSweep.C{n}\n\n{enclosing}{}", fragment("")),
+        ),
+        Channel::OpenSameFile => (
+            Vec::new(),
+            format!(
+                "module Demo.FbSweep.C{n}\n\n{enclosing}module Host{n} =\n{}open Host{n}\n\n",
+                fragment("    ")
+            ),
+        ),
+        Channel::OpenCrossFile => (
+            vec![format!("module Demo.FbSweepHost.H{n}\n\n{}", fragment(""))],
+            format!("module Demo.FbSweep.C{n}\n\n{enclosing}open Demo.FbSweepHost.H{n}\n\n"),
+        ),
+        Channel::NamespaceCrossFile => (
+            vec![format!("namespace Demo.FbSweepNs.N{n}\n\n{}", fragment(""))],
+            format!("module Demo.FbSweep.C{n}\n\n{enclosing}open Demo.FbSweepNs.N{n}\n\n"),
+        ),
+    };
 
     let mut probes = Vec::new();
     src.push_str("let probeExpr = ");
@@ -311,10 +409,12 @@ fn build_cell(n: usize, members: &[Shape]) -> Cell {
     src.push_str("\nlet probeAfterType = ");
     probes.push((Probe::AfterEnclosingType, push_probe(&mut src)));
     src.push('\n');
+    files.push(src);
 
     Cell {
+        channel,
         label,
-        src,
+        files,
         probes,
         enclosing_type,
     }
@@ -323,14 +423,19 @@ fn build_cell(n: usize, members: &[Shape]) -> Cell {
 /// A declaration range rendered as the source line that holds it — a bare byte
 /// pair says nothing about *which member* a side picked, and the whole point of
 /// a cell is which one won.
-fn at(src: &str, range: Option<(usize, usize)>) -> String {
+fn at(files: &[String], range: Option<(usize, usize, usize)>) -> String {
     match range {
         None => "nothing".to_string(),
-        Some((s, e)) => {
+        Some((f, s, e)) => {
+            let src = &files[f];
             let line = src[..s].matches('\n').count() + 1;
             let ls = src[..s].rfind('\n').map_or(0, |i| i + 1);
             let le = src[s..].find('\n').map_or(src.len(), |i| s + i);
-            format!("{:?} in {:?} (line {line})", &src[s..e], src[ls..le].trim())
+            format!(
+                "{:?} in {:?} (file {f}, line {line})",
+                &src[s..e],
+                src[ls..le].trim()
+            )
         }
     }
 }
@@ -803,28 +908,119 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ),
 ];
 
+/// What one run of the grid over some channels found.
+struct SweepOutcome {
+    cells: usize,
+    mismatches: Vec<String>,
+    adjudicated: usize,
+    local_eviction_gaps: usize,
+    seen_gaps: BTreeSet<String>,
+    channel_entries: Vec<String>,
+}
+
 #[test]
 fn the_fold_agrees_with_fcs_over_every_member_pair() {
-    let cells = cells();
+    let SweepOutcome {
+        cells,
+        mismatches,
+        adjudicated,
+        local_eviction_gaps,
+        seen_gaps,
+        channel_entries,
+    } = sweep(Channel::GATED);
+
+    let stale: Vec<&str> = KNOWN_GAPS
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| !seen_gaps.contains(*k))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "KNOWN_GAPS entries name cells the grid no longer generates: {stale:?}"
+    );
+
+    assert!(
+        mismatches.is_empty(),
+        "{} of {} probes across {cells} cells disagree with FCS ({adjudicated} adjudicated):\n{}",
+        mismatches.len(),
+        cells * 3,
+        mismatches.join("\n")
+    );
+
+    assert_eq!(
+        local_eviction_gaps, 78,
+        "the count of #52 cells moved; down is a fix (update this number), up is a new defect"
+    );
+
+    let manifest =
+        Manifest::from_entries(channel_entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    borzoi_oracle_harness::manifest::check(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/manifests/auto_open_member_sweep_channels.txt"),
+        &manifest,
+        "BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all \
+         auto_open_member_sweep::the_fold_agrees_with_fcs_over_every_member_pair",
+    );
+
+    // Vacuity: the grid proves nothing if FCS declined to adjudicate it.
+    assert!(
+        adjudicated > cells,
+        "FCS adjudicated only {adjudicated} probes across {cells} cells"
+    );
+}
+
+/// The grid through an earlier file's **namespace**, opened by a later one —
+/// the implicit namespace fold `main` already performs for a fragment another
+/// file declares.
+///
+/// Ignored because it fails, on `main` and here alike, with the same 116
+/// disagreements (none of them the fold-back's): a constructible type the
+/// opening block declares after the `open` does not take the name back from
+/// the opened members, and an earlier file's same-named members are not
+/// ranked by kind (`ProjectItems::fragment_value_children` keeps the last
+/// declaration). Both are defects of that fold, not of the fold-back.
+#[test]
+#[ignore = "116 disagreements, identical on main: see the doc comment"]
+fn the_namespace_fold_agrees_with_fcs_over_every_member_pair() {
+    let outcome = sweep(&[Channel::NamespaceCrossFile]);
+    assert!(
+        outcome.mismatches.is_empty(),
+        "{} of {} probes across {} cells disagree with FCS:\n{}",
+        outcome.mismatches.len(),
+        outcome.cells * 3,
+        outcome.cells,
+        outcome.mismatches.join("\n")
+    );
+}
+
+/// Run the grid over `channels` against FCS and grade every probe.
+fn sweep(channels: &[Channel]) -> SweepOutcome {
+    let cells = cells(channels);
 
     // Parse-check every cell up front and report *all* failures at once: a
     // panic on the first would hide the rest behind a costly FCS round-trip.
     let mut parse_failures: Vec<String> = Vec::new();
+    // Every cell's files, in one Compile order: a cell's earlier file precedes
+    // its probe file, and no cell reaches another's paths.
     let mut files: Vec<(PathBuf, String)> = Vec::new();
+    let mut cell_paths: Vec<Vec<PathBuf>> = Vec::new();
     for cell in &cells {
-        let parsed = parse(&cell.src);
-        if !parsed.errors.is_empty() {
-            parse_failures.push(format!(
-                "  {}\n    {:?}\n    {:?}",
-                cell.label,
-                cell.src.replace('\n', "\\n"),
-                parsed.errors
-            ));
+        let mut paths = Vec::new();
+        for src in &cell.files {
+            let parsed = parse(src);
+            if !parsed.errors.is_empty() {
+                parse_failures.push(format!(
+                    "  {}\n    {:?}\n    {:?}",
+                    cell.key(Probe::Expr),
+                    src.replace('\n', "\\n"),
+                    parsed.errors
+                ));
+            }
+            let path = temp_fs_file("borzoi_sema_fb_sweep", src);
+            files.push((path.clone(), src.clone()));
+            paths.push(path);
         }
-        files.push((
-            temp_fs_file("borzoi_sema_fb_sweep", &cell.src),
-            cell.src.clone(),
-        ));
+        cell_paths.push(paths);
     }
     assert!(
         parse_failures.is_empty(),
@@ -848,51 +1044,42 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
     // above and by count below; down is a fix, up is a new defect.
     let mut local_eviction_gaps = 0usize;
     let mut seen_gaps: BTreeSet<String> = BTreeSet::new();
+    // The other channels' gaps and #52 cells, as exact manifest entries.
+    let mut channel_entries: Vec<String> = Vec::new();
 
-    for (cell, (path, _)) in cells.iter().zip(files.iter()) {
+    for (cell, paths) in cells.iter().zip(cell_paths.iter()) {
+        let probe_path = paths.last().expect("a cell has a file");
         let fu = fcs_files
             .iter()
-            .find(|f| f.path.file_name() == path.file_name())
-            .unwrap_or_else(|| panic!("no FCS uses for cell {:?} ({path:?})", cell.label));
+            .find(|f| f.path.file_name() == probe_path.file_name())
+            .unwrap_or_else(|| panic!("no FCS uses for cell {:?} ({probe_path:?})", cell.label));
         assert!(
             !fu.uses.is_empty(),
             "FCS reported nothing at all for cell {:?} — it likely failed to parse there:\n{}",
             cell.label,
-            cell.src
+            cell.src()
         );
+        // A declaration in one of this cell's files, as `(file, start, end)`.
+        let file_of =
+            |path: &std::path::Path| paths.iter().position(|p| p.file_name() == path.file_name());
 
-        let parsed = parse(&cell.src);
-        let recovery = SyntaxRecovery::of(&parsed);
-        let file = ImplFile::cast(parsed.root).expect("impl file");
-        let rf = resolve_file(
-            &file,
-            &ProjectItems::default(),
-            crate::common::fsharp_core_env(),
-            &recovery,
-        );
+        let resolved = resolve_cell(cell);
+        let render = |d: Option<(usize, usize, usize)>| at(&cell.files, d);
 
         for (probe, span) in &cell.probes {
-            let key = format!("{}/{}", cell.label, probe.tag());
-            let ours = rf.resolution_at(*span);
-            let our_def = match ours {
-                Some(Resolution::Local(_) | Resolution::Item(_)) => rf
-                    .resolved_def(ours.expect("checked"))
-                    .map(|d| d.range)
-                    .map(|r| (usize::from(r.start()), usize::from(r.end()))),
-                _ => None,
-            };
+            let key = cell.key(*probe);
+            let (ours, our_def) = resolved.at(*span);
 
             // FCS's answer for exactly this occurrence, and only when the
-            // declaration is in this same file: a use it resolves elsewhere
-            // (FSharp.Core's `Some`, say) is out of this sweep's scope.
+            // declaration is in one of this cell's files: a use it resolves
+            // elsewhere (FSharp.Core's `Some`, say) is out of this sweep's scope.
             let fcs_use = fu
                 .uses
                 .iter()
                 .find(|u| u.start == usize::from(span.start()) && u.end == usize::from(span.end()));
             let fcs_decl = fcs_use
                 .and_then(|u| u.decl.as_ref())
-                .filter(|d| d.file.file_name() == path.file_name())
-                .map(|d| (d.start, d.end));
+                .and_then(|d| file_of(&d.file).map(|f| (f, d.start, d.end)));
 
             // A pattern occurrence FCS calls a *definition* is a fresh binder:
             // the name reached nothing in the pattern namespace. Sema records a
@@ -904,8 +1091,8 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
                     mismatches.push(format!(
                         "  {key}\n    FCS binds a fresh pattern binder, we point at {} \
                          (resolution {ours:?})\n{}",
-                        at(&cell.src, our_def),
-                        cell.src
+                        render(our_def),
+                        cell.files.join("\n----\n")
                     ));
                 }
                 continue;
@@ -917,7 +1104,9 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
             // no project type constructor. Assert both — a change on either
             // side is news, not a gap to record.
             if *probe == Probe::AfterEnclosingType {
+                let last = cell.files.len() - 1;
                 let want = (
+                    last,
                     usize::from(cell.enclosing_type.start()),
                     usize::from(cell.enclosing_type.end()),
                 );
@@ -925,8 +1114,8 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
                     mismatches.push(format!(
                         "  {key}\n    the enclosing `type {NAME}()` should take the name, but \
                          FCS picks {}\n{}",
-                        at(&cell.src, fcs_decl),
-                        cell.src
+                        render(fcs_decl),
+                        cell.files.join("\n----\n")
                     ));
                 } else if our_def.is_some() {
                     // Naming the enclosing `let Nn = 99` is task #52 — the same
@@ -935,18 +1124,22 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
                     // no `[<AutoOpen>]` in the source at all). Ratcheted by
                     // shape, so a *folded* member standing here — the door this
                     // branch opens and closes — still fails.
-                    let enclosing_binding = cell.src.find(&format!("let {NAME} = 99")).map(|i| {
+                    let enclosing_binding = cell.src().find(&format!("let {NAME} = 99")).map(|i| {
                         let at = i + "let ".len();
-                        (at, at + NAME.len())
+                        (last, at, at + NAME.len())
                     });
                     if our_def == enclosing_binding {
-                        local_eviction_gaps += 1;
+                        if cell.channel == Channel::FoldBack {
+                            local_eviction_gaps += 1;
+                        } else {
+                            channel_entries.push(format!("{key} #52"));
+                        }
                     } else {
                         mismatches.push(format!(
                             "  {key}\n    FCS picks the enclosing type, we pick {} (resolution \
                              {ours:?})\n{}",
-                            at(&cell.src, our_def),
-                            cell.src
+                            render(our_def),
+                            cell.files.join("\n----\n")
                         ));
                     }
                 }
@@ -954,23 +1147,25 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
                 continue;
             }
 
-            // Counted before the ratchet: a KNOWN_GAPS cell asserts FCS
-            // resolved the probe in-file, so it is adjudication too — and the
-            // vacuity floor below must not fall as gaps are fixed.
+            // Counted before the ratchet: a gap asserts FCS resolved the probe
+            // in-file, so it is adjudication too — and the vacuity floor below
+            // must not fall as gaps are fixed.
             if fcs_decl.is_some() {
                 adjudicated += 1;
             }
 
-            if let Some((_, reason)) = KNOWN_GAPS.iter().find(|(k, _)| *k == key) {
+            if cell.channel == Channel::FoldBack
+                && let Some((_, reason)) = KNOWN_GAPS.iter().find(|(k, _)| *k == key)
+            {
                 seen_gaps.insert(key.clone());
                 if our_def.is_some() || fcs_decl.is_none() {
                     mismatches.push(format!(
                         "  {key} [KNOWN GAP: {reason}]\n    no longer behaves as the gap \
                          describes — if fixed, delete its entry; if we now name a target, that \
                          is a wrong resolution\n    FCS:  {}\n    ours: {}\n{}",
-                        at(&cell.src, fcs_decl),
-                        at(&cell.src, our_def),
-                        cell.src
+                        render(fcs_decl),
+                        render(our_def),
+                        cell.files.join("\n----\n")
                     ));
                 }
                 continue;
@@ -978,57 +1173,106 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
 
             match (fcs_decl, our_def) {
                 (None, None) => {}
+                // The other channels' gaps are manifest entries, on the
+                // ratchet's terms: FCS resolved the probe in-file and we named
+                // nothing.
+                (Some(_), None) if cell.channel != Channel::FoldBack => {
+                    channel_entries.push(format!("{key} gap"));
+                }
                 (Some(_), _) => {
                     if fcs_decl != our_def {
                         mismatches.push(format!(
                             "  {key}\n    FCS picks {}\n    we pick   {} (resolution \
                              {ours:?})\n{}",
-                            at(&cell.src, fcs_decl),
-                            at(&cell.src, our_def),
-                            cell.src
+                            render(fcs_decl),
+                            render(our_def),
+                            cell.files.join("\n----\n")
                         ));
                     }
                 }
                 (None, Some(_)) => mismatches.push(format!(
                     "  {key}\n    FCS resolved nothing in-file, we pick {} (resolution \
                      {ours:?})\n{}",
-                    at(&cell.src, our_def),
-                    cell.src
+                    render(our_def),
+                    cell.files.join("\n----\n")
                 )),
             }
         }
     }
 
-    let stale: Vec<&str> = KNOWN_GAPS
-        .iter()
-        .map(|(k, _)| *k)
-        .filter(|k| !seen_gaps.contains(*k))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "KNOWN_GAPS entries name cells the grid no longer generates: {stale:?}"
-    );
+    SweepOutcome {
+        cells: cells.len(),
+        mismatches,
+        adjudicated,
+        local_eviction_gaps,
+        seen_gaps,
+        channel_entries,
+    }
+}
 
-    assert!(
-        mismatches.is_empty(),
-        "{} of {} probes across {} cells disagree with FCS ({adjudicated} adjudicated):\n{}",
-        mismatches.len(),
-        cells.len() * 3,
-        cells.len(),
-        mismatches.join("\n")
-    );
+/// Our side of one cell: its probe file resolved, alone or after the cell's
+/// earlier file.
+enum ResolvedCell {
+    File(Box<ResolvedFile>),
+    Project(ResolvedProject),
+}
 
-    assert_eq!(
-        local_eviction_gaps, 78,
-        "the count of #52 cells moved; down is a fix (update this number), up is a new defect"
-    );
+impl ResolvedCell {
+    /// The resolution at `span` in the probe file, and the declaration it
+    /// names as `(file, start, end)` when it names one in this cell.
+    fn at(&self, span: TextRange) -> (Option<Resolution>, Option<(usize, usize, usize)>) {
+        let range = |r: TextRange| (usize::from(r.start()), usize::from(r.end()));
+        match self {
+            ResolvedCell::File(rf) => {
+                let ours = rf.resolution_at(span);
+                let def = match ours {
+                    Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => rf
+                        .resolved_def(res)
+                        .map(|d| range(d.range))
+                        .map(|(s, e)| (0, s, e)),
+                    _ => None,
+                };
+                (ours, def)
+            }
+            ResolvedCell::Project(proj) => {
+                let last = proj.files().len() - 1;
+                let ours = proj.file(last).resolution_at(span);
+                let def = match ours {
+                    Some(Resolution::Item(_)) => proj
+                        .item_def(ours.expect("checked"))
+                        .map(|(f, d)| (f, range(d.range).0, range(d.range).1)),
+                    Some(res @ Resolution::Local(_)) => proj
+                        .file(last)
+                        .resolved_def(res)
+                        .map(|d| (last, range(d.range).0, range(d.range).1)),
+                    _ => None,
+                };
+                (ours, def)
+            }
+        }
+    }
+}
 
-    // Vacuity: the grid proves nothing if FCS declined to adjudicate it.
-    assert!(
-        adjudicated > cells.len(),
-        "FCS adjudicated only {adjudicated} probes across {} cells",
-        cells.len()
-    );
+fn resolve_cell(cell: &Cell) -> ResolvedCell {
+    let env = crate::common::fsharp_core_env();
+    let impl_file = |src: &str| {
+        let parsed = parse(src);
+        ImplFile::cast(parsed.root).expect("impl file")
+    };
+    if let [only] = cell.files.as_slice() {
+        let parsed = parse(only);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        ResolvedCell::File(Box::new(resolve_file(
+            &file,
+            &ProjectItems::default(),
+            env,
+            &recovery,
+        )))
+    } else {
+        let files: Vec<ImplFile> = cell.files.iter().map(|s| impl_file(s)).collect();
+        ResolvedCell::Project(resolve_project(&files, env))
+    }
 }
 
 /// **A member that is not in scope cannot change what is.**
@@ -1052,19 +1296,22 @@ fn an_inaccessible_member_does_not_change_any_cell() {
     let mut mismatches: Vec<String> = Vec::new();
     let mut losses: Vec<String> = Vec::new();
 
-    for cell in cells() {
-        let base = resolutions(&cell.src, &cell.probes);
+    // The fold-back channel only: the perturbation is spliced into the probe
+    // file's own fragment.
+    for cell in cells(&[Channel::FoldBack]) {
+        let src = cell.src().to_string();
+        let base = resolutions(&src, &cell.probes);
         for invisible in INVISIBLE {
             // Into the fragment, after its members: the fold's own block, at the
             // indent its declarations use.
-            let Some(blank) = cell.src.find("\n\nlet probeExpr") else {
+            let Some(blank) = src.find("\n\nlet probeExpr") else {
                 panic!("cell {:?} has no probe tail", cell.label);
             };
-            let mut perturbed = cell.src.clone();
+            let mut perturbed = src.clone();
             perturbed.insert_str(blank, &format!("\n    {invisible}"));
 
             // The probes moved by exactly the inserted text.
-            let shift = u32::try_from(perturbed.len() - cell.src.len()).expect("fits");
+            let shift = u32::try_from(perturbed.len() - src.len()).expect("fits");
             let moved: Vec<(Probe, TextRange)> = cell
                 .probes
                 .iter()
