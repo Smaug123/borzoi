@@ -1165,7 +1165,8 @@ pub(super) struct Resolver<'a> {
     /// Each in-file union case's field names, in source order, keyed by the
     /// case's def — `None` for a case declared in the signature form
     /// (`| Some : Value:'T -> 'T option`), whose fields this does not read. An
-    /// anonymous field contributes no name. F# reads `Case(x = e)` as a named
+    /// anonymous field contributes the name F# generates for it (`Item`, or
+    /// `Item<n>` among several). F# reads `Case(x = e)` as a named
     /// field only when `x` is one of these; otherwise `x = e` is an equality
     /// passed positionally ([`Resolver::resolve_method_args`]).
     pub(super) case_field_names: HashMap<DefId, Option<Vec<String>>>,
