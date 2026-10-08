@@ -157,16 +157,17 @@ classes, none of them fixed:
   offside block, so the debris rule (block depth > 0) does not see that
   `yield 2` is inside it, and it becomes an expression declaration.
 
-Two other live defects are outside recovery proper:
+One other live defect is outside recovery proper:
+`ENUM_CASE must contain a value expression`, `TYPAR_DECL must contain an
+IDENT_TOK child`, and about twenty other normaliser assertions panic on
+recovered trees. They cost nothing in the relation, because the units are
+damaged, but they keep those files from being `exact`.
 
-- `g f(x)` (an adjacent application as an argument, and anything built on
-  one: `g f(x).Foo`, `g f(x).[i]`, `g -f(x)`) is FS0597 in FCS's grammar
-  (`argExpr` rejects an `atomicExpr` whose high-precedence flag is set); our
-  parser accepts it.
-- `ENUM_CASE must contain a value expression`, `TYPAR_DECL must contain an
-  IDENT_TOK child`, and about twenty other normaliser assertions panic on
-  recovered trees. They cost nothing in the relation, because the units are
-  damaged, but they keep those files from being `exact`.
+`g f(x)`, an argument that ends in an adjacent application (and anything
+built on one: `g f(x).Foo`, `g f(x).[i]`, `g -f(x)`), is FS0597 in FCS's
+grammar: `argExpr` reports it on an `atomicExpr` whose high-precedence flag
+is set, and keeps the tree. Our parser reports it too, at FCS's span, and
+`parser_diff_successive_args` grades the rule as a generated matrix.
 
 ## The whole-project gate
 

@@ -79,6 +79,7 @@ mod parser_diff_static_optimization;
 mod parser_diff_strings;
 mod parser_diff_struct_expr;
 mod parser_diff_struct_pat;
+mod parser_diff_successive_args;
 mod parser_diff_tabs;
 mod parser_diff_then;
 mod parser_diff_trait_call;

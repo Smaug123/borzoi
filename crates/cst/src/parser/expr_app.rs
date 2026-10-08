@@ -108,11 +108,23 @@ impl<'src> Parser<'src> {
     /// adjacent rewrite, leaves the inner `-` for the next iteration's
     /// failure / outer-loop handling. The adjacency / left-gap gates
     /// live in [`Parser::op_is_adjacent_prefix`].
+    ///
+    /// An argument whose atomic expression ends in an adjacent application
+    /// (`g f(x)`, `g f(x).P`, `g !f(x)`; see [`EndsInAdjacentApp`]) is FS0597,
+    /// which FCS's `argExpr` reports without changing the tree: at the
+    /// argument's range, or at the operator of the `ADJACENT_PREFIX_OP` form
+    /// (`g -f(x)`).
     pub(super) fn parse_arg_expr(&mut self) {
+        let start = self.peek().map(|(_, span)| span.clone());
         if !self.op_is_adjacent_prefix() {
-            self.parse_atomic_expr();
+            if self.parse_atomic_expr_flagged() == EndsInAdjacentApp::Yes {
+                let start = start.expect("an argument starts at a peeked token").start;
+                let end = self.prev_significant_raw_end().unwrap_or(start);
+                self.push_successive_args_error(start..end);
+            }
             return;
         }
+        let op_span = start.expect("op_is_adjacent_prefix true implies a peeked filtered token");
         let (res, _) = self
             .peek()
             .cloned()
@@ -121,25 +133,49 @@ impl<'src> Parser<'src> {
             Ok(FilteredToken::Raw(t)) => t,
             _ => unreachable!("op_is_adjacent_prefix only succeeds on a Raw token"),
         };
-        match tok {
+        let ends = match tok {
             Token::Amp => self.parse_address_of_atomic(SyntaxKind::AMP_TOK),
             Token::AmpAmp => self.parse_address_of_atomic(SyntaxKind::AMP_AMP_TOK),
             Token::Op(_) => {
                 let cp = self.builder.checkpoint();
                 self.emit_prefix_op_as_long_ident();
-                if self.peek_starts_atomic_expr() {
-                    self.parse_atomic_expr();
+                let ends = if self.peek_starts_atomic_expr() {
+                    self.parse_atomic_expr_flagged()
                 } else {
                     self.push_missing_operand_error();
-                }
+                    EndsInAdjacentApp::No
+                };
                 self.builder
                     .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
                 self.builder.finish_node();
+                ends
             }
             _ => {
                 unreachable!("op_is_adjacent_prefix limits its caller to Amp/AmpAmp/Op tokens")
             }
+        };
+        if ends == EndsInAdjacentApp::Yes {
+            self.push_successive_args_error(op_span);
         }
+    }
+
+    /// FS0597 at `span` (see [`Self::parse_arg_expr`]).
+    fn push_successive_args_error(&mut self, span: Range<usize>) {
+        self.errors.push(ParseError {
+            message: SUCCESSIVE_ARGS_MESSAGE.to_string(),
+            span,
+        });
+    }
+
+    /// The end of the last significant raw token the parser has consumed.
+    fn prev_significant_raw_end(&self) -> Option<usize> {
+        self.raw_tokens[..self.raw_pos]
+            .iter()
+            .rev()
+            .find_map(|(res, span)| match res {
+                Ok(tt) => raw_significant(tt).map(|_| span.end),
+                Err(_) => None,
+            })
     }
 
     /// The arg-position counterpart of [`Parser::parse_address_of`]:
@@ -150,16 +186,20 @@ impl<'src> Parser<'src> {
     /// can chain `& - 1` as `AddressOf(true, App(~-, 1))`, while
     /// arg-level callers stop at the atom (the next minus-level prefix
     /// belongs to a sibling app step, not this AddressOf).
-    pub(super) fn parse_address_of_atomic(&mut self, op_kind: SyntaxKind) {
+    ///
+    /// Returns the operand's [`EndsInAdjacentApp`] flag.
+    pub(super) fn parse_address_of_atomic(&mut self, op_kind: SyntaxKind) -> EndsInAdjacentApp {
         self.builder
             .start_node(FSharpLang::kind_to_raw(SyntaxKind::ADDRESS_OF_EXPR));
         self.bump_into(op_kind);
-        if self.peek_starts_atomic_expr() {
-            self.parse_atomic_expr();
+        let ends = if self.peek_starts_atomic_expr() {
+            self.parse_atomic_expr_flagged()
         } else {
             self.push_missing_operand_error();
-        }
+            EndsInAdjacentApp::No
+        };
         self.builder.finish_node();
+        ends
     }
 
     /// Mirror of FCS's malformed-numeric-literal rule
