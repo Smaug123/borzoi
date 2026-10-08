@@ -28,11 +28,13 @@ use std::path::PathBuf;
 
 use crate::common::{
     CensusDecl, ResolveDiffUse, census_resolve_uses, full_bcl_env, invoke_fcs_dump_census,
-    parse_census_jsonl, temp_fs_file,
+    invoke_fcs_dump_census_project, parse_census_jsonl, temp_fs_file,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file, resolve_project,
+};
 use rowan::TextRange;
 
 /// The declarations every call shape is checked against.
@@ -44,11 +46,12 @@ type T(a: int) =
 let g (c: bool) = c
 let h (c: bool) (d: bool) = c && d
 let k<'t> (c: bool) = c
-let run (a: int) (b: int option) =
+let run (a: int) (b: int option) (p: bool -> bool) =
+    let lf (c: bool) = c
 ";
 
-/// One call per program. The callee's parameters are named like the locals in
-/// scope, which is the collision that matters.
+/// Method, constructor and equality calls written out. The callee's parameters
+/// are named like the locals in scope, which is the collision that matters.
 const CALLS: &[&str] = &[
     // An in-file static method: named, optional named, and both.
     "    T.S(«a» = ‹a›)\n",
@@ -62,15 +65,50 @@ const CALLS: &[&str] = &[
     "    let timeout = ‹b›\n    Async.RunSynchronously(async { return ‹a› }, «?timeout» = ‹timeout›)\n",
     "    let cancellationToken = None\n    Async.RunSynchronously(async { return ‹a› }, \
      «?cancellationToken» = ‹cancellationToken›)\n",
-    // A let-bound function: `a = a` is an equality, not a named argument, in
-    // the last argument of a curried application and under an operator too.
-    "    g (‹a› = ‹a›)\n",
-    "    h true (‹a› = ‹a›)\n",
+    // An equality under an operator is never an argument list's element.
     "    g (true && (‹a› = ‹a›))\n",
-    // …and through the wrappers that leave the head a function.
-    "    (g) (‹a› = ‹a›)\n",
-    "    k<int> (‹a› = ‹a›)\n",
 ];
+
+/// Every way of applying a **function** to `(a = a)` the matrix covers: each
+/// function head — a module function, a block-local one, a function-typed
+/// parameter, a generic one under type arguments, a curried application —
+/// under each wrapper that leaves it a function, plus heads that are not names
+/// at all. F# reads `a = a` there as an equality, so both operands must
+/// resolve.
+fn function_calls() -> Vec<String> {
+    let names = [
+        "g",
+        "lf",
+        "p",
+        "k<int>",
+        "h true",
+        "(h true)",
+        "(h : bool -> bool -> bool) true",
+    ];
+    let wrappers: [fn(&str) -> String; 4] = [
+        |h| h.to_string(),
+        |h| format!("({h})"),
+        |h| format!("(({h}))"),
+        |h| format!("({h} : bool -> bool)"),
+    ];
+    let mut heads: Vec<String> = names
+        .iter()
+        .flat_map(|n| wrappers.iter().map(move |w| w(n)))
+        .collect();
+    heads.extend(
+        [
+            "(fun (c: bool) -> c)",
+            "(if true then g else lf)",
+            "(match 0 with _ -> g)",
+            "(let q = g in q)",
+        ]
+        .map(str::to_string),
+    );
+    heads
+        .into_iter()
+        .map(|head| format!("    {head} (‹a› = ‹a›)\n"))
+        .collect()
+}
 
 /// Calls whose value sides can only be committed once FSharp.Core is
 /// referenced: the head is a module function there (`not`, `List.contains`),
@@ -88,11 +126,16 @@ struct Program {
     values: Vec<TextRange>,
 }
 
-/// Strip the `«…»` (label) and `‹…›` (value) markers. A `?` sigil inside a
-/// label marker is kept in the source but excluded from the range, which is
-/// the label *name* FCS reports.
+/// [`render_after`] the shared [`PRELUDE`].
 fn render(call: &str) -> Program {
-    let mut src = String::from(PRELUDE);
+    render_after(PRELUDE, call)
+}
+
+/// `prefix` followed by `call` with its `«…»` (label) and `‹…›` (value)
+/// markers stripped. A `?` sigil inside a label marker is kept in the source
+/// but excluded from the range, which is the label *name* FCS reports.
+fn render_after(prefix: &str, call: &str) -> Program {
+    let mut src = String::from(prefix);
     let mut labels = Vec::new();
     let mut values = Vec::new();
     let mut chars = call.chars();
@@ -142,6 +185,7 @@ fn named_argument_labels_never_bind_a_local() {
     let programs: Vec<(Program, bool)> = CALLS
         .iter()
         .map(|c| (render(c), false))
+        .chain(function_calls().iter().map(|c| (render(c), false)))
         .chain(CALLS_NEEDING_CORE.iter().map(|c| (render(c), true)))
         .collect();
     let paths: Vec<PathBuf> = programs
@@ -246,6 +290,81 @@ fn check_program(
                 "{:?} at {range:?}: FCS {:?}, we gave {ours:?} in\n{src}",
                 &src[range], u.decl
             ));
+        }
+    }
+}
+
+/// A function from an **earlier file** in Compile order is a function head
+/// too, qualified or opened: `a = a` stays an equality, and both operands
+/// resolve. Its proof is the preceding file's export, not this file's arena.
+#[test]
+fn a_cross_file_function_head_keeps_both_equality_operands() {
+    let first = "module First\nlet g (c: bool) = c\nlet h (c: bool) (d: bool) = c && d\n";
+    let later = [
+        render_after(
+            "module Qualified\nlet run (a: int) =\n",
+            "    First.g (‹a› = ‹a›) && First.h true (‹a› = ‹a›)\n",
+        ),
+        render_after(
+            "module Opened\nopen First\nlet run (a: int) =\n",
+            "    g (‹a› = ‹a›) && h true (‹a› = ‹a›)\n",
+        ),
+    ];
+    let mut paths = vec![temp_fs_file("named_args_first", first)];
+    paths.extend(
+        later
+            .iter()
+            .map(|p| temp_fs_file("named_args_later", &p.src)),
+    );
+    let census = parse_census_jsonl(&invoke_fcs_dump_census_project(&paths));
+    for p in &paths {
+        let _ = std::fs::remove_file(p);
+    }
+    assert_eq!(census.len(), paths.len(), "one census line per file");
+    for file in &census {
+        assert!(
+            file.ok && !file.has_check_errors,
+            "{} must type-check cleanly",
+            file.path
+        );
+    }
+
+    let sources: Vec<&str> = std::iter::once(first)
+        .chain(later.iter().map(|p| p.src.as_str()))
+        .collect();
+    let asts: Vec<ImplFile> = sources
+        .iter()
+        .map(|src| {
+            let parsed = parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            ImplFile::cast(parsed.root).expect("impl file")
+        })
+        .collect();
+    let project = resolve_project(&asts, &AssemblyEnv::default());
+    for (i, program) in later.iter().enumerate() {
+        let rf = project.file(i + 1);
+        let uses: Vec<_> = census_resolve_uses(&census[i + 1], &program.src)
+            .into_iter()
+            .filter(|u| !u.is_from_definition && u.start != u.end)
+            .collect();
+        for value in &program.values {
+            let fcs = uses
+                .iter()
+                .find(|u| range_of(u.start, u.end) == *value)
+                .expect("FCS reports every planted value");
+            let CensusDecl::InFile(s, e) = fcs.decl else {
+                panic!("FCS binds {value:?} outside the file");
+            };
+            let ours = rf
+                .resolution_at(*value)
+                .and_then(|r| rf.resolved_def(r))
+                .map(|d| d.range);
+            assert_eq!(
+                ours,
+                Some(range_of(s, e)),
+                "the value at {value:?} must resolve to the binder FCS names:\n{}",
+                program.src
+            );
         }
     }
 }

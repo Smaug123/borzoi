@@ -89,7 +89,7 @@ impl<'a> Resolver<'a> {
                     // Resolved after the function, so the head's resolution is
                     // already recorded when deciding whether `a` may carry
                     // named arguments.
-                    if !e.is_infix() && func.is_some_and(|f| !self.applies_an_in_file_value(&f)) {
+                    if !e.is_infix() && func.is_some_and(|f| !self.applies_a_function_value(&f)) {
                         self.resolve_method_args(&a);
                     } else {
                         self.resolve_expr(&a);
@@ -908,7 +908,7 @@ impl<'a> Resolver<'a> {
     /// `decide_type_path`.
     ///
     /// An `x = y` argument of a provable *function* application
-    /// ([`Self::applies_an_in_file_value`]) is an equality test and reaches the
+    /// ([`Self::applies_a_function_value`]) is an equality test and reaches the
     /// bare-ident path; [`is_named_arg_label`] keeps the *fallback* off its `x`.
     /// Every other application's named-argument labels are skipped before they
     /// get here ([`Self::resolve_method_args`]).
@@ -956,24 +956,29 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether an application whose function is `func` is provably an F#
-    /// **function** application — one whose head names an in-file value,
-    /// function or local — so that an `x = y` argument is an equality test.
+    /// **function** application, so that an `x = y` argument is an equality
+    /// test.
     ///
-    /// Anything else may be a method, constructor or union-case application,
+    /// Otherwise it may be a method, constructor or union-case application,
     /// where FCS reads a trailing `x = y` argument as a **named argument**
     /// *syntactically* (`GetMethodArgs`): `x` then names the callee's
     /// parameter (or field, or settable property), never the `x` in scope.
-    /// Telling the two apart in general needs the callee's identity — `not`,
-    /// `printfn` and `System.Math.Max` are all bare or dotted names, and only
-    /// the last is a method — so the answer is `false` unless it is proved.
+    ///
+    /// Only a **name** can denote a method group, a constructor or a case — a
+    /// bare or dotted identifier, or a member access — so every other head
+    /// (`(fun b -> b)`, `(if c then f else g)`) is a function value. A name
+    /// needs its callee's identity: `not`, `printfn` and `System.Math.Max` are
+    /// all names, and only the last is a method. So a name is a function only
+    /// when it is proved to be: it resolves to a value, function or local of
+    /// this file or an earlier one, or to a member of an F# module.
     ///
     /// Must be asked after `func` is resolved: it reads the head's recorded
     /// resolution.
-    fn applies_an_in_file_value(&self, func: &Expr) -> bool {
+    fn applies_a_function_value(&self, func: &Expr) -> bool {
         // A curried application `f a (x = y)` applies whatever `f` is, and so
-        // do `(f) (x = y)` and `f<int> (x = y)`. Seeing through the parens and
-        // the type application can only prove a *value* head, which is applied
-        // as a function however it is wrapped.
+        // do `(f) (x = y)`, `f<int> (x = y)` and `(f : bool -> bool) (x = y)`.
+        // Seeing through the wrappers can only prove a *value* head, which is
+        // applied as a function however it is wrapped.
         let mut head = func.clone();
         loop {
             let next = match &head {
@@ -982,7 +987,12 @@ impl<'a> Resolver<'a> {
                 Expr::App(app) => app.func(),
                 Expr::Paren(p) => p.inner(),
                 Expr::TypeApp(t) => t.expr(),
-                _ => break,
+                Expr::Typed(t) => t.expr(),
+                Expr::Ident(_) | Expr::LongIdent(_) => break,
+                // Member access (`x.M`, `a?b`, `'T.M`): a method for all we know.
+                Expr::DotGet(_) | Expr::Dynamic(_) | Expr::Typar(_) => return false,
+                // Not a name, so a first-class function value.
+                _ => return true,
             };
             let Some(next) = next else {
                 return false;
@@ -1006,27 +1016,29 @@ impl<'a> Resolver<'a> {
         let Some(range) = range else {
             return false;
         };
-        let def = match self.resolutions.get(&range) {
-            // A member of an F# module is a `let`-bound function or value, never
-            // a method: FCS applies it as a function.
-            Some(Resolution::Member { parent, .. }) => return self.assemblies.is_module(*parent),
-            Some(Resolution::Local(id)) => Some(*id),
-            Some(Resolution::Item(item)) => item
-                .index()
-                .checked_sub(self.item_base as usize)
-                .and_then(|i| self.items.get(i))
-                .and_then(|it| match it.def {
-                    super::model::ExportDef::Own(def) => Some(def),
-                    super::model::ExportDef::Sig { .. } => None,
-                }),
-            _ => None,
-        };
-        def.is_some_and(|id| {
+        let is_value_def = |id: crate::DefId| {
             matches!(
                 self.defs[id.index()].kind,
                 DefKind::Value { .. } | DefKind::Parameter | DefKind::PatternLocal
             )
-        })
+        };
+        match self.resolutions.get(&range) {
+            // A member of an F# module is a `let`-bound function or value, never
+            // a method: FCS applies it as a function.
+            Some(Resolution::Member { parent, .. }) => self.assemblies.is_module(*parent),
+            Some(Resolution::Local(id)) => is_value_def(*id),
+            // A module-level export: a value or function, or a constructor case.
+            Some(Resolution::Item(item)) => {
+                match item.index().checked_sub(self.item_base as usize) {
+                    Some(local) => self.items.get(local).is_some_and(|it| match it.def {
+                        super::model::ExportDef::Own(def) => is_value_def(def),
+                        super::model::ExportDef::Sig { .. } => it.case_kind().is_none(),
+                    }),
+                    None => !self.preceding.is_case_item(*item),
+                }
+            }
+            _ => false,
+        }
     }
 
     /// Resolve the argument of an application that may be a method,
