@@ -167,7 +167,9 @@ impl EcmaView for Ecma335Assembly {
 
     fn doc_id_dialect(&self) -> Result<DocIdDialect, ImportError> {
         // Three marks, any one sufficient: the assembly-level interface-data
-        // attribute, an F# resource (signature or optimisation data), and the
+        // attribute, an F# compiler resource (one of the reserved signature or
+        // optimisation-data families — not merely a name starting `FSharp`,
+        // which an ordinary C# resource may), and the
         // `CompilationMappingAttribute` fsc puts on every type it generates from
         // F# source — module, record, union, class, exception. The last survives
         // a build that strips the first two.
@@ -184,7 +186,7 @@ impl EcmaView for Ecma335Assembly {
                 .image
                 .resources
                 .iter()
-                .any(|r| r.name.starts_with("FSharp"))
+                .any(|r| classify_fsharp_resource(&r.name).is_some())
             || self.image.type_defs.iter().any(mapped);
         Ok(if fsharp {
             DocIdDialect::FSharp
@@ -4414,6 +4416,57 @@ mod tests {
     /// field's F# name is *not* its IL name" without saying what it is. Skip the field
     /// rather than surface `Values.RenamedLit`, a name F# never exposes. The plain
     /// literals beside it are unaffected.
+    /// An F# compiler resource marks the F# dialect; a resource that merely
+    /// begins `FSharp` — a C# root namespace, or the reserved stem used as one —
+    /// does not, or every member of such a C# assembly would lose its docs.
+    #[test]
+    fn only_a_reserved_fsharp_resource_marks_the_fsharp_dialect() {
+        use crate::doc_id::DocIdDialect;
+        use crate::reader::ManifestResource;
+        use crate::view::EcmaView;
+
+        let dll = |name: &str| {
+            let path = all_dlls()
+                .into_iter()
+                .find(|path| path.file_name().and_then(|n| n.to_str()) == Some(name))
+                .unwrap_or_else(|| panic!("{name} fixture"));
+            std::fs::read(&path).expect("fixture")
+        };
+        let fsharp = Ecma335Assembly::parse(&dll("MiniLibFs.dll")).expect("parse");
+        assert_eq!(fsharp.doc_id_dialect().unwrap(), DocIdDialect::FSharp);
+
+        let csharp = dll("MiniLib.dll");
+        let with_resource = |name: &str| {
+            let mut view = Ecma335Assembly::parse(&csharp).expect("parse");
+            view.image.resources.push(ManifestResource {
+                name: name.to_string(),
+                bytes: Vec::new(),
+            });
+            view.doc_id_dialect().unwrap()
+        };
+        assert_eq!(
+            Ecma335Assembly::parse(&csharp)
+                .unwrap()
+                .doc_id_dialect()
+                .unwrap(),
+            DocIdDialect::Metadata
+        );
+        for name in [
+            "FSharpInterop.Messages.txt",
+            "FSharpSignature.Notes.txt",
+            "FSharp.Core.resources",
+        ] {
+            assert_eq!(with_resource(name), DocIdDialect::Metadata, "{name}");
+        }
+        for name in [
+            "FSharpSignatureData.MiniLib",
+            "FSharpSignatureCompressedData.MiniLib",
+            "FSharpOptimizationData.MiniLib",
+        ] {
+            assert_eq!(with_resource(name), DocIdDialect::FSharp, "{name}");
+        }
+    }
+
     #[test]
     fn il_heuristic_path_skips_a_compiled_name_renamed_literal() {
         use crate::model::Member;
