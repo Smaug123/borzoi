@@ -241,6 +241,40 @@ fn deferred_resolution_explains_why_definition_is_unavailable() {
     assert_eq!((range.start.character, range.end.character), (8, 15));
 }
 
+/// A signature file of an evaluated project is analysed on its own, but the
+/// explanation must not blame the project: the `.fsproj` evaluated, and the
+/// file is one of its Compile items.
+#[test]
+fn a_signature_file_in_its_project_is_not_explained_as_an_orphan() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("P.fsproj"),
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fsi" />
+            <Compile Include="A.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    let sig = "module A\nval f : int -> 'a list\n";
+    let sig_path = tmp.path().join("A.fsi");
+    write(&sig_path, sig);
+    write(&tmp.path().join("A.fs"), "module A\nlet f (x : int) = x\n");
+    let mut state = State::default();
+    let uri = Url::from_file_path(&sig_path).unwrap();
+    state.docs.insert(uri.clone(), sig.to_string());
+
+    let hover = run(&mut state, &uri, 1, 4).expect("an explanation for `f`");
+    let body = body(&hover);
+    assert!(body.starts_with("**No definition available**"), "{body}");
+    assert!(!body.contains("didn't evaluate"), "{body}");
+    assert!(
+        !body.contains("isn't one of the project's compile items"),
+        "{body}"
+    );
+    assert!(body.contains("signature file"), "{body}");
+}
+
 #[test]
 fn cursor_off_identifier_returns_none() {
     // Cursor on whitespace — no recorded resolution contains it.

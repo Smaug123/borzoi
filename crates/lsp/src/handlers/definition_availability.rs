@@ -62,27 +62,46 @@ pub enum UnavailableReason {
     UntrackedName,
 }
 
+/// How the cursor's file was resolved — which bounds what an explanation may
+/// claim. It is *context*, not a separate reason: an `UnboundName` in a file
+/// resolved on its own may really be a cross-file symbol its project would
+/// have supplied, so this colours the explanation without changing which
+/// resolution arm fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Analysis {
+    /// With its evaluated project, so cross-file and referenced-assembly names
+    /// were in reach.
+    Project,
+    /// On its own, because no evaluated project compiles it.
+    SingleFile,
+    /// On its own although an evaluated project compiles it: a signature file,
+    /// which is not yet analysed with its project.
+    Signature,
+}
+
 /// Why go-to-definition is unavailable at a cursor: the [`UnavailableReason`],
-/// plus whether resolution ran in single-file fallback (no project context).
-/// The `degraded_single_file` flag is *context*, not a separate reason — an
-/// `UnboundName` in degraded mode may really be a cross-file symbol the missing
-/// project would have supplied, so the flag colours the explanation without
-/// changing which resolution arm fired.
+/// and how the file was resolved ([`Analysis`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefinitionUnavailable {
     pub reason: UnavailableReason,
-    pub degraded_single_file: bool,
+    pub analysis: Analysis,
 }
 
 impl DefinitionUnavailable {
     /// A markdown explanation for a hover (or any client that renders markdown).
-    /// A `**No definition available**` header, the reason sentence, then — in
-    /// degraded mode — a note that project context was missing.
+    /// A `**No definition available**` header, the reason sentence, then — for
+    /// a file resolved on its own — a note saying why project context was
+    /// missing.
     pub fn explain(&self) -> String {
         let mut body = format!("**No definition available**\n\n{}", self.reason.sentence());
-        if self.degraded_single_file {
+        let note = match self.analysis {
+            Analysis::Project => None,
+            Analysis::SingleFile => Some(DEGRADED_NOTE),
+            Analysis::Signature => Some(SIGNATURE_NOTE),
+        };
+        if let Some(note) = note {
             body.push_str("\n\n");
-            body.push_str(DEGRADED_NOTE);
+            body.push_str(note);
         }
         body
     }
@@ -127,6 +146,12 @@ impl UnavailableReason {
 /// The note appended in single-file fallback: the file wasn't analysed as part
 /// of an evaluated project, so anything cross-file or cross-assembly is out of
 /// reach regardless of its own resolvability.
+/// The note for a signature file of an evaluated project: its project is
+/// fine, but the file is analysed on its own all the same.
+const SIGNATURE_NOTE: &str = "_Analyzed without project context: signature files are not yet \
+                              analyzed with their project, so cross-file and referenced-assembly \
+                              symbols can't be resolved here._";
+
 const DEGRADED_NOTE: &str = "_Analyzed without project context (its `.fsproj` didn't evaluate, or \
                              the file isn't one of the project's compile items), so cross-file and \
                              referenced-assembly symbols can't be resolved here._";
@@ -134,9 +159,9 @@ const DEGRADED_NOTE: &str = "_Analyzed without project context (its `.fsproj` di
 /// Classify why go-to-definition finds nothing at `byte` in `file`. `None` when
 /// there *is* something to navigate to (a resolution of a navigable kind) or
 /// when the cursor is on nothing name-like (whitespace, a keyword, punctuation)
-/// — in both cases there is no honest explanation to give. `degraded_single_file`
-/// is threaded through unchanged: it reflects *how* `file` was resolved, which
-/// the caller knows and the classifier does not.
+/// — in both cases there is no honest explanation to give. `analysis` is
+/// threaded through unchanged: it reflects *how* `file` was resolved, which the
+/// caller knows and the classifier does not.
 ///
 /// `inferred` is the same side-table go-to-definition consults, under the same
 /// precedence: the resolver's answer wins unless it deferred or recorded
@@ -150,7 +175,7 @@ pub fn classify(
     inferred: Option<&InferredFile>,
     root: &SyntaxNode,
     byte: usize,
-    degraded_single_file: bool,
+    analysis: Analysis,
 ) -> Option<DefinitionUnavailable> {
     let reason = match effective_resolution(file, inferred, byte) {
         // Navigable: go-to-definition can answer (source-IO caveats aside).
@@ -182,10 +207,7 @@ pub fn classify(
             }
         }
     };
-    Some(DefinitionUnavailable {
-        reason,
-        degraded_single_file,
-    })
+    Some(DefinitionUnavailable { reason, analysis })
 }
 
 /// The resolution the LSP would *act* on at `byte` — see
@@ -260,7 +282,9 @@ mod tests {
     fn reasons_in(src: &str) -> Vec<UnavailableReason> {
         let (file, root) = resolve(src);
         (0..=src.len())
-            .filter_map(|byte| classify(&file, None, &root, byte, false).map(|u| u.reason))
+            .filter_map(|byte| {
+                classify(&file, None, &root, byte, Analysis::Project).map(|u| u.reason)
+            })
             .collect()
     }
 
@@ -295,7 +319,7 @@ mod tests {
         ) {
             let (file, root) = resolve(snippet);
             let byte = pick.index(snippet.len() + 1);
-            let got = classify(&file, None, &root, byte, false).map(|u| u.reason);
+            let got = classify(&file, None, &root, byte, Analysis::Project).map(|u| u.reason);
             let expected = match smallest_resolution_at(&file, byte) {
                 Some(
                     Resolution::Local(_)
@@ -322,8 +346,8 @@ mod tests {
             prop_assert_eq!(got, expected);
         }
 
-        /// The `degraded_single_file` flag is pure context: flipping it changes
-        /// only that field, never the reason or whether an explanation is given.
+        /// [`Analysis`] is pure context: changing it changes only that field,
+        /// never the reason or whether an explanation is given.
         #[test]
         fn degraded_flag_is_orthogonal_to_the_reason(
             snippet in prop::sample::select(SNIPPETS),
@@ -331,12 +355,15 @@ mod tests {
         ) {
             let (file, root) = resolve(snippet);
             let byte = pick.index(snippet.len() + 1);
-            let plain = classify(&file, None, &root, byte, false);
-            let degraded = classify(&file, None, &root, byte, true);
+            let plain = classify(&file, None, &root, byte, Analysis::Project);
+            let degraded = classify(&file, None, &root, byte, Analysis::SingleFile);
             prop_assert_eq!(plain.map(|u| u.reason), degraded.map(|u| u.reason));
             prop_assert_eq!(plain.is_some(), degraded.is_some());
-            prop_assert_eq!(plain.map(|u| u.degraded_single_file), plain.map(|_| false));
-            prop_assert_eq!(degraded.map(|u| u.degraded_single_file), degraded.map(|_| true));
+            prop_assert_eq!(plain.map(|u| u.analysis), plain.map(|_| Analysis::Project));
+            prop_assert_eq!(
+                degraded.map(|u| u.analysis),
+                degraded.map(|_| Analysis::SingleFile)
+            );
         }
 
         /// Agreement with the single-file go-to-definition handler: a position it
@@ -353,7 +380,7 @@ mod tests {
             let byte = pick.index(snippet.len() + 1);
             if let Some(res) = smallest_resolution_at(&file, byte) {
                 let locatable = file.resolved_def(res).is_some();
-                let explained = classify(&file, None, &root, byte, false).is_some();
+                let explained = classify(&file, None, &root, byte, Analysis::Project).is_some();
                 if locatable {
                     prop_assert!(!explained, "a locatable definition must not be explained-away");
                 }
@@ -414,7 +441,7 @@ mod tests {
     fn explain_has_header_reason_and_no_degraded_note_when_in_project() {
         let u = DefinitionUnavailable {
             reason: UnavailableReason::UnboundName,
-            degraded_single_file: false,
+            analysis: Analysis::Project,
         };
         let body = u.explain();
         assert!(body.starts_with("**No definition available**"), "{body}");
@@ -426,9 +453,20 @@ mod tests {
     fn explain_adds_the_degraded_note_in_single_file_mode() {
         let u = DefinitionUnavailable {
             reason: UnavailableReason::UnboundName,
-            degraded_single_file: true,
+            analysis: Analysis::SingleFile,
         };
         assert!(u.explain().contains("without project context"));
+    }
+
+    #[test]
+    fn a_signature_file_is_not_explained_as_out_of_its_project() {
+        let u = DefinitionUnavailable {
+            reason: UnavailableReason::UnboundName,
+            analysis: Analysis::Signature,
+        };
+        let body = u.explain();
+        assert!(body.contains("signature files"), "{body}");
+        assert!(!body.contains("didn't evaluate"), "{body}");
     }
 
     #[test]
@@ -454,13 +492,13 @@ mod tests {
         // Column 3 of `let x = 1` is the space after `let` — no identifier
         // touches it, so there is nothing to explain.
         let (file, root) = resolve("let x = 1\n");
-        assert!(classify(&file, None, &root, 3, true).is_none());
+        assert!(classify(&file, None, &root, 3, Analysis::SingleFile).is_none());
     }
 
     #[test]
     fn past_end_offset_does_not_panic() {
         let (file, root) = resolve("let x = 1\n");
         // Far past the buffer: no token, no resolution, no explanation.
-        assert!(classify(&file, None, &root, 10_000, false).is_none());
+        assert!(classify(&file, None, &root, 10_000, Analysis::Project).is_none());
     }
 }
