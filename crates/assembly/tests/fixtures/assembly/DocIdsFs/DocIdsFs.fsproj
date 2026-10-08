@@ -19,6 +19,8 @@
 
   <ItemGroup>
     <Compile Include="Library.fs" />
+    <Compile Include="Hidden.fsi" />
+    <Compile Include="Hidden.fs" />
   </ItemGroup>
 
 </Project>

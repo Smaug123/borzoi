@@ -32,17 +32,21 @@
 //! without writing it.
 //!
 //! The subjects are host-independent: the purpose-built `DocIdsFs` fixture,
-//! whose every declaration is documented so its manifest pins each key, and the
-//! four F# libraries `tools/fcs-dump` references at versions its project pins.
+//! whose every declaration is documented so its manifest pins each key *and the
+//! member that answers it* (a key handed to the wrong member is still a hit, so
+//! only the attribution shows it), and the four F# libraries `tools/fcs-dump`
+//! references at versions its project pins.
 //! [`nuget_cache_sweep`] widens the same grading to a pinned list of packages in
 //! the NuGet cache, gated on an environment variable.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use borzoi_assembly::doc_id::walk_doc_ids;
+use borzoi_assembly::doc_id::{TypeDocName, member_doc_ids, type_doc_name, type_enc, walk_doc_ids};
 use borzoi_assembly::fsharp_pickle::model::{PickledExnRepr, PickledRecdField, PickledTyconRepr};
-use borzoi_assembly::{Ecma335Assembly, EcmaView, ResourceKind, unpickle_signature};
+use borzoi_assembly::{
+    Ecma335Assembly, EcmaView, Entity, Member, ResourceKind, unpickle_signature,
+};
 use borzoi_oracle_harness::manifest::{self, Manifest};
 
 use crate::common::{ensure_doc_ids_fs_built, fcs_dump_bin_dir};
@@ -138,6 +142,52 @@ fn pickled_sigs(view: &Ecma335Assembly) -> Result<BTreeSet<String>, String> {
     Ok(sigs)
 }
 
+/// For each ID a projected *member* generates, the IL identity of the members
+/// that generate it (`Method Add(System.Int32)`): what the fixture's manifest
+/// pins beside each hit. A hit alone cannot tell a key attached to its own
+/// member from one attached to a member that merely shares its slot — the key
+/// is in the XML either way — so the fixture pins who answers it.
+fn generating_members(types: &[Entity]) -> BTreeMap<String, Vec<String>> {
+    fn walk(e: &Entity, enclosing: Option<&TypeDocName>, out: &mut BTreeMap<String, Vec<String>>) {
+        let decl = type_doc_name(e, enclosing);
+        for member in &e.members {
+            let (kind, name, params) = match member {
+                Member::Method(m) => (
+                    "Method",
+                    &m.name,
+                    m.signature
+                        .parameters
+                        .iter()
+                        .map(|p| {
+                            let byref = if p.is_byref { "@" } else { "" };
+                            format!("{}{byref}", type_enc(&p.ty))
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                Member::Property(p) => (
+                    "Property",
+                    &p.name,
+                    p.parameters.iter().map(|ip| type_enc(&ip.ty.ty)).collect(),
+                ),
+                Member::Field(f) => ("Field", &f.name, Vec::new()),
+                Member::Event(ev) => ("Event", &ev.name, Vec::new()),
+            };
+            let who = format!("{kind} {name}({})", params.join(","));
+            for id in member_doc_ids(&decl, member) {
+                out.entry(id).or_default().push(who.clone());
+            }
+        }
+        for nested in &e.nested_types {
+            walk(nested, Some(&decl), out);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for e in types {
+        walk(e, None, &mut out);
+    }
+    out
+}
+
 /// Grade one assembly against the doc XML beside it and return its manifest.
 /// Panics on a broken premise (see the module docs) or a vacuous subject.
 fn grade(dll: &Path, pin: Pin, min_keys: usize) -> Manifest {
@@ -187,13 +237,17 @@ fn grade(dll: &Path, pin: Pin, min_keys: usize) -> Manifest {
         }
         Err(e) => entries.push(format!("pickle undecodable: {e}")),
     }
+    let who = generating_members(&types);
     let mut hits = 0usize;
     for key in &shipped {
         let hit = generated.contains_key(key);
         hits += usize::from(hit);
         match (pin, hit) {
             (_, false) => entries.push(format!("miss {key}")),
-            (Pin::EveryKey, true) => entries.push(format!("hit {key}")),
+            (Pin::EveryKey, true) => match who.get(key) {
+                Some(members) => entries.push(format!("hit {key} <= {}", members.join(" | "))),
+                None => entries.push(format!("hit {key}")),
+            },
             (Pin::MissesOnly, true) => {}
         }
     }

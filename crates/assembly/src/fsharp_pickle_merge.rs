@@ -1750,7 +1750,13 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 // when the group's vals disagree, since which val claimed which
                 // MethodDef is then unprovable. Two vals sharing one key is
                 // fsc's own collision, and the doc XML holds one entry for both.
-                m.xml_doc_sig = facts.xml_doc_sig.clone().flatten();
+                //
+                // The claim itself is by name and arity, so the key must also
+                // fit the claimed method's signature: a helper the signature
+                // file hides can share the val's compiled name and arity and be
+                // claimed in place of the val's own method.
+                let key = facts.xml_doc_sig.clone().flatten();
+                m.xml_doc_sig = key.filter(|k| crate::doc_id::recorded_method_key_fits(k, &m));
                 if facts.extension == Some(true) {
                     m.is_extension_method = true;
                 }
@@ -3141,10 +3147,6 @@ struct DocKey {
     slot: DocSlot,
     /// `None` for an undocumented val.
     key: Option<String>,
-    /// Whether the val's pickled access is unrestricted (`TAccess []`). fsc
-    /// emits such a member `public` in IL, and a restricted one (F# `internal`
-    /// or `private`) `assembly` or narrower.
-    is_public: bool,
 }
 
 /// Stamp each F# type's members with the doc-comment key fsc pickled for them
@@ -3209,7 +3211,6 @@ pub(crate) fn apply_type_member_doc_sigs(
                         .push(DocKey {
                             slot,
                             key: pickled_xml_doc_sig(&v.xmldoc_sig),
-                            is_public: v.access.is_empty(),
                         });
                 }
             }
@@ -3241,7 +3242,6 @@ pub(crate) fn apply_type_member_doc_sigs(
                     keys.push(DocKey {
                         slot: DocSlot::ValField(field.ident.name.clone()),
                         key: pickled_xml_doc_sig(&field.xmldoc_sig),
-                        is_public: field.access.is_empty(),
                     });
                 }
             }
@@ -3338,31 +3338,26 @@ pub(crate) fn apply_type_member_doc_sigs(
 /// Stamp `entity`'s members from one type's pickled keys; see
 /// [`apply_type_member_doc_sigs`] for when a slot is unambiguous.
 fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
-    // Per slot: how many vals claim it, and their key and access class if they
-    // all agree.
-    #[allow(clippy::type_complexity)]
-    let mut slots: HashMap<&DocSlot, (usize, Option<(Option<&String>, bool)>)> = HashMap::new();
+    // Per slot: how many vals claim it, and their key if they all agree.
+    let mut slots: HashMap<&DocSlot, (usize, Option<Option<&String>>)> = HashMap::new();
     for k in keys {
-        let fact = (k.key.as_ref(), k.is_public);
-        let entry = slots.entry(&k.slot).or_insert((0, Some(fact)));
+        let entry = slots.entry(&k.slot).or_insert((0, Some(k.key.as_ref())));
         entry.0 += 1;
-        if entry.1 != Some(fact) {
+        if entry.1 != Some(k.key.as_ref()) {
             entry.1 = None;
         }
     }
-    for (slot, (vals, fact)) in slots {
-        let Some((Some(key), is_public)) = fact else {
+    for (slot, (vals, key)) in slots {
+        let Some(Some(key)) = key else {
             continue;
         };
         // A val's own member can be missing from the projection — refused and
-        // recorded as skipped — while a member the signature hides (a
-        // `.fsi`-private helper) sits in the same slot. The count below cannot
-        // tell that member from the val's, so a skip under the slot's name
-        // declines the slot (`type_member_stamp_never_hands_a_member_another_vals_key`
-        // pins that). A member the projection drops *without* recording it — a
-        // deliberate elision — is the same hazard unrecorded; the accessibility
-        // class narrows it, since fsc emits a public val public and a restricted
-        // one narrower, while such a helper is typically not public.
+        // recorded as skipped, or deliberately elided — while a member the
+        // signature file hides sits in the same slot. The count below cannot
+        // tell that member from the val's. A recorded skip under the slot's
+        // name declines the slot outright; otherwise the key's parameter types
+        // must fit every occupant (`type_member_stamp_never_hands_a_member_another_vals_key`
+        // pins both).
         let slot_name = match slot {
             DocSlot::Method { name, .. }
             | DocSlot::Getter { name, .. }
@@ -3381,10 +3376,16 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
             .iter()
             .filter(|m| occupies(m, slot))
             .collect();
+        let keyed_as = match slot {
+            DocSlot::Setter { .. } => crate::doc_id::KeyedAs::Setter,
+            _ => crate::doc_id::KeyedAs::Member,
+        };
+        // The key encodes the val's parameter types, so it refutes a member
+        // that merely shares the slot (`doc_id::recorded_key_fits`).
         if occupants.len() != vals
             || occupants
                 .iter()
-                .any(|m| matches!(member_access(m), Access::Public) != is_public)
+                .any(|m| !crate::doc_id::recorded_key_fits(key, m, keyed_as))
         {
             continue;
         }
@@ -3401,15 +3402,6 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
                 _ => unreachable!("`occupies` pairs each slot with its member kind"),
             }
         }
-    }
-}
-
-fn member_access(member: &Member) -> Access {
-    match member {
-        Member::Method(m) => m.access,
-        Member::Field(f) => f.access,
-        Member::Property(p) => p.access,
-        Member::Event(e) => e.access,
     }
 }
 
@@ -5551,93 +5543,123 @@ mod tests {
         );
     }
 
-    /// One generated item of a type: a method slot, plus either a pickled val
-    /// (documented or not, whose own IL member the projection kept or refused)
-    /// or an IL member the signature hides.
+    /// What became of a pickled val's own IL member in the projection.
+    #[derive(Debug, Clone, Copy)]
+    enum ValMember {
+        Kept,
+        /// Refused, and recorded in `skipped_members`.
+        Refused,
+        /// Dropped without a record (a deliberate elision).
+        Elided,
+    }
+
+    /// One generated IL method: a name, a parameter list over two types, and
+    /// staticness — the method's IL identity — plus either the pickled val it
+    /// compiles from (documented or not) or nothing, for a member the signature
+    /// file hides.
     #[derive(Debug, Clone)]
-    enum DocSlotItem {
-        Val {
-            slot: (u8, u8, bool),
-            key: Option<u8>,
-            is_public: bool,
-            kept: bool,
-        },
-        Hidden {
-            slot: (u8, u8, bool),
-            is_public: bool,
-        },
+    struct DocSlotItem {
+        name: u8,
+        params: Vec<bool>,
+        is_static: bool,
+        val: Option<(bool, ValMember)>,
     }
 
     fn doc_slot_item() -> impl Strategy<Value = DocSlotItem> {
-        let slot = (0u8..2, 0u8..2, any::<bool>());
-        prop_oneof![
-            (
-                slot.clone(),
-                proptest::option::of(0u8..3),
-                any::<bool>(),
-                any::<bool>()
-            )
-                .prop_map(|(slot, key, is_public, kept)| DocSlotItem::Val {
-                    slot,
-                    key,
-                    is_public,
-                    kept,
-                }),
-            (slot, any::<bool>())
-                .prop_map(|(slot, is_public)| DocSlotItem::Hidden { slot, is_public }),
-        ]
+        let member = prop_oneof![
+            Just(ValMember::Kept),
+            Just(ValMember::Refused),
+            Just(ValMember::Elided),
+        ];
+        (
+            0u8..2,
+            proptest::collection::vec(any::<bool>(), 0..3),
+            any::<bool>(),
+            proptest::option::of((any::<bool>(), member)),
+        )
+            .prop_map(|(name, params, is_static, val)| DocSlotItem {
+                name,
+                params,
+                is_static,
+                val,
+            })
     }
 
     proptest! {
-        /// Soundness of the type-member stamp against a generated ground truth:
-        /// whatever mix of overloads, undocumented vals, refused members and
-        /// signature-hidden IL members a type holds, a member that receives a key
-        /// is the member of a val that carries that key. Keys may repeat across
-        /// vals (fsc writes one key for two members sometimes); a stamp is then
-        /// still that member's own key.
+        /// Soundness of the type-member stamp against a generated ground truth.
+        /// Whatever mix of overloads, undocumented vals, refused or silently
+        /// elided members and signature-hidden IL members a type holds, a member
+        /// that receives a key is the member of a val that carries that key.
+        /// Each val's key encodes its parameter types as fsc writes them, and no
+        /// two IL methods share an identity, as in real metadata.
         #[test]
         fn type_member_stamp_never_hands_a_member_another_vals_key(
             items in proptest::collection::vec(doc_slot_item(), 0..8)
         ) {
-            let method_of = |(name, arity, is_static): (u8, u8, bool), is_public: bool| {
-                let mut m = make_ecma_method_arity(&format!("M{name}"), arity.into());
+            let mut seen = std::collections::HashSet::new();
+            let items: Vec<DocSlotItem> = items
+                .into_iter()
+                .filter(|i| seen.insert((i.name, i.params.clone(), i.is_static)))
+                .collect();
+            let ty = |p: bool| if p { "System.String" } else { "System.Int32" };
+            let key_of = |i: &DocSlotItem| {
+                let params: Vec<&str> = i.params.iter().map(|p| ty(*p)).collect();
+                if params.is_empty() {
+                    format!("M:N.T.M{}", i.name)
+                } else {
+                    format!("M:N.T.M{}({})", i.name, params.join(","))
+                }
+            };
+            let method_of = |i: &DocSlotItem| {
+                let mut m = make_ecma_method(&format!("M{}", i.name));
                 if let Member::Method(mm) = &mut m {
-                    mm.is_static = is_static;
-                    mm.access = if is_public { Access::Public } else { Access::Internal };
+                    mm.is_static = i.is_static;
+                    mm.signature.parameters = i
+                        .params
+                        .iter()
+                        .map(|p| Parameter {
+                            name: None,
+                            ty: TypeRef::Primitive(if *p { Primitive::String } else { Primitive::I4 }),
+                            is_byref: false,
+                            is_out: false,
+                            is_readonly_ref: false,
+                            default: crate::model::ParamDefault::None,
+                            is_param_array: false,
+                            nullability: Nullability::Oblivious,
+                        })
+                        .collect();
                 }
                 m
             };
-            let slot_of = |(name, arity, is_static): (u8, u8, bool)| DocSlot::Method {
-                name: format!("M{name}"),
-                arity: arity.into(),
-                is_static,
-            };
             let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Class);
             let mut keys = Vec::new();
-            // The key each member truly carries: `Some(k)` for a kept member of a
-            // val keyed `k`, `None` for an undocumented val's member or a hidden one.
+            // The key each projected member truly carries: `Some(k)` for the
+            // kept member of a val keyed `k`, `None` otherwise.
             let mut truth = Vec::new();
             for item in &items {
-                match item {
-                    DocSlotItem::Val { slot, key, is_public, kept } => {
-                        let key = key.map(|k| format!("M:N.T.K{k}"));
-                        keys.push(DocKey {
-                            slot: slot_of(*slot),
-                            key: key.clone(),
-                            is_public: *is_public,
-                        });
-                        if *kept {
-                            entity.members.push(method_of(*slot, *is_public));
-                            truth.push(key);
-                        } else {
-                            entity.skipped_members.push(SkippedMember {
-                                name: format!("M{}", slot.0),
+                let slot = DocSlot::Method {
+                    name: format!("M{}", item.name),
+                    arity: item.params.len(),
+                    is_static: item.is_static,
+                };
+                match item.val {
+                    Some((documented, member)) => {
+                        let key = documented.then(|| key_of(item));
+                        keys.push(DocKey { slot, key: key.clone() });
+                        match member {
+                            ValMember::Kept => {
+                                entity.members.push(method_of(item));
+                                truth.push(key);
+                            }
+                            ValMember::Refused => entity.skipped_members.push(SkippedMember {
+                                name: format!("M{}", item.name),
                                 reason: "refused".to_string(),
-                            });
+                            }),
+                            ValMember::Elided => {}
                         }
                     }
-                    DocSlotItem::Hidden { slot, is_public } => {
-                        entity.members.push(method_of(*slot, *is_public));
+                    None => {
+                        entity.members.push(method_of(item));
                         truth.push(None);
                     }
                 }

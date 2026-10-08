@@ -82,7 +82,9 @@
 //! key for two members — so a consumer must treat an ID that two members of an
 //! assembly generate as belonging to neither.
 
-use crate::model::{Entity, EntityKind, Field, Member, Parameter, Primitive, TypeRef, UnionCases};
+use crate::model::{
+    Entity, EntityKind, Field, Member, MethodLike, Parameter, Primitive, TypeRef, UnionCases,
+};
 
 /// The XML-doc *type name* of a type: the text after the `T:` prefix, e.g.
 /// `System.Collections.Generic.Dictionary`2`. Produced by [`type_doc_name`] and
@@ -296,6 +298,175 @@ fn field_keys_as_property(kind: EntityKind, field: &Field) -> bool {
         EntityKind::Module => true,
         _ => false,
     }
+}
+
+/// Which of a member's IL signatures a recorded key is checked against: a
+/// property's setter key lists the assigned value after the index parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyedAs {
+    /// A method, a property's getter, an event, or a field.
+    Member,
+    /// A property's setter.
+    Setter,
+}
+
+/// Whether `key`, a documentation-comment ID the F# compiler recorded for some
+/// val, is consistent with `member`'s IL signature — a necessary condition for
+/// it being *this* member's key, checked before the projection hands it over.
+///
+/// The projection ties a pickled val to a projected member by name, arity and
+/// staticness, and that tie is lossy: a member the signature file hides can sit
+/// in the val's slot while the val's own member is missing from the projection.
+/// The key encodes the val's parameter types, so it can refute the tie: the
+/// key's parameters must be the member's, read in fsc's dialect —
+///
+/// - fsc may prepend SRTP witness parameters, each an `FSharpFunc`, to a
+///   method's own;
+/// - a multidimensional array's rank is not compared: current fsc writes a
+///   rank-`r` array with `r - 1` dimension specs (`[0:]` for 2-D), older fsc
+///   and Roslyn with `r`;
+/// - older fsc writes a byref parameter as the `byref<'T, 'Kind>` (or `inref`,
+///   `outref`) abbreviation, the IL as `'T@`;
+/// - fsc writes a `nativeptr<'T>` as a pointer (`` ``0* ``), the IL as
+///   `System.IntPtr`; and it keeps the `voidptr` and `ilsigptr<'T>`
+///   abbreviations the IL spells `System.Void*` and `` ``0* ``;
+/// - a key's method generic arity counts the val's measure type parameters,
+///   which IL erases, so it may exceed the IL arity but never fall short.
+///
+/// Everything else must agree exactly. A parameter shape outside these rules
+/// (a flattened 8-tuple, say) refutes a correct tie too, which costs that
+/// member its key and nothing else.
+pub(crate) fn recorded_key_fits(key: &str, member: &Member, keyed_as: KeyedAs) -> bool {
+    match (member, keyed_as) {
+        (Member::Method(m), KeyedAs::Member) => recorded_method_key_fits(key, m),
+        (Member::Property(p), _) => {
+            let mut params: Vec<String> =
+                p.parameters.iter().map(|ip| type_enc(&ip.ty.ty)).collect();
+            if keyed_as == KeyedAs::Setter {
+                params.push(type_enc(&p.ty));
+            }
+            key_fits(key, &params, 0, false)
+        }
+        (Member::Event(_) | Member::Field(_), KeyedAs::Member) => key_fits(key, &[], 0, false),
+        (_, KeyedAs::Setter) => false,
+    }
+}
+
+/// [`recorded_key_fits`] for a method.
+pub(crate) fn recorded_method_key_fits(key: &str, method: &MethodLike) -> bool {
+    let params: Vec<String> = method.signature.parameters.iter().map(param_enc).collect();
+    key_fits(key, &params, method.generic_parameters.len(), true)
+}
+
+fn key_fits(key: &str, il_params: &[String], il_generic_arity: usize, is_method: bool) -> bool {
+    let Some((name, key_params)) = split_key(key) else {
+        return false;
+    };
+    let key_generic_arity = name
+        .rsplit_once("``")
+        .and_then(|(_, n)| n.parse::<usize>().ok())
+        .unwrap_or(0);
+    if key_generic_arity < il_generic_arity || key_params.len() < il_params.len() {
+        return false;
+    }
+    let (witnesses, own) = key_params.split_at(key_params.len() - il_params.len());
+    if !witnesses.is_empty()
+        && !(is_method
+            && witnesses
+                .iter()
+                .all(|w| w.starts_with("Microsoft.FSharp.Core.FSharpFunc{")))
+    {
+        return false;
+    }
+    own.iter().zip(il_params).all(|(k, il)| param_fits(k, il))
+}
+
+/// Whether one key parameter, in fsc's dialect, names the IL parameter `il`
+/// (see [`recorded_key_fits`]).
+fn param_fits(key: &str, il: &str) -> bool {
+    if normalise_arrays(key) == normalise_arrays(il) {
+        return true;
+    }
+    if il == "System.IntPtr" && key.ends_with('*') {
+        return true;
+    }
+    if key == "Microsoft.FSharp.Core.voidptr" && il == "System.Void*" {
+        return true;
+    }
+    // `ilsigptr<'T>` is the IL's `'T*`; older compilers spell a byref as the
+    // `byref<'T, 'Kind>` / `inref<'T>` / `outref<'T>` abbreviation, the IL `'T@`.
+    let first_arg = |abbrev: &str| -> Option<&str> {
+        let inner = key.strip_prefix(abbrev)?.strip_suffix('}')?;
+        Some(split_top_level(inner).into_iter().next().unwrap_or(inner))
+    };
+    if let Some(t) = first_arg("Microsoft.FSharp.Core.ilsigptr{") {
+        return il.strip_suffix('*').is_some_and(|i| param_fits(t, i));
+    }
+    for abbrev in [
+        "Microsoft.FSharp.Core.byref{",
+        "Microsoft.FSharp.Core.inref{",
+        "Microsoft.FSharp.Core.outref{",
+    ] {
+        if let Some(t) = first_arg(abbrev) {
+            return il.strip_suffix('@').is_some_and(|i| param_fits(t, i));
+        }
+    }
+    false
+}
+
+/// A key's text before its parameter list (prefix and name, generic arity
+/// included) and its top-level parameter types; `None` for a key whose
+/// parentheses do not close at its end.
+fn split_key(key: &str) -> Option<(&str, Vec<&str>)> {
+    let Some(open) = key.find('(') else {
+        return Some((key, Vec::new()));
+    };
+    let inner = key[open + 1..].strip_suffix(')')?;
+    Some((&key[..open], split_top_level(inner)))
+}
+
+/// Split an encoded type list at its top-level commas — those outside any
+/// `{…}` type arguments or `[…]` array dimensions.
+fn split_top_level(list: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    for (i, c) in list.char_indices() {
+        match c {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&list[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&list[start..]);
+    parts
+}
+
+/// Rewrite every array suffix in an encoded type to `[]` (a vector) or `[,]`
+/// (any multidimensional array). The rank is dialect-dependent — current fsc
+/// writes `[0:]` for 2-D, older fsc and Roslyn `[0:, 0:]` / `[0:,0:]` — so the
+/// comparison keeps only what every dialect agrees on.
+fn normalise_arrays(ty: &str) -> String {
+    let mut out = String::with_capacity(ty.len());
+    let mut rest = ty;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find(']').map(|c| open + c) else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        out.push_str(if rest[open + 1..close].trim().is_empty() {
+            "[]"
+        } else {
+            "[,]"
+        });
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Encode a parameter list as `(t1,t2,…)`, or the empty string when there are
@@ -1283,6 +1454,73 @@ mod tests {
         let m = Member::Method(m);
         assert_eq!(member_doc_id(&d, &m), recorded);
         assert_eq!(member_doc_ids(&d, &m), vec![recorded.to_string()]);
+    }
+
+    #[test]
+    fn recorded_key_fits_reads_fscs_dialect_and_refutes_other_signatures() {
+        let tvar = |index| TypeRef::Var {
+            index,
+            is_method: true,
+        };
+        let m = |params: Vec<Parameter>, arity| method("f", arity, params, prim(Primitive::Void));
+        let fits = |key: &str, member: &Member| recorded_key_fits(key, member, KeyedAs::Member);
+        // Same parameters.
+        let int_f = m(vec![param(prim(Primitive::I4))], 0);
+        assert!(fits("M:N.M.f(System.Int32)", &int_f));
+        // A different parameter type, or count, refutes the tie.
+        assert!(!fits("M:N.M.f(System.String)", &int_f));
+        assert!(!fits("M:N.M.f", &int_f));
+        // SRTP witnesses lead the key's own parameters — only `FSharpFunc`s,
+        // and only on a method.
+        let srtp = m(vec![param(tvar(0))], 1);
+        assert!(fits(
+            "M:N.M.twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,``1},``0)",
+            &srtp
+        ));
+        assert!(!fits("M:N.M.twice``1(System.String,``0)", &srtp));
+        // The key's generic arity may count erased measure parameters, but
+        // never falls short of the IL's.
+        assert!(fits("M:N.M.f``1(System.Int32)", &int_f));
+        assert!(!fits("M:N.M.f(``0)", &srtp));
+        // Multidimensional arrays in every dialect; a vector is not one.
+        let md = m(vec![param(md_array(prim(Primitive::I4), 2))], 0);
+        assert!(fits("M:N.M.f(System.Int32[0:])", &md));
+        assert!(fits("M:N.M.f(System.Int32[0:, 0:])", &md));
+        assert!(!fits("M:N.M.f(System.Int32[])", &md));
+        // Older fsc's byref abbreviation; `nativeptr<'T>`; `voidptr`.
+        let byref = m(vec![byref_param(prim(Primitive::I4))], 0);
+        assert!(fits("M:N.M.f(System.Int32@)", &byref));
+        assert!(fits(
+            "M:N.M.f(Microsoft.FSharp.Core.byref{System.Int32,Microsoft.FSharp.Core.ByRefKinds.InOut})",
+            &byref
+        ));
+        let intptr = m(vec![param(prim(Primitive::IntPtr))], 1);
+        assert!(fits("M:N.M.f``1(``0*)", &intptr));
+        let voidptr = m(vec![param(TypeRef::Ptr(None))], 0);
+        assert!(fits("M:N.M.f(Microsoft.FSharp.Core.voidptr)", &voidptr));
+        // A setter's key carries the assigned value after the index parameters.
+        let Member::Property(mut p) =
+            property("Item", prim(Primitive::String), vec![prim(Primitive::I4)])
+        else {
+            unreachable!("property() builds a Member::Property")
+        };
+        p.has_setter = true;
+        let p = Member::Property(p);
+        assert!(recorded_key_fits(
+            "P:N.T.Item(System.Int32)",
+            &p,
+            KeyedAs::Member
+        ));
+        assert!(recorded_key_fits(
+            "P:N.T.Item(System.Int32,System.String)",
+            &p,
+            KeyedAs::Setter
+        ));
+        assert!(!recorded_key_fits(
+            "P:N.T.Item(System.String)",
+            &p,
+            KeyedAs::Member
+        ));
     }
 
     #[test]
