@@ -8,7 +8,21 @@ license.workspace = true
 logos = "0.14"
 rowan = "0.16"
 
+[features]
+# Records which typed-AST accessors a computation reads
+# (`syntax::accessor_trace`). Test-only: the parser differential uses it to
+# check that its projection reads every accessor `borzoi-sema` and the LSP
+# read. The self-reference in `[dev-dependencies]` turns it on for this
+# crate's own tests.
+accessor-trace = []
+
 [dev-dependencies]
+borzoi-cst = { path = ".", features = ["accessor-trace"] }
+# Parses `src/syntax/mod.rs` and the consumers' sources for the accessor
+# coverage check (`tests/all/accessor_coverage.rs`).
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
+quote = "1"
 borzoi-oracle-harness = { path = "../oracle-harness" }
 proptest = "1"
 serde = { version = "1", features = ["derive"] }

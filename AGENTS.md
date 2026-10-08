@@ -188,9 +188,26 @@ real F# Compiler Service by *differential* tests living in `crates/cst/tests/all
   with `assert_eq!`. This tests the *modelled syntactic structure* and the
   caller-selected parse-status expectation (both clean, both erroring, or a
   known acceptance gap). The normaliser deliberately elides trivia and most FCS
-  details/ranges; broad module/decl ranges are separately audited in the corpus
-  sweep. The lex-filter diff compares normalised token streams after FCS's
-  `UseLexFilter` against our offside rewriter.
+  details/ranges; module/decl ranges, and the ranges of the names below them
+  (type, union-case, field, member and `let` binder names), are separately
+  audited (`common/range_audit.rs`). The lex-filter diff compares our offside
+  rewriter's output with the stream FCS's parser reads, block ends included
+  (`fcs-dump tokens-lexfilter-internal-batch`, read with
+  `parse_fcs_parser_stream`).
+- **What the currency must cover.** Eliding is only sound for detail no consumer
+  reads. Every public accessor in `crates/cst/src/syntax/mod.rs` opens with
+  `accessor!("Type::method")`, which under the crate's `accessor-trace` feature
+  (on for its own tests) records the call. `parser_corpus_diff` records what the
+  projection reads on the files that match FCS and pins it in
+  `tests/manifests/accessor_coverage.txt`; `accessor_coverage::
+  consumers_read_only_compared_accessors` scans `crates/sema/src` and
+  `crates/lsp/src` with `syn` and fails if they call an accessor the projection
+  never compares. So when sema or the LSP starts reading a new accessor, project
+  it (`normalised_ast/`), add a graded fixture (`common/accessor_coverage.rs`
+  `FIXTURES`) if no corpus file holds the construct, or exempt it in
+  `NOT_PROJECTED` with the reason FCS has nothing to compare it with. The scan
+  matches calls by method name (it has no types), so it can over-ask; and it
+  cannot see a consumer that walks raw `SyntaxNode`s.
 - **Per-construct tests** — `parser_diff_*.rs` (e.g. `parser_diff_module_structure.rs`
   for members/types, `parser_diff_match.rs`, `parser_diff_let_bindings.rs`, …).
   Each is a `#[test]` calling a helper from `crates/cst/tests/all/common/mod.rs`:
@@ -267,7 +284,13 @@ nix develop -c dotnet build tools/fcs-dump/fcs-dump.fsproj -c Release
 tools/fcs-dump/bin/Release/net10.0/fcs-dump ast path/to/file.fs
 printf '%s\n' path/to/file.fs | tools/fcs-dump/bin/Release/net10.0/fcs-dump ast-batch
 tools/fcs-dump/bin/Release/net10.0/fcs-dump tokens-filtered path/to/file.fs
+printf '%s\n' path/to/file.fs | tools/fcs-dump/bin/Release/net10.0/fcs-dump tokens-lexfilter-internal-batch
 ```
+
+`tokens-filtered` is FCS's public tokenizer, which drops every token without an
+`FSharpTokenKind`, block ends among them; `tokens-lexfilter-internal-batch` is
+the stream the parser reads (via reflection on FCS internals), and is what the
+lex-filter differential compares against.
 
 Workflow to add a parser feature: write the failing `assert_asts_match` test(s)
 first, confirm they fail (our side errors or diverges), implement, re-run. To see

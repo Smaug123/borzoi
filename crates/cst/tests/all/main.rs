@@ -9,6 +9,7 @@
 
 mod common;
 
+mod accessor_coverage;
 mod ast_projection;
 mod corpus;
 mod corpus_walk;

@@ -647,6 +647,132 @@ let private dumpTokensBatch (withLexFilter: bool) =
             Console.Out.WriteLine(json)
         line <- Console.In.ReadLine()
 
+/// The parser-facing token stream *before* the public tokenizer drops what it
+/// has no `FSharpTokenKind` for.
+///
+/// `FSharpLexer.Tokenize` with `UseLexFilter` runs FCS's `LexFilter`, then
+/// discards every token whose kind is `FSharpTokenKind.None`. That discards the
+/// offside rule's block ends: the outer `LexFilter` wrapper replaces each
+/// `OBLOCKEND` (and each `)` / `}`) with six `*_COMING_SOON` tokens and an
+/// `*_IS_HERE` token, none of which has a kind. So `tokens-filtered` cannot
+/// show where a block ends. This reads the same stream from FCS's internal
+/// `FSharpLexerImpl.lex`, which hands its callback every token, and names
+/// each by its `FSharpTokenKind` when it has one and by its `token` case name
+/// (`OBLOCKEND_IS_HERE`, `OAND_BANG`, …) when it does not. The six
+/// `*_COMING_SOON` copies before each `*_IS_HERE` are look-ahead for the
+/// parser's error recovery and say nothing the `*_IS_HERE` does not, so they
+/// are left out, and a range is written without its file name: the stream is
+/// several times the size of the public one otherwise. Reflection, because
+/// both are internal: each lookup fails loudly, naming what moved.
+let private internalLex =
+    lazy (
+        let asm = typeof<FSharpLexer>.Assembly
+        let flags = BindingFlags.Static ||| BindingFlags.Public ||| BindingFlags.NonPublic
+        let impl =
+            match asm.GetType("FSharp.Compiler.Tokenization.FSharpLexerImpl") with
+            | null -> failwith "fcs-dump: FSharp.Compiler.Tokenization.FSharpLexerImpl not found"
+            | t -> t
+        let lex =
+            match impl.GetMethod("lex", flags) with
+            | null -> failwith "fcs-dump: FSharpLexerImpl.lex not found"
+            | m -> m
+        let ps = lex.GetParameters()
+        let param name =
+            match ps |> Array.tryFind (fun p -> p.Name = name) with
+            | Some p -> p
+            | None ->
+                failwithf
+                    "fcs-dump: FSharpLexerImpl.lex has no parameter %s; it takes (%s)"
+                    name
+                    (ps |> Array.map (fun p -> string p.Name + ": " + string p.ParameterType) |> String.concat ", ")
+        let langVersion =
+            Activator.CreateInstance((param "langVersion").ParameterType, [| box "latestmajor"; null |])
+        let pathMap =
+            match asm.GetType("Internal.Utilities.PathMapModule") with
+            | null -> failwith "fcs-dump: Internal.Utilities.PathMapModule not found"
+            | t ->
+                match t.GetProperty("empty", flags) with
+                | null -> failwith "fcs-dump: PathMap.empty not found"
+                | p -> p.GetValue(null)
+        let tokenCtor =
+            match
+                typeof<FSharpToken>.GetConstructors(BindingFlags.Instance ||| BindingFlags.NonPublic)
+                |> Array.tryFind (fun c -> c.GetParameters().Length = 2)
+            with
+            | None -> failwith "fcs-dump: FSharpToken(token, range) constructor not found"
+            | Some c -> c
+        lex, (param "lexCallback").ParameterType, langVersion, pathMap, tokenCtor)
+
+let private lexInternal (text: string) =
+    let lex, callbackType, langVersion, pathMap, tokenCtor = internalLex.Force()
+    let tokenType = callbackType.GetGenericArguments().[0]
+    let innerType = callbackType.GetGenericArguments().[1]
+    let tokens = ResizeArray()
+    let callback =
+        FSharpValue.MakeFunction(
+            callbackType,
+            fun tok ->
+                FSharpValue.MakeFunction(
+                    innerType,
+                    fun r ->
+                        let m = unbox<range> r
+                        let kind = (tokenCtor.Invoke([| tok; r |]) :?> FSharpToken).Kind
+                        let name =
+                            if kind = FSharpTokenKind.None then
+                                let case, _ = FSharpValue.GetUnionFields(tok, tokenType, true)
+                                case.Name
+                            else
+                                kind.ToString()
+                        if not (name.EndsWith("_COMING_SOON", StringComparison.Ordinal)) then
+                            tokens.Add(
+                                {| Kind = name
+                                   Range =
+                                    {| Start = {| Line = m.StartLine; Col = m.StartColumn |}
+                                       End = {| Line = m.EndLine; Col = m.EndColumn |} |} |}
+                            )
+                        box ()))
+    let flags =
+        FSharpLexerFlags.Compiling ||| FSharpLexerFlags.SkipTrivia ||| FSharpLexerFlags.UseLexFilter
+    // By name: the parameter list moves between FCS versions
+    // (`strictIndentation` arrived after `langVersion`).
+    let args =
+        lex.GetParameters()
+        |> Array.map (fun p ->
+            match p.Name with
+            | "text" -> box (SourceText.ofString text)
+            | "conditionalDefines" -> box ([]: string list)
+            | "flags" -> box flags
+            | "reportLibraryOnlyFeatures" -> box true
+            | "langVersion" -> langVersion
+            // `None`: the language version's default, as `Tokenize` passes.
+            | "strictIndentation" -> null
+            | "lexCallback" -> callback
+            | "pathMap" -> pathMap
+            | "ct" -> box System.Threading.CancellationToken.None
+            | other -> failwithf "fcs-dump: FSharpLexerImpl.lex has an unknown parameter %s" other)
+    lex.Invoke(null, args) |> ignore
+    tokens
+
+/// Batch form of [`lexInternal`], in `tokens-filtered-batch`'s JSONL shape.
+let private dumpTokensInternalBatch () =
+    let options = buildOptionsCompact ()
+    let mutable line = Console.In.ReadLine()
+    while not (isNull line) do
+        let path = (Option.ofObj line |> Option.defaultValue "").Trim()
+        if path <> "" then
+            let payload =
+                try
+                    let absolute = Path.GetFullPath path
+                    box {| Path = path
+                           WithLexFilter = true
+                           Tokens = (lexInternal (File.ReadAllText absolute)).ToArray() |}
+                with ex ->
+                    box {| Path = path
+                           WithLexFilter = true
+                           Error = ex.ToString() |}
+            Console.Out.WriteLine(JsonSerializer.Serialize(payload, options))
+        line <- Console.In.ReadLine()
+
 // ============================================================================
 // Entities dump (assembly-reader differential test oracle)
 // ============================================================================
@@ -6849,6 +6975,8 @@ let private usage () =
     eprintfn "  tokens-raw [--compact]      dump pre-LexFilter token stream"
     eprintfn "  tokens-filtered [--compact] dump post-LexFilter token stream"
     eprintfn "  tokens-filtered-batch    read paths from stdin, emit JSONL"
+    eprintfn "  tokens-lexfilter-internal-batch  as tokens-filtered-batch, with the"
+    eprintfn "                           tokens the public tokenizer drops (block ends)"
     eprintfn "  tokens-raw-batch         read paths from stdin, emit JSONL"
     eprintfn "  entities <dll-path>      dump entity skeletons of a managed DLL"
     eprintfn "  uses <source-path>       dump symbol uses (name-resolution oracle)"
@@ -6938,6 +7066,9 @@ let main argv =
         0
     | [| "tokens-raw-batch" |] ->
         dumpTokensBatch false
+        0
+    | [| "tokens-lexfilter-internal-batch" |] ->
+        dumpTokensInternalBatch ()
         0
     | [| "entities"; dllPath |] ->
         dumpEntities (Path.GetFullPath dllPath)

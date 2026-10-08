@@ -2,9 +2,9 @@ use std::ops::Range;
 
 use borzoi_cst::parser::{Parse, parse, parse_sig};
 use borzoi_cst::syntax::{
-    AstNode, ExceptionDefnDecl, Expr, HashDirectiveDecl, ImplFile, LetDecl, MemberDefn, ModuleDecl,
-    ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, SigDecl, SigFile, SyntaxKind,
-    SyntaxNode, SyntaxToken, TypeDefn, TypeDefnsDecl,
+    AstNode, Binding, ExceptionDefnDecl, Expr, HashDirectiveDecl, ImplFile, LetDecl, MemberDefn,
+    ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigDecl, SigFile,
+    SyntaxKind, SyntaxNode, SyntaxToken, TypeDefn, TypeDefnRepr, TypeDefnsDecl,
 };
 use serde_json::Value;
 use tempfile::NamedTempFile;
@@ -202,6 +202,7 @@ fn collect_cst_impl_decl(decl: &ModuleDecl, path: String, out: &mut Vec<AstRange
         kind: impl_decl_kind(decl).to_string(),
         range: impl_decl_ast_range(decl),
     });
+    collect_cst_sub_facts(decl, &path, out);
     if let ModuleDecl::NestedModule(nested) = decl {
         collect_cst_nested_impl_module(nested, path, out);
     }
@@ -1031,6 +1032,289 @@ pub(super) fn is_light_hash_directive(node: &SyntaxNode) -> bool {
     }
 }
 
+// ============================================================================
+// Sub-declaration range facts
+// ============================================================================
+//
+// Below the declaration layer, the facts are the ranges consumers read: the
+// *names* that are definition sites. Each type definition's name in a
+// `type … and …` group, each union case's, record field's and `member`'s name,
+// and each `let` (or `extern`) binding's binder. Ours is the range of the token
+// the facade returns (`UnionCase::ident`, `RecordFieldDecl::ident`, the last
+// segment of a binding's head pattern, `ActivePatName::name_range` for an
+// active-pattern binder); FCS's is the `Ident`'s `idRange`. A wrong token with
+// the right text (the right-hand `x` of `let x = x` as the binder, say)
+// normalises identically and differs only here.
+//
+// The nodes' own ranges are not audited: no consumer reads them, and FCS
+// draws them inconsistently (a `SynUnionCase` covers its attributes when it
+// has no fields and not when it has some).
+
+fn token_range(token: &SyntaxToken) -> Range<usize> {
+    let r = token.text_range();
+    usize::from(r.start())..usize::from(r.end())
+}
+
+fn push_cst_name(out: &mut Vec<AstRangeFact>, path: String, kind: &str, range: Range<usize>) {
+    out.push(AstRangeFact {
+        path,
+        kind: kind.to_string(),
+        range,
+    });
+}
+
+fn collect_cst_sub_facts(decl: &ModuleDecl, path: &str, out: &mut Vec<AstRangeFact>) {
+    match decl {
+        ModuleDecl::Types(types) => {
+            for (j, defn) in types.defns().enumerate() {
+                collect_cst_type_defn(&defn, &format!("{path}.type[{j}]"), out);
+            }
+        }
+        ModuleDecl::Let(let_decl) => {
+            for (j, binding) in let_decl.bindings().enumerate() {
+                if let Some(range) = cst_binder_range(&binding) {
+                    push_cst_name(out, format!("{path}.binding[{j}]"), "Binder", range);
+                }
+            }
+        }
+        // FCS lowers `extern` to a `Let` whose one binding is named by it.
+        ModuleDecl::Extern(e) => {
+            if let Some(name) = e.name().and_then(|li| li.idents().last()) {
+                push_cst_name(
+                    out,
+                    format!("{path}.binding[0]"),
+                    "Binder",
+                    token_range(&name),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_cst_type_defn(defn: &TypeDefn, path: &str, out: &mut Vec<AstRangeFact>) {
+    if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
+        push_cst_name(out, path.to_string(), "TypeName", token_range(&name));
+    }
+    match defn.repr() {
+        Some(TypeDefnRepr::Union(u)) => {
+            for (k, case) in u.cases().enumerate() {
+                if let Some(name) = case.ident() {
+                    push_cst_name(
+                        out,
+                        format!("{path}.case[{k}]"),
+                        "UnionCase",
+                        token_range(&name),
+                    );
+                }
+            }
+        }
+        Some(TypeDefnRepr::Record(r)) => {
+            for (k, field) in r.fields().enumerate() {
+                if let Some(name) = field.ident() {
+                    push_cst_name(
+                        out,
+                        format!("{path}.field[{k}]"),
+                        "Field",
+                        token_range(&name),
+                    );
+                }
+            }
+        }
+        Some(TypeDefnRepr::ObjectModel(om)) => {
+            collect_cst_members(om.members(), &format!("{path}.repr"), out);
+        }
+        _ => {}
+    }
+    collect_cst_members(defn.members(), path, out);
+}
+
+fn collect_cst_members(
+    members: impl Iterator<Item = MemberDefn>,
+    path: &str,
+    out: &mut Vec<AstRangeFact>,
+) {
+    let members = members.filter_map(|m| match m {
+        MemberDefn::Member(m) => Some(m),
+        _ => None,
+    });
+    for (k, m) in members.enumerate() {
+        if let Some(range) = m.binding().as_ref().and_then(cst_binder_range) {
+            push_cst_name(out, format!("{path}.member[{k}]"), "Member", range);
+        }
+    }
+}
+
+/// The binder name of a binding whose head is a plain name (`let x`), a
+/// function or member head (`let f a b`, `member this.M x`), or an active
+/// pattern: the name's range.
+fn cst_binder_range(binding: &Binding) -> Option<Range<usize>> {
+    let range = match binding.pat()? {
+        Pat::Named(named) => match named.active_pat_name() {
+            Some(active) => active.name_range()?,
+            None => named.ident()?.text_range(),
+        },
+        Pat::LongIdent(head) => match head.active_pat_name() {
+            Some(active) => active.name_range()?,
+            None => head.head()?.idents().last()?.text_range(),
+        },
+        _ => return None,
+    };
+    Some(usize::from(range.start())..usize::from(range.end()))
+}
+
+fn collect_fcs_sub_facts(
+    kind: &str,
+    decl_fields: &[Value],
+    path: &str,
+    line_index: &LineIndex<'_>,
+    out: &mut Vec<AstRangeFact>,
+) {
+    match kind {
+        "Types" => {
+            let defns = decl_fields[0]
+                .as_array()
+                .expect("SynModuleDecl.Types holds a SynTypeDefn list");
+            for (j, defn) in defns.iter().enumerate() {
+                collect_fcs_type_defn(defn, &format!("{path}.type[{j}]"), line_index, out);
+            }
+        }
+        "Let" => {
+            let bindings = decl_fields[1]
+                .as_array()
+                .expect("SynModuleDecl.Let holds a SynBinding list");
+            for (j, binding) in bindings.iter().enumerate() {
+                if let Some(range) = fcs_binder_range(binding) {
+                    push_fcs_fact(
+                        out,
+                        format!("{path}.binding[{j}]"),
+                        "Binder",
+                        range,
+                        line_index,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn id_range(ident: &Value) -> &Value {
+    ident.get("idRange").expect("an Ident has an idRange")
+}
+
+fn collect_fcs_type_defn(
+    defn: &Value,
+    path: &str,
+    line_index: &LineIndex<'_>,
+    out: &mut Vec<AstRangeFact>,
+) {
+    // `SynTypeDefn(typeInfo, typeRepr, members, implicitConstructor, range,
+    // trivia)`; `SynComponentInfo(attributes, typeParams, constraints, longId,
+    // …)`.
+    let f = fields(defn);
+    let long_id = fields(&f[0])[3]
+        .as_array()
+        .expect("SynComponentInfo.longId");
+    if let Some(name) = long_id.last() {
+        push_fcs_fact(
+            out,
+            path.to_string(),
+            "TypeName",
+            id_range(name),
+            line_index,
+        );
+    }
+    let repr = &f[1];
+    match case_name(repr) {
+        "Simple" => {
+            let simple = &fields(repr)[0];
+            match case_name(simple) {
+                // `Union(accessibility, unionCases, range)`;
+                // `SynUnionCase(attributes, ident: SynIdent, …)`. An
+                // operator-named case (`([])`) has no name token on our side.
+                "Union" => {
+                    let cases = fields(simple)[1].as_array().expect("union cases");
+                    for (k, case) in cases.iter().enumerate() {
+                        let ident = &fields(&fields(case)[1])[0];
+                        let text = ident.get("idText").and_then(Value::as_str);
+                        if text.is_some_and(|t| t.starts_with("op_")) {
+                            continue;
+                        }
+                        push_fcs_fact(
+                            out,
+                            format!("{path}.case[{k}]"),
+                            "UnionCase",
+                            id_range(ident),
+                            line_index,
+                        );
+                    }
+                }
+                // `Record(accessibility, recordFields, range)`;
+                // `SynField(attributes, isStatic, idOpt, …)`.
+                "Record" => {
+                    let rfields = fields(simple)[1].as_array().expect("record fields");
+                    for (k, field) in rfields.iter().enumerate() {
+                        let id_opt = &fields(field)[2];
+                        if !id_opt.is_null() && case_name(id_opt) == "Some" {
+                            push_fcs_fact(
+                                out,
+                                format!("{path}.field[{k}]"),
+                                "Field",
+                                id_range(&fields(id_opt)[0]),
+                                line_index,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // `ObjectModel(kind, members, range)`.
+        "ObjectModel" => {
+            collect_fcs_members(&fields(repr)[1], &format!("{path}.repr"), line_index, out);
+        }
+        _ => {}
+    }
+    collect_fcs_members(&f[2], path, line_index, out);
+}
+
+fn collect_fcs_members(
+    members: &Value,
+    path: &str,
+    line_index: &LineIndex<'_>,
+    out: &mut Vec<AstRangeFact>,
+) {
+    let members = members.as_array().expect("a SynMemberDefn list");
+    // Only `SynMemberDefn.Member(memberDefn, range)`, counted among
+    // themselves: FCS lists an implicit constructor among the members, and we
+    // do not.
+    let members = members.iter().filter(|m| case_name(m) == "Member");
+    for (k, member) in members.enumerate() {
+        if let Some(range) = fcs_binder_range(&fields(member)[0]) {
+            push_fcs_fact(
+                out,
+                format!("{path}.member[{k}]"),
+                "Member",
+                range,
+                line_index,
+            );
+        }
+    }
+}
+
+/// `SynBinding.headPat` (field 7): a `Named(SynIdent(ident, _), …)` or a
+/// `LongIdent(SynLongIdent(idents, …), …)` head's last ident.
+fn fcs_binder_range(binding: &Value) -> Option<&Value> {
+    let head = &fields(binding)[7];
+    let ident = match case_name(head) {
+        "Named" => &fields(&fields(head)[0])[0],
+        "LongIdent" => fields(&fields(head)[0])[0].as_array()?.last()?,
+        _ => return None,
+    };
+    ident.get("idRange")
+}
+
 fn collect_fcs_range_facts(json: &str, source: &str) -> Vec<AstRangeFact> {
     let dump: Value = serde_json::from_str(json).expect("fcs-dump JSON shape");
     let parse_tree = dump
@@ -1111,6 +1395,7 @@ fn collect_fcs_impl_decl(
         fcs_impl_decl_range(kind, decl_fields),
         line_index,
     );
+    collect_fcs_sub_facts(kind, decl_fields, &path, line_index, out);
     if kind == "NestedModule" {
         let nested = decl_fields[2]
             .as_array()
