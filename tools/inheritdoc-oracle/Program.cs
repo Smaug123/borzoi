@@ -38,7 +38,8 @@
 //     -> {"ok":true,"selection":"<selection>…the selected nodes…</selection>"}
 //      | {"ok":false,"why":..}   (where Roslyn's `TrySelectNodes` yields null)
 //
-//   {"op":"compile","source":s,"assemblyName":n,"outDir":d,"references":[dll..]}
+//   {"op":"compile","source":s,"assemblyName":n,"outDir":d,
+//    "references":[dll | {"path":dll,"alias":a} ..]}
 //     Compile one C# file (preview language, nullable on) to `d/n.dll` and its
 //     documentation file `d/n.xml` — the compiler's own `.xml`, which keeps
 //     `<inheritdoc>` verbatim and turns crefs into IDs — for purpose-built
@@ -231,7 +232,19 @@ internal static class Program
             }
             case "compile":
             {
-                var references = request["references"]!.AsArray().Select(r => (string)r!).ToList();
+                // A reference is a path, or {"path":p,"alias":a} for one the
+                // source reaches through `extern alias a`.
+                var references = request["references"]!.AsArray().Select(r =>
+                {
+                    if (r is JsonObject o)
+                    {
+                        var reference = MetadataReference.CreateFromFile((string)o["path"]!);
+                        return o["alias"] is { } alias
+                            ? reference.WithAliases(new[] { (string)alias! })
+                            : reference;
+                    }
+                    return MetadataReference.CreateFromFile((string)r!);
+                }).ToList();
                 var name = (string)request["assemblyName"]!;
                 var outDir = (string)request["outDir"]!;
                 var parse = new CSharpParseOptions(LanguageVersion.Preview, DocumentationMode.Diagnose);
@@ -239,7 +252,7 @@ internal static class Program
                 var compilation = CSharpCompilation.Create(
                     name,
                     new[] { tree },
-                    references.Select(r => (MetadataReference)MetadataReference.CreateFromFile(r)),
+                    references,
                     new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
                 Directory.CreateDirectory(outDir);
                 using var dll = new MemoryStream();

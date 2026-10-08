@@ -155,7 +155,7 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   and none differently; of the 140 declines, Roslyn itself leaves the element
   in 117, shows nothing for 21 (an undocumented inherited symbol), and needs
   `InternalsVisibleTo` for 2. Over the NuGet cache (highest version of each
-  package, referenced with both packs but not its own dependencies), 6,946
+  package, referenced with both packs but not its own dependencies), 6,942
   expand identically and none differently, C# 14 extension members' `cref`s
   into their `<G>$` skeletons included (all 66 of CliWrap's inheritdoc entries
   but one cycle). Not modelled: default-interface-member implementations, and

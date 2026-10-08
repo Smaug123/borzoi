@@ -158,6 +158,27 @@ impl Oracle {
         out_dir: &Path,
         references: &[PathBuf],
     ) -> Result<PathBuf, Vec<String>> {
+        let plain: Vec<(PathBuf, Option<&str>)> =
+            references.iter().map(|r| (r.clone(), None)).collect();
+        self.compile_aliased(source, name, out_dir, &plain)
+    }
+
+    /// [`Self::compile`], with some references reached through an
+    /// `extern alias`.
+    pub fn compile_aliased(
+        &mut self,
+        source: &str,
+        name: &str,
+        out_dir: &Path,
+        references: &[(PathBuf, Option<&str>)],
+    ) -> Result<PathBuf, Vec<String>> {
+        let references: Vec<serde_json::Value> = references
+            .iter()
+            .map(|(path, alias)| match alias {
+                Some(alias) => serde_json::json!({ "path": path, "alias": alias }),
+                None => serde_json::json!(path),
+            })
+            .collect();
         let r = self.request(&serde_json::json!({
             "op": "compile",
             "source": source,

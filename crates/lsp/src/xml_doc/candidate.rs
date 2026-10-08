@@ -57,21 +57,30 @@ use super::key::DocTarget;
 pub struct Instantiation {
     pub context: EntityHandle,
     pub args: Vec<TypeRef>,
+    /// Each argument's [`type_key`]: which types the arguments are.
+    key: Vec<String>,
 }
 
 impl Instantiation {
     /// `handle`'s own instantiation: each type parameter stands for itself.
     pub fn definition(env: &AssemblyEnv, handle: EntityHandle) -> Self {
         let arity = env.entity(handle).generic_parameters.len();
+        let args: Vec<TypeRef> = (0..arity)
+            .map(|i| TypeRef::Var {
+                index: u16::try_from(i).unwrap_or(u16::MAX),
+                is_method: false,
+            })
+            .collect();
         Instantiation {
             context: handle,
-            args: (0..arity)
-                .map(|i| TypeRef::Var {
-                    index: u16::try_from(i).unwrap_or(u16::MAX),
-                    is_method: false,
-                })
-                .collect(),
+            key: args.iter().map(type_enc).collect(),
+            args,
         }
+    }
+
+    /// Which types the arguments are, by bound identity (see [`type_key`]).
+    pub fn key(&self) -> &[String] {
+        &self.key
     }
 
     /// `ty`, written in the declaring type's metadata, as a type of
@@ -134,25 +143,84 @@ impl Instantiation {
     }
 
     /// The instantiation of the type `reference` names — a base type or an
-    /// interface written in the metadata of the type this instantiates.
-    fn of_reference(&self, reference: &TypeRef) -> Option<Instantiation> {
+    /// interface written in the metadata of the type this instantiates, its
+    /// same-module references already qualified.
+    fn of_reference(
+        &self,
+        env: &AssemblyEnv,
+        reference: &TypeRef,
+    ) -> Result<Instantiation, Undecidable> {
         let TypeRef::Named { type_args, .. } = reference else {
-            return None;
+            return Err(Undecidable::MalformedInstantiation);
         };
-        Some(Instantiation {
+        let args: Vec<TypeRef> = type_args
+            .iter()
+            .map(|a| self.apply(&a.ty))
+            .collect::<Option<_>>()
+            .ok_or(Undecidable::MalformedInstantiation)?;
+        let key = args
+            .iter()
+            .map(|a| type_key(env, self.context, a))
+            .collect::<Option<_>>()
+            .ok_or(Undecidable::TypeIdentity)?;
+        Ok(Instantiation {
             context: self.context,
-            args: type_args
-                .iter()
-                .map(|a| self.apply(&a.ty))
-                .collect::<Option<_>>()?,
+            args,
+            key,
         })
     }
+}
 
-    /// A key telling instantiations of one definition apart by the types
-    /// they name.
-    fn key(&self) -> Vec<String> {
-        self.args.iter().map(type_enc).collect()
-    }
+/// A type's identity as Roslyn compares types: by the definition each named
+/// type binds to ([`AssemblyEnv::il_type_definition`]), not by its name — two
+/// assemblies may define the same full name — and, for one no loaded assembly
+/// defines, by the full identity of the assembly the reference names, which
+/// is what Roslyn's missing-type symbols compare by. `ty` must name its
+/// assemblies explicitly (see [`qualify`]); `None` where the binding is
+/// ambiguous or uncertain.
+pub(crate) fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<String> {
+    Some(match ty {
+        TypeRef::Primitive(_) | TypeRef::Var { .. } => type_enc(ty),
+        TypeRef::Named {
+            assembly,
+            namespace,
+            name,
+            type_args,
+            segment_arities,
+        } => {
+            let head = match env.il_type_definition(from, ty) {
+                IlTypeDefinition::Resolved(def) => format!("{def:?}"),
+                IlTypeDefinition::NotFound => {
+                    let assembly = assembly.as_ref()?;
+                    format!(
+                        "missing {} {:?} {:?} {}.{name} {segment_arities:?}",
+                        assembly.name,
+                        assembly.version,
+                        assembly.public_key_token,
+                        namespace.join(".")
+                    )
+                }
+                _ => return None,
+            };
+            let args = type_args
+                .iter()
+                .map(|a| type_key(env, from, &a.ty))
+                .collect::<Option<Vec<_>>>()?;
+            format!("{head}<{}>", args.join(","))
+        }
+        TypeRef::Array {
+            element,
+            rank,
+            sizes,
+            lower_bounds,
+        } => format!(
+            "{}[{rank};{sizes:?};{lower_bounds:?}]",
+            type_key(env, from, &element.ty)?
+        ),
+        TypeRef::Ptr(Some(inner)) => format!("{}*", type_key(env, from, inner)?),
+        TypeRef::Ptr(None) => "void*".to_string(),
+        TypeRef::ByRef { inner, .. } => format!("{}&", type_key(env, from, inner)?),
+    })
 }
 
 /// A symbol a walk has reached, with the instantiation of its declaring type
@@ -228,6 +296,12 @@ pub enum Undecidable {
     ChainTooLong,
     /// An instantiation names a type parameter its type does not have.
     MalformedInstantiation,
+    /// A type in a compared signature or instantiation binds ambiguously or
+    /// uncertainly, so which type it is cannot be settled.
+    TypeIdentity,
+    /// An interface member with a default implementation whose
+    /// implementability by a public class member is not modelled.
+    DefaultImplementation,
     /// Roslyn's own rule throws here — a constructor of a type with no base
     /// type, whose base it dereferences unchecked — and the exception
     /// abandons the whole expansion.
@@ -283,9 +357,7 @@ fn bind(
     // same-module reference among them must name its module explicitly to
     // keep meaning the same type wherever it is bound later.
     let qualified = qualify(reference, &env.entity(from).assembly);
-    let args = inst
-        .of_reference(&qualified)
-        .ok_or(Undecidable::MalformedInstantiation)?;
+    let args = inst.of_reference(env, &qualified)?;
     if args.args.len() != env.entity(def).generic_parameters.len() {
         return Err(Undecidable::MalformedInstantiation);
     }
@@ -564,8 +636,45 @@ enum Byrefs {
     Ignored,
 }
 
-fn signature(member: &Member, inst: &Instantiation, byrefs: Byrefs) -> Option<Signature> {
-    let enc = |ty: &TypeRef| inst.apply(ty).map(|t| type_enc(&t));
+/// `member`'s signature (it is declared on `declaring`, instantiated by
+/// `inst`), each type by its bound identity ([`type_key`]). Undecidable where
+/// a type names a parameter the instantiation lacks or binds uncertainly.
+fn signature(
+    env: &AssemblyEnv,
+    declaring: EntityHandle,
+    member: &Member,
+    inst: &Instantiation,
+    byrefs: Byrefs,
+) -> Result<Signature, Undecidable> {
+    signature_of(env, declaring, member, inst, byrefs).ok_or(Undecidable::TypeIdentity)
+}
+
+/// Whether `member`'s signature is `want`. A signature that cannot be
+/// settled is undecidable, not a mismatch: treating it as one would step
+/// past a member that may be the match.
+fn same_signature(
+    env: &AssemblyEnv,
+    declaring: EntityHandle,
+    member: &Member,
+    inst: &Instantiation,
+    byrefs: Byrefs,
+    want: &Signature,
+) -> Result<bool, Undecidable> {
+    Ok(signature(env, declaring, member, inst, byrefs)? == *want)
+}
+
+fn signature_of(
+    env: &AssemblyEnv,
+    declaring: EntityHandle,
+    member: &Member,
+    inst: &Instantiation,
+    byrefs: Byrefs,
+) -> Option<Signature> {
+    let module = &env.entity(declaring).assembly;
+    let enc = |ty: &TypeRef| {
+        inst.apply(&qualify(ty, module))
+            .and_then(|t| type_key(env, inst.context, &t))
+    };
     Some(match member {
         Member::Method(m) => Signature {
             kind: Kind::Method,
@@ -660,8 +769,7 @@ fn explicit_candidate(
     };
     explicit_target(
         env,
-        member,
-        inst,
+        (parent, member, inst),
         iface,
         &iface_inst,
         wanted_kind,
@@ -772,8 +880,7 @@ fn unresolved_explicit_candidate(
     }
     explicit_target(
         env,
-        member,
-        inst,
+        (parent, member, inst),
         iface,
         &iface_inst,
         wanted_kind,
@@ -785,8 +892,7 @@ fn unresolved_explicit_candidate(
 /// whose signature (under `iface_inst`) is `member`'s (under `inst`).
 fn explicit_target(
     env: &AssemblyEnv,
-    member: &Member,
-    inst: &Instantiation,
+    (parent, member, inst): (EntityHandle, &Member, &Instantiation),
     iface: EntityHandle,
     iface_inst: &Instantiation,
     wanted_kind: Kind,
@@ -797,20 +903,30 @@ fn explicit_target(
         // candidate is then an accessor method, documented nowhere.
         return Undecidable::ExplicitImplementation.into();
     }
-    let Some(mine) = signature(member, inst, Byrefs::RefOutSame) else {
-        return Undecidable::MalformedInstantiation.into();
+    let mine = match signature(env, parent, member, inst, Byrefs::RefOutSame) {
+        Ok(s) => s,
+        Err(why) => return why.into(),
     };
     if has_skipped(env, iface, wanted_name) {
         return Undecidable::Shadowed.into();
     }
-    let mut found = members(env, iface).filter(|(_, m)| {
-        kind(m) == wanted_kind
-            && member_name(m) == wanted_name
-            && signature(m, iface_inst, Byrefs::RefOutSame).is_some_and(|s| s == mine)
-    });
-    match (found.next(), found.next()) {
-        (Some((idx, _)), None) => Candidate::Found(Reached {
-            target: DocTarget::Member { parent: iface, idx },
+    let mut found = Vec::new();
+    for (idx, m) in members(env, iface) {
+        if kind(m) != wanted_kind || member_name(m) != wanted_name {
+            continue;
+        }
+        match same_signature(env, iface, m, iface_inst, Byrefs::RefOutSame, &mine) {
+            Ok(true) => found.push(idx),
+            Ok(false) => {}
+            Err(why) => return why.into(),
+        }
+    }
+    match found.as_slice() {
+        [idx] => Candidate::Found(Reached {
+            target: DocTarget::Member {
+                parent: iface,
+                idx: *idx,
+            },
             inst: iface_inst.clone(),
         }),
         _ => Undecidable::ExplicitImplementation.into(),
@@ -878,8 +994,9 @@ fn overridden_candidate(
     member: &Member,
 ) -> Candidate {
     let name = member_name(member);
-    let Some(mine) = signature(member, inst, Byrefs::RefOutDistinct) else {
-        return Undecidable::MalformedInstantiation.into();
+    let mine = match signature(env, parent, member, inst, Byrefs::RefOutDistinct) {
+        Ok(s) => s,
+        Err(why) => return why.into(),
     };
     let mut level = (parent, inst.clone());
     for _ in 0..MAX_CHAIN {
@@ -905,8 +1022,10 @@ fn overridden_candidate(
             if kind(other) != kind(member) {
                 return Undecidable::Shadowed.into();
             }
-            if signature(other, def_inst, Byrefs::RefOutDistinct).is_some_and(|s| s == mine) {
-                matches.push((idx, other));
+            match same_signature(env, *def, other, def_inst, Byrefs::RefOutDistinct, &mine) {
+                Ok(true) => matches.push((idx, other)),
+                Ok(false) => {}
+                Err(why) => return why.into(),
             }
         }
         match matches.as_slice() {
@@ -932,6 +1051,45 @@ fn overridden_candidate(
 
 /// Roslyn's `GetOverriddenMember` keeps a match only if it is virtual,
 /// abstract or an override.
+/// Whether an interface member is one a class member can implement.
+enum Implementable {
+    Yes,
+    /// Not virtual, or sealed: a private or sealed default implementation.
+    No,
+    /// Virtual but not public, or with accessors that disagree: whether a
+    /// public member implements it turns on rules not modelled here.
+    Unknown,
+}
+
+fn implementable(member: &Member) -> Implementable {
+    let open = |virtual_: bool, final_: bool| virtual_ && !final_;
+    let verdict = |opens: &[bool]| match (opens.iter().all(|o| *o), opens.iter().any(|o| *o)) {
+        (true, true) => Implementable::Yes,
+        (_, false) => Implementable::No,
+        _ => Implementable::Unknown,
+    };
+    let structural = match member {
+        Member::Method(m) => verdict(&[open(m.is_virtual, m.is_final)]),
+        Member::Property(p) => verdict(
+            &p.accessor_slots
+                .iter()
+                .map(|s| open(s.is_virtual, s.is_final))
+                .collect::<Vec<_>>(),
+        ),
+        Member::Event(e) => verdict(
+            &e.accessor_slots
+                .iter()
+                .map(|s| open(s.is_virtual, s.is_final))
+                .collect::<Vec<_>>(),
+        ),
+        Member::Field(_) => Implementable::No,
+    };
+    match structural {
+        Implementable::Yes if member_access(member) != Access::Public => Implementable::Unknown,
+        other => other,
+    }
+}
+
 fn is_overridable(member: &Member) -> bool {
     match member {
         Member::Method(m) => m.is_virtual,
@@ -982,23 +1140,35 @@ fn constructor_candidate(
         Ok(None) => return Undecidable::RoslynThrows.into(),
         Err(why) => return why.into(),
     };
-    let Some(mine) = signature(member, inst, Byrefs::Ignored) else {
-        return Undecidable::MalformedInstantiation.into();
+    let mine = match signature(env, parent, member, inst, Byrefs::Ignored) {
+        Ok(s) => s,
+        Err(why) => return why.into(),
     };
     if has_skipped(env, base, ".ctor") {
         return Undecidable::Shadowed.into();
     }
-    let mut found = members(env, base).filter(|(_, m)| {
-        matches!(m, Member::Method(c) if c.is_constructor && !c.is_static && imported_non_virtual(c.access))
-            && signature(m, &base_inst, Byrefs::Ignored).is_some_and(|s| s == mine)
-    });
-    match (found.next(), found.next()) {
-        (None, _) => Candidate::None(NoCandidate::NoBaseConstructor),
-        (Some((idx, _)), None) => Candidate::Found(Reached {
-            target: DocTarget::Member { parent: base, idx },
+    let mut found = Vec::new();
+    for (idx, m) in members(env, base) {
+        if !matches!(m, Member::Method(c) if c.is_constructor && !c.is_static && imported_non_virtual(c.access))
+        {
+            continue;
+        }
+        match same_signature(env, base, m, &base_inst, Byrefs::Ignored, &mine) {
+            Ok(true) => found.push(idx),
+            Ok(false) => {}
+            Err(why) => return why.into(),
+        }
+    }
+    match found.as_slice() {
+        [] => Candidate::None(NoCandidate::NoBaseConstructor),
+        [idx] => Candidate::Found(Reached {
+            target: DocTarget::Member {
+                parent: base,
+                idx: *idx,
+            },
             inst: base_inst,
         }),
-        (Some(_), Some(_)) => Undecidable::AmbiguousMatch.into(),
+        _ => Undecidable::AmbiguousMatch.into(),
     }
 }
 
@@ -1017,7 +1187,7 @@ struct Iface {
 
 impl Iface {
     fn key(&self) -> (EntityHandle, Vec<String>) {
-        (self.def, self.inst.key())
+        (self.def, self.inst.key().to_vec())
     }
 }
 
@@ -1153,23 +1323,37 @@ fn interface_candidate(
             if member_name(im) != name || kind(im) != kind(member) || is_static(im) {
                 continue;
             }
-            let Some(theirs) = signature(im, &iface.inst, Byrefs::RefOutSame) else {
-                return Undecidable::MalformedInstantiation.into();
+            // Only an abstract or virtual, unsealed member is implemented at
+            // all (Roslyn's `IsImplementableInterfaceMember`); a private or
+            // sealed default implementation is not, whatever shares its name.
+            match implementable(im) {
+                Implementable::No => continue,
+                Implementable::Unknown => return Undecidable::DefaultImplementation.into(),
+                Implementable::Yes => {}
+            }
+            let theirs = match signature(env, iface.def, im, &iface.inst, Byrefs::RefOutSame) {
+                Ok(s) => s,
+                Err(why) => return why.into(),
             };
             // The implicit implementation: the first public member of the
             // type with the interface member's name, kind, static-ness and
             // signature. Unless that is `member`, `member` implements nothing
             // here, whatever else does.
-            let implicit: Vec<&Member> = members(env, parent)
-                .map(|(_, x)| x)
-                .filter(|x| {
-                    member_name(x) == name
-                        && kind(x) == kind(im)
-                        && member_access(x) == Access::Public
-                        && !is_static(x)
-                        && signature(x, inst, Byrefs::RefOutSame).is_some_and(|s| s == theirs)
-                })
-                .collect();
+            let mut implicit: Vec<&Member> = Vec::new();
+            for (_, x) in members(env, parent) {
+                if member_name(x) != name
+                    || kind(x) != kind(im)
+                    || member_access(x) != Access::Public
+                    || is_static(x)
+                {
+                    continue;
+                }
+                match same_signature(env, parent, x, inst, Byrefs::RefOutSame, &theirs) {
+                    Ok(true) => implicit.push(x),
+                    Ok(false) => {}
+                    Err(why) => return why.into(),
+                }
+            }
             if !implicit.iter().any(|x| std::ptr::eq(*x, member)) {
                 continue;
             }

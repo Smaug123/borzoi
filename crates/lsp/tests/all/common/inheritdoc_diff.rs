@@ -37,12 +37,18 @@ pub enum Verdict {
     NoStart(String),
 }
 
-/// Whether the tree holds an `<inheritdoc>` (any spelling Roslyn expands).
+/// Whether the tree holds anything that might be an `<inheritdoc>`: a looser
+/// test than the expansion's own (any namespace, any case, Unicode lookalikes),
+/// so an entry the expansion wrongly passes over still gets compared.
 fn has_inheritdoc(e: &DocElement) -> bool {
     e.children.iter().any(|c| match c {
-        DocNode::Element(c) => c.name.eq_ignore_ascii_case("inheritdoc") || has_inheritdoc(c),
+        DocNode::Element(c) => looks_like_inheritdoc(&c.name) || has_inheritdoc(c),
         DocNode::Text(_) => false,
     })
+}
+
+fn looks_like_inheritdoc(name: &str) -> bool {
+    name.to_lowercase().replace('ı', "i") == "inheritdoc"
 }
 
 fn parse(xml: &str) -> DocElement {
