@@ -551,6 +551,10 @@ fn engines_agree(
         });
     }
 
+    // One scratch copy of the tree for every loser: each loser is pushed as a
+    // temporary node to classify its dependencies against its own ancestors,
+    // and popped again, so the cost is one copy rather than one per loser.
+    let mut nodes = walk.nodes.clone();
     for loser in &walk.losers {
         let Some(cached) = cache.get(&loser.identity) else {
             let source = cache
@@ -563,7 +567,9 @@ fn engines_agree(
         };
         let dependencies = cached.dependencies.clone();
 
-        let mut nodes = walk.nodes.clone();
+        if dependencies.is_empty() {
+            continue;
+        }
         nodes.push(Node {
             id: Some(loser.identity.id.clone()),
             parent: Some(loser.parent),
@@ -599,6 +605,7 @@ fn engines_agree(
                 Verdict::Cycle | Verdict::Acceptable => return Err(not_a_leaf()),
             }
         }
+        nodes.pop();
     }
 
     Ok(())
