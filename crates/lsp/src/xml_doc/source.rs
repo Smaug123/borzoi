@@ -282,9 +282,17 @@ impl SourceDocIndex {
                     .children_with_tokens()
                     .filter_map(NodeOrToken::into_token)
                     .find(|t| t.kind() == SyntaxKind::IDENT_TOK),
+                // The member's head path — not an attribute's, which comes
+                // first in the tree.
                 SyntaxKind::MEMBER_DEFN | SyntaxKind::GET_SET_MEMBER => n
                     .descendants()
-                    .find(|c| c.kind() == SyntaxKind::LONG_IDENT)
+                    .find(|c| {
+                        c.kind() == SyntaxKind::LONG_IDENT
+                            && !c
+                                .ancestors()
+                                .take_while(|a| a != &n)
+                                .any(|a| a.kind() == SyntaxKind::ATTRIBUTE_LIST)
+                    })
                     .and_then(|lid| {
                         lid.children_with_tokens()
                             .filter_map(NodeOrToken::into_token)
