@@ -161,9 +161,11 @@ pub enum ResolveDecline {
         identity: PackageIdentity,
         source: Box<PackageReadError>,
     },
-    /// The legacy restore engine fails with NU1107: a surviving edge's range does
-    /// not accept the version the graph settled on. The default engine may
-    /// resolve the graph, or fail it differently.
+    /// The legacy restore engine fails with a version conflict: a surviving
+    /// edge's range does not accept the version the graph settled on. That is
+    /// NU1107, or NU1106 when the conflict leaves the engine's conflict pass
+    /// unable to settle the package at all. The default engine may resolve the
+    /// graph, or fail it differently.
     VersionConflict {
         id: PackageId,
         selected: Box<NuGetVersion>,
@@ -208,6 +210,14 @@ pub enum ResolveDecline {
     LosingVersionNotALeaf {
         loser: PackageIdentity,
         dependency: PackageId,
+    },
+    /// Whether an edge is eclipsed turned on a floating range, which NuGet
+    /// compares by its release prefix and we do not model. A float that
+    /// survives the walk declines as [`ResolveDecline::FloatingRange`]; this
+    /// is one that only took part in an ancestor comparison.
+    FloatingRangeComparison {
+        id: PackageId,
+        range: Box<VersionRange>,
     },
     /// A potential downgrade of a package that is not a direct reference, which
     /// the two restore engines adjudicate differently. See `engines_agree`.
@@ -262,7 +272,7 @@ impl fmt::Display for ResolveDecline {
                 write!(
                     f,
                     "package {id} settled on version {selected}, which does not satisfy {range} \
-                     (the legacy restore engine fails with NU1107)"
+                     (the legacy restore engine fails with NU1107 or NU1106)"
                 )
             }
             ResolveDecline::Downgrade {
@@ -320,6 +330,13 @@ impl fmt::Display for ResolveDecline {
                     "package {} {} loses its conflict but depends on {dependency}, a subtree \
                      the restore engines may resolve differently",
                     loser.id, loser.version
+                )
+            }
+            ResolveDecline::FloatingRangeComparison { id, range } => {
+                write!(
+                    f,
+                    "whether the edge {id} {range} is eclipsed turns on a floating range, which \
+                     NuGet compares by its release prefix"
                 )
             }
             ResolveDecline::TransitivePotentialDowngrade { id, range } => {
@@ -524,6 +541,9 @@ fn finish(
 ///   keeps only as a leaf — has no subtree, so none of that can happen. This reads each loser's
 ///   dependency list, but nothing below it: the default engine's restore
 ///   installs exactly that much of a rejected branch.
+/// - **No eclipse verdict turns on a floating range.** NuGet compares floats by
+///   their release prefix (`RemoteDependencyWalker.IsGreaterThanOrEqualTo`),
+///   which [`is_at_least`] does not model.
 /// - **Potential downgrades are of direct references only.** The legacy engine
 ///   adjudicates a potential downgrade against its ancestors' edges; the
 ///   default one, against whichever version its breadth-first walk chose first
@@ -543,6 +563,13 @@ fn engines_agree(
     cache: &mut PackageCache,
 ) -> Result<(), ResolveDecline> {
     let is_direct = |id: &PackageId| direct.iter().any(|requirement| &requirement.id == id);
+
+    if let Some((id, range)) = &walk.float_compared {
+        return Err(ResolveDecline::FloatingRangeComparison {
+            id: id.clone(),
+            range: Box::new(range.clone()),
+        });
+    }
 
     if let Some(downgrade) = walk.downgrades.iter().find(|d| !is_direct(&d.id)) {
         return Err(ResolveDecline::TransitivePotentialDowngrade {
@@ -602,7 +629,9 @@ fn engines_agree(
                 // a relevant downgrade, since restore requires its parents to be
                 // accepted.
                 Verdict::Eclipsed | Verdict::PotentiallyDowngraded => {}
-                Verdict::Cycle | Verdict::Acceptable => return Err(not_a_leaf()),
+                Verdict::Cycle | Verdict::Acceptable | Verdict::FloatCompared => {
+                    return Err(not_a_leaf());
+                }
             }
         }
         nodes.pop();
@@ -634,18 +663,18 @@ fn engines_agree(
 /// already declined if that bound is not on disk, which is the only way restore
 /// could have resolved the edge higher.
 ///
-/// A floating deeper range is held to the settled version directly, as a
-/// conservative stand-in. NuGet compares floats by their release prefix, which
-/// [`is_at_least`] does not model, and only this direction of error is safe:
-/// it can decline where restore succeeds, never the reverse.
+/// Neither range here floats: an eclipse comparison involving a float is
+/// [`Verdict::FloatCompared`], never a potential downgrade, and a surviving edge
+/// that floats has already declined.
 fn downgrade_is_relevant(
     walk: &Walk,
     downgrade: &PotentialDowngrade,
     selected: &NuGetVersion,
 ) -> bool {
-    if downgrade.range.is_floating() {
-        return !downgrade.range.satisfies(selected);
-    }
+    assert!(
+        !downgrade.range.is_floating(),
+        "a floating edge is never classified as a potential downgrade"
+    );
 
     let mut held_to: Option<NuGetVersion> = None;
     let mut ancestor = Some(downgrade.parent);
@@ -708,6 +737,8 @@ struct Walk {
     /// candidates its downgrade check compares against.
     surviving: Vec<Vec<(PackageId, VersionRange)>>,
     cycle: Option<Vec<PackageId>>,
+    /// The first edge whose eclipse verdict turned on a floating range.
+    float_compared: Option<(PackageId, VersionRange)>,
     /// Every edge that survived the walk but lost to a higher version of its
     /// package, so was never expanded.
     losers: Vec<Loser>,
@@ -745,6 +776,10 @@ enum Verdict {
     /// An ancestor requires this package *lower* than we do.
     PotentiallyDowngraded,
     Cycle,
+    /// The ancestor's edge or this one floats. NuGet then decides eclipse by the
+    /// float's release prefix, which [`is_at_least`] does not model, so the
+    /// verdict is unknown.
+    FloatCompared,
 }
 
 fn walk(
@@ -764,6 +799,7 @@ fn walk(
         parents: Vec::new(),
         surviving: vec![Vec::new()],
         cycle: None,
+        float_compared: None,
         losers: Vec::new(),
         nodes: Vec::new(),
         shapes: BTreeMap::new(),
@@ -781,6 +817,12 @@ fn walk(
         for (dep_index, (id, range)) in dependencies.iter().enumerate() {
             match classify(&nodes, node, id, range, direct, &current, cache) {
                 Verdict::Eclipsed => continue,
+                Verdict::FloatCompared => {
+                    if walk.float_compared.is_none() {
+                        walk.float_compared = Some((id.clone(), range.clone()));
+                    }
+                    continue;
+                }
                 Verdict::Cycle => {
                     if walk.cycle.is_none() {
                         walk.cycle = Some(cycle_path(&nodes, node, id));
@@ -974,6 +1016,9 @@ fn classify(
             if sibling_id != id {
                 continue;
             }
+            if sibling_range.is_floating() || range.is_floating() {
+                return Verdict::FloatCompared;
+            }
             return if is_at_least(sibling_range, range) {
                 Verdict::Eclipsed
             } else {
@@ -1030,9 +1075,10 @@ fn all_versions_range() -> VersionRange {
     VersionRange::parse("(, )").expect("literal all-versions range parses")
 }
 
-/// `RemoteDependencyWalker.IsGreaterThanOrEqualTo`: is the *nearer* edge's lower
-/// bound at least the deeper one's? Floating ranges are out of the envelope and
-/// decline before this is reached.
+/// `RemoteDependencyWalker.IsGreaterThanOrEqualTo` for non-floating ranges: is
+/// the *nearer* edge's lower bound at least the deeper one's? NuGet compares a
+/// floating range by its release prefix instead; [`classify`] reports that case
+/// as [`Verdict::FloatCompared`] rather than calling this.
 fn is_at_least(nearer: &VersionRange, deeper: &VersionRange) -> bool {
     let Some(near_min) = nearer.min_version() else {
         // No lower bound at all accepts everything the deeper edge could want.
