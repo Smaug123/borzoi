@@ -821,11 +821,15 @@ impl Gen {
             .map(|(name, _)| name.to_string())
             .collect();
         for (b, folded) in &supplied {
-            if !ambiguous.contains(&b.name) {
-                let via = match via {
-                    Via::Opened if *folded => Via::OpenedFolded,
-                    other => other,
-                };
+            let via = match via {
+                Via::Opened if *folded => Via::OpenedFolded,
+                other => other,
+            };
+            // A contested name's binders stay beneath its ambiguity marker:
+            // no use is planted through the marker, but the one the module
+            // supplies directly is what a fold-blind resolver names
+            // ([`Scope::unfolded_beneath`]).
+            if !ambiguous.contains(&b.name) || via == Via::Opened {
                 scope.push(b, via);
             }
         }
