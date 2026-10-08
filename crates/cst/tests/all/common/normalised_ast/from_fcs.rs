@@ -1404,8 +1404,22 @@ fn fcs_member(v: &Value) -> NormalisedMember {
                 .or(set.as_ref())
                 .map(|(n, _)| n.clone())
                 .unwrap_or_default();
+            // `SynBinding.valData` (field 6) is `SynValData(Some flags, …)`.
+            let is_static = [&f[0], &f[1]]
+                .into_iter()
+                .find_map(fcs_opt)
+                .map(|binding| {
+                    let val_data = fields(&fields(binding)[6]);
+                    let flags = fcs_opt(&val_data[0])
+                        .expect("a get/set accessor binding carries SynMemberFlags");
+                    !flags["IsInstance"]
+                        .as_bool()
+                        .expect("SynMemberFlags.IsInstance is a bool")
+                })
+                .expect("a GetSetMember has an accessor");
             NormalisedMember::GetSetMember {
                 name,
+                is_static,
                 get: get.map(|(_, a)| a),
                 set: set.map(|(_, a)| a),
             }
@@ -2303,9 +2317,15 @@ fn fcs_expr(v: &Value) -> NormalisedExpr {
             let is_infix = f[1]
                 .as_bool()
                 .expect("SynExpr.App field 1 (isInfix) must be a JSON bool");
+            // The atomic arm of the checker's `isAdjacentListExpr`: an atomic
+            // application to a list (not an array) is an indexer.
+            let bracket_indexer = is_atomic
+                && matches!(case_name(&f[3]), "ArrayOrList" | "ArrayOrListComputed")
+                && fields(&f[3])[0].as_bool().is_some_and(|is_array| !is_array);
             NormalisedExpr::App {
                 is_atomic,
                 is_infix,
+                bracket_indexer,
                 func: Box::new(fcs_expr(&f[2])),
                 arg: Box::new(fcs_expr(&f[3])),
             }
