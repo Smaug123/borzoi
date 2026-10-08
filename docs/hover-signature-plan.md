@@ -165,9 +165,10 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   renders no documentation), and the type occurrences where FCS binds
   something other than the type resolution chose: a different type-argument
   count, a `T.M` whose `M` the type does not declare (#323), a named
-  argument's name (#324), and a constructor call of a type with explicit
-  constructors (a call of a primary-constructor type shows that constructor's
-  own doc, as FCS does). The signature fallback is #319.
+  argument's name (#324), and every constructor call (`new T()`, `T()`,
+  `[<T>]`), where FCS binds the constructor overload resolution picks and
+  shows its doc — almost always empty (all 47 in the gated corpus sample).
+  The signature fallback is #319.
 - **Doc-ID misses** are the generator's: the explicit-interface `@`/`,` and
   `nint` drift (`docs/xmldoc-explicit-interface-plan.md`, Stages 2 and 4) and
   FSharp.Core's `M:`/`T:` residue

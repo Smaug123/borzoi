@@ -280,58 +280,6 @@ fn every(src: &str, name: &str) -> Vec<(usize, bool, Verdict, Vec<String>)> {
 }
 
 #[test]
-fn a_constructor_call_shows_the_primary_constructors_own_doc() {
-    // At `new K()` / `K()` FCS binds the constructor, whose doc is the block
-    // between the type's name and its parameters — not the type's.
-    let src = "module M\n/// The type.\ntype K\n    /// The constructor.\n    (x: int) =\n    member _.P = x\nlet a = new K(1)\nlet b : K = a\n";
-    let sites = every(src, "K");
-    let call = src.find("K(1)").unwrap();
-    let annotation = src.find("K = a").unwrap();
-    let definition = src.find("K\n").unwrap();
-    for (at, is_def, verdict, fcs) in &sites {
-        let expected: &[&str] = if *at == call {
-            &[" The constructor."]
-        } else {
-            &[" The type."]
-        };
-        assert_eq!(fcs, expected, "FCS at {at} (definition: {is_def})");
-        assert_eq!(verdict, &Verdict::Agree { attached: true }, "at {at}");
-    }
-    let at: Vec<_> = sites.iter().map(|s| s.0).collect();
-    assert!(
-        at.contains(&call) && at.contains(&annotation) && at.contains(&definition),
-        "{sites:?}"
-    );
-}
-
-#[test]
-fn a_call_of_a_type_with_explicit_constructors_declines() {
-    let src = "module M\n/// T\ntype K(x: int) =\n    /// ctor\n    new() = K(1)\n    member _.P = x\nlet a = new K()\nlet b = new K(2)\n";
-    let sites = every(src, "K");
-    let calls: Vec<_> = sites.iter().filter(|(_, def, _, _)| !def).collect();
-    assert!(!calls.is_empty());
-    for (at, _, verdict, _) in calls {
-        assert_eq!(
-            verdict,
-            &Verdict::Declined(SourceDocDecline::ConstructorOverloads),
-            "at {at}"
-        );
-    }
-}
-
-#[test]
-fn an_attribute_name_shows_the_attribute_constructors_doc() {
-    let src = "module M\n/// attr\ntype DocAttribute\n    /// pctor\n    () =\n    inherit System.Attribute()\n[<Doc>]\nlet a = 1\n[<DocAttribute>]\nlet b = 2\n";
-    let sites = every(src, "DocAttribute");
-    let uses: Vec<_> = sites.iter().filter(|(_, def, _, _)| !def).collect();
-    assert_eq!(uses.len(), 2, "{sites:?}");
-    for (at, _, verdict, fcs) in uses {
-        assert_eq!(fcs, &[" pctor"], "at {at}");
-        assert_eq!(verdict, &Verdict::Agree { attached: true }, "at {at}");
-    }
-}
-
-#[test]
 fn a_type_in_type_argument_positions_keeps_its_doc() {
     let src = "module M\n/// rec\ntype R = { V: int }\nlet a : R list = []\nlet b = System.Collections.Generic.Stack<R>()\nlet c = Unchecked.defaultof<R>\nlet d : System.Collections.Generic.Dictionary<string, R> = null\nlet e : (R * int) list = []\n/// ms\n[<Measure>]\ntype ms\nlet f (x: float<ms>) = x\n";
     for name in ["R", "ms"] {
@@ -415,24 +363,6 @@ fn site(sites: &[(usize, Verdict, Vec<String>)], at: usize) -> (Verdict, Vec<Str
 }
 
 #[test]
-fn a_struct_call_may_bind_the_generated_parameterless_constructor() {
-    // `new S()` binds the struct's generated parameterless constructor, which
-    // has no doc; `new S(1)` the documented primary one. Which one is overload
-    // resolution, so both decline.
-    let src = "module M\n/// S\n[<Struct>]\ntype S\n    /// pctor\n    (x: int) =\n    member _.X = x\nlet a = new S()\nlet b = new S(1)\n";
-    let sites = every(src, "S");
-    let calls: Vec<_> = sites.iter().filter(|(_, def, _, _)| !def).collect();
-    assert_eq!(calls.len(), 2, "{sites:?}");
-    for (at, _, verdict, _) in calls {
-        assert_eq!(
-            verdict,
-            &Verdict::Declined(SourceDocDecline::ConstructorOverloads),
-            "at {at}"
-        );
-    }
-}
-
-#[test]
 fn a_member_reached_through_a_namesake_of_another_arity_shows_no_other_doc() {
     // FCS binds `T.M` to the non-generic `T`'s `M`; resolution may pick the
     // generic one's. `every` fails on any doc FCS does not attach.
@@ -444,4 +374,71 @@ fn a_member_reached_through_a_namesake_of_another_arity_shows_no_other_doc() {
     for (_, _, _, fcs) in graded {
         assert_eq!(fcs, &[" plain M"]);
     }
+}
+
+#[test]
+fn constructor_calls_decline_and_other_uses_keep_the_types_doc() {
+    // At `new K(1)` / `K(2)` / `[<K>]` FCS binds a constructor and shows *its*
+    // doc (here " The constructor."), which takes overload resolution to
+    // choose; the annotation and the definition are the type's.
+    let src = "module M\n/// The type.\ntype K\n    /// The constructor.\n    (x: int) =\n    inherit System.Attribute()\nlet a = new K(1)\nlet b = K(2)\nlet c : K = a\n[<K(3)>]\nlet d = 0\n";
+    let sites = every(src, "K");
+    let calls = [
+        src.find("K(1)").unwrap(),
+        src.find("K(2)").unwrap(),
+        src.find("K(3)").unwrap(),
+    ];
+    let mut graded_calls = 0;
+    for (at, _, verdict, fcs) in &sites {
+        if calls.contains(at) {
+            graded_calls += 1;
+            assert_eq!(fcs, &[" The constructor."], "FCS at {at}");
+            assert_eq!(
+                verdict,
+                &Verdict::Declined(SourceDocDecline::ConstructorCall),
+                "at {at}"
+            );
+        } else {
+            assert_eq!(fcs, &[" The type."], "FCS at {at}");
+            assert_eq!(verdict, &Verdict::Agree { attached: true }, "at {at}");
+        }
+    }
+    assert!(graded_calls >= 2, "{sites:?}");
+}
+
+#[test]
+fn constructor_calls_of_every_overload_shape_decline() {
+    // Explicit `new`s, a constructor added by an intrinsic augmentation, a
+    // struct's generated parameterless one, and a struct marked through an
+    // attribute alias: none may show the primary constructor's doc.
+    for src in [
+        "module M\n/// T\ntype K(x: int) =\n    /// ctor\n    new() = K(1)\n    member _.P = x\nlet a = new K()\nlet b = new K(2)\n",
+        "module M\n/// T\ntype K\n    /// pctor\n    (x: int) =\n    member _.P = x\ntype K with\n    /// added\n    new() = K(1)\nlet a = new K()\n",
+        "module M\n/// S\n[<Struct>]\ntype S\n    /// pctor\n    (x: int) =\n    member _.X = x\nlet a = new S()\nlet b = new S(1)\n",
+        "module M\ntype SAttribute = Microsoft.FSharp.Core.StructAttribute\n/// S\n[<S>]\ntype T\n    /// pctor\n    (x: int) =\n    member _.X = x\nlet a = new T()\n",
+    ] {
+        for name in ["K", "S", "T"] {
+            for (at, is_def, verdict, _) in every(src, name) {
+                if !is_def && src[at..].starts_with(&format!("{name}(")) {
+                    assert_eq!(
+                        verdict,
+                        Verdict::Declined(SourceDocDecline::ConstructorCall),
+                        "{name} at {at} in\n{src}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_generic_type_name_under_new_is_the_types() {
+    // `new T<int>(1)`: the constructor's record spans `T<int>`, and the name
+    // token is the type's.
+    let src = "module M\n/// The type.\ntype T<'a>\n    /// The constructor.\n    (x: 'a) =\n    member _.X = x\nlet a = new T<int>(1)\n";
+    let sites = every(src, "T");
+    let name = src.find("T<int>").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == name).expect("graded");
+    assert_eq!(fcs, &[" The type."]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
 }

@@ -118,18 +118,15 @@ pub enum SourceDocDecline {
     /// up in every same-named type (`NameResolution`'s arity-sorted tycon
     /// list), so it binds another `T` — one that declares `M`.
     MemberNotDeclared,
-    /// A constructor call (`new T()`, `T()`, `[<T>]`) of a type with more
-    /// than one constructor — explicit ones, or a struct's generated
-    /// parameterless one: FCS binds the overload resolution picks, and shows
-    /// its doc.
-    ConstructorOverloads,
+    /// A constructor call (`new T()`, `T()`, `inherit T()`, `[<T>]`): FCS
+    /// binds the constructor overload resolution picks and shows its doc, not
+    /// the type's.
+    ConstructorCall,
     /// A qualified use (`T.M`, `T<a>.M`) of a member or case whose declaring
     /// type's arity differs from the type arguments the qualifier supplies:
     /// FCS resolves the qualifier among same-named types by arity first
     /// (#323), so it binds another type's `M`.
     QualifierArityMismatch,
-    /// A constructor-shaped use of a type that declares no constructor.
-    NoConstructor,
     /// A type name, or a qualified member or case, in a position not
     /// classified (a nested-type path, a parenthesised qualifier).
     UnmodelledOccurrence,
@@ -297,60 +294,6 @@ impl SourceDocIndex {
                 _ => None,
             };
             declared.is_some_and(|t| unticked(t.text()) == name)
-        })
-    }
-
-    /// The constructors of the type definition `def` names.
-    fn constructors(&self, def: &Def) -> Constructors {
-        let Some(defn) = self.type_defn_of(def) else {
-            return Constructors::None;
-        };
-        let explicit = defn
-            .descendants()
-            .filter(|n| n.kind() == SyntaxKind::OBJECT_MODEL_REPR)
-            .flat_map(|repr| repr.children())
-            .any(|member| {
-                // `new(…) = …`: a `NEW_TOK` heading the member's name path
-                // (not the `new` of a construction expression in its body).
-                member
-                    .descendants_with_tokens()
-                    .filter_map(NodeOrToken::into_token)
-                    .any(|t| {
-                        t.kind() == SyntaxKind::NEW_TOK
-                            && t.parent()
-                                .is_some_and(|p| p.kind() == SyntaxKind::LONG_IDENT)
-                    })
-            });
-        // A struct also has a generated parameterless constructor, which
-        // `new S()` binds and which carries no doc.
-        if explicit || is_struct(&defn) {
-            return Constructors::Several;
-        }
-        if !defn
-            .children()
-            .any(|c| c.kind() == SyntaxKind::IMPLICIT_CTOR)
-        {
-            return Constructors::None;
-        }
-        // `grabXmlDoc (parseState, $2, 2)` in the primary-constructor rule: the
-        // block before the first token after the type's name and parameters —
-        // its attributes, its accessibility, or its `(`.
-        let after_name = defn
-            .children()
-            .filter(|c| matches!(c.kind(), SyntaxKind::LONG_IDENT | SyntaxKind::TYPAR_DECLS))
-            .map(|c| c.text_range().end())
-            .max();
-        let grab = defn
-            .descendants_with_tokens()
-            .filter_map(NodeOrToken::into_token)
-            .filter(is_real)
-            .find(|t| after_name.is_some_and(|end| t.text_range().start() >= end));
-        Constructors::Primary(match grab {
-            Some(token) => match self.block_before(&token) {
-                Ok(lines) => SourceDoc::Attached(lines),
-                Err(why) => SourceDoc::Declined(why),
-            },
-            None => SourceDoc::Declined(SourceDocDecline::NoDeclaration),
         })
     }
 
@@ -747,7 +690,9 @@ enum TypeOccurrence {
     /// declares `M`.
     Qualifier { arity: usize, member: String },
     /// `new T(…)`, `T(…)`, a first-class `T`, `inherit T(…)`, or an attribute
-    /// `[<T>]`: FCS binds one of the type's constructors.
+    /// `[<T>]`: FCS binds one of the type's constructors. (With type arguments,
+    /// `new T<a>(…)`, the constructor's record spans the application and the
+    /// name token is a [`TypeOccurrence::Type`].)
     Constructor { arity: usize },
 }
 
@@ -814,9 +759,13 @@ fn classify_type_occurrence(root: &SyntaxNode, at: TextRange) -> Option<TypeOccu
                 },
                 _ => (host.clone(), 0),
             };
-            let constructed = applied.parent().is_some_and(|p| {
-                matches!(p.kind(), SyntaxKind::NEW_EXPR | SyntaxKind::INHERIT_MEMBER)
-            });
+            // `new T(…)`: the name is the constructor's. With type arguments
+            // (`new T<a>(…)`) the constructor's record spans the application
+            // and the name token is the type's.
+            let constructed = applied == host
+                && applied.parent().is_some_and(|p| {
+                    matches!(p.kind(), SyntaxKind::NEW_EXPR | SyntaxKind::INHERIT_MEMBER)
+                });
             Some(if constructed {
                 TypeOccurrence::Constructor { arity }
             } else {
@@ -851,7 +800,8 @@ fn classify_type_occurrence(root: &SyntaxNode, at: TextRange) -> Option<TypeOccu
                         .to_string();
                     Some(TypeOccurrence::Qualifier { arity, member })
                 }
-                _ => Some(TypeOccurrence::Constructor { arity }),
+                // `T<a>(…)`: as `new T<a>(…)`, the name token is the type's.
+                _ => Some(TypeOccurrence::Type { arity }),
             }
         }
     }
@@ -880,30 +830,6 @@ fn applied_arity(app: &SyntaxNode, head: &SyntaxNode) -> Option<usize> {
     } else {
         None
     }
-}
-
-/// Whether a type definition is a struct: `[<Struct>]` (or
-/// `[<StructAttribute>]`) on it, or a `struct … end` representation.
-fn is_struct(defn: &SyntaxNode) -> bool {
-    let attribute = defn
-        .children()
-        .filter(|c| c.kind() == SyntaxKind::ATTRIBUTE_LIST)
-        .flat_map(|list| list.descendants())
-        .filter(|n| n.kind() == SyntaxKind::ATTRIBUTE)
-        .filter_map(|a| a.children().find(|c| c.kind() == SyntaxKind::LONG_IDENT))
-        .any(|name| {
-            let name = ident_text(&name);
-            let last = name.rsplit('.').next().unwrap_or(&name);
-            matches!(last, "Struct" | "StructAttribute")
-        });
-    attribute
-        || defn
-            .children()
-            .filter(|c| c.kind() == SyntaxKind::OBJECT_MODEL_REPR)
-            .any(|repr| {
-                repr.children_with_tokens()
-                    .any(|e| e.kind() == SyntaxKind::STRUCT_TOK)
-            })
 }
 
 /// How an occurrence of a member or case is qualified by its type.
@@ -952,18 +878,6 @@ fn qualification(root: &SyntaxNode, at: TextRange) -> Option<Qualification> {
     } else {
         Qualification::Bare
     })
-}
-
-/// The constructors a type definition declares, as far as which one a call
-/// binds.
-enum Constructors {
-    /// Only the primary constructor, whose doc is this.
-    Primary(SourceDoc),
-    /// Some explicit `new`, or a struct's generated parameterless one besides
-    /// the primary: which one a call binds is overload resolution.
-    Several,
-    /// No constructor in the definition.
-    None,
 }
 
 /// The generic arity a `TYPE_DEFN` declares: its type-parameter declarations.
@@ -1167,14 +1081,13 @@ impl<'a> ProjectDocs<'a> {
                         return decline(SourceDocDecline::MemberNotDeclared);
                     }
                 }
+                // FCS binds a constructor here, not the type. Which one, and
+                // with which doc, takes overload resolution (explicit `new`s,
+                // augmentations, a struct's generated parameterless one) — and
+                // a constructor's doc is almost always empty, so declining
+                // shows what FCS would in nearly every case.
                 Some(TypeOccurrence::Constructor { .. }) => {
-                    return Some(match index.constructors(def) {
-                        Constructors::Primary(doc) => doc,
-                        Constructors::Several => {
-                            SourceDoc::Declined(SourceDocDecline::ConstructorOverloads)
-                        }
-                        Constructors::None => SourceDoc::Declined(SourceDocDecline::NoConstructor),
-                    });
+                    return decline(SourceDocDecline::ConstructorCall);
                 }
             }
         }
