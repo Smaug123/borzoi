@@ -55,7 +55,7 @@ Two findings sharpen the scope:
 - **The "record field-backed property → `Field`" rebrand mis-keys record
   fields.** fsc keys a record's instance fields `P:` (`XmlDocFileWriter`:
   `tc.IsRecordTycon && not rf.IsStatic` → `XmlDocSigOfProperty`), e.g.
-  `P:Microsoft.FSharp.Core.FSharpRef`1.contents`; `F:` misses were 0 only
+  ``P:Microsoft.FSharp.Core.FSharpRef`1.contents``; `F:` misses were 0 only
   because those keys counted as `P:` misses. Exception fields do key `F:`. The
   generator keys record fields `P:` (`doc_id::field_keys_as_property`).
 
