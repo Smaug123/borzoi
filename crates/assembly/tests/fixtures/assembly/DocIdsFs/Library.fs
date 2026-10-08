@@ -331,3 +331,14 @@ type Dropped<[<ParamMarker>] 'T>() =
 [<CompiledName("Dropped`2")>]
 type Squatter<'T>() =
     member _.Corner(a: int[,]) = a.[0, 0] + 1
+
+/// Two getters renamed to one IL property name: fsc emits one `Shared`
+/// property (backed by `get_First`) and a bare `get_Second` method.
+type SharedName() =
+    /// The first getter.
+    [<CompiledName("Shared")>]
+    member _.First = 1
+
+    /// The second getter.
+    [<CompiledName("Shared")>]
+    member _.Second = 2
