@@ -388,6 +388,7 @@ impl Ecma335Assembly {
         // declaration-order overlays gate on.
         let fsharp_extension_index_unknowable = is_fsharp_assembly && !authoritative;
 
+        let mut records_settled = false;
         if let Some((resource_name, decoded)) = decoded {
             match decoded {
                 Ok(ccu) => {
@@ -448,6 +449,11 @@ impl Ecma335Assembly {
                     // `fsharp_abbreviations_unknowable`).
                     crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
                     if authoritative {
+                        // Record and exception member properties, vouched for
+                        // by the pickle's published member list. Authoritative-
+                        // only: the row is located by a reconstructed name key.
+                        crate::fsharp_pickle_merge::settle_record_properties(&mut out, Some(&ccu))?;
+                        records_settled = true;
                         // F#-only typar constraints (`when 'T : comparison` and
                         // friends), which have no IL encoding at all.
                         //
@@ -478,6 +484,11 @@ impl Ecma335Assembly {
         // only once every one of them is either vouched for by the pickle or
         // gone; this drops the ones no pickle claimed.
         drop_unvouched_union_properties(&mut out);
+        // Likewise the record and exception property candidates, where no
+        // authoritative pickle settled them above.
+        if !records_settled {
+            crate::fsharp_pickle_merge::settle_record_properties(&mut out, None)?;
+        }
         Ok((
             out,
             AssemblyProjectionSkips {
@@ -3314,15 +3325,50 @@ impl Ecma335Assembly {
                 // `Is<Case>` testers, the hidden `Tag`, and the testers of a
                 // pre-F#9 assembly that are `FS0039` to name, all under the same
                 // attributes.
-                if matches!(kind, EntityKind::Union) {
+                //
+                // A record's or exception's non-`Field` properties are
+                // candidates in the same way, settled by
+                // `settle_record_properties`: a user-defined member property
+                // (`member p.Sum`) is surfaced by FCS, a row fsc synthesises
+                // beside it is not, and their attributes do not say which.
+                if matches!(
+                    kind,
+                    EntityKind::Union | EntityKind::Record | EntityKind::Exception
+                ) {
+                    // The pickle vouches for a candidate by its accessor's name
+                    // (`get_P`), which is the member's F# name; a
+                    // `[<CompiledName>]` renames the IL *property* but not its
+                    // accessors. A property whose accessor names another one —
+                    // `member First` compiled as property `Second` beside
+                    // `member Second` compiled as `First` — would be vouched
+                    // for under the wrong name and type, and `Property`
+                    // carries no source name to say which, so it is refused
+                    // (recorded as a skip): visibly absent, never present and
+                    // wrong.
+                    let accessor_names_property =
+                        |accessor: Option<crate::reader::MethodId>, prefix: &str| {
+                            accessor.is_none_or(|m| {
+                                td.methods[m.0 as usize].name.strip_prefix(prefix)
+                                    == Some(p.name.as_str())
+                            })
+                        };
+                    if !accessor_names_property(p.getter, "get_")
+                        || !accessor_names_property(p.setter, "set_")
+                    {
+                        return Err(ImportError::UnsupportedEcmaLayout {
+                            detail: format!(
+                                "F# property `{}` is `[<CompiledName>]`-renamed: its accessors \
+                                 carry its F# name, which the projection cannot represent",
+                                p.name
+                            ),
+                        });
+                    }
                     return Ok(Some(Member::Property(self.project_property(
                         td,
                         p,
                         type_context,
                     )?)));
                 }
-                // A non-`Field` property on a Record or Exception is dropped:
-                // FCS surfaces none.
                 Ok(None)
             })();
             out.push_or_skip_opt(&p.name, projected);
