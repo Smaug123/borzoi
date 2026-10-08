@@ -1,45 +1,16 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 6757
+hits 6786
 keys 7364
 miss F:Internal.Utilities.Text.Lexing.Position.AbsoluteOffset
 miss F:Internal.Utilities.Text.Lexing.Position.FileIndex
 miss F:Internal.Utilities.Text.Lexing.Position.Line
 miss F:Internal.Utilities.Text.Lexing.Position.StartOfLineAbsoluteOffset
-miss M:FSharp.Compiler.CompilerDiagnostics.PhasedDiagnostic.AdjustSeverity(FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic,FSharp.Compiler.Diagnostics.FSharpDiagnosticOptions)
-miss M:FSharp.Compiler.CompilerDiagnostics.PhasedDiagnostic.EagerlyFormatCore(FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic,System.Boolean)
-miss M:FSharp.Compiler.CompilerDiagnostics.PhasedDiagnostic.FormatCore(FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic,System.Boolean,System.Boolean)
-miss M:FSharp.Compiler.CompilerDiagnostics.PhasedDiagnostic.Output(FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic,System.Text.StringBuilder,FSharp.Compiler.CompilerConfig.TcConfig,FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity)
-miss M:FSharp.Compiler.CompilerDiagnostics.PhasedDiagnostic.WriteWithContext(FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic,System.IO.TextWriter,System.String,Microsoft.FSharp.Core.FSharpFunc{System.String,Microsoft.FSharp.Core.FSharpFunc{System.Int32,System.String}},FSharp.Compiler.CompilerConfig.TcConfig,FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity)
-miss M:FSharp.Compiler.CompilerDiagnostics.PhasedDiagnostic.get_Number(FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic)
-miss M:FSharp.Compiler.CompilerDiagnostics.PhasedDiagnostic.get_Range(FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic)
-miss M:FSharp.Compiler.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.ErrorR(FSharp.Compiler.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:FSharp.Compiler.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.ErrorRecovery(FSharp.Compiler.DiagnosticsLogger.DiagnosticsLogger,System.Exception,FSharp.Compiler.Text.Range)
-miss M:FSharp.Compiler.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.ErrorRecoveryNoRange(FSharp.Compiler.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:FSharp.Compiler.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.Error``1(FSharp.Compiler.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:FSharp.Compiler.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.SimulateError``1(FSharp.Compiler.DiagnosticsLogger.DiagnosticsLogger,FSharp.Compiler.DiagnosticsLogger.PhasedDiagnostic)
-miss M:FSharp.Compiler.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.StopProcessingRecovery(FSharp.Compiler.DiagnosticsLogger.DiagnosticsLogger,System.Exception,FSharp.Compiler.Text.Range)
-miss M:FSharp.Compiler.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.Warning(FSharp.Compiler.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:FSharp.Compiler.Infos.ValRef.IsFSharpEventProperty(FSharp.Compiler.TypedTree.ValRef,FSharp.Compiler.TcGlobals.TcGlobals)
-miss M:FSharp.Compiler.Infos.ValRef.IsFSharpExplicitInterfaceImplementation(FSharp.Compiler.TypedTree.ValRef,FSharp.Compiler.TcGlobals.TcGlobals)
-miss M:FSharp.Compiler.Infos.ValRef.get_IsDefiniteFSharpOverrideMember(FSharp.Compiler.TypedTree.ValRef)
-miss M:FSharp.Compiler.Infos.ValRef.get_IsDispatchSlotMember(FSharp.Compiler.TypedTree.ValRef)
-miss M:FSharp.Compiler.Infos.ValRef.get_IsVirtualMember(FSharp.Compiler.TypedTree.ValRef)
 miss M:FSharp.Compiler.LowerSequenceExpressions.ConvertSequenceExprToObject(FSharp.Compiler.TcGlobals.TcGlobals,FSharp.Compiler.Import.ImportMap,FSharp.Compiler.TypedTree.Expr)
 miss M:FSharp.Compiler.MethodCalls.AdjustCallerArgs``3(Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.TypedTree.ValRef,Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.TypedTree.ValUseFlag,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Collections.FSharpList{FSharp.Compiler.TypedTree.TType},Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.Text.Range,System.Tuple{FSharp.Compiler.TypedTree.Expr,FSharp.Compiler.TypedTree.TType}}}}},Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.Text.Range,Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.AbstractIL.IL.ILFieldInit,FSharp.Compiler.TypedTree.Const}},Microsoft.FSharp.Core.FSharpOption{System.String},FSharp.Compiler.InfoReader.InfoReader,FSharp.Compiler.AccessibilityLogic.AccessorDomain,FSharp.Compiler.MethodCalls.CalledMeth{FSharp.Compiler.TypedTree.Expr},Microsoft.FSharp.Collections.FSharpList{FSharp.Compiler.TypedTree.Expr},Microsoft.FSharp.Core.FSharpOption{``0},FSharp.Compiler.Text.Range,FSharp.Compiler.Text.Range)
-miss M:FSharp.Compiler.TypedTreeOps.ActivePatternInfo.DisplayNameByIdx(FSharp.Compiler.Syntax.PrettyNaming.ActivePatternInfo,System.Int32)
-miss M:FSharp.Compiler.TypedTreeOps.ActivePatternInfo.DisplayNameCoreByIdx(FSharp.Compiler.Syntax.PrettyNaming.ActivePatternInfo,System.Int32)
-miss M:FSharp.Compiler.TypedTreeOps.ActivePatternInfo.OverallType(FSharp.Compiler.Syntax.PrettyNaming.ActivePatternInfo,FSharp.Compiler.TcGlobals.TcGlobals,FSharp.Compiler.Text.Range,FSharp.Compiler.TypedTree.TType,Microsoft.FSharp.Collections.FSharpList{FSharp.Compiler.TypedTree.TType},FSharp.Compiler.TypedTree.ActivePatternReturnKind)
-miss M:FSharp.Compiler.TypedTreeOps.ActivePatternInfo.ResultType(FSharp.Compiler.Syntax.PrettyNaming.ActivePatternInfo,FSharp.Compiler.TcGlobals.TcGlobals,FSharp.Compiler.Text.Range,Microsoft.FSharp.Collections.FSharpList{FSharp.Compiler.TypedTree.TType},FSharp.Compiler.TypedTree.ActivePatternReturnKind)
-miss M:FSharp.Compiler.TypedTreeOps.TraitConstraintInfo.GetCompiledArgumentTypes(FSharp.Compiler.TypedTree.TraitConstraintInfo)
-miss M:FSharp.Compiler.TypedTreeOps.TraitConstraintInfo.GetLogicalArgumentTypes(FSharp.Compiler.TypedTree.TraitConstraintInfo,FSharp.Compiler.TcGlobals.TcGlobals)
-miss M:FSharp.Compiler.TypedTreeOps.TraitConstraintInfo.GetWitnessInfo(FSharp.Compiler.TypedTree.TraitConstraintInfo)
-miss M:FSharp.Compiler.TypedTreeOps.TraitConstraintInfo.get_MemberDisplayNameCore(FSharp.Compiler.TypedTree.TraitConstraintInfo)
 miss M:FSharp.Compiler.TypedTreeOps.|IntegerForLoopExpr|_|(FSharp.Compiler.TypedTree.Expr)
 miss M:FSharp.Compiler.TypedTreeOps.|TryWithExpr|_|(FSharp.Compiler.TypedTree.Expr)
-miss M:Internal.Utilities.Library.Extras.StringBuilder.AppendString(System.Text.StringBuilder,System.String)
-miss M:Internal.Utilities.Library.PervasiveAutoOpens.Async.RunImmediate.Static``1(Microsoft.FSharp.Control.FSharpAsync{``0},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})
 miss P:FSComp.SR.SwallowResourceText(System.Boolean)
 miss P:FSIstrings.SR.SwallowResourceText(System.Boolean)
 miss P:FSharp.Compiler.AbstractIL.IL.ILTypeRef.BasicQualifiedName

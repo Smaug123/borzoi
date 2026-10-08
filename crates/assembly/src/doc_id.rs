@@ -146,7 +146,44 @@ pub fn type_doc_name(entity: &Entity, enclosing: Option<&TypeDocName>) -> TypeDo
 /// The documentation comment ID of `member`, declared on the type named by
 /// `decl`. Total over the four [`Member`] kinds: methods (incl. constructors
 /// and conversion operators), fields, properties (incl. indexers), and events.
+///
+/// A member that carries the key the F# compiler recorded for it
+/// ([`crate::MethodLike::xml_doc_sig`], [`crate::Property::xml_doc_sig`]) is
+/// keyed by that, verbatim; a property known only by its setter's key is keyed
+/// by that one. Everything else is computed from the signature. This is the
+/// member's preferred ID; [`member_doc_ids`] lists every ID it is keyed by.
 pub fn member_doc_id(decl: &TypeDocName, member: &Member) -> String {
+    let recorded = match member {
+        Member::Method(m) => m.xml_doc_sig.as_ref(),
+        Member::Property(p) => p.xml_doc_sig.as_ref().or(p.setter_xml_doc_sig.as_ref()),
+        Member::Field(_) | Member::Event(_) => None,
+    };
+    match recorded {
+        Some(sig) => sig.clone(),
+        None => computed_member_doc_id(decl, member),
+    }
+}
+
+/// Every documentation comment ID `member` is keyed by, [`member_doc_id`]'s
+/// first. A member has one, except a settable F# property: fsc keys its getter
+/// and its setter separately (`P:N.T.Count` and `P:N.T.Count(System.Int32)`),
+/// both with the property's documentation.
+pub fn member_doc_ids(decl: &TypeDocName, member: &Member) -> Vec<String> {
+    let primary = member_doc_id(decl, member);
+    let mut ids = vec![primary];
+    if let Member::Property(p) = member
+        && let Some(setter) = &p.setter_xml_doc_sig
+        && *setter != ids[0]
+    {
+        ids.push(setter.clone());
+    }
+    ids
+}
+
+/// The documentation comment ID of `member`, computed from its signature in the
+/// standard (Roslyn) form, with the F#-specific field prefixes of
+/// [`field_keys_as_property`].
+fn computed_member_doc_id(decl: &TypeDocName, member: &Member) -> String {
     match member {
         Member::Method(m) => {
             let name = escape_member_name(&m.name);
@@ -211,7 +248,9 @@ pub fn walk_doc_ids(entity: &Entity, enclosing: Option<&TypeDocName>, f: &mut im
     let decl = type_doc_name(entity, enclosing);
     f(decl.type_id());
     for member in &entity.members {
-        f(member_doc_id(&decl, member));
+        for id in member_doc_ids(&decl, member) {
+            f(id);
+        }
     }
     if let UnionCases::Known(cases) = &entity.union_cases {
         for case in cases {
@@ -673,6 +712,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
         })
     }
 
@@ -715,6 +755,8 @@ mod tests {
             custom_attrs: Vec::new(),
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
+            setter_xml_doc_sig: None,
         })
     }
 

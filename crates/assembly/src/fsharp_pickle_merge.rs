@@ -1279,6 +1279,11 @@ pub struct ModuleMemberVal {
     /// the `.fs` file), else the first. `None` when the val pickles no range
     /// (no `ValReprInfo`).
     pub definition_range: Option<FsharpSourceRange>,
+    /// The documentation-comment ID fsc recorded for the val (`p_ValData`'s
+    /// `XmlDocSig`) — the key it wrote into the doc XML. `None` for an
+    /// undocumented val, or one compiled without a doc file, both of which
+    /// pickle an empty string.
+    pub xml_doc_sig: Option<String>,
 }
 
 impl ModuleMemberVal {
@@ -1391,6 +1396,7 @@ fn module_member_vals(
             is_literal: v.literal_value.is_some(),
             is_public: v.access.is_empty(),
             definition_range: resolve_definition_range(pickled, v),
+            xml_doc_sig: pickled_xml_doc_sig(&v.xmldoc_sig),
         });
     }
     Ok(out)
@@ -1491,7 +1497,15 @@ fn val_facts(v: &ModuleMemberVal) -> ValFacts {
         fsharp_extension: v.is_extension && v.is_member,
         definition_range: v.definition_range.clone(),
         arg_group_count: callable_arg_group_count(v),
+        xml_doc_sig: v.xml_doc_sig.clone(),
     }
+}
+
+/// A pickled `XmlDocSig` as the model carries it: `None` for the empty string
+/// fsc pickles for an undocumented item (or for every item, when it wrote no
+/// doc file).
+pub(crate) fn pickled_xml_doc_sig(sig: &str) -> Option<String> {
+    (!sig.is_empty()).then(|| sig.to_string())
 }
 
 /// The val's argument groups as a *caller* counts them.
@@ -1521,6 +1535,11 @@ struct ValFacts {
     /// tupled one, so a disagreeing group under-sets to "unknown" rather than
     /// handing one method the other's grouping.
     arg_group_count: Option<usize>,
+    /// The val's doc-comment key. A group fact too, and the one that most needs
+    /// to be: two documented overloads in one claim group carry two different
+    /// keys, and handing a method its sibling's key would show the sibling's
+    /// documentation on hover.
+    xml_doc_sig: Option<String>,
 }
 
 /// Per-claim-group facts, `None` when the group's vals disagree. A group is
@@ -1538,6 +1557,7 @@ struct GroupFacts {
     fsharp_extension: Option<bool>,
     definition_range: Option<Option<FsharpSourceRange>>,
     arg_group_count: Option<Option<usize>>,
+    xml_doc_sig: Option<Option<String>>,
 }
 
 /// Rebuild `ecma`'s member list from the module's pickled vals — the Slice C
@@ -1585,6 +1605,9 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 if g.arg_group_count.as_ref() != Some(&facts.arg_group_count) {
                     g.arg_group_count = None;
                 }
+                if g.xml_doc_sig.as_ref() != Some(&facts.xml_doc_sig) {
+                    g.xml_doc_sig = None;
+                }
             })
             .or_insert(GroupFacts {
                 source_name: Some(facts.source_name),
@@ -1592,6 +1615,7 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 fsharp_extension: Some(facts.fsharp_extension),
                 definition_range: Some(facts.definition_range),
                 arg_group_count: Some(facts.arg_group_count),
+                xml_doc_sig: Some(facts.xml_doc_sig),
             });
     }
 
@@ -1722,6 +1746,11 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 // getter has no sequence point and for whom this range is the
                 // only source location — always keep theirs.
                 m.definition_range = facts.definition_range.clone().flatten().map(Box::new);
+                // The key fsc wrote for the val — under-set, like the range,
+                // when the group's vals disagree, since which val claimed which
+                // MethodDef is then unprovable. Two vals sharing one key is
+                // fsc's own collision, and the doc XML holds one entry for both.
+                m.xml_doc_sig = facts.xml_doc_sig.clone().flatten();
                 if facts.extension == Some(true) {
                     m.is_extension_method = true;
                 }
@@ -4240,6 +4269,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
         })
     }
 
@@ -4416,6 +4446,7 @@ mod tests {
                     is_literal: false,
                     is_public: true,
                     definition_range: None,
+                    xml_doc_sig: None,
                 },
                 ModuleMemberVal {
                     val_index: 1,
@@ -4431,6 +4462,7 @@ mod tests {
                     is_literal: false,
                     is_public: true,
                     definition_range: None,
+                    xml_doc_sig: None,
                 },
                 ModuleMemberVal {
                     val_index: 2,
@@ -4445,6 +4477,7 @@ mod tests {
                     is_literal: false,
                     is_public: true,
                     definition_range: None,
+                    xml_doc_sig: None,
                 },
                 ModuleMemberVal {
                     val_index: 3,
@@ -4459,6 +4492,7 @@ mod tests {
                     is_literal: false,
                     is_public: true,
                     definition_range: None,
+                    xml_doc_sig: None,
                 },
                 ModuleMemberVal {
                     val_index: 4,
@@ -4473,6 +4507,7 @@ mod tests {
                     is_literal: false,
                     is_public: true,
                     definition_range: None,
+                    xml_doc_sig: None,
                 },
             ]
         );
@@ -5034,6 +5069,69 @@ mod tests {
             method("Shared", 1).definition_range,
             None,
             "a conflicted same-shape group must under-set its ranges"
+        );
+    }
+
+    /// Doc-comment keys ride the claim like definition ranges: a unanimous
+    /// claim group stamps its val's pickled `XmlDocSig`, an undocumented val
+    /// (empty sig) stamps nothing, and a same-`(name, shape)` group whose
+    /// documented overloads carry different keys under-sets — handing either
+    /// method the other's key would show the sibling's docs.
+    #[test]
+    fn member_list_stamps_doc_sigs_by_claim_group() {
+        let mut value = ext_test_val_arity(None, 0, None, &[]);
+        value.logical_name = "answer".to_string();
+        value.xmldoc_sig = "P:NS.M.answer".to_string();
+        let mut bare = ext_test_val_arity(Some("bare"), 0, None, &[1]);
+        bare.logical_name = "bare".to_string();
+        let mut a = ext_test_val_arity(Some("Shared"), 0, None, &[1]);
+        a.logical_name = "first".to_string();
+        a.xmldoc_sig = "M:NS.M.Shared(System.Int32)".to_string();
+        let mut b = ext_test_val_arity(Some("Shared"), 0, None, &[1]);
+        b.logical_name = "second".to_string();
+        b.xmldoc_sig = "M:NS.M.Shared(System.String)".to_string();
+
+        let module = make_entity(
+            "M",
+            PickledTyconRepr::NoRepr,
+            module_with_vals(vec![0, 1, 2, 3]),
+        );
+        let mut ns_modul = empty_modul_typ();
+        ns_modul.entities = vec![2];
+        let ns = make_entity("NS", PickledTyconRepr::NoRepr, ns_modul);
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let root = make_entity("Test", PickledTyconRepr::NoRepr, root_modul);
+        let ccu = make_ccu(vec![root, ns, module], vec![value, bare, a, b], 0);
+
+        let mut entities = vec![{
+            let mut e = make_ecma_entity(vec!["NS"], "M", EntityKind::Module);
+            e.members = vec![
+                make_ecma_module_value("answer"),
+                make_ecma_method_arity("bare", 1),
+                make_ecma_method_arity("Shared", 1),
+                make_ecma_method_arity("Shared", 1),
+            ];
+            e
+        }];
+        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        let entity = entities.into_iter().next().expect("one entity");
+        let sigs: Vec<(&str, Option<&str>)> = entity
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                Member::Method(m) => Some((m.name.as_str(), m.xml_doc_sig.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sigs,
+            vec![
+                ("answer", Some("P:NS.M.answer")),
+                ("bare", None),
+                ("Shared", None),
+                ("Shared", None),
+            ]
         );
     }
 

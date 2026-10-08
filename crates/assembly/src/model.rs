@@ -1444,6 +1444,16 @@ pub struct MethodLike {
     /// parent an interface?) can finish the classification. Kept separate
     /// from [`Self::implements`] so that field stays *proven-only*.
     pub unclassified_impls: Vec<UnclassifiedMethodImpl>,
+    /// The documentation-comment ID the F# compiler recorded for this member in
+    /// the assembly's signature pickle (`Val.XmlDocSig`) — verbatim the key it
+    /// wrote into the doc XML, SRTP witness parameters, `[0:]` arrays and all.
+    /// `Some` only for a *documented* member of an F#-compiled assembly built
+    /// with a doc file, and only where every pickled val the member could be
+    /// matched to carries this one key — a group of same-name, same-arity
+    /// overloads whose keys differ leaves each `None`, since which val is which
+    /// MethodDef is then unprovable. Where it is `None`, [`crate::doc_id`]
+    /// computes the ID from the signature.
+    pub xml_doc_sig: Option<String>,
 }
 
 /// One in-assembly-undecidable `MethodImpl` row: the declaration's parent
@@ -1818,6 +1828,15 @@ pub struct Property {
     /// cannot prove two external declarations are one member). See
     /// [`MethodLike::unclassified_impls`].
     pub unclassified_impls: Vec<UnclassifiedMethodImpl>,
+    /// The documentation-comment ID the F# compiler recorded in the signature
+    /// pickle for this property's getter — or, for an F# `val` field the IL
+    /// exposes as a property, for the field (`F:`). See
+    /// [`MethodLike::xml_doc_sig`].
+    pub xml_doc_sig: Option<String>,
+    /// The ID the F# compiler recorded for the property's *setter*. fsc keys
+    /// each accessor separately, the setter with its value argument
+    /// (`P:N.Widget.Count(System.Int32)`), so a settable property has two keys.
+    pub setter_xml_doc_sig: Option<String>,
 }
 
 /// An event, projected to the LSP-shaped surface rather than the raw

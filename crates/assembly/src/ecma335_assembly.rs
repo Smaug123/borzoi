@@ -2479,6 +2479,7 @@ impl Ecma335Assembly {
             metadata_token: m.token,
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
         })
     }
 
@@ -2901,6 +2902,8 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
+            setter_xml_doc_sig: None,
         })
     }
 

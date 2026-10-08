@@ -192,6 +192,7 @@ fn method(name: &str, signature: MethodSignature) -> MethodLike {
         metadata_token: 0,
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        xml_doc_sig: None,
     }
 }
 
@@ -227,6 +228,8 @@ fn property(name: &str, ty: TypeRef, has_getter: bool, has_setter: bool) -> Prop
         custom_attrs: vec![],
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        xml_doc_sig: None,
+        setter_xml_doc_sig: None,
     }
 }
 
