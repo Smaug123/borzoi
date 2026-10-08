@@ -205,8 +205,10 @@ fn token_positions(key: &str, salt: &str, n: usize, k: usize) -> Vec<usize> {
 /// The member-name tokens of an expression access: an `IDENT_TOK` inside the
 /// `LONG_IDENT` of a `LONG_IDENT_EXPR` / `DOT_GET_EXPR`, glued to the `.` before
 /// it, and followed on its line by nothing but a closer or the end of the line,
-/// so deleting it leaves `recv.` where a member name is being typed. (`recv. [`
-/// and `recv. (` are not that shape: F# reads both as a dotted indexer.)
+/// so deleting it leaves `recv.` where a member name is being typed, or by an
+/// opening `[` / `(`, so deleting it leaves `recv. [` / `recv. (`, which F#
+/// reads as a dotted indexer (valid for `[`, a deprecated-notation error for
+/// `(`). Either way nothing after the access may change.
 fn member_name_tokens(file: &CleanFile) -> Vec<Range<usize>> {
     let src = file.src.as_bytes();
     file.parse
@@ -233,7 +235,12 @@ fn member_name_tokens(file: &CleanFile) -> Vec<Range<usize>> {
             src[r.end..]
                 .iter()
                 .find(|&&c| !matches!(c, b' ' | b'\t'))
-                .is_none_or(|&c| matches!(c, b'\r' | b'\n' | b')' | b']' | b'}' | b',' | b';'))
+                .is_none_or(|&c| {
+                    matches!(
+                        c,
+                        b'\r' | b'\n' | b')' | b']' | b'}' | b',' | b';' | b'[' | b'('
+                    )
+                })
         })
         .collect()
 }
