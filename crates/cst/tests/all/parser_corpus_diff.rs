@@ -76,6 +76,7 @@ use crate::common::corpus_manifest::{
     check_manifest, regenerate_ignored, relative_key, summary_entry,
 };
 use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
+use crate::common::recovery::grade;
 use crate::common::{
     ast_ranges_match, collect_fsharp_corpus_files, corpus_root, fcs_ast_batch, read_corpus_source,
 };
@@ -171,20 +172,66 @@ fn parse_ours(path: &Path, src: &str, symbols: &HashSet<String>) -> Option<Parse
     .ok()
 }
 
-/// Classify one UTF-8 corpus file against its `ast-batch` record `line`. A
-/// range divergence also returns the audit's message, for the printed sample.
+/// One file's outcome: its bucket, the range audit's message for a range
+/// divergence (for the printed sample), and — when either parser reported an
+/// error — the recovered-tree verdict (`common::recovery`), which the manifest
+/// pins after the bucket name.
+struct Outcome {
+    bucket: Bucket,
+    range_message: Option<String>,
+    recovery: Option<Recovery>,
+}
+
+/// A recovered-tree verdict as the manifest records it, plus the first
+/// divergence for the printed sample.
+struct Recovery {
+    token: String,
+    divergence: Option<String>,
+}
+
+impl Outcome {
+    fn bucket(bucket: Bucket) -> Self {
+        Outcome {
+            bucket,
+            range_message: None,
+            recovery: None,
+        }
+    }
+
+    fn recovered(bucket: Bucket, parse: &Parse, line: &str, src: &str) -> Self {
+        let recovery = match catch_unwind_silent(|| grade(parse, line, src)) {
+            Ok(Ok(v)) => Recovery {
+                token: v.token(),
+                divergence: v.first_divergence,
+            },
+            // FCS's tree is deeper than `serde_json` reads; nothing to grade.
+            Ok(Err(_)) => Recovery {
+                token: "fcs-unreadable".to_string(),
+                divergence: None,
+            },
+            Err(_) => panic!("grading a recovered tree panicked"),
+        };
+        Outcome {
+            bucket,
+            range_message: None,
+            recovery: Some(recovery),
+        }
+    }
+}
+
+/// Classify one UTF-8 corpus file against its `ast-batch` record `line`.
 fn classify(
     path: &Path,
     src: &str,
     line: &str,
     compiled_symbols: &HashSet<String>,
     script_symbols: &HashSet<String>,
-) -> (Bucket, Option<String>) {
+) -> Outcome {
     // `BatchMeta` ignores the heavy `ParseTree` field, so this stays cheap
     // and — unlike a full `Value` parse — does not trip the recursion limit
     // on deep files.
     let Ok(meta) = serde_json::from_str::<BatchMeta>(line) else {
-        return (Bucket::FcsRecordMalformed, None);
+        return Outcome::bucket(Bucket::FcsRecordMalformed);
     };
     assert_eq!(
         Path::new(&meta.path),
@@ -192,7 +239,7 @@ fn classify(
         "fcs-dump ast-batch response path did not match request"
     );
     if meta.error.is_some() {
-        return (Bucket::FcsError, None);
+        return Outcome::bucket(Bucket::FcsError);
     }
     assert_eq!(
         meta.is_script,
@@ -200,7 +247,7 @@ fn classify(
         "fcs-dump ast-batch script classification did not match request"
     );
     let Some(fcs_had_errors) = meta.parse_had_errors else {
-        return (Bucket::FcsMissingParseStatus, None);
+        return Outcome::bucket(Bucket::FcsMissingParseStatus);
     };
     let symbols = if is_script_path(path) {
         script_symbols
@@ -210,13 +257,14 @@ fn classify(
 
     if fcs_had_errors {
         let Some(ours) = parse_ours(path, src, symbols) else {
-            return (Bucket::OurParsePanicked, None);
+            return Outcome::bucket(Bucket::OurParsePanicked);
         };
-        return if ours.errors.is_empty() {
-            (Bucket::WeAcceptFcsRejects, None)
+        let bucket = if ours.errors.is_empty() {
+            Bucket::WeAcceptFcsRejects
         } else {
-            (Bucket::BothReject, None)
+            Bucket::BothReject
         };
+        return Outcome::recovered(bucket, &ours, line, src);
     }
 
     // Normalise the FCS side *first*. Its internal full `Value` parse fails
@@ -225,29 +273,33 @@ fn classify(
     // recursive-descent parser ever runs on it — keeping that parser, which
     // we do not run under a guard stack, off stack-overflow-deep input.
     let Ok(fcs_norm) = catch_unwind_silent(|| normalise_fcs_dump(line)) else {
-        return (Bucket::FcsNormaliserUnmodelled, None);
+        return Outcome::bucket(Bucket::FcsNormaliserUnmodelled);
     };
 
     // Our side: parse the same source. We only compare where *we* are
     // clean and FCS is clean — an error tree is not a meaningful thing to
     // diff.
     let Some(ours) = parse_ours(path, src, symbols) else {
-        return (Bucket::OurParsePanicked, None);
+        return Outcome::bucket(Bucket::OurParsePanicked);
     };
     if !ours.errors.is_empty() {
-        return (Bucket::WeRejectFcsAccepts, None);
+        return Outcome::recovered(Bucket::WeRejectFcsAccepts, &ours, line, src);
     }
     let Ok(ours_norm) = catch_unwind_silent(|| normalise_parse(&ours)) else {
-        return (Bucket::OurNormaliserUnmodelled, None);
+        return Outcome::bucket(Bucket::OurNormaliserUnmodelled);
     };
 
     if ours_norm != fcs_norm {
-        return (Bucket::AstDivergent, None);
+        return Outcome::bucket(Bucket::AstDivergent);
     }
     match catch_unwind_silent(|| ast_ranges_match(&ours, line, src)) {
-        Ok(Ok(())) => (Bucket::Match, None),
-        Ok(Err(message)) => (Bucket::RangeDivergent, Some(message)),
-        Err(_) => (Bucket::RangeAuditPanicked, None),
+        Ok(Ok(())) => Outcome::bucket(Bucket::Match),
+        Ok(Err(message)) => Outcome {
+            bucket: Bucket::RangeDivergent,
+            range_message: Some(message),
+            recovery: None,
+        },
+        Err(_) => Outcome::bucket(Bucket::RangeAuditPanicked),
     }
 }
 
@@ -280,24 +332,32 @@ fn parser_matches_fcs_over_corpus() {
         .map(|s| s.to_string())
         .collect();
 
-    // Every collected file, with its bucket.
-    let mut outcomes: Vec<(&PathBuf, Bucket)> = Vec::with_capacity(files.len());
+    // Every collected file, with its bucket and (for a rejected file) its
+    // recovered-tree verdict token.
+    let mut outcomes: Vec<(&PathBuf, Bucket, Option<String>)> = Vec::with_capacity(files.len());
     let mut range_messages: Vec<(&PathBuf, String)> = Vec::new();
+    let mut recovery_divergences: Vec<(&PathBuf, String)> = Vec::new();
     for path in &files {
         let src = match read_corpus_source(path) {
             Ok(src) => src,
             Err(err) if err.is_non_utf8() => {
-                outcomes.push((path, Bucket::NonUtf8));
+                outcomes.push((path, Bucket::NonUtf8, None));
                 continue;
             }
             Err(err) => panic!("{err}"),
         };
         let line = fcs_ast_batch(path);
-        let (bucket, message) = classify(path, &src, &line, &compiled_symbols, &script_symbols);
-        outcomes.push((path, bucket));
-        if let Some(message) = message {
+        let outcome = classify(path, &src, &line, &compiled_symbols, &script_symbols);
+        if let Some(message) = outcome.range_message {
             range_messages.push((path, message));
         }
+        let token = outcome.recovery.map(|r| {
+            if let Some(d) = r.divergence {
+                recovery_divergences.push((path, d));
+            }
+            r.token
+        });
+        outcomes.push((path, outcome.bucket, token));
     }
 
     let in_bucket = |b: Bucket| -> Vec<&PathBuf> {
@@ -342,6 +402,15 @@ fn parser_matches_fcs_over_corpus() {
             }
         }
     }
+    if !recovery_divergences.is_empty() {
+        eprintln!(
+            "\nRecovered-tree divergences ({}, showing up to {DIVERGENCE_SAMPLE}):",
+            recovery_divergences.len()
+        );
+        for (p, d) in recovery_divergences.iter().take(DIVERGENCE_SAMPLE) {
+            eprintln!("  {}\n    {}", p.display(), d.replace('\n', "\n    "));
+        }
+    }
     if !range_messages.is_empty() {
         eprintln!(
             "\nAST range divergences ({}, showing up to {DIVERGENCE_SAMPLE}):",
@@ -373,7 +442,10 @@ fn parser_matches_fcs_over_corpus() {
         outcomes
             .iter()
             .filter(|o| o.1 != Bucket::Match)
-            .map(|(p, b)| format!("{} {}", relative_key(&root, p), b.name())),
+            .map(|(p, b, token)| match token {
+                Some(token) => format!("{} {} {token}", relative_key(&root, p), b.name()),
+                None => format!("{} {}", relative_key(&root, p), b.name()),
+            }),
     );
     let manifest =
         Manifest::from_entries(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));

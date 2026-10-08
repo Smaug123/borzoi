@@ -128,6 +128,45 @@ pub fn normalise_parse(parse: &Parse) -> NormalisedRoot {
     }
 }
 
+/// One module/namespace's header — [`normalise_module`] with `decls` left
+/// empty. A recovered-tree comparison grades a header and each of its
+/// declarations as separate units, so a damaged declaration does not take the
+/// header (or its siblings) down with it.
+pub fn impl_module_header(m: &ModuleOrNamespace) -> NormalisedModule {
+    let mut local = 0u32;
+    NormalisedModule {
+        kind: module_kind(m),
+        is_rec: m.is_rec(),
+        attributes: normalise_attribute_lists(m.attributes(), &mut local),
+        access: cst_access(m.syntax()),
+        decls: Vec::new(),
+    }
+}
+
+/// The signature-file counterpart of [`impl_module_header`].
+pub fn sig_module_header(m: &ModuleOrNamespace) -> NormalisedSigModule {
+    let mut local = 0u32;
+    NormalisedSigModule {
+        kind: module_kind(m),
+        is_rec: m.is_rec(),
+        attributes: normalise_attribute_lists(m.attributes(), &mut local),
+        access: cst_access(m.syntax()),
+        decls: Vec::new(),
+    }
+}
+
+/// One declaration as a recovered-tree comparison unit: [`normalise_decl`],
+/// except that a nested module projects its header alone (`decls` empty) — its
+/// body declarations are units of their own.
+pub fn impl_decl_unit(d: &ModuleDecl) -> NormalisedDecl {
+    normalise_decl_with(d, false)
+}
+
+/// The signature-file counterpart of [`impl_decl_unit`].
+pub fn sig_decl_unit(d: &SigDecl) -> NormalisedSigDecl {
+    normalise_sig_decl_with(d, false)
+}
+
 fn normalise_impl_file(file: &ImplFile) -> NormalisedImplFile {
     NormalisedImplFile {
         warn_directives: normalise_warn_directives(file.syntax()),
@@ -181,6 +220,12 @@ fn normalise_sig_module(m: &ModuleOrNamespace) -> NormalisedSigModule {
 /// adds nested modules + abbreviations (reusing the impl-side projections);
 /// 10.12a adds `val` (reusing the shared `VAL_SIG` carrier).
 fn normalise_sig_decl(d: &SigDecl) -> NormalisedSigDecl {
+    normalise_sig_decl_with(d, true)
+}
+
+/// [`normalise_sig_decl`], projecting a nested module's body only when
+/// `recurse` (see [`sig_decl_unit`]).
+fn normalise_sig_decl_with(d: &SigDecl, recurse: bool) -> NormalisedSigDecl {
     match d {
         SigDecl::Open(o) => NormalisedSigDecl::Open {
             target: normalise_open_target(o),
@@ -258,11 +303,14 @@ fn normalise_sig_decl(d: &SigDecl) -> NormalisedSigDecl {
                 is_rec: nm.is_rec(),
                 attributes,
                 access: cst_access(nm.syntax()),
-                decls: nm
-                    .sig_decls()
-                    .filter(|d| !is_light_sig_hash_directive(d))
-                    .map(|d| normalise_sig_decl(&d))
-                    .collect(),
+                decls: if recurse {
+                    nm.sig_decls()
+                        .filter(|d| !is_light_sig_hash_directive(d))
+                        .map(|d| normalise_sig_decl(&d))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             }
         }
         SigDecl::ModuleAbbrev(a) => {
@@ -361,6 +409,12 @@ fn normalise_module(m: &ModuleOrNamespace) -> NormalisedModule {
 /// including an `and`-chain (one `ModuleDecl::Let` with several bindings)
 /// and any nested/sibling lambdas in a binding RHS.
 fn normalise_decl(d: &ModuleDecl) -> NormalisedDecl {
+    normalise_decl_with(d, true)
+}
+
+/// [`normalise_decl`], projecting a nested module's body only when `recurse`
+/// (see [`impl_decl_unit`]).
+fn normalise_decl_with(d: &ModuleDecl, recurse: bool) -> NormalisedDecl {
     let mut counter = 0u32;
     match d {
         ModuleDecl::Expr(e) => {
@@ -449,11 +503,14 @@ fn normalise_decl(d: &ModuleDecl) -> NormalisedDecl {
                 is_rec: nm.is_rec(),
                 attributes,
                 access: cst_access(nm.syntax()),
-                decls: nm
-                    .decls()
-                    .filter(|d| !is_light_hash_directive(d))
-                    .map(|d| normalise_decl(&d))
-                    .collect(),
+                decls: if recurse {
+                    nm.decls()
+                        .filter(|d| !is_light_hash_directive(d))
+                        .map(|d| normalise_decl(&d))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             }
         }
         ModuleDecl::ModuleAbbrev(a) => {
@@ -1190,8 +1247,7 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
                 Some(args) => {
                     let mut counter = 0u32;
                     NormalisedMember::ImplicitInherit {
-                        base_type: base_type
-                            .expect("an `inherit Base(args)` clause has a base type"),
+                        base_type: base_type.unwrap_or(NormalisedType::FromParseError),
                         args: normalise_expr(&args, &mut counter),
                     }
                 }
@@ -1203,10 +1259,7 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
             // FCS's `members: SynMemberDefns option`: a `with` block →
             // `Some(members)` (possibly empty), no `with` → `None`. The
             // interface's own members nest inside the `INTERFACE_IMPL` node.
-            let interface_type = normalise_type(
-                &i.interface_type()
-                    .expect("an interface implementation has an interface type"),
-            );
+            let interface_type = type_slot(i.interface_type());
             let members = i
                 .has_with()
                 .then(|| i.members().map(|m| normalise_member(&m)).collect());
@@ -1353,10 +1406,7 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
                 )
                 .to_string()
             };
-            let ty = normalise_type(
-                &vs.ty()
-                    .expect("an abstract slot must have a `: <type>` signature"),
-            );
+            let ty = type_slot(vs.ty());
             let leading_keyword = match (a.is_static(), a.is_abstract_member()) {
                 (true, true) => NormalisedLeadingKeyword::StaticAbstractMember,
                 (true, false) => NormalisedLeadingKeyword::StaticAbstract,
@@ -1549,7 +1599,7 @@ fn normalise_union_case_field(f: &UnionCaseField) -> NormalisedField {
         // accessibility is `None` here).
         access: None,
         name: f.ident().map(|t| strip_backticks(t.text()).to_string()),
-        ty: normalise_type(&f.ty().expect("UNION_CASE_FIELD must contain a field type")),
+        ty: type_slot(f.ty()),
         is_mutable: false,
         is_static: false,
     }
@@ -1567,7 +1617,7 @@ fn normalise_field(f: &RecordFieldDecl) -> NormalisedField {
         // rather than projecting the recovery `ACCESS_TOK` our tree captures.
         access: None,
         name: f.ident().map(|t| strip_backticks(t.text()).to_string()),
-        ty: normalise_type(&f.ty().expect("RECORD_FIELD_DECL must contain a field type")),
+        ty: type_slot(f.ty()),
         is_mutable: f.is_mutable(),
         is_static: false,
     }
@@ -1584,7 +1634,7 @@ fn normalise_val_field(f: &ValField) -> NormalisedField {
         // `SynField.accessibility` (field 6) — `val mutable internal x : int`.
         access: cst_access(f.syntax()),
         name: f.ident().map(|t| strip_backticks(t.text()).to_string()),
-        ty: normalise_type(&f.ty().expect("VAL_FIELD must contain a field type")),
+        ty: type_slot(f.ty()),
         is_mutable: f.is_mutable(),
         is_static: f.is_static(),
     }
@@ -1758,7 +1808,7 @@ fn normalise_pat(p: &Pat, counter: &mut u32) -> NormalisedPat {
                 .collect(),
         },
         Pat::IsInst(i) => NormalisedPat::IsInst {
-            ty: normalise_type(&i.ty().expect("IS_INST_PAT must contain a tested type")),
+            ty: type_slot(i.ty()),
         },
         Pat::ListCons(c) => NormalisedPat::ListCons {
             lhs: Box::new(normalise_pat(
@@ -1845,10 +1895,10 @@ fn normalise_paren_pat(p: &ParenPat, counter: &mut u32) -> NormalisedPat {
 
 fn normalise_typed_pat(t: &TypedPat, counter: &mut u32) -> NormalisedPat {
     let inner = t.pat().expect("TYPED_PAT must contain an inner pattern");
-    let ty = t.ty().expect("TYPED_PAT must contain a type annotation");
+    let ty = t.ty();
     NormalisedPat::Typed {
         pat: Box::new(normalise_pat(&inner, counter)),
-        ty: normalise_type(&ty),
+        ty: type_slot(ty),
     }
 }
 
@@ -1984,8 +2034,15 @@ fn normalise_expr(e: &Expr, counter: &mut u32) -> NormalisedExpr {
             let tok = t.ident().expect("TYPAR_EXPR must contain an IDENT_TOK");
             strip_backticks(tok.text()).to_string()
         }),
-        Expr::LongIdent(l) => NormalisedExpr::LongIdent(normalise_long_ident(l)),
-        Expr::Paren(p) => NormalisedExpr::Paren(Box::new(normalise_paren(p, counter))),
+        Expr::LongIdent(l) => normalise_long_ident_expr(l),
+        Expr::DotMissing(d) => {
+            NormalisedExpr::DiscardAfterMissingQualificationAfterDot(Box::new(normalise_expr(
+                &d.receiver()
+                    .expect("DOT_MISSING_EXPR must contain a receiver Expr child"),
+                counter,
+            )))
+        }
+        Expr::Paren(p) => normalise_paren(p, counter),
         Expr::Tuple(t) => normalise_tuple(t, counter),
         Expr::App(a) => normalise_app(a, counter),
         Expr::DotGet(d) => normalise_dot_get(d, counter),
@@ -2744,12 +2801,10 @@ fn normalise_typed(t: &TypedExpr, counter: &mut u32) -> NormalisedExpr {
     let expr = t
         .expr()
         .expect("TYPED_EXPR must contain an inner expression child");
-    let ty = t
-        .ty()
-        .expect("TYPED_EXPR must contain a type annotation child");
+    let ty = t.ty();
     NormalisedExpr::Typed {
         expr: Box::new(normalise_expr(&expr, counter)),
-        ty: normalise_type(&ty),
+        ty: type_slot(ty),
     }
 }
 
@@ -2760,12 +2815,10 @@ fn normalise_type_test(t: &TypeTestExpr, counter: &mut u32) -> NormalisedExpr {
     let expr = t
         .expr()
         .expect("TYPE_TEST_EXPR must contain an inner expression child");
-    let ty = t
-        .ty()
-        .expect("TYPE_TEST_EXPR must contain a target-type child");
+    let ty = t.ty();
     NormalisedExpr::TypeTest {
         expr: Box::new(normalise_expr(&expr, counter)),
-        ty: normalise_type(&ty),
+        ty: type_slot(ty),
     }
 }
 
@@ -2775,12 +2828,10 @@ fn normalise_upcast(u: &UpcastExpr, counter: &mut u32) -> NormalisedExpr {
     let expr = u
         .expr()
         .expect("UPCAST_EXPR must contain an inner expression child");
-    let ty = u
-        .ty()
-        .expect("UPCAST_EXPR must contain a target-type child");
+    let ty = u.ty();
     NormalisedExpr::Upcast {
         expr: Box::new(normalise_expr(&expr, counter)),
-        ty: normalise_type(&ty),
+        ty: type_slot(ty),
     }
 }
 
@@ -2790,12 +2841,10 @@ fn normalise_downcast(d: &DowncastExpr, counter: &mut u32) -> NormalisedExpr {
     let expr = d
         .expr()
         .expect("DOWNCAST_EXPR must contain an inner expression child");
-    let ty = d
-        .ty()
-        .expect("DOWNCAST_EXPR must contain a target-type child");
+    let ty = d.ty();
     NormalisedExpr::Downcast {
         expr: Box::new(normalise_expr(&expr, counter)),
-        ty: normalise_type(&ty),
+        ty: type_slot(ty),
     }
 }
 
@@ -2804,6 +2853,15 @@ fn normalise_downcast(d: &DowncastExpr, counter: &mut u32) -> NormalisedExpr {
 /// types, and postfix type-applications; the panic-on-anything-else
 /// default will surface as a clear test failure when a later phase
 /// adds variants without updating this projector.
+/// A type slot the grammar requires. FCS fills a missing one with
+/// `SynType.FromParseError`; our CST leaves the child out.
+fn type_slot(t: Option<Type>) -> NormalisedType {
+    match t {
+        Some(t) => normalise_type(&t),
+        None => NormalisedType::FromParseError,
+    }
+}
+
 fn normalise_type(t: &Type) -> NormalisedType {
     match t {
         Type::LongIdent(l) => NormalisedType::LongIdent(normalise_long_ident_type(l)),
@@ -2819,10 +2877,9 @@ fn normalise_type(t: &Type) -> NormalisedType {
             let arg = f
                 .arg()
                 .expect("FUN_TYPE must contain an argument-type child");
-            let ret = f.ret().expect("FUN_TYPE must contain a return-type child");
             NormalisedType::Fun {
                 arg: Box::new(normalise_type(&arg)),
-                ret: Box::new(normalise_type(&ret)),
+                ret: Box::new(type_slot(f.ret())),
             }
         }
         Type::Tuple(t) => normalise_tuple_type(t),
@@ -3539,11 +3596,37 @@ fn normalise_tuple(t: &TupleExpr, counter: &mut u32) -> NormalisedExpr {
 /// `PAREN_EXPR > <inner-expr>` child. The wrapping `Paren` node is
 /// preserved in the normalised representation so it diffs against FCS's
 /// `SynExpr.Paren` rather than collapsing through.
+/// `SynExpr.Paren`, from `( … )` or `begin … end`. An unclosed opener (no
+/// closer token) is FCS's recovery: `LPAREN parenExprBody recover` wraps the
+/// body as `Paren(FromParseError body)`, `LPAREN recover` with no body is a
+/// bare `ArbitraryAfterError`, and `BEGIN typedSequentialExpr recover` is a
+/// bare `FromParseError body`.
 fn normalise_paren(p: &ParenExpr, counter: &mut u32) -> NormalisedExpr {
-    let inner = p
-        .inner()
-        .expect("PAREN_EXPR must contain an inner expression child");
-    normalise_expr(&inner, counter)
+    let tokens: Vec<SyntaxKind> = p
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| !t.text_range().is_empty())
+        .map(|t| t.kind())
+        .collect();
+    let begin = tokens.contains(&SyntaxKind::BEGIN_TOK);
+    let closed = tokens
+        .iter()
+        .any(|k| matches!(k, SyntaxKind::RPAREN_TOK | SyntaxKind::END_TOK));
+    match (p.inner(), closed) {
+        (Some(inner), true) => NormalisedExpr::Paren(Box::new(normalise_expr(&inner, counter))),
+        (Some(inner), false) => {
+            let survivor =
+                NormalisedExpr::FromParseError(Box::new(normalise_expr(&inner, counter)));
+            if begin {
+                survivor
+            } else {
+                NormalisedExpr::Paren(Box::new(survivor))
+            }
+        }
+        (None, false) => NormalisedExpr::Error,
+        (None, true) => panic!("PAREN_EXPR must contain an inner expression child"),
+    }
 }
 
 /// Project `SynExpr.TraitCall` — the SRTP trait call
@@ -3644,6 +3727,31 @@ fn normalise_static_opt_condition(c: &StaticOptCondition) -> NormalisedStaticOpt
 /// Project a `SynExpr.LongIdent` to its sequence of `Ident.idText` strings,
 /// matching FCS's representation. Backticks come off here so the diff
 /// against `fcs-dump ast` doesn't need to know about source-form vs idText.
+/// A `LONG_IDENT_EXPR`: FCS's `SynExpr.LongIdent`, or — when the path ends in
+/// a dot with no segment after it (`foo.`, `A.B.`) —
+/// `DiscardAfterMissingQualificationAfterDot` over the receiver path, which
+/// FCS builds as a plain `Ident` when it has one segment.
+fn normalise_long_ident_expr(l: &LongIdentExpr) -> NormalisedExpr {
+    let segments = normalise_long_ident(l);
+    let ends_in_dot = l
+        .long_ident()
+        .and_then(|li| {
+            li.syntax()
+                .children_with_tokens()
+                .filter(|el| !el.kind().is_trivia())
+                .last()
+        })
+        .is_some_and(|el| el.kind() == SyntaxKind::DOT_TOK);
+    if !ends_in_dot {
+        return NormalisedExpr::LongIdent(segments);
+    }
+    let receiver = match <[String; 1]>::try_from(segments) {
+        Ok([one]) => NormalisedExpr::Ident(one),
+        Err(segments) => NormalisedExpr::LongIdent(segments),
+    };
+    NormalisedExpr::DiscardAfterMissingQualificationAfterDot(Box::new(receiver))
+}
+
 fn normalise_long_ident(l: &LongIdentExpr) -> Vec<String> {
     let inner = l
         .long_ident()
