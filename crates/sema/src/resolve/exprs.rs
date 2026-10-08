@@ -3,7 +3,7 @@
 use borzoi_cst::syntax::{AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
 
 use crate::binders::{BinderRole, PatternName, pattern_names};
-use crate::def::{Def, DefKind};
+use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
 use super::model::{DeferredReason, Resolution};
@@ -89,10 +89,13 @@ impl<'a> Resolver<'a> {
                     // Resolved after the function, so the head's resolution is
                     // already recorded when deciding whether `a` may carry
                     // named arguments.
-                    if !e.is_infix() && func.is_some_and(|f| !self.applies_a_function_value(&f)) {
-                        self.resolve_method_args(&a);
-                    } else {
-                        self.resolve_expr(&a);
+                    let callee = match &func {
+                        Some(f) if !e.is_infix() => self.callee_kind(f),
+                        _ => Callee::Function,
+                    };
+                    match callee {
+                        Callee::Function => self.resolve_expr(&a),
+                        named => self.resolve_method_args(&a, named),
                     }
                 }
             }
@@ -175,7 +178,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
                 if let Some(arg) = e.arg() {
-                    self.resolve_method_args(&arg);
+                    self.resolve_method_args(&arg, Callee::MaybeNamed);
                 }
             }
             Expr::ObjExpr(e) => {
@@ -194,7 +197,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
                 if let Some(arg) = e.arg() {
-                    self.resolve_method_args(&arg);
+                    self.resolve_method_args(&arg, Callee::MaybeNamed);
                 }
             }
             Expr::InferredUpcast(e) => {
@@ -908,7 +911,7 @@ impl<'a> Resolver<'a> {
     /// `decide_type_path`.
     ///
     /// An `x = y` argument of a provable *function* application
-    /// ([`Self::applies_a_function_value`]) is an equality test and reaches the
+    /// ([`Self::callee_kind`]) is an equality test and reaches the
     /// bare-ident path; [`is_named_arg_label`] keeps the *fallback* off its `x`.
     /// Every other application's named-argument labels are skipped before they
     /// get here ([`Self::resolve_method_args`]).
@@ -955,47 +958,51 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    /// Whether an application whose function is `func` is provably an F#
-    /// **function** application, so that an `x = y` argument is an equality
-    /// test.
+    /// What an application whose function is `func` applies, as far as F#'s
+    /// reading of an `x = y` argument goes.
     ///
-    /// Otherwise it may be a method, constructor or union-case application,
-    /// where FCS reads a trailing `x = y` argument as a **named argument**
-    /// *syntactically* (`GetMethodArgs`): `x` then names the callee's
-    /// parameter (or field, or settable property), never the `x` in scope.
+    /// For a method, constructor or union-case application FCS reads a
+    /// trailing `x = y` argument as a **named argument** *syntactically*
+    /// (`GetMethodArgs`): `x` then names the callee's parameter (or field, or
+    /// settable property), never the `x` in scope. For a function application
+    /// it is an equality passed positionally. FCS-adjudicated
+    /// (`resolve_named_args_diff::fcs_adjudicates_every_head_and_wrapper`):
     ///
-    /// Only a **name** can denote a method group, a constructor or a case — a
-    /// bare or dotted identifier, or a member access — so every other head
-    /// (`(fun b -> b)`, `(if c then f else g)`) is a function value. A name
-    /// needs its callee's identity: `not`, `printfn` and `System.Math.Max` are
-    /// all names, and only the last is a method. So a name is a function only
-    /// when it is proved to be: it resolves to a value, function or local of
-    /// this file or an earlier one, or to a member of an F# module.
+    /// * only an **unwrapped name** reaches a method group, constructor or case
+    ///   this way. A parenthesised or type-annotated head — `(T.S)`,
+    ///   `(T : bool -> _)` — is a first-class function value, and so is every
+    ///   head that is not a name at all (`(fun b -> b)`, `(if c then f else g)`);
+    /// * a union case reads `x = y` as a named field only when `x` *is* one of
+    ///   its fields — `Case(a = a)` over `Case of bool` is an equality;
+    /// * a name needs its callee's identity: `not`, `printfn` and
+    ///   `System.Math.Max` are all names, and only the last is a method. So a
+    ///   name is a function only when it is proved to be — a value, function or
+    ///   local of this file or an earlier one, or a member of an F# module — and
+    ///   a case only when it is this file's.
     ///
     /// Must be asked after `func` is resolved: it reads the head's recorded
     /// resolution.
-    fn applies_a_function_value(&self, func: &Expr) -> bool {
+    fn callee_kind(&self, func: &Expr) -> Callee {
         // A curried application `f a (x = y)` applies whatever `f` is, and so
-        // do `(f) (x = y)`, `f<int> (x = y)` and `(f : bool -> bool) (x = y)`.
-        // Seeing through the wrappers can only prove a *value* head, which is
-        // applied as a function however it is wrapped.
+        // does `f<int> (x = y)`.
         let mut head = func.clone();
         loop {
             let next = match &head {
                 // An infix operator's application is never a method call.
-                Expr::App(app) if app.is_infix() => return true,
+                Expr::App(app) if app.is_infix() => return Callee::Function,
                 Expr::App(app) => app.func(),
-                Expr::Paren(p) => p.inner(),
                 Expr::TypeApp(t) => t.expr(),
-                Expr::Typed(t) => t.expr(),
                 Expr::Ident(_) | Expr::LongIdent(_) => break,
                 // Member access (`x.M`, `a?b`, `'T.M`): a method for all we know.
-                Expr::DotGet(_) | Expr::Dynamic(_) | Expr::Typar(_) => return false,
-                // Not a name, so a first-class function value.
-                _ => return true,
+                Expr::DotGet(_) | Expr::Dynamic(_) | Expr::Typar(_) => {
+                    return Callee::MaybeNamed;
+                }
+                // Not a bare name — parenthesised, annotated, or not a name at
+                // all — so a first-class function value.
+                _ => return Callee::Function,
             };
             let Some(next) = next else {
-                return false;
+                return Callee::MaybeNamed;
             };
             head = next;
         }
@@ -1014,43 +1021,52 @@ impl<'a> Resolver<'a> {
             _ => None,
         };
         let Some(range) = range else {
-            return false;
+            return Callee::MaybeNamed;
         };
-        let is_value_def = |id: crate::DefId| {
-            matches!(
-                self.defs[id.index()].kind,
-                DefKind::Value { .. } | DefKind::Parameter | DefKind::PatternLocal
-            )
+        let of_def = |id: DefId| match self.defs[id.index()].kind {
+            DefKind::Value { .. } | DefKind::Parameter | DefKind::PatternLocal => Callee::Function,
+            DefKind::UnionCase => Callee::Case(id),
+            _ => Callee::MaybeNamed,
         };
         match self.resolutions.get(&range) {
             // A member of an F# module is a `let`-bound function or value, never
             // a method: FCS applies it as a function.
-            Some(Resolution::Member { parent, .. }) => self.assemblies.is_module(*parent),
-            Some(Resolution::Local(id)) => is_value_def(*id),
+            Some(Resolution::Member { parent, .. }) if self.assemblies.is_module(*parent) => {
+                Callee::Function
+            }
+            Some(Resolution::Local(id)) => of_def(*id),
             // A module-level export: a value or function, or a constructor case.
             Some(Resolution::Item(item)) => {
                 match item.index().checked_sub(self.item_base as usize) {
-                    Some(local) => self.items.get(local).is_some_and(|it| match it.def {
-                        super::model::ExportDef::Own(def) => is_value_def(def),
-                        super::model::ExportDef::Sig { .. } => it.case_kind().is_none(),
-                    }),
-                    None => !self.preceding.is_case_item(*item),
+                    Some(local) => match self.items.get(local) {
+                        Some(it) => match it.def {
+                            super::model::ExportDef::Own(def) => of_def(def),
+                            super::model::ExportDef::Sig { .. } if it.case_kind().is_none() => {
+                                Callee::Function
+                            }
+                            super::model::ExportDef::Sig { .. } => Callee::MaybeNamed,
+                        },
+                        None => Callee::MaybeNamed,
+                    },
+                    None if !self.preceding.is_case_item(*item) => Callee::Function,
+                    None => Callee::MaybeNamed,
                 }
             }
-            _ => false,
+            _ => Callee::MaybeNamed,
         }
     }
 
     /// Resolve the argument of an application that may be a method,
-    /// constructor or union-case call: every argument as an ordinary
-    /// expression, except that a **named argument**'s label (`x` in `x = e` or
-    /// `?x = e`) is left unresolved, since it names something of the callee's
-    /// and not a value in scope. Its value `e` resolves as usual.
+    /// constructor or union-case call (`callee`, never [`Callee::Function`]):
+    /// every argument as an ordinary expression, except that a **named
+    /// argument**'s label (`x` in `x = e` or `?x = e`) is left unresolved,
+    /// since it names something of the callee's and not a value in scope. Its
+    /// value `e` resolves as usual.
     ///
     /// The argument shapes are FCS's `GetMethodArgs`: a parenthesised
     /// (non-struct) tuple, a bare one, or a single expression, parenthesised or
     /// not.
-    pub(super) fn resolve_method_args(&mut self, arg: &Expr) {
+    pub(super) fn resolve_method_args(&mut self, arg: &Expr, callee: Callee) {
         let inner = match arg {
             Expr::Paren(p) => match p.inner() {
                 Some(inner) => inner,
@@ -1063,21 +1079,39 @@ impl<'a> Resolver<'a> {
             Expr::Tuple(t) if t.is_struct() => self.resolve_expr(&inner),
             Expr::Tuple(t) => {
                 for el in t.elements() {
-                    self.resolve_method_arg(&el);
+                    self.resolve_method_arg(&el, callee);
                 }
             }
-            other => self.resolve_method_arg(other),
+            other => self.resolve_method_arg(other, callee),
         }
     }
 
-    fn resolve_method_arg(&mut self, el: &Expr) {
+    fn resolve_method_arg(&mut self, el: &Expr, callee: Callee) {
         match named_arg_shape(el) {
-            Some((Some(lhs), value)) if is_label_shaped(&lhs) => {
+            Some((Some(lhs), value)) if self.is_named_arg(&lhs, callee) => {
                 if let Some(value) = value {
                     self.resolve_expr(&value);
                 }
             }
             _ => self.resolve_expr(el),
+        }
+    }
+
+    /// Whether `lhs`, the left of an `lhs = e` argument to `callee`, is a
+    /// named-argument label rather than an equality operand.
+    fn is_named_arg(&self, lhs: &Expr, callee: Callee) -> bool {
+        let Some(name) = label_name(lhs) else {
+            return false;
+        };
+        match callee {
+            Callee::Function => false,
+            Callee::MaybeNamed => true,
+            // An unread field list could hold the name, so only a case whose
+            // fields are known and lack it is an equality.
+            Callee::Case(id) => match self.case_field_names.get(&id) {
+                Some(Some(fields)) => fields.contains(&name),
+                _ => true,
+            },
         }
     }
 
@@ -1161,15 +1195,33 @@ pub(crate) fn named_arg_shape(el: &Expr) -> Option<(Option<Expr>, Option<Expr>)>
     Some((op_app.arg(), outer.arg()))
 }
 
-/// Whether the left of a [`named_arg_shape`] element can be a named-argument
-/// label: FCS's `LongOrSingleIdent` with exactly one segment, optionally behind
-/// the `?` of an optional argument (`x`, `?x`; not `a.b`).
-fn is_label_shaped(lhs: &Expr) -> bool {
-    match lhs {
-        Expr::Ident(_) => true,
-        Expr::LongIdent(e) => e.long_ident().is_some_and(|li| li.idents().count() == 1),
-        _ => false,
-    }
+/// What an application applies, as far as F#'s reading of an `x = y`
+/// argument goes ([`Resolver::callee_kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Callee {
+    /// A function value: `x = y` is an equality.
+    Function,
+    /// An in-file union case: `x = y` names a field exactly when `x` is one.
+    Case(DefId),
+    /// A method, constructor or case for all we know: `x = y` may name a
+    /// parameter, field or property.
+    MaybeNamed,
+}
+
+/// The name the left of a [`named_arg_shape`] element would label, if it can
+/// be a label at all: FCS's `LongOrSingleIdent` with exactly one segment,
+/// optionally behind the `?` of an optional argument (`x`, `?x`; not `a.b`).
+fn label_name(lhs: &Expr) -> Option<String> {
+    let token = match lhs {
+        Expr::Ident(e) => e.ident(),
+        Expr::LongIdent(e) => e.long_ident().and_then(|li| {
+            let mut idents = li.idents();
+            let only = idents.next()?;
+            idents.next().is_none().then_some(only)
+        }),
+        _ => None,
+    }?;
+    Some(id_text(token.text()).to_string())
 }
 
 /// Whether this bare ident is the **label** of a named argument (`M(Thing = 1)`)

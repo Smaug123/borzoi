@@ -24,6 +24,7 @@
 //! Each program must also type-check cleanly: FCS's answer about a program it
 //! rejects is recovery, not semantics.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::common::{
@@ -367,4 +368,178 @@ fn a_cross_file_function_head_keeps_both_equality_operands() {
             );
         }
     }
+}
+
+/// The declarations of the adjudicated matrix. Every callee takes one `bool`
+/// named `a`, and the local `a` is a `bool`, so `h (a = a)` type-checks
+/// whether F# reads it as the named argument `a` or as an equality passed
+/// positionally — and which one it chose is visible in what FCS says the
+/// first `a` is.
+const MATRIX_PRELUDE: &str = "\
+module M
+type T(a: bool) =
+    static member S(a: bool) = a
+    member _.I(a: bool) = a
+type U =
+    | Case of bool
+    | Named of a: bool
+let g (a: bool) = a
+let run (a: bool) (p: bool -> bool) =
+    let lf (c: bool) = c
+    let t = T(true)
+";
+
+/// Every callee head the matrix applies, crossed with every wrapper.
+fn matrix_calls() -> Vec<String> {
+    let names = [
+        "g", "lf", "p", "T.S", "t.I", "T", "Case", "Named", "Some", "U.Case", "U.Named",
+    ];
+    let wrappers: [fn(&str) -> String; 4] = [
+        |h| h.to_string(),
+        |h| format!("({h})"),
+        |h| format!("(({h}))"),
+        |h| format!("({h} : bool -> _)"),
+    ];
+    let mut heads: Vec<String> = names
+        .iter()
+        .flat_map(|n| wrappers.iter().map(move |w| w(n)))
+        .collect();
+    heads.extend(
+        [
+            "(fun (c: bool) -> c)",
+            "(if true then g else lf)",
+            "(match 0 with _ -> T.S)",
+        ]
+        .map(str::to_string),
+    );
+    heads
+        .into_iter()
+        .map(|head| format!("    {head} («a» = ‹a›) |> ignore\n"))
+        .collect()
+}
+
+/// Equality cells the resolver declines, each for a stated reason. A decline
+/// is sound; it is listed so that a new one is a test failure, not a quiet
+/// coverage loss.
+const MAY_DECLINE: &[&str] = &[
+    // An assembly union case reads `a = a` as a named field only if `a` is one
+    // of its fields; the assembly's field names are not consulted, so its
+    // label is declined.
+    "Some (a = a) |> ignore",
+];
+
+/// How FCS read one matrix cell's `x = y`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Reading {
+    /// A named argument (or field): the left `a` names the callee's.
+    Label,
+    /// An equality passed positionally: the left `a` is the local.
+    Equality,
+}
+
+/// The matrix, adjudicated **by FCS** rather than by this test's author: for
+/// each head and wrapper, FCS's own answer at the left `a` says whether F#
+/// read a label or an equality, and the resolver must agree — never the local
+/// for a label, always the local for an equality.
+///
+/// Review rounds each found one more head shape (`(f)`, `(f : T)`, a lambda,
+/// `(T.S)`, `Case(a = a)`) where a hand-written rule guessed wrong. Here each
+/// cell's expectation is FCS's, so a new head or wrapper is one more row, not
+/// one more guess.
+#[test]
+fn fcs_adjudicates_every_head_and_wrapper() {
+    let programs: Vec<Program> = matrix_calls()
+        .iter()
+        .map(|c| render_after(MATRIX_PRELUDE, c))
+        .collect();
+    let paths: Vec<PathBuf> = programs
+        .iter()
+        .map(|p| temp_fs_file("named_args_matrix", &p.src))
+        .collect();
+    let census = parse_census_jsonl(&invoke_fcs_dump_census(&paths));
+    for p in &paths {
+        let _ = std::fs::remove_file(p);
+    }
+    assert_eq!(census.len(), programs.len(), "one census line per program");
+
+    let mut readings: BTreeMap<Reading, Vec<String>> = BTreeMap::new();
+    let mut rejected = Vec::new();
+    let mut wrong = Vec::new();
+    for (program, file) in programs.iter().zip(&census) {
+        let src = &program.src;
+        let call = src[MATRIX_PRELUDE.len()..].trim().to_string();
+        if !file.ok || file.has_check_errors {
+            rejected.push(call);
+            continue;
+        }
+        let uses: Vec<_> = census_resolve_uses(file, src)
+            .into_iter()
+            .filter(|u| !u.is_from_definition && u.start != u.end)
+            .collect();
+        let decl_at = |r: TextRange| {
+            uses.iter()
+                .find(|u| range_of(u.start, u.end) == r)
+                .map(|u| u.decl)
+        };
+        let (label, value) = (program.labels[0], program.values[0]);
+        let local = match decl_at(value) {
+            Some(CensusDecl::InFile(s, e)) => range_of(s, e),
+            other => panic!("FCS reads the value side of {call} as {other:?}"),
+        };
+        let reading = if decl_at(label)
+            == Some(CensusDecl::InFile(
+                usize::from(local.start()),
+                usize::from(local.end()),
+            )) {
+            Reading::Equality
+        } else {
+            Reading::Label
+        };
+        readings.entry(reading).or_default().push(call.clone());
+
+        for (env, env_name) in [
+            (&AssemblyEnv::default(), "empty"),
+            (full_bcl_env(), "FSharp.Core"),
+        ] {
+            let parsed = parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            let recovery = SyntaxRecovery::of(&parsed);
+            let impl_file = ImplFile::cast(parsed.root).expect("impl file");
+            let rf = resolve_file(&impl_file, &ProjectItems::default(), env, &recovery);
+            let at = |r: TextRange| {
+                rf.resolution_at(r)
+                    .and_then(|res| rf.resolved_def(res))
+                    .map(|d| d.range)
+            };
+            if at(value) != Some(local) {
+                wrong.push(format!(
+                    "{call} [{env_name}]: the value side is {:?}",
+                    at(value)
+                ));
+            }
+            match (reading, at(label)) {
+                (Reading::Label, Some(r)) => {
+                    wrong.push(format!("{call} [{env_name}]: a label committed to {r:?}"))
+                }
+                (Reading::Equality, None) if MAY_DECLINE.contains(&call.as_str()) => {}
+                (Reading::Equality, ours) if ours != Some(local) => wrong.push(format!(
+                    "{call} [{env_name}]: an equality operand is {ours:?}, FCS {local:?}"
+                )),
+                _ => {}
+            }
+        }
+    }
+    for (reading, calls) in &readings {
+        eprintln!("{reading:?} ({}):", calls.len());
+        for c in calls {
+            eprintln!("  {c}");
+        }
+    }
+    eprintln!("rejected by FCS ({}): {rejected:#?}", rejected.len());
+    assert!(
+        wrong.is_empty(),
+        "{} cells disagree with FCS:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }
