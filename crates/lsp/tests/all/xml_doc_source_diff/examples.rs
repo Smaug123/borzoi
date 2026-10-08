@@ -313,7 +313,7 @@ fn a_call_of_a_type_with_explicit_constructors_declines() {
     for (at, _, verdict, _) in calls {
         assert_eq!(
             verdict,
-            &Verdict::Declined(SourceDocDecline::ExplicitConstructors),
+            &Verdict::Declined(SourceDocDecline::ConstructorOverloads),
             "at {at}"
         );
     }
@@ -412,4 +412,36 @@ fn site(sites: &[(usize, Verdict, Vec<String>)], at: usize) -> (Verdict, Vec<Str
         .find(|(offset, _, _)| *offset == at)
         .unwrap_or_else(|| panic!("no graded site at {at}: {sites:?}"));
     (verdict.clone(), fcs.clone())
+}
+
+#[test]
+fn a_struct_call_may_bind_the_generated_parameterless_constructor() {
+    // `new S()` binds the struct's generated parameterless constructor, which
+    // has no doc; `new S(1)` the documented primary one. Which one is overload
+    // resolution, so both decline.
+    let src = "module M\n/// S\n[<Struct>]\ntype S\n    /// pctor\n    (x: int) =\n    member _.X = x\nlet a = new S()\nlet b = new S(1)\n";
+    let sites = every(src, "S");
+    let calls: Vec<_> = sites.iter().filter(|(_, def, _, _)| !def).collect();
+    assert_eq!(calls.len(), 2, "{sites:?}");
+    for (at, _, verdict, _) in calls {
+        assert_eq!(
+            verdict,
+            &Verdict::Declined(SourceDocDecline::ConstructorOverloads),
+            "at {at}"
+        );
+    }
+}
+
+#[test]
+fn a_member_reached_through_a_namesake_of_another_arity_shows_no_other_doc() {
+    // FCS binds `T.M` to the non-generic `T`'s `M`; resolution may pick the
+    // generic one's. `every` fails on any doc FCS does not attach.
+    let src = "module M\ntype T =\n    /// plain M\n    static member M = 1\ntype T<'a> =\n    /// generic M\n    static member M = 2\nlet x = T.M\n";
+    let sites = every(src, "M");
+    let use_site = src.find("T.M").unwrap();
+    let graded: Vec<_> = sites.iter().filter(|s| s.0 == use_site).collect();
+    assert!(!graded.is_empty(), "{sites:?}");
+    for (_, _, _, fcs) in graded {
+        assert_eq!(fcs, &[" plain M"]);
+    }
 }

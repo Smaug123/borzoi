@@ -118,14 +118,20 @@ pub enum SourceDocDecline {
     /// up in every same-named type (`NameResolution`'s arity-sorted tycon
     /// list), so it binds another `T` — one that declares `M`.
     MemberNotDeclared,
-    /// A constructor call (`new T()`, `T()`, `[<T>]`) of a type with explicit
-    /// constructors: FCS binds the constructor overload resolution picks, and
-    /// shows its doc.
-    ExplicitConstructors,
+    /// A constructor call (`new T()`, `T()`, `[<T>]`) of a type with more
+    /// than one constructor — explicit ones, or a struct's generated
+    /// parameterless one: FCS binds the overload resolution picks, and shows
+    /// its doc.
+    ConstructorOverloads,
+    /// A qualified use (`T.M`, `T<a>.M`) of a member or case whose declaring
+    /// type's arity differs from the type arguments the qualifier supplies:
+    /// FCS resolves the qualifier among same-named types by arity first
+    /// (#323), so it binds another type's `M`.
+    QualifierArityMismatch,
     /// A constructor-shaped use of a type that declares no constructor.
     NoConstructor,
-    /// A type name in a position not classified (a nested-type path, a
-    /// parenthesised qualifier).
+    /// A type name, or a qualified member or case, in a position not
+    /// classified (a nested-type path, a parenthesised qualifier).
     UnmodelledOccurrence,
     /// The occurrence is the left of `=` in a parenthesised application
     /// argument — a named argument when the callee is a method or constructor,
@@ -315,8 +321,10 @@ impl SourceDocIndex {
                                 .is_some_and(|p| p.kind() == SyntaxKind::LONG_IDENT)
                     })
             });
-        if explicit {
-            return Constructors::Explicit;
+        // A struct also has a generated parameterless constructor, which
+        // `new S()` binds and which carries no doc.
+        if explicit || is_struct(&defn) {
+            return Constructors::Several;
         }
         if !defn
             .children()
@@ -874,13 +882,86 @@ fn applied_arity(app: &SyntaxNode, head: &SyntaxNode) -> Option<usize> {
     }
 }
 
+/// Whether a type definition is a struct: `[<Struct>]` (or
+/// `[<StructAttribute>]`) on it, or a `struct … end` representation.
+fn is_struct(defn: &SyntaxNode) -> bool {
+    let attribute = defn
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::ATTRIBUTE_LIST)
+        .flat_map(|list| list.descendants())
+        .filter(|n| n.kind() == SyntaxKind::ATTRIBUTE)
+        .filter_map(|a| a.children().find(|c| c.kind() == SyntaxKind::LONG_IDENT))
+        .any(|name| {
+            let name = ident_text(&name);
+            let last = name.rsplit('.').next().unwrap_or(&name);
+            matches!(last, "Struct" | "StructAttribute")
+        });
+    attribute
+        || defn
+            .children()
+            .filter(|c| c.kind() == SyntaxKind::OBJECT_MODEL_REPR)
+            .any(|repr| {
+                repr.children_with_tokens()
+                    .any(|e| e.kind() == SyntaxKind::STRUCT_TOK)
+            })
+}
+
+/// How an occurrence of a member or case is qualified by its type.
+enum Qualification {
+    /// `M` / `Case` on its own.
+    Bare,
+    /// `T.M` / `N.T.M` (no type arguments) or `T<a, b>.M` (two).
+    ByType { arity: usize },
+}
+
+/// How the occurrence at `at` — whose last segment is the member or case — is
+/// qualified, or `None` for a shape not listed in [`Qualification`].
+fn qualification(root: &SyntaxNode, at: TextRange) -> Option<Qualification> {
+    if !root.text_range().contains_range(at) {
+        return None;
+    }
+    let element = root.covering_element(at);
+    // `T<a>.M`: a dotted access off a type application.
+    if let Some(dot) = ancestors(&element).find(|n| n.kind() == SyntaxKind::DOT_GET_EXPR)
+        && dot.text_range().end() == at.end()
+        && let Some(app) = dot
+            .first_child()
+            .filter(|c| c.kind() == SyntaxKind::TYPE_APP_EXPR)
+    {
+        let head = app.first_child()?;
+        return Some(Qualification::ByType {
+            arity: app.children().filter(|c| *c != head).count(),
+        });
+    }
+    let path = match &element {
+        // A lone identifier outside any dotted path (`A`, a pattern head).
+        NodeOrToken::Token(t) => match t.parent()? {
+            lid if lid.kind() == SyntaxKind::LONG_IDENT => lid,
+            _ => return Some(Qualification::Bare),
+        },
+        NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => n.clone(),
+        NodeOrToken::Node(n) => n.children().find(|c| c.kind() == SyntaxKind::LONG_IDENT)?,
+    };
+    let segments = path
+        .children_with_tokens()
+        .filter_map(NodeOrToken::into_token)
+        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        .count();
+    Some(if segments > 1 {
+        Qualification::ByType { arity: 0 }
+    } else {
+        Qualification::Bare
+    })
+}
+
 /// The constructors a type definition declares, as far as which one a call
 /// binds.
 enum Constructors {
     /// Only the primary constructor, whose doc is this.
     Primary(SourceDoc),
-    /// Some explicit `new`: which one a call binds is overload resolution.
-    Explicit,
+    /// Some explicit `new`, or a struct's generated parameterless one besides
+    /// the primary: which one a call binds is overload resolution.
+    Several,
     /// No constructor in the definition.
     None,
 }
@@ -1041,6 +1122,29 @@ impl<'a> ProjectDocs<'a> {
             .entry(file)
             .or_insert_with(|| SourceDocIndex::new(project_file.file.syntax()));
         let at_definition = file == from && at == def.range;
+        if matches!(
+            def.kind,
+            DefKind::Member | DefKind::UnionCase | DefKind::EnumCase
+        ) && !at_definition
+        {
+            let declaring = index.type_defn_of(def).map(|d| type_arity(&d));
+            match self
+                .files
+                .get(from)
+                .and_then(|f| qualification(f.file.syntax(), at))
+            {
+                Some(Qualification::Bare) => {}
+                Some(Qualification::ByType { arity }) if Some(arity) == declaring => {}
+                Some(Qualification::ByType { .. }) => {
+                    return Some(SourceDoc::Declined(
+                        SourceDocDecline::QualifierArityMismatch,
+                    ));
+                }
+                None => {
+                    return Some(SourceDoc::Declined(SourceDocDecline::UnmodelledOccurrence));
+                }
+            }
+        }
         if def.kind == DefKind::Type && !at_definition {
             let declared = index.type_defn_of(def).map(|d| type_arity(&d));
             let occurrence = self
@@ -1066,8 +1170,8 @@ impl<'a> ProjectDocs<'a> {
                 Some(TypeOccurrence::Constructor { .. }) => {
                     return Some(match index.constructors(def) {
                         Constructors::Primary(doc) => doc,
-                        Constructors::Explicit => {
-                            SourceDoc::Declined(SourceDocDecline::ExplicitConstructors)
+                        Constructors::Several => {
+                            SourceDoc::Declined(SourceDocDecline::ConstructorOverloads)
                         }
                         Constructors::None => SourceDoc::Declined(SourceDocDecline::NoConstructor),
                     });

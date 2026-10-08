@@ -27,8 +27,9 @@ src/Compiler/Driver/CreateILModule.fs:203:17 tcConfig Parameter use declined Nam
 src/Compiler/Driver/CreateILModule.fs:469:37 name Value { is_function: false } use declined NamedArgumentCandidate fcs-unpaired
 src/Compiler/Driver/CreateILModule.fs:634:37 tcConfig Parameter use declined NamedArgumentCandidate fcs-unpaired
 src/Compiler/Driver/XmlDocFileWriter.fs compared fcs-check-errors agree-doc=0 agree-none=181 unpaired-none=25
-src/Compiler/Facilities/prim-lexing.fs compared fcs-check-errors agree-doc=32 agree-none=546 unpaired-none=7
+src/Compiler/Facilities/prim-lexing.fs compared fcs-check-errors agree-doc=32 agree-none=545 unpaired-none=7
 src/Compiler/Facilities/prim-lexing.fs:170:15 ISourceTextNew Type use declined NoConstructor fcs-none
+src/Compiler/Facilities/prim-lexing.fs:382:9 FromArrayNoCopy Member use declined QualifierArityMismatch fcs-none
 src/Compiler/Facilities/prim-lexing.fs:382:9 LexBuffer Type use declined ArityMismatch fcs-none
 src/Compiler/Optimize/LowerStateMachines.fs compared fcs-check-errors agree-doc=43 agree-none=1210 unpaired-none=482
 src/Compiler/Optimize/LowerStateMachines.fs:380:37 IsStateMachineExpr Value { is_function: true } use unpaired-doc
@@ -143,8 +144,8 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttr
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/E_AttributeApplication04.fs compared fcs-clean agree-doc=0 agree-none=4 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/FreeTypeVariable01.fs compared fcs-clean agree-doc=0 agree-none=2 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs compared fcs-check-errors agree-doc=0 agree-none=6 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:14 CA1 Type use declined ExplicitConstructors fcs-none
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:28 CA1 Type use declined ExplicitConstructors fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:14 CA1 Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:28 CA1 Type use declined ConstructorOverloads fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/E_oninvalidlanguageelement001.fs compared fcs-clean agree-doc=0 agree-none=8 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/E_oninvalidlanguageelement001.fs:12:12 args Parameter use declined NamedArgumentCandidate fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/entrypointfunctionnotmain001.fs compared fcs-clean agree-doc=0 agree-none=8 unpaired-none=0
@@ -251,9 +252,15 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/I
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/MultipleInst05.fs compared fcs-check-errors agree-doc=0 agree-none=9 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_ImplicitCTorUse02.fs compared fcs-check-errors agree-doc=0 agree-none=3 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs compared fcs-check-errors agree-doc=0 agree-none=9 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs compared fcs-clean agree-doc=0 agree-none=25 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:31:14 field_is_RIP Type use declined NoConstructor fcs-none
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:31:34 field_is_RIP Type use declined NoConstructor fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs compared fcs-clean agree-doc=0 agree-none=19 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:28:14 RIP Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:28:25 RIP Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:29:14 arg_unused_is_RIP Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:29:45 arg_unused_is_RIP Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:30:14 arg_used_is_RIP Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:30:45 arg_used_is_RIP Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:31:14 field_is_RIP Type use declined ConstructorOverloads fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:31:34 field_is_RIP Type use declined ConstructorOverloads fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/E_ExtensionInNamespace01.fs compared fcs-check-errors agree-doc=0 agree-none=0 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs compared fcs-clean agree-doc=0 agree-none=3 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs compared fcs-check-errors agree-doc=0 agree-none=9 unpaired-none=0
@@ -293,8 +300,9 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputationExpressions/Computatio
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs compared fcs-clean agree-doc=0 agree-none=210 unpaired-none=5
 tests/FSharp.Compiler.ComponentTests/EmittedIL/DoNotBoxStruct/DoNotBoxStruct_Array_CSInterface.fs compared fcs-clean agree-doc=0 agree-none=5 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinAddressOfArrayElement.fs compared fcs-clean agree-doc=0 agree-none=10 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinStructTypeWithGetPinnableReferenceReturningByref.fs compared fcs-clean agree-doc=0 agree-none=34 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinStructTypeWithGetPinnableReferenceReturningByref.fs compared fcs-clean agree-doc=0 agree-none=33 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinStructTypeWithGetPinnableReferenceReturningByref.fs:25:13 ArrayElementRef Type use declined ArityMismatch fcs-none
+tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinStructTypeWithGetPinnableReferenceReturningByref.fs:25:13 Create Member use declined QualifierArityMismatch fcs-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs compared fcs-clean agree-doc=0 agree-none=89 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs compared fcs-clean agree-doc=0 agree-none=12 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs compared fcs-clean agree-doc=0 agree-none=6 unpaired-none=0
@@ -515,7 +523,8 @@ tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs:175:23 a Value { is_function: false } use declined NamedArgumentCandidate fcs-unpaired
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs:246:23 c Value { is_function: false } use declined NamedArgumentCandidate fcs-unpaired
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs:249:23 d Value { is_function: false } use declined NamedArgumentCandidate fcs-unpaired
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs compared fcs-check-errors agree-doc=7 agree-none=515 unpaired-none=47
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs compared fcs-check-errors agree-doc=7 agree-none=514 unpaired-none=47
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:468:42 Dummy Type use declined ConstructorOverloads fcs-none
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:93:57 cancellationToken Value { is_function: false } use declined NamedArgumentCandidate fcs-none
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/ExtraTopLevelOperatorsTests.fs compared fcs-check-errors agree-doc=0 agree-none=65 unpaired-none=92
 tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleChecked.fs compared fcs-check-errors agree-doc=0 agree-none=39 unpaired-none=38
@@ -601,7 +610,7 @@ tests/fsharp/core/topinit/test5.fs compared fcs-clean agree-doc=0 agree-none=44 
 tests/fsharp/core/versionAttributes/Warn2003_3.fs compared fcs-clean agree-doc=0 agree-none=0 unpaired-none=0
 tests/fsharp/regression/5531/test.fs compared fcs-clean agree-doc=0 agree-none=30 unpaired-none=0
 tests/fsharp/typeProviders/splitAssemblyTools/provider.fs compared fcs-clean agree-doc=0 agree-none=7 unpaired-none=0
-tests/fsharp/typeProviders/splitAssemblyTools/provider.fs:10:12 TypeProviderAssemblyAttribute Type use declined ExplicitConstructors fcs-none
+tests/fsharp/typeProviders/splitAssemblyTools/provider.fs:10:12 TypeProviderAssemblyAttribute Type use declined ConstructorOverloads fcs-none
 tests/fsharp/typecheck/sigs/neg07.fs compared fcs-check-errors agree-doc=0 agree-none=43 unpaired-none=5
 tests/fsharp/typecheck/sigs/neg11.fs compared fcs-clean agree-doc=0 agree-none=2 unpaired-none=0
 tests/fsharp/typecheck/sigs/neg120.fs compared fcs-check-errors agree-doc=0 agree-none=267 unpaired-none=1
