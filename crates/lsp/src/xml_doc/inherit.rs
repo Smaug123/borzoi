@@ -18,7 +18,8 @@
 //! - in the inherited entry, a `<typeparamref>` naming a type parameter of the
 //!   inherited symbol's containing types becomes `<see cref="…"/>` of the type
 //!   argument it is reached with, when that argument has a documentation ID
-//!   (`class D : B<int>` inherits "a `T:System.Int32`", not "a `T`");
+//!   (`class D : B<int>` inherits "a `T:System.Int32`", not "a `T`"); the name
+//!   is looked up innermost first, so a method's own `T` shadows its type's;
 //! - a symbol already being expanded on the current path is a cycle.
 //!
 //! So an entry with its own `<summary>` and a top-level `<inheritdoc/>` shows
@@ -35,9 +36,10 @@
 //! the comparison against Roslyn is per entry.
 //!
 //! Where Roslyn itself expands to nothing — no candidate, a cycle, an
-//! inherited symbol with no documentation, an XPath it cannot evaluate — this
-//! module declines too rather than delete the element: an `<inheritdoc>` whose
-//! inherited text is not shown is marked, never silently dropped.
+//! inherited symbol with no documentation, an XPath it cannot evaluate or
+//! that selects nothing to show — this module declines too rather than delete
+//! the element: an `<inheritdoc>` whose inherited text is not shown is marked,
+//! never silently dropped.
 
 use std::sync::Arc;
 
@@ -46,8 +48,8 @@ use borzoi_assembly::{Access, Member, Primitive, TypeRef};
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
 
 use super::candidate::{
-    Candidate, Instantiation, NoCandidate, Reached, Undecidable, candidate, il_faithful,
-    inherits_automatically, type_parameter_names,
+    Candidate, Instantiation, NoCandidate, ParameterSlot, Reached, Undecidable, candidate,
+    il_faithful, inherits_automatically, type_parameters_in_scope,
 };
 use super::key::{DocIdIndex, DocTarget, type_name};
 use super::lookup::{DocLookup, DocSources, Located, xml_path_for};
@@ -103,6 +105,10 @@ pub enum Decline {
     /// A result deeper than the renderer's bound, or larger than
     /// [`MAX_NODES`].
     TooLarge,
+    /// The path selects nothing to show from the inherited entry (no node,
+    /// or only whitespace): Roslyn removes the element, leaving nothing in
+    /// its place.
+    NothingSelected,
 }
 
 /// Why a `cref` does not name one symbol.
@@ -130,7 +136,8 @@ pub enum CrefMiss {
 pub enum TypeArgMiss {
     /// `System.Object`, which may be `dynamic` (whose ID is none).
     MaybeDynamic,
-    /// The argument's type does not bind.
+    /// The argument's type does not bind, or the inherited symbol's
+    /// enclosing types are unknown.
     Unbound,
     /// A type constructed from its own type parameters somewhere other than
     /// where the rendering of that case is modelled.
@@ -372,8 +379,8 @@ impl Walk<'_> {
             }
             Err(miss) => return Err(Decline::InheritedDoc(Box::new(miss))),
         };
-        let names = all_type_parameter_names(self.env, target.target);
-        rewrite_type_param_refs(self.env, &target.inst, &names, &mut inherited)?;
+        let in_scope = type_parameters_in_scope(self.env, target.target);
+        rewrite_type_param_refs(self.env, &target.inst, in_scope.as_deref(), &mut inherited)?;
         let path = match element.attribute("path") {
             Some(path) if !path.is_empty() => authored_path(path),
             _ => {
@@ -382,7 +389,15 @@ impl Walk<'_> {
             }
         }
         .map_err(Decline::Path)?;
-        Ok(path.select(&inherited))
+        let selected = path.select(&inherited);
+        let shows_something = selected.iter().any(|n| match n {
+            DocNode::Element(_) => true,
+            DocNode::Text(t) => !t.trim().is_empty(),
+        });
+        if !shows_something {
+            return Err(Decline::NothingSelected);
+        }
+        Ok(selected)
     }
 
     /// The symbol a `cref` names, as Roslyn's
@@ -502,26 +517,17 @@ pub fn roslyn_imports(env: &AssemblyEnv, target: DocTarget) -> bool {
     }
 }
 
-/// Roslyn's `GetAllTypeParameters` of a target's original definition: its
-/// containing types' parameters, outermost first, then a method's own.
-fn all_type_parameter_names(env: &AssemblyEnv, target: DocTarget) -> Vec<String> {
-    let mut names = type_parameter_names(env, target.owner()).unwrap_or_default();
-    if let DocTarget::Member { parent, idx } = target
-        && let Member::Method(m) = env.member_at(parent, idx)
-    {
-        names.extend(m.generic_parameters.iter().map(|p| p.name.clone()));
-    }
-    names
-}
-
 /// Rewrite, in `root`, each `<typeparamref name="T"/>` naming a containing
 /// type's parameter of the inherited symbol to `<see cref="…"/>` of the type
 /// argument `inst` gives it, when that argument has a documentation ID that
-/// is not an error ID (`!:`) — Roslyn's `RewriteInheritdocElement`.
+/// is not an error ID (`!:`) — Roslyn's `RewriteInheritdocElement`. The name
+/// is the first of `in_scope` (innermost first) to match; a method's own type
+/// parameter is its own argument, whose ID is an error ID. `in_scope` is
+/// `None` where the inherited symbol's type parameters are unknown.
 fn rewrite_type_param_refs(
     env: &AssemblyEnv,
     inst: &Instantiation,
-    names: &[String],
+    in_scope: Option<&[(String, ParameterSlot)]>,
     root: &mut DocElement,
 ) -> Result<(), Decline> {
     for child in &mut root.children {
@@ -531,9 +537,11 @@ fn rewrite_type_param_refs(
         if e.name == "typeparamref"
             && let Some(name) = e.attribute("name")
         {
-            let replacement = match names.iter().position(|n| n == name) {
-                Some(index) if index < inst.args.len() => {
-                    type_argument_id(env, inst, &inst.args[index]).map_err(Decline::TypeParamRef)?
+            let in_scope = in_scope.ok_or(Decline::TypeParamRef(TypeArgMiss::Unbound))?;
+            let replacement = match in_scope.iter().find(|(n, _)| n == name) {
+                Some((_, ParameterSlot::Type(index))) if *index < inst.args.len() => {
+                    type_argument_id(env, inst, &inst.args[*index])
+                        .map_err(Decline::TypeParamRef)?
                 }
                 _ => None,
             };
@@ -546,7 +554,7 @@ fn rewrite_type_param_refs(
                 continue;
             }
         }
-        rewrite_type_param_refs(env, inst, names, e)?;
+        rewrite_type_param_refs(env, inst, in_scope, e)?;
     }
     Ok(())
 }

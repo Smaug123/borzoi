@@ -40,7 +40,7 @@
 use borzoi_assembly::doc_id::type_enc;
 use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, ImplementedMember, InterfaceMemberImpl, Member,
-    NullableType, TypeRef,
+    NullableType, Primitive, TypeRef,
 };
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition, MemberIndex};
 
@@ -173,33 +173,23 @@ impl Instantiation {
 
 /// A type's identity as Roslyn compares types: by the definition each named
 /// type binds to ([`AssemblyEnv::il_type_definition`]), not by its name — two
-/// assemblies may define the same full name — and, for one no loaded assembly
-/// defines, by the full identity of the assembly the reference names, which
-/// is what Roslyn's missing-type symbols compare by. `ty` must name its
-/// assemblies explicitly (every same-module reference qualified); `None` where the binding is
-/// ambiguous or uncertain.
+/// assemblies may define the same full name. `ty` must name its assemblies
+/// explicitly (every same-module reference qualified); `None` where the
+/// binding is not a definition.
+///
+/// A type no loaded assembly defines has no key. Roslyn compares such a
+/// missing type by where its reference lands — the loaded assembly of that
+/// simple name, whatever version the reference asked for, or else a missing
+/// assembly of the reference's full identity, culture included — and the
+/// model keeps neither the culture nor which loaded assembly Roslyn's
+/// unification picks. So equality and inequality alike are unproven, and
+/// every comparison over such a type declines.
 pub fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<String> {
     Some(match ty {
         TypeRef::Primitive(_) | TypeRef::Var { .. } => type_enc(ty),
-        TypeRef::Named {
-            assembly,
-            namespace,
-            name,
-            type_args,
-            segment_arities,
-        } => {
+        TypeRef::Named { type_args, .. } => {
             let head = match env.il_type_definition(from, ty) {
                 IlTypeDefinition::Resolved(def) => format!("{def:?}"),
-                IlTypeDefinition::NotFound => {
-                    let assembly = assembly.as_ref()?;
-                    format!(
-                        "missing {} {:?} {:?} {}.{name} {segment_arities:?}",
-                        assembly.name,
-                        assembly.version,
-                        assembly.public_key_token,
-                        namespace.join(".")
-                    )
-                }
                 _ => return None,
             };
             let args = type_args
@@ -312,6 +302,11 @@ pub enum Undecidable {
     /// type, whose base it dereferences unchecked — and the exception
     /// abandons the whole expansion.
     RoslynThrows,
+    /// A base constructor whose signature matches by runtime type, over a
+    /// type that may hide a distinction Roslyn's constructor rule compares —
+    /// `object` (or `dynamic`), a native-sized integer (or `nint`), a tuple
+    /// (its element names) — carried in an attribute the model does not keep.
+    AttributeCarriedDistinction,
 }
 
 impl From<Undecidable> for Candidate {
@@ -1182,6 +1177,15 @@ fn constructor_candidate(
     }
     match found.as_slice() {
         [] => Candidate::None(NoCandidate::NoBaseConstructor),
+        // Roslyn's `IsSameSignature` compares parameter types with the
+        // default symbol comparer, which sees `dynamic`, tuple element names
+        // and `nint` where the runtime comparison above does not. A match
+        // here is a match to Roslyn unless the signature holds such a type;
+        // a match shares its types' structure with `member`'s, so `member`'s
+        // types decide.
+        [_] if signature_may_hide_attribute_distinction(member, inst) => {
+            Undecidable::AttributeCarriedDistinction.into()
+        }
         [idx] => Candidate::Found(Reached {
             target: DocTarget::Member {
                 parent: base,
@@ -1190,6 +1194,50 @@ fn constructor_candidate(
             inst: base_inst,
         }),
         _ => Undecidable::AmbiguousMatch.into(),
+    }
+}
+
+/// Whether a constructor's parameter types, under `inst`, hold a type whose C#
+/// reading may rest on an attribute the model does not keep (see
+/// [`Undecidable::AttributeCarriedDistinction`]). The instantiation's
+/// arguments count, read from metadata as they are; a type parameter left in
+/// the context is itself, never `dynamic`.
+fn signature_may_hide_attribute_distinction(member: &Member, inst: &Instantiation) -> bool {
+    match member {
+        Member::Method(m) => m.signature.parameters.iter().any(|p| {
+            inst.apply(&p.ty)
+                .is_none_or(|t| may_hide_attribute_distinction(&t))
+        }),
+        _ => true,
+    }
+}
+
+fn may_hide_attribute_distinction(ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Primitive(p) => matches!(
+            p,
+            Primitive::Object | Primitive::IntPtr | Primitive::UIntPtr
+        ),
+        TypeRef::Var { .. } => false,
+        TypeRef::Named {
+            namespace,
+            name,
+            type_args,
+            ..
+        } => {
+            (namespace.len() == 1
+                && namespace[0] == "System"
+                && (matches!(name.as_str(), "Object" | "IntPtr" | "UIntPtr")
+                    || name.starts_with("ValueTuple")))
+                || type_args
+                    .iter()
+                    .any(|a| may_hide_attribute_distinction(&a.ty))
+        }
+        TypeRef::Array { element, .. } => may_hide_attribute_distinction(&element.ty),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
+            may_hide_attribute_distinction(inner)
+        }
+        TypeRef::Ptr(None) => false,
     }
 }
 
@@ -1422,17 +1470,51 @@ fn interface_candidate(
     Candidate::None(NoCandidate::ImplementsNothing)
 }
 
-/// The cumulative type-parameter names of `handle` as Roslyn's
-/// `GetAllTypeParameters` lists them: each from the level that introduces it,
-/// outermost first.
-pub fn type_parameter_names(env: &AssemblyEnv, handle: EntityHandle) -> Option<Vec<String>> {
-    let chain = env.enclosing_chain_from_root(handle)?;
-    let mut names = Vec::new();
-    for link in chain {
-        let own = &env.entity(link).generic_parameters;
-        names.extend(own.iter().skip(names.len()).map(|p| p.name.clone()));
+/// Where a type parameter in scope of a symbol takes its argument from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterSlot {
+    /// A method's own type parameter: its argument is itself.
+    Method,
+    /// The declaring type's cumulative type parameter of this position.
+    Type(usize),
+}
+
+/// The type parameters in scope of `target`'s definition as Roslyn's
+/// `GetAllTypeParameters` lists them: innermost first — a method's own, then
+/// the declaring type's own, then each enclosing type's own, outward — so a
+/// name declared at two levels is found at the inner. `None` where the
+/// enclosing chain is unknown.
+pub fn type_parameters_in_scope(
+    env: &AssemblyEnv,
+    target: DocTarget,
+) -> Option<Vec<(String, ParameterSlot)>> {
+    let mut out = Vec::new();
+    if let DocTarget::Member { parent, idx } = target
+        && let Member::Method(m) = env.member_at(parent, idx)
+    {
+        out.extend(
+            m.generic_parameters
+                .iter()
+                .map(|p| (p.name.clone(), ParameterSlot::Method)),
+        );
     }
-    Some(names)
+    // A nested type's metadata redeclares its enclosers' parameters first;
+    // a level's own are those past its encloser's count.
+    let mut levels = Vec::new();
+    let mut enclosing = 0;
+    for link in env.enclosing_chain_from_root(target.owner())? {
+        let all = &env.entity(link).generic_parameters;
+        levels.push(
+            all.iter()
+                .enumerate()
+                .skip(enclosing)
+                .map(|(i, p)| (p.name.clone(), ParameterSlot::Type(i)))
+                .collect::<Vec<_>>(),
+        );
+        enclosing = enclosing.max(all.len());
+    }
+    out.extend(levels.into_iter().rev().flatten());
+    Some(out)
 }
 
 /// The entity a [`DocTarget`] is declared on.

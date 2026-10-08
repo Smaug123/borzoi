@@ -100,12 +100,22 @@ internal static class Program
         return reference;
     }
 
+    /// <summary>
+    /// The compilation over <paramref name="references"/>, reused while the set is unchanged. Only the current
+    /// set's metadata references stay cached: a test binary compiles thousands of fixtures, and each brings
+    /// new DLLs, while the reference pack they share is carried from one set to the next.
+    /// </summary>
     private static CSharpCompilation CompilationOf(IReadOnlyList<string> references)
     {
         var key = string.Join("\n", references);
         if (s_compilation is null || s_compilationKey != key)
         {
-            s_compilation = CSharpCompilation.Create("InheritdocOracleConsumer", references: references.Select(Reference));
+            var current = references.Select(Reference).ToList();
+            foreach (var stale in s_references.Keys.Except(references).ToList())
+            {
+                s_references.Remove(stale);
+            }
+            s_compilation = CSharpCompilation.Create("InheritdocOracleConsumer", references: current);
             s_compilationKey = key;
         }
         return s_compilation;
