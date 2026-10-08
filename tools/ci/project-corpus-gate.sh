@@ -28,10 +28,13 @@ if [ -z "${BORZOI_PROJECT_LIST:-}" ]; then
   export GITHUB_ENV="$RUNNER_TEMP/corpus-env"
   : >"$GITHUB_ENV"
   bash tools/ci/project-corpus.sh
-  set -a
-  # shellcheck disable=SC1090
-  . "$GITHUB_ENV"
-  set +a
+  # Read as data, not sourced: the values are paths, and a cache directory
+  # with a space in its name must not turn into a command.
+  while IFS='=' read -r key value; do
+    case "$key" in
+      BORZOI_PROJECT_LIST | BORZOI_PROJECT_PINNED) export "$key=$value" ;;
+    esac
+  done <"$GITHUB_ENV"
 fi
 : "${RUNNER_TEMP:?must be set alongside BORZOI_PROJECT_LIST}"
 
