@@ -181,6 +181,7 @@ enum Template {
     ValField,
     AutoOpenModule,
     RecModule,
+    Struct,
 }
 
 const TEMPLATES: &[Template] = &[
@@ -225,6 +226,7 @@ const TEMPLATES: &[Template] = &[
     Template::ValField,
     Template::AutoOpenModule,
     Template::RecModule,
+    Template::Struct,
 ];
 
 /// How many inner prelude slots a template has.
@@ -497,12 +499,30 @@ impl Item {
                 ));
             }
             // `CN.M` binds whichever `CN` declares `M`: here the generic one.
+            // Members of each, documented, including one both declare.
             Template::QualifierNamesakes => {
                 attr(out);
-                out.push_str(&format!("type CN{n} =\n    static member Other{n} = 0\n"));
+                out.push_str(&format!("type CN{n} =\n"));
+                slot(1, "    ", out);
+                out.push_str(&format!("    static member Other{n} = 0\n"));
+                slot(2, "    ", out);
+                out.push_str(&format!("    static member Both{n} = 0\n"));
                 slot(0, "", out);
+                out.push_str(&format!("type CN{n}<'a> =\n"));
+                slot(3, "    ", out);
+                out.push_str(&format!("    static member M{n} = 1\n"));
+                slot(1, "    ", out);
                 out.push_str(&format!(
-                    "type CN{n}<'a> =\n    static member M{n} = 1\nlet _ = CN{n}.M{n}, CN{n}.Other{n}"
+                    "    static member Both{n} = 1\nlet _ = CN{n}.M{n}, CN{n}.Other{n}, CN{n}.Both{n}, CN<int>.Both{n}"
+                ));
+            }
+            // A struct's call may bind its generated parameterless constructor.
+            Template::Struct => {
+                out.push_str("[<Struct>]\n");
+                out.push_str(&format!("type ST{n}\n"));
+                slot(0, "    ", out);
+                out.push_str(&format!(
+                    "    (x: int) =\n    member _.X = x\nlet _ = new ST{n}(), new ST{n}(1), ST{n}(2)"
                 ));
             }
             // A doc on an accessor, merged by FCS into the property's.
