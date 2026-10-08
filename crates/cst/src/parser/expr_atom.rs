@@ -38,16 +38,26 @@ impl<'src> Parser<'src> {
     /// `expr.[index]` (`DotIndexedGet`), interleaved left-associatively. The
     /// head dispatch lives in [`Self::parse_atomic_expr_head`].
     pub(super) fn parse_atomic_expr(&mut self) {
+        let _ = self.parse_atomic_expr_flagged();
+    }
+
+    /// [`Self::parse_atomic_expr`], returning whether the expression ends in
+    /// an adjacent application (FCS's `atomicExpr` flag, which `argExpr`
+    /// reads; see [`EndsInAdjacentApp`]).
+    pub(super) fn parse_atomic_expr_flagged(&mut self) -> EndsInAdjacentApp {
         // Depth-guarded: with `parse_minus_expr`, one of the two universal
         // expression chokepoints. Every nesting level of the main cycle passes
         // through here (paren / brace / CE / app-argument atoms), and the
         // atomic-level prefix `!`/`~` chains (`! ! … x`) re-enter here per
         // operator — a path that bypasses `parse_minus_expr`. Guarding the body
-        // bounds them all; the recursion re-enters this public wrapper.
-        self.with_depth(Self::parse_atomic_expr_inner);
+        // bounds them all; the recursion re-enters this public wrapper. A parse
+        // cut off by the limit has no flag to report.
+        let mut ends = EndsInAdjacentApp::No;
+        self.with_depth(|p| ends = p.parse_atomic_expr_inner());
+        ends
     }
 
-    fn parse_atomic_expr_inner(&mut self) {
+    fn parse_atomic_expr_inner(&mut self) -> EndsInAdjacentApp {
         // Checkpoint the head so the postfix tail can splice it under an
         // `APP_EXPR` / `DOT_GET_EXPR` / `DOT_INDEXED_GET_EXPR` wrapper. With no
         // postfix following, the checkpoint goes unused and the green tree is
@@ -67,23 +77,26 @@ impl<'src> Parser<'src> {
         // arguments: there the `.Bar` of `f(+).Bar` must bind to the whole
         // application (`DotGet(App(f, (+)), [Bar])`), so the `(+)` argument stays
         // head-only (`fold = false`).
-        if self.at_paren_op_value(self.pos) {
+        let head = if self.at_paren_op_value(self.pos) {
             self.parse_paren_op_value_expr(true);
+            EndsInAdjacentApp::No
         } else if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::LParenStarRParen)), _))
         ) {
             self.parse_star_op_value_expr(true);
+            EndsInAdjacentApp::No
         } else if self.at_active_pat_name() {
             // A bare active-pattern-name value `(|Foo|_|)` — FCS's `identExpr:
             // opName`, the same single-segment `SynExpr.LongIdent` an
             // operator-value produces (`fold = true` so `(|Foo|_|).Bar` folds
             // its trailing `.member` onto the name, as `(+).Bar` does).
             self.parse_active_pat_name_expr(true);
+            EndsInAdjacentApp::No
         } else {
-            self.parse_atomic_expr_head();
-        }
-        self.parse_postfix_tail(cp, head_start);
+            self.parse_atomic_expr_head()
+        };
+        self.parse_postfix_tail(cp, head_start, head)
     }
 
     /// The atomic-expression head dispatch, before the postfix dot/index
@@ -100,10 +113,14 @@ impl<'src> Parser<'src> {
     /// its own postfix tail: a trailing `(y)` / `.Bar` chains onto the whole
     /// application via that loop, not onto the argument (`f(x).Bar` =
     /// `DotGet(App(f, (x)), …)`).
-    pub(super) fn parse_atomic_expr_head(&mut self) {
+    ///
+    /// Returns the head's [`EndsInAdjacentApp`] flag. Only a prefix-operator
+    /// head (`!f(x)`, FCS's `PREFIX_OP atomicExpr`) can set it, by passing on
+    /// its operand's; every other head is a self-contained atom.
+    pub(super) fn parse_atomic_expr_head(&mut self) -> EndsInAdjacentApp {
         match self.peek().cloned() {
             Some((Ok(FilteredToken::Raw(Token::Op(text))), _)) if is_prefix_op_text(text) => {
-                self.parse_prefix_op_app();
+                return self.parse_prefix_op_app();
             }
             Some((Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))), _)) => {
                 self.parse_ident_expr();
@@ -267,6 +284,7 @@ impl<'src> Parser<'src> {
             }
             _ => self.parse_const_expr(),
         }
+        EndsInAdjacentApp::No
     }
 
     /// `true` when the cursor's `?` opens an optional-named-argument expression
@@ -2249,7 +2267,7 @@ impl<'src> Parser<'src> {
             self.bump_into(SyntaxKind::ERROR);
         }
         if self.peek_starts_aftertype_arg() {
-            self.parse_atomic_expr_head();
+            let _ = self.parse_atomic_expr_head();
         }
         self.builder.finish_node(); // INHERIT_MEMBER
     }
@@ -3305,7 +3323,19 @@ impl<'src> Parser<'src> {
     /// `LONG_IDENT_EXPR` — so that arm only fires after a non-ident head
     /// (paren, indexer, a high-precedence application, …), matching FCS's
     /// `mkSynDot` (which keeps an ident-rooted chain as `SynExpr.LongIdent`).
-    fn parse_postfix_tail(&mut self, cp: rowan::Checkpoint, head_start: Option<usize>) {
+    ///
+    /// `head` is the head's [`EndsInAdjacentApp`] flag; the loop returns the
+    /// whole expression's, following FCS's productions: an adjacent paren
+    /// application sets it, a `.member`, `.[index]` or `?name` passes the
+    /// receiver's on, and a bracket indexer, a type application or a measure
+    /// annotation clears it.
+    fn parse_postfix_tail(
+        &mut self,
+        cp: rowan::Checkpoint,
+        head_start: Option<usize>,
+        head: EndsInAdjacentApp,
+    ) -> EndsInAdjacentApp {
+        let mut ends = head;
         loop {
             // Only a raw-adjacent `.` continues a postfix access — a dot reached
             // only by crossing a LexFilter-swallowed `)` belongs to an
@@ -3358,7 +3388,7 @@ impl<'src> Parser<'src> {
                         .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::DOT_MISSING_EXPR));
                     self.bump_into(SyntaxKind::DOT_TOK);
                     self.builder.finish_node();
-                    return;
+                    return ends;
                 }
             } else if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::QMark)), _)))
                 && self.cursor_is_raw_adjacent()
@@ -3394,9 +3424,10 @@ impl<'src> Parser<'src> {
                 self.builder
                     .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
                 self.bump_into(SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK);
-                self.parse_atomic_expr_head();
+                let _ = self.parse_atomic_expr_head();
                 self.check_adjacent_malformed_numeric();
                 self.builder.finish_node();
+                ends = EndsInAdjacentApp::Yes;
             } else if self.peek_high_precedence_brack_app() {
                 // `arr[i]` — adjacent (no-whitespace) bracket indexer. LexFilter
                 // emits the marker only when `[` is adjacent to an *ident*, so it
@@ -3417,6 +3448,7 @@ impl<'src> Parser<'src> {
                 self.bump_into(SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK);
                 self.parse_array_or_list_expr();
                 self.builder.finish_node();
+                ends = EndsInAdjacentApp::No;
             } else if self.peek_is_tyapp_marker() && self.prev_filtered_is_measure_numeric() {
                 // `1.0<ml>` — a measure-annotated numeric constant. FCS's
                 // `rawConstant HIGH_PRECEDENCE_TYAPP measureTypeArg`
@@ -3426,6 +3458,7 @@ impl<'src> Parser<'src> {
                 // than a `SynExpr.TypeApp`. Wrap the accumulated `CONST_EXPR` at
                 // `cp` in a `MEASURE_LIT_EXPR`.
                 self.parse_measure_lit_tail(cp);
+                ends = EndsInAdjacentApp::No;
             } else if self.peek_is_tyapp_marker() {
                 // `f<int>` — adjacent generic type application. LexFilter emits
                 // the `HighPrecedenceTyApp` virtual between the head and an
@@ -3437,8 +3470,9 @@ impl<'src> Parser<'src> {
                 // LexFilter, as in `ResizeArray<_>()`) chains onto the *whole*
                 // type application via the next iteration of this loop.
                 self.parse_type_app_tail(cp);
+                ends = EndsInAdjacentApp::No;
             } else {
-                return;
+                return ends;
             }
         }
     }

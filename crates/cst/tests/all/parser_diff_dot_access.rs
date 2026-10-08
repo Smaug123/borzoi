@@ -5,9 +5,7 @@
 //! instead; the non-dotted `arr[i]` indexer is phase 10.16c
 //! (`parser_diff_brack_index.rs`).
 
-use crate::common;
-
-use crate::common::{assert_asts_match, assert_asts_match_fcs_rejects_ours_accepts};
+use crate::common::{assert_asts_match, assert_asts_match_with_diagnostic};
 use borzoi_cst::parser::parse;
 
 // ---- DotIndexedGet (`expr.[index]`) reads -------------------------------
@@ -247,10 +245,11 @@ fn diff_ast_curried_paren_app_dot_get() {
 
 /// Phase 10.16b — a high-precedence application as a *whitespace* argument:
 /// `g f(x)` → `App(g, App(Atomic, f, Paren x))` = `g (f(x))`. The adjacent
-/// `f(x)` binds tighter than the surrounding whitespace application.
+/// `f(x)` binds tighter than the surrounding whitespace application. FCS
+/// reports FS0597 at `f(x)` and keeps that tree.
 #[test]
 fn diff_ast_paren_app_as_whitespace_arg() {
-    assert_asts_match_fcs_rejects_ours_accepts("let y = g f(x)\n");
+    assert_asts_match_with_diagnostic("let y = g f(x)\n", 597);
 }
 
 // ---- Library-only cons-cell field access (`expr.( :: ).N`) --------------
@@ -269,35 +268,35 @@ fn diff_ast_paren_app_as_whitespace_arg() {
 /// `LibraryOnlyUnionCaseFieldSet(Ident "cons", ["op_ColonColon"], 1, Ident "tail", _)`.
 #[test]
 fn diff_cons_field_set() {
-    common::assert_asts_match_with_diagnostic("let f cons tail = cons.( :: ).1 <- tail\n", 42);
+    assert_asts_match_with_diagnostic("let f cons tail = cons.( :: ).1 <- tail\n", 42);
 }
 
 /// The get form (the building block; no bare get appears in FSharp.Core) —
 /// `cons.( :: ).0`. FCS: `LibraryOnlyUnionCaseFieldGet(Ident "cons", ["op_ColonColon"], 0, _)`.
 #[test]
 fn diff_cons_field_get() {
-    common::assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0\n", 42);
+    assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0\n", 42);
 }
 
 /// The object can be any expression, not just an ident — `(g x).( :: ).1`
 /// applies the qualification to a parenthesised application.
 #[test]
 fn diff_cons_field_get_on_paren_app() {
-    common::assert_asts_match_with_diagnostic("let f g x = (g x).( :: ).1\n", 42);
+    assert_asts_match_with_diagnostic("let f g x = (g x).( :: ).1\n", 42);
 }
 
 /// A radix (hex) field number — FCS's grammar token here is `INT32`, which
 /// admits `0x`/`0o`/`0b` spellings. `cons.( :: ).0x1` is `fieldNum = 1`.
 #[test]
 fn diff_cons_field_get_hex_field() {
-    common::assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0x1\n", 42);
+    assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0x1\n", 42);
 }
 
 /// The `base` receiver — `base.( :: ).1`. FCS's `BASE DOT atomicExprQualification`
 /// keeps `base` a single `SynExpr.Ident` (not a one-segment `LongIdent`).
 #[test]
 fn diff_cons_field_get_on_base() {
-    common::assert_asts_match_with_diagnostic(
+    assert_asts_match_with_diagnostic(
         "type T() =\n    inherit System.Object()\n    member _.M c = base.( :: ).1\n",
         42,
     );
@@ -308,15 +307,15 @@ fn diff_cons_field_get_on_base() {
 /// after the `.M` segment stops at `::`).
 #[test]
 fn diff_cons_field_get_on_member_chain() {
-    common::assert_asts_match_with_diagnostic("let h g x = (g x).M.( :: ).1\n", 42);
+    assert_asts_match_with_diagnostic("let h g x = (g x).M.( :: ).1\n", 42);
 }
 
 /// An int32-suffixed field number — `cons.( :: ).1l` (lowercase `l` is the int32
 /// suffix; FCS lexes it `INT32`). `0x1l` combines the suffix with a radix body.
 #[test]
 fn diff_cons_field_get_int32_suffix() {
-    common::assert_asts_match_with_diagnostic("let f cons = cons.( :: ).1l\n", 42);
-    common::assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0x1l\n", 42);
+    assert_asts_match_with_diagnostic("let f cons = cons.( :: ).1l\n", 42);
+    assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0x1l\n", 42);
 }
 
 /// A high-bit field number is decoded as signed `int` (two's-complement),
@@ -324,6 +323,6 @@ fn diff_cons_field_get_int32_suffix() {
 /// u32-overflowing decimal `2147483648` is `-2147483648`.
 #[test]
 fn diff_cons_field_get_high_bit_field() {
-    common::assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0xFFFFFFFF\n", 42);
-    common::assert_asts_match_with_diagnostic("let f cons = cons.( :: ).2147483648\n", 42);
+    assert_asts_match_with_diagnostic("let f cons = cons.( :: ).0xFFFFFFFF\n", 42);
+    assert_asts_match_with_diagnostic("let f cons = cons.( :: ).2147483648\n", 42);
 }
