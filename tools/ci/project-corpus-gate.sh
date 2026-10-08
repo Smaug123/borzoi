@@ -44,4 +44,4 @@ nix develop --command env \
   BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
   BORZOI_PROJECT_MANIFEST="$repo/crates/corpus-diff/manifests/project_corpus.txt" \
   BORZOI_PROJECT_MANIFEST_ROOT="$RUNNER_TEMP/project-corpus" \
-  cargo run --locked -p borzoi-corpus-diff
+  cargo run --locked --profile gate -p borzoi-corpus-diff

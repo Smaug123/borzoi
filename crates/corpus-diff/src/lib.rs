@@ -35,7 +35,11 @@ use borzoi_sema::{
     OpenOpacity, Resolution, ResolvedFile, ResolvedProject, infer_file,
 };
 
+pub mod handler_diff;
+pub mod lsp_client;
 pub mod manifest;
+pub mod perturb;
+pub mod utf16;
 
 // The oracle's structural naming of a declaration is shared with the LSP
 // crate's `resolve_real_project_diff`, which compares the same two sides on one
@@ -232,6 +236,19 @@ pub struct LoadOptions {
     pub build_properties: HashMap<String, String>,
 }
 
+/// The workspace the LSP evaluates projects in, with the corpus runner's
+/// extra MSBuild properties.
+fn workspace_with(build_properties: HashMap<String, String>) -> Workspace {
+    if build_properties.is_empty() {
+        Workspace::new()
+    } else {
+        Workspace::with_env_and_extra_build_properties(
+            SdkDiscoveryEnv::from_process_env(),
+            build_properties,
+        )
+    }
+}
+
 /// Load `project` exactly through [`Workspace`] + [`SemanticState`].
 pub fn load_lsp_project(project: &Path) -> Result<LoadedProject, LoadSkip> {
     load_lsp_project_with_limits(project, LoadLimits::default())
@@ -258,14 +275,7 @@ pub fn load_lsp_project_with_options(
     project: &Path,
     options: &LoadOptions,
 ) -> Result<LoadedProject, LoadSkip> {
-    let mut workspace = if options.build_properties.is_empty() {
-        Workspace::new()
-    } else {
-        Workspace::with_env_and_extra_build_properties(
-            SdkDiscoveryEnv::from_process_env(),
-            options.build_properties.clone(),
-        )
-    };
+    let mut workspace = workspace_with(options.build_properties.clone());
     let mut semantic = SemanticState::new();
     let docs: HashMap<Url, String> = HashMap::new();
 
@@ -678,6 +688,15 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Invoke `tools/fcs-dump uses-project` for an already-loaded project.
 pub fn invoke_fcs_uses_project(loaded: &LoadedProject) -> Result<String, FcsInvokeError> {
+    invoke_fcs_uses_paths(loaded, &loaded.parses.paths)
+}
+
+/// Invoke `tools/fcs-dump uses-project` on `paths`, in that order, with
+/// `loaded`'s reference set, defines and language version.
+fn invoke_fcs_uses_paths(
+    loaded: &LoadedProject,
+    paths: &[PathBuf],
+) -> Result<String, FcsInvokeError> {
     let mut cmd = fcs_dump_command("uses-project")?;
     if !loaded.fcs_extra_refs.is_empty() {
         cmd.env(
@@ -732,7 +751,7 @@ pub fn invoke_fcs_uses_project(loaded: &LoadedProject) -> Result<String, FcsInvo
     // healthy but large project would be killed and recorded as skipped, quietly
     // shrinking the corpus the diff claims to cover.
     let out = BoundedCommand::new(cmd)
-        .stdin_lines(loaded.parses.paths.iter().map(|p| p.display().to_string()))
+        .stdin_lines(paths.iter().map(|p| p.display().to_string()))
         .timeout(PROJECT_TIMEOUT)
         .run()
         .map_err(FcsInvokeError::Harness)?;
@@ -865,6 +884,10 @@ pub struct ProjectUse {
     /// pattern itself. See [`SkippedUses::compiler_generated`].
     pub is_compiler_generated: bool,
     pub decl: UseDecl,
+    /// What kind of symbol FCS says this is: `member`, `type`, `module`,
+    /// `namespace`, `unioncase`, `field`, `activepatterncase` or
+    /// `genericparameter`. `None` where the oracle could not say.
+    pub symbol_kind: Option<String>,
     pub assembly: Option<String>,
     pub full_name: Option<String>,
     /// The entity the used symbol is declared in, named **structurally** —
@@ -1084,6 +1107,8 @@ struct RawUse {
     is_constructor: Option<bool>,
     #[serde(rename = "IsCompilerGenerated", default)]
     is_compiler_generated: Option<bool>,
+    #[serde(rename = "SymbolKind", default)]
+    symbol_kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1155,6 +1180,7 @@ pub fn parse_project_uses(
                         end: idx.offset(u.range.end.line, u.range.end.col),
                         is_from_definition: u.is_from_definition,
                         is_compiler_generated: u.is_compiler_generated.unwrap_or(false),
+                        symbol_kind: u.symbol_kind,
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
@@ -2142,6 +2168,9 @@ pub enum ProjectVerdict {
         assets: ProjectAssetsStatus,
         sources: Vec<(PathBuf, Arc<str>)>,
         comparison: Box<Comparison>,
+        /// What the request handlers answered over the protocol, and how that
+        /// compares with the oracle ([`handler_diff`]).
+        handlers: Box<handler_diff::HandlerReport>,
     },
     Skipped(ProjectSkip),
 }
@@ -2165,6 +2194,10 @@ pub enum ProjectSkip {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectCorpusRunOptions {
     pub build_properties: HashMap<String, String>,
+    /// One record in this many is asked every handler question
+    /// ([`handler_diff`]); `None` is [`handler_diff::SAMPLE_STRIDE`]. A fixture
+    /// small enough to ask everything sets one.
+    pub handler_sample_stride: Option<NonZeroUsize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2197,6 +2230,10 @@ pub enum CorpusRunFailure {
     },
     SoundnessGate {
         max_divergences: usize,
+        divergences: usize,
+    },
+    /// A request handler answered wrongly ([`handler_diff`]).
+    HandlerDivergences {
         divergences: usize,
     },
     /// The run could not be rendered as a manifest.
@@ -2255,6 +2292,9 @@ impl fmt::Display for CorpusRunFailure {
                 f,
                 "project resolution divergences ({divergences} > {max_divergences})"
             ),
+            Self::HandlerDivergences { divergences } => {
+                write!(f, "LSP handler divergences ({divergences} > 0)")
+            }
             Self::ManifestUnrenderable(e) => write!(f, "manifest: {e}"),
             Self::ManifestMismatch(diff) => f.write_str(diff),
         }
@@ -2286,18 +2326,23 @@ pub fn run_project_corpus_diff_with_options(
         limits: LoadLimits { max_files },
         build_properties: options.build_properties,
     };
+    let stride = options
+        .handler_sample_stride
+        .unwrap_or(handler_diff::SAMPLE_STRIDE);
 
     let mut projects = Vec::new();
     for project in visited {
         summary.record_project_visited();
-        let verdict = match visit_project(&project, &load_options, &mut summary) {
-            Ok((assets, sources, comparison)) => {
+        let verdict = match visit_project(&project, &load_options, stride, &mut summary) {
+            Ok((assets, sources, comparison, handlers)) => {
                 summary.record_comparison(&comparison);
                 record_divergence_details(&comparison, &mut divergence_details);
+                divergence_details.extend(handlers.divergences.iter().map(|d| d.render()));
                 ProjectVerdict::Comparable {
                     assets,
                     sources,
                     comparison: Box::new(comparison),
+                    handlers: Box::new(handlers),
                 }
             }
             Err((skip, reason)) => {
@@ -2316,14 +2361,21 @@ pub fn run_project_corpus_diff_with_options(
     }
 }
 
-/// A comparable project's assets status, sources and comparison.
-type Visited = (ProjectAssetsStatus, Vec<(PathBuf, Arc<str>)>, Comparison);
+/// A comparable project's assets status, sources, comparison and handler
+/// verdict.
+type Visited = (
+    ProjectAssetsStatus,
+    Vec<(PathBuf, Arc<str>)>,
+    Comparison,
+    handler_diff::HandlerReport,
+);
 
 /// Load `project`, ask the oracle about it and compare, or say why not (the
 /// structured skip and the report's sentence for it).
 fn visit_project(
     project: &Path,
     load_options: &LoadOptions,
+    handler_sample_stride: NonZeroUsize,
     summary: &mut CorpusSummary,
 ) -> Result<Visited, (ProjectSkip, String)> {
     let loaded = load_lsp_project_with_options(project, load_options).map_err(|reason| {
@@ -2352,7 +2404,153 @@ fn visit_project(
             reason,
         ));
     }
-    Ok((loaded.project_assets, sources, comparison))
+    let handlers = compare_project_handlers(
+        &loaded,
+        load_options,
+        handler_sample_stride,
+        &fcs,
+        &comparison,
+    );
+    Ok((loaded.project_assets, sources, comparison, handlers))
+}
+
+/// The handler-level differential over a comparable project
+/// ([`handler_diff`]): its perturbed copy is made and put to FCS here, and both
+/// copies are put to a server started for the project.
+fn compare_project_handlers(
+    loaded: &LoadedProject,
+    load_options: &LoadOptions,
+    sample_stride: NonZeroUsize,
+    fcs: &[FileUses],
+    comparison: &Comparison,
+) -> handler_diff::HandlerReport {
+    let started = std::time::Instant::now();
+    let perturbed = perturbed_project(loaded);
+    let perturbed_at = started.elapsed();
+    let build_properties = load_options.build_properties.clone();
+    // A file two projects compile is answered by whichever the server finds it
+    // owned by, which need not be this one; the oracle's answers are this
+    // project's, so only a file the server would answer as this project's is
+    // probed. Decided by the server's own ownership rule, in a workspace like
+    // the one each server below starts with.
+    let mut workspace = workspace_with(build_properties.clone());
+    let this_project = path_key(&loaded.project);
+    let owned: Vec<bool> = loaded
+        .parses
+        .paths
+        .iter()
+        .map(|path| {
+            workspace
+                .owning_project(path)
+                .is_some_and(|owner| path_key(&owner) == this_project)
+        })
+        .collect();
+    let start_server = || {
+        let build_properties = build_properties.clone();
+        lsp_client::LspClient::start(move || workspace_with(build_properties))
+    };
+    let report = handler_diff::compare_handlers(
+        &loaded.parses.paths,
+        &loaded.parses.texts,
+        &owned,
+        sample_stride,
+        fcs,
+        comparison,
+        &perturbed,
+        &start_server,
+    );
+    // Progress, not part of the report: the time is not a fact about the
+    // project.
+    eprintln!(
+        "handler differential: {} — perturbed copy and its oracle {:.1?}, {} probes {:.1?}",
+        loaded.project.display(),
+        perturbed_at,
+        report.probes.len(),
+        started.elapsed() - perturbed_at
+    );
+    report
+}
+
+/// `loaded`'s sources perturbed ([`perturb`]), and FCS's records on the copy.
+///
+/// The copy is written under a temporary directory at each source's absolute
+/// path, so every file keeps its name (an F# file with no module header is the
+/// module its file name says) and two sources never collide. FCS reads only the
+/// files and the reference set, defines and language version the original was
+/// checked with, so nothing else of the project needs copying.
+fn perturbed_project(loaded: &LoadedProject) -> handler_diff::PerturbedProject {
+    let files: Vec<perturb::Perturbed> = loaded
+        .parses
+        .files
+        .iter()
+        .zip(&loaded.parses.texts)
+        .enumerate()
+        .map(|(index, (file, text))| {
+            // The entry point must stay the last declaration of the last file.
+            let append = file.file.as_impl().is_some() && !text.contains("EntryPoint");
+            perturb::perturb(text, file.file.syntax(), append.then_some(index))
+        })
+        .collect();
+    let fcs = perturbed_fcs(loaded, &files);
+    handler_diff::PerturbedProject { files, fcs }
+}
+
+fn perturbed_fcs(
+    loaded: &LoadedProject,
+    files: &[perturb::Perturbed],
+) -> Result<Vec<FileUses>, handler_diff::PerturbedSkip> {
+    use handler_diff::PerturbedSkip;
+    let dir = tempfile::tempdir().map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
+    let mut copies = Vec::new();
+    for (path, file) in loaded.parses.paths.iter().zip(files) {
+        let relative = path
+            .strip_prefix("/")
+            .map_err(|_| PerturbedSkip::Fcs(format!("{} is not absolute", path.display())))?;
+        let copy = dir.path().join(relative);
+        if let Some(parent) = copy.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
+        }
+        std::fs::write(&copy, &file.text).map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
+        copies.push((copy, Arc::<str>::from(file.text.as_str())));
+    }
+    let paths: Vec<PathBuf> = copies.iter().map(|(p, _)| p.clone()).collect();
+    let json =
+        invoke_fcs_uses_paths(loaded, &paths).map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
+    let mut fcs =
+        parse_project_uses(&json, &copies).map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
+    // Every path back to the original's spelling.
+    let original: HashMap<&Path, &PathBuf> = paths
+        .iter()
+        .map(PathBuf::as_path)
+        .zip(&loaded.parses.paths)
+        .collect();
+    let respell = |path: &mut PathBuf| {
+        if let Some(original) = original.get(path.as_path()) {
+            *path = (*original).clone();
+        }
+    };
+    let mut errors = Vec::new();
+    for file in &mut fcs {
+        respell(&mut file.path);
+        for u in &mut file.uses {
+            if let UseDecl::InProject(decl) = &mut u.decl {
+                respell(&mut decl.file);
+            }
+        }
+        for error in file.error_diagnostics() {
+            errors.push((
+                file.path.clone(),
+                error.range.start.line,
+                error.range.start.col + 1,
+                error.error_number,
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(fcs)
+    } else {
+        Err(PerturbedSkip::FcsErrors(errors))
+    }
 }
 
 /// Every gate `config` names, in order; a configured manifest is rewritten
@@ -2429,6 +2627,14 @@ fn check_project_corpus_run_with(
             divergences: run.summary.total_divergences(),
         });
     }
+    // A wrong answer from a handler is as wrong as one from the resolver, and
+    // for the same reason a manifest must not be able to record one.
+    let handler_divergences = handler_divergence_count(run);
+    if handler_divergences > 0 {
+        return Err(CorpusRunFailure::HandlerDivergences {
+            divergences: handler_divergences,
+        });
+    }
     // Last, so every gate above has passed first: in particular, a run with a
     // divergence never reaches the manifest, so regenerating it cannot bless one.
     if let Some(manifest) = &config.manifest {
@@ -2445,8 +2651,39 @@ fn check_project_corpus_run_with(
     Ok(())
 }
 
+/// How many wrong answers the handler differential found across `run`.
+fn handler_divergence_count(run: &CorpusRun) -> usize {
+    run.projects
+        .iter()
+        .map(|record| match &record.verdict {
+            ProjectVerdict::Comparable { handlers, .. } => handlers.divergences.len(),
+            ProjectVerdict::Skipped(_) => 0,
+        })
+        .sum()
+}
+
 pub fn render_project_corpus_run_report(run: &CorpusRun) -> String {
     let mut out = run.summary.render_text_report();
+    let mut probes: BTreeMap<(handler_diff::Variant, handler_diff::Handler), usize> =
+        BTreeMap::new();
+    for record in &run.projects {
+        if let ProjectVerdict::Comparable { handlers, .. } = &record.verdict {
+            for probe in &handlers.probes {
+                *probes.entry((probe.variant, probe.handler)).or_default() += 1;
+            }
+        }
+    }
+    writeln!(
+        out,
+        "project-corpus-diff handler probes: {} | {} divergences",
+        probes
+            .iter()
+            .map(|((variant, handler), n)| format!("{} {} {n}", variant.label(), handler.label()))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        handler_divergence_count(run)
+    )
+    .expect("write String");
     for detail in &run.divergence_details {
         writeln!(out, "{detail}").expect("write String");
     }
@@ -4338,6 +4575,7 @@ impl ProjectCorpusRunOptions {
                 "BORZOI_PROJECT_MSBUILD_PROPERTIES",
                 raw.msbuild_properties,
             )?,
+            handler_sample_stride: parse_handler_stride(raw.handler_sample_stride)?,
         })
     }
 }
@@ -4345,12 +4583,18 @@ impl ProjectCorpusRunOptions {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectCorpusRunOptionsRawEnv {
     pub msbuild_properties: Option<OsString>,
+    /// `BORZOI_HANDLER_SAMPLE_STRIDE`: see
+    /// [`ProjectCorpusRunOptions::handler_sample_stride`]. Any value but the
+    /// default asks a different set of questions from the one the checked-in
+    /// manifest records, so it is for exploring, not for the gate.
+    pub handler_sample_stride: Option<OsString>,
 }
 
 impl ProjectCorpusRunOptionsRawEnv {
     pub fn current() -> Self {
         Self {
             msbuild_properties: std::env::var_os("BORZOI_PROJECT_MSBUILD_PROPERTIES"),
+            handler_sample_stride: std::env::var_os("BORZOI_HANDLER_SAMPLE_STRIDE"),
         }
     }
 }
@@ -4499,11 +4743,18 @@ pub enum ProjectCorpusRunOptionsError {
         first: String,
         second: String,
     },
+    InvalidHandlerSampleStride {
+        value: String,
+    },
 }
 
 impl fmt::Display for ProjectCorpusRunOptionsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidHandlerSampleStride { value } => write!(
+                f,
+                "BORZOI_HANDLER_SAMPLE_STRIDE must be a positive integer; got {value:?}"
+            ),
             Self::InvalidMsbuildProperty { key, entry } => write!(
                 f,
                 "{key} entries must be semicolon-separated Name=Value pairs with non-empty names; got {entry:?}"
@@ -4674,6 +4925,20 @@ fn parse_exhaustive(value: Option<OsString>) -> Result<bool, ProjectCandidateSet
             value: other.to_string(),
         }),
     }
+}
+
+fn parse_handler_stride(
+    value: Option<OsString>,
+) -> Result<Option<NonZeroUsize>, ProjectCorpusRunOptionsError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.to_string_lossy();
+    value.parse::<NonZeroUsize>().map(Some).map_err(|_| {
+        ProjectCorpusRunOptionsError::InvalidHandlerSampleStride {
+            value: value.to_string(),
+        }
+    })
 }
 
 fn parse_nonzero(
@@ -5862,6 +6127,7 @@ mod tests {
             msbuild_properties: Some(OsString::from(
                 "DISABLE_ARCADE=true; Configuration = Release ; Empty=",
             )),
+            handler_sample_stride: Some(OsString::from("1")),
         })
         .expect("runner options are valid");
 
@@ -5873,6 +6139,7 @@ mod tests {
                 ("Empty".to_string(), "".to_string()),
             ])
         );
+        assert_eq!(options.handler_sample_stride, Some(NonZeroUsize::MIN));
     }
 
     #[test]
@@ -5880,6 +6147,7 @@ mod tests {
         assert_eq!(
             ProjectCorpusRunOptions::from_raw_env(ProjectCorpusRunOptionsRawEnv {
                 msbuild_properties: Some(OsString::from("DISABLE_ARCADE")),
+                handler_sample_stride: None,
             }),
             Err(ProjectCorpusRunOptionsError::InvalidMsbuildProperty {
                 key: "BORZOI_PROJECT_MSBUILD_PROPERTIES",
@@ -5889,11 +6157,21 @@ mod tests {
         assert_eq!(
             ProjectCorpusRunOptions::from_raw_env(ProjectCorpusRunOptionsRawEnv {
                 msbuild_properties: Some(OsString::from("Name=1; name=2")),
+                handler_sample_stride: None,
             }),
             Err(ProjectCorpusRunOptionsError::DuplicateMsbuildProperty {
                 key: "BORZOI_PROJECT_MSBUILD_PROPERTIES",
                 first: "Name".to_string(),
                 second: "name".to_string(),
+            })
+        );
+        assert_eq!(
+            ProjectCorpusRunOptions::from_raw_env(ProjectCorpusRunOptionsRawEnv {
+                msbuild_properties: None,
+                handler_sample_stride: Some(OsString::from("0")),
+            }),
+            Err(ProjectCorpusRunOptionsError::InvalidHandlerSampleStride {
+                value: "0".to_string(),
             })
         );
     }
@@ -6244,7 +6522,33 @@ mod tests {
                 divergences: 1,
             })
         );
-        // And with the divergence gate passed, the manifest is checked.
+        // A wrong answer from a request handler fails the same way, before the
+        // manifest, so a manifest cannot record one either.
+        let mut handler_divergent = clean_run();
+        handler_divergent.projects.push(ProjectRecord {
+            project: PathBuf::from("/tmp/P.fsproj"),
+            verdict: ProjectVerdict::Comparable {
+                assets: ProjectAssetsStatus::NotChecked,
+                sources: Vec::new(),
+                comparison: Box::default(),
+                handlers: Box::new(handler_diff::HandlerReport {
+                    divergences: vec![handler_diff::HandlerDivergence {
+                        variant: handler_diff::Variant::Plain,
+                        file: PathBuf::from("/tmp/B.fs"),
+                        range: (5, 6),
+                        name: "x".to_string(),
+                        asked: Some((handler_diff::Handler::Hover, handler_diff::Probe::Last)),
+                        detail: "names another symbol".to_string(),
+                    }],
+                    ..handler_diff::HandlerReport::default()
+                }),
+            },
+        });
+        assert_eq!(
+            check_project_corpus_run_with(&handler_divergent, &with_manifest, true),
+            Err(CorpusRunFailure::HandlerDivergences { divergences: 1 })
+        );
+        // And with the divergence gates passed, the manifest is checked.
         assert!(matches!(
             check_project_corpus_run_with(&clean_run(), &with_manifest, false),
             Err(CorpusRunFailure::ManifestMismatch(message)) if message.contains("no manifest at")
