@@ -14,12 +14,12 @@
 //! contract. Undefined *property* references stay [`Issue::Undefined`]
 //! (substituted empty), not an abort.
 //!
-//! The scanner ([`scan_paren`]/[`scan_quote`]) is the one place the grammar's
-//! nesting is modelled: a `$(…)` may appear inside a `'…'` string literal
-//! (with its own quotes and parens), and a string literal may appear inside a
-//! `(…)` argument list. The two mutually-recursive scanners handle that
-//! uniformly, replacing the flat quote/paren counting the string-prefix
-//! matchers used.
+//! The scanners ([`scan_paren`]/[`scan_quote`]/[`split_args`]) are the one
+//! place the grammar's extents are decided, and they are MSBuild's own
+//! (`Expander.ScanForClosingParenthesis`, `ScanForClosingQuote`,
+//! `ExtractFunctionArguments`) rather than a cleaner nesting-aware grammar:
+//! string literals are skipped flat, so a `$(…)` inside one is not a group.
+//! Where the two models disagree, only MSBuild's is right.
 //!
 //! Which members actually evaluate is the *only* thing that grows across the
 //! plan's stages: Stage 2 migrated today's functions onto the dispatch tables
@@ -49,45 +49,42 @@ fn is_string_delim(b: u8) -> bool {
 }
 
 /// `i` points at the byte *after* an opening `(`. Return the index of the
-/// matching `)`, treating nested string literals and `$(…)` expansions as
-/// opaque balanced groups (their inner parens/quotes don't count). `None` if
-/// the group never closes.
+/// matching `)`, or `None` if the group never closes.
+///
+/// This is MSBuild's `Expander.ScanForClosingParenthesis`, deliberately
+/// verbatim: parens nest, but a string literal is skipped **flat** — to the
+/// next byte equal to its delimiter, whatever lies between. A `$(…)` inside a
+/// literal is not a group, so its own quotes can close the literal early:
+/// `'$([System.IO.Path]::Combine("a'b"))'` ends at the `'` inside `"a'b"`, the
+/// `"` after it never closes, and MSBuild does not recognise the expression at
+/// all. The symmetric spelling the SDK itself uses
+/// (`'$(V.Split('-')[0])'`) comes out right only because its inner quotes
+/// pair up with the outer ones. A nesting-aware scan agrees on that shape and
+/// commits a value MSBuild never computes on the asymmetric ones.
 fn scan_paren(b: &[u8], mut i: usize) -> Option<usize> {
+    let mut depth = 1usize;
     while i < b.len() {
         match b[i] {
-            d if is_string_delim(d) => i = scan_quote(b, i + 1, d)? + 1,
-            b'$' if b.get(i + 1) == Some(&b'(') => i = scan_paren(b, i + 2)? + 1,
-            b'(' => i = scan_paren(b, i + 1)? + 1,
-            b')' => return Some(i),
-            _ => i += 1,
+            d if is_string_delim(d) => i = scan_quote(b, i + 1, d)?,
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
         }
+        i += 1;
     }
     None
 }
 
 /// `i` points at the byte *after* an opening string delimiter `delim`. Return
-/// the index of the closing `delim`. A *balanced* `$(…)` inside the string is
-/// skipped as a group, so a quote that belongs to a nested expression
-/// (`'$(X.Split('-')[0])'`) does not close the outer string. An *unbalanced*
-/// `$(` is literal text — MSBuild treats a `$(` with no matching `)` as
-/// ordinary characters (`'$('` is the two-char string `$(`, and
-/// `$(P.Contains('$('))` evaluates), so we fall back to advancing past the `$`
-/// rather than failing the whole scan. `None` only if the string itself never
-/// closes.
-fn scan_quote(b: &[u8], mut i: usize, delim: u8) -> Option<usize> {
-    while i < b.len() {
-        match b[i] {
-            b'$' if b.get(i + 1) == Some(&b'(') => {
-                i = match scan_paren(b, i + 2) {
-                    Some(close) => close + 1,
-                    None => i + 1,
-                };
-            }
-            d if d == delim => return Some(i),
-            _ => i += 1,
-        }
-    }
-    None
+/// the index of the next `delim` — MSBuild's `ScanForClosingQuote`, a plain
+/// `IndexOf`. Nothing inside a literal is structure, `$(` included.
+fn scan_quote(b: &[u8], i: usize, delim: u8) -> Option<usize> {
+    b.get(i..)?.iter().position(|&c| c == delim).map(|p| p + i)
 }
 
 /// The extent of a `$(…)` whose opening `$(` has just been consumed: `after`
@@ -97,15 +94,22 @@ pub(super) fn find_close(after: &str) -> Option<usize> {
     scan_paren(after.as_bytes(), 0)
 }
 
-/// Split a function argument list on *top-level* commas — commas inside nested
-/// strings, parens, or `$(…)` don't separate arguments. Each part is trimmed.
-/// `None` if the argument text is malformed (an unbalanced string/paren).
+/// Split a function argument list on its separating commas. Each part is
+/// trimmed. `None` if the argument text is malformed (an unclosed string or
+/// `$(…)`), which MSBuild rejects as a project error.
+///
+/// This is MSBuild's `Expander.ExtractFunctionArguments`: a comma inside a
+/// string literal (skipped flat, as [`scan_quote`] does) or inside a `$(…)`
+/// (skipped by [`scan_paren`]) does not separate, and **every other comma
+/// does** — including one inside a plain `(…)`, which MSBuild does not treat
+/// as a group, and one that a literal's early close leaves exposed
+/// (`'$(X.Split(',')[0])'` is two arguments).
 ///
 /// Only a genuinely *empty* argument text is zero arguments (`Func()`); a
 /// *whitespace* argument text is **one** (whitespace) argument (`Func( )`),
 /// matching MSBuild — which rejects `IsRunningFromVisualStudio( )` (a zero-arg
 /// intrinsic handed one arg) while accepting `IsRunningFromVisualStudio()`.
-fn split_args(s: &str) -> Option<Vec<&str>> {
+pub(super) fn split_args(s: &str) -> Option<Vec<&str>> {
     if s.is_empty() {
         return Some(Vec::new());
     }
@@ -117,7 +121,6 @@ fn split_args(s: &str) -> Option<Vec<&str>> {
         match b[i] {
             d if is_string_delim(d) => i = scan_quote(b, i + 1, d)? + 1,
             b'$' if b.get(i + 1) == Some(&b'(') => i = scan_paren(b, i + 2)? + 1,
-            b'(' => i = scan_paren(b, i + 1)? + 1,
             b',' => {
                 parts.push(s[start..i].trim());
                 start = i + 1;
@@ -1713,14 +1716,31 @@ mod tests {
     }
 
     #[test]
-    fn split_args_respects_nesting() {
+    fn find_close_skips_literals_flat() {
+        // The `'` inside `"a'b"` closes the outer literal, and the `"` after it
+        // never closes: MSBuild finds no extent at all (oracle 2026-10-08).
+        let after = "[MSBuild]::IsOSPlatform('$([System.IO.Path]::Combine(\"a'b\"))'))";
+        assert_eq!(find_close(after), None);
+    }
+
+    #[test]
+    fn split_args_is_msbuilds() {
         assert_eq!(split_args("'a','b'"), Some(vec!["'a'", "'b'"]));
-        // A comma inside a nested string / expression is not a separator.
+        // A comma inside a string literal or a `$(…)` is not a separator.
         assert_eq!(split_args("'a,b'"), Some(vec!["'a,b'"]));
         assert_eq!(
-            split_args("'$(X.Split(',')[0])'"),
-            Some(vec!["'$(X.Split(',')[0])'"])
+            split_args("$(X.Y('a,b')),c"),
+            Some(vec!["$(X.Y('a,b'))", "c"])
         );
+        // …but literals are skipped flat, so a nested expression's own quote can
+        // close one early and expose a comma: two arguments, not one (oracle
+        // 2026-10-08: `Parse('$(V.Split(',')[0])')` is a project error).
+        assert_eq!(
+            split_args("'$(X.Split(',')[0])'"),
+            Some(vec!["'$(X.Split('", "')[0])'"])
+        );
+        // A plain `(…)` is not a group either.
+        assert_eq!(split_args("(a,b)"), Some(vec!["(a", "b)"]));
         // Empty arg text is zero args (`Func()`); whitespace is one arg
         // (`Func( )`), trimmed to "".
         assert_eq!(split_args(""), Some(vec![]));

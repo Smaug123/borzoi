@@ -593,6 +593,31 @@ fn hand_picked_corners() {
             props(&[("Foo", "a`b")]),
             ExpandVerdict::Exact,
         ),
+        // A quote of the *outer* delimiter inside a nested call's argument
+        // (`'…"a'b"…'`) ends MSBuild's scan of the outer argument early, so it
+        // does not recognise the expression at all and passes the text through
+        // verbatim. Found by the case-variant soak; committing `False` here was a
+        // wrong answer.
+        (
+            "$([MSBuild]::IsOSPlatform('$([System.IO.Path]::Combine(\"a'b\"))'))",
+            props(&[]),
+            ExpandVerdict::Partial,
+        ),
+        // The same flat scan splits *arguments*: inside `'…'` the quote of
+        // `Split(','` closes the outer literal, so the comma after it separates
+        // two arguments, and `Parse` handed two is a project error.
+        (
+            "$([System.Version]::Parse('$(V.Split(',')[0])').Major)",
+            props(&[("V", "1.2,3")]),
+            ExpandVerdict::Partial,
+        ),
+        // A doubled outer quote: MSBuild trims *every* leading and trailing
+        // quote of the argument's delimiter, so `''a''` is the needle `a`.
+        (
+            "$(V.Contains(''a''))",
+            props(&[("V", "xay")]),
+            ExpandVerdict::Partial,
+        ),
         // --- IsOSPlatform: non-ASCII spelling ------------------------------
         // MSBuild matches under invariant uppercasing (`oſx` → `OSX`,
         // True on macOS); we compare ASCII-only, so non-ASCII declines.
