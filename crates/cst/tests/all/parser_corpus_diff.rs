@@ -59,24 +59,36 @@
 //! `EDITING` for `.fsx` scripts. That keeps `#if` branches aligned instead of
 //! diverging on symbol-set mismatch.
 //!
+//! # What the comparison covers
+//!
+//! The normalised AST elides detail, which is only sound for detail nothing
+//! downstream reads. So the sweep records, through the `accessor-trace`
+//! feature, which typed-AST accessors our projection reads on the files that
+//! match, and pins that set in `tests/manifests/accessor_coverage.txt`. The
+//! ordinary suite requires it to include every accessor `borzoi-sema` and the
+//! LSP call (`common::accessor_coverage`), so a consumer that starts reading an
+//! accessor the projection never compares fails `cargo test`.
+//!
 //! `#[ignore]`d like `parser_corpus.rs`: it parses the corpus twice (us + FCS)
 //! and is slow. Run with
 //! `cargo test -p borzoi-cst --test all parser_corpus_diff:: -- --ignored`
 //! under `nix develop` (which sets `BORZOI_CORPUS`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::{Parse, parse_sig_with_symbols, parse_with_symbols};
+use borzoi_cst::syntax::accessor_trace::record;
 use borzoi_oracle_harness::manifest::Manifest;
 use serde::Deserialize;
 
+use crate::common::accessor_coverage::fixture_reads;
 use crate::common::catch_unwind_silent;
 use crate::common::corpus_manifest::{
     check_manifest, corpus_relative, regenerate_ignored, sort_by_corpus_key, summary_entry,
 };
 use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
-use crate::common::recovery::grade;
+use crate::common::recovery::{Relation, grade};
 use crate::common::{
     ast_ranges_match, collect_fsharp_corpus_files, corpus_root, fcs_ast_batch, read_corpus_source,
 };
@@ -180,6 +192,9 @@ struct Outcome {
     bucket: Bucket,
     range_message: Option<String>,
     recovery: Option<Recovery>,
+    /// For a match (or an exact recovered tree), the accessors our projection
+    /// read: every one of them was compared with FCS and agreed.
+    reads: BTreeSet<&'static str>,
 }
 
 /// A recovered-tree verdict as the manifest records it, plus the first
@@ -195,17 +210,26 @@ impl Outcome {
             bucket,
             range_message: None,
             recovery: None,
+            reads: BTreeSet::new(),
         }
     }
 
     fn recovered(bucket: Bucket, parse: &Parse, line: &str, src: &str) -> Self {
-        let recovery = match catch_unwind_silent(|| grade(parse, line, src)) {
-            Ok(Ok(v)) => Recovery {
-                token: v.token(),
-                divergence: v.first_divergence,
-            },
+        let mut reads = BTreeSet::new();
+        let recovery = match catch_unwind_silent(|| record(|| grade(parse, line, src))) {
+            Ok((Ok(v), graded_reads)) => {
+                // An exact recovered tree was compared whole, so everything the
+                // grader read agreed with FCS.
+                if v.relation == Relation::Exact {
+                    reads = graded_reads;
+                }
+                Recovery {
+                    token: v.token(),
+                    divergence: v.first_divergence,
+                }
+            }
             // FCS's tree is deeper than `serde_json` reads; nothing to grade.
-            Ok(Err(_)) => Recovery {
+            Ok((Err(_), _)) => Recovery {
                 token: "fcs-unreadable".to_string(),
                 divergence: None,
             },
@@ -215,6 +239,7 @@ impl Outcome {
             bucket,
             range_message: None,
             recovery: Some(recovery),
+            reads,
         }
     }
 }
@@ -285,19 +310,25 @@ fn classify(
     if !ours.errors.is_empty() {
         return Outcome::recovered(Bucket::WeRejectFcsAccepts, &ours, line, src);
     }
-    let Ok(ours_norm) = catch_unwind_silent(|| normalise_parse(&ours)) else {
+    let Ok((ours_norm, mut reads)) = catch_unwind_silent(|| record(|| normalise_parse(&ours)))
+    else {
         return Outcome::bucket(Bucket::OurNormaliserUnmodelled);
     };
 
     if ours_norm != fcs_norm {
         return Outcome::bucket(Bucket::AstDivergent);
     }
-    match catch_unwind_silent(|| ast_ranges_match(&ours, line, src)) {
-        Ok(Ok(())) => Outcome::bucket(Bucket::Match),
-        Ok(Err(message)) => Outcome {
-            bucket: Bucket::RangeDivergent,
+    match catch_unwind_silent(|| record(|| ast_ranges_match(&ours, line, src))) {
+        Ok((Ok(()), range_reads)) => {
+            reads.extend(range_reads);
+            Outcome {
+                reads,
+                ..Outcome::bucket(Bucket::Match)
+            }
+        }
+        Ok((Err(message), _)) => Outcome {
             range_message: Some(message),
-            recovery: None,
+            ..Outcome::bucket(Bucket::RangeDivergent)
         },
         Err(_) => Outcome::bucket(Bucket::RangeAuditPanicked),
     }
@@ -339,6 +370,7 @@ fn parser_matches_fcs_over_corpus() {
     let mut outcomes: Vec<(&PathBuf, Bucket, Option<String>)> = Vec::with_capacity(files.len());
     let mut range_messages: Vec<(&PathBuf, String)> = Vec::new();
     let mut recovery_divergences: Vec<(&PathBuf, String)> = Vec::new();
+    let mut projected: BTreeSet<&'static str> = BTreeSet::new();
     for path in &files {
         let src = match read_corpus_source(path) {
             Ok(src) => src,
@@ -350,6 +382,7 @@ fn parser_matches_fcs_over_corpus() {
         };
         let line = fcs_ast_batch(path);
         let outcome = classify(path, &src, &line, &compiled_symbols, &script_symbols);
+        projected.extend(&outcome.reads);
         if let Some(message) = outcome.range_message {
             range_messages.push((path, message));
         }
@@ -438,6 +471,17 @@ fn parser_matches_fcs_over_corpus() {
          range oracle is not total over the structurally-matched corpus: \
          {audit_panicked:#?}",
         audit_panicked.len(),
+    );
+
+    // What the projection compares, pinned exactly so the ordinary suite
+    // (`accessor_coverage::consumers_read_only_compared_accessors`) can hold
+    // the consumers to it without the corpus.
+    projected.extend(fixture_reads());
+    check_manifest(
+        "accessor_coverage",
+        &Manifest::from_entries(projected.iter().map(|a| a.to_string()))
+            .unwrap_or_else(|e| panic!("manifest entry: {e}")),
+        &regenerate_ignored("parser_corpus_diff"),
     );
 
     let entries = std::iter::once(summary_entry("match", count(Bucket::Match))).chain(

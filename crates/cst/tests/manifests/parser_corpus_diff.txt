@@ -1,7 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_corpus_diff:: -- --ignored
-(match) 5428 files
+(match) 5423 files
 .github/skills/fsharp-diagnostics/server/Server.fs fcs-normaliser-unmodelled
 buildtools/fslex/Parsing.fs fcs-normaliser-unmodelled
 buildtools/fslex/fslexlex.fs fcs-normaliser-unmodelled
@@ -116,6 +116,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefi
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_InvalidAbbrevName01.fs both-reject exact 0/0/1
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_InvalidAbbrevName02.fs both-reject exact 0/0/1
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_UseInsideFunc.fs both-reject outside-damage 1/1/2
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/AstrSymbOper01.fs range-divergent
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/E_BasicOperatorNames01.fs both-reject exact 2/2/4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/E_QuestionMark01.fs we-accept-fcs-rejects exact 2/2/6
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/E_QuestionMark02.fs we-accept-fcs-rejects exact 2/2/5
@@ -175,6 +176,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Er
 tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error06.fsx both-reject exact 4/4/5
 tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_IncompleteParens01.fsx both-reject exact 2/2/3
 tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_IncompleteParens02.fsx both-reject outside-damage 4/4/5
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/Match02.fs range-divergent
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Utils.fs non-utf8
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DerivedType.fs both-reject exact 3/3/4
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DoNotInlineX.fs both-reject outside-damage 9/9/10
@@ -193,6 +195,7 @@ tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_type_id
 tests/FSharp.Compiler.ComponentTests/Miscellaneous/ReallyLongList01.fs fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/innerpoly.fsx fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/libtest.fsx fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/measures.fsx range-divergent
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/members_basics.fs range-divergent
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/QueryTrieTests.fs fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/Scenarios.fs fcs-normaliser-unmodelled
@@ -376,6 +379,7 @@ tests/fsharp/core/load-script/loadfail1.fsx both-reject exact 0/0/2
 tests/fsharp/core/longnames/test.fsx range-divergent
 tests/fsharp/core/math/numbers/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/math/numbersVS2008/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/measures/test.fsx range-divergent
 tests/fsharp/core/members/absil.fs both-reject divergent 0/0/1
 tests/fsharp/core/members/absil.fsi both-reject divergent 15/15/17 beyond-fcs:531
 tests/fsharp/core/members/basics-hw/test.fsx we-reject-fcs-accepts divergent 1775/1778/1781
@@ -408,6 +412,7 @@ tests/fsharp/typecheck/sigs/neg10.fs range-divergent
 tests/fsharp/typecheck/sigs/neg104.fs both-reject outside-damage 7/7/15
 tests/fsharp/typecheck/sigs/neg114.fs both-reject outside-damage 0/0/3
 tests/fsharp/typecheck/sigs/neg115.fs both-reject outside-damage 2/2/3
+tests/fsharp/typecheck/sigs/neg116.fs range-divergent
 tests/fsharp/typecheck/sigs/neg13.fs range-divergent
 tests/fsharp/typecheck/sigs/neg135.fs both-reject outside-damage 1/1/2
 tests/fsharp/typecheck/sigs/neg19.fs we-accept-fcs-rejects outside-damage 4/4/7

@@ -179,12 +179,16 @@ dependencies = [
 name = "borzoi-cst"
 version = "0.1.0"
 dependencies = [
+ "borzoi-cst",
  "borzoi-oracle-harness",
  "logos",
+ "proc-macro2",
  "proptest",
+ "quote",
  "rowan",
  "serde",
  "serde_json",
+ "syn",
  "tempfile",
 ]
 
