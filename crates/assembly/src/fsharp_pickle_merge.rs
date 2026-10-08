@@ -3130,9 +3130,21 @@ struct TypeDocSigTarget {
     namespace: Vec<String>,
     type_chain: Vec<String>,
     arity: usize,
-    /// Each member val's (or `val` field's) slot and its pickled key, in pickle
+    /// Each member val's (or `val` field's) slot and pickled key, in pickle
     /// order. A slot can repeat: same-name, same-arity overloads share one.
-    keys: Vec<(DocSlot, Option<String>)>,
+    keys: Vec<DocKey>,
+}
+
+/// One pickled member val's (or `val` field's) doc key and where it compiles.
+#[derive(Debug, Clone)]
+struct DocKey {
+    slot: DocSlot,
+    /// `None` for an undocumented val.
+    key: Option<String>,
+    /// Whether the val's pickled access is unrestricted (`TAccess []`). fsc
+    /// emits such a member `public` in IL, and a restricted one (F# `internal`
+    /// or `private`) `assembly` or narrower.
+    is_public: bool,
 }
 
 /// Stamp each F# type's members with the doc-comment key fsc pickled for them
@@ -3167,7 +3179,7 @@ pub(crate) fn apply_type_member_doc_sigs(
     // walk collects every type's location, by stamp, and every member val, by
     // its parent's stamp.
     let mut targets: HashMap<u32, TypeDocSigTarget> = HashMap::new();
-    let mut member_keys: HashMap<PickledTcRef, Vec<(DocSlot, Option<String>)>> = HashMap::new();
+    let mut member_keys: HashMap<PickledTcRef, Vec<DocKey>> = HashMap::new();
     let mut parents: HashMap<u32, u32> = HashMap::new();
     let mut logical_paths: HashMap<u32, Vec<String>> = HashMap::new();
     let mut path = Vec::new();
@@ -3194,7 +3206,11 @@ pub(crate) fn apply_type_member_doc_sigs(
                     member_keys
                         .entry(info.apparent_parent.clone())
                         .or_default()
-                        .push((slot, pickled_xml_doc_sig(&v.xmldoc_sig)));
+                        .push(DocKey {
+                            slot,
+                            key: pickled_xml_doc_sig(&v.xmldoc_sig),
+                            is_public: v.access.is_empty(),
+                        });
                 }
             }
             // The entity's logical path from the CCU root, which is how a
@@ -3222,10 +3238,11 @@ pub(crate) fn apply_type_member_doc_sigs(
             let mut keys = Vec::new();
             if let PickledTyconRepr::FSharpObjectModel(model) = &entity.repr {
                 for field in model.rfields.iter().filter(|f| !f.is_static) {
-                    keys.push((
-                        DocSlot::ValField(field.ident.name.clone()),
-                        pickled_xml_doc_sig(&field.xmldoc_sig),
-                    ));
+                    keys.push(DocKey {
+                        slot: DocSlot::ValField(field.ident.name.clone()),
+                        key: pickled_xml_doc_sig(&field.xmldoc_sig),
+                        is_public: field.access.is_empty(),
+                    });
                 }
             }
             let mut chain = type_chain.to_vec();
@@ -3320,22 +3337,55 @@ pub(crate) fn apply_type_member_doc_sigs(
 
 /// Stamp `entity`'s members from one type's pickled keys; see
 /// [`apply_type_member_doc_sigs`] for when a slot is unambiguous.
-fn stamp_doc_sigs(entity: &mut Entity, keys: &[(DocSlot, Option<String>)]) {
-    // Per slot: how many vals claim it, and their key if they all agree.
-    let mut slots: HashMap<&DocSlot, (usize, Option<Option<&String>>)> = HashMap::new();
-    for (slot, key) in keys {
-        let entry = slots.entry(slot).or_insert((0, Some(key.as_ref())));
+fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey]) {
+    // Per slot: how many vals claim it, and their key and access class if they
+    // all agree.
+    #[allow(clippy::type_complexity)]
+    let mut slots: HashMap<&DocSlot, (usize, Option<(Option<&String>, bool)>)> = HashMap::new();
+    for k in keys {
+        let fact = (k.key.as_ref(), k.is_public);
+        let entry = slots.entry(&k.slot).or_insert((0, Some(fact)));
         entry.0 += 1;
-        if entry.1 != Some(key.as_ref()) {
+        if entry.1 != Some(fact) {
             entry.1 = None;
         }
     }
-    for (slot, (vals, key)) in slots {
-        let Some(Some(key)) = key else {
+    for (slot, (vals, fact)) in slots {
+        let Some((Some(key), is_public)) = fact else {
             continue;
         };
-        let occupants = entity.members.iter().filter(|m| occupies(m, slot)).count();
-        if occupants != vals {
+        // A val's own member can be missing from the projection — refused and
+        // recorded as skipped — while a member the signature hides (a
+        // `.fsi`-private helper) sits in the same slot. The count below cannot
+        // tell that member from the val's, so a skip under the slot's name
+        // declines the slot (`type_member_stamp_never_hands_a_member_another_vals_key`
+        // pins that). A member the projection drops *without* recording it — a
+        // deliberate elision — is the same hazard unrecorded; the accessibility
+        // class narrows it, since fsc emits a public val public and a restricted
+        // one narrower, while such a helper is typically not public.
+        let slot_name = match slot {
+            DocSlot::Method { name, .. }
+            | DocSlot::Getter { name, .. }
+            | DocSlot::Setter { name, .. }
+            | DocSlot::ValField(name) => name,
+        };
+        if entity.skipped_members.iter().any(|s| s.name == *slot_name)
+            || entity.skipped_members.iter().any(|s| {
+                s.name.strip_prefix("get_").or(s.name.strip_prefix("set_")) == Some(slot_name)
+            })
+        {
+            continue;
+        }
+        let occupants: Vec<&Member> = entity
+            .members
+            .iter()
+            .filter(|m| occupies(m, slot))
+            .collect();
+        if occupants.len() != vals
+            || occupants
+                .iter()
+                .any(|m| matches!(member_access(m), Access::Public) != is_public)
+        {
             continue;
         }
         for member in entity.members.iter_mut().filter(|m| occupies(m, slot)) {
@@ -3351,6 +3401,15 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[(DocSlot, Option<String>)]) {
                 _ => unreachable!("`occupies` pairs each slot with its member kind"),
             }
         }
+    }
+}
+
+fn member_access(member: &Member) -> Access {
+    match member {
+        Member::Method(m) => m.access,
+        Member::Field(f) => f.access,
+        Member::Property(p) => p.access,
+        Member::Event(e) => e.access,
     }
 }
 
@@ -5490,6 +5549,109 @@ mod tests {
                 ("Shared", None),
             ]
         );
+    }
+
+    /// One generated item of a type: a method slot, plus either a pickled val
+    /// (documented or not, whose own IL member the projection kept or refused)
+    /// or an IL member the signature hides.
+    #[derive(Debug, Clone)]
+    enum DocSlotItem {
+        Val {
+            slot: (u8, u8, bool),
+            key: Option<u8>,
+            is_public: bool,
+            kept: bool,
+        },
+        Hidden {
+            slot: (u8, u8, bool),
+            is_public: bool,
+        },
+    }
+
+    fn doc_slot_item() -> impl Strategy<Value = DocSlotItem> {
+        let slot = (0u8..2, 0u8..2, any::<bool>());
+        prop_oneof![
+            (
+                slot.clone(),
+                proptest::option::of(0u8..3),
+                any::<bool>(),
+                any::<bool>()
+            )
+                .prop_map(|(slot, key, is_public, kept)| DocSlotItem::Val {
+                    slot,
+                    key,
+                    is_public,
+                    kept,
+                }),
+            (slot, any::<bool>())
+                .prop_map(|(slot, is_public)| DocSlotItem::Hidden { slot, is_public }),
+        ]
+    }
+
+    proptest! {
+        /// Soundness of the type-member stamp against a generated ground truth:
+        /// whatever mix of overloads, undocumented vals, refused members and
+        /// signature-hidden IL members a type holds, a member that receives a key
+        /// is the member of a val that carries that key. Keys may repeat across
+        /// vals (fsc writes one key for two members sometimes); a stamp is then
+        /// still that member's own key.
+        #[test]
+        fn type_member_stamp_never_hands_a_member_another_vals_key(
+            items in proptest::collection::vec(doc_slot_item(), 0..8)
+        ) {
+            let method_of = |(name, arity, is_static): (u8, u8, bool), is_public: bool| {
+                let mut m = make_ecma_method_arity(&format!("M{name}"), arity.into());
+                if let Member::Method(mm) = &mut m {
+                    mm.is_static = is_static;
+                    mm.access = if is_public { Access::Public } else { Access::Internal };
+                }
+                m
+            };
+            let slot_of = |(name, arity, is_static): (u8, u8, bool)| DocSlot::Method {
+                name: format!("M{name}"),
+                arity: arity.into(),
+                is_static,
+            };
+            let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Class);
+            let mut keys = Vec::new();
+            // The key each member truly carries: `Some(k)` for a kept member of a
+            // val keyed `k`, `None` for an undocumented val's member or a hidden one.
+            let mut truth = Vec::new();
+            for item in &items {
+                match item {
+                    DocSlotItem::Val { slot, key, is_public, kept } => {
+                        let key = key.map(|k| format!("M:N.T.K{k}"));
+                        keys.push(DocKey {
+                            slot: slot_of(*slot),
+                            key: key.clone(),
+                            is_public: *is_public,
+                        });
+                        if *kept {
+                            entity.members.push(method_of(*slot, *is_public));
+                            truth.push(key);
+                        } else {
+                            entity.skipped_members.push(SkippedMember {
+                                name: format!("M{}", slot.0),
+                                reason: "refused".to_string(),
+                            });
+                        }
+                    }
+                    DocSlotItem::Hidden { slot, is_public } => {
+                        entity.members.push(method_of(*slot, *is_public));
+                        truth.push(None);
+                    }
+                }
+            }
+            stamp_doc_sigs(&mut entity, &keys);
+            for (member, truth) in entity.members.iter().zip(&truth) {
+                let Member::Method(m) = member else {
+                    unreachable!("the generator builds methods only")
+                };
+                if let Some(stamped) = &m.xml_doc_sig {
+                    prop_assert_eq!(Some(stamped), truth.as_ref(), "{:?}", items);
+                }
+            }
+        }
     }
 
     /// A minimal rebranded module-value member: a zero-parameter method
