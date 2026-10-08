@@ -170,10 +170,18 @@ pub fn ensure_sdk_fsharp_core() -> (PathBuf, PathBuf) {
 
 /// The newest `Microsoft.NETCore.App.Ref` reference-pack directory the
 /// installed SDK ships (the `ref/<tfm>/` folder holding ~170 reference
-/// assemblies — the exact surface the compiler resolves against). Located
-/// via `dotnet --list-sdks` like [`ensure_sdk_fsharp_core`]; panics with a
-/// clear message if no SDK carries one (the SDK is already required by the
+/// assemblies — the exact surface the compiler resolves against). Panics with
+/// a clear message if no SDK carries one (the SDK is already required by the
 /// `dotnet build` fixtures, so this holds in every lane that runs those).
+pub fn sdk_ref_pack_dir() -> PathBuf {
+    sdk_targeting_pack_dir("Microsoft.NETCore.App.Ref")
+}
+
+/// The newest `ref/<tfm>/` directory of the targeting pack `pack`
+/// (`Microsoft.NETCore.App.Ref`, `Microsoft.AspNetCore.App.Ref`, …) that an
+/// installed SDK ships, located via `dotnet --list-sdks` like
+/// [`ensure_sdk_fsharp_core`]. Panics, quoting the listing, if no SDK carries
+/// the pack: a caller that grades a pack must not pass on its absence.
 ///
 /// "Newest" (max on the *numerically parsed* version-directory name, then
 /// on the numerically parsed TFM) rather than "first": a machine with
@@ -181,7 +189,7 @@ pub fn ensure_sdk_fsharp_core() -> (PathBuf, PathBuf) {
 /// what `net10.0`+ builds here actually reference. Numeric parsing matters —
 /// lexicographically `"9.0.10"` sorts *after* `"10.0.8"`, which would pick a
 /// .NET 9 pack on a multi-SDK machine and fail budgets calibrated for 10.
-pub fn sdk_ref_pack_dir() -> PathBuf {
+pub fn sdk_targeting_pack_dir(pack: &str) -> PathBuf {
     /// The leading numeric value of each dot-separated segment, so
     /// `"10.0.8"` → `[10, 0, 8]` and `"net10.0"` → `[0, 10, 0]`-ish
     /// (`"net10"` has leading digits after the alphabetic prefix is
@@ -208,9 +216,7 @@ pub fn sdk_ref_pack_dir() -> PathBuf {
         };
         let root = rest.trim().trim_start_matches('[').trim_end_matches(']');
         // `<root>` is `<dotnet>/sdk`; the packs live beside it.
-        let packs = Path::new(root)
-            .parent()
-            .map(|p| p.join("packs").join("Microsoft.NETCore.App.Ref"));
+        let packs = Path::new(root).parent().map(|p| p.join("packs").join(pack));
         let Some(packs) = packs.filter(|p| p.is_dir()) else {
             continue;
         };
@@ -239,7 +245,7 @@ pub fn sdk_ref_pack_dir() -> PathBuf {
     match candidates.into_iter().next_back() {
         Some((_, dir)) => dir,
         None => panic!(
-            "no SDK ships a Microsoft.NETCore.App.Ref reference pack \
+            "no SDK ships a {pack} targeting pack \
              (from `dotnet --list-sdks`):\n{listing}"
         ),
     }
