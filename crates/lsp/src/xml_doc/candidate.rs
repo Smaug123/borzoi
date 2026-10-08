@@ -794,14 +794,15 @@ fn explicit_candidate(
 }
 
 /// Rule 1 when the implemented interface is in another assembly: its
-/// `MethodSemantics` are out of the projection's reach, so each `MethodImpl`
-/// row names a raw interface *method* (`Dispose`, `get_Item`). A method's row
-/// names that method; a property's or event's rows name its accessors, which
-/// C# and VB name `get_P`/`set_P` and `add_E`/`remove_E`. The convention is
-/// trusted only where nothing else on the interface could carry the raw
-/// name — no method named like an accessor, no property or event a method's
-/// name could be the accessor of — and only when every accessor of the member
-/// has its row.
+/// `MethodSemantics` are out of the projection's reach from here, so each
+/// `MethodImpl` row names a raw interface *method* (`Dispose`, `get_Item`). A
+/// method's row names that method; a property's or event's rows name its
+/// accessors, and what Roslyn inherits from is the property or event that
+/// *owns* those accessor methods — read off the interface's own projection
+/// ([`borzoi_assembly::AccessorSlot::name`]), never off the accessors'
+/// names, which metadata need not spell by the `get_`/`set_` convention. A
+/// method's row naming an accessor, or rows that no single member owns
+/// exactly, are undecidable.
 fn unresolved_explicit_candidate(
     env: &AssemblyEnv,
     parent: EntityHandle,
@@ -834,66 +835,51 @@ fn unresolved_explicit_candidate(
     {
         return Undecidable::ExplicitImplementation.into();
     }
-    let prefixed = |prefixes: &[&str]| -> Option<&str> {
-        let names: Vec<&str> = raws
-            .iter()
-            .map(|raw| prefixes.iter().find_map(|p| raw.strip_prefix(p)))
-            .collect::<Option<_>>()?;
-        names.windows(2).all(|w| w[0] == w[1]).then(|| names[0])
-    };
-    let (wanted_kind, wanted_name, accessors): (Kind, &str, Vec<String>) = match member {
+    // The interface's accessor methods, by owner.
+    let mut owned: Vec<(Kind, &str, Vec<&str>)> = Vec::new();
+    for (_, m) in members(env, iface) {
+        let slots = match m {
+            Member::Property(p) => &p.accessor_slots,
+            Member::Event(e) => &e.accessor_slots,
+            _ => continue,
+        };
+        if slots.iter().any(|s| s.name.is_empty()) {
+            // A projection that did not record accessor names.
+            return Undecidable::ExplicitImplementation.into();
+        }
+        let mut names: Vec<&str> = slots.iter().map(|s| s.name.as_str()).collect();
+        names.sort_unstable();
+        owned.push((kind(m), member_name(m), names));
+    }
+    let is_accessor = |raw: &str| owned.iter().any(|(_, _, names)| names.contains(&raw));
+    let (wanted_kind, wanted_name): (Kind, &str) = match member {
         Member::Method(_) => match raws.as_slice() {
-            [raw] => (Kind::Method, raw, Vec::new()),
+            [raw] if !is_accessor(raw) => (Kind::Method, raw),
+            // A method standing in for an accessor: Roslyn's candidate is
+            // then an accessor method, documented nowhere.
             _ => return Undecidable::ExplicitImplementation.into(),
         },
-        Member::Property(p) => {
-            let Some(name) = prefixed(&["get_", "set_"]) else {
-                return Undecidable::ExplicitImplementation.into();
+        Member::Property(_) | Member::Event(_) => {
+            let accessors = match member {
+                Member::Property(p) => p.accessor_slots.len(),
+                Member::Event(e) => e.accessor_slots.len(),
+                _ => unreachable!(),
             };
-            let mut want = Vec::new();
-            if p.has_getter {
-                want.push(format!("get_{name}"));
+            let mut have = raws.clone();
+            have.sort_unstable();
+            // Every accessor of the member has its one row, and together they
+            // name exactly the accessors of one interface member.
+            let owners: Vec<&(Kind, &str, Vec<&str>)> = owned
+                .iter()
+                .filter(|(k, _, names)| *k == kind(member) && *names == have)
+                .collect();
+            match owners.as_slice() {
+                [(k, name, _)] if have.len() == accessors => (*k, *name),
+                _ => return Undecidable::ExplicitImplementation.into(),
             }
-            if p.has_setter {
-                want.push(format!("set_{name}"));
-            }
-            (Kind::Property, name, want)
-        }
-        Member::Event(e) => {
-            let Some(name) = prefixed(&["add_", "remove_", "raise_"]) else {
-                return Undecidable::ExplicitImplementation.into();
-            };
-            let mut want = vec![format!("add_{name}"), format!("remove_{name}")];
-            if e.has_fire {
-                want.push(format!("raise_{name}"));
-            }
-            (Kind::Event, name, want)
         }
         Member::Field(_) => return Undecidable::ExplicitImplementation.into(),
     };
-    if wanted_kind != Kind::Method {
-        let mut have: Vec<String> = raws.iter().map(|r| r.to_string()).collect();
-        have.sort();
-        let mut want = accessors.clone();
-        want.sort();
-        if have != want {
-            return Undecidable::ExplicitImplementation.into();
-        }
-    }
-    // Nothing else on the interface may carry the raw names.
-    let lookalike = members(env, iface).any(|(_, m)| match (wanted_kind, m) {
-        (Kind::Method, Member::Property(_) | Member::Event(_)) => {
-            may_name(
-                &ImplementedMember::Unresolved(wanted_name.to_string()),
-                member_name(m),
-            ) && member_name(m) != wanted_name
-        }
-        (Kind::Property | Kind::Event, Member::Method(x)) => accessors.contains(&x.name),
-        _ => false,
-    });
-    if lookalike {
-        return Undecidable::ExplicitImplementation.into();
-    }
     explicit_target(
         env,
         (parent, member, inst),

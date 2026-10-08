@@ -664,6 +664,15 @@ pub struct AssemblyEnv {
     /// DLL's manifest references other assemblies (`AssemblyRef` rows).
     /// `None` where the build path did not read it.
     assembly_has_references: Vec<Option<bool>>,
+    /// The simple names (lower-cased) some loaded manifest qualifies by a
+    /// non-neutral culture, its own or a reference's
+    /// ([`borzoi_assembly::EcmaView::culture_qualified_names`]). Binding one by
+    /// simple name alone is not a binder's binding, which matches culture.
+    culture_qualified_names: HashSet<String>,
+    /// Whether every loaded DLL's culture-qualified names were read, so that
+    /// [`Self::culture_qualified_names`] is the whole set. `false` for an env
+    /// built without them (and by default).
+    culture_qualified_names_read: bool,
     /// Memo for [`Self::resolve_abbreviation_target`] /
     /// [`Self::resolve_abbreviation_tycon`], keyed by `(marker, allow_args)`.
     /// The chase is a pure function of the env's immutable entity data, but
@@ -870,6 +879,9 @@ pub struct AssemblyProjectionInput {
     /// ([`borzoi_assembly::EcmaView::assembly_refs`] non-empty); `None` when
     /// not read.
     pub has_assembly_references: Option<bool>,
+    /// [`borzoi_assembly::EcmaView::culture_qualified_names`]; `None` when
+    /// not read.
+    pub culture_qualified_names: Option<Vec<String>>,
 }
 
 /// Whether entity `e`'s **logical name** — its IL `name` or its `source_name` —
@@ -1080,6 +1092,7 @@ impl AssemblyEnv {
                         type_forwarders: Vec::new(),
                         doc_id_dialect: None,
                         has_assembly_references: None,
+                        culture_qualified_names: None,
                     }
                 })
                 .collect(),
@@ -1096,6 +1109,7 @@ impl AssemblyEnv {
         assemblies: Vec<AssemblyProjectionInput>,
     ) -> Self {
         let mut env = AssemblyEnv::default();
+        let mut cultures_read = true;
         let mut tagged: Vec<(
             Option<AssemblyId>,
             AbbreviationVisibility,
@@ -1116,6 +1130,7 @@ impl AssemblyEnv {
                 type_forwarders,
                 doc_id_dialect,
                 has_assembly_references,
+                culture_qualified_names,
             } = input;
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
@@ -1125,6 +1140,12 @@ impl AssemblyEnv {
                 env.assembly_doc_id_dialects.insert(id, dialect);
             }
             env.assembly_has_references.push(has_assembly_references);
+            match culture_qualified_names {
+                Some(names) => env
+                    .culture_qualified_names
+                    .extend(names.iter().map(|n| n.to_lowercase())),
+                None => cultures_read = false,
+            }
             env.assembly_forwarders.push(
                 type_forwarders
                     .into_iter()
@@ -1164,6 +1185,7 @@ impl AssemblyEnv {
                 )
             }));
         }
+        env.culture_qualified_names_read = cultures_read;
         env.index_roots(tagged);
         env.record_assembly_auto_opens(auto_opens);
         env
@@ -1408,6 +1430,7 @@ impl AssemblyEnv {
     /// `None`) so the AutoOpen deref can tell same-named views apart.
     pub fn from_views<V: EcmaView>(views: &[V]) -> Result<Self, ImportError> {
         let mut env = AssemblyEnv::default();
+        let mut cultures_read = true;
         let mut tagged = Vec::new();
         let mut auto_opens = Vec::new();
         let mut dropped_namespaces = Vec::new();
@@ -1438,6 +1461,12 @@ impl AssemblyEnv {
             env.assembly_identities.push(Some(view.identity().clone()));
             env.assembly_has_references
                 .push(Some(!view.assembly_refs().is_empty()));
+            match view.culture_qualified_names() {
+                Some(names) => env
+                    .culture_qualified_names
+                    .extend(names.iter().map(|n| n.to_lowercase())),
+                None => cultures_read = false,
+            }
             env.assembly_forwarders.push(
                 view.type_forwarders()?
                     .into_iter()
@@ -1459,6 +1488,7 @@ impl AssemblyEnv {
                 view.assembly_auto_opens()?,
             ));
         }
+        env.culture_qualified_names_read = cultures_read;
         env.index_roots(tagged);
         env.record_assembly_auto_opens(auto_opens);
         for namespace in dropped_namespaces {
@@ -7252,6 +7282,7 @@ mod from_views_tests {
             type_forwarders: Vec::new(),
             doc_id_dialect: None,
             has_assembly_references: None,
+            culture_qualified_names: None,
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
             input("Contributor.dll", vec![widget, marker]),
@@ -7404,6 +7435,7 @@ mod from_views_tests {
             type_forwarders: forwarders,
             doc_id_dialect: None,
             has_assembly_references: None,
+            culture_qualified_names: None,
         }
     }
 

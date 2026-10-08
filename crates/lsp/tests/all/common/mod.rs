@@ -1066,6 +1066,7 @@ pub fn doc_key_env_of(
                 type_forwarders: Vec::new(),
                 doc_id_dialect: Some(dialect),
                 has_assembly_references: None,
+                culture_qualified_names: None,
             },
         )
         .collect();

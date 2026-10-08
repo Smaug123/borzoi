@@ -168,7 +168,8 @@ This is a Cargo workspace with nine members:
   marker with a typed reason. Its oracle is `tools/inheritdoc-oracle`, a
   test-only C# JSONL batch tool (the `nuget-oracle` mould) that calls Roslyn's
   internal expansion by reflection, evaluates Roslyn's XPath selection, and
-  compiles purpose-built C# fixtures; `xml_doc_inheritdoc_diff` (handwritten
+  compiles purpose-built C# fixtures (renaming methods in one, for metadata
+  no compiler writes); `xml_doc_inheritdoc_diff` (handwritten
   hierarchies), `xml_doc_inheritdoc_generated_diff` (generated ones: a few
   dozen cases each in the normal suite, hundreds in its ignored `deep_*`
   twins, `BORZOI_INHERITDOC_CASES` overriding both) and the ignored

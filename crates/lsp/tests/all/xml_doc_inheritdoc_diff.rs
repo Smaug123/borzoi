@@ -66,6 +66,7 @@ pub fn fixture_missing(source: &str, dependency: Option<&str>) -> Result<Fixture
             referenced: false,
             against: &[],
             visible: true,
+            patch: None,
         })
         .into_iter()
         .collect();
@@ -84,6 +85,8 @@ pub struct Dep<'a> {
     pub against: &'a [usize],
     /// Whether `Fx` is compiled against it.
     pub visible: bool,
+    /// A rewrite of the compiled DLL, for metadata no C# compiler writes.
+    pub patch: Option<fn(&std::path::Path)>,
 }
 
 /// [`fixture`], with `Fx` compiled against dependency assemblies built from
@@ -117,6 +120,9 @@ fn fixture_over(source: &str, deps: &[Dep<'_>], core: bool) -> Result<Fixture, V
             .lock()
             .unwrap()
             .compile(dep.source, dep.name, &dep_dir, &against)?;
+        if let Some(patch) = dep.patch {
+            patch(&dll);
+        }
         if dep.visible {
             compile_against.push((dll.clone(), dep.alias));
         }
@@ -665,6 +671,7 @@ public class Derived : Mid
                 referenced: true,
                 against: &[],
                 visible: true,
+                patch: None,
             },
             Dep {
                 name: "DepB",
@@ -673,6 +680,7 @@ public class Derived : Mid
                 referenced: true,
                 against: &[],
                 visible: true,
+                patch: None,
             },
         ],
     )
@@ -873,6 +881,7 @@ public class Derived : Hi.Mid
                 referenced: false,
                 against: &[],
                 visible: true,
+                patch: None,
             },
             Dep {
                 name: "Dep",
@@ -881,6 +890,7 @@ public class Derived : Hi.Mid
                 referenced: false,
                 against: &[],
                 visible: false,
+                patch: None,
             },
             Dep {
                 name: "Dep",
@@ -889,6 +899,7 @@ public class Derived : Hi.Mid
                 referenced: true,
                 against: &[],
                 visible: false,
+                patch: None,
             },
             Dep {
                 name: "Lo",
@@ -897,6 +908,7 @@ public class Derived : Hi.Mid
                 referenced: true,
                 against: &[0],
                 visible: true,
+                patch: None,
             },
             Dep {
                 name: "Hi",
@@ -905,6 +917,7 @@ public class Derived : Hi.Mid
                 referenced: true,
                 against: &[1, 3],
                 visible: true,
+                patch: None,
             },
         ],
     )
@@ -1046,4 +1059,148 @@ namespace F
         "{:?}",
         v.get("M:F.U.A")
     );
+}
+
+/// Roslyn's documentation provider reads each `<member>` whole and then
+/// advances one node, so a `<member>` immediately after another — no
+/// whitespace between — is never indexed. Here `B`'s entry is invisible to
+/// Roslyn, which expands `D`'s `<inheritdoc/>` to nothing; inheriting `B`'s
+/// summary would be a different answer.
+#[test]
+fn an_entry_adjacent_to_the_previous_one_is_read_differently() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>A.</summary>
+public class A { }
+
+/// <summary>B.</summary>
+public class B { }
+
+/// <inheritdoc/>
+public class D : B { }
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let xml = fx.dll.with_extension("xml");
+    let compact: String = std::fs::read_to_string(&xml)
+        .unwrap()
+        .lines()
+        .map(str::trim)
+        .collect();
+    std::fs::write(&xml, compact).unwrap();
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("adjacent entries");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("T:F.D"), Some(Verdict::Declined { cause, .. }) if cause == "ReadDifferently"),
+        "{:?}",
+        v.get("T:F.D")
+    );
+}
+
+/// Swap the names of the two getters of `N.I`: `P`'s getter is `get_Q` and
+/// `Q`'s is `get_P` — legal metadata no C# compiler writes.
+fn swap_getter_names(dll: &std::path::Path) {
+    oracle()
+        .lock()
+        .unwrap()
+        .swap_method_names(dll, "get_P", "get_Q");
+}
+
+/// An explicit implementation of a property of an interface in another
+/// assembly is a `MethodImpl` row naming the interface's *accessor*. The
+/// property that owns the accessor is what Roslyn inherits from, whatever the
+/// accessor is called: `I.P` here, though its getter is named `get_Q`.
+#[test]
+fn an_external_accessor_belongs_to_its_owner_not_its_name() {
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The implementer.</summary>
+public class C : N.I
+{
+    /// <inheritdoc/>
+    int N.I.P => 0;
+
+    /// <inheritdoc/>
+    int N.I.Q => 0;
+}
+"#,
+        &[Dep {
+            name: "Ifc",
+            source: "namespace N {\n/// <summary>I.</summary>\npublic interface I {\n/// <summary>I.P's own.</summary>\nint P { get; }\n/// <summary>I.Q's own.</summary>\nint Q { get; } } }",
+            alias: None,
+            referenced: true,
+            against: &[],
+            visible: true,
+            patch: Some(swap_getter_names),
+        }],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("external accessor ownership");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in ["P:F.C.N#I#P", "P:F.C.N#I#Q"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Agrees)),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+}
+
+/// Assembly binding compares culture: a reference to `Dep, Culture=ja` does
+/// not bind to a loaded `Dep, Culture=fr`, so to Roslyn `D`'s base is missing
+/// and its `<inheritdoc/>` inherits nothing.
+#[test]
+fn a_reference_does_not_bind_across_cultures() {
+    let dep = |culture: &str| {
+        format!(
+            "[assembly: System.Reflection.AssemblyCulture(\"{culture}\")]\nnamespace L {{\n/// <summary>Base ({culture}).</summary>\npublic class Base {{ }} }}"
+        )
+    };
+    let (ja, fr) = (dep("ja"), dep("fr"));
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <inheritdoc/>
+public class D : L.Base { }
+"#,
+        &[
+            Dep {
+                name: "Dep",
+                source: &ja,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "Dep",
+                source: &fr,
+                alias: None,
+                referenced: true,
+                against: &[],
+                visible: false,
+                patch: None,
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("cultures");
+    census.assert_sound();
 }

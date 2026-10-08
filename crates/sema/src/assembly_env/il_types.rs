@@ -34,8 +34,10 @@ pub enum IlTypeDefinition {
     /// arities do not line up with its name.
     NotFound,
     /// Two loaded DLLs carry the referenced assembly's simple name (or one
-    /// carries it in another case, which a binder may match), or two
-    /// types match: which one a consumer binds is not knowable here.
+    /// carries it in another case, which a binder may match, or some
+    /// manifest qualifies the name by culture, which a binder also
+    /// matches), or two types match: which one a consumer binds is not
+    /// knowable here.
     Ambiguous,
     /// A DLL dropped an undecodable type in the reference's namespace, so the
     /// type we would bind may not be the only candidate.
@@ -121,8 +123,16 @@ impl AssemblyEnv {
     /// The key of the sole loaded DLL with simple name `name`. Simple names
     /// compare case-insensitively (Roslyn's `AssemblyIdentityComparer`, the
     /// CLR binder alike), so a loaded DLL whose name differs from `name` only
-    /// in case could be the one bound: the binding is ambiguous.
+    /// in case could be the one bound: the binding is ambiguous. A binder also
+    /// matches culture, which a `TypeRef` does not carry, so a name some
+    /// manifest qualifies by culture — or any name, when cultures were not
+    /// read — is ambiguous too.
     fn assembly_key_named(&self, name: &str) -> Result<AssemblyKey<'_>, IlTypeDefinition> {
+        if !self.culture_qualified_names_read
+            || self.culture_qualified_names.contains(&name.to_lowercase())
+        {
+            return Err(IlTypeDefinition::Ambiguous);
+        }
         let differs_in_case = |other: &str| {
             other != name
                 && (other.to_lowercase() == name.to_lowercase()

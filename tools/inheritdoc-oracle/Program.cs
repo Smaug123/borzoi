@@ -46,6 +46,12 @@
 //     fixtures.
 //     -> {"ok":true} | {"ok":false,"diagnostics":[..errors..]}
 //
+//   {"op":"swap-method-names","assembly":dll,"a":m1,"b":m2}
+//     Exchange, in place, the `Name` columns of the `MethodDef` rows named m1
+//     and m2: metadata no compiler writes (an accessor named like another
+//     property's), for fixtures `compile` cannot make.
+//     -> {"ok":true}
+//
 // Any per-request exception is reported as {"error":..} on that line; the
 // process itself never dies mid-batch.
 
@@ -278,6 +284,42 @@ internal static class Program
                 }
                 File.WriteAllBytes(Path.Combine(outDir, name + ".dll"), dll.ToArray());
                 File.WriteAllBytes(Path.Combine(outDir, name + ".xml"), xml.ToArray());
+                return new JsonObject { ["ok"] = true };
+            }
+            case "swap-method-names":
+            {
+                // Exchange the `Name` columns of the two `MethodDef` rows named
+                // `a` and `b`, in place: legal metadata no compiler writes (an
+                // accessor named like another property's). The heap is left
+                // alone, since a compiler's suffix-merged heap shares a
+                // property's name with its accessor's.
+                var path = (string)request["assembly"]!;
+                var a = (string)request["a"]!;
+                var b = (string)request["b"]!;
+                var bytes = File.ReadAllBytes(path);
+                int rowA, rowB, rowSize, tableStart, nameSize;
+                using (var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(bytes)))
+                {
+                    var md = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+                    var rows = md.MethodDefinitions
+                        .Select(h => (Row: System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber(h), Name: md.GetString(md.GetMethodDefinition(h).Name)))
+                        .ToList();
+                    rowA = rows.Single(r => r.Name == a).Row;
+                    rowB = rows.Single(r => r.Name == b).Row;
+                    var table = System.Reflection.Metadata.Ecma335.TableIndex.MethodDef;
+                    rowSize = System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowSize(md, table);
+                    tableStart = pe.PEHeaders.MetadataStartOffset
+                        + System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableMetadataOffset(md, table);
+                    nameSize = System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetHeapSize(md, System.Reflection.Metadata.Ecma335.HeapIndex.String) < 0x10000 ? 2 : 4;
+                }
+                // MethodDef columns: RVA (4), ImplFlags (2), Flags (2), Name.
+                var offA = tableStart + (rowA - 1) * rowSize + 8;
+                var offB = tableStart + (rowB - 1) * rowSize + 8;
+                for (var i = 0; i < nameSize; i++)
+                {
+                    (bytes[offA + i], bytes[offB + i]) = (bytes[offB + i], bytes[offA + i]);
+                }
+                File.WriteAllBytes(path, bytes);
                 return new JsonObject { ["ok"] = true };
             }
             case "xpath":
