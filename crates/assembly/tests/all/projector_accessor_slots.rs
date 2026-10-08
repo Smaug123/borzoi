@@ -61,36 +61,35 @@ fn method<'a>(e: &'a Entity, name: &str) -> &'a MethodLike {
         .unwrap_or_else(|| panic!("method {name:?} not found on {:?}", e.name))
 }
 
-const NEW_VIRTUAL: AccessorSlot = AccessorSlot {
-    is_virtual: true,
-    is_newslot: true,
-    is_abstract: false,
-    is_final: false,
-    has_other_method_impl: false,
-};
+fn slot(name: &str, is_virtual: bool, is_newslot: bool) -> AccessorSlot {
+    AccessorSlot {
+        name: name.to_string(),
+        is_virtual,
+        is_newslot,
+        is_abstract: false,
+        is_final: false,
+        has_other_method_impl: false,
+    }
+}
 
-const OVERRIDE: AccessorSlot = AccessorSlot {
-    is_virtual: true,
-    is_newslot: false,
-    is_abstract: false,
-    is_final: false,
-    has_other_method_impl: false,
-};
+fn new_virtual(name: &str) -> AccessorSlot {
+    slot(name, true, true)
+}
 
-const PLAIN: AccessorSlot = AccessorSlot {
-    is_virtual: false,
-    is_newslot: false,
-    is_abstract: false,
-    is_final: false,
-    has_other_method_impl: false,
-};
+fn overriding(name: &str) -> AccessorSlot {
+    slot(name, true, false)
+}
+
+fn plain(name: &str) -> AccessorSlot {
+    slot(name, false, false)
+}
 
 #[test]
 fn a_virtual_property_has_a_new_virtual_slot_per_accessor() {
     let es = load();
     assert_eq!(
         property(entity(&es, "SlotBase"), "Both").accessor_slots,
-        [NEW_VIRTUAL, NEW_VIRTUAL]
+        [new_virtual("get_Both"), new_virtual("set_Both")]
     );
 }
 
@@ -99,7 +98,7 @@ fn a_getter_only_override_has_one_reused_slot() {
     let es = load();
     assert_eq!(
         property(entity(&es, "SlotDerived"), "Both").accessor_slots,
-        [OVERRIDE]
+        [overriding("get_Both")]
     );
 }
 
@@ -109,7 +108,7 @@ fn a_non_virtual_property_has_plain_slots() {
     for ty in ["SlotBase", "SlotDerived"] {
         assert_eq!(
             property(entity(&es, ty), "Plain").accessor_slots,
-            [PLAIN, PLAIN],
+            [plain("get_Plain"), plain("set_Plain")],
             "{ty}.Plain"
         );
     }
@@ -120,11 +119,11 @@ fn event_slots_are_add_then_remove() {
     let es = load();
     assert_eq!(
         event(entity(&es, "SlotBase"), "Changed").accessor_slots,
-        [NEW_VIRTUAL, NEW_VIRTUAL]
+        [new_virtual("add_Changed"), new_virtual("remove_Changed")]
     );
     assert_eq!(
         event(entity(&es, "SlotDerived"), "Changed").accessor_slots,
-        [OVERRIDE, OVERRIDE]
+        [overriding("add_Changed"), overriding("remove_Changed")]
     );
 }
 

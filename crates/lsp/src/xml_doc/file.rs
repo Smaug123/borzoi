@@ -90,6 +90,39 @@ pub enum EntryError {
     TooDeep,
 }
 
+/// The `<member>` elements Roslyn's `XmlDocumentationProvider` reads. It
+/// reads the document node by node, and on an element named `member` that has
+/// a `name` attribute it takes the element whole (`ReadOuterXml`). That leaves
+/// the reader *on* the following node, which the loop's next `Read` then steps
+/// past unseen. So a `<member>` directly after one read whole is never read
+/// itself, although the nodes inside it are walked.
+fn members_roslyn_reads(document: roxmltree::Node<'_, '_>) -> HashSet<roxmltree::NodeId> {
+    fn walk(
+        node: roxmltree::Node<'_, '_>,
+        read: &mut HashSet<roxmltree::NodeId>,
+        unseen: &mut bool,
+    ) {
+        for child in node.children() {
+            let seen = !std::mem::take(unseen);
+            if !child.is_element() {
+                continue;
+            }
+            if seen && child.tag_name().name() == "member" && child.attribute("name").is_some() {
+                read.insert(child.id());
+                *unseen = true;
+                continue;
+            }
+            walk(child, read, unseen);
+            // The element's end tag, when it has content, is the node a step
+            // past its last child lands on; an empty element set nothing.
+            *unseen = false;
+        }
+    }
+    let mut read = HashSet::new();
+    walk(document, &mut read, &mut false);
+    read
+}
+
 impl DocFile {
     /// Decode a documentation file's bytes: UTF-8 (with or without a BOM), or
     /// UTF-16 with a BOM. Nothing else is guessed at.
@@ -146,18 +179,30 @@ impl DocFile {
         // entry on its own, losing a namespace declared outside it. Any
         // `member` element outside the overlap, or in a namespace, marks its
         // key as read differently.
+        //
+        // Roslyn also never sees a `<member>` that its read of the previous
+        // one stepped over (see [`members_roslyn_reads`]). And it matches the
+        // *qualified* name, which a namespaced `member` makes uncertain, so
+        // one anywhere marks every key.
         let mut roslyn_divergent: HashSet<String> = HashSet::new();
-        for member in root
+        let read_by_roslyn = members_roslyn_reads(doc.root());
+        let all_members: Vec<_> = root
             .descendants()
             .filter(|n| n.is_element() && n.tag_name().name() == "member")
-        {
+            .collect();
+        let any_namespaced = all_members
+            .iter()
+            .any(|m| m.tag_name().namespace().is_some());
+        for member in &all_members {
             let indexed_here = member.tag_name().namespace().is_none()
                 && member.ancestors().any(|a| a.has_tag_name("members"));
             let nested = member
                 .ancestors()
                 .skip(1)
                 .any(|a| a.is_element() && a.tag_name().name() == "member");
-            if (!indexed_here || nested)
+            let stepped_over =
+                member.attribute("name").is_some() && !read_by_roslyn.contains(&member.id());
+            if (any_namespaced || !indexed_here || nested || stepped_over)
                 && let Some(key) = member.attribute("name")
             {
                 roslyn_divergent.insert(key.to_string());
@@ -294,6 +339,31 @@ mod tests {
         keys.sort();
         assert_eq!(keys, ["T:A", "T:Inner"]);
         assert_eq!(unique_element(&doc, "T:Inner").text_content(), "i");
+    }
+
+    /// Roslyn's provider takes a `<member>` whole and then steps over the
+    /// node after it unseen: one directly after another — no whitespace
+    /// between — is never indexed, though one after that is.
+    #[test]
+    fn an_entry_directly_after_another_is_read_differently() {
+        let doc = DocFile::parse(
+            r#"<doc><members><member name="T:A"><summary>a</summary></member><member name="T:B"><summary>b</summary></member><member name="T:C"/><!--c--><member name="T:D"/>
+            <member name="T:E"/></members></doc>"#,
+        )
+        .unwrap();
+        assert!(doc.read_as_roslyn_reads("T:A"));
+        assert!(!doc.read_as_roslyn_reads("T:B"));
+        assert!(doc.read_as_roslyn_reads("T:C"));
+        // The comment is the node stepped over, so `T:D` is read.
+        assert!(doc.read_as_roslyn_reads("T:D"));
+        assert!(doc.read_as_roslyn_reads("T:E"));
+        // A `<member>` stepped over is walked into: Roslyn reads one inside it.
+        let inner = DocFile::parse(
+            r#"<doc><members><member name="T:A"/><member name="T:B"> <member name="T:Inner"/></member></members></doc>"#,
+        )
+        .unwrap();
+        assert!(!inner.read_as_roslyn_reads("T:B"));
+        assert!(!inner.read_as_roslyn_reads("T:Inner"));
     }
 
     /// Roslyn's provider indexes every element named `member` (last wins) and

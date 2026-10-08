@@ -115,6 +115,18 @@ impl EcmaView for Ecma335Assembly {
         self.image.references.iter().map(project_identity).collect()
     }
 
+    fn culture_qualified_names(&self) -> Option<Vec<String>> {
+        Some(
+            self.image
+                .assembly
+                .iter()
+                .chain(&self.image.references)
+                .filter(|a| !a.culture.is_empty())
+                .map(|a| a.name.clone())
+                .collect(),
+        )
+    }
+
     fn enumerate_type_defs_with_skips(
         &self,
     ) -> Result<(Vec<Entity>, AssemblyProjectionSkips), ImportError> {
@@ -2500,6 +2512,7 @@ impl Ecma335Assembly {
         accessors
             .iter()
             .map(|a| AccessorSlot {
+                name: a.name.clone(),
                 is_virtual: a.is_virtual,
                 is_newslot: a.is_new_slot,
                 is_abstract: a.is_abstract,

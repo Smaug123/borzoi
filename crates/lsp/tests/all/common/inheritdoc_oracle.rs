@@ -240,6 +240,17 @@ impl Oracle {
 
     /// The nodes Roslyn's XPath selects from `xml`, wrapped in one
     /// `<selection>` element; `None` where Roslyn's selection fails.
+    /// Exchange, in the DLL at `assembly`, the names of its two methods
+    /// named `a` and `b` (their `MethodDef` rows' `Name` columns).
+    pub fn swap_method_names(&mut self, assembly: &Path, a: &str, b: &str) {
+        self.request(&serde_json::json!({
+            "op": "swap-method-names",
+            "assembly": assembly,
+            "a": a,
+            "b": b,
+        }));
+    }
+
     pub fn xpath(&mut self, xml: &str, path: &str) -> Option<String> {
         let r = self.request(&serde_json::json!({ "op": "xpath", "xml": xml, "path": path }));
         (r["ok"].as_bool() == Some(true))

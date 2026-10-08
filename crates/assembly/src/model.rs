@@ -1459,9 +1459,15 @@ pub struct MethodLike {
 /// (or event) as an override when any of its accessors is one, and the
 /// accessors need not agree, so a consumer deciding what a property
 /// overrides needs each accessor's flags rather than a summary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AccessorSlot {
+    /// The accessor method's metadata name, verbatim. Conventionally
+    /// `get_P`/`set_P`, `add_E`/`remove_E`, but metadata need not follow
+    /// the convention, and what implements an accessor implements *this*
+    /// method, whatever it is called. Empty in a projection that predates it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub name: String,
     /// `virtual` (`MethodAttributes` 0x0040).
     pub is_virtual: bool,
     /// `newslot` (`MethodAttributes` 0x0100): a fresh vtable slot, not an

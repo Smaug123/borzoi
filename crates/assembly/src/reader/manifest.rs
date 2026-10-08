@@ -44,6 +44,8 @@ pub(crate) struct AssemblyIdentity {
     pub version: Version,
     pub public_key: Vec<u8>,
     pub has_full_key: bool,
+    /// The row's `Culture`, empty for a culture-neutral assembly.
+    pub culture: String,
 }
 
 /// A manifest resource embedded in this file (`CurrentFile` implementation).
@@ -74,11 +76,13 @@ pub(crate) fn read_assembly(tables: &Tables) -> Result<Option<AssemblyIdentity>,
     let flags = row.int(5);
     let public_key = row.blob(6)?.to_vec();
     let name = row.string(7)?.to_string();
+    let culture = row.string(8)?.to_string();
     Ok(Some(AssemblyIdentity {
         name,
         version,
         public_key,
         has_full_key: flags & FLAG_PUBLIC_KEY != 0,
+        culture,
     }))
 }
 
@@ -99,11 +103,13 @@ pub(crate) fn read_assembly_refs(tables: &Tables) -> Result<Vec<AssemblyIdentity
         let flags = row.int(4);
         let public_key = row.blob(5)?.to_vec();
         let name = row.string(6)?.to_string();
+        let culture = row.string(7)?.to_string();
         refs.push(AssemblyIdentity {
             name,
             version,
             public_key,
             has_full_key: flags & FLAG_PUBLIC_KEY != 0,
+            culture,
         });
     }
     Ok(refs)

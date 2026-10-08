@@ -102,6 +102,9 @@ struct ReferencedAssemblyProjection {
     /// entry predating this field).
     #[serde(default)]
     has_assembly_references: Option<bool>,
+    /// `EcmaView::culture_qualified_names`; `None` when unread.
+    #[serde(default)]
+    culture_qualified_names: Option<Vec<String>>,
 }
 
 /// Why one referenced DLL contributed nothing to the [`AssemblyEnv`]. The two
@@ -2837,6 +2840,7 @@ pub fn build_env_from_dll_paths<'a>(
                 manifest_identity: projection.manifest_identity,
                 type_forwarders: projection.type_forwarders,
                 has_assembly_references: projection.has_assembly_references,
+                culture_qualified_names: projection.culture_qualified_names,
             }
         })
         .collect();
@@ -3005,6 +3009,11 @@ fn enumerate_view_catching<V: EcmaView>(
             .unwrap_or_default();
             let has_assembly_references =
                 catch_reader_panic(path, "assembly_refs", || !view.assembly_refs().is_empty());
+            let culture_qualified_names =
+                catch_reader_panic(path, "culture_qualified_names", || {
+                    view.culture_qualified_names()
+                })
+                .flatten();
             Some(ReferencedAssemblyProjection {
                 entities: types,
                 fsharp_abbreviations_unknowable: skipped.fsharp_abbreviations_unknowable,
@@ -3018,6 +3027,7 @@ fn enumerate_view_catching<V: EcmaView>(
                 manifest_identity: Some(view.identity().clone()),
                 type_forwarders,
                 has_assembly_references,
+                culture_qualified_names,
             })
         }
         Err(err) => {
