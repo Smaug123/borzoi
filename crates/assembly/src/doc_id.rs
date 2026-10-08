@@ -1251,6 +1251,66 @@ mod tests {
     }
 
     #[test]
+    fn recorded_doc_sig_is_used_verbatim() {
+        // A key the F# compiler recorded wins over the computed one: here the
+        // SRTP witness parameter fsc prepends, which no IL signature shows.
+        let d = decl(&["N"], "M", 0);
+        let Member::Method(mut m) = method(
+            "twice",
+            1,
+            vec![param(TypeRef::Var {
+                index: 0,
+                is_method: true,
+            })],
+            prim(Primitive::Void),
+        ) else {
+            unreachable!("method() builds a Member::Method")
+        };
+        assert_eq!(
+            member_doc_id(&d, &Member::Method(m.clone())),
+            "M:N.M.twice``1(``0)"
+        );
+        let recorded = "M:N.M.twice``1(Microsoft.FSharp.Core.FSharpFunc{``0,``0},``0)";
+        m.xml_doc_sig = Some(recorded.to_string());
+        let m = Member::Method(m);
+        assert_eq!(member_doc_id(&d, &m), recorded);
+        assert_eq!(member_doc_ids(&d, &m), vec![recorded.to_string()]);
+    }
+
+    #[test]
+    fn settable_property_is_keyed_by_getter_and_setter() {
+        let d = decl(&["N"], "W", 0);
+        let Member::Property(mut p) = property("Count", prim(Primitive::I4), vec![]) else {
+            unreachable!("property() builds a Member::Property")
+        };
+        p.has_setter = true;
+        // Nothing recorded: one computed key.
+        assert_eq!(
+            member_doc_ids(&d, &Member::Property(p.clone())),
+            vec!["P:N.W.Count".to_string()]
+        );
+        // Both accessors recorded: the getter's first.
+        p.xml_doc_sig = Some("P:N.W.Count".to_string());
+        p.setter_xml_doc_sig = Some("P:N.W.Count(System.Int32)".to_string());
+        assert_eq!(
+            member_doc_ids(&d, &Member::Property(p.clone())),
+            vec![
+                "P:N.W.Count".to_string(),
+                "P:N.W.Count(System.Int32)".to_string()
+            ]
+        );
+        // Write-only: the setter's key is the property's only one.
+        p.has_getter = false;
+        p.xml_doc_sig = None;
+        let p = Member::Property(p);
+        assert_eq!(member_doc_id(&d, &p), "P:N.W.Count(System.Int32)");
+        assert_eq!(
+            member_doc_ids(&d, &p),
+            vec!["P:N.W.Count(System.Int32)".to_string()]
+        );
+    }
+
+    #[test]
     fn module_literal_keys_as_property() {
         // A module's `[<Literal>]` is a zero-argument value to fsc: `P:`.
         let mut module = ent(&["N"], "M", 0);

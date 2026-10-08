@@ -448,6 +448,11 @@ impl Ecma335Assembly {
                     // `fsharp_abbreviations_unknowable`).
                     crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
                     if authoritative {
+                        // The doc-comment keys fsc pickled for each type's
+                        // members (module members get theirs from the member
+                        // list above). Authoritative-only, like the other
+                        // overlays that locate a row by a reconstructed name key.
+                        crate::fsharp_pickle_merge::apply_type_member_doc_sigs(&mut out, &ccu)?;
                         // F#-only typar constraints (`when 'T : comparison` and
                         // friends), which have no IL encoding at all.
                         //

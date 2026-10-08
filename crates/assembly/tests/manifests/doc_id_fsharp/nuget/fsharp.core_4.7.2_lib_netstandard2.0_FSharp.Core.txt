@@ -1,37 +1,16 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 1967
+hits 1988
 keys 2090
-miss M:Microsoft.FSharp.Collections.FSharpMap`2.TryGetValue(`0,Microsoft.FSharp.Core.byref{`1,Microsoft.FSharp.Core.ByRefKinds.InOut})
 miss M:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.add_Error(Microsoft.FSharp.Control.FSharpHandler{System.Exception})
 miss M:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.remove_Error(Microsoft.FSharp.Control.FSharpHandler{System.Exception})
-miss M:Microsoft.FSharp.Core.CompilerServices.GeneratedSequenceBase`1.GenerateNext(Microsoft.FSharp.Core.byref{System.Collections.Generic.IEnumerable{`0},Microsoft.FSharp.Core.ByRefKinds.InOut})
 miss M:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.add_Invalidate(System.EventHandler)
 miss M:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.remove_Invalidate(System.EventHandler)
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(Microsoft.FSharp.Core.FSharpFunc{`0,`1})
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(System.Converter{`0,`1})
-miss M:Microsoft.FSharp.Core.FSharpOption`1.op_Implicit(`0)
-miss M:Microsoft.FSharp.Core.FSharpValueOption`1.op_Implicit(`0)
-miss P:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.DefaultTimeout(System.Int32)
 miss P:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.Error
-miss P:Microsoft.FSharp.Core.CompilerMessageAttribute.IsError(System.Boolean)
-miss P:Microsoft.FSharp.Core.CompilerMessageAttribute.IsHidden(System.Boolean)
 miss P:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.Invalidate
-miss P:Microsoft.FSharp.Core.CompilerServices.TypeProviderConfig.IsHostedExecution(System.Boolean)
-miss P:Microsoft.FSharp.Core.CompilerServices.TypeProviderConfig.IsInvalidationSupported(System.Boolean)
-miss P:Microsoft.FSharp.Core.CompilerServices.TypeProviderConfig.ReferencedAssemblies(System.String[])
-miss P:Microsoft.FSharp.Core.CompilerServices.TypeProviderConfig.ResolutionFolder(System.String)
-miss P:Microsoft.FSharp.Core.CompilerServices.TypeProviderConfig.RuntimeAssembly(System.String)
-miss P:Microsoft.FSharp.Core.CompilerServices.TypeProviderConfig.SystemRuntimeAssemblyVersion(System.Version)
-miss P:Microsoft.FSharp.Core.CompilerServices.TypeProviderConfig.TemporaryFolder(System.String)
-miss P:Microsoft.FSharp.Core.CustomOperationAttribute.AllowIntoPattern(System.Boolean)
-miss P:Microsoft.FSharp.Core.CustomOperationAttribute.IsLikeGroupJoin(System.Boolean)
-miss P:Microsoft.FSharp.Core.CustomOperationAttribute.IsLikeJoin(System.Boolean)
-miss P:Microsoft.FSharp.Core.CustomOperationAttribute.IsLikeZip(System.Boolean)
-miss P:Microsoft.FSharp.Core.CustomOperationAttribute.JoinConditionWord(System.String)
-miss P:Microsoft.FSharp.Core.CustomOperationAttribute.MaintainsVariableSpace(System.Boolean)
-miss P:Microsoft.FSharp.Core.CustomOperationAttribute.MaintainsVariableSpaceUsingBind(System.Boolean)
 miss P:Microsoft.FSharp.Core.FSharpOption`1.IsNone
 miss P:Microsoft.FSharp.Core.FSharpOption`1.IsSome
 miss P:Microsoft.FSharp.Core.FSharpRef`1.Value

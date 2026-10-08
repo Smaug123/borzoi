@@ -56,8 +56,8 @@ use crate::ecma335_assembly::strip_arity;
 use crate::error::ImportError;
 use crate::fsharp_pickle::model::{
     IsType, PickledAttribExpr, PickledAttribute, PickledCcu, PickledConst, PickledEntity,
-    PickledExnRepr, PickledExpr, PickledTcRef, PickledTyconRepr, PickledType, PickledVal,
-    TupleKind, TyparKind,
+    PickledExnRepr, PickledExpr, PickledMemberKind, PickledTcRef, PickledTyconRepr, PickledType,
+    PickledVal, TupleKind, TyparKind,
 };
 use crate::model::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, CompilerMessage, Entity,
@@ -2995,6 +2995,352 @@ fn find_entity_unique_mut<'a>(
             .find(|e| e.name == *segment)?;
     }
     Some(current)
+}
+
+// ---------------------------------------------------------------------------
+// Doc-comment keys of type members
+// ---------------------------------------------------------------------------
+
+/// Which projected member of a type one pickled doc key belongs to, as far as
+/// the IL can tell: the slot a val compiles to (a method, or one accessor of a
+/// property, by name, IL arity and staticness), or a `val` field the IL exposes
+/// as a property.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DocSlot {
+    Method {
+        name: String,
+        arity: usize,
+        is_static: bool,
+    },
+    Getter {
+        name: String,
+        index_arity: usize,
+        is_static: bool,
+    },
+    Setter {
+        name: String,
+        index_arity: usize,
+        is_static: bool,
+    },
+    ValField(String),
+}
+
+/// The [`DocSlot`] a type's member val compiles to, or `None` for one with no
+/// slot this overlay stamps: a class constructor, an F#-native extension (it
+/// compiles onto its module, which the module member list keys), a val with no
+/// `ValReprInfo` to count arguments from.
+///
+/// An instance member's first argument group is the receiver, which the IL
+/// signature does not list; a setter's last argument is the assigned value,
+/// which a property's index parameters do not.
+fn member_doc_slot(v: &PickledVal) -> Option<DocSlot> {
+    let info = v.member_info.as_ref()?;
+    if v.flags & VAL_FLAGS_IS_EXTENSION_MEMBER != 0 {
+        return None;
+    }
+    let total: usize = v.repr_info.as_ref()?.arg_repr.iter().map(Vec::len).sum();
+    let is_static = !info.flags.is_instance;
+    let args = if is_static {
+        total
+    } else {
+        total.checked_sub(1)?
+    };
+    let compiled = v.compiled_name.as_deref().unwrap_or(&v.logical_name);
+    Some(match info.flags.kind {
+        PickledMemberKind::Member => DocSlot::Method {
+            name: compiled.to_string(),
+            arity: args,
+            is_static,
+        },
+        PickledMemberKind::Constructor => DocSlot::Method {
+            name: ".ctor".to_string(),
+            arity: total,
+            is_static: false,
+        },
+        PickledMemberKind::PropertyGet => DocSlot::Getter {
+            name: v.logical_name.strip_prefix("get_")?.to_string(),
+            index_arity: args,
+            is_static,
+        },
+        PickledMemberKind::PropertySet => DocSlot::Setter {
+            name: v.logical_name.strip_prefix("set_")?.to_string(),
+            index_arity: args.checked_sub(1)?,
+            is_static,
+        },
+        PickledMemberKind::ClassConstructor => return None,
+    })
+}
+
+/// Whether `member` occupies `slot`.
+fn occupies(member: &Member, slot: &DocSlot) -> bool {
+    match (member, slot) {
+        (
+            Member::Method(m),
+            DocSlot::Method {
+                name,
+                arity,
+                is_static,
+            },
+        ) => m.name == *name && m.signature.parameters.len() == *arity && m.is_static == *is_static,
+        (
+            Member::Property(p),
+            DocSlot::Getter {
+                name,
+                index_arity,
+                is_static,
+            },
+        ) => {
+            p.has_getter
+                && p.name == *name
+                && p.parameters.len() == *index_arity
+                && p.is_static == *is_static
+        }
+        (
+            Member::Property(p),
+            DocSlot::Setter {
+                name,
+                index_arity,
+                is_static,
+            },
+        ) => {
+            p.has_setter
+                && p.name == *name
+                && p.parameters.len() == *index_arity
+                && p.is_static == *is_static
+        }
+        (Member::Property(p), DocSlot::ValField(name)) => {
+            p.name == *name && p.parameters.is_empty() && !p.is_static
+        }
+        _ => false,
+    }
+}
+
+/// One pickled F# type's doc keys, located by FQN in the ECMA tree.
+struct TypeDocSigTarget {
+    namespace: Vec<String>,
+    type_chain: Vec<String>,
+    arity: usize,
+    /// Each member val's (or `val` field's) slot and its pickled key, in pickle
+    /// order. A slot can repeat: same-name, same-arity overloads share one.
+    keys: Vec<(DocSlot, Option<String>)>,
+}
+
+/// Stamp each F# type's members with the doc-comment key fsc pickled for them
+/// ([`crate::MethodLike::xml_doc_sig`], [`crate::Property::xml_doc_sig`] and
+/// [`crate::Property::setter_xml_doc_sig`]) — the type-member counterpart of the
+/// module member list's claim, which keys module members.
+///
+/// A type's member vals are its `tcaug.adhoc` entries (what FCS's
+/// `MembersOfFSharpTyconSorted` reads); a class's or struct's `val` fields are
+/// its object-model fields, keyed `F:` although an immutable one compiles to a
+/// property. Each val is matched to the projected member occupying its
+/// [`DocSlot`], and a slot is stamped only when that is unambiguous: every val
+/// sharing the slot carries the one key, and exactly as many members occupy
+/// the slot as vals claim it. Two documented `Add` overloads share the slot
+/// `Add/1` with different keys, so neither is stamped — handing a method its
+/// sibling's key would show the sibling's documentation — and both keep their
+/// computed IDs.
+///
+/// The type is located by `(namespace, containers, name, arity)` and must be
+/// the only row at that key (see [`find_entity_at_arity_mut`]; the containers
+/// must each be unique by name too). A type with an erased `[<Measure>]`
+/// parameter is skipped: its pickled arity is not its CLR arity, so the key
+/// cannot name its row. Skipping costs coverage only — a member left unstamped
+/// keeps its computed ID.
+pub(crate) fn apply_type_member_doc_sigs(
+    entities: &mut [Entity],
+    pickled: &PickledCcu,
+) -> Result<(), ImportError> {
+    // A type's member vals are declared in its *enclosing* module or
+    // namespace's val list, each naming the type as its apparent parent (the
+    // type's own `tcaug.adhoc` holds non-local references back to them). So one
+    // walk collects every type's location, by stamp, and every member val, by
+    // its parent's stamp.
+    let mut targets: HashMap<u32, TypeDocSigTarget> = HashMap::new();
+    let mut member_keys: HashMap<PickledTcRef, Vec<(DocSlot, Option<String>)>> = HashMap::new();
+    let mut parents: HashMap<u32, u32> = HashMap::new();
+    let mut logical_paths: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut path = Vec::new();
+    walk_entity_tree(
+        pickled,
+        pickled.root_entity,
+        true,
+        &[],
+        &[],
+        &mut path,
+        &mut |stamp, entity, is_root, namespace, type_chain| {
+            for &vi in &entity.module_type.vals {
+                let v = pickled.tables.vals.get(vi as usize).ok_or(
+                    ImportError::OsgnIndexOutOfRange {
+                        kind: "val (type member doc keys)",
+                        index: vi,
+                        max: pickled.tables.vals.len(),
+                    },
+                )?;
+                let Some(info) = &v.member_info else {
+                    continue;
+                };
+                if let Some(slot) = member_doc_slot(v) {
+                    member_keys
+                        .entry(info.apparent_parent.clone())
+                        .or_default()
+                        .push((slot, pickled_xml_doc_sig(&v.xmldoc_sig)));
+                }
+            }
+            // The entity's logical path from the CCU root, which is how a
+            // non-local reference back into this CCU names it. A parent is
+            // visited before its children, so its path is already recorded.
+            let path = match parents.get(&stamp) {
+                Some(parent) => {
+                    let mut p = logical_paths.get(parent).cloned().unwrap_or_default();
+                    p.push(entity.logical_name.clone());
+                    p
+                }
+                None => Vec::new(),
+            };
+            for &child in &entity.module_type.entities {
+                parents.insert(child, stamp);
+            }
+            logical_paths.insert(stamp, path);
+            if is_root
+                || entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE != 0
+                || entity.type_abbrev.is_some()
+                || !is_measure_free(pickled, entity)
+            {
+                return Ok(());
+            }
+            let mut keys = Vec::new();
+            if let PickledTyconRepr::FSharpObjectModel(model) = &entity.repr {
+                for field in model.rfields.iter().filter(|f| !f.is_static) {
+                    keys.push((
+                        DocSlot::ValField(field.ident.name.clone()),
+                        pickled_xml_doc_sig(&field.xmldoc_sig),
+                    ));
+                }
+            }
+            let mut chain = type_chain.to_vec();
+            chain.push(clr_name(entity));
+            targets.insert(
+                stamp,
+                TypeDocSigTarget {
+                    namespace: namespace.to_vec(),
+                    type_chain: chain,
+                    arity: entity.typars.len(),
+                    keys,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    let host = pickled
+        .tables
+        .tycons
+        .get(pickled.root_entity as usize)
+        .map(|root| root.logical_name.as_str());
+    let by_path: HashMap<&[String], u32> = logical_paths
+        .iter()
+        .map(|(stamp, path)| (path.as_slice(), *stamp))
+        .collect();
+    for (parent, keys) in member_keys {
+        let stamp = match parent {
+            PickledTcRef::Local(stamp) => Some(stamp),
+            // fsc pickles a member's apparent parent as a path into the CCU —
+            // its own CCU, for an intrinsic member.
+            PickledTcRef::NonLocal(index) => pickled
+                .header
+                .nlerefs
+                .get(index as usize)
+                .filter(|nle| {
+                    pickled
+                        .header
+                        .ccu_refs
+                        .get(nle.ccu as usize)
+                        .is_some_and(|ccu| Some(ccu.name.as_str()) == host)
+                })
+                .and_then(|nle| {
+                    nle.path
+                        .iter()
+                        .map(|&i| pickled.header.strings.get(i as usize).cloned())
+                        .collect::<Option<Vec<String>>>()
+                })
+                .and_then(|path| by_path.get(path.as_slice()).copied()),
+        };
+        // A parent the walk did not record as a type is a module (whose
+        // members the member list keys), a type this overlay skips, or an
+        // entity of another CCU.
+        if let Some(target) = stamp.and_then(|s| targets.get_mut(&s)) {
+            target.keys.extend(keys);
+        }
+    }
+    for target in targets.into_values() {
+        if target.keys.is_empty() {
+            continue;
+        }
+        let (leaf, containers) = target
+            .type_chain
+            .split_last()
+            .expect("a target's chain ends in its own name");
+        let ecma = if containers.is_empty() {
+            find_entity_at_arity_mut(
+                entities,
+                &target.namespace,
+                &target.type_chain,
+                target.arity,
+            )
+        } else {
+            find_entity_unique_mut(entities, &target.namespace, containers).and_then(|container| {
+                find_entity_at_arity_mut(
+                    &mut container.nested_types,
+                    &[],
+                    std::slice::from_ref(leaf),
+                    target.arity,
+                )
+            })
+        };
+        let Some(ecma) = ecma else {
+            continue;
+        };
+        if ecma.kind == EntityKind::Module {
+            continue;
+        }
+        stamp_doc_sigs(ecma, &target.keys);
+    }
+    Ok(())
+}
+
+/// Stamp `entity`'s members from one type's pickled keys; see
+/// [`apply_type_member_doc_sigs`] for when a slot is unambiguous.
+fn stamp_doc_sigs(entity: &mut Entity, keys: &[(DocSlot, Option<String>)]) {
+    // Per slot: how many vals claim it, and their key if they all agree.
+    let mut slots: HashMap<&DocSlot, (usize, Option<Option<&String>>)> = HashMap::new();
+    for (slot, key) in keys {
+        let entry = slots.entry(slot).or_insert((0, Some(key.as_ref())));
+        entry.0 += 1;
+        if entry.1 != Some(key.as_ref()) {
+            entry.1 = None;
+        }
+    }
+    for (slot, (vals, key)) in slots {
+        let Some(Some(key)) = key else {
+            continue;
+        };
+        let occupants = entity.members.iter().filter(|m| occupies(m, slot)).count();
+        if occupants != vals {
+            continue;
+        }
+        for member in entity.members.iter_mut().filter(|m| occupies(m, slot)) {
+            match (member, slot) {
+                (Member::Method(m), DocSlot::Method { .. }) => m.xml_doc_sig = Some(key.clone()),
+                (Member::Property(p), DocSlot::Getter { .. } | DocSlot::ValField(_)) => {
+                    p.xml_doc_sig = Some(key.clone())
+                }
+                (Member::Property(p), DocSlot::Setter { .. }) => {
+                    p.setter_xml_doc_sig = Some(key.clone())
+                }
+                _ => unreachable!("`occupies` pairs each slot with its member kind"),
+            }
+        }
+    }
 }
 
 // Silence the unused-import linter: `PickledEntity` and `PickledType`

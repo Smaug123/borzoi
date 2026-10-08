@@ -1,18 +1,12 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 6786
+hits 6809
 keys 7364
-miss F:Internal.Utilities.Text.Lexing.Position.AbsoluteOffset
-miss F:Internal.Utilities.Text.Lexing.Position.FileIndex
-miss F:Internal.Utilities.Text.Lexing.Position.Line
-miss F:Internal.Utilities.Text.Lexing.Position.StartOfLineAbsoluteOffset
 miss M:FSharp.Compiler.LowerSequenceExpressions.ConvertSequenceExprToObject(FSharp.Compiler.TcGlobals.TcGlobals,FSharp.Compiler.Import.ImportMap,FSharp.Compiler.TypedTree.Expr)
 miss M:FSharp.Compiler.MethodCalls.AdjustCallerArgs``3(Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.TypedTree.ValRef,Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.TypedTree.ValUseFlag,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Collections.FSharpList{FSharp.Compiler.TypedTree.TType},Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.Text.Range,System.Tuple{FSharp.Compiler.TypedTree.Expr,FSharp.Compiler.TypedTree.TType}}}}},Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.Text.Range,Microsoft.FSharp.Core.FSharpFunc{FSharp.Compiler.AbstractIL.IL.ILFieldInit,FSharp.Compiler.TypedTree.Const}},Microsoft.FSharp.Core.FSharpOption{System.String},FSharp.Compiler.InfoReader.InfoReader,FSharp.Compiler.AccessibilityLogic.AccessorDomain,FSharp.Compiler.MethodCalls.CalledMeth{FSharp.Compiler.TypedTree.Expr},Microsoft.FSharp.Collections.FSharpList{FSharp.Compiler.TypedTree.Expr},Microsoft.FSharp.Core.FSharpOption{``0},FSharp.Compiler.Text.Range,FSharp.Compiler.Text.Range)
 miss M:FSharp.Compiler.TypedTreeOps.|IntegerForLoopExpr|_|(FSharp.Compiler.TypedTree.Expr)
 miss M:FSharp.Compiler.TypedTreeOps.|TryWithExpr|_|(FSharp.Compiler.TypedTree.Expr)
-miss P:FSComp.SR.SwallowResourceText(System.Boolean)
-miss P:FSIstrings.SR.SwallowResourceText(System.Boolean)
 miss P:FSharp.Compiler.AbstractIL.IL.ILTypeRef.BasicQualifiedName
 miss P:FSharp.Compiler.AbstractIL.IL.ILTypeRef.Enclosing
 miss P:FSharp.Compiler.AbstractIL.IL.ILTypeRef.FullName
@@ -27,17 +21,6 @@ miss P:FSharp.Compiler.AbstractIL.IL.ILTypeSpec.TypeRef
 miss P:FSharp.Compiler.CodeAnalysis.FSharpProjectOptions.ProjectDirectory
 miss P:FSharp.Compiler.CodeAnalysis.TcInfo.TcDiagnostics
 miss P:FSharp.Compiler.GraphChecking.TrieNode.Files
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.CommandLineArgs(System.String[])
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.EventLoop(FSharp.Compiler.Interactive.Shell.Settings.IEventLoop)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.FloatingPointFormat(System.String)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.FormatProvider(System.IFormatProvider)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.PrintDepth(System.Int32)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.PrintLength(System.Int32)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.PrintSize(System.Int32)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.PrintWidth(System.Int32)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.ShowDeclarationValues(System.Boolean)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.ShowIEnumerable(System.Boolean)
-miss P:FSharp.Compiler.Interactive.Shell.Settings.InteractiveSettings.ShowProperties(System.Boolean)
 miss P:FSharp.Compiler.ParseAndCheckInputs.TcState.Ccu
 miss P:FSharp.Compiler.ParseAndCheckInputs.TcState.CcuSig
 miss P:FSharp.Compiler.ParseAndCheckInputs.TcState.TcEnvFromImpls
@@ -265,7 +248,6 @@ miss P:FSharp.Compiler.TypedTree.RecdField.XmlDoc
 miss P:FSharp.Compiler.TypedTree.RecdField.XmlDocSig
 miss P:FSharp.Compiler.TypedTree.RecdField.XmlDocSig(System.String)
 miss P:FSharp.Compiler.TypedTree.TProvidedTypeInfo.IsGenerated
-miss P:FSharp.Compiler.TypedTree.TraitConstraintInfo.Solution(Microsoft.FSharp.Core.FSharpOption{FSharp.Compiler.TypedTree.TraitConstraintSln})
 miss P:FSharp.Compiler.TypedTree.TyconRecdFields.AllFieldsAsList
 miss P:FSharp.Compiler.TypedTree.TyconRecdFields.TrueFieldsAsList
 miss P:FSharp.Compiler.TypedTree.TyconRecdFields.TrueInstanceFieldsAsList
@@ -424,11 +406,6 @@ miss P:FSharp.Compiler.TypedTree.ValRef.XmlDoc
 miss P:FSharp.Compiler.TypedTree.ValRef.XmlDocSig
 miss P:FSharp.Compiler.TypedTreeOps.SignatureHidingInfo.Empty
 miss P:FSharp.Compiler.TypedTreeOps.SignatureRepackageInfo.Empty
-miss P:Internal.Utilities.Collections.HashMultiMap`2.Item(`0,`1)
-miss P:Internal.Utilities.Text.Lexing.LexBuffer`1.EndPos(Internal.Utilities.Text.Lexing.Position)
-miss P:Internal.Utilities.Text.Lexing.LexBuffer`1.IsPastEndOfStream(System.Boolean)
-miss P:Internal.Utilities.Text.Lexing.LexBuffer`1.StartPos(Internal.Utilities.Text.Lexing.Position)
-miss P:UtilsStrings.SR.SwallowResourceText(System.Boolean)
 miss T:FSharp.Compiler.AbstractIL.IL.ILArrayBound
 miss T:FSharp.Compiler.AbstractIL.IL.ILArrayBounds
 miss T:FSharp.Compiler.AbstractIL.IL.ILCodeLabel

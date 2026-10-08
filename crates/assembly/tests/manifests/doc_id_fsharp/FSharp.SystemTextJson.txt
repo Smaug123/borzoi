@@ -7,7 +7,6 @@ dup M:System.Text.Json.Serialization.JsonRecordConverter.CanConvert(System.Type)
 dup M:System.Text.Json.Serialization.JsonSetConverter.CanConvert(System.Type) x2
 dup M:System.Text.Json.Serialization.JsonTupleConverter.CanConvert(System.Type) x2
 dup M:System.Text.Json.Serialization.JsonUnionConverter.CanConvert(System.Type) x2
-hits 71
+hits 72
 keys 72
-miss P:System.Text.Json.Serialization.JsonNameAttribute.Field(System.String)
 pickle decoded
