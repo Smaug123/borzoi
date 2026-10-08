@@ -1,25 +1,16 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 3115
+hits 3124
 keys 3168
 miss F:Internal.Utilities.Text.Lexing.Position.AbsoluteOffset
 miss F:Internal.Utilities.Text.Lexing.Position.FileIndex
 miss F:Internal.Utilities.Text.Lexing.Position.Line
 miss F:Internal.Utilities.Text.Lexing.Position.OriginalLine
 miss F:Internal.Utilities.Text.Lexing.Position.StartOfLineAbsoluteOffset
-miss M:Fantomas.FCS.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.ErrorR(Fantomas.FCS.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:Fantomas.FCS.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.ErrorRecovery(Fantomas.FCS.DiagnosticsLogger.DiagnosticsLogger,System.Exception,Fantomas.FCS.Text.Range)
-miss M:Fantomas.FCS.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.ErrorRecoveryNoRange(Fantomas.FCS.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:Fantomas.FCS.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.Error``1(Fantomas.FCS.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:Fantomas.FCS.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.SimulateError``1(Fantomas.FCS.DiagnosticsLogger.DiagnosticsLogger,Fantomas.FCS.DiagnosticsLogger.PhasedDiagnostic)
-miss M:Fantomas.FCS.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.StopProcessingRecovery(Fantomas.FCS.DiagnosticsLogger.DiagnosticsLogger,System.Exception,Fantomas.FCS.Text.Range)
-miss M:Fantomas.FCS.DiagnosticsLogger.DiagnosticsLoggerExtensions.DiagnosticsLogger.Warning(Fantomas.FCS.DiagnosticsLogger.DiagnosticsLogger,System.Exception)
-miss M:Internal.Utilities.Library.Extras.StringBuilder.AppendString(System.Text.StringBuilder,System.String)
 miss M:Internal.Utilities.Library.NameMap.layerAdditive``3(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Collections.FSharpList{``0},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Collections.FSharpList{``0}}},Microsoft.FSharp.Collections.FSharpMap{``2,``1},Microsoft.FSharp.Collections.FSharpMap{``2,Microsoft.FSharp.Collections.FSharpList{``0}})
 miss M:Internal.Utilities.Library.NameMap.subfold2``4(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``1,``2}},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``2,``2}}}},Microsoft.FSharp.Collections.FSharpMap{``0,``3},Microsoft.FSharp.Collections.FSharpMap{``0,``1},``2)
 miss M:Internal.Utilities.Library.NameMap.union``2(Microsoft.FSharp.Core.FSharpFunc{System.Collections.Generic.IEnumerable{``0},``1},System.Collections.Generic.IEnumerable{Microsoft.FSharp.Collections.FSharpMap{System.String,``0}})
-miss M:Internal.Utilities.Library.PervasiveAutoOpens.Async.RunImmediate.Static``1(Microsoft.FSharp.Control.FSharpAsync{``0},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})
 miss P:FSComp.SR.SwallowResourceText(System.Boolean)
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeRef.BasicQualifiedName
 miss P:Fantomas.FCS.AbstractIL.IL.ILTypeRef.Enclosing

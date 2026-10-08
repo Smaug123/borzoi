@@ -8,6 +8,10 @@ hit F:DocIdsFs.Colour.Red
 hit F:DocIdsFs.Fields.Raw
 hit F:DocIdsFs.Widget.Label@
 hit M:DocIdsFs.Box`1.Map``1(Microsoft.FSharp.Core.FSharpFunc{`0,``0})
+hit M:DocIdsFs.Ext.String.Shout(System.String)
+hit M:DocIdsFs.Ext.String.get_Blank.Static
+hit M:DocIdsFs.Ext.String.get_Len(System.String)
+hit M:DocIdsFs.Ext.Widget.get_Twice(DocIdsFs.Widget)
 hit M:DocIdsFs.Fields.#ctor
 hit M:DocIdsFs.Funcs.RenamedAtIl(System.Int32)
 hit M:DocIdsFs.Funcs.add(System.Int32,System.Int32)
@@ -21,6 +25,11 @@ hit M:DocIdsFs.Funcs.id2``1(``0)
 hit M:DocIdsFs.Funcs.inc(System.Int32)
 hit M:DocIdsFs.Funcs.orZero(Microsoft.FSharp.Core.FSharpOption{System.Int32})
 hit M:DocIdsFs.Funcs.scale(System.Double)
+hit M:DocIdsFs.Funcs.scaleG``1(System.Double)
+hit M:DocIdsFs.Funcs.sum2(System.Int32[0:])
+hit M:DocIdsFs.Funcs.sum3(System.Int32[0:, 0:])
+hit M:DocIdsFs.Funcs.twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``0,``1}},``0)
+hit M:DocIdsFs.Funcs.unitOf``1(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``0})
 hit M:DocIdsFs.Funcs.|Even|Odd|(System.Int32)
 hit M:DocIdsFs.Funcs.|Positive|_|(System.Int32)
 hit M:DocIdsFs.IShape.Describe
@@ -84,15 +93,6 @@ hit T:DocIdsFs.m
 keys 101
 miss F:DocIdsFs.Pos.Col
 miss F:DocIdsFs.Pos.Line
-miss M:DocIdsFs.Ext.String.Shout(System.String)
-miss M:DocIdsFs.Ext.String.get_Blank.Static
-miss M:DocIdsFs.Ext.String.get_Len(System.String)
-miss M:DocIdsFs.Ext.Widget.get_Twice(DocIdsFs.Widget)
-miss M:DocIdsFs.Funcs.scaleG``1(System.Double)
-miss M:DocIdsFs.Funcs.sum2(System.Int32[0:])
-miss M:DocIdsFs.Funcs.sum3(System.Int32[0:, 0:])
-miss M:DocIdsFs.Funcs.twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``0,``1}},``0)
-miss M:DocIdsFs.Funcs.unitOf``1(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,``0})
 miss M:DocIdsFs.Widget.Corner(System.Int32[0:])
 miss M:DocIdsFs.Widget.Twice``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``0,``1}},``0)
 miss M:DocIdsFs.Widget.add_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})

@@ -831,6 +831,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
         }
     }
 

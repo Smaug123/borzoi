@@ -1104,6 +1104,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
         })
     }
 
@@ -1139,6 +1140,8 @@ mod tests {
             custom_attrs: vec![],
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
+            setter_xml_doc_sig: None,
         })
     }
 
