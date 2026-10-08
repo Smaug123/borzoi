@@ -198,7 +198,7 @@ fn report_names(title: &str, counts: &BTreeMap<String, usize>) {
 /// have to add. The **third minus the second** is what the work is worth.
 ///
 /// The assertions are **two-sided**, for the same reason `parser_corpus`'s
-/// `CLEAN_PARSES` is: the SDK is pinned and the evaluator deterministic, so
+/// manifest is: the SDK is pinned and the evaluator deterministic, so
 /// there is no drift for a one-sided bound to absorb. Improving the evaluator
 /// is *supposed* to fail this test; update the numbers with the date and say
 /// which way they moved.

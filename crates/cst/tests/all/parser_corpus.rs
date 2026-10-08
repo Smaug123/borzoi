@@ -9,21 +9,29 @@
 //!   source byte-for-byte (`root.text() == src`). A failure here is a real
 //!   byte-dropping bug, never a "feature not implemented yet" gap, so it is a
 //!   hard assertion for every file the parser returns from.
-//! * **Recorded counts.** The parser is intentionally incomplete, so most real
-//!   files still produce parse errors. Rather than an unwieldy
-//!   multi-thousand-entry allow-list, we record counts: [`CLEAN_PARSES`] files
-//!   parse with zero errors, and at most [`MAX_NON_UTF8_SOURCES`] are skipped
-//!   as non-UTF-8. The corpus is content-addressed (pinned in `flake.nix`) and
-//!   the parser is deterministic, so these counts are exactly reproducible
-//!   across machines.
+//! * **The manifest — every file's outcome, exactly.** The parser is
+//!   intentionally incomplete, so some real files still produce parse errors.
+//!   The corpus is content-addressed (pinned in `flake.nix`) and the parser is
+//!   deterministic, so which files those are is a fixed fact, and the sweep
+//!   checks it exactly against `tests/manifests/parser_corpus.txt`: one line per
+//!   file that parses with errors or is skipped as non-UTF-8, and one summary
+//!   line counting the clean parses. Every non-clean file is listed by path, so
+//!   a file moving into or out of the clean set moves a listed line as well as
+//!   the count.
 //!
-//!   [`CLEAN_PARSES`] is **two-sided**: improving the parser fails this test
-//!   just as a regression does. Parse one more file cleanly and it goes red
-//!   until you bump the constant, with the date and the new figure. That is the
-//!   intended cost — the alternative is a one-sided floor with slack nobody
-//!   re-measures, which is what let this number sit 2,401 files below the truth
-//!   while the sweep ran nowhere. [`MAX_NON_UTF8_SOURCES`] stays a ceiling: it
-//!   counts a property of the corpus, not of our code.
+//!   The comparison is **two-sided**: improving the parser fails it just as a
+//!   regression does. Parse one more file cleanly and it goes red until the
+//!   manifest is regenerated and the diff committed, which is what keeps the
+//!   record honest between measurements:
+//!
+//!   ```text
+//!   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_corpus:: -- --ignored
+//!   ```
+//!
+//!   The alternative — a one-sided floor with slack nobody re-measures — is what
+//!   let the clean-parse count sit 2,401 files below the truth while the sweep
+//!   ran nowhere. Regeneration cannot bless a panic or a round-trip failure:
+//!   those assertions run first.
 //!
 //! Symbols are empty (plain [`parse`]), matching the lexer corpus test: every
 //! `#if <ident>` is false, so the `#else` / post-`#endif` branch is active.
@@ -39,58 +47,36 @@
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::{Parse, parse, parse_sig};
+use borzoi_oracle_harness::manifest::Manifest;
 
+use crate::common::corpus_manifest::{
+    check_manifest, corpus_relative, regenerate_ignored, sort_by_corpus_key, summary_entry,
+};
 use crate::common::{
     catch_unwind_silent, collect_fsharp_corpus_files, corpus_root, read_corpus_source,
 };
 
-/// Files that parse with **zero** errors and round-trip, as a **two-sided**
-/// record: a run that parses fewer fails, and so does one that parses more.
-///
-/// The corpus is content-addressed and the parser is deterministic, so this
-/// count is exactly reproducible — there is no drift for a one-sided floor to
-/// absorb, and a floor is precisely what rotted. Measured 2026-06-19 as
-/// 3227 / 6367, it was still 3227 on 2026-07-31 when the truth was 5628 / 6344
-/// (88.7%): 2,401 files of slack, enough to un-parse a third of the corpus
-/// without failing, because nothing ran this sweep.
-///
-/// Two-sided is therefore the point rather than pedantry. Lowering it needs a
-/// reason; **raising it is the good direction and still requires the bump** —
-/// parse one more file cleanly and this fails until the constant records it,
-/// which is what keeps the number honest between measurements. Same discipline
-/// as the exact manifests (`docs/continuous-measurements.md`), and for the same
-/// stated reason: a one-sided bound quietly decays into a rubber stamp.
-///
-/// 5625 on 2026-09-23: three files FCS rejects moved from "we accept" to "both
-/// reject" (`$` in an operator name, and a stray token after a module `let`'s
-/// body block), with `parser_corpus_diff`'s we-reject/FCS-accepts bucket
-/// unchanged — a lowering with a reason.
-const CLEAN_PARSES: usize = 5625;
-
+// Why a manifest and not a bound on the clean-parse count: a one-sided floor
+// on it, measured as 3227 / 6367 in June 2026, was still 3227 on 2026-07-31
+// when the truth was 5628 / 6344 — 2,401 files of slack, enough to un-parse a
+// third of the corpus without failing, because nothing ran this sweep. Even an
+// exact count cannot see one file gained while another is lost; the manifest
+// pins the set of files, not only its size.
+//
 // The raw parser panicking on a corpus file used to be ratcheted (`MAX_PANICS`,
 // 7 when it was last measured in June 2026). It reaches zero on the pinned
-// corpus, so the ceiling became an invariant and is asserted as one below: at
-// zero a `<=` bound states nothing a `is_empty()` does not, and leaving slack
-// nobody re-measures is what let the clean-parse floor drift 2,401 files.
+// corpus, so the ceiling became an invariant and is asserted as one below.
 //
 // The LSP wraps the parser in `catch_unwind` so a panic never kills the server
 // (see `crates/lsp/tests/all/parser_corpus_sweep.rs`, which asserts exactly
 // that); a panic here is still a latent bug worth failing on.
-
-/// Upper bound on corpus files that are real F# fixtures but not UTF-8 source.
-/// These are explicit skips because the CST parser takes `&str`; I/O failures
-/// still panic instead of landing here.
-///
-/// Measured 2026-07-04 against the pinned corpus: 11 codepage / UTF-16
-/// fixtures.
-const MAX_NON_UTF8_SOURCES: usize = 11;
 
 #[derive(Default)]
 struct Tally {
     total: usize,
     panics: Vec<PathBuf>,
     roundtrip_failures: Vec<PathBuf>,
-    files_with_errors: usize,
+    files_with_errors: Vec<PathBuf>,
     clean: usize,
     non_utf8: Vec<PathBuf>,
 }
@@ -105,9 +91,11 @@ fn run_parse(path: &Path, src: &str) -> Parse {
 fn parse_fsharp_corpus() {
     let root = corpus_root();
 
-    let files = collect_fsharp_corpus_files(&root)
+    let mut files = collect_fsharp_corpus_files(&root)
         .unwrap_or_else(|err| panic!("walk F# corpus under {}: {err}", root.display()));
     assert!(!files.is_empty(), "no .fs/.fsi/.fsx files under {root:?}");
+    // Host-independent order, and a loud failure if two files share a key.
+    sort_by_corpus_key(&root, &mut files);
 
     eprintln!("parsing {} files under {}", files.len(), root.display());
 
@@ -139,7 +127,7 @@ fn parse_fsharp_corpus() {
         if parsed.errors.is_empty() {
             tally.clean += 1;
         } else {
-            tally.files_with_errors += 1;
+            tally.files_with_errors.push(path.clone());
         }
     }
 
@@ -149,14 +137,14 @@ fn parse_fsharp_corpus() {
         tally.total,
         tally.clean,
         100.0 * tally.clean as f64 / tally.total.max(1) as f64,
-        tally.files_with_errors,
+        tally.files_with_errors.len(),
         tally.panics.len(),
         tally.non_utf8.len(),
         tally.roundtrip_failures.len(),
     );
 
-    // List the (few) panicking files so the known-broken set is auditable in
-    // `--nocapture` output without having to trip the ceiling assertion.
+    // List the panicking files so they are auditable in `--nocapture` output
+    // alongside the counts.
     if !tally.panics.is_empty() {
         eprintln!("raw-parser panics ({}):", tally.panics.len());
         for p in &tally.panics {
@@ -186,21 +174,7 @@ fn parse_fsharp_corpus() {
         );
     }
 
-    // --- Graduating ratchets ----------------------------------------------
-    assert!(
-        tally.non_utf8.len() <= MAX_NON_UTF8_SOURCES,
-        "{} corpus sources were not UTF-8 (ceiling is MAX_NON_UTF8_SOURCES = {}). \
-         These are skipped explicitly because the CST parser takes &str; \
-         investigate new entries rather than silently dropping them.\n{}",
-        tally.non_utf8.len(),
-        MAX_NON_UTF8_SOURCES,
-        tally
-            .non_utf8
-            .iter()
-            .map(|p| format!("  {}", p.display()))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    );
+    // --- Hard invariant: no panics -----------------------------------------
     assert!(
         tally.panics.is_empty(),
         "raw parser panicked on {} files. The corpus panics none of it today, so \
@@ -214,13 +188,26 @@ fn parse_fsharp_corpus() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    assert_eq!(
-        tally.clean, CLEAN_PARSES,
-        "clean parses moved: {} now, CLEAN_PARSES records {}. Fewer means a \
-         construct stopped parsing without errors — a regression. More is the \
-         good direction and still fails here: bump CLEAN_PARSES in the same \
-         commit, with the date and the new figure, so the record cannot drift \
-         from the truth between measurements.",
-        tally.clean, CLEAN_PARSES,
+
+    // --- Every file's outcome, exactly ----------------------------------------
+    let entries = std::iter::once(summary_entry("clean", tally.clean))
+        .chain(
+            tally
+                .files_with_errors
+                .iter()
+                .map(|p| format!("{} errors", corpus_relative(&root, p))),
+        )
+        .chain(
+            tally
+                .non_utf8
+                .iter()
+                .map(|p| format!("{} non-utf8", corpus_relative(&root, p))),
+        );
+    let manifest =
+        Manifest::from_entries(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    check_manifest(
+        "parser_corpus",
+        &manifest,
+        &regenerate_ignored("parser_corpus"),
     );
 }
