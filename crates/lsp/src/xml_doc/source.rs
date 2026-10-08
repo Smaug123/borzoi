@@ -46,6 +46,11 @@
 //! typed [`SourceDocDecline`], never a guess: a doc shown must be the doc FCS
 //! attaches, and a neighbour's doc must never be shown. The differential
 //! against FCS (`xml_doc_source_diff`) holds every committed answer to that.
+//!
+//! A doc is only as right as the resolution that chose its declaration, and
+//! the differential found two shapes resolution gets wrong (#323, #324); they
+//! decline here too ([`SourceDocDecline::SameNameDeclarations`],
+//! [`SourceDocDecline::NamedArgumentCandidate`]) until resolution is fixed.
 
 use std::collections::HashMap;
 
@@ -97,6 +102,17 @@ pub enum SourceDocDecline {
     /// (`Val.XmlDoc` falls back to `val_other_xmldoc`, set during signature
     /// conformance), which is not located here.
     SignatureFallback,
+    /// The declaration's container declares another type (or the type another
+    /// case) of the same name. Same-named types of different arity are legal
+    /// and resolution does not yet choose between them by arity (#323), so the
+    /// occurrence may name the other one; a duplicate case is an error FCS
+    /// resolves to the first.
+    SameNameDeclarations,
+    /// The occurrence is the left of `=` in a parenthesised application
+    /// argument — a named argument when the callee is a method or constructor,
+    /// which FCS binds to the parameter, not to the value resolution found
+    /// (#324).
+    NamedArgumentCandidate,
     /// A use in another file reached a declaration of an implementation file a
     /// signature constrains. FCS binds such a use to the *signature's* symbol,
     /// whose doc is the signature's alone, so the implementation's doc is not
@@ -426,6 +442,21 @@ fn type_rule(
     if !name.text_range().contains_range(range) {
         return Err(SourceDocDecline::NoDeclaration);
     }
+    let container = defn
+        .parent()
+        .and_then(|defns| defns.parent())
+        .ok_or(SourceDocDecline::NoDeclaration)?;
+    let namesakes = container
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::TYPE_DEFNS)
+        .flat_map(|defns| defns.children())
+        .filter(|n| n.kind() == SyntaxKind::TYPE_DEFN)
+        .filter_map(|n| n.children().find(|c| c.kind() == SyntaxKind::LONG_IDENT))
+        .filter(|other| ident_text(other) == ident_text(&name))
+        .count();
+    if namesakes > 1 {
+        return Err(SourceDocDecline::SameNameDeclarations);
+    }
     let first = first_real_token(&defn).ok_or(SourceDocDecline::NoDeclaration)?;
     match first.kind() {
         SyntaxKind::AND_TOK => {
@@ -455,6 +486,16 @@ fn case_rule(
     if !is_case_name(&case, range) {
         return Err(SourceDocDecline::NoDeclaration);
     }
+    if let Some(repr) = case.parent() {
+        let namesakes = repr
+            .children()
+            .filter(|n| n.kind() == case.kind())
+            .filter(|other| ident_text(other) == ident_text(&case))
+            .count();
+        if namesakes > 1 {
+            return Err(SourceDocDecline::SameNameDeclarations);
+        }
+    }
     match previous_real_sibling(&case) {
         Some(NodeOrToken::Token(bar)) if bar.kind() == SyntaxKind::BAR_TOK => Ok(GrabRule::At(bar)),
         None => {
@@ -477,6 +518,23 @@ fn is_case_name(case: &SyntaxNode, range: TextRange) -> bool {
     case.children_with_tokens()
         .filter_map(NodeOrToken::into_token)
         .any(|t| t.kind() == SyntaxKind::IDENT_TOK && t.text_range() == range)
+}
+
+/// The identifier `node` declares (its direct `IDENT_TOK` children, joined
+/// with `.`), double backticks stripped: `` ``A`` `` and `A` are one name.
+fn ident_text(node: &SyntaxNode) -> String {
+    node.children_with_tokens()
+        .filter_map(NodeOrToken::into_token)
+        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        .map(|t| {
+            let text = t.text();
+            text.strip_prefix("``")
+                .and_then(|t| t.strip_suffix("``"))
+                .unwrap_or(text)
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// An `exception` definition's constructor.
@@ -573,6 +631,53 @@ pub fn member_text(elaborated: &[String]) -> String {
     text
 }
 
+/// Whether the name at `at` is the left of `=` in a parenthesised (possibly
+/// tupled) application argument — `M(x = 1)`, `f (x = 1, y)` — which is a
+/// named argument when the callee is a method or constructor and an equality
+/// test otherwise; syntax cannot tell which.
+fn is_named_argument_candidate(root: &SyntaxNode, at: TextRange) -> bool {
+    if !root.text_range().contains_range(at) {
+        return false;
+    }
+    let NodeOrToken::Token(token) = root.covering_element(at) else {
+        return false;
+    };
+    let Some(lhs) = token
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::IDENT_EXPR)
+    else {
+        return false;
+    };
+    let Some(infix) = lhs
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::INFIX_APP_EXPR)
+    else {
+        return false;
+    };
+    let is_equals = infix.first_child().as_ref() == Some(&lhs)
+        && infix.children().nth(1).is_some_and(|op| {
+            op.kind() == SyntaxKind::LONG_IDENT_EXPR && op.text().to_string().trim() == "="
+        });
+    if !is_equals {
+        return false;
+    }
+    let Some(mut arg) = infix.parent().filter(|p| p.kind() == SyntaxKind::APP_EXPR) else {
+        return false;
+    };
+    if arg
+        .parent()
+        .is_some_and(|p| p.kind() == SyntaxKind::TUPLE_EXPR)
+    {
+        arg = arg.parent().expect("checked");
+    }
+    arg.parent().is_some_and(|paren| {
+        paren.kind() == SyntaxKind::PAREN_EXPR
+            && paren
+                .parent()
+                .is_some_and(|app| app.kind() == SyntaxKind::APP_EXPR)
+    })
+}
+
 /// Why attached `///` lines yield no documentation tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceRenderError {
@@ -629,10 +734,10 @@ impl<'a> ProjectDocs<'a> {
         }
     }
 
-    /// The documentation of what `res`, an occurrence in Compile-order file
-    /// `from`, resolves to — `None` when it does not resolve to a binder of the
-    /// project's own sources.
-    pub fn doc(&mut self, from: usize, res: Resolution) -> Option<SourceDoc> {
+    /// The documentation of what `res`, the occurrence at `at` in Compile-order
+    /// file `from`, resolves to — `None` when it does not resolve to a binder
+    /// of the project's own sources.
+    pub fn doc(&mut self, from: usize, at: TextRange, res: Resolution) -> Option<SourceDoc> {
         let (file, def) = match res {
             Resolution::Local(id) => (from, self.resolved.file(from).def(id)),
             Resolution::Item(_) => self.resolved.item_def(res)?,
@@ -647,6 +752,15 @@ impl<'a> ProjectDocs<'a> {
             .clean_through(project_file.file.syntax())
         {
             return Some(SourceDoc::Declined(SourceDocDecline::ParseErrors));
+        }
+        if self
+            .files
+            .get(from)
+            .is_some_and(|f| is_named_argument_candidate(f.file.syntax(), at))
+        {
+            return Some(SourceDoc::Declined(
+                SourceDocDecline::NamedArgumentCandidate,
+            ));
         }
         let constrained = matches!(project_file.file, SourceFile::Impl(_))
             && self.partners.get(file).copied().flatten().is_some();

@@ -3,7 +3,27 @@
 //! expectation was backwards. Several are the shrunk counterexamples the
 //! property found against deliberately broken models.
 
-use super::harness::{Verdict, run_fixture};
+use borzoi::xml_doc::source::SourceDocDecline;
+
+use super::harness::{Graded, OracleFile, Verdict, check_paths, run_fixture};
+
+/// [`run_fixture`] for a fixture FCS rejects: graded all the same.
+fn run_fixture_allowing_errors(files: &[(&str, &str)]) -> (Vec<Graded>, Vec<OracleFile>) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let paths: Vec<_> = files
+        .iter()
+        .map(|(name, text)| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, text).unwrap();
+            p
+        })
+        .collect();
+    check_paths(
+        &paths,
+        files.iter().map(|(_, t)| t.to_string()).collect(),
+        &[],
+    )
+}
 
 /// FCS's lines and our verdict at the definition of the unique binder named
 /// `name` in a one-file project.
@@ -113,6 +133,12 @@ fn a_live_region_contributes_its_doc_lines() {
 }
 
 #[test]
+fn the_implicit_compiled_symbol_is_defined() {
+    let src = "module M\n/// a\n#if COMPILED\n/// b\n#endif\nlet v = 1\n";
+    assert_attached(src, "v", &[" a", " b"]);
+}
+
+#[test]
 fn an_attribute_after_the_doc_keeps_it_and_one_before_loses_it() {
     let before = "module M\n/// a\n[<System.Obsolete(\"o\")>]\nlet v = 1\n";
     assert_attached(before, "v", &[" a"]);
@@ -139,6 +165,81 @@ fn constructor_calls_are_graded_against_fcs() {
         .collect();
     eprintln!("constructor-call occurrences: {calls:?}");
     assert!(super::harness::failures(&graded).is_empty());
+}
+
+/// Every graded occurrence of `name`, as (byte offset, verdict, FCS lines).
+fn occurrences(src: &str, name: &str) -> Vec<(usize, Verdict, Vec<String>)> {
+    let files = [("M.fs", src)];
+    let (graded, _) = run_fixture(&files, &[]);
+    graded
+        .into_iter()
+        .filter(|g| g.name == name)
+        .map(|g| {
+            (
+                usize::from(g.range.start()),
+                g.verdict,
+                g.fcs_lines.unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn same_named_types_of_different_arity_decline() {
+    // Resolution reads `CT<int>` as the non-generic `CT` (#323); FCS binds the
+    // generic one. Neither type's doc may be shown at any of their sites.
+    let src = "module M\n/// generic\ntype CT<'T> = int -> 'T\n/// plain\ntype CT = int -> unit\nlet f (x: CT<int>) = x\nlet g (x: CT) = x\n";
+    let sites = occurrences(src, "CT");
+    let generic_use = src.find("CT<int>").unwrap();
+    let (_, _, fcs) = sites
+        .iter()
+        .find(|(at, _, _)| *at == generic_use)
+        .expect("graded");
+    assert_eq!(fcs, &[" generic"]);
+    for (at, verdict, _) in &sites {
+        assert_eq!(
+            verdict,
+            &Verdict::Declined(SourceDocDecline::SameNameDeclarations),
+            "at {at}"
+        );
+    }
+}
+
+#[test]
+fn a_named_argument_name_declines() {
+    // The left `areSimilar` is the constructor's parameter to FCS; resolution
+    // finds the local (#324).
+    let src = "module M\ntype A(areSimilar: int) =\n    member _.X = areSimilar\nlet h () =\n    /// local\n    let areSimilar = 1\n    A(areSimilar = areSimilar)\n";
+    let sites = occurrences(src, "areSimilar");
+    let lhs = src.rfind("A(areSimilar").unwrap() + 2;
+    let rhs = src.rfind("areSimilar").unwrap();
+    let at = |offset: usize| {
+        sites
+            .iter()
+            .find(|(at, _, _)| *at == offset)
+            .unwrap_or_else(|| panic!("no graded site at {offset}: {sites:?}"))
+    };
+    assert_eq!(at(lhs).2, Vec::<String>::new());
+    assert_eq!(
+        at(lhs).1,
+        Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
+    );
+    assert_eq!(at(rhs).2, [" local"]);
+    assert_eq!(at(rhs).1, Verdict::Agree { attached: true });
+}
+
+#[test]
+fn duplicate_union_cases_decline() {
+    let src =
+        "module M\ntype C =\n    /// one\n    | Dup of int\n    /// two\n    | Dup of string\n";
+    let files = [("M.fs", src)];
+    let (graded, _) = run_fixture_allowing_errors(&files);
+    for g in graded.iter().filter(|g| g.name == "Dup") {
+        assert_eq!(
+            g.verdict,
+            Verdict::Declined(SourceDocDecline::SameNameDeclarations)
+        );
+    }
 }
 
 #[test]

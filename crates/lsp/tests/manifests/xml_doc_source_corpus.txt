@@ -19,15 +19,20 @@ src/Compiler/Checking/OverloadResolutionCache.fs:205:54 OverloadResolutionCacheR
 src/Compiler/Checking/OverloadResolutionCache.fs:61:26 OverloadResolutionCacheKey Type use unpaired-doc
 src/Compiler/Checking/OverloadResolutionCache.fs:61:54 OverloadResolutionCacheResult Type use unpaired-doc
 src/Compiler/CodeGen/EraseUnions.Emit.fs compared fcs-check-errors agree-doc=0 agree-none=530 unpaired-none=176
-src/Compiler/Driver/CreateILModule.fs compared fcs-check-errors agree-doc=8 agree-none=385 unpaired-none=145
+src/Compiler/Driver/CreateILModule.fs compared fcs-check-errors agree-doc=8 agree-none=385 unpaired-none=144
+src/Compiler/Driver/CreateILModule.fs:469:37 name Value { is_function: false } use declined NamedArgumentCandidate fcs-unpaired
 src/Compiler/Driver/XmlDocFileWriter.fs compared fcs-check-errors agree-doc=0 agree-none=181 unpaired-none=25
 src/Compiler/Facilities/prim-lexing.fs compared fcs-check-errors agree-doc=32 agree-none=548 unpaired-none=7
 src/Compiler/Optimize/LowerStateMachines.fs compared fcs-check-errors agree-doc=43 agree-none=1210 unpaired-none=482
 src/Compiler/Optimize/LowerStateMachines.fs:380:37 IsStateMachineExpr Value { is_function: true } use unpaired-doc
 src/Compiler/Service/QuickParse.fs compared fcs-check-errors agree-doc=30 agree-none=644 unpaired-none=15
 src/Compiler/Service/ServiceParseTreeWalk.fs compared fcs-check-errors agree-doc=9 agree-none=1667 unpaired-none=523
-src/Compiler/SyntaxTree/LexFilter.fs compared fcs-check-errors agree-doc=56 agree-none=2934 unpaired-none=287
+src/Compiler/SyntaxTree/LexFilter.fs compared fcs-check-errors agree-doc=56 agree-none=2930 unpaired-none=287
 src/Compiler/SyntaxTree/LexFilter.fs:1011:83 warningStringOfPosition Value { is_function: true } use unpaired-doc
+src/Compiler/SyntaxTree/LexFilter.fs:1920:25 tokenStartCol Value { is_function: false } use declined NamedArgumentCandidate fcs-none
+src/Compiler/SyntaxTree/LexFilter.fs:2696:59 s PatternLocal use declined NamedArgumentCandidate fcs-none
+src/Compiler/SyntaxTree/LexFilter.fs:2696:73 s PatternLocal use declined NamedArgumentCandidate fcs-none
+src/Compiler/SyntaxTree/LexFilter.fs:2697:56 s PatternLocal use declined NamedArgumentCandidate fcs-none
 src/Compiler/TypedTree/TcGlobals.fs compared fcs-check-errors agree-doc=11 agree-none=3854 unpaired-none=345
 src/Compiler/TypedTree/WellKnownAttribs.fs compared fcs-clean agree-doc=5 agree-none=167 unpaired-none=0
 src/Compiler/Utilities/PathMap.fs compared fcs-check-errors agree-doc=0 agree-none=58 unpaired-none=4
@@ -35,7 +40,70 @@ src/Compiler/Utilities/sformat.fs compared fcs-clean agree-doc=15 agree-none=202
 src/FSharp.Build/SubstituteText.fs compared fcs-check-errors agree-doc=0 agree-none=72 unpaired-none=3
 src/FSharp.Core/Linq.fs compared fcs-check-errors agree-doc=215 agree-none=2027 unpaired-none=419
 src/FSharp.Core/eventmodule.fs compared fcs-clean agree-doc=0 agree-none=115 unpaired-none=0
-src/FSharp.Core/quotations.fs compared fcs-check-errors agree-doc=92 agree-none=5111 unpaired-none=30
+src/FSharp.Core/quotations.fs compared fcs-check-errors agree-doc=92 agree-none=5048 unpaired-none=30
+src/FSharp.Core/quotations.fs:1022:45 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1061:36 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1084:39 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1115:32 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1130:57 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1182:52 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1192:59 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1204:48 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1214:53 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1227:60 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1242:53 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1242:71 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1255:60 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1255:78 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1270:61 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1282:99 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1294:54 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1304:92 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1346:28 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1346:38 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:1358:31 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:179:35 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:181:27 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2257:36 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:228:102 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:228:76 Expr Type def declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2345:60 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:234:14 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:238:105 ty1 PatternLocal use declined NamedArgumentCandidate fcs-none
+src/FSharp.Core/quotations.fs:2484:92 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2490:21 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2490:29 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2492:13 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2496:6 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:269:98 es1 PatternLocal use declined NamedArgumentCandidate fcs-none
+src/FSharp.Core/quotations.fs:271:75 e1 PatternLocal use declined NamedArgumentCandidate fcs-none
+src/FSharp.Core/quotations.fs:272:75 n1 PatternLocal use declined NamedArgumentCandidate fcs-none
+src/FSharp.Core/quotations.fs:2800:34 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2826:31 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2830:36 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:290:22 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2912:47 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:293:24 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2969:74 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:2972:24 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:325:23 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:333:38 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:366:38 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:446:38 Expr Type def declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:448:26 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:489:19 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:502:29 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:519:28 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:808:34 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:811:34 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:947:32 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:950:32 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:950:45 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:953:32 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:953:45 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:953:58 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:971:60 Expr Type use declined SameNameDeclarations fcs-none
+src/FSharp.Core/quotations.fs:982:47 Expr Type use declined SameNameDeclarations fcs-none
 src/Microsoft.FSharp.Compiler/Program.fs compared fcs-clean agree-doc=0 agree-none=1 unpaired-none=0
 tests/EndToEndBuildTests/DesignTimeProviderPackaging/Host/Library.fs compared fcs-clean agree-doc=0 agree-none=3 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/Fsc/Optimize.fs compared fcs-check-errors agree-doc=0 agree-none=5 unpaired-none=1
@@ -74,7 +142,8 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefi
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/TupledIndexer.fs compared fcs-clean agree-doc=0 agree-none=16 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/E_MisspeltParam01.fs compared fcs-check-errors agree-doc=0 agree-none=0 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/SanityCheck.fs compared fcs-clean agree-doc=0 agree-none=19 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs compared fcs-clean agree-doc=0 agree-none=64 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs compared fcs-clean agree-doc=0 agree-none=63 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:42:20 x Value { is_function: false } use declined NamedArgumentCandidate fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/ConsumeOverloadGenericMethods.fs compared fcs-check-errors agree-doc=0 agree-none=4 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/NoOverloadIDSpecified.fs compared fcs-clean agree-doc=0 agree-none=9 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/TieBreakerRule01b.fs compared fcs-clean agree-doc=0 agree-none=10 unpaired-none=0
@@ -114,11 +183,15 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotation
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/QuoteStructStaticFieldProp01.fs compared fcs-check-errors agree-doc=0 agree-none=10 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/VarIsMutable01c.fs compared fcs-clean agree-doc=0 agree-none=2 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs compared fcs-clean agree-doc=0 agree-none=241 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs compared fcs-check-errors agree-doc=0 agree-none=19 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs compared fcs-check-errors agree-doc=0 agree-none=19 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs compared fcs-check-errors agree-doc=0 agree-none=18 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs:15:17 r1 Value { is_function: false } use declined NamedArgumentCandidate fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs compared fcs-check-errors agree-doc=0 agree-none=18 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs:14:17 r1 Value { is_function: false } use declined NamedArgumentCandidate fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test28.fs compared fcs-check-errors agree-doc=0 agree-none=3 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs compared fcs-check-errors agree-doc=0 agree-none=19 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs compared fcs-check-errors agree-doc=0 agree-none=19 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs compared fcs-check-errors agree-doc=0 agree-none=18 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs:12:17 r1 Value { is_function: false } use declined NamedArgumentCandidate fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs compared fcs-check-errors agree-doc=0 agree-none=18 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs:12:17 r1 Value { is_function: false } use declined NamedArgumentCandidate fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/IComparison/DU.fs compared fcs-clean agree-doc=0 agree-none=12 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestArrayParam.fs compared fcs-check-errors agree-doc=0 agree-none=11 unpaired-none=1
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestStructParam.fs compared fcs-check-errors agree-doc=0 agree-none=13 unpaired-none=1
@@ -147,7 +220,11 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/C
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/MemberDeclarations.fs compared fcs-check-errors agree-doc=0 agree-none=81 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs compared fcs-check-errors agree-doc=0 agree-none=2 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs compared fcs-clean agree-doc=0 agree-none=8 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs compared fcs-clean agree-doc=0 agree-none=14 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs compared fcs-clean agree-doc=0 agree-none=10 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:12:6 DelegateReturningAFunctionValue Type def declined SameNameDeclarations fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:13 DelegateReturningAFunctionValue Type use declined SameNameDeclarations fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:7:6 DelegateReturningAFunctionValue Type def declined SameNameDeclarations fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:8:13 DelegateReturningAFunctionValue Type use declined SameNameDeclarations fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/EnumTypes/EnumTypes.fs compared fcs-check-errors agree-doc=0 agree-none=48 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs compared fcs-check-errors agree-doc=0 agree-none=28 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/MultipleInst05.fs compared fcs-check-errors agree-doc=0 agree-none=9 unpaired-none=0
@@ -181,7 +258,8 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/DuckTypingRec
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/NoClashMemberIFaceMember.fs compared fcs-clean agree-doc=0 agree-none=8 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/TypeInference02.fs compared fcs-clean agree-doc=0 agree-none=22 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs compared fcs-check-errors agree-doc=0 agree-none=76 unpaired-none=11
-tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs compared fcs-check-errors agree-doc=0 agree-none=13 unpaired-none=1
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs compared fcs-check-errors agree-doc=0 agree-none=13 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs:19:25 a Parameter use declined NamedArgumentCandidate fcs-unpaired
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/Overload_ToString.fs compared fcs-clean agree-doc=0 agree-none=7 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parsing/Parsing.fs compared fcs-check-errors agree-doc=0 agree-none=27 unpaired-none=2
 tests/FSharp.Compiler.ComponentTests/Diagnostics/NONTERM.fs compared fcs-check-errors agree-doc=0 agree-none=109 unpaired-none=0
@@ -202,7 +280,11 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/EqualsOnUnions01.fs compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/NonEscapingArguments02.fs compared fcs-clean agree-doc=0 agree-none=8 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ExceptionType.fs compared fcs-clean agree-doc=0 agree-none=4 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs compared fcs-clean agree-doc=0 agree-none=25 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs compared fcs-check-errors agree-doc=0 agree-none=33 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs compared fcs-check-errors agree-doc=0 agree-none=29 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:14:32 c PatternLocal use declined NamedArgumentCandidate fcs-none
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:22:37 c PatternLocal use declined NamedArgumentCandidate fcs-none
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:30:37 c PatternLocal use declined NamedArgumentCandidate fcs-none
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:37 c PatternLocal use declined NamedArgumentCandidate fcs-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/RealInternalSignature/ClassTypeVisibilityNamespaceRoot.fs compared fcs-check-errors agree-doc=0 agree-none=60 unpaired-none=14
 tests/FSharp.Compiler.ComponentTests/EmittedIL/SeqExpressionStepping/SeqExpressionSteppingTest07.fs compared fcs-clean agree-doc=0 agree-none=102 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/EmittedIL/StaticOptimizations/StaticOptimizations.fs compared fcs-check-errors agree-doc=0 agree-none=11 unpaired-none=0
@@ -296,7 +378,9 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_Unexp
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs:22:5 i PatternLocal def declined ParseErrors fcs-none
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs:23:5 counter Value { is_function: false } use declined ParseErrors fcs-none
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_HashOfSealedType01.fs compared fcs-clean agree-doc=0 agree-none=6 unpaired-none=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs compared fcs-clean agree-doc=0 agree-none=4 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs compared fcs-clean agree-doc=0 agree-none=2 unpaired-none=0
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:15:6 T4b Type def declined SameNameDeclarations fcs-none
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:19:6 T4b Type use declined SameNameDeclarations fcs-none
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceExpr01.fs compared fcs-check-errors agree-doc=0 agree-none=0 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator05.fs compared fcs-check-errors agree-doc=0 agree-none=0 unpaired-none=0
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/tuplewithlazy01b.fs compared fcs-check-errors agree-doc=0 agree-none=0 unpaired-none=0
@@ -401,7 +485,9 @@ tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs compared fcs-check-errors agree-doc=7 agree-none=516 unpaired-none=47
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/ExtraTopLevelOperatorsTests.fs compared fcs-check-errors agree-doc=0 agree-none=65 unpaired-none=92
 tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleChecked.fs compared fcs-check-errors agree-doc=0 agree-none=39 unpaired-none=38
-tests/FSharp.Test.Utilities/CompilerAssert.fs compared fcs-check-errors agree-doc=23 agree-none=1314 unpaired-none=139
+tests/FSharp.Test.Utilities/CompilerAssert.fs compared fcs-check-errors agree-doc=23 agree-none=1314 unpaired-none=137
+tests/FSharp.Test.Utilities/CompilerAssert.fs:933:153 useTransparentCompiler Parameter use declined NamedArgumentCandidate fcs-unpaired
+tests/FSharp.Test.Utilities/CompilerAssert.fs:933:98 enablePartialTypeChecking Parameter use declined NamedArgumentCandidate fcs-unpaired
 tests/FSharp.Test.Utilities/Utilities.fs compared fcs-check-errors agree-doc=0 agree-none=169 unpaired-none=6
 tests/benchmarks/CompiledCodeBenchmarks/MicroPerf/Conditions.fs compared fcs-check-errors agree-doc=0 agree-none=11 unpaired-none=1
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs compared fcs-check-errors agree-doc=17 agree-none=605 unpaired-none=40
@@ -483,8 +569,14 @@ tests/fsharp/typecheck/sigs/neg120.fs compared fcs-check-errors agree-doc=0 agre
 tests/fsharp/typecheck/sigs/neg132.fs compared fcs-check-errors agree-doc=0 agree-none=12 unpaired-none=0
 tests/fsharp/typecheck/sigs/neg21.fs compared fcs-check-errors agree-doc=0 agree-none=28 unpaired-none=0
 tests/fsharp/typecheck/sigs/neg36.fs compared fcs-check-errors agree-doc=0 agree-none=13 unpaired-none=0
-tests/fsharp/typecheck/sigs/neg48.fs compared fcs-check-errors agree-doc=0 agree-none=60 unpaired-none=0
-tests/fsharp/typecheck/sigs/neg59.fs compared fcs-check-errors agree-doc=0 agree-none=39 unpaired-none=78
+tests/fsharp/typecheck/sigs/neg48.fs compared fcs-check-errors agree-doc=0 agree-none=56 unpaired-none=0
+tests/fsharp/typecheck/sigs/neg48.fs:101:10 tree5 Type use declined SameNameDeclarations fcs-none
+tests/fsharp/typecheck/sigs/neg48.fs:104:10 tree5 Type use declined SameNameDeclarations fcs-none
+tests/fsharp/typecheck/sigs/neg48.fs:107:10 tree5 Type use declined SameNameDeclarations fcs-none
+tests/fsharp/typecheck/sigs/neg48.fs:98:10 tree5 Type def declined SameNameDeclarations fcs-none
+tests/fsharp/typecheck/sigs/neg59.fs compared fcs-check-errors agree-doc=0 agree-none=37 unpaired-none=78
+tests/fsharp/typecheck/sigs/neg59.fs:15:40 i PatternLocal use declined NamedArgumentCandidate fcs-none
+tests/fsharp/typecheck/sigs/neg59.fs:9:35 i PatternLocal use declined NamedArgumentCandidate fcs-none
 tests/fsharp/typecheck/sigs/neg95.fs skipped fcs-not-ok
 tests/fsharp/typecheck/sigs/neg_byref_14.fs compared fcs-check-errors agree-doc=0 agree-none=1 unpaired-none=0
 tests/fsharp/typecheck/sigs/neg_byref_5.fs compared fcs-check-errors agree-doc=0 agree-none=1 unpaired-none=0
@@ -587,7 +679,10 @@ tests/service/data/SyntaxTree/Type/Union - Field 01.fs compared fcs-clean agree-
 tests/service/data/SyntaxTree/Type/With 03.fs compared fcs-check-errors agree-doc=0 agree-none=0 unpaired-none=0
 tests/service/data/SyntaxTree/UnionCase/MultipleSynUnionCasesHaveBarRange.fs compared fcs-clean agree-doc=0 agree-none=3 unpaired-none=0
 tests/service/data/TestProject/TestProject.fs compared fcs-check-errors agree-doc=0 agree-none=46 unpaired-none=0
-vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs compared fcs-check-errors agree-doc=0 agree-none=110 unpaired-none=157
+vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs compared fcs-check-errors agree-doc=0 agree-none=110 unpaired-none=154
+vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs:70:13 filePath Parameter use declined NamedArgumentCandidate fcs-unpaired
+vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs:72:13 flags Value { is_function: false } use declined NamedArgumentCandidate fcs-unpaired
+vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs:73:13 ct Parameter use declined NamedArgumentCandidate fcs-unpaired
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs compared fcs-check-errors agree-doc=0 agree-none=30 unpaired-none=42
 vsintegration/src/FSharp.Editor/CodeFixes/MissingReference.fs compared fcs-check-errors agree-doc=0 agree-none=10 unpaired-none=76
 vsintegration/src/FSharp.Editor/CodeFixes/WrapExpressionInParentheses.fs compared fcs-check-errors agree-doc=0 agree-none=7 unpaired-none=5
