@@ -419,6 +419,7 @@ impl Ecma335Assembly {
         // declaration-order overlays gate on.
         let fsharp_extension_index_unknowable = is_fsharp_assembly && !authoritative;
 
+        let mut records_settled = false;
         if let Some((resource_name, decoded)) = decoded {
             match decoded {
                 Ok(ccu) => {
@@ -483,10 +484,17 @@ impl Ecma335Assembly {
                     // `fsharp_abbreviations_unknowable`).
                     crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
                     if authoritative {
+                        // Record and exception member properties, vouched for
+                        // by the pickle's published member list. Authoritative-
+                        // only: the row is located by a reconstructed name key.
+                        crate::fsharp_pickle_merge::settle_record_properties(&mut out, Some(&ccu))?;
+                        records_settled = true;
                         // The doc-comment keys fsc pickled for each type's
                         // members (module members get theirs from the member
                         // list above). Authoritative-only, like the other
                         // overlays that locate a row by a reconstructed name key.
+                        // After the record settle, so only the properties that
+                        // survive it are stamped.
                         crate::fsharp_pickle_merge::apply_type_member_doc_sigs(
                             &mut out,
                             &ccu,
@@ -522,6 +530,11 @@ impl Ecma335Assembly {
         // only once every one of them is either vouched for by the pickle or
         // gone; this drops the ones no pickle claimed.
         drop_unvouched_union_properties(&mut out);
+        // Likewise the record and exception property candidates, where no
+        // authoritative pickle settled them above.
+        if !records_settled {
+            crate::fsharp_pickle_merge::settle_record_properties(&mut out, None)?;
+        }
         Ok((
             out,
             AssemblyProjectionSkips {
@@ -3393,15 +3406,22 @@ impl Ecma335Assembly {
                 // `Is<Case>` testers, the hidden `Tag`, and the testers of a
                 // pre-F#9 assembly that are `FS0039` to name, all under the same
                 // attributes.
-                if matches!(kind, EntityKind::Union) {
+                //
+                // A record's or exception's non-`Field` properties are
+                // candidates in the same way, settled by
+                // `settle_record_properties`: a user-defined member property
+                // (`member p.Sum`) is surfaced by FCS, a row fsc synthesises
+                // beside it is not, and their attributes do not say which.
+                if matches!(
+                    kind,
+                    EntityKind::Union | EntityKind::Record | EntityKind::Exception
+                ) {
                     return Ok(Some(Member::Property(self.project_property(
                         td,
                         p,
                         type_context,
                     )?)));
                 }
-                // A non-`Field` property on a Record or Exception is dropped:
-                // FCS surfaces none.
                 Ok(None)
             })();
             out.push_or_skip_opt(&p.name, projected);
