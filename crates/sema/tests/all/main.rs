@@ -20,6 +20,7 @@ mod extension_shadow_diff;
 mod extension_visibility_matrix;
 mod fcs_dump_refs_absolute;
 mod fsharp_member_diff;
+mod il_type_definition;
 mod implicit_namespace_matrix;
 mod infer_annotation_entity_diff;
 mod infer_annotation_shape_gen_diff;

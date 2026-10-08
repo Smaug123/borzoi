@@ -14,9 +14,10 @@
 //! our F# member *projection* re-interprets some members away from their IL
 //! kind — see "Limitations".)
 //!
-//! This module is the *generation* half (slice 1): a pure
-//! [`Entity`]/[`Member`] → ID-string function. Finding and parsing the `.xml`,
-//! and wiring the result into hover, are later slices.
+//! This module is the *generation* half: a pure [`Entity`]/[`Member`] →
+//! ID-string function. Finding, parsing and rendering the `.xml` for hover is
+//! the LSP's (`crates/lsp/src/xml_doc/`), which keeps this crate free of an XML
+//! dependency.
 //!
 //! ## What the rules are
 //!
@@ -628,6 +629,7 @@ mod tests {
             metadata_token: 0,
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            has_other_method_impl: false,
         })
     }
 
@@ -670,6 +672,7 @@ mod tests {
             custom_attrs: Vec::new(),
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            accessor_slots: Vec::new(),
         })
     }
 
@@ -684,6 +687,7 @@ mod tests {
             custom_attrs: Vec::new(),
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            accessor_slots: Vec::new(),
         })
     }
 

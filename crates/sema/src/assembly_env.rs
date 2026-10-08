@@ -27,6 +27,9 @@ use borzoi_assembly::{
 use crate::def::SemanticClass;
 use crate::resolve::ActivePatternShape;
 
+mod il_types;
+pub use il_types::IlTypeDefinition;
+
 /// Fuel bound for chasing a chain of type-abbreviation markers
 /// (`type A = B; type B = C; …`) in [`AssemblyEnv::resolve_abbreviation_target`].
 /// Real alias chains are short; the bound only stops a pathological or crafted
@@ -650,6 +653,19 @@ pub struct AssemblyEnv {
     /// through its forwarder, exactly as the CLR's loader does (FSharp.Core's
     /// pickle names its BCL targets through the `netstandard` CCU).
     assembly_forwarders: Vec<HashMap<(String, String), String>>,
+    /// Per-[`AssemblyId`], in lockstep with [`Self::assemblies`]: whether the
+    /// DLL's manifest references other assemblies (`AssemblyRef` rows).
+    /// `None` where the build path did not read it.
+    assembly_has_references: Vec<Option<bool>>,
+    /// The simple names (lower-cased) some loaded manifest qualifies by a
+    /// non-neutral culture, its own or a reference's
+    /// ([`borzoi_assembly::EcmaView::culture_qualified_names`]). Binding one by
+    /// simple name alone is not a binder's binding, which matches culture.
+    culture_qualified_names: HashSet<String>,
+    /// Whether every loaded DLL's culture-qualified names were read, so that
+    /// [`Self::culture_qualified_names`] is the whole set. `false` for an env
+    /// built without them (and by default).
+    culture_qualified_names_read: bool,
     /// Memo for [`Self::resolve_abbreviation_target`] /
     /// [`Self::resolve_abbreviation_tycon`], keyed by `(marker, allow_args)`.
     /// The chase is a pure function of the env's immutable entity data, but
@@ -849,6 +865,13 @@ pub struct AssemblyProjectionInput {
     /// ([`borzoi_assembly::EcmaView::type_forwarders`]) — how an abbreviation
     /// target chase continues out of a facade assembly (`netstandard`).
     pub type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
+    /// Whether the manifest references other assemblies
+    /// ([`borzoi_assembly::EcmaView::assembly_refs`] non-empty); `None` when
+    /// not read.
+    pub has_assembly_references: Option<bool>,
+    /// [`borzoi_assembly::EcmaView::culture_qualified_names`]; `None` when
+    /// not read.
+    pub culture_qualified_names: Option<Vec<String>>,
 }
 
 /// Whether entity `e`'s **logical name** — its IL `name` or its `source_name` —
@@ -1056,6 +1079,8 @@ impl AssemblyEnv {
                         auto_opens,
                         manifest_identity: None,
                         type_forwarders: Vec::new(),
+                        has_assembly_references: None,
+                        culture_qualified_names: None,
                     }
                 })
                 .collect(),
@@ -1072,6 +1097,7 @@ impl AssemblyEnv {
         assemblies: Vec<AssemblyProjectionInput>,
     ) -> Self {
         let mut env = AssemblyEnv::default();
+        let mut cultures_read = true;
         let mut tagged: Vec<(
             Option<AssemblyId>,
             AbbreviationVisibility,
@@ -1090,11 +1116,20 @@ impl AssemblyEnv {
                 auto_opens: raw_auto_opens,
                 manifest_identity,
                 type_forwarders,
+                has_assembly_references,
+                culture_qualified_names,
             } = input;
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(Some(path));
+            env.assembly_has_references.push(has_assembly_references);
+            match culture_qualified_names {
+                Some(names) => env
+                    .culture_qualified_names
+                    .extend(names.iter().map(|n| n.to_lowercase())),
+                None => cultures_read = false,
+            }
             env.assembly_forwarders.push(
                 type_forwarders
                     .into_iter()
@@ -1134,6 +1169,7 @@ impl AssemblyEnv {
                 )
             }));
         }
+        env.culture_qualified_names_read = cultures_read;
         env.index_roots(tagged);
         env.record_assembly_auto_opens(auto_opens);
         env
@@ -1378,6 +1414,7 @@ impl AssemblyEnv {
     /// `None`) so the AutoOpen deref can tell same-named views apart.
     pub fn from_views<V: EcmaView>(views: &[V]) -> Result<Self, ImportError> {
         let mut env = AssemblyEnv::default();
+        let mut cultures_read = true;
         let mut tagged = Vec::new();
         let mut auto_opens = Vec::new();
         let mut dropped_namespaces = Vec::new();
@@ -1404,6 +1441,14 @@ impl AssemblyEnv {
             // Every view is a distinct loaded DLL with a known identity — register
             // it (even a rootless one) so a referenced-CCU name is counted per DLL.
             env.assembly_identities.push(Some(view.identity().clone()));
+            env.assembly_has_references
+                .push(Some(!view.assembly_refs().is_empty()));
+            match view.culture_qualified_names() {
+                Some(names) => env
+                    .culture_qualified_names
+                    .extend(names.iter().map(|n| n.to_lowercase())),
+                None => cultures_read = false,
+            }
             env.assembly_forwarders.push(
                 view.type_forwarders()?
                     .into_iter()
@@ -1425,6 +1470,7 @@ impl AssemblyEnv {
                 view.assembly_auto_opens()?,
             ));
         }
+        env.culture_qualified_names_read = cultures_read;
         env.index_roots(tagged);
         env.record_assembly_auto_opens(auto_opens);
         for namespace in dropped_namespaces {
@@ -2002,6 +2048,29 @@ impl AssemblyEnv {
             .and_then(|p| p.as_deref())
     }
 
+    /// Whether `handle`'s DLL is the reference set's core library as Roslyn
+    /// picks it: the one loaded DLL whose manifest references no other
+    /// assembly. `Some(false)` when another DLL is that one, or when none or
+    /// several are; `None` when it cannot be told — some DLL's references were
+    /// not read, or a DLL the env cannot name is present.
+    pub fn is_core_library(&self, handle: EntityHandle) -> Option<bool> {
+        if self.assembly_identities_incomplete
+            || self.assembly_has_references.len() != self.assemblies.len()
+        {
+            return None;
+        }
+        let mut without = Vec::new();
+        for (i, has) in self.assembly_has_references.iter().enumerate() {
+            match has {
+                None => return None,
+                Some(false) => without.push(i),
+                Some(true) => {}
+            }
+        }
+        let id = self.assembly_provenance(handle)?;
+        Some(matches!(without.as_slice(), [only] if *only == id.0 as usize))
+    }
+
     /// The total number of interned entities (top-level + nested).
     pub fn len(&self) -> usize {
         self.nodes.len()
@@ -2021,6 +2090,12 @@ impl AssemblyEnv {
     /// ones no ordinary lookup reaches, e.g. a compiler-generated nested type).
     pub fn all_handles(&self) -> impl Iterator<Item = EntityHandle> + use<> {
         (0..self.nodes.len()).map(EntityHandle::new)
+    }
+
+    /// The top-level types of every assembly in the env, in interning order —
+    /// the roots of the trees [`Self::children`] descends.
+    pub fn top_level_handles(&self) -> &[EntityHandle] {
+        &self.top_level_types
     }
 
     /// Resolve a top-level type by its namespace, simple name, and generic
@@ -2881,6 +2956,16 @@ impl AssemblyEnv {
     /// eligibility filter (a module cannot be a terminal type) must decline to
     /// *exclude* it for the same reason, or it would drop a genuine
     /// type-position contestant from a cross-DLL contest (codex review).
+    /// Whether `handle`'s assembly carries an **authoritative F# signature** —
+    /// so its entities and members are projected in F#'s source-level view
+    /// (record fields as fields, module values as methods, accessors folded
+    /// away) rather than as the IL a metadata consumer such as Roslyn reads.
+    /// `false` for a C#/VB/BCL assembly, and for an F# one whose pickle could
+    /// not be used (whose projection is then the IL one).
+    pub fn has_authoritative_fsharp_signature(&self, handle: EntityHandle) -> bool {
+        !self.fsharp_signature_unreliable(handle)
+    }
+
     pub fn is_authoritative_module(&self, handle: EntityHandle) -> bool {
         self.entity(handle).kind == EntityKind::Module && !self.fsharp_signature_unreliable(handle)
     }
@@ -2980,9 +3065,6 @@ impl AssemblyEnv {
         })
     }
 
-    /// The F# source full name of `handle`: namespace segments, enclosing
-    /// entity names for nested types, and the entity's source name when metadata
-    /// records one (`List`, not `ListModule`).
     /// The entities whose names [`Self::entity_full_name`] joins after the
     /// namespace: the enclosing chain outermost-first, ending at `handle`.
     ///
@@ -2992,16 +3074,27 @@ impl AssemblyEnv {
     /// can say which entity any given segment names. (The differential
     /// harnesses use it to decide whether a generic-arity marker FCS wrote onto
     /// a segment is one our own resolution vouches for.)
+    ///
+    /// A handle unreachable from any top-level type yields the one-entry chain
+    /// `[handle]`, the same fallback [`Self::entity_full_name`] takes; a caller
+    /// that must not mistake such a handle for a top-level one asks
+    /// [`Self::enclosing_chain_from_root`] instead.
     pub fn enclosing_chain(&self, handle: EntityHandle) -> Vec<EntityHandle> {
+        self.enclosing_chain_from_root(handle)
+            .unwrap_or_else(|| vec![handle])
+    }
+
+    /// As [`Self::enclosing_chain`], but `None` when `handle` is unreachable
+    /// from every top-level type — so the first entry, when there is one, is
+    /// provably top-level and its namespace provably the chain's.
+    pub fn enclosing_chain_from_root(&self, handle: EntityHandle) -> Option<Vec<EntityHandle>> {
         let mut chain = Vec::new();
         for &root in &self.top_level_types {
             if self.push_enclosing_chain_from(root, handle, &mut chain) {
-                return chain;
+                return Some(chain);
             }
         }
-        // Unreachable from a root: `entity_full_name` falls back to the
-        // entity's own namespace and name, which is a one-entry chain.
-        vec![handle]
+        None
     }
 
     fn push_enclosing_chain_from(
@@ -3023,6 +3116,9 @@ impl AssemblyEnv {
         false
     }
 
+    /// The F# source full name of `handle`: namespace segments, enclosing
+    /// entity names for nested types, and the entity's source name when metadata
+    /// records one (`List`, not `ListModule`).
     pub fn entity_full_name(&self, handle: EntityHandle) -> String {
         let mut segments = Vec::new();
         if self.push_entity_full_name(handle, &mut segments) {
@@ -3749,6 +3845,14 @@ impl AssemblyEnv {
     /// unreliable. The applicability matcher's named-argument affirmation reads this.
     pub(crate) fn namespace_has_dropped_type(&self, namespace: &[String]) -> bool {
         self.namespaces_with_dropped_types.contains(namespace)
+    }
+
+    /// Whether some referenced assembly dropped an undecodable type in the
+    /// namespace `handle` lives in (a nested type's is its top-level
+    /// encloser's) — so a consumer committing to `handle` as *the* type of its
+    /// name there cannot rule out a same-named one it never saw.
+    pub fn dropped_a_type_beside(&self, handle: EntityHandle) -> bool {
+        self.namespace_has_dropped_type(&self.nodes[handle.index()].owning_namespace)
     }
 
     /// Whether a dropped type sits in **any namespace this module path could be split
@@ -5738,6 +5842,16 @@ impl AssemblyEnv {
             .map(MemberIndex::new)
     }
 
+    /// Every member index of `handle`, in member order — for a sweep over all
+    /// of an entity's members ([`MemberIndex`]'s constructor is private, as
+    /// [`EntityHandle`]'s is; see [`Self::all_handles`]).
+    pub fn member_indices(
+        &self,
+        handle: EntityHandle,
+    ) -> impl Iterator<Item = MemberIndex> + use<> {
+        (0..self.entity(handle).members.len()).map(MemberIndex::new)
+    }
+
     /// The member an [`EntityHandle`] + [`MemberIndex`] names.
     pub fn member_at(&self, handle: EntityHandle, idx: MemberIndex) -> &Member {
         &self.entity(handle).members[idx.index()]
@@ -6679,6 +6793,7 @@ mod from_views_tests {
             custom_attrs: vec![],
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            accessor_slots: Vec::new(),
         })
     }
 
@@ -7127,6 +7242,8 @@ mod from_views_tests {
             auto_opens: Vec::new(),
             manifest_identity: Some(ident("Lib")),
             type_forwarders: Vec::new(),
+            has_assembly_references: None,
+            culture_qualified_names: None,
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
             input("Contributor.dll", vec![widget, marker]),
@@ -7277,6 +7394,8 @@ mod from_views_tests {
             auto_opens: Vec::new(),
             manifest_identity: Some(ident(dll)),
             type_forwarders: forwarders,
+            has_assembly_references: None,
+            culture_qualified_names: None,
         }
     }
 

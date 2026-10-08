@@ -192,6 +192,7 @@ fn method(name: &str, signature: MethodSignature) -> MethodLike {
         metadata_token: 0,
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        has_other_method_impl: false,
     }
 }
 
@@ -227,6 +228,7 @@ fn property(name: &str, ty: TypeRef, has_getter: bool, has_setter: bool) -> Prop
         custom_attrs: vec![],
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        accessor_slots: Vec::new(),
     }
 }
 
@@ -241,6 +243,7 @@ fn event(name: &str, delegate_type: TypeRef) -> Event {
         custom_attrs: vec![],
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        accessor_slots: Vec::new(),
     }
 }
 

@@ -51,8 +51,8 @@ mod unify;
 
 pub use assembly_env::{
     AbbreviationVisibility, AssemblyEnv, AssemblyProjectionInput, EntityHandle, ExtensionMembers,
-    MemberIndex, OpenFoldName, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget, StaticLookup,
-    ValueSurface,
+    IlTypeDefinition, MemberIndex, OpenFoldName, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget,
+    StaticLookup, ValueSurface,
 };
 pub use binders::{BinderRole, PatternName, pattern_names};
 pub use def::{Def, DefId, DefKind, SemanticClass};

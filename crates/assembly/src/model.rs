@@ -1444,6 +1444,41 @@ pub struct MethodLike {
     /// parent an interface?) can finish the classification. Kept separate
     /// from [`Self::implements`] so that field stays *proven-only*.
     pub unclassified_impls: Vec<UnclassifiedMethodImpl>,
+    /// Whether some `MethodImpl` row names this method as its body without
+    /// contributing to [`Self::implements`] or [`Self::unclassified_impls`]: a
+    /// redirection to an ancestor *class* method — C# emits one for a
+    /// covariant-return override, which is `newslot` and so does not read as
+    /// an override from its flags alone — or a row whose declaration could
+    /// not be classified. A consumer deciding what this method overrides or
+    /// implements must treat that as unknown when this is set.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub has_other_method_impl: bool,
+}
+
+/// The vtable facts of one property or event accessor. C# reads a property
+/// (or event) as an override when any of its accessors is one, and the
+/// accessors need not agree, so a consumer deciding what a property
+/// overrides needs each accessor's flags rather than a summary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AccessorSlot {
+    /// The accessor method's metadata name, verbatim. Conventionally
+    /// `get_P`/`set_P`, `add_E`/`remove_E`, but metadata need not follow
+    /// the convention, and what implements an accessor implements *this*
+    /// method, whatever it is called. Empty in a projection that predates it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub name: String,
+    /// `virtual` (`MethodAttributes` 0x0040).
+    pub is_virtual: bool,
+    /// `newslot` (`MethodAttributes` 0x0100): a fresh vtable slot, not an
+    /// override of a base one.
+    pub is_newslot: bool,
+    /// `abstract` (`MethodAttributes` 0x0400).
+    pub is_abstract: bool,
+    /// `final` (`MethodAttributes` 0x0020).
+    pub is_final: bool,
+    /// As [`MethodLike::has_other_method_impl`], for this accessor.
+    pub has_other_method_impl: bool,
 }
 
 /// One in-assembly-undecidable `MethodImpl` row: the declaration's parent
@@ -1818,6 +1853,10 @@ pub struct Property {
     /// cannot prove two external declarations are one member). See
     /// [`MethodLike::unclassified_impls`].
     pub unclassified_impls: Vec<UnclassifiedMethodImpl>,
+    /// The vtable facts of each distinct accessor, getter first then setter
+    /// (an absent one omitted).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub accessor_slots: Vec<AccessorSlot>,
 }
 
 /// An event, projected to the LSP-shaped surface rather than the raw
@@ -1868,6 +1907,10 @@ pub struct Event {
     /// cannot prove two external declarations are one member). See
     /// [`MethodLike::unclassified_impls`].
     pub unclassified_impls: Vec<UnclassifiedMethodImpl>,
+    /// The vtable facts of each distinct accessor: `add`, `remove`, then
+    /// `fire` when present.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub accessor_slots: Vec<AccessorSlot>,
 }
 
 /// A custom attribute the importer didn't classify into a typed field on

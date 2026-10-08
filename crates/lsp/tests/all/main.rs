@@ -21,6 +21,7 @@ mod handlers_completion;
 mod handlers_definition;
 mod handlers_document_symbol;
 mod handlers_hover;
+mod handlers_hover_xml_doc;
 mod handlers_qualifier_cursors;
 mod handlers_references;
 mod handlers_references_corpus_diff;
@@ -45,6 +46,10 @@ mod sdk_resolution_exactness_diff;
 mod sdk_resolution_oracle;
 mod sdk_resolution_override_classification;
 mod watched_assembly_refresh_e2e;
+mod xml_doc_inheritdoc_diff;
+mod xml_doc_inheritdoc_generated_diff;
+mod xml_doc_inheritdoc_sweep;
+mod xml_doc_inheritdoc_xpath_diff;
 mod xml_doc_shipped_sweep;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is

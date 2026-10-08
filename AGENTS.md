@@ -163,6 +163,19 @@ This is a Cargo workspace with nine members:
   (`docs/fsproj-consumption-plan.md` tracks the remaining consumers).
   `borzoi-assembly` is runtime-live too: referenced assemblies are
   read into each project's `AssemblyEnv` (`crates/lsp/src/semantic.rs`).
+  Hover's XML documentation (`crates/lsp/src/xml_doc/`) expands
+  `<inheritdoc>` exactly as Roslyn's IDE does, or declines to the in-place
+  marker with a typed reason. Its oracle is `tools/inheritdoc-oracle`, a
+  test-only C# JSONL batch tool (the `nuget-oracle` mould) that calls Roslyn's
+  internal expansion by reflection, evaluates Roslyn's XPath selection, and
+  compiles purpose-built C# fixtures (renaming methods in one, for metadata
+  no compiler writes); `xml_doc_inheritdoc_diff` (handwritten
+  hierarchies), `xml_doc_inheritdoc_generated_diff` (generated ones: a few
+  dozen cases each in the normal suite, hundreds in its ignored `deep_*`
+  twins, `BORZOI_INHERITDOC_CASES` overriding both) and the ignored
+  `xml_doc_inheritdoc_sweep` (the ASP.NET Core pack, plus a NuGet cache under
+  `BORZOI_INHERITDOC_SWEEP_ROOT`) hold every expansion to certain-implies-exact
+  against it.
 - `crates/corpus-diff/` — `borzoi-corpus-diff`. Test-only, unpublished: an
   empirical whole-project name-resolution differential. It loads real F#
   projects through the same runtime path the LSP uses (`Workspace` +
@@ -349,6 +362,7 @@ nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- -
 nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ignored    #  ~30 s
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
+nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_generated_diff::deep_  #  ~75 s
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~20 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s

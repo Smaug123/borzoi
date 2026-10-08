@@ -1,8 +1,8 @@
 # Hover: F# member/type signatures
 
 > **Status:** landed. `textDocument/hover` renders a referenced entity/member as
-> an F# signature line with declaring-type + assembly provenance context. Four
-> gaps remain (below); everything else is done. Code comments in
+> an F# signature line with declaring-type + assembly provenance context, and
+> its XML documentation. Four gaps remain (below); everything else is done. Code comments in
 > `crates/lsp/src/handlers/hover.rs` and `crates/assembly/src/display.rs` point
 > here as the tracker for the remaining items.
 
@@ -126,13 +126,62 @@ Hover renders the **F# signature** view. The remaining gaps are facts that view
 would show but the projection cannot currently supply, plus one rendering the
 `type` keyword still over-claims.
 
-### 1. XML doc summaries not wired into hover
+### 1. XML documentation: what remains
 
-`doc_id` generation exists (the `M:`/`P:`/`T:` key derivation), but sidecar
-`.xml` documentation-file lookup and parsing are not wired into the hover
-handler, so no summary text is shown. Requires: locating the companion `.xml`
-next to the resolved assembly, parsing the `<member name="…">` entries, keying
-by `doc_id`, and appending the summary to the hover body.
+Hover shows a referenced-assembly symbol's **complete** XML documentation
+(summary, type parameters, parameters, returns, value, exceptions, permissions,
+remarks, examples, see-also, and any other section under its own name), read
+from the `.xml` beside the DLL the env read and keyed by `doc_id`
+(`crates/lsp/src/xml_doc/`). Lookup is exact-or-nothing: a miss, an ambiguous
+key, a malformed or foreign file, or a symbol whose key some other symbol of
+the same assembly also generates (the doc-ID format is not injective: `T:A.B`
+names both a type `B` in namespace `A` and one nested in type `A`), all show
+no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaining:
+
+- **`<inheritdoc>` is expanded as Roslyn's IDE expands it, or marked.**
+  `xml_doc::inherit` reproduces `GetDocumentationComment(…, expandInheritdoc:
+  true)`: each element is replaced in place by the XPath-selected nodes of the
+  `cref`'s or the implicit candidate's (overridden member, implemented
+  interface member, base constructor, base type) own expanded entry, with
+  `<typeparamref>` rewritten to the type argument it is reached with, and an
+  undocumented override or implementation inheriting automatically. Roslyn
+  merges nothing — an entry with its own summary and a top-level
+  `<inheritdoc/>` holds both summaries — and neither does this. Where the
+  answer is not exactly Roslyn's (a type that does not bind, a candidate the
+  env cannot settle, a `path` outside the modelled XPath or one selecting
+  nothing, a cycle, a missing inherited entry), the entry renders unexpanded
+  with the marker, and the typed `inherit::Decline` is logged. Held to Roslyn
+  by `tools/inheritdoc-oracle`: 2,104 ASP.NET Core entries expand identically
+  and none differently; of the 141 declines, Roslyn itself leaves the element
+  in 117, shows nothing for 21 (an undocumented inherited symbol), needs
+  `InternalsVisibleTo` for 2, and compares a constructor signature over
+  `object` by an attribute the model does not keep for 1. Over the NuGet
+  cache (highest version of each package, referenced with both packs but not
+  its own dependencies), 6,830 expand identically and none differently, C# 14
+  extension members' `cref`s into their `<G>$` skeletons included. Not
+  modelled, each declining: default-interface-member implementations;
+  `InternalsVisibleTo` (an internal member of another assembly); a signature
+  over a type no loaded assembly defines (Roslyn compares those by where its
+  unification lands them, which the model cannot see); and a base-constructor
+  match over `object`, native-sized integers or tuples, whose `dynamic`,
+  `nint` and element-name attributes Roslyn's constructor rule compares.
+  Not seen at all: `modopt`s, which the projection drops by policy, so two
+  signatures differing only in one compare equal here and not to Roslyn's
+  runtime comparers (C# never emits such a pair; #339).
+- **`<include>` is not resolved** (same marker; NuGet only, and there is
+  nothing to resolve against: 27,144 elements in 27 files, every one naming a
+  `doc\*.uex` file that no package ships).
+- **Malformed files show nothing.** ~0.3% of NuGet-cache doc files are not
+  well-formed XML (FSharp.Core 4.3–4.5's stray `</returns>`, unclosed `<p>` in
+  old `System.*` packages); the whole file is refused rather than partially
+  read.
+- **Project-local `///` comments** are not rendered yet; the renderer takes a
+  `DocElement` tree and does not care where it came from.
+- **Doc-ID misses** are the generator's: the explicit-interface `@`/`,` and
+  `nint` drift (`docs/xmldoc-explicit-interface-plan.md`, Stages 2 and 4) and
+  FSharp.Core's `M:`/`T:` residue
+  (`docs/completed/fsharp-member-rebranding-docid-plan.md`). Each is a missing
+  doc, never a wrong one.
 
 ### 2. A union case's payload and its `[<Obsolete>]` marker
 

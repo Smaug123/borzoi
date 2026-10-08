@@ -568,14 +568,28 @@ fn apply_method_impls(
         if ti != class_idx {
             continue;
         }
+        // From here on the row names a method we built as its body, so a row
+        // that contributes nothing to it is still recorded as *there*: a
+        // consumer deciding what the method overrides must not mistake "a
+        // `MethodImpl` we did not surface" for "no `MethodImpl`".
+        let mark_other = |out: &mut [TypeMembers]| {
+            if let Some(m) = out
+                .get_mut(ti as usize)
+                .and_then(|tm| tm.methods.get_mut(mi as usize))
+            {
+                m.has_other_method_impl = true;
+            }
+        };
 
         let Some((iface_coded, member, classification)) =
             resolve_method_decl(md, tables, image_tables, method_starts, out, decl)?
         else {
+            mark_other(out);
             continue;
         };
         // An undecodable declaration parent cannot be classified at all.
         let Ok(decl_sig) = decode_type_def_or_ref(md, tables, image_tables, iface_coded) else {
+            mark_other(out);
             continue;
         };
         let ctx = match expanded.entry(ti) {
@@ -590,6 +604,7 @@ fn apply_method_impls(
         };
         let verdict = classify_decl_parent(md, tables, ctx, &decl_sig)?;
         if matches!(verdict, DeclParent::AncestorClass | DeclParent::NotAnImpl) {
+            mark_other(out);
             continue;
         }
 
@@ -610,6 +625,7 @@ fn apply_method_impls(
         // an explicit impl. (An *abstract* virtual body is fine: DIM
         // reabstraction and VB `MustOverride … Implements` both emit one.)
         if !(m.is_virtual || m.is_static) || m.is_rt_special_name {
+            m.has_other_method_impl = true;
             continue;
         }
 
@@ -1612,11 +1628,12 @@ fn build_method(
         generic_params,
         signature,
         attributes: attrs.take(table::METHOD_DEF, rid),
-        // Both filled by `apply_method_impls` after all type member runs are
+        // All filled by `apply_method_impls` after all type member runs are
         // built; the `MethodImpl` table is keyed by `MethodDef` rid, so it is
         // resolved in one post-pass rather than per-method here.
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        has_other_method_impl: false,
     })
 }
 
