@@ -13,6 +13,7 @@ mod assembly_diff;
 mod bcl_ref_pack_sweep;
 mod display_member;
 mod display_type;
+mod doc_id_csharp_diff;
 mod doc_id_diff;
 mod doc_id_fsharp_core_diff;
 mod explicit_interface;

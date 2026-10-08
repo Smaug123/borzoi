@@ -142,6 +142,7 @@ dependencies = [
  "borzoi-spawn",
  "flate2",
  "proptest",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha1",
