@@ -68,6 +68,7 @@ mod resolve_project_diff;
 mod resolve_qualified_path_access_gen_diff;
 mod resolve_qualified_values;
 mod resolve_qualifier_precedence_diff;
+mod resolve_scope_gen_diff;
 mod resolve_scoping;
 mod resolve_self_qualifier_gen_diff;
 mod resolve_signature_exports;

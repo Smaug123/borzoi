@@ -18,6 +18,7 @@ pub mod fsharp_member_corpus;
 pub mod generator;
 pub mod member_hiding_corpus;
 pub mod overload_corpus;
+pub mod scope_gen;
 pub mod tier_corpus;
 
 use std::collections::HashMap;
