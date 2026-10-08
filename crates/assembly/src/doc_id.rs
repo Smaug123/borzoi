@@ -76,7 +76,7 @@
 //! module methods / F# array-bound encoding (`M:`), type-name keys (`T:`), and
 //! FCS-surfaced type properties the projection drops.
 
-use crate::model::{Entity, Member, Parameter, Primitive, TypeRef};
+use crate::model::{Entity, EntityKind, Field, Member, Parameter, Primitive, TypeRef, UnionCases};
 
 /// The XML-doc *type name* of a type: the text after the `T:` prefix, e.g.
 /// `System.Collections.Generic.Dictionary`2`. Produced by [`type_doc_name`] and
@@ -87,6 +87,9 @@ use crate::model::{Entity, Member, Parameter, Primitive, TypeRef};
 pub struct TypeDocName {
     full: String,
     cumulative_arity: usize,
+    /// The type's kind, which decides one F#-specific prefix: fsc keys the
+    /// fields of a record and the literals of a module as properties (`P:`).
+    kind: EntityKind,
 }
 
 impl TypeDocName {
@@ -136,6 +139,7 @@ pub fn type_doc_name(entity: &Entity, enclosing: Option<&TypeDocName>) -> TypeDo
     TypeDocName {
         full,
         cumulative_arity,
+        kind: entity.kind,
     }
 }
 
@@ -171,7 +175,14 @@ pub fn member_doc_id(decl: &TypeDocName, member: &Member) -> String {
                 decl.full
             )
         }
-        Member::Field(f) => format!("F:{}.{}", decl.full, escape_member_name(&f.name)),
+        Member::Field(f) => {
+            let prefix = if field_keys_as_property(decl.kind, f) {
+                'P'
+            } else {
+                'F'
+            };
+            format!("{prefix}:{}.{}", decl.full, escape_member_name(&f.name))
+        }
         Member::Property(p) => {
             // An indexer's index parameters are encoded just like a method's
             // parameter list; an ordinary property has none and emits no parens.
@@ -202,8 +213,42 @@ pub fn walk_doc_ids(entity: &Entity, enclosing: Option<&TypeDocName>, f: &mut im
     for member in &entity.members {
         f(member_doc_id(&decl, member));
     }
+    if let UnionCases::Known(cases) = &entity.union_cases {
+        for case in cases {
+            // fsc's class-per-case representation nests a class named after a
+            // case that carries fields, and that class's type key *is* the
+            // case's key — so it is walked below, as the nested type.
+            if !entity.nested_types.iter().any(|n| n.name == *case) {
+                f(union_case_doc_id(&decl, case));
+            }
+        }
+    }
     for nested in &entity.nested_types {
         walk_doc_ids(nested, Some(&decl), f);
+    }
+}
+
+/// The documentation comment ID of the union case `case` (its F# name) of the
+/// union named by `decl`. fsc keys a case as a type nested in its union
+/// (`XmlDocSigOfUnionCase`): `T:Microsoft.FSharp.Core.FSharpOption`1.Some`.
+pub fn union_case_doc_id(decl: &TypeDocName, case: &str) -> String {
+    format!("T:{}.{case}", decl.full)
+}
+
+/// Whether fsc keys this field `P:` rather than `F:`.
+///
+/// A record's instance fields are exposed as properties, and fsc keys them so
+/// (`XmlDocFileWriter`: `tc.IsRecordTycon && not rf.IsStatic` →
+/// `XmlDocSigOfProperty`): `P:Microsoft.FSharp.Core.FSharpRef`1.contents`. A
+/// module's only projected fields are its `[<Literal>]` values, which fsc keys
+/// as the zero-argument values they are (`XmlDocSigOfVal`: no curried
+/// arguments and no type parameters → `P:`). An exception's fields, and a
+/// class's or struct's fields, keep `F:`.
+fn field_keys_as_property(kind: EntityKind, field: &Field) -> bool {
+    match kind {
+        EntityKind::Record => !field.is_static,
+        EntityKind::Module => true,
+        _ => false,
     }
 }
 
@@ -1132,6 +1177,69 @@ mod tests {
         assert_eq!(
             member_doc_id(&d, &field("Value", prim(Primitive::I4))),
             "F:N.C.Value"
+        );
+    }
+
+    #[test]
+    fn record_instance_field_keys_as_property() {
+        // fsc exposes a record field as a property and keys it so
+        // (`P:Microsoft.FSharp.Core.FSharpRef`1.contents`); a static field of
+        // the same record, a class field and an exception field keep `F:`.
+        let mut record = ent(&["N"], "R", 0);
+        record.kind = EntityKind::Record;
+        let d = type_doc_name(&record, None);
+        assert_eq!(
+            member_doc_id(&d, &field("contents", prim(Primitive::I4))),
+            "P:N.R.contents"
+        );
+        let Member::Field(mut stat) = field("cache", prim(Primitive::I4)) else {
+            unreachable!("field() builds a Member::Field")
+        };
+        stat.is_static = true;
+        assert_eq!(member_doc_id(&d, &Member::Field(stat)), "F:N.R.cache");
+        for kind in [EntityKind::Class, EntityKind::Struct, EntityKind::Exception] {
+            let mut e = ent(&["N"], "C", 0);
+            e.kind = kind;
+            assert_eq!(
+                member_doc_id(&type_doc_name(&e, None), &field("x", prim(Primitive::I4))),
+                "F:N.C.x",
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn module_literal_keys_as_property() {
+        // A module's `[<Literal>]` is a zero-argument value to fsc: `P:`.
+        let mut module = ent(&["N"], "M", 0);
+        module.kind = EntityKind::Module;
+        assert_eq!(
+            member_doc_id(
+                &type_doc_name(&module, None),
+                &field("Limit", prim(Primitive::I4))
+            ),
+            "P:N.M.Limit"
+        );
+    }
+
+    #[test]
+    fn walk_keys_union_cases_as_nested_types() {
+        // Each known case keys `T:<union>.<case>`; a case whose class-per-case
+        // carrier is a nested type is keyed once, by that type.
+        let mut union = ent(&["N"], "Shape", 0);
+        union.kind = EntityKind::Union;
+        union.union_cases = UnionCases::Known(vec!["Circle".into(), "Empty".into()]);
+        union.nested_types.push(ent(&[], "Circle", 0));
+        let mut ids = Vec::new();
+        walk_doc_ids(&union, None, &mut |id| ids.push(id));
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "T:N.Shape".to_string(),
+                "T:N.Shape.Circle".to_string(),
+                "T:N.Shape.Empty".to_string(),
+            ]
         );
     }
 

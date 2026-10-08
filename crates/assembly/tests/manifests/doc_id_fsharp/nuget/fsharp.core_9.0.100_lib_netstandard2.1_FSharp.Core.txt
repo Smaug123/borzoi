@@ -1,7 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 1980
+hits 1987
 keys 2410
 miss M:Microsoft.FSharp.Collections.Array2DModule.Base1``1(``0[0:])
 miss M:Microsoft.FSharp.Collections.Array2DModule.Base2``1(``0[0:])
@@ -330,13 +330,6 @@ miss P:Microsoft.FSharp.Core.FSharpOption`1.IsNone
 miss P:Microsoft.FSharp.Core.FSharpOption`1.IsSome
 miss P:Microsoft.FSharp.Core.FSharpRef`1.Value
 miss P:Microsoft.FSharp.Core.FSharpRef`1.Value(`0)
-miss P:Microsoft.FSharp.Core.FSharpRef`1.contents
-miss T:Microsoft.FSharp.Core.FSharpOption`1.None
-miss T:Microsoft.FSharp.Core.FSharpOption`1.Some
-miss T:Microsoft.FSharp.Core.FSharpResult`2.Error
-miss T:Microsoft.FSharp.Core.FSharpResult`2.Ok
-miss T:Microsoft.FSharp.Core.FSharpValueOption`1.ValueNone
-miss T:Microsoft.FSharp.Core.FSharpValueOption`1.ValueSome
 miss T:Microsoft.FSharp.Core.[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]`1
 miss T:Microsoft.FSharp.Core.[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]`1
 miss T:Microsoft.FSharp.Core.[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]`1
