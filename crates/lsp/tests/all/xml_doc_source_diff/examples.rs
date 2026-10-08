@@ -452,3 +452,24 @@ fn a_qualifier_of_an_attributed_member_keeps_the_types_doc() {
     assert_eq!(fcs, &[" The type."]);
     assert_eq!(verdict, &Verdict::Agree { attached: true });
 }
+
+#[test]
+fn a_light_directive_inside_a_doc_block_declines() {
+    // FCS's lexer consumes `#light` without a grab point, so both lines
+    // attach; the tree holds it as tokens, so the block cannot be read whole.
+    let src = "module M\n/// first\n#light \"on\"\n/// second\nlet x = 1\n";
+    let (fcs, verdict) = at_definition(src, "x");
+    assert_eq!(fcs, [" first", " second"]);
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::LexerDirective));
+}
+
+#[test]
+fn a_parenthesised_tuple_postfix_argument_is_one_type_argument() {
+    // `(int * string) T` applies `T` to one argument, so FCS binds `T<'a>`;
+    // `every` fails on any doc FCS does not attach (here `T<'a, 'b>`'s).
+    let src = "module M\n/// one\ntype T<'a> = 'a list\n/// two\ntype T<'a, 'b> = 'a * 'b\nlet x : (int * string) T = []\n";
+    let sites = every(src, "T");
+    let use_site = src.rfind("T = []").unwrap();
+    let (_, _, _, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
+    assert_eq!(fcs, &[" one"]);
+}

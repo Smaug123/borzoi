@@ -61,6 +61,8 @@ enum Piece {
     Nowarn,
     /// A doc line indented by a tab.
     TabDoc(usize),
+    /// `#light "on"`, which FCS's lexer consumes without a grab point.
+    Light,
 }
 
 impl Piece {
@@ -108,6 +110,7 @@ impl Piece {
                 out.push_str("#endif\n");
             }
             Piece::Nowarn => out.push_str("#nowarn \"40\"\n"),
+            Piece::Light => out.push_str("#light \"on\"\n"),
             Piece::TabDoc(i) => {
                 out.push_str(indent);
                 out.push('\t');
@@ -655,6 +658,7 @@ fn hazards() -> Vec<Vec<Piece>> {
         }],
         vec![Doc(0), Nowarn, Doc(3)],
         vec![TabDoc(0)],
+        vec![Doc(0), Light, Doc(3)],
         vec![Doc(15)],
     ]
 }
@@ -806,6 +810,7 @@ fn piece() -> impl Strategy<Value = Piece> {
         1 => Just(Piece::BlockMultiline),
         1 => Just(Piece::Nowarn),
         1 => (0..DOC_TEXTS.len()).prop_map(Piece::TabDoc),
+        1 => Just(Piece::Light),
         1 => (any::<bool>(), proptest::collection::vec(doc.clone(), 0..3))
             .prop_map(|(live, inner)| Piece::IfDef { live, inner }),
         1 => (
