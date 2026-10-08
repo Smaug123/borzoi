@@ -3337,6 +3337,34 @@ impl Ecma335Assembly {
                     kind,
                     EntityKind::Union | EntityKind::Record | EntityKind::Exception
                 ) {
+                    // The pickle vouches for a candidate by its accessor's name
+                    // (`get_P`), which is the member's F# name; a
+                    // `[<CompiledName>]` renames the IL *property* but not its
+                    // accessors. A property whose accessor names another one —
+                    // `member First` compiled as property `Second` beside
+                    // `member Second` compiled as `First` — would be vouched
+                    // for under the wrong name and type, and `Property`
+                    // carries no source name to say which, so it is refused
+                    // (recorded as a skip): visibly absent, never present and
+                    // wrong.
+                    let accessor_names_property =
+                        |accessor: Option<crate::reader::MethodId>, prefix: &str| {
+                            accessor.is_none_or(|m| {
+                                td.methods[m.0 as usize].name.strip_prefix(prefix)
+                                    == Some(p.name.as_str())
+                            })
+                        };
+                    if !accessor_names_property(p.getter, "get_")
+                        || !accessor_names_property(p.setter, "set_")
+                    {
+                        return Err(ImportError::UnsupportedEcmaLayout {
+                            detail: format!(
+                                "F# property `{}` is `[<CompiledName>]`-renamed: its accessors \
+                                 carry its F# name, which the projection cannot represent",
+                                p.name
+                            ),
+                        });
+                    }
                     return Ok(Some(Member::Property(self.project_property(
                         td,
                         p,

@@ -478,6 +478,17 @@ pub fn ensure_pre_visible_union_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the RenamedMembers F# fixture once and return the path to the
+/// produced `.dll`: a record and a union whose member properties are
+/// `[<CompiledName>]`-renamed (see its `Library.fs`).
+pub fn ensure_renamed_members_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("RenamedMembers", "RenamedMembers.dll"))
+        .1
+        .as_path()
+}
+
 /// Build the KeyCollision F# fixture once and return the path to the produced
 /// `.dll`. Same build-once pattern as [`ensure_minilib_built`].
 ///

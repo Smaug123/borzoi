@@ -32,6 +32,7 @@ mod projector_default_member;
 mod projector_events;
 mod projector_extension_index;
 mod projector_fsharp_core;
+mod projector_fsharp_properties;
 mod projector_generic_nullability;
 mod projector_generics;
 mod projector_malformed_metadata;
