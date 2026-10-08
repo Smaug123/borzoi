@@ -33,7 +33,7 @@
 //!
 //! - **Prefixes**: `T:` type, `M:` method, `P:` property, `F:` field, `E:`
 //!   event — except that an F# record's instance fields and an F# module's
-//!   literals key `P:`, as fsc keys them ([`field_keys_as_property`]).
+//!   literals key `P:`, as fsc keys them.
 //! - **Type full name**: namespace segments and the enclosing-type chain joined
 //!   with `.` (never `+`), each type segment keeping its `` `n `` arity suffix.
 //!   The arity on a segment counts the generic parameters *introduced at that
@@ -276,7 +276,7 @@ pub fn walk_doc_ids(entity: &Entity, enclosing: Option<&TypeDocName>, f: &mut im
 
 /// The documentation comment ID of the union case `case` (its F# name) of the
 /// union named by `decl`. fsc keys a case as a type nested in its union
-/// (`XmlDocSigOfUnionCase`): `T:Microsoft.FSharp.Core.FSharpOption`1.Some`.
+/// (`XmlDocSigOfUnionCase`): ``T:Microsoft.FSharp.Core.FSharpOption`1.Some``.
 pub fn union_case_doc_id(decl: &TypeDocName, case: &str) -> String {
     format!("T:{}.{case}", decl.full)
 }
@@ -285,7 +285,7 @@ pub fn union_case_doc_id(decl: &TypeDocName, case: &str) -> String {
 ///
 /// A record's instance fields are exposed as properties, and fsc keys them so
 /// (`XmlDocFileWriter`: `tc.IsRecordTycon && not rf.IsStatic` →
-/// `XmlDocSigOfProperty`): `P:Microsoft.FSharp.Core.FSharpRef`1.contents`. A
+/// `XmlDocSigOfProperty`): ``P:Microsoft.FSharp.Core.FSharpRef`1.contents``. A
 /// module's only projected fields are its `[<Literal>]` values, which fsc keys
 /// as the zero-argument values they are (`XmlDocSigOfVal`: no curried
 /// arguments and no type parameters → `P:`). An exception's fields, and a
@@ -1233,7 +1233,7 @@ mod tests {
     #[test]
     fn record_instance_field_keys_as_property() {
         // fsc exposes a record field as a property and keys it so
-        // (`P:Microsoft.FSharp.Core.FSharpRef`1.contents`); a static field of
+        // (``P:Microsoft.FSharp.Core.FSharpRef`1.contents``); a static field of
         // the same record, a class field and an exception field keep `F:`.
         let mut record = ent(&["N"], "R", 0);
         record.kind = EntityKind::Record;
