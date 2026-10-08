@@ -69,6 +69,7 @@ mod parser_diff_pat_opname_path;
 mod parser_diff_pat_typars;
 mod parser_diff_quote_pat;
 mod parser_diff_ranges;
+mod parser_diff_recovery;
 mod parser_diff_reserved_idents;
 mod parser_diff_sig_files;
 mod parser_diff_srtp_support_matrix;
@@ -88,6 +89,7 @@ mod parser_diff_types;
 mod parser_diff_when_constraints;
 mod parser_ifdef;
 mod parser_panic_sweep;
+mod recovery_sweep;
 mod shape_sensitivity;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is

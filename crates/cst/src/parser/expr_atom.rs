@@ -3341,10 +3341,11 @@ impl<'src> Parser<'src> {
                     self.parse_dot_get_tail(cp);
                 } else {
                     // A dangling `.` after a non-ident head (e.g. `(f x).`):
-                    // mirror `parse_ident_expr`'s trailing-dot error and stop,
-                    // consuming the dot so the round-trip stays lossless.
-                    // (Identifier heads never reach here — their trailing dot is
-                    // handled in `parse_ident_expr`.)
+                    // FCS's `mkSynDotMissing`. Wrap the head and the dot in a
+                    // `DOT_MISSING_EXPR`, report `parse_ident_expr`'s
+                    // trailing-dot error, and stop. (Identifier heads never
+                    // reach here — their trailing dot is handled in
+                    // `parse_ident_expr`.)
                     let dot_span = self
                         .peek()
                         .map(|(_, span)| span.clone())
@@ -3353,7 +3354,10 @@ impl<'src> Parser<'src> {
                         message: "trailing dot in long identifier path".to_string(),
                         span: dot_span,
                     });
+                    self.builder
+                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::DOT_MISSING_EXPR));
                     self.bump_into(SyntaxKind::DOT_TOK);
+                    self.builder.finish_node();
                     return;
                 }
             } else if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::QMark)), _)))

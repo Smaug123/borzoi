@@ -19,6 +19,7 @@
 pub mod corpus_manifest;
 pub mod normalised_ast;
 mod range_audit;
+pub mod recovery;
 
 #[allow(unused_imports)]
 pub use range_audit::{assert_ast_ranges_match, assert_sig_ast_ranges_match, ast_ranges_match};
