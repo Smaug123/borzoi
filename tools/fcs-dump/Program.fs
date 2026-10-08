@@ -6917,6 +6917,8 @@ let mutable private xmlDocSdkSwitches: (FSharpProjectOptions * string[]) option 
 let private xmlDocProjectFiles
     (checker: FSharpChecker)
     (paths: string[])
+    (refArgs: string[])
+    (exclusiveRefs: bool)
     (defineArgs: string[])
     (langVersionArgs: string[])
     =
@@ -6942,7 +6944,22 @@ let private xmlDocProjectFiles
                 let dir = Option.ofObj (Path.GetDirectoryName(paths.[0])) |> Option.defaultValue "."
                 Path.Combine(dir, "fcs-dump-xmldoc.fsproj")
             SourceFiles = paths
-            OtherOptions = Array.concat [ switches; defineArgs; langVersionArgs ]
+            OtherOptions =
+                // `exclusiveRefs`: the caller's refs are the whole set (a real
+                // project's composed references), so the SDK's own are dropped
+                // and `--noframework` stops FCS looking for one — exactly as
+                // `usesProjectFiles` does.
+                let switches =
+                    if exclusiveRefs then
+                        let kept =
+                            switches
+                            |> Array.filter (fun o ->
+                                not (o.StartsWith("-r:") || o.StartsWith("/r:") || o.StartsWith("--reference:")))
+                        if kept |> Array.contains "--noframework" then kept
+                        else Array.append kept [| "--noframework" |]
+                    else
+                        switches
+                Array.concat [ switches; refArgs; defineArgs; langVersionArgs ]
             UseScriptResolutionRules = false }
     paths
     |> Array.map (fun absolute ->
@@ -6979,8 +6996,10 @@ let private xmlDocProjectFiles
                Uses = [||] |})
 
 /// Resident source-XML-doc oracle. One JSON request per stdin line —
-/// `{ "paths": [<abs .fs/.fsi>…], "defines": [<sym>…], "langversion": <token|null> }`,
-/// Compile order — type-checked as ONE project against the SDK references, and
+/// `{ "paths": [<abs .fs/.fsi>…], "defines": [<sym>…], "langversion": <token|null>,
+/// "refs": [<dll>…], "exclusiveRefs": <bool> }`, Compile order — type-checked as
+/// ONE project against the SDK references plus `refs` (or `refs` alone, when
+/// `exclusiveRefs`), and
 /// one compact `{ "Files": [ { Path, Ok, Error, Diagnostics, Uses } … ] }` line
 /// back, `Uses` holding every symbol use with its symbol's documentation (see
 /// [`projectXmlDocUse`]). Tolerant: a type error is a diagnostic, never an
@@ -7011,7 +7030,13 @@ let private xmlDocBatchCore () =
                     | Some s when s.Trim() <> "" -> [| "--langversion:" + s.Trim() |]
                     | _ -> [||]
                 | _ -> [||]
-            let files = xmlDocProjectFiles checker paths defineArgs langVersionArgs
+            let refArgs = strArray "refs" |> Array.toList |> extraRefArgsOf
+            let exclusiveRefs =
+                match root.TryGetProperty("exclusiveRefs") with
+                | true, v when v.ValueKind = JsonValueKind.True -> true
+                | _ -> false
+            let files =
+                xmlDocProjectFiles checker paths refArgs exclusiveRefs defineArgs langVersionArgs
             JsonSerializer.Serialize({| Files = files |}, compact)
         with ex ->
             JsonSerializer.Serialize({| BatchError = ex.Message |}, compact)
