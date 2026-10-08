@@ -666,6 +666,16 @@ let private stripAritySuffix (name: string) =
         | _ -> seg)
     |> String.concat "/"
 
+/// An entity's name as a type reference spells it in metadata: namespace-
+/// qualified, each nested segment joined by `/` (ECMA-335's nesting
+/// separator, which the Rust model keeps). FCS's `FullName` cannot be used
+/// as-is for a nested entity: it joins an IL nested type with `+`, and an F#
+/// entity nested in a module with `.` — indistinguishable from a namespace.
+let rec private ilTypeRefName (td: FSharpEntity) : string =
+    match td.DeclaringEntity with
+    | Some outer when not outer.IsNamespace -> sprintf "%s/%s" (ilTypeRefName outer) td.CompiledName
+    | _ -> (td.TryFullName |> Option.defaultWith (fun () -> td.DisplayName)).Replace('+', '/')
+
 /// Whether `t` is a *real* by-reference type (`byref<T>` / `inref` / `outref`,
 /// i.e. `ref`/`in`/`out`) — one that wraps exactly one referent.
 ///
@@ -704,9 +714,11 @@ let private isRealByref (t: FSharpType) : bool =
 /// outside any signature); a stray typar in such a context fails loud
 /// rather than silently emitting an invalid `!T<n>`.
 ///
-/// FCS uses `+` between an outer/nested type and its leaf; the Rust side
-/// uses `/`. We normalise to `/` so the strings agree.
-let rec private renderTypeInScope
+/// `headName` spells a named type's head; the two oracles that render through
+/// here want different spellings of a nested type (see `renderTypeInScope`
+/// and `renderType`).
+let rec private renderTypeWith
+    (headName: FSharpEntity -> string)
     (typeTypars: System.Collections.Generic.IList<FSharpGenericParameter>)
     (methodTypars: System.Collections.Generic.IList<FSharpGenericParameter>)
     (t: FSharpType) =
@@ -718,7 +730,7 @@ let rec private renderTypeInScope
     // continuing — this is also what F#'s display contexts do internally
     // for cross-language consumption.
     if t.IsAbbreviation then
-        renderTypeInScope typeTypars methodTypars t.AbbreviatedType
+        renderTypeWith headName typeTypars methodTypars t.AbbreviatedType
     elif t.IsGenericParameter then
         // FCS exposes the parameter as a named typar (e.g. `'T`); the Rust
         // side carries a positional index plus an `is_method` flag. Resolve
@@ -758,7 +770,7 @@ let rec private renderTypeInScope
         let name = if t.IsStructTupleType then "System.ValueTuple" else "System.Tuple"
         let rendered =
             args
-            |> Seq.map (renderTypeInScope typeTypars methodTypars)
+            |> Seq.map (renderTypeWith headName typeTypars methodTypars)
             |> String.concat ", "
         sprintf "%s<%s>" name rendered
     elif t.HasTypeDefinition then
@@ -767,30 +779,24 @@ let rec private renderTypeInScope
             let rank = td.ArrayRank
             if t.GenericArguments.Count <> 1 then
                 failwithf "fcs-dump entities: array type with %d generic args" t.GenericArguments.Count
-            let elem = renderTypeInScope typeTypars methodTypars t.GenericArguments.[0]
+            let elem = renderTypeWith headName typeTypars methodTypars t.GenericArguments.[0]
             let commas = String.replicate (rank - 1) ","
             sprintf "%s[%s]" elem commas
         elif isRealByref t then
-            sprintf "%s&" (renderTypeInScope typeTypars methodTypars t.GenericArguments.[0])
+            sprintf "%s&" (renderTypeWith headName typeTypars methodTypars t.GenericArguments.[0])
         else
-            // Prefer TryFullName ("System.Int32"); fall back to DisplayName
-            // for entities FCS reports without a full name (anonymous,
-            // unresolved). FCS uses `+` between an outer type and its
-            // nested leaf — Rust uses `/`, so normalise. This branch also
-            // catches the byref-*like* zero-arg intrinsics
-            // (`System.TypedReference` / `ArgIterator` / `RuntimeArgumentHandle`)
-            // that `isRealByref` deliberately excludes — see its comment.
-            let baseName =
-                td.TryFullName
-                |> Option.defaultWith (fun () -> td.DisplayName)
-            let baseName = baseName.Replace('+', '/')
+            // The head's spelling is the caller's (`headName`). This branch also catches the
+            // byref-*like* zero-arg intrinsics (`System.TypedReference` /
+            // `ArgIterator` / `RuntimeArgumentHandle`) that `isRealByref`
+            // deliberately excludes — see its comment.
+            let baseName = headName td
             // ECMA-335 backtick-arity suffix on the *outermost* segment
             // before the first generic arg gets stripped by both sides.
             let baseName = stripAritySuffix baseName
             if t.GenericArguments.Count > 0 then
                 let args =
                     t.GenericArguments
-                    |> Seq.map (renderTypeInScope typeTypars methodTypars)
+                    |> Seq.map (renderTypeWith headName typeTypars methodTypars)
                     |> String.concat ", "
                 sprintf "%s<%s>" baseName args
             else
@@ -798,13 +804,27 @@ let rec private renderTypeInScope
     else
         failwithf "fcs-dump entities: unrecognised FSharpType: %s" (t.Format(FSharpDisplayContext.Empty))
 
+/// The entities renderer: every head in its metadata spelling
+/// ([`ilTypeRefName`]), the currency the Rust side's `TypeRef` renders in.
+let private renderTypeInScope
+    (typeTypars: System.Collections.Generic.IList<FSharpGenericParameter>)
+    (methodTypars: System.Collections.Generic.IList<FSharpGenericParameter>)
+    (t: FSharpType) =
+    renderTypeWith ilTypeRefName typeTypars methodTypars t
+
 /// Render an [`FSharpType`] with no enclosing typar scope. Any generic
 /// parameter encountered fails loud. Use this only at sites where the type
 /// is metadata-position (an entity FQN reference at the top level, for
 /// instance) and a typar would indicate a bug.
+///
+/// Heads keep FCS's `FullName` (with `+` read as `/`): this feeds the
+/// inference oracle's canonical rendering, whose consumer (sema's `Ty`) spells
+/// an F# entity nested in a module with `.`, as `FullName` does.
 let private renderType (t: FSharpType) : string =
     let empty : System.Collections.Generic.IList<FSharpGenericParameter> = upcast ResizeArray<_>()
-    renderTypeInScope empty empty t
+    let fullName (td: FSharpEntity) =
+        (td.TryFullName |> Option.defaultWith (fun () -> td.DisplayName)).Replace('+', '/')
+    renderTypeWith fullName empty empty t
 
 /// Strip a trailing mangled-arity suffix (`` `N ``) from a tycon FQN's final
 /// segment, so a head whose `LogicalName` already carries its arity
@@ -1037,11 +1057,7 @@ and private walkFcsType
             else
                 // Also the byref-*like* zero-arg intrinsics (`isRealByref`
                 // excludes them): they render as their plain named type here.
-                let baseName =
-                    td.TryFullName
-                    |> Option.defaultWith (fun () -> td.DisplayName)
-                let baseName = baseName.Replace('+', '/')
-                let baseName = stripAritySuffix baseName
+                let baseName = stripAritySuffix (ilTypeRefName td)
                 if t.GenericArguments.Count > 0 then
                     // System.Nullable<T> mirrors the F# compiler's
                     // `isSystemNullable` early-out (`import.fs:270-274`):
@@ -1090,6 +1106,31 @@ let private accessString (a: FSharpAccessibility) =
     elif a.IsProtected then "Protected"
     else
         failwithf "fcs-dump entities: unhandled FSharpAccessibility (none of Public/Private/Internal/Protected set)"
+
+/// An F#-declared member's accessibility in the IL encoding the Rust side
+/// reads: fsc compiles an F# `private` member to IL `assembly`, so FCS's
+/// `Private` renders as `Internal` — the pickle's distinction between the two
+/// never reaches the metadata row.
+let private fsharpIlAccessString (a: FSharpAccessibility) =
+    if a.IsPrivate then "Internal" else accessString a
+
+/// An F#-declared property's accessibility as its metadata shows it: the most
+/// permissive of its accessors', which is what the Rust side joins from the two
+/// accessor MethodDefs. The property symbol's own `Accessibility` is not this —
+/// FCS answers it from one accessor's val, so `with get () = … and private set
+/// …` can read as private.
+let private fsharpPropertyAccessString (m: FSharpMemberOrFunctionOrValue) =
+    let accessors =
+        [ if m.HasGetterMethod then m.GetterMethod.Accessibility
+          if m.HasSetterMethod then m.SetterMethod.Accessibility ]
+    let rank (a: FSharpAccessibility) =
+        if a.IsPublic then 3
+        elif a.IsProtected then 2
+        elif a.IsInternal then 1
+        else 0
+    match accessors with
+    | [] -> failwithf "fcs-dump entities: property `%s` has neither getter nor setter" m.DisplayName
+    | _ -> accessors |> List.maxBy rank |> fsharpIlAccessString
 
 // ============================================================================
 // Attribute-aware access projection for IL-imported methods
@@ -2763,6 +2804,10 @@ let private projectIlField
                 // guard is belt-and-braces for a hypothetical fixture that
                 // sets both bits.
                 if isInitOnly && not isLiteral then "init_only"
+                // The CLI `Literal` bit — a C# `const`, an enum case. Mirrors
+                // `Field::is_literal`, which sema reads to decide whether an
+                // opened name may be a constant pattern.
+                if isLiteral then "literal"
                 if isVolatile then "volatile"
                 if isRequired then "required"
             |]
@@ -2945,10 +2990,24 @@ let private projectIlProperty
                 if Option.isSome setMethodOpt then "set"
                 if isRequired then "required"
             |]
+        // The getter's *own* accessibility, which `Access` (the join of both
+        // accessors) cannot show: `public int P { private get; set; }` is a
+        // public property whose read is private. Mirrors
+        // `Property::getter_access`, which sema gates a typed read on.
+        let getterAccess : objnull =
+            match getter with
+            | Some g ->
+                box (
+                    accessStringFromAttributes (
+                        accessorAttrs g &&& System.Reflection.MethodAttributes.MemberAccessMask
+                    )
+                )
+            | None -> null
         Some (box {| Kind = "Property"
                      Name = name
                      Signature = signature
                      Access = accessStringFromAttributes maskedAccess
+                     GetterAccess = getterAccess
                      Flags = flags
                      GenericParameters = ([||]: obj array) |})
 
@@ -3538,10 +3597,8 @@ let private isProjectableMethod (m: FSharpMemberOrFunctionOrValue) =
     // Module-level `[<Literal>] let X = …` constants compile to a static
     // literal field on the module class (no property, no method body).
     // FCS still surfaces them through `MembersFunctionsAndValues` as
-    // zero-arg methods, but the Rust-side projector sees only the
-    // field — projecting here would emit a `Method` against the other
-    // side's nothing/field. Drop them on both sides for now; a future
-    // slice can project literals symmetrically.
+    // zero-arg methods, but the Rust-side projector sees the field, so
+    // `projectEntity` projects them as fields (`moduleLiterals`) instead.
     && m.LiteralValue.IsNone
 
 /// Render an [`FSharpParameter`] to the same string form `render_parameter`
@@ -4043,6 +4100,9 @@ let private fieldFlags (f: FSharpField) =
            && not f.IsLiteral
            && not (f.IsCompilerGenerated && f.Name = "value__") then
             "init_only"
+        // An F#-defined enum's cases are CLI literal fields, exactly as an IL
+        // enum's are; FCS reports them `IsLiteral`.
+        if f.IsLiteral then "literal"
     |]
 
 let private projectField
@@ -4174,10 +4234,17 @@ let private projectMember
         Array.append
             (memberFlags ilMethodDef m)
             (formatCompilerFeatureRequiredList m.Attributes |> List.toArray)
+    // The argument groups a *caller* writes: `let f a b` is two, `member
+    // x.M(a, b)` one, a value binding zero, and every IL method one. FCS
+    // already strips an instance extension member's receiver group, which is
+    // exactly the count `MethodLike::arg_group_count` carries (the overload
+    // engine and the active-pattern splitter read it).
+    let argGroups = m.CurriedParameterGroups.Count
     box {| Kind = "Method"
            Name = name
            Signature = renderMethodSignature numTypeTypars typeTypars methodNullableContext ilMethodDef m
            Access = memberAccessString m
+           ArgGroups = argGroups
            Flags = flags
            GenericParameters = genericParameters
            Obsolete = obsolete
@@ -4231,6 +4298,7 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
                Experimental = (null: objnull)
                DefaultMember = (null: objnull)
                AbbreviatedTarget = target
+               UnionCases = (null: objnull)
                CompilerFeatureRequired = ([||]: obj array) |}
     else
     // System.Text.Json's null encoding of `objnull` matches the
@@ -4377,10 +4445,15 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
         | None ->
             e.MembersFunctionsAndValues
             |> Seq.filter (fun m -> m.IsProperty)
-            // Same accessibility mirror as `fcsMemberAccessible` above:
-            // the pickle view is unfiltered, and the Rust normaliser
-            // drops private/internal members.
-            |> Seq.filter (fun m -> m.Accessibility.IsPublic || m.Accessibility.IsProtected)
+            // Same accessibility mirror as `fcsMemberAccessible` above: the
+            // pickle view is unfiltered, and the Rust normaliser drops
+            // private/internal members — by the accessor join, not the
+            // property symbol's own accessibility (see
+            // `fsharpPropertyAccessString`).
+            |> Seq.filter (fun m ->
+                match fsharpPropertyAccessString m with
+                | "Public" | "Protected" -> true
+                | _ -> false)
             |> Seq.map (fun m ->
                 // An indexed property (an F# `Item` indexer) carries its
                 // index dimension in `CurriedParameterGroups`; rendering
@@ -4401,6 +4474,13 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
                         if m.HasGetterMethod then "get"
                         if m.HasSetterMethod then "set"
                     |]
+                // The getter's own accessibility (see `projectIlProperty`),
+                // in the IL encoding the Rust side reads.
+                let getterAccess : objnull =
+                    if m.HasGetterMethod then
+                        box (fsharpIlAccessString m.GetterMethod.Accessibility)
+                    else
+                        null
                 // Render nullability the same way the F#-native method
                 // return path does (`renderReturnType`'s no-ILMethodDef
                 // branch): nullness-aware inner descent plus the
@@ -4422,7 +4502,8 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
                 box {| Kind = "Property"
                        Name = m.DisplayName
                        Signature = signature
-                       Access = accessString m.Accessibility
+                       Access = fsharpPropertyAccessString m
+                       GetterAccess = getterAccess
                        Flags = flags
                        GenericParameters = ([||]: obj array) |})
     let events =
@@ -4437,8 +4518,35 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
             |> List.choose (projectIlEvent numTypeTypars typeNullableContext methodDefs)
             :> seq<_>
         | None -> Seq.empty
+    // A module's `[<Literal>]` bindings. `isProjectableMethod` keeps them out
+    // of `methods` — fsc emits no method for one — and they are not
+    // `FSharpFields`, so they are projected here as the static field fsc
+    // compiles each to. The field's CLI shape follows from the value's type:
+    // a `decimal` cannot be a CLI literal (ECMA-335 II.16.2 admits only
+    // primitive constants), so fsc emits a `static initonly` field carrying
+    // `[DecimalConstant]` instead; every other literal is a `static literal`
+    // field. The Rust side reads that IL row (`Field::is_literal`).
+    let moduleLiterals =
+        if e.IsFSharpModule then
+            e.MembersFunctionsAndValues
+            |> Seq.filter (fun m -> m.LiteralValue.IsSome)
+            |> Seq.filter fcsMemberAccessible
+            |> Seq.map (fun m ->
+                let signature = renderTypeInScope typeTypars emptyMethodTypars m.FullType
+                box {| Kind = "Field"
+                       Name = m.CompiledName
+                       Signature = signature
+                       Access = accessString m.Accessibility
+                       Flags =
+                        [|
+                            "static"
+                            if signature = "System.Decimal" then "init_only" else "literal"
+                        |]
+                       GenericParameters = ([||]: obj array) |})
+        else
+            Seq.empty
     let members =
-        Seq.concat [ methods; fields; properties; events ]
+        Seq.concat [ methods; fields; moduleLiterals; properties; events ]
         |> Seq.toArray
 
     // Generic parameters: phase 3e emits these on every entity (empty
@@ -4493,6 +4601,21 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
                 null
         else
             null
+    // The union's cases a referencing assembly can name, in declaration
+    // order: those whose accessibility is unrestricted. A `private` or
+    // `internal` representation hides every case, which is the empty list,
+    // not an absent one. `null` for anything that is not an F# union.
+    // Mirrors `Entity::union_cases`, which sema folds into an `open`'s
+    // bare-name surface.
+    let unionCases : objnull =
+        if e.IsFSharpUnion then
+            e.UnionCases
+            |> Seq.filter (fun uc -> uc.Accessibility.IsPublic)
+            |> Seq.map (fun uc -> uc.Name)
+            |> Seq.toArray
+            |> box
+        else
+            null
     box {| Fqn = entityFqn e
            Kind = entityKindString e
            Access = accessString e.Accessibility
@@ -4505,6 +4628,7 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
            Experimental = experimental
            DefaultMember = defaultMember
            AbbreviatedTarget = abbreviatedTarget
+           UnionCases = unionCases
            CompilerFeatureRequired = formatCompilerFeatureRequiredList e.Attributes |> List.toArray |}
 
 /// Walk the FSharpAssemblySignature tree, flattening namespace nodes and
@@ -4614,8 +4738,30 @@ let private dumpEntities (dllAbsolute: string) =
             collectTopLevelEntities asm.Contents.Entities
             |> Seq.toArray
 
+        // The assembly-level `[<assembly: AutoOpen("path")>]` paths, in
+        // manifest order — FCS's own `GetAutoOpenAttributes` rule
+        // (`TryFindAutoOpenAttr`): the attribute is recognised by its full
+        // type name alone, the single-string form contributes its path, the
+        // no-argument form contributes nothing. These are the implicit opens
+        // a reference brings into scope (mirrors `EcmaView::assembly_auto_opens`).
+        let assemblyAutoOpens =
+            asm.Contents.Attributes
+            |> Seq.filter (fun a ->
+                a.AttributeType.TryFullName = Some "Microsoft.FSharp.Core.AutoOpenAttribute")
+            |> Seq.choose (fun a ->
+                match List.ofSeq a.ConstructorArguments with
+                | [ (_, (:? string as path)) ] -> Some path
+                // `AutoOpen(null)` decodes to `ILAttribElem.String None`.
+                | [ (_, null) ]
+                | [] -> None
+                | other ->
+                    failwithf
+                        "fcs-dump entities: assembly-level AutoOpenAttribute with unexpected arguments %A"
+                        other)
+            |> Seq.toArray
         let payload =
             {| Assembly = asm.SimpleName
+               AssemblyAutoOpens = assemblyAutoOpens
                Entities = entities |}
 
         let json = JsonSerializer.Serialize(payload, buildOptions ())
@@ -6167,8 +6313,8 @@ let private renderTypeCanonical (t: FSharpType) : string =
             // the caller's `try` turns into FCS's display rendering of the whole
             // type from the root (postfix `X option`, source aliases).
             //
-            // The head is spelled exactly as [`renderTypeInScope`] spells it, so
-            // the two renderers keep naming a tycon identically: `TryFullName`
+            // The head is spelled exactly as [`renderType`] spells it, so the
+            // canonical renderer names a tycon identically on every path: `TryFullName`
             // (falling back to `DisplayName` for an entity FCS reports without
             // one), FCS's nested-type `+` normalised to `/`, and the ECMA-335
             // backtick-arity suffix stripped.
