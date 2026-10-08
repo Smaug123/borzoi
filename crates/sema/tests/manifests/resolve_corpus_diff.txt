@@ -1,8 +1,8 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored
-.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs compared fcs-clean match=25
-buildtools/fslex/fslexpars.fs compared fcs-check-errors match=222
+.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs compared fcs-clean match=25 external=52
+buildtools/fslex/fslexpars.fs compared fcs-check-errors match=222 external=391
 buildtools/fslex/fslexpars.fs:261:20 "'gentype__startspec" gap
 buildtools/fslex/fslexpars.fs:264:49 "'gentype_codeopt" gap
 buildtools/fslex/fslexpars.fs:265:49 "'gentype_Macros" gap
@@ -68,15 +68,15 @@ buildtools/fslex/fslexpars.fs:639:20 "'gentype_charset" gap
 buildtools/fslex/fslexpars.fs:642:49 "'gentype_charset" gap
 buildtools/fslex/fslexpars.fs:643:49 "'gentype_charset" gap
 buildtools/fslex/fslexpars.fs:651:20 "'gentype_charset" gap
-docs/fcs-samples/FsiExe/fsiserver.fs compared fcs-check-errors match=5
-src/Compiler/AbstractIL/ilsign.fs compared fcs-check-errors match=372
+docs/fcs-samples/FsiExe/fsiserver.fs compared fcs-check-errors match=5 external=36
+src/Compiler/AbstractIL/ilsign.fs compared fcs-check-errors match=372 external=311
 src/Compiler/AbstractIL/ilsign.fs:146:26 "BlobReader" gap
 src/Compiler/AbstractIL/ilsign.fs:309:38 "BlobReader" gap
 src/Compiler/AbstractIL/ilsign.fs:52:56 "ByteArrayUnion" gap
-src/Compiler/Checking/CheckRecordSyntaxHelpers.fs compared fcs-check-errors match=87
+src/Compiler/Checking/CheckRecordSyntaxHelpers.fs compared fcs-check-errors match=87 external=85
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:51:28 "_, field" gap
-src/Compiler/Checking/OverloadResolutionCache.fs compared fcs-check-errors match=81
-src/Compiler/CodeGen/EraseUnions.Emit.fs compared fcs-check-errors match=297
+src/Compiler/Checking/OverloadResolutionCache.fs compared fcs-check-errors match=81 external=119
+src/Compiler/CodeGen/EraseUnions.Emit.fs compared fcs-check-errors match=297 external=73
 src/Compiler/CodeGen/EraseUnions.Emit.fs:220:25 "'Mark" gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:221:41 "'Mark" gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:223:29 "'Mark" gap
@@ -86,7 +86,7 @@ src/Compiler/CodeGen/EraseUnions.Emit.fs:351:46 "'Mark" gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:386:36 "'Mark" gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:390:46 "'Mark" gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:443:38 "'Mark" gap
-src/Compiler/Driver/CreateILModule.fs compared fcs-check-errors match=208
+src/Compiler/Driver/CreateILModule.fs compared fcs-check-errors match=208 external=272
 src/Compiler/Driver/CreateILModule.fs:242:16 "AttributeHelpers" gap
 src/Compiler/Driver/CreateILModule.fs:242:16 "AttributeHelpers.ILVersion" gap
 src/Compiler/Driver/CreateILModule.fs:256:16 "AttributeHelpers" gap
@@ -98,8 +98,8 @@ src/Compiler/Driver/CreateILModule.fs:491:13 "AttributeHelpers" gap
 src/Compiler/Driver/CreateILModule.fs:78:9 "AttributeHelpers" gap
 src/Compiler/Driver/CreateILModule.fs:81:9 "AttributeHelpers" gap
 src/Compiler/Driver/CreateILModule.fs:84:9 "AttributeHelpers" gap
-src/Compiler/Driver/XmlDocFileWriter.fs compared fcs-check-errors match=119
-src/Compiler/Facilities/prim-lexing.fs compared fcs-check-errors match=412
+src/Compiler/Driver/XmlDocFileWriter.fs compared fcs-check-errors match=119 external=81
+src/Compiler/Facilities/prim-lexing.fs compared fcs-check-errors match=412 external=249
 src/Compiler/Facilities/prim-lexing.fs:163:24 "StringText" gap
 src/Compiler/Facilities/prim-lexing.fs:167:24 "StringText" gap
 src/Compiler/Facilities/prim-lexing.fs:172:34 "sourceText" gap
@@ -153,7 +153,7 @@ src/Compiler/Facilities/prim-lexing.fs:387:9 "LexBuffer<char>" gap
 src/Compiler/Facilities/prim-lexing.fs:387:9 "LexBuffer<char>\n            .FromFunction" gap
 src/Compiler/Facilities/prim-lexing.fs:436:6 "GenericImplFragments" gap
 src/Compiler/Facilities/prim-lexing.fs:515:43 "UnicodeTables" gap
-src/Compiler/Optimize/LowerStateMachines.fs compared fcs-check-errors match=746
+src/Compiler/Optimize/LowerStateMachines.fs compared fcs-check-errors match=746 external=572
 src/Compiler/Optimize/LowerStateMachines.fs:273:47 "TTarget(vs, targetExpr, flags)" gap
 src/Compiler/Optimize/LowerStateMachines.fs:800:40 "TTarget(_vs, targetExpr, _)" gap
 src/Compiler/Optimize/LowerStateMachines.fs:810:42 "TTarget(_vs, _, _)" gap
@@ -161,9 +161,9 @@ src/Compiler/Optimize/LowerStateMachines.fs:813:89 "TTarget(vs, _, _)" gap
 src/Compiler/Optimize/LowerStateMachines.fs:819:62 "TTarget(vs, _, _)" gap
 src/Compiler/Optimize/LowerStateMachines.fs:826:74 "TTarget(vs, _, _)" gap
 src/Compiler/Optimize/LowerStateMachines.fs:960:5 "LowerStateMachine" gap
-src/Compiler/Service/QuickParse.fs compared fcs-check-errors match=518
+src/Compiler/Service/QuickParse.fs compared fcs-check-errors match=518 external=322
 src/Compiler/Service/QuickParse.fs:238:55 "prior, residue" gap
-src/Compiler/Service/ServiceParseTreeWalk.fs compared fcs-check-errors match=1157
+src/Compiler/Service/ServiceParseTreeWalk.fs compared fcs-check-errors match=1157 external=701
 src/Compiler/Service/ServiceParseTreeWalk.fs:105:15 "SyntaxVisitorPath" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:106:13 "'T" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1072:34 "SynValSig(synType = t; attributes = attributes; synExpr = expr; range = m)" gap
@@ -782,7 +782,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:930:47 "SynField(attributes = attri
 src/Compiler/Service/ServiceParseTreeWalk.fs:97:115 "'T" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:97:15 "SyntaxVisitorPath" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:97:71 "'T" gap
-src/Compiler/SyntaxTree/LexFilter.fs compared fcs-check-errors match=2401
+src/Compiler/SyntaxTree/LexFilter.fs compared fcs-check-errors match=2401 external=645
 src/Compiler/SyntaxTree/LexFilter.fs:1172:23 "NULL" gap
 src/Compiler/SyntaxTree/LexFilter.fs:1663:42 "SEMICOLON_SEMICOLON" gap
 src/Compiler/SyntaxTree/LexFilter.fs:1728:34 "REC" gap
@@ -853,7 +853,7 @@ src/Compiler/SyntaxTree/LexFilter.fs:972:26 "PositionWithColumn" gap
 src/Compiler/SyntaxTree/LexFilter.fs:979:26 "PositionWithColumn" gap
 src/Compiler/SyntaxTree/LexFilter.fs:984:26 "PositionWithColumn" gap
 src/Compiler/SyntaxTree/LexFilter.fs:988:26 "PositionWithColumn" gap
-src/Compiler/TypedTree/TcGlobals.fs compared fcs-check-errors match=2952
+src/Compiler/TypedTree/TcGlobals.fs compared fcs-check-errors match=2952 external=812
 src/Compiler/TypedTree/TcGlobals.fs:1154:14 "refcell_tcr_canon" gap
 src/Compiler/TypedTree/TcGlobals.fs:1156:14 "option_tcr_canon" gap
 src/Compiler/TypedTree/TcGlobals.fs:1158:14 "valueoption_tcr_canon" gap
@@ -1128,7 +1128,7 @@ src/Compiler/TypedTree/TcGlobals.fs:220:67 "CompilerServicesPath" gap
 src/Compiler/TypedTree/TcGlobals.fs:221:67 "ControlPathArray" gap
 src/Compiler/TypedTree/TcGlobals.fs:45:25 "IntrinsicValRef(mvr, _, _, _, key)" gap
 src/Compiler/TypedTree/TcGlobals.fs:472:117 "argTys, retTy" gap
-src/Compiler/TypedTree/WellKnownAttribs.fs compared fcs-clean match=59
+src/Compiler/TypedTree/WellKnownAttribs.fs compared fcs-clean match=59 external=169
 src/Compiler/TypedTree/WellKnownAttribs.fs:124:53 "'TFlags" gap x2
 src/Compiler/TypedTree/WellKnownAttribs.fs:125:26 "'TItem" gap x2
 src/Compiler/TypedTree/WellKnownAttribs.fs:126:24 "'TFlags" gap x2
@@ -1136,10 +1136,10 @@ src/Compiler/TypedTree/WellKnownAttribs.fs:147:9 "WellKnownAttribs" gap
 src/Compiler/TypedTree/WellKnownAttribs.fs:152:13 "WellKnownAttribs" gap
 src/Compiler/TypedTree/WellKnownAttribs.fs:154:13 "WellKnownAttribs" gap
 src/Compiler/TypedTree/WellKnownAttribs.fs:162:22 "WellKnownAttribs" gap
-src/Compiler/Utilities/PathMap.fs compared fcs-check-errors match=36
+src/Compiler/Utilities/PathMap.fs compared fcs-check-errors match=36 external=47
 src/Compiler/Utilities/PathMap.fs:20:49 "PathMap map" gap
 src/Compiler/Utilities/PathMap.fs:35:16 "PathMap map" gap
-src/Compiler/Utilities/sformat.fs compared fcs-clean match=1279
+src/Compiler/Utilities/sformat.fs compared fcs-clean match=1279 external=888
 src/Compiler/Utilities/sformat.fs:1009:24 "Value" gap
 src/Compiler/Utilities/sformat.fs:1009:24 "Value.GetValueInfo" gap
 src/Compiler/Utilities/sformat.fs:1013:21 "wordL" gap
@@ -1387,8 +1387,8 @@ src/Compiler/Utilities/sformat.fs:898:44 "^^" gap
 src/Compiler/Utilities/sformat.fs:898:47 "rightL" gap
 src/Compiler/Utilities/sformat.fs:898:54 "rightBracket" gap
 src/Compiler/Utilities/sformat.fs:898:9 "leftL" gap
-src/FSharp.Build/SubstituteText.fs compared fcs-check-errors match=48
-src/FSharp.Core/Linq.fs compared fcs-check-errors match=1414
+src/FSharp.Build/SubstituteText.fs compared fcs-check-errors match=48 external=36
+src/FSharp.Core/Linq.fs compared fcs-check-errors match=1414 external=798
 src/FSharp.Core/Linq.fs:23:40 "'T" gap
 src/FSharp.Core/Linq.fs:23:46 "'T" gap
 src/FSharp.Core/Linq.fs:261:36 "|SpecificCallToMethod|_|" gap
@@ -1513,7 +1513,7 @@ src/FSharp.Core/Linq.fs:398:44 "|SpecificCallToMethod|_|" gap
 src/FSharp.Core/Linq.fs:399:31 "|SpecificCallToMethod|_|" gap
 src/FSharp.Core/Linq.fs:945:116 "'T" gap
 src/FSharp.Core/Linq.fs:945:74 "'T" gap
-src/FSharp.Core/eventmodule.fs compared fcs-clean match=62
+src/FSharp.Core/eventmodule.fs compared fcs-clean match=62 external=108
 src/FSharp.Core/eventmodule.fs:13:42 "'Delegate" gap
 src/FSharp.Core/eventmodule.fs:13:53 "'T" gap
 src/FSharp.Core/eventmodule.fs:19:47 "'Delegate" gap
@@ -1541,7 +1541,7 @@ src/FSharp.Core/eventmodule.fs:91:39 "'U1" gap
 src/FSharp.Core/eventmodule.fs:91:44 "'U2" gap
 src/FSharp.Core/eventmodule.fs:91:71 "'Delegate" gap
 src/FSharp.Core/eventmodule.fs:91:82 "'T" gap
-src/FSharp.Core/quotations.fs compared fcs-check-errors match=3308
+src/FSharp.Core/quotations.fs compared fcs-check-errors match=3308 external=1871
 src/FSharp.Core/quotations.fs:1022:45 "Expr" alt-binder fcs=228:76 ours=446:38 fcs-check-errors
 src/FSharp.Core/quotations.fs:1061:36 "Expr" alt-binder fcs=228:76 ours=446:38 fcs-check-errors
 src/FSharp.Core/quotations.fs:1084:39 "Expr" alt-binder fcs=228:76 ours=446:38 fcs-check-errors
@@ -2098,48 +2098,48 @@ src/FSharp.Core/quotations.fs:953:58 "Expr" alt-binder fcs=228:76 ours=446:38 fc
 src/FSharp.Core/quotations.fs:96:6 "Helpers" gap
 src/FSharp.Core/quotations.fs:971:60 "Expr" alt-binder fcs=228:76 ours=446:38 fcs-check-errors
 src/FSharp.Core/quotations.fs:982:47 "Expr" alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/Microsoft.FSharp.Compiler/Program.fs compared fcs-clean match=0
-tests/EndToEndBuildTests/DesignTimeProviderPackaging/Host/Library.fs compared fcs-clean match=1
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/Fsc/Optimize.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/checked/checked01.fs compared fcs-clean match=16
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/determinism/determinism.fs compared fcs-check-errors match=31
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/highentropyva.fs compared fcs-check-errors match=10
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/platform/error_05.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/reflectionfree.fs compared fcs-check-errors match=2
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/times/error_01.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/warn/warn.fs compared fcs-check-errors match=14
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsi/Nologo.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/Basic/E_PrivateImplicitCtor01.fs compared fcs-check-errors match=11
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnOverridesAndIFaceImpl/E_OnOverrides01.fs compared fcs-check-errors match=0
+src/Microsoft.FSharp.Compiler/Program.fs compared fcs-clean match=0 external=3
+tests/EndToEndBuildTests/DesignTimeProviderPackaging/Host/Library.fs compared fcs-clean match=1 external=1
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/Fsc/Optimize.fs compared fcs-check-errors match=0 external=25
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/checked/checked01.fs compared fcs-clean match=16 external=65
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/determinism/determinism.fs compared fcs-check-errors match=31 external=55
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/highentropyva.fs compared fcs-check-errors match=10 external=31
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/platform/error_05.fs compared fcs-clean match=0 external=1
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/reflectionfree.fs compared fcs-check-errors match=2 external=17
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/times/error_01.fs compared fcs-clean match=0 external=1
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/warn/warn.fs compared fcs-check-errors match=14 external=103
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsi/Nologo.fs compared fcs-check-errors match=0 external=11
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/Basic/E_PrivateImplicitCtor01.fs compared fcs-check-errors match=11 external=9
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnOverridesAndIFaceImpl/E_OnOverrides01.fs compared fcs-check-errors match=0 external=1
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnOverridesAndIFaceImpl/E_OnOverrides01.fs:12:23 "C" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnOverridesAndIFaceImpl/E_OnOverrides01.fs:17:23 "C" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnOverridesAndIFaceImpl/E_OnOverrides01.fs:22:23 "C" gap x4
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnTypeMembers/OnTypeMembers.fs compared fcs-check-errors match=14
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnTypeMembers/OnTypeMembers.fs compared fcs-check-errors match=14 external=29
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_type01.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/AssemblyVersion04.fs compared fcs-clean match=7
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AllowNullLiteral.fs compared fcs-check-errors match=5
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/AssemblyVersion04.fs compared fcs-clean match=7 external=30
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AllowNullLiteral.fs compared fcs-check-errors match=5 external=40
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AllowNullLiteral.fs:16:17 "C" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AllowNullLiteral.fs:54:24 "A" gap x4
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod04.fs compared fcs-clean match=0
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod04.fs compared fcs-clean match=0 external=13
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod04.fs:10:3 "CustomMethod" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod04.fs:10:4 "ustomMethod" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod04.fs:13:3 "CustomMethod" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod04.fs:13:4 "ustomMethod" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/RequiresExplicitTypeArguments01.fs compared fcs-clean match=21
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/E_AttributeApplication04.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/FreeTypeVariable01.fs compared fcs-clean match=1
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/RequiresExplicitTypeArguments01.fs compared fcs-clean match=21 external=47
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/E_AttributeApplication04.fs compared fcs-clean match=0 external=5
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/FreeTypeVariable01.fs compared fcs-clean match=1 external=14
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/FreeTypeVariable01.fs:14:81 "'a" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs compared fcs-check-errors match=2
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs compared fcs-check-errors match=2 external=8
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:14 "CA1" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:15 "A1" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:28 "CA1" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/Basic/W_ReturnType03b.fs:16:29 "A1" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/E_oninvalidlanguageelement001.fs compared fcs-clean match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/entrypointfunctionnotmain001.fs compared fcs-clean match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/Events/Basic/SanityCheck.fs compared fcs-clean match=57
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/E_oninvalidlanguageelement001.fs compared fcs-clean match=4 external=9
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/entrypointfunctionnotmain001.fs compared fcs-clean match=4 external=6
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/Events/Basic/SanityCheck.fs compared fcs-clean match=57 external=51
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/Events/Basic/SanityCheck.fs:26:27 "queakyToy" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/ExceptionDefinitions.fs compared fcs-check-errors match=43
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs compared fcs-clean match=37
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/ExceptionDefinitions.fs compared fcs-check-errors match=43 external=225
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs compared fcs-clean match=37 external=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:10:32 "Bar<'a,'b>" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:10:33 "ar<'a,'b>" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:15:33 "Rec2<'a>" gap
@@ -2158,69 +2158,69 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembe
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:34:34 "ec2B<'a>" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:6:32 "Foo<'a>" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:6:33 "oo<'a>" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/InterfaceSpecificationsAndImplementations/ConcreteUnitOnInterface01.fs compared fcs-clean match=16
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/InterfaceSpecificationsAndImplementations/ConcreteUnitOnInterface01.fs compared fcs-clean match=16 external=7
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/InterfaceSpecificationsAndImplementations/ConcreteUnitOnInterface01.fs:7:20 "'state" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_ErrorsForInlineValue.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/ManyLetBindings.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/TypeFunctions/E_typeof_undefined_01.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MemberDefinitions.fs compared fcs-check-errors match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/E_IndexerIndeterminateType01.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/IndexedPropertiesSameType.fs compared fcs-clean match=20
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/TupledIndexer.fs compared fcs-clean match=6
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_ErrorsForInlineValue.fs compared fcs-check-errors match=0 external=4
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/ManyLetBindings.fs compared fcs-clean match=0 external=1
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/TypeFunctions/E_typeof_undefined_01.fs compared fcs-check-errors match=1 external=1
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MemberDefinitions.fs compared fcs-check-errors match=4 external=12
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/E_IndexerIndeterminateType01.fs compared fcs-check-errors match=1 external=0
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/IndexedPropertiesSameType.fs compared fcs-clean match=20 external=30
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/TupledIndexer.fs compared fcs-clean match=6 external=12
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/TupledIndexer.fs:17:7 "2" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/TupledIndexer.fs:23:26 "b:int, c:int" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/TupledIndexer.fs:25:7 "3" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/E_MisspeltParam01.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/SanityCheck.fs compared fcs-clean match=10
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/E_MisspeltParam01.fs compared fcs-check-errors match=0 external=3
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/SanityCheck.fs compared fcs-clean match=10 external=9
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/SanityCheck.fs:11:14 "oo" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/SanityCheck.fs:12:36 "param3" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/SanityCheck.fs:12:52 "param2" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/NamedArguments/SanityCheck.fs:12:68 "param1" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs compared fcs-clean match=41
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs compared fcs-clean match=41 external=59
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:23:23 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:23:38 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:33:17 "oo" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:42:20 "x" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/ConsumeOverloadGenericMethods.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/NoOverloadIDSpecified.fs compared fcs-clean match=4
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/ConsumeOverloadGenericMethods.fs compared fcs-check-errors match=0 external=2
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/NoOverloadIDSpecified.fs compared fcs-clean match=4 external=7
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/NoOverloadIDSpecified.fs:9:14 "oo" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/TieBreakerRule01b.fs compared fcs-clean match=6
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/TieBreakerRule01b.fs compared fcs-clean match=6 external=6
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/TieBreakerRule01b.fs:13:15 "C" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/TieBreakerRule01b.fs:13:15 "C.F" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_UseInsideFunc.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleDefinitions/E_ModuleWithExpression02.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleDefinitions/W_ModuleAbbreviationWithNamespace01.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/EqualOperatorsOverloading.fs compared fcs-clean match=17
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleDefinitions/E_ModuleWithExpression02.fs compared fcs-check-errors match=0 external=1
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleDefinitions/W_ModuleAbbreviationWithNamespace01.fs compared fcs-check-errors match=0 external=4
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/EqualOperatorsOverloading.fs compared fcs-clean match=17 external=3
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/EqualOperatorsOverloading.fs:11:12 "Test" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/EqualOperatorsOverloading.fs:11:21 "Test" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/EqualOperatorsOverloading.fs:13:13 "==" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/EqualOperatorsOverloading.fs:14:13 "!=" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/VerticalbarOptionalinDU.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/RecursiveRecords.fs compared fcs-clean match=8
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/VerticalbarOptionalinDU.fs compared fcs-clean match=0 external=0
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/RecursiveRecords.fs compared fcs-clean match=8 external=10
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/RecursiveRecords.fs:4:13 "Egg" gap x2
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/UnionOrderOfExecution.fs compared fcs-clean match=6
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/UnionOrderOfExecution.fs compared fcs-clean match=6 external=7
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/UnionOrderOfExecution.fs:21:1 "InnerModule" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/UnionOrderOfExecution.fs:22:1 "InnerModule" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs compared fcs-clean match=55
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs compared fcs-clean match=55 external=58
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:37:25 "DisposableBuilder" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:43:25 "isposable" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:44:24 "isposable" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:45:28 "isposable" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:46:23 "isposable" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:47:25 "isposable" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/DeclarationElements/PInvokeDeclarations.fs compared fcs-check-errors match=11
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/BindingExpressions/AmbigLetBinding.fs compared fcs-clean match=8
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ConstantExpressions/bigint02.fs compared fcs-clean match=2
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ConstantExpressions/sbyte.fs compared fcs-clean match=2
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ControlFlowExpressions/PatternMatching/W_PatternMatchingCounterExample03.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ControlFlowExpressions/TryWith/E_RethrowOutsideWith01.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/AddressOf/E_byrefvaluesnotpermitted001.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ComputationExpressions/E_MissingTryFinally.fs compared fcs-check-errors match=14
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs compared fcs-check-errors match=1
+tests/FSharp.Compiler.ComponentTests/Conformance/DeclarationElements/PInvokeDeclarations.fs compared fcs-check-errors match=11 external=74
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/BindingExpressions/AmbigLetBinding.fs compared fcs-clean match=8 external=9
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ConstantExpressions/bigint02.fs compared fcs-clean match=2 external=8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ConstantExpressions/sbyte.fs compared fcs-clean match=2 external=2
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ControlFlowExpressions/PatternMatching/W_PatternMatchingCounterExample03.fs compared fcs-clean match=0 external=0
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ControlFlowExpressions/TryWith/E_RethrowOutsideWith01.fs compared fcs-check-errors match=0 external=2
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/AddressOf/E_byrefvaluesnotpermitted001.fs compared fcs-check-errors match=1 external=1
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ComputationExpressions/E_MissingTryFinally.fs compared fcs-check-errors match=14 external=4
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs compared fcs-check-errors match=1 external=9
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:9 "this" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs compared fcs-clean match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs compared fcs-check-errors match=9
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs compared fcs-check-errors match=30
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs compared fcs-clean match=4 external=10
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs compared fcs-check-errors match=9 external=13
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs compared fcs-check-errors match=30 external=62
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:16:17 "g" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:16:24 "g" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:27:17 "g" gap
@@ -2232,56 +2232,56 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/Que
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:57:41 "mg" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:59:25 "yg" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/UppercaseIdentifier04.fs unreadable
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/IfThenElse05.fs compared fcs-clean match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs compared fcs-clean match=7
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/Applications.fs compared fcs-check-errors match=9
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/FieldSet.fs compared fcs-check-errors match=4
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/IfThenElse05.fs compared fcs-clean match=1 external=3
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs compared fcs-clean match=7 external=11
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/Applications.fs compared fcs-check-errors match=9 external=39
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/FieldSet.fs compared fcs-check-errors match=4 external=31
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/FieldSet.fs:9:12 "S" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/NewObject.fs compared fcs-check-errors match=3
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/SByte.fs compared fcs-check-errors match=3
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/UInt64.fs compared fcs-check-errors match=3
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_InvalidQuotationLiteral03.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/OperatorInSplice.fs compared fcs-clean match=21
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/QuoteStructStaticFieldProp01.fs compared fcs-check-errors match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/VarIsMutable01c.fs compared fcs-clean match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs compared fcs-clean match=172
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/NewObject.fs compared fcs-check-errors match=3 external=26
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/SByte.fs compared fcs-check-errors match=3 external=14
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/UInt64.fs compared fcs-check-errors match=3 external=14
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_InvalidQuotationLiteral03.fs compared fcs-check-errors match=0 external=2
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/OperatorInSplice.fs compared fcs-clean match=21 external=55
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/QuoteStructStaticFieldProp01.fs compared fcs-check-errors match=4 external=3
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/VarIsMutable01c.fs compared fcs-clean match=1 external=14
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs compared fcs-clean match=172 external=209
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs:104:13 "Foo<char>" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs:104:14 "oo<char>" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs compared fcs-check-errors match=11 external=28
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs:15:17 "r1" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs compared fcs-check-errors match=11 external=23
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs:14:17 "r1" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test28.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test28.fs compared fcs-check-errors match=0 external=16
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs compared fcs-check-errors match=11 external=18
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs:12:17 "r1" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs compared fcs-check-errors match=11 external=18
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs:12:17 "r1" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/IComparison/DU.fs compared fcs-clean match=6
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestArrayParam.fs compared fcs-check-errors match=6
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestStructParam.fs compared fcs-check-errors match=7
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/NonGenericTestNameRecursiveInClassSubsume.fs compared fcs-check-errors match=8
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/IComparison/DU.fs compared fcs-clean match=6 external=23
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestArrayParam.fs compared fcs-check-errors match=6 external=4
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestStructParam.fs compared fcs-check-errors match=7 external=12
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/NonGenericTestNameRecursiveInClassSubsume.fs compared fcs-check-errors match=8 external=17
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/NonGenericTestNameRecursiveInClassSubsume.fs:11:15 "NonGenericTestNameRecursiveInClassSubsume" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs compared fcs-check-errors match=12
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs compared fcs-check-errors match=12 external=9
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:15:32 "x" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:18:22 "C" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestStructRecord.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/E_ByrefUsedInQuotation01.fs compared fcs-check-errors match=2
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/E_TopLevelByref.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/InRefParam_Generic_ExplicitAddressOfAttCallSite2.fs compared fcs-check-errors match=5
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestStructRecord.fs compared fcs-check-errors match=1 external=7
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/E_ByrefUsedInQuotation01.fs compared fcs-check-errors match=2 external=4
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/E_TopLevelByref.fs compared fcs-check-errors match=1 external=3
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/InRefParam_Generic_ExplicitAddressOfAttCallSite2.fs compared fcs-check-errors match=5 external=3
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/InRefParam_Generic_ExplicitAddressOfAttCallSite2.fs:5:35 "'T" gap x2
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/Slot_InRefReturn.fs compared fcs-check-errors match=7
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/Slot_InRefReturn.fs compared fcs-check-errors match=7 external=11
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/Slot_InRefReturn.fs:10:15 "C" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/DispatchSlotChecking/DispatchSlotChecking.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/Generalization/GenGroup01.fs compared fcs-clean match=6
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/MethodApplicationResolution/UnitVsNoArgs.fs compared fcs-clean match=8
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/DispatchSlotChecking/DispatchSlotChecking.fs compared fcs-check-errors match=1 external=8
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/Generalization/GenGroup01.fs compared fcs-clean match=6 external=3
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/MethodApplicationResolution/UnitVsNoArgs.fs compared fcs-clean match=8 external=6
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/MethodApplicationResolution/UnitVsNoArgs.fs:12:16 "Foo<unit>" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/MethodApplicationResolution/UnitVsNoArgs.fs:12:17 "oo<unit>" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/Misc/NameResolutionMisc.fs compared fcs-check-errors match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/RequireQualifiedAccess/OnUnionWithCaseOfSameName2.fs compared fcs-check-errors match=0
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/Misc/NameResolutionMisc.fs compared fcs-check-errors match=4 external=28
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/RequireQualifiedAccess/OnUnionWithCaseOfSameName2.fs compared fcs-check-errors match=0 external=5
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/RequireQualifiedAccess/OnUnionWithCaseOfSameName2.fs:10:9 "A" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/RequireQualifiedAccess/OnUnionWithCaseOfSameName2.fs:10:9 "A.C" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ResolvingApplicationExpressions/ResolvingApplicationExpressions.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs compared fcs-check-errors match=135
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ResolvingApplicationExpressions/ResolvingApplicationExpressions.fs compared fcs-check-errors match=1 external=8
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs compared fcs-check-errors match=135 external=11
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs:61:20 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs:61:27 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs:61:33 "C12" gap
@@ -2307,25 +2307,25 @@ tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInferen
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs:66:33 "C14" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs:66:33 "C14.M" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/E_TwoEqualTypeVariables02.fs:66:33 "C14.M<_>" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/TypeInference.fs compared fcs-check-errors match=24
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/WellFormednessChecking/E_Override_with_Incorrect_Type01.fs compared fcs-check-errors match=0
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/TypeInference.fs compared fcs-check-errors match=24 external=132
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/WellFormednessChecking/E_Override_with_Incorrect_Type01.fs compared fcs-check-errors match=0 external=4
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/WellFormednessChecking/E_Override_with_Incorrect_Type01.fs:11:22 "A" gap x4
-tests/FSharp.Compiler.ComponentTests/Conformance/LexicalAnalysis/ShiftGenerics.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/LexicalFiltering/OffsideExceptions/OffsideExceptions.fs compared fcs-check-errors match=3
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/AbstractMembers/E_InlineVirtualMember01.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/E_InternalProperty01.fs compared fcs-check-errors match=2
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/ReferenceType01.fs compared fcs-clean match=2
+tests/FSharp.Compiler.ComponentTests/Conformance/LexicalAnalysis/ShiftGenerics.fs compared fcs-check-errors match=1 external=9
+tests/FSharp.Compiler.ComponentTests/Conformance/LexicalFiltering/OffsideExceptions/OffsideExceptions.fs compared fcs-check-errors match=3 external=112
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/AbstractMembers/E_InlineVirtualMember01.fs compared fcs-check-errors match=0 external=13
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/E_InternalProperty01.fs compared fcs-check-errors match=2 external=5
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/ReferenceType01.fs compared fcs-clean match=2 external=2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/ReferenceType01.fs:3:16 "P" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/ReferenceType01.fs:5:9 "T" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/CtorAndCCtor01.fs compared fcs-clean match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/MemberDeclarations.fs compared fcs-check-errors match=27
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs compared fcs-clean match=3
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/CtorAndCCtor01.fs compared fcs-clean match=4 external=13
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/MemberDeclarations.fs compared fcs-check-errors match=27 external=163
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs compared fcs-check-errors match=0 external=5
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs compared fcs-clean match=3 external=6
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs:11:18 "C" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs compared fcs-clean match=8
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs compared fcs-clean match=8 external=15
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:13 "DelegateReturningAFunctionValue<_>" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/EnumTypes/EnumTypes.fs compared fcs-check-errors match=16
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs compared fcs-check-errors match=18
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/EnumTypes/EnumTypes.fs compared fcs-check-errors match=16 external=82
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs compared fcs-check-errors match=18 external=32
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:12:11 "I_000" gap x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:13:11 "I_000" gap x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:19:16 "'a" gap
@@ -2334,15 +2334,15 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/I
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:27:18 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:27:24 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:54:28 "i" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/MultipleInst05.fs compared fcs-check-errors match=15
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_ImplicitCTorUse02.fs compared fcs-check-errors match=0
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/MultipleInst05.fs compared fcs-check-errors match=15 external=0
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_ImplicitCTorUse02.fs compared fcs-check-errors match=0 external=11
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_ImplicitCTorUse02.fs:7:18 "U2" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs compared fcs-check-errors match=2
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs compared fcs-check-errors match=2 external=9
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs:16:13 "StructType" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs:16:14 "tructType" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs:16:24 "x" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs:16:27 "y" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs compared fcs-clean match=27
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs compared fcs-clean match=27 external=31
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:23:11 "RIP" gap x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:28:26 "IP" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:29:15 "rg_unused_is_RIP" gap
@@ -2350,49 +2350,49 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/S
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:30:15 "rg_used_is_RIP" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:30:46 "rg_used_is_RIP" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:9:35 "RIP" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/E_ExtensionInNamespace01.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs compared fcs-clean match=2
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/E_ExtensionInNamespace01.fs compared fcs-check-errors match=0 external=2
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs compared fcs-clean match=2 external=4
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs:17:10 "M" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs compared fcs-check-errors match=6
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs compared fcs-check-errors match=6 external=8
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:11:10 "M" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeKindInference/infer_interface002.fs compared fcs-clean match=5
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/And/andPattern02.fs compared fcs-clean match=22
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/ConsList/E_consPattern01.fs compared fcs-check-errors match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs compared fcs-clean match=8
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeKindInference/infer_interface002.fs compared fcs-clean match=5 external=15
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/And/andPattern02.fs compared fcs-clean match=22 external=17
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/ConsList/E_consPattern01.fs compared fcs-check-errors match=4 external=12
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs compared fcs-clean match=8 external=7
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs:7:13 "Foo" gap x4
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs:7:14 "oo" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs:9:24 "Bar" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Expression/NoCounterExampleTryWith01.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/AsHighOrderFunc01.fs compared fcs-clean match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Expression/NoCounterExampleTryWith01.fs compared fcs-clean match=0 external=13
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/AsHighOrderFunc01.fs compared fcs-clean match=11 external=17
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/AsHighOrderFunc01.fs:21:11 "|Odd|Even|" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/AsHighOrderFunc01.fs:30:12 "|IsThree|_|" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/AsHighOrderFunc01.fs:9:11 "|ToString|" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/E_Error_NonParam03.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs compared fcs-clean match=22
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/E_Error_NonParam03.fs compared fcs-check-errors match=0 external=0
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs compared fcs-clean match=22 external=24
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:14:13 "OneHundred" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:21:13 "OneHundred" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/activePatterns10.fs compared fcs-clean match=4
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs compared fcs-clean match=31
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns01.fs compared fcs-clean match=5
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns14.fs compared fcs-clean match=1
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/MatchNaN.fs compared fcs-clean match=9
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/type_int.fs compared fcs-clean match=2
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Tuple/W_IncompleteMatches01.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/E_UnionPattern05.fs compared fcs-clean match=3
-tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/unionPattern04.fs compared fcs-clean match=1
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/activePatterns10.fs compared fcs-clean match=4 external=13
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs compared fcs-clean match=31 external=45
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns01.fs compared fcs-clean match=5 external=8
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns14.fs compared fcs-clean match=1 external=3
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/MatchNaN.fs compared fcs-clean match=9 external=16
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/type_int.fs compared fcs-clean match=2 external=1
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Tuple/W_IncompleteMatches01.fs compared fcs-clean match=0 external=1
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/E_UnionPattern05.fs compared fcs-clean match=3 external=0
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/unionPattern04.fs compared fcs-clean match=1 external=1
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/unionPattern04.fs:10:15 "XDuTag" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/unionPattern04.fs:8:27 "XDuTag" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/unionPattern04.fs:8:9 "XDuTag" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/PseudoCustomAttributes/AssemblyVersion_002.fs compared fcs-clean match=5
-tests/FSharp.Compiler.ComponentTests/Conformance/TypeForwarding/NegativeCases/Class_NG_TurnToStruct.fs compared fcs-check-errors match=2
-tests/FSharp.Compiler.ComponentTests/Conformance/TypeForwarding/NegativeCases/Interface_NG_WidenAccess.fs compared fcs-check-errors match=6
-tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/DuckTypingRecords01.fs compared fcs-clean match=5
+tests/FSharp.Compiler.ComponentTests/Conformance/PseudoCustomAttributes/AssemblyVersion_002.fs compared fcs-clean match=5 external=24
+tests/FSharp.Compiler.ComponentTests/Conformance/TypeForwarding/NegativeCases/Class_NG_TurnToStruct.fs compared fcs-check-errors match=2 external=1
+tests/FSharp.Compiler.ComponentTests/Conformance/TypeForwarding/NegativeCases/Interface_NG_WidenAccess.fs compared fcs-check-errors match=6 external=5
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/DuckTypingRecords01.fs compared fcs-clean match=5 external=9
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/DuckTypingRecords01.fs:7:20 "^T" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/DuckTypingRecords01.fs:7:27 "^T" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/DuckTypingRecords01.fs:7:40 "Name" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/NoClashMemberIFaceMember.fs compared fcs-clean match=6
-tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/TypeInference02.fs compared fcs-clean match=11
-tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs compared fcs-check-errors match=45
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/NoClashMemberIFaceMember.fs compared fcs-clean match=6 external=6
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/TypeInference02.fs compared fcs-clean match=11 external=18
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs compared fcs-check-errors match=45 external=7
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs:11:40 "'T" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs:14:47 "'T" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs:17:45 "'T" gap
@@ -2423,35 +2423,35 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAnd
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs:49:96 "StaticProperty" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs:5:48 "'T" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs:8:46 "'T" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs compared fcs-check-errors match=6
-tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/Overload_ToString.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parsing/Parsing.fs compared fcs-check-errors match=11
-tests/FSharp.Compiler.ComponentTests/Diagnostics/NONTERM.fs compared fcs-check-errors match=36
-tests/FSharp.Compiler.ComponentTests/EmittedIL/AssemblyBoundary/test01.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/EmittedIL/AttributeTargets/Field.fs compared fcs-clean match=0
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs compared fcs-check-errors match=6 external=5
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/Overload_ToString.fs compared fcs-clean match=0 external=11
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parsing/Parsing.fs compared fcs-check-errors match=11 external=34
+tests/FSharp.Compiler.ComponentTests/Diagnostics/NONTERM.fs compared fcs-check-errors match=36 external=233
+tests/FSharp.Compiler.ComponentTests/EmittedIL/AssemblyBoundary/test01.fs compared fcs-check-errors match=0 external=2
+tests/FSharp.Compiler.ComponentTests/EmittedIL/AttributeTargets/Field.fs compared fcs-clean match=0 external=12
 tests/FSharp.Compiler.ComponentTests/EmittedIL/AttributeTargets/Field.fs:11:11 "Export" gap x2
 tests/FSharp.Compiler.ComponentTests/EmittedIL/AttributeTargets/Field.fs:11:12 "xport" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/CodeGenRegressions/CodeGenRegressions_Crashes.fs compared fcs-check-errors match=9
-tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputationExpressions/ComputationExpr03.fs compared fcs-check-errors match=2
-tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs compared fcs-clean match=101
+tests/FSharp.Compiler.ComponentTests/EmittedIL/CodeGenRegressions/CodeGenRegressions_Crashes.fs compared fcs-check-errors match=9 external=108
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputationExpressions/ComputationExpr03.fs compared fcs-check-errors match=2 external=2
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs compared fcs-clean match=101 external=72
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs:1:39 " arra" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs:1:48 " " gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/DoNotBoxStruct/DoNotBoxStruct_Array_CSInterface.fs compared fcs-clean match=3
+tests/FSharp.Compiler.ComponentTests/EmittedIL/DoNotBoxStruct/DoNotBoxStruct_Array_CSInterface.fs compared fcs-clean match=3 external=2
 tests/FSharp.Compiler.ComponentTests/EmittedIL/DoNotBoxStruct/DoNotBoxStruct_Array_CSInterface.fs:6:15 "'T" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinAddressOfArrayElement.fs compared fcs-clean match=5
-tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinStructTypeWithGetPinnableReferenceReturningByref.fs compared fcs-clean match=26
+tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinAddressOfArrayElement.fs compared fcs-clean match=5 external=9
+tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinStructTypeWithGetPinnableReferenceReturningByref.fs compared fcs-clean match=26 external=33
 tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinStructTypeWithGetPinnableReferenceReturningByref.fs:18:35 "'a" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs compared fcs-clean match=44
-tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs compared fcs-clean match=9
-tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs compared fcs-clean match=3
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs compared fcs-clean match=59
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs compared fcs-clean match=44 external=7
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs compared fcs-clean match=9 external=10
+tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs compared fcs-clean match=3 external=9
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs compared fcs-clean match=59 external=28
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:7:9 "U(a,b)" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/MethodImplAttribute/MethodImplAttribute.NoInlining_InlineKeyword.fs compared fcs-clean match=1
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/EqualsOnUnions01.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/NonEscapingArguments02.fs compared fcs-clean match=4
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ExceptionType.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs compared fcs-clean match=11
-tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs compared fcs-check-errors match=20
+tests/FSharp.Compiler.ComponentTests/EmittedIL/MethodImplAttribute/MethodImplAttribute.NoInlining_InlineKeyword.fs compared fcs-clean match=1 external=10
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/EqualsOnUnions01.fs compared fcs-clean match=0 external=2
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/NonEscapingArguments02.fs compared fcs-clean match=4 external=3
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ExceptionType.fs compared fcs-clean match=0 external=29
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs compared fcs-clean match=11 external=30
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs compared fcs-check-errors match=20 external=36
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:14:36 "p" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:15:20 "p" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:22:41 "p" gap
@@ -2460,14 +2460,14 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Jo
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:31:18 "ps" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:41 "p" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:40:18 "ps" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/RealInternalSignature/ClassTypeVisibilityNamespaceRoot.fs compared fcs-check-errors match=29
-tests/FSharp.Compiler.ComponentTests/EmittedIL/SeqExpressionStepping/SeqExpressionSteppingTest07.fs compared fcs-clean match=48
-tests/FSharp.Compiler.ComponentTests/EmittedIL/StaticOptimizations/StaticOptimizations.fs compared fcs-check-errors match=5
-tests/FSharp.Compiler.ComponentTests/EmittedIL/StringEncoding/NormalizationFormC.fs compared fcs-check-errors match=26
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/AttributesOnPropertySetter.fs compared fcs-check-errors match=6
+tests/FSharp.Compiler.ComponentTests/EmittedIL/RealInternalSignature/ClassTypeVisibilityNamespaceRoot.fs compared fcs-check-errors match=29 external=117
+tests/FSharp.Compiler.ComponentTests/EmittedIL/SeqExpressionStepping/SeqExpressionSteppingTest07.fs compared fcs-clean match=48 external=63
+tests/FSharp.Compiler.ComponentTests/EmittedIL/StaticOptimizations/StaticOptimizations.fs compared fcs-check-errors match=5 external=14
+tests/FSharp.Compiler.ComponentTests/EmittedIL/StringEncoding/NormalizationFormC.fs compared fcs-check-errors match=26 external=35
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/AttributesOnPropertySetter.fs compared fcs-check-errors match=6 external=14
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/AttributesOnPropertySetter.fs:14:16 "AttrOnSetter" gap x4
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/AttributesOnPropertySetter.fs:14:17 "ttrOnSetter" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs compared fcs-clean match=30
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs compared fcs-clean match=30 external=37
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs:22:119 "Float" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs:22:150 "Float" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs:22:169 "Float" gap
@@ -2482,59 +2482,59 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs:23:
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs:23:42 "Double" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs:23:67 "Double" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/FloatsAndDoubles.fs:23:91 "Double" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/dummy.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/EmittedIL/TestFunctions/TestFunction09b.fs compared fcs-clean match=3
-tests/FSharp.Compiler.ComponentTests/EmittedIL/TestFunctions/TestFunction18.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/EmittedIL/TestFunctions/TestFunction24.fs compared fcs-clean match=15
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Tuples/Tuple05.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/ErrorMessages/AbbreviationTests.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/ErrorMessages/ExtendedDiagnosticDataTests.fs compared fcs-check-errors match=73
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/dummy.fs compared fcs-clean match=0 external=0
+tests/FSharp.Compiler.ComponentTests/EmittedIL/TestFunctions/TestFunction09b.fs compared fcs-clean match=3 external=2
+tests/FSharp.Compiler.ComponentTests/EmittedIL/TestFunctions/TestFunction18.fs compared fcs-clean match=0 external=2
+tests/FSharp.Compiler.ComponentTests/EmittedIL/TestFunctions/TestFunction24.fs compared fcs-clean match=15 external=36
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Tuples/Tuple05.fs compared fcs-clean match=0 external=0
+tests/FSharp.Compiler.ComponentTests/ErrorMessages/AbbreviationTests.fs compared fcs-check-errors match=0 external=35
+tests/FSharp.Compiler.ComponentTests/ErrorMessages/ExtendedDiagnosticDataTests.fs compared fcs-check-errors match=73 external=150
 tests/FSharp.Compiler.ComponentTests/ErrorMessages/ExtendedDiagnosticDataTests.fs:18:13 "'a" gap
 tests/FSharp.Compiler.ComponentTests/ErrorMessages/ExtendedDiagnosticDataTests.fs:19:20 "'b" gap
 tests/FSharp.Compiler.ComponentTests/ErrorMessages/ExtendedDiagnosticDataTests.fs:19:28 "'b" gap
 tests/FSharp.Compiler.ComponentTests/ErrorMessages/ExtendedDiagnosticDataTests.fs:19:40 "Diagnostics" gap
 tests/FSharp.Compiler.ComponentTests/ErrorMessages/ExtendedDiagnosticDataTests.fs:26:15 "'a" gap
-tests/FSharp.Compiler.ComponentTests/ErrorMessages/Repro1548.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/ErrorMessages/WrongSyntaxInForLoop.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Globalization/Surrogates.fs compared fcs-clean match=2
-tests/FSharp.Compiler.ComponentTests/Interop/DIMSlotCoverageTests.fs compared fcs-check-errors match=95
-tests/FSharp.Compiler.ComponentTests/Language/CompilerDirectiveTests.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinAddressOfRecordField.fs compared fcs-clean match=3
-tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinNakedString.fs compared fcs-clean match=2
-tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinTypeWithPrivateGetPinnableReference.fs compared fcs-check-errors match=7
+tests/FSharp.Compiler.ComponentTests/ErrorMessages/Repro1548.fs compared fcs-check-errors match=0 external=7
+tests/FSharp.Compiler.ComponentTests/ErrorMessages/WrongSyntaxInForLoop.fs compared fcs-check-errors match=0 external=5
+tests/FSharp.Compiler.ComponentTests/Globalization/Surrogates.fs compared fcs-clean match=2 external=6
+tests/FSharp.Compiler.ComponentTests/Interop/DIMSlotCoverageTests.fs compared fcs-check-errors match=95 external=69
+tests/FSharp.Compiler.ComponentTests/Language/CompilerDirectiveTests.fs compared fcs-check-errors match=0 external=17
+tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinAddressOfRecordField.fs compared fcs-clean match=3 external=10
+tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinNakedString.fs compared fcs-clean match=2 external=6
+tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinTypeWithPrivateGetPinnableReference.fs compared fcs-check-errors match=7 external=5
 tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinTypeWithPrivateGetPinnableReference.fs:8:31 "'T" gap
-tests/FSharp.Compiler.ComponentTests/Language/Nullness/NullableRegressionTests.fs compared fcs-check-errors match=43
-tests/FSharp.Compiler.ComponentTests/Language/SequenceExpressions/SequenceExpressionTests.fs compared fcs-check-errors match=18
-tests/FSharp.Compiler.ComponentTests/Miscellaneous/MigratedMisc.fs compared fcs-check-errors match=13
-tests/FSharp.Compiler.ComponentTests/Signatures/MemberTests.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/SkipLocalsInit.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs compared fcs-check-errors match=87
+tests/FSharp.Compiler.ComponentTests/Language/Nullness/NullableRegressionTests.fs compared fcs-check-errors match=43 external=76
+tests/FSharp.Compiler.ComponentTests/Language/SequenceExpressions/SequenceExpressionTests.fs compared fcs-check-errors match=18 external=122
+tests/FSharp.Compiler.ComponentTests/Miscellaneous/MigratedMisc.fs compared fcs-check-errors match=13 external=83
+tests/FSharp.Compiler.ComponentTests/Signatures/MemberTests.fs compared fcs-check-errors match=0 external=6
+tests/FSharp.Compiler.ComponentTests/SkipLocalsInit.fs compared fcs-check-errors match=0 external=27
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs compared fcs-check-errors match=87 external=150
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:76:41 "DepCollector" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/CompilerOptions/fsc/optimize/optimize01.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/SanityCheck01.fs compared fcs-clean match=8
+tests/FSharp.Compiler.ComponentTests/resources/tests/CompilerOptions/fsc/optimize/optimize01.fs compared fcs-clean match=0 external=1
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/SanityCheck01.fs compared fcs-clean match=8 external=7
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/SanityCheck01.fs:12:18 "oo" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/SanityCheck01.fs:9:18 "oo" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/AbstractSlot01.fs compared fcs-clean match=9
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/AbstractSlot01.fs compared fcs-clean match=9 external=9
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/AbstractSlot01.fs:12:13 "Foo" gap x4
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/AbstractSlot01.fs:12:14 "oo" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/AbstractSlot01.fs:15:14 "oo" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/AbstractSlot01.fs:18:14 "ar" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/publicprivateinternal03.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_NoNamespaceModuleDec01b.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/DontEscapeCommentFromString01.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/escapeCharsInComments002.fs compared fcs-clean match=14
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/publicprivateinternal03.fs compared fcs-clean match=0 external=0
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_NoNamespaceModuleDec01b.fs compared fcs-check-errors match=0 external=1
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/DontEscapeCommentFromString01.fs compared fcs-clean match=0 external=1
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/escapeCharsInComments002.fs compared fcs-clean match=14 external=28
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_UnmatchedEndif01.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Directives/multiple_nowarn01.fs compared fcs-clean match=1
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Directives/multiple_nowarn01.fs compared fcs-clean match=1 external=3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_ValidIdentifier04.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_BigNumNotImpl01.fs compared fcs-check-errors match=0
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_BigNumNotImpl01.fs compared fcs-check-errors match=0 external=1
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_BigNumNotImpl01.fs:11:23 "2147483647G" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_BigNumNotImpl01.fs:12:23 "9223372036854775807G" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_BigNumNotImpl01.fs:13:23 "12345678901234567890G" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals005.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/casingOct.fs compared fcs-clean match=2
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/CharLiterals03.fs compared fcs-clean match=6
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/UnicodeString03.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs compared fcs-check-errors match=74
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/casingOct.fs compared fcs-clean match=2 external=2
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/CharLiterals03.fs compared fcs-clean match=6 external=4
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/UnicodeString03.fs compared fcs-clean match=0 external=1
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs compared fcs-check-errors match=74 external=13
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:17:23 "^a" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:17:32 "^b" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:17:40 "^a" gap
@@ -2551,28 +2551,28 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:31:10 "TestType" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:31:10 "TestType<int, string>" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:31:10 "TestType<int, string>.(+++)" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/QMarkPrecedenceMethodCall.fs compared fcs-clean match=7
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/QMarkPrecedenceMethodCall.fs compared fcs-clean match=7 external=10
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/QMarkPrecedenceMethodCall.fs:12:21 "?" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/First_Non_Comment_Text01.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/Printing/UnitsOfMeasureIdentifiersRoundTrip02.fs compared fcs-clean match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/ByRef04.fs compared fcs-clean match=2
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/First_Non_Comment_Text01.fs compared fcs-clean match=0 external=0
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/Printing/UnitsOfMeasureIdentifiersRoundTrip02.fs compared fcs-clean match=0 external=6
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/ByRef04.fs compared fcs-clean match=2 external=4
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/ByRef04.fs:8:35 "^a" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/ByRef04.fs:8:55 "TryParse" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/ByRef04.fs:8:75 "^a" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_ComparisonConstraint01.fs compared fcs-check-errors match=9
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_ComparisonConstraint01.fs compared fcs-check-errors match=9 external=17
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_ComparisonConstraint01.fs:20:11 "S1" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_ComparisonConstraint01.fs:21:11 "S2" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_ComparisonConstraint01.fs:7:22 "'a" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_NullnessConstraint01.fs compared fcs-check-errors match=3
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_NullnessConstraint01.fs compared fcs-check-errors match=3 external=11
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_NullnessConstraint01.fs:5:21 "'d" gap
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/StructConstraint01.fs compared fcs-clean match=1
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/LogicalPropertiesOfTypes/BaseTypes_Record.fs compared fcs-clean match=6
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/StructConstraint01.fs compared fcs-clean match=1 external=9
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/LogicalPropertiesOfTypes/BaseTypes_Record.fs compared fcs-clean match=6 external=9
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/TypeParameterDefinitions/E_LazyInType02.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_FormattingStringBadPrecision01.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_Multiline01.fs compared fcs-check-errors match=6
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_FormattingStringBadPrecision01.fs compared fcs-check-errors match=1 external=2
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_Multiline01.fs compared fcs-check-errors match=6 external=5
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_HashOfSealedType01.fs compared fcs-clean match=2
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs compared fcs-clean match=0
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_HashOfSealedType01.fs compared fcs-clean match=2 external=3
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs compared fcs-clean match=0 external=9
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:12:33 "kg" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:16:24 "T4" gap x4
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:16:25 "4" gap
@@ -2581,12 +2581,12 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceEx
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator05.fs our-parse-errors
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/tuplewithlazy01b.fs our-parse-errors
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/match01.fs our-parse-errors
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/async/MissingReturnBangForLoop03.fs compared fcs-check-errors match=1
-tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/BailAfterFirstError01.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/resources/tests/Libraries/Core/NativeInterop/stackalloc/negativesize01.fs compared fcs-clean match=0
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/async/MissingReturnBangForLoop03.fs compared fcs-check-errors match=1 external=2
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/BailAfterFirstError01.fs compared fcs-check-errors match=0 external=3
+tests/FSharp.Compiler.ComponentTests/resources/tests/Libraries/Core/NativeInterop/stackalloc/negativesize01.fs compared fcs-clean match=0 external=7
 tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/productioncoverage01.fs our-parse-errors
-tests/FSharp.Compiler.Service.Tests/CSharpProjectAnalysis.fs compared fcs-check-errors match=87
-tests/FSharp.Compiler.Service.Tests/FsiTests.fs compared fcs-check-errors match=219
+tests/FSharp.Compiler.Service.Tests/CSharpProjectAnalysis.fs compared fcs-check-errors match=87 external=126
+tests/FSharp.Compiler.Service.Tests/FsiTests.fs compared fcs-check-errors match=219 external=178
 tests/FSharp.Compiler.Service.Tests/FsiTests.fs:427:21 "CustomType2" gap
 tests/FSharp.Compiler.Service.Tests/FsiTests.fs:449:19 "CustomType2" gap
 tests/FSharp.Compiler.Service.Tests/FsiTests.fs:471:33 "CustomType2" gap
@@ -2602,12 +2602,12 @@ tests/FSharp.Compiler.Service.Tests/FsiTests.fs:634:31 "CustomType2" gap
 tests/FSharp.Compiler.Service.Tests/FsiTests.fs:634:46 "CustomType2" gap
 tests/FSharp.Compiler.Service.Tests/FsiTests.fs:634:63 "CustomType2" gap
 tests/FSharp.Compiler.Service.Tests/FsiTests.fs:634:78 "CustomType2" gap
-tests/FSharp.Compiler.Service.Tests/PostInferenceChecksTests.fs compared fcs-check-errors match=44
-tests/FSharp.Compiler.Service.Tests/SynExprTests.fs compared fcs-check-errors match=27
+tests/FSharp.Compiler.Service.Tests/PostInferenceChecksTests.fs compared fcs-check-errors match=44 external=46
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs compared fcs-check-errors match=27 external=27
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:68:40 "this" gap
-tests/FSharp.Core.UnitTests/FSharp.Core/DiscriminatedUnionType.fs compared fcs-check-errors match=138
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs compared fcs-check-errors match=23
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs compared fcs-check-errors match=293
+tests/FSharp.Core.UnitTests/FSharp.Core/DiscriminatedUnionType.fs compared fcs-check-errors match=138 external=167
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs compared fcs-check-errors match=23 external=112
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs compared fcs-check-errors match=293 external=704
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:150:28 "'a" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:171:41 "exitContext" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:20:104 "'b" gap
@@ -2619,9 +2619,9 @@ tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:53:20 "ChoiceWorkflow(ops, cancelAfter)" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:626:49 "Utils" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:67:20 "ChoiceWorkflow(ops, cancelAfter)" gap
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/ExtraTopLevelOperatorsTests.fs compared fcs-check-errors match=24
-tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleChecked.fs compared fcs-check-errors match=0
-tests/FSharp.Test.Utilities/CompilerAssert.fs compared fcs-check-errors match=795
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/ExtraTopLevelOperatorsTests.fs compared fcs-check-errors match=24 external=70
+tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleChecked.fs compared fcs-check-errors match=0 external=133
+tests/FSharp.Test.Utilities/CompilerAssert.fs compared fcs-check-errors match=795 external=830
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1001:52 "SourceCodeFileKind" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1001:52 "SourceCodeFileKind.Create" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1004:64 "SourceCodeFileKind" gap
@@ -2716,7 +2716,7 @@ tests/FSharp.Test.Utilities/CompilerAssert.fs:989:55 "SourceCodeFileKind" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:989:55 "SourceCodeFileKind.Create" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:995:75 "SourceCodeFileKind" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:995:75 "SourceCodeFileKind.Create" gap
-tests/FSharp.Test.Utilities/Utilities.fs compared fcs-check-errors match=87
+tests/FSharp.Test.Utilities/Utilities.fs compared fcs-check-errors match=87 external=135
 tests/FSharp.Test.Utilities/Utilities.fs:248:60 "recursive" gap
 tests/FSharp.Test.Utilities/Utilities.fs:250:14 "TestReferences" gap
 tests/FSharp.Test.Utilities/Utilities.fs:254:17 "NetStandard20" gap
@@ -2782,8 +2782,8 @@ tests/FSharp.Test.Utilities/Utilities.fs:82:45 "exn" gap
 tests/FSharp.Test.Utilities/Utilities.fs:83:27 "ts" gap
 tests/FSharp.Test.Utilities/Utilities.fs:84:17 "cancellationToken" gap
 tests/FSharp.Test.Utilities/Utilities.fs:85:13 "task" gap
-tests/benchmarks/CompiledCodeBenchmarks/MicroPerf/Conditions.fs compared fcs-check-errors match=6
-tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs compared fcs-check-errors match=385
+tests/benchmarks/CompiledCodeBenchmarks/MicroPerf/Conditions.fs compared fcs-check-errors match=6 external=15
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs compared fcs-check-errors match=385 external=349
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:39 "Build" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:39 "Build.MSBuildProps.makeNuGet" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:45 "MSBuildProps" gap
@@ -2816,37 +2816,37 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:91:27 "Build.MSBuildProps.makeProject" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:91:33 "MSBuildProps" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:92:9 "Build" gap
-tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest1.fs compared fcs-clean match=206
+tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest1.fs compared fcs-clean match=206 external=3
 tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest1.fs:9:20 "StrChainBuilder" gap
-tests/fsharp/Compiler/CodeGen/EmittedIL/ComputationExpressionOptimizations.fs compared fcs-check-errors match=0
-tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs compared fcs-check-errors match=3
-tests/fsharp/Compiler/Language/OptionalInteropTests.fs compared fcs-check-errors match=0
-tests/fsharp/Compiler/Libraries/Core/Collections/CollectionTests.fs compared fcs-check-errors match=3
-tests/fsharp/Compiler/Libraries/Core/Operators/RoundTests.fs compared fcs-check-errors match=0
-tests/fsharp/Compiler/Warnings/AssignmentWarningTests.fs compared fcs-check-errors match=0
-tests/fsharp/core/fsi-reference/ImplementationAssembly.fs compared fcs-clean match=0
-tests/fsharp/core/large/matches/LargeMatches-200.fs compared fcs-clean match=202
+tests/fsharp/Compiler/CodeGen/EmittedIL/ComputationExpressionOptimizations.fs compared fcs-check-errors match=0 external=5
+tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs compared fcs-check-errors match=3 external=7
+tests/fsharp/Compiler/Language/OptionalInteropTests.fs compared fcs-check-errors match=0 external=15
+tests/fsharp/Compiler/Libraries/Core/Collections/CollectionTests.fs compared fcs-check-errors match=3 external=14
+tests/fsharp/Compiler/Libraries/Core/Operators/RoundTests.fs compared fcs-check-errors match=0 external=5
+tests/fsharp/Compiler/Warnings/AssignmentWarningTests.fs compared fcs-check-errors match=0 external=6
+tests/fsharp/core/fsi-reference/ImplementationAssembly.fs compared fcs-clean match=0 external=1
+tests/fsharp/core/large/matches/LargeMatches-200.fs compared fcs-clean match=202 external=207
 tests/fsharp/core/members/console/console2.fs our-parse-errors
-tests/fsharp/core/samename/folder2/a.fs compared fcs-clean match=1
-tests/fsharp/core/topinit/flag_deterministic_init17.fs compared fcs-clean match=0
-tests/fsharp/core/topinit/flag_deterministic_init29.fs compared fcs-clean match=0
-tests/fsharp/core/topinit/flag_deterministic_init40.fs compared fcs-clean match=0
-tests/fsharp/core/topinit/flag_deterministic_init52.fs compared fcs-clean match=0
-tests/fsharp/core/topinit/flag_deterministic_init64.fs compared fcs-clean match=0
-tests/fsharp/core/topinit/flag_deterministic_init76.fs compared fcs-clean match=0
-tests/fsharp/core/topinit/lib_deterministic_init1.fs compared fcs-check-errors match=0
-tests/fsharp/core/topinit/lib_deterministic_init21.fs compared fcs-check-errors match=0
-tests/fsharp/core/topinit/lib_deterministic_init33.fs compared fcs-check-errors match=0
-tests/fsharp/core/topinit/lib_deterministic_init45.fs compared fcs-check-errors match=1
-tests/fsharp/core/topinit/lib_deterministic_init57.fs compared fcs-check-errors match=0
-tests/fsharp/core/topinit/lib_deterministic_init69.fs compared fcs-check-errors match=0
-tests/fsharp/core/topinit/lib_deterministic_init80.fs compared fcs-check-errors match=0
-tests/fsharp/core/topinit/test5.fs compared fcs-clean match=32
+tests/fsharp/core/samename/folder2/a.fs compared fcs-clean match=1 external=1
+tests/fsharp/core/topinit/flag_deterministic_init17.fs compared fcs-clean match=0 external=0
+tests/fsharp/core/topinit/flag_deterministic_init29.fs compared fcs-clean match=0 external=0
+tests/fsharp/core/topinit/flag_deterministic_init40.fs compared fcs-clean match=0 external=0
+tests/fsharp/core/topinit/flag_deterministic_init52.fs compared fcs-clean match=0 external=0
+tests/fsharp/core/topinit/flag_deterministic_init64.fs compared fcs-clean match=0 external=0
+tests/fsharp/core/topinit/flag_deterministic_init76.fs compared fcs-clean match=0 external=0
+tests/fsharp/core/topinit/lib_deterministic_init1.fs compared fcs-check-errors match=0 external=2
+tests/fsharp/core/topinit/lib_deterministic_init21.fs compared fcs-check-errors match=0 external=1
+tests/fsharp/core/topinit/lib_deterministic_init33.fs compared fcs-check-errors match=0 external=0
+tests/fsharp/core/topinit/lib_deterministic_init45.fs compared fcs-check-errors match=1 external=0
+tests/fsharp/core/topinit/lib_deterministic_init57.fs compared fcs-check-errors match=0 external=2
+tests/fsharp/core/topinit/lib_deterministic_init69.fs compared fcs-check-errors match=0 external=1
+tests/fsharp/core/topinit/lib_deterministic_init80.fs compared fcs-check-errors match=0 external=0
+tests/fsharp/core/topinit/test5.fs compared fcs-clean match=32 external=26
 tests/fsharp/core/topinit/test5.fs:14:25 "C" gap
 tests/fsharp/core/topinit/test5.fs:14:25 "C.P2" gap
 tests/fsharp/core/topinit/test5.fs:33:5 "CheckStatic5" gap
-tests/fsharp/core/versionAttributes/Warn2003_3.fs compared fcs-clean match=0
-tests/fsharp/regression/5531/test.fs compared fcs-clean match=21
+tests/fsharp/core/versionAttributes/Warn2003_3.fs compared fcs-clean match=0 external=4
+tests/fsharp/regression/5531/test.fs compared fcs-clean match=21 external=8
 tests/fsharp/regression/5531/test.fs:10:19 "Foo" gap
 tests/fsharp/regression/5531/test.fs:12:9 "Base" gap
 tests/fsharp/regression/5531/test.fs:13:9 "Derived" gap
@@ -2854,9 +2854,9 @@ tests/fsharp/regression/5531/test.fs:6:13 "Base" gap x4
 tests/fsharp/regression/5531/test.fs:6:14 "ase" gap
 tests/fsharp/regression/5531/test.fs:9:28 "^T" gap
 tests/fsharp/regression/5531/test.fs:9:41 "Foo" gap
-tests/fsharp/typeProviders/splitAssemblyTools/provider.fs compared fcs-clean match=2
+tests/fsharp/typeProviders/splitAssemblyTools/provider.fs compared fcs-clean match=2 external=8
 tests/fsharp/typeProviders/splitAssemblyTools/provider.fs:10:12 "TypeProviderAssembly" gap
-tests/fsharp/typecheck/sigs/neg07.fs compared fcs-check-errors match=11
+tests/fsharp/typecheck/sigs/neg07.fs compared fcs-check-errors match=11 external=89
 tests/fsharp/typecheck/sigs/neg07.fs:20:39 "UnionCase1" gap
 tests/fsharp/typecheck/sigs/neg07.fs:20:57 "UnionCase2" gap
 tests/fsharp/typecheck/sigs/neg07.fs:21:27 "UnionCase1" gap
@@ -2864,9 +2864,9 @@ tests/fsharp/typecheck/sigs/neg07.fs:21:39 "UnionCase2" gap
 tests/fsharp/typecheck/sigs/neg07.fs:47:17 "{ RecordLabel1 = a; RecordLabel2 = b }" gap
 tests/fsharp/typecheck/sigs/neg07.fs:49:15 "R" gap
 tests/fsharp/typecheck/sigs/neg07.fs:49:35 "R" gap
-tests/fsharp/typecheck/sigs/neg11.fs compared fcs-clean match=0
+tests/fsharp/typecheck/sigs/neg11.fs compared fcs-clean match=0 external=1
 tests/fsharp/typecheck/sigs/neg11.fs:6:26 "'a" gap x2
-tests/fsharp/typecheck/sigs/neg120.fs compared fcs-check-errors match=180
+tests/fsharp/typecheck/sigs/neg120.fs compared fcs-check-errors match=180 external=75
 tests/fsharp/typecheck/sigs/neg120.fs:13:28 "Id" gap
 tests/fsharp/typecheck/sigs/neg120.fs:14:20 "Id" gap
 tests/fsharp/typecheck/sigs/neg120.fs:18:148 "'U" gap
@@ -2978,14 +2978,14 @@ tests/fsharp/typecheck/sigs/neg120.fs:85:54 "'``Monad<'T>``" gap
 tests/fsharp/typecheck/sigs/neg120.fs:88:28 "'MT" gap
 tests/fsharp/typecheck/sigs/neg120.fs:88:36 "'``Monad<list<'T>>``" gap
 tests/fsharp/typecheck/sigs/neg120.fs:94:18 "Id" gap
-tests/fsharp/typecheck/sigs/neg132.fs compared fcs-check-errors match=6
+tests/fsharp/typecheck/sigs/neg132.fs compared fcs-check-errors match=6 external=19
 tests/fsharp/typecheck/sigs/neg132.fs:10:38 "'T" gap x2
 tests/fsharp/typecheck/sigs/neg132.fs:10:50 "'T" gap x2
 tests/fsharp/typecheck/sigs/neg132.fs:15:9 "OverloadsWithSrtp" gap
 tests/fsharp/typecheck/sigs/neg132.fs:15:9 "OverloadsWithSrtp.SomeMethod" gap
 tests/fsharp/typecheck/sigs/neg132.fs:9:50 "^T" gap
 tests/fsharp/typecheck/sigs/neg132.fs:9:63 "Length" gap
-tests/fsharp/typecheck/sigs/neg21.fs compared fcs-check-errors match=10
+tests/fsharp/typecheck/sigs/neg21.fs compared fcs-check-errors match=10 external=34
 tests/fsharp/typecheck/sigs/neg21.fs:12:14 "kg" gap
 tests/fsharp/typecheck/sigs/neg21.fs:13:14 "s" gap
 tests/fsharp/typecheck/sigs/neg21.fs:13:23 "sqrm" gap
@@ -3005,7 +3005,7 @@ tests/fsharp/typecheck/sigs/neg21.fs:21:47 "s" gap
 tests/fsharp/typecheck/sigs/neg21.fs:21:57 "m" gap
 tests/fsharp/typecheck/sigs/neg21.fs:23:15 "kg" gap
 tests/fsharp/typecheck/sigs/neg21.fs:8:25 "m" gap x2
-tests/fsharp/typecheck/sigs/neg36.fs compared fcs-check-errors match=3
+tests/fsharp/typecheck/sigs/neg36.fs compared fcs-check-errors match=3 external=38
 tests/fsharp/typecheck/sigs/neg36.fs:10:17 "D" gap x3
 tests/fsharp/typecheck/sigs/neg36.fs:10:17 "D<string,string>" gap
 tests/fsharp/typecheck/sigs/neg36.fs:10:18 "<string,string>" gap
@@ -3019,53 +3019,53 @@ tests/fsharp/typecheck/sigs/neg36.fs:31:17 "PC" gap x4
 tests/fsharp/typecheck/sigs/neg36.fs:31:18 "C" gap
 tests/fsharp/typecheck/sigs/neg36.fs:6:22 "'T" gap
 tests/fsharp/typecheck/sigs/neg36.fs:7:22 "'U" gap
-tests/fsharp/typecheck/sigs/neg48.fs compared fcs-check-errors match=0
-tests/fsharp/typecheck/sigs/neg59.fs compared fcs-check-errors match=11
+tests/fsharp/typecheck/sigs/neg48.fs compared fcs-check-errors match=0 external=56
+tests/fsharp/typecheck/sigs/neg59.fs compared fcs-check-errors match=11 external=55
 tests/fsharp/typecheck/sigs/neg59.fs:16:24 "group" gap
 tests/fsharp/typecheck/sigs/neg95.fs fcs-not-ok
-tests/fsharp/typecheck/sigs/neg_byref_14.fs compared fcs-check-errors match=0
-tests/fsharp/typecheck/sigs/neg_byref_5.fs compared fcs-check-errors match=0
-tests/fsharp/typecheck/sigs/pos10.fs compared fcs-clean match=4
+tests/fsharp/typecheck/sigs/neg_byref_14.fs compared fcs-check-errors match=0 external=2
+tests/fsharp/typecheck/sigs/neg_byref_5.fs compared fcs-check-errors match=0 external=4
+tests/fsharp/typecheck/sigs/pos10.fs compared fcs-clean match=4 external=7
 tests/fsharp/typecheck/sigs/pos10.fs:2:17 "'a" gap
 tests/fsharp/typecheck/sigs/pos10.fs:2:23 "new" gap
 tests/fsharp/typecheck/sigs/pos10.fs:2:37 "'a" gap
-tests/fsharp/typecheck/sigs/pos22.fs compared fcs-clean match=4
+tests/fsharp/typecheck/sigs/pos22.fs compared fcs-clean match=4 external=1
 tests/fsharp/typecheck/sigs/pos22.fs:12:13 "Base" gap x4
 tests/fsharp/typecheck/sigs/pos22.fs:12:14 "ase" gap
 tests/fsharp/typecheck/sigs/pos22.fs:13:31 "base" gap
 tests/fsharp/typecheck/sigs/pos22.fs:8:30 "'t" gap
-tests/fsharp/typecheck/sigs/pos33.fs compared fcs-clean match=0
-tests/service/data/SyntaxTree/Attribute/RangeOfAttribute.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Binding/RangeOfAttributeShouldBeIncludedInSynMemberDefnLetBindings.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Binding/RangeOfLetKeywordShouldBePresentInSynModuleDeclLetBinding.fs compared fcs-clean match=0
-tests/service/data/SyntaxTree/ConditionalDirective/IfElifElseEndif.fs compared fcs-clean match=0
-tests/service/data/SyntaxTree/Expression/AnonRecd - Quotation 01.fs compared fcs-clean match=0
-tests/service/data/SyntaxTree/Expression/AnonymousRecords-10.fs compared fcs-clean match=0
+tests/fsharp/typecheck/sigs/pos33.fs compared fcs-clean match=0 external=9
+tests/service/data/SyntaxTree/Attribute/RangeOfAttribute.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Binding/RangeOfAttributeShouldBeIncludedInSynMemberDefnLetBindings.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Binding/RangeOfLetKeywordShouldBePresentInSynModuleDeclLetBinding.fs compared fcs-clean match=0 external=0
+tests/service/data/SyntaxTree/ConditionalDirective/IfElifElseEndif.fs compared fcs-clean match=0 external=0
+tests/service/data/SyntaxTree/Expression/AnonRecd - Quotation 01.fs compared fcs-clean match=0 external=3
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-10.fs compared fcs-clean match=0 external=8
 tests/service/data/SyntaxTree/Expression/Binary - Plus 03.fs our-parse-errors
-tests/service/data/SyntaxTree/Expression/DotLambda_NestedPropertiesAfterUnderscore.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/Expression/DotLambda_NestedPropertiesAfterUnderscore.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/Expression/DotLambda_NestedPropertiesAfterUnderscore.fs:1:14 "_" gap
-tests/service/data/SyntaxTree/Expression/For 02.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Expression/If 02.fs compared fcs-clean match=0
+tests/service/data/SyntaxTree/Expression/For 02.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Expression/If 02.fs compared fcs-clean match=0 external=0
 tests/service/data/SyntaxTree/Expression/Lambda - Missing expr 02.fs our-parse-errors
-tests/service/data/SyntaxTree/Expression/Object - Class 03.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/Expression/Object - Class 03.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/Expression/Rarrow 01.fs our-parse-errors
-tests/service/data/SyntaxTree/Expression/Record - Anon 11.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Expression/Record - Field 12.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Expression/Sequential 01.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Expression/SynExprLetOrUseBangContainsTheRangeOfTheEqualsSign.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Expression/SynExprTryFinallyContainsTheRangeOfTheTryAndWithKeyword.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/Expression/Record - Anon 11.fs compared fcs-check-errors match=0 external=1
+tests/service/data/SyntaxTree/Expression/Record - Field 12.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Expression/Sequential 01.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Expression/SynExprLetOrUseBangContainsTheRangeOfTheEqualsSign.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Expression/SynExprTryFinallyContainsTheRangeOfTheTryAndWithKeyword.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/Expression/Try - With 08.fs our-parse-errors
 tests/service/data/SyntaxTree/Expression/Tuple - Missing item 04.fs our-parse-errors
 tests/service/data/SyntaxTree/Expression/Type test 04.fs our-parse-errors
 tests/service/data/SyntaxTree/Expression/Upcast 04.fs our-parse-errors
-tests/service/data/SyntaxTree/Expression/WhileBang 06.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Extern/Extern 01.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Lambda/LambdaWithTupleParameterWithWildCardGivesCorrectBody.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/LeadingKeyword/AndKeyword.fs compared fcs-clean match=2
-tests/service/data/SyntaxTree/LeadingKeyword/StaticAbstractMemberKeyword.fs compared fcs-clean match=0
+tests/service/data/SyntaxTree/Expression/WhileBang 06.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Extern/Extern 01.fs compared fcs-check-errors match=0 external=4
+tests/service/data/SyntaxTree/Lambda/LambdaWithTupleParameterWithWildCardGivesCorrectBody.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/LeadingKeyword/AndKeyword.fs compared fcs-clean match=2 external=2
+tests/service/data/SyntaxTree/LeadingKeyword/StaticAbstractMemberKeyword.fs compared fcs-clean match=0 external=2
 tests/service/data/SyntaxTree/MatchClause/Missing pat 01.fs our-parse-errors
-tests/service/data/SyntaxTree/MatchClause/RangeOfSingleSynMatchClause.fs compared fcs-check-errors match=1
-tests/service/data/SyntaxTree/Measure/SynMeasureParenHasCorrectRange.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/MatchClause/RangeOfSingleSynMatchClause.fs compared fcs-check-errors match=1 external=2
+tests/service/data/SyntaxTree/Measure/SynMeasureParenHasCorrectRange.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/Member/Auto property 05.fs our-parse-errors
 tests/service/data/SyntaxTree/Member/Do 03.fs our-parse-errors
 tests/service/data/SyntaxTree/Member/Field 12.fs our-parse-errors
@@ -3073,52 +3073,52 @@ tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Fun 04.fs our-parse-
 tests/service/data/SyntaxTree/Member/Inherit 05.fs our-parse-errors
 tests/service/data/SyntaxTree/Member/Let 02.fs our-parse-errors
 tests/service/data/SyntaxTree/Member/Member 08.fs our-parse-errors
-tests/service/data/SyntaxTree/Member/SynTypeDefnWithAbstractSlotContainsTheRangeOfTheWithKeyword.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/ModuleMember/Let 01.fs compared fcs-clean match=0
-tests/service/data/SyntaxTree/ModuleMember/Open 08.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/ModuleOrNamespace/ModuleShouldContainModuleKeyword.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/Member/SynTypeDefnWithAbstractSlotContainsTheRangeOfTheWithKeyword.fs compared fcs-check-errors match=0 external=1
+tests/service/data/SyntaxTree/ModuleMember/Let 01.fs compared fcs-clean match=0 external=0
+tests/service/data/SyntaxTree/ModuleMember/Open 08.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/ModuleOrNamespace/ModuleShouldContainModuleKeyword.fs compared fcs-check-errors match=0 external=6
 tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 02.fs our-parse-errors
 tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 15.fs our-parse-errors
-tests/service/data/SyntaxTree/Nullness/GenericFunctionTyparNotNull.fs compared fcs-clean match=0
+tests/service/data/SyntaxTree/Nullness/GenericFunctionTyparNotNull.fs compared fcs-clean match=0 external=0
 tests/service/data/SyntaxTree/Nullness/GenericFunctionTyparNotNull.fs:1:16 "'T" gap
 tests/service/data/SyntaxTree/Nullness/GenericFunctionTyparNotNull.fs:1:24 "'T" gap
-tests/service/data/SyntaxTree/Nullness/RegressionAnnotatedInlinePatternMatch.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/OperatorName/ActivePatternAnd 03.fs compared fcs-clean match=0
-tests/service/data/SyntaxTree/OperatorName/ActivePatternExceptionAnd 06.fs compared fcs-clean match=1
-tests/service/data/SyntaxTree/OperatorName/PartialActivePatternAsFunction.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Pattern/And 04.fs compared fcs-clean match=1
-tests/service/data/SyntaxTree/Pattern/Cons 01.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/Pattern/Named field 04.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/Nullness/RegressionAnnotatedInlinePatternMatch.fs compared fcs-check-errors match=0 external=1
+tests/service/data/SyntaxTree/OperatorName/ActivePatternAnd 03.fs compared fcs-clean match=0 external=2
+tests/service/data/SyntaxTree/OperatorName/ActivePatternExceptionAnd 06.fs compared fcs-clean match=1 external=1
+tests/service/data/SyntaxTree/OperatorName/PartialActivePatternAsFunction.fs compared fcs-check-errors match=0 external=0
+tests/service/data/SyntaxTree/Pattern/And 04.fs compared fcs-clean match=1 external=4
+tests/service/data/SyntaxTree/Pattern/Cons 01.fs compared fcs-check-errors match=0 external=1
+tests/service/data/SyntaxTree/Pattern/Named field 04.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/Pattern/Record 05.fs our-parse-errors
 tests/service/data/SyntaxTree/Pattern/Typed - Missing type 02.fs our-parse-errors
-tests/service/data/SyntaxTree/SimplePats/SimplePats 02.fs compared fcs-check-errors match=0
-tests/service/data/SyntaxTree/String/SynExprInterpolatedStringWithSynStringKindVerbatim.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/SimplePats/SimplePats 02.fs compared fcs-check-errors match=0 external=1
+tests/service/data/SyntaxTree/String/SynExprInterpolatedStringWithSynStringKindVerbatim.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/SynType/Div 05.fs our-parse-errors
-tests/service/data/SyntaxTree/SynType/Named 02.fs compared fcs-clean match=0
-tests/service/data/SyntaxTree/SynType/Tuple - Nested 01.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/SynType/Named 02.fs compared fcs-clean match=0 external=0
+tests/service/data/SyntaxTree/SynType/Tuple - Nested 01.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/SynType/Tuple 08.fs our-parse-errors
 tests/service/data/SyntaxTree/SynType/Typed LetBang 06.fs our-parse-errors
-tests/service/data/SyntaxTree/SynType/Typed LetBang 19.fs compared fcs-clean match=1
-tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 11.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/SynType/Typed LetBang 19.fs compared fcs-clean match=1 external=6
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 11.fs compared fcs-check-errors match=0 external=2
 tests/service/data/SyntaxTree/SynType/Typed UseBang 05.fs our-parse-errors
 tests/service/data/SyntaxTree/Type/As 02.fs our-parse-errors
-tests/service/data/SyntaxTree/Type/Class 05.fs compared fcs-check-errors match=0
+tests/service/data/SyntaxTree/Type/Class 05.fs compared fcs-check-errors match=0 external=0
 tests/service/data/SyntaxTree/Type/Enum 10 - Eof.fs our-parse-errors
 tests/service/data/SyntaxTree/Type/Module After Inherit 01.fs our-parse-errors
 tests/service/data/SyntaxTree/Type/Module Inside Interface End 01.fs our-parse-errors
 tests/service/data/SyntaxTree/Type/NestedTypeHasStaticTypeAsLeadingKeyword.fs our-parse-errors
 tests/service/data/SyntaxTree/Type/Record - Access 04.fs our-parse-errors
-tests/service/data/SyntaxTree/Type/Struct 01.fs compared fcs-clean match=0
+tests/service/data/SyntaxTree/Type/Struct 01.fs compared fcs-clean match=0 external=0
 tests/service/data/SyntaxTree/Type/Type 01.fs our-parse-errors
-tests/service/data/SyntaxTree/Type/Union - Field 01.fs compared fcs-clean match=0
+tests/service/data/SyntaxTree/Type/Union - Field 01.fs compared fcs-clean match=0 external=2
 tests/service/data/SyntaxTree/Type/With 03.fs our-parse-errors
-tests/service/data/SyntaxTree/UnionCase/MultipleSynUnionCasesHaveBarRange.fs compared fcs-clean match=0
-tests/service/data/TestProject/TestProject.fs compared fcs-check-errors match=0
-vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs compared fcs-check-errors match=49
-vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs compared fcs-check-errors match=11
-vsintegration/src/FSharp.Editor/CodeFixes/MissingReference.fs compared fcs-check-errors match=1
-vsintegration/src/FSharp.Editor/CodeFixes/WrapExpressionInParentheses.fs compared fcs-check-errors match=1
-vsintegration/src/FSharp.Editor/Common/Logger.fs compared fcs-clean match=48
+tests/service/data/SyntaxTree/UnionCase/MultipleSynUnionCasesHaveBarRange.fs compared fcs-clean match=0 external=4
+tests/service/data/TestProject/TestProject.fs compared fcs-check-errors match=0 external=0
+vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs compared fcs-check-errors match=49 external=79
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs compared fcs-check-errors match=11 external=51
+vsintegration/src/FSharp.Editor/CodeFixes/MissingReference.fs compared fcs-check-errors match=1 external=14
+vsintegration/src/FSharp.Editor/CodeFixes/WrapExpressionInParentheses.fs compared fcs-check-errors match=1 external=8
+vsintegration/src/FSharp.Editor/Common/Logger.fs compared fcs-clean match=48 external=41
 vsintegration/src/FSharp.Editor/Common/Logger.fs:23:32 "SharpEditorEventSource" gap
 vsintegration/src/FSharp.Editor/Common/Logger.fs:60:9 "FSharpEditorEventSource" gap
 vsintegration/src/FSharp.Editor/Common/Logger.fs:60:9 "FSharpEditorEventSource.Instance" gap
@@ -3143,13 +3143,13 @@ vsintegration/src/FSharp.Editor/Common/Logger.fs:90:17 "FSharpEditorEventSource"
 vsintegration/src/FSharp.Editor/Common/Logger.fs:90:17 "FSharpEditorEventSource.Instance" gap
 vsintegration/src/FSharp.Editor/Common/Logger.fs:90:67 "message" gap
 vsintegration/src/FSharp.Editor/Common/Logger.fs:90:76 "functionId" gap
-vsintegration/src/FSharp.Editor/Diagnostics/SimplifyNameDiagnosticAnalyzer.fs compared fcs-check-errors match=0
+vsintegration/src/FSharp.Editor/Diagnostics/SimplifyNameDiagnosticAnalyzer.fs compared fcs-check-errors match=0 external=25
 vsintegration/src/FSharp.Editor/Diagnostics/SimplifyNameDiagnosticAnalyzer.fs:11:6 "Microsoft" gap
 vsintegration/src/FSharp.Editor/Diagnostics/SimplifyNameDiagnosticAnalyzer.fs:13:6 "Microsoft" gap
-vsintegration/src/FSharp.Editor/Hints/InlayParameterNameHints.fs compared fcs-check-errors match=76
+vsintegration/src/FSharp.Editor/Hints/InlayParameterNameHints.fs compared fcs-check-errors match=76 external=119
 vsintegration/src/FSharp.Editor/Hints/InlayParameterNameHints.fs:140:48 "range, parameter" gap
-vsintegration/src/FSharp.Editor/LanguageService/LegacyProjectWorkspaceMap.fs compared fcs-check-errors match=84
-vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs compared fcs-check-errors match=228
+vsintegration/src/FSharp.Editor/LanguageService/LegacyProjectWorkspaceMap.fs compared fcs-check-errors match=84 external=82
+vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs compared fcs-check-errors match=228 external=253
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:1063:17 "FSharpCrossLanguageSymbolNavigationService" gap
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:1063:17 "FSharpCrossLanguageSymbolNavigationService.DocCommentIdToPath" gap
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:580:74 "preferSignature" gap
@@ -3164,8 +3164,8 @@ vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:837:18 "Property" g
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:838:21 "Constructor" gap
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:839:18 "Method" gap
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:840:16 "Other" gap
-vsintegration/src/FSharp.Editor/Refactor/ChangeDerefToValueRefactoring.fs compared fcs-check-errors match=0
-vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs compared fcs-check-errors match=23
+vsintegration/src/FSharp.Editor/Refactor/ChangeDerefToValueRefactoring.fs compared fcs-check-errors match=0 external=22
+vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs compared fcs-check-errors match=23 external=34
 vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs:39:16 "VisualStudio" gap
 vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs:39:6 "Microsoft" gap
 vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs:40:16 "VisualStudio" gap
@@ -3183,19 +3183,19 @@ vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs:48:16 "VisualSt
 vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs:48:29 "FSharp" gap
 vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs:48:36 "LanguageService" gap
 vsintegration/src/FSharp.LanguageService/ProjectSitesAndFiles.fs:48:6 "Microsoft" gap
-vsintegration/src/FSharp.VS.FSI/fsiPackageHooks.fs compared fcs-check-errors match=62
+vsintegration/src/FSharp.VS.FSI/fsiPackageHooks.fs compared fcs-check-errors match=62 external=53
 vsintegration/src/FSharp.VS.FSI/fsiPackageHooks.fs:47:79 "'t" gap
 vsintegration/src/FSharp.VS.FSI/fsiPackageHooks.fs:47:97 "'t" gap
-vsintegration/tests/FSharp.Editor.Tests/CodeFixes/AddOpenOnTopOffTests.fs compared fcs-check-errors match=17
-vsintegration/tests/FSharp.Editor.Tests/CodeFixes/DiscardUnusedValueTests.fs compared fcs-check-errors match=3
-vsintegration/tests/FSharp.Editor.Tests/CodeFixes/RenameParamToMatchSignatureTests.fs compared fcs-check-errors match=1
-vsintegration/tests/FSharp.Editor.Tests/HelpContextServiceTests.fs compared fcs-check-errors match=91
-vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs compared fcs-check-errors match=106
+vsintegration/tests/FSharp.Editor.Tests/CodeFixes/AddOpenOnTopOffTests.fs compared fcs-check-errors match=17 external=37
+vsintegration/tests/FSharp.Editor.Tests/CodeFixes/DiscardUnusedValueTests.fs compared fcs-check-errors match=3 external=9
+vsintegration/tests/FSharp.Editor.Tests/CodeFixes/RenameParamToMatchSignatureTests.fs compared fcs-check-errors match=1 external=5
+vsintegration/tests/FSharp.Editor.Tests/HelpContextServiceTests.fs compared fcs-check-errors match=91 external=116
+vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs compared fcs-check-errors match=106 external=99
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:107:46 "ToolTipText elements" gap
-vsintegration/tests/Salsa/SalsaUtils.fs compared fcs-check-errors match=255
+vsintegration/tests/Salsa/SalsaUtils.fs compared fcs-check-errors match=255 external=130
 vsintegration/tests/Salsa/SalsaUtils.fs:165:44 "fileContents, fileName" gap
 vsintegration/tests/Salsa/SalsaUtils.fs:210:96 "CompletionItem(nm, _, _, _, _)" gap
 vsintegration/tests/Salsa/SalsaUtils.fs:215:54 "CompletionItem(name,_,_,_,_)" gap
 vsintegration/tests/Salsa/SalsaUtils.fs:224:54 "CompletionItem(name,_,_,_,_)" gap
-vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.QuickParse.fs compared fcs-check-errors match=84
-vsintegration/tests/UnitTests/TestLib.Salsa.fs compared fcs-check-errors match=49
+vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.QuickParse.fs compared fcs-check-errors match=84 external=85
+vsintegration/tests/UnitTests/TestLib.Salsa.fs compared fcs-check-errors match=49 external=69

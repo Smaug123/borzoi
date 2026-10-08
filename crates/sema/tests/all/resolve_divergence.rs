@@ -49,8 +49,11 @@
 //! empty `AssemblyEnv`, so it can only adjudicate **in-file** declarations.
 //! Uses FCS resolves into a referenced assembly (FSharp.Core / BCL / NuGet) have
 //! no in-file declaration to compare against and no env for us to resolve them
-//! through, so they are tallied under `out-of-file` and otherwise skipped — the
-//! target-identity check for those is the *whole-project* differential
+//! through, so they are tallied under `out-of-file` and otherwise skipped here.
+//! The gate (`resolve_corpus_diff`) does grade them, as a soundness check: the
+//! only correct answer for one under the empty environment is to decline, so
+//! any in-file binder committed there is a divergence. Their target identity is
+//! checked by the *whole-project* differential
 //! (`crates/lsp/tests/all/resolve_real_project_diff.rs` and the `corpus-diff`
 //! crate), which drives the real assembly closure and the `uses-project` oracle.
 //! Bringing assembly divergences into *this* report would mean extending the
