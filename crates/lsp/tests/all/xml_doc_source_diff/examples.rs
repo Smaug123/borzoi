@@ -171,57 +171,6 @@ fn an_assembly_namesake_of_another_arity_is_not_shown_the_source_doc() {
 }
 
 #[test]
-fn a_named_argument_name_declines() {
-    // The left `areSimilar` is the constructor's parameter to FCS; resolution
-    // finds the local (#324).
-    let src = "module M\ntype A(areSimilar: int) =\n    member _.X = areSimilar\nlet h () =\n    /// local\n    let areSimilar = 1\n    A(areSimilar = areSimilar)\n";
-    let sites = occurrences(src, "areSimilar");
-    let lhs = src.rfind("A(areSimilar").unwrap() + 2;
-    let rhs = src.rfind("areSimilar").unwrap();
-    let at = |offset: usize| {
-        sites
-            .iter()
-            .find(|(at, _, _)| *at == offset)
-            .unwrap_or_else(|| panic!("no graded site at {offset}: {sites:?}"))
-    };
-    assert_eq!(at(lhs).2, Vec::<String>::new());
-    assert_eq!(
-        at(lhs).1,
-        Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
-    );
-    assert_eq!(at(rhs).2, [" local"]);
-    assert_eq!(at(rhs).1, Verdict::Agree { attached: true });
-}
-
-#[test]
-fn an_optional_named_argument_name_declines() {
-    let src = "module M\ntype A(?other: int) =\n    member _.X = other\nlet h () =\n    /// local\n    let other = 1\n    A(?other = Some other)\n";
-    let sites = occurrences(src, "other");
-    let lhs = src.find("?other =").unwrap() + 1;
-    let (_, verdict, fcs) = sites
-        .iter()
-        .find(|(at, _, _)| *at == lhs)
-        .unwrap_or_else(|| panic!("no graded site at {lhs}: {sites:?}"));
-    assert_eq!(fcs, &Vec::<String>::new());
-    assert_eq!(
-        verdict,
-        &Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
-    );
-}
-
-#[test]
-fn a_named_argument_name_in_a_new_expression_declines() {
-    let src = "module M\ntype A(arg: int) =\n    member _.X = arg\nlet h () =\n    /// local\n    let arg = 1\n    new A(arg = arg)\n";
-    let sites = occurrences(src, "arg");
-    let (verdict, fcs) = site(&sites, src.find("A(arg =").unwrap() + 2);
-    assert_eq!(fcs, Vec::<String>::new());
-    assert_eq!(
-        verdict,
-        Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
-    );
-}
-
-#[test]
 fn arity_mismatch_declines_across_reopened_namespaces_and_files() {
     let src = "namespace N\n/// generic\ntype T<'a> = int -> 'a\nnamespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
     let sites = occurrences(src, "T");
@@ -234,6 +183,26 @@ fn arity_mismatch_declines_across_reopened_namespaces_and_files() {
     let files = [("A.fs", a), ("B.fs", b)];
     let (graded, _) = run_fixture(&files, &[]);
     assert!(super::harness::failures(&graded).is_empty(), "{graded:?}");
+}
+
+#[test]
+fn named_argument_labels_show_no_doc() {
+    // Plain, optional and `new` named arguments whose labels are also
+    // documented locals: FCS binds each label to the parameter.
+    let src = "module M\ntype A(arg: int, ?opt: int) =\n    member _.X = arg\nlet h () =\n    /// local\n    let arg = 1\n    /// local\n    let opt = 2\n    A(arg = arg, ?opt = Some opt), new A(arg = arg)\n";
+    let files = [("M.fs", src)];
+    let (graded, _) = run_fixture(&files, &[]);
+    assert!(super::harness::failures(&graded).is_empty(), "{graded:#?}");
+    for label in [
+        src.find("A(arg =").unwrap() + 2,
+        src.find("?opt =").unwrap() + 1,
+        src.find("new A(arg =").unwrap() + 6,
+    ] {
+        assert!(
+            !graded.iter().any(|g| usize::from(g.range.start()) == label),
+            "the label at {label} is graded, so resolution committed it to something"
+        );
+    }
 }
 
 #[test]

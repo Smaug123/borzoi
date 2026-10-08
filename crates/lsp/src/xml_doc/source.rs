@@ -48,12 +48,11 @@
 //! against FCS (`xml_doc_source_diff`) holds every committed answer to that.
 //!
 //! A doc is only as right as the resolution that chose its declaration, and
-//! the differential found two shapes resolution gets wrong (#323, #324); they
-//! decline here too ([`SourceDocDecline::ArityMismatch`],
-//! [`SourceDocDecline::NamedArgumentCandidate`]) until resolution is fixed.
-//! Both guards check an invariant of the occurrence itself — the type
-//! arguments it supplies, the `=` it stands left of — rather than enumerate
-//! the declarations that could collide.
+//! the differential found a shape resolution gets wrong (#323): a type use
+//! whose type-argument count differs from the arity of the type it resolved
+//! to declines ([`SourceDocDecline::ArityMismatch`]) until resolution chooses
+//! by arity. The guard checks an invariant of the occurrence itself rather
+//! than enumerating the declarations that could collide.
 
 use std::collections::HashMap;
 
@@ -134,11 +133,6 @@ pub enum SourceDocDecline {
     /// A type name, or a qualified member or case, in a position not
     /// classified (a nested-type path, a parenthesised qualifier).
     UnmodelledOccurrence,
-    /// The occurrence is the left of `=` in a parenthesised application
-    /// argument — a named argument when the callee is a method or constructor,
-    /// which FCS binds to the parameter, not to the value resolution found
-    /// (#324).
-    NamedArgumentCandidate,
     /// A use in another file reached a declaration of an implementation file a
     /// signature constrains. FCS binds such a use to the *signature's* symbol,
     /// whose doc is the signature's alone, so the implementation's doc is not
@@ -910,59 +904,6 @@ fn type_arity(defn: &SyntaxNode) -> usize {
         .count()
 }
 
-/// Whether the name at `at` is the left of `=` in parentheses, possibly
-/// tupled — `M(x = 1)`, `new A(?x = o)`, `f (x = 1, y)` — which is a named
-/// argument when the parentheses are a method's or constructor's argument list
-/// and an equality test otherwise; syntax cannot tell which.
-fn is_named_argument_candidate(root: &SyntaxNode, at: TextRange) -> bool {
-    if !root.text_range().contains_range(at) {
-        return false;
-    }
-    let NodeOrToken::Token(token) = root.covering_element(at) else {
-        return false;
-    };
-    // The name's own expression: `x` (an `IDENT_EXPR`) or `?x` (a
-    // `LONG_IDENT_EXPR` over a `LONG_IDENT`), the optional-argument spelling.
-    let mut lhs = token.parent();
-    while let Some(node) = lhs.clone().filter(|n| n.kind() == SyntaxKind::LONG_IDENT) {
-        lhs = node.parent();
-    }
-    let Some(lhs) = lhs.filter(|n| {
-        matches!(
-            n.kind(),
-            SyntaxKind::IDENT_EXPR | SyntaxKind::LONG_IDENT_EXPR
-        )
-    }) else {
-        return false;
-    };
-    let Some(infix) = lhs
-        .parent()
-        .filter(|p| p.kind() == SyntaxKind::INFIX_APP_EXPR)
-    else {
-        return false;
-    };
-    let is_equals = infix.first_child().as_ref() == Some(&lhs)
-        && infix.children().nth(1).is_some_and(|op| {
-            op.kind() == SyntaxKind::LONG_IDENT_EXPR && op.text().to_string().trim() == "="
-        });
-    if !is_equals {
-        return false;
-    }
-    let Some(mut arg) = infix.parent().filter(|p| p.kind() == SyntaxKind::APP_EXPR) else {
-        return false;
-    };
-    if arg
-        .parent()
-        .is_some_and(|p| p.kind() == SyntaxKind::TUPLE_EXPR)
-    {
-        arg = arg.parent().expect("checked");
-    }
-    // Whatever applies the parentheses — an application, `new`, a method call
-    // through a dotted path, or nothing at all — they may be an argument list.
-    arg.parent()
-        .is_some_and(|paren| paren.kind() == SyntaxKind::PAREN_EXPR)
-}
-
 /// Why attached `///` lines yield no documentation tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceRenderError {
@@ -1037,15 +978,6 @@ impl<'a> ProjectDocs<'a> {
             .clean_through(project_file.file.syntax())
         {
             return Some(SourceDoc::Declined(SourceDocDecline::ParseErrors));
-        }
-        if self
-            .files
-            .get(from)
-            .is_some_and(|f| is_named_argument_candidate(f.file.syntax(), at))
-        {
-            return Some(SourceDoc::Declined(
-                SourceDocDecline::NamedArgumentCandidate,
-            ));
         }
         let constrained = matches!(project_file.file, SourceFile::Impl(_))
             && self.partners.get(file).copied().flatten().is_some();

@@ -164,8 +164,8 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   `///` line, a file with parse errors, an orphan buffer (single-file hover
   renders no documentation), and the type occurrences where FCS binds
   something other than the type resolution chose: a different type-argument
-  count, a `T.M` whose `M` the type does not declare (#323), a named
-  argument's name (#324), and every constructor call (`new T()`, `T()`,
+  count, a `T.M` whose `M` the type does not declare (#323), and every
+  constructor call (`new T()`, `T()`,
   `[<T>]`), where FCS binds the constructor overload resolution picks and
   shows its doc — almost always empty (all 47 in the gated corpus sample).
   The signature fallback is #319.
