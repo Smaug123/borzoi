@@ -139,7 +139,7 @@ fn glob_include_expands_property_defined_later_in_document() {
     let resolved = vec![canon(tmp.path()).join("src/A.fs")];
     let resolver = |req: &GlobRequest<'_>| {
         requests.borrow_mut().push(req.include.to_string());
-        resolved.clone()
+        Ok(resolved.clone())
     };
     let result = parse_fsproj_with_imports(
         &std::fs::read_to_string(&project_path).unwrap(),

@@ -164,9 +164,94 @@ What that cost is measurable. `MIN_CLEAN_PARSES` had been measured once, in June
 2026, and sat 2,401 files below the truth by the time anything ran it again — a
 regression could have un-parsed a third of the corpus and still passed. The
 resolution ratchets, which *were* maintained (other work re-ran them by hand),
-were current to within a few hundred. That is the difference a gate makes, and
-it is why the ratchets are now pinned to their exact measured values rather than
-left with slack nobody re-measures.
+were current to within a few hundred. That is the difference a gate makes.
+
+Being current is not the same as being exact, though, and a bound with slack
+hides whatever fits in the slack. A mutation audit (2026-09-23) planted bugs
+under the resolution ratchets: one lost 89 matches against a floor with 299 to
+spare, one added 13 wrong answers under an alt-binder ceiling of 90 against 72
+measured, and both stayed green. A count also cannot see movement inside itself
+— one answer gained while another is lost.
+
+### Exact manifests
+
+The corpus is content-addressed (the `fsharp-src` flake input) and both sides
+are deterministic, so a sweep's outcome for every item is a fixed fact. The sema
+sweeps therefore pin that fact itself: each checks a run against a manifest
+checked in under `crates/sema/tests/manifests/`, one sorted line per item, and
+fails on **any** difference with a line diff of what moved. There is no slack,
+and no direction is privileged — a newly bound name fails the run exactly as a
+lost one does, because both are a change someone should look at. An intended
+movement is acknowledged by regenerating the manifest and committing it, so the
+pull request shows exactly which items moved:
+
+```sh
+BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored
+```
+
+(Each manifest's header and each failure message names its own command.)
+A manifest records state, so it cannot say a state is wrong; the hard
+soundness gates — zero resolution divergences, zero inference divergences, the
+attribute and overload certain-implies-exact checks — remain separate
+assertions that run first, so regeneration cannot bless a wrong answer.
+
+Granularity is chosen per sweep, to keep each file reviewable:
+
+| manifest | entries |
+|---|---|
+| `resolve_corpus_diff` | one per sampled file (compared or skipped and why; whether FCS's check errored; its match count) and one per gap, alt-binder or divergence use. Matches are counted per file rather than listed — ~22k of them — which loses no movement, since every non-match use is listed by key. |
+| `infer_corpus_diff` | one per sampled file, and one per commit (agree or error-recovered, with both types when they differ). |
+| `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
+| `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
+| `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside. |
+
+An alt-binder entry says whether FCS checked its file cleanly (`fcs-clean`) or
+with errors (`fcs-check-errors`). In the latter it is usually FCS's isolation
+recovery binding differently; in the former there is no recovery to blame, so
+it is a wrong answer. One stands today, and the manifest names it:
+`SanityCheck02.fs:42:20`, the label of a named argument (`M(x = x)`) bound to
+an enclosing `let x` where F# binds the callee's parameter — the limitation
+`resolve/exprs.rs` documents at `is_named_arg_label`.
+
+A manifest is only exact if every host computes the same one, and two things
+had to be pinned for that:
+
+- **The oracle's reference set.** FCS's script checks take their framework
+  references from the runtime `fcs-dump` runs on. CI used to publish it
+  self-contained, which made that runtime the bundle's own directory: every
+  check, in every lane, resolved against implementation assemblies plus
+  `FSharp.Compiler.Service` and `fcs-dump` themselves, rather than the SDK
+  reference pack a local `dotnet build` uses. Corpus files that `open` the
+  compiler's namespaces then partly checked in CI, which moved ~870 resolution
+  matches. A one-sided floor could not see that; the manifest failed on it at
+  once. CI now publishes framework-dependent, and `fcs-dump` refuses to start
+  self-contained.
+- **File keys.** On a case-insensitive file system Nix stores a name that
+  collides case-insensitively with a sibling under a `~nix~case~hack~<n>`
+  suffix (the corpus has both `CompilerOptions/Fsc` and `CompilerOptions/fsc`).
+  Keys decode it, files are sorted by their decoded components so a strided
+  sample picks the same files everywhere, and two files decoding to one key
+  fail the sweep (`borzoi_oracle_harness::corpus_key`).
+
+The comparison helper is `borzoi_oracle_harness::manifest`, and the corpus key
+spelling `borzoi_oracle_harness::corpus_key`, both deliberately outside `sema`.
+
+The whole-project gate (`ci.yml`'s `corpus-diff` job) uses the same helper over
+the pinned *project* corpus, with
+`crates/corpus-diff/manifests/project_corpus.txt` (see
+`docs/project-corpus-diff-runner.md`). Its corpus is a set of Git checkouts
+rather than a store path, so keys are taken relative to the checkouts' root, and
+its manifest has one more kind of line: each project's verdict, so a project
+that silently moves from comparable to skipped fails the gate. It used to have
+only a divergence ceiling, which a change making the LSP answer *nothing* for
+locals passed — project matches fell from 14,304 to 2,702 and the job stayed
+green. Regenerate it with
+`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`, run outside
+`nix develop`; the script materialises the corpus first when run locally.
+
+The other crates' corpus gates still assert one-sided counts with slack —
+`cst`'s `MAX_WE_ACCEPT_FCS_REJECTS`, `assembly`'s `bcl_ref_pack_sweep` — and are
+the next candidates for it.
 
 Two things follow for anyone adding a sweep:
 
@@ -492,6 +577,11 @@ BORZOI_PROJECT_LIST=/tmp/candidate/PATH/TO.fsproj \
   nix develop -c cargo run -p borzoi-corpus-diff
 ```
 
+Adding (or re-pinning) a project changes what the gate's manifest records, so
+the same pull request regenerates it
+(`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`) and the
+new project's lines are part of its diff.
+
 Not every revision survives this, and an old one is likelier not to: a project
 that pins `FSharp.Core` with `Include` while the SDK also adds it implicitly
 fails restore outright under the .NET 10 SDK (`NU1504`, duplicate
@@ -500,9 +590,8 @@ and it is exactly the kind of thing a stale fork pin walks into.
 
 ### Measurement, not gate
 
-The runner's own ratchets (`BORZOI_PROJECT_EXPECT_DIVERGENCES` and friends) are
-a gate, and they gate in `ci.yml`'s `corpus-diff` job, on the pull request,
-before the commit lands. This job is a measurement. It therefore does not fail
+The runner's own gates (zero divergences, then the exact manifest) gate in
+`ci.yml`'s `corpus-diff` job, on the pull request, before the commit lands. This job is a measurement. It therefore does not fail
 on the runner's exit code, because doing so would withhold the observation in
 exactly the run that found something. Divergence counts ride in `statistics` and
 the series carries the finding.

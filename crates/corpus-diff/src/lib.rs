@@ -5,7 +5,6 @@
 //! and compare the two without letting skipped or erroring projects look like
 //! proof.
 
-use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
@@ -32,9 +31,11 @@ use borzoi_sema::test_support::{
     assembly_full_name_agrees, certified_expected as certified_structural,
 };
 use borzoi_sema::{
-    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, InferredFile, OpenOpacity,
-    Resolution, ResolvedFile, ResolvedProject, infer_file,
+    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, DeferredReason, InferredFile,
+    OpenOpacity, Resolution, ResolvedFile, ResolvedProject, infer_file,
 };
+
+pub mod manifest;
 
 // The oracle's structural naming of a declaration is shared with the LSP
 // crate's `resolve_real_project_diff`, which compares the same two sides on one
@@ -588,6 +589,9 @@ fn msbuild_diagnostic_message(kind: &DiagnosticKind) -> String {
         }
         DiagnosticKind::UnsupportedGlob { pattern } => {
             format!("glob pattern not expanded: {pattern}")
+        }
+        DiagnosticKind::GlobDeclined { include, reason } => {
+            format!("glob not expanded, MSBuild's result is not reproducible: {include} ({reason})")
         }
         DiagnosticKind::UndefinedProperty { name } => {
             format!("$({name}) is not defined")
@@ -1436,9 +1440,61 @@ pub struct Comparison {
     pub assembly_divergences: Vec<AssemblyDivergence>,
     pub reverse_divergences: Vec<ReverseDivergence>,
     pub fcs_error_files: Vec<FcsErrorFile>,
+    /// The project files the oracle reported on and the forward pass compared,
+    /// as the loaded project spells them; [`Self::files_compared`] counts them.
+    pub compared_files: Vec<PathBuf>,
+    /// Every item behind the counts above, in the order it was graded.
+    pub ledger: Vec<LedgerItem>,
 }
 
 impl Comparison {
+    /// Count `item` in the bucket its outcome names, and keep it in the ledger.
+    /// The only place a per-item count moves, so the ledger the manifest is
+    /// rendered from cannot drift from the totals the report prints.
+    fn record(&mut self, item: LedgerItem) {
+        match item.outcome {
+            ItemOutcome::Match(Graded::Project, _) => self.matches += 1,
+            ItemOutcome::Match(Graded::Assembly, _) => self.assembly_matches += 1,
+            ItemOutcome::Deferral { graded, site, .. } => match graded {
+                Graded::Project => {
+                    self.deferrals += 1;
+                    self.project_decline_census.observe(site);
+                }
+                Graded::Assembly => {
+                    self.assembly_deferrals += 1;
+                    self.assembly_decline_census.observe(site);
+                }
+            },
+            // Counted by the detailed lists' lengths.
+            ItemOutcome::Divergence(_) | ItemOutcome::ReverseDivergence => {}
+            ItemOutcome::SetAside(kind) => {
+                let skipped = &mut self.skipped_uses;
+                *match kind {
+                    SetAside::Definition => &mut skipped.definitions,
+                    SetAside::ZeroWidth => &mut skipped.zero_width,
+                    SetAside::CompilerGenerated => &mut skipped.compiler_generated,
+                    SetAside::NonProjectDeclaration => &mut skipped.non_project_declarations,
+                    SetAside::OutOfProjectDeclaration => &mut skipped.out_of_project_declarations,
+                    SetAside::NoOracleDeclaration => &mut skipped.no_oracle_declaration,
+                    SetAside::AmbiguousOracleRange => &mut skipped.ambiguous_oracle_range,
+                    SetAside::ShadowedConstructorUse => &mut skipped.shadowed_constructor_use,
+                } += 1;
+            }
+            ItemOutcome::UnoracledDefinition => self.unoracled_definitions += 1,
+            ItemOutcome::UnoracledOrPatternAlias => self.unoracled_or_pattern_aliases += 1,
+        }
+        if let ItemOutcome::Match(graded, _)
+        | ItemOutcome::Deferral { graded, .. }
+        | ItemOutcome::Divergence(graded) = item.outcome
+        {
+            match graded {
+                Graded::Project => self.uses_considered += 1,
+                Graded::Assembly => self.assembly_uses_considered += 1,
+            }
+        }
+        self.ledger.push(item);
+    }
+
     /// Count a graded answer against the surface that served it, so the
     /// per-surface counts say how much of each was actually put to the oracle.
     fn observe_surface(&mut self, served: ServedAnswer) {
@@ -1450,7 +1506,7 @@ impl Comparison {
                 self.member_commits_compared += 1;
             }
             ServedAnswer::Committed(_, AnswerSurface::Resolver)
-            | ServedAnswer::Declined
+            | ServedAnswer::Declined(_)
             | ServedAnswer::Contested => {}
         }
     }
@@ -1527,6 +1583,81 @@ impl SkippedUses {
         self.ambiguous_oracle_range += other.ambiguous_oracle_range;
         self.shadowed_constructor_use += other.shadowed_constructor_use;
     }
+}
+
+/// What became of one item the comparison looked at: an oracle record in the
+/// forward direction, or one of our own answers in the reverse one.
+///
+/// The per-item twin of [`Comparison`]'s counts, and their only source: every
+/// count is incremented by `Comparison::record` from the outcome of the item it
+/// pushes, so the ledger and the totals cannot disagree. The exact manifest
+/// (`manifest::project_corpus_manifest`) is rendered from the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerItem {
+    /// The file the item sits in, as the loaded project spells it.
+    pub file: PathBuf,
+    pub range: (usize, usize),
+    /// The oracle's name for the used symbol (forward), or our source text at
+    /// the range (reverse).
+    pub name: String,
+    pub outcome: ItemOutcome,
+}
+
+/// Which comparison a graded record went to: an in-project declaration compared
+/// against our definition site, or an assembly identity compared against our
+/// entity or member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Graded {
+    Project,
+    Assembly,
+}
+
+/// What the LSP served at a record's cursor where it made no claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServedDecline {
+    /// No surface recorded anything containing the cursor.
+    Unrecorded,
+    Unresolved,
+    Deferred(DeferredReason),
+}
+
+/// An oracle record the forward direction sets aside rather than grades — one
+/// variant per [`SkippedUses`] count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SetAside {
+    Definition,
+    ZeroWidth,
+    CompilerGenerated,
+    NonProjectDeclaration,
+    OutOfProjectDeclaration,
+    NoOracleDeclaration,
+    AmbiguousOracleRange,
+    ShadowedConstructorUse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemOutcome {
+    /// The served answer names the oracle's declaration.
+    Match(Graded, AnswerSurface),
+    /// The LSP served no claim at the record's cursor. `site` is the guard that
+    /// declined at the record's own range, if one recorded itself.
+    Deferral {
+        graded: Graded,
+        served: ServedDecline,
+        site: Option<DeclineSite>,
+    },
+    /// The served answer names something else. Each also has a detailed entry
+    /// in [`Comparison::divergences`] or [`Comparison::assembly_divergences`].
+    Divergence(Graded),
+    SetAside(SetAside),
+    /// One of our answers the oracle did not speak about, in binding position
+    /// ([`Comparison::unoracled_definitions`]).
+    UnoracledDefinition,
+    /// [`Comparison::unoracled_or_pattern_aliases`].
+    UnoracledOrPatternAlias,
+    /// One of our answers no oracle record confirms; detailed in
+    /// [`Comparison::reverse_divergences`].
+    ReverseDivergence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1681,17 +1812,7 @@ impl CorpusSummary {
     }
 
     pub fn total_divergences(&self) -> usize {
-        self.divergence_counts().total()
-    }
-
-    /// This run's divergences split by comparison, for
-    /// [`CorpusRunnerConfig::expect_divergences`].
-    pub fn divergence_counts(&self) -> DivergenceCounts {
-        DivergenceCounts {
-            project: self.project_divergences,
-            assembly: self.assembly_divergences,
-            reverse: self.reverse_divergences,
-        }
+        self.project_divergences + self.assembly_divergences + self.reverse_divergences
     }
 
     pub fn skipped_projects_basis_points(&self) -> Option<u64> {
@@ -1970,46 +2091,28 @@ impl fmt::Display for BasisPoints {
     }
 }
 
-/// The divergence counts of a run, split by the oracle comparison that found
-/// them — the currency of [`CorpusRunnerConfig::expect_divergences`].
-///
-/// Per category and not a single total, because the categories are independent
-/// claims: a change that introduces an assembly wrong target while fixing a
-/// project one moves the total by zero.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DivergenceCounts {
-    pub project: usize,
-    pub assembly: usize,
-    pub reverse: usize,
+/// Where a run's exact manifest lives, and the corpus root its project and file
+/// keys are relative to (`BORZOI_PROJECT_MANIFEST`,
+/// `BORZOI_PROJECT_MANIFEST_ROOT`). See [`manifest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestConfig {
+    pub path: PathBuf,
+    pub root: PathBuf,
 }
 
-impl DivergenceCounts {
-    pub fn total(&self) -> usize {
-        self.project + self.assembly + self.reverse
-    }
-}
+/// The command that regenerates the pinned corpus's checked-in manifest,
+/// written into its header and into a mismatch's failure message.
+pub const PROJECT_CORPUS_MANIFEST_REGENERATE: &str =
+    "BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh";
 
-impl fmt::Display for DivergenceCounts {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "assembly={},project={},reverse={}",
-            self.assembly, self.project, self.reverse
-        )
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CorpusRunnerConfig {
-    /// The exact per-category divergence counts this corpus is known to
-    /// produce, if the caller records them. **Two-sided**: a run that diverges
-    /// more fails, and so does a run that diverges less, so a fix cannot land
-    /// without bringing the recorded number down with it. A one-sided ceiling
-    /// only ever ratchets in the direction nobody has to act on.
-    ///
-    /// Mutually exclusive with [`Self::max_divergences`]; see
-    /// [`CorpusRunnerConfigError::ConflictingDivergenceRatchets`].
-    pub expect_divergences: Option<DivergenceCounts>,
+    /// The checked-in manifest this run must reproduce exactly, if the caller
+    /// names one. Checked only after every other gate has passed, so in
+    /// particular after the divergence gate: a manifest cannot bless a wrong
+    /// answer, and with one set [`Self::max_divergences`] must be zero
+    /// ([`CorpusRunnerConfigError::ManifestWithDivergenceAllowance`]).
+    pub manifest: Option<ManifestConfig>,
     pub max_divergences: usize,
     pub min_comparable_projects: Option<NonZeroUsize>,
     pub max_skipped_projects: Option<usize>,
@@ -2022,6 +2125,44 @@ pub struct CorpusRun {
     pub summary: CorpusSummary,
     pub exhaustive: bool,
     pub divergence_details: Vec<String>,
+    /// What each visited project came to, in visiting order — what the exact
+    /// manifest ([`manifest::project_corpus_manifest`]) is rendered from.
+    pub projects: Vec<ProjectRecord>,
+}
+
+/// One visited project and what became of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRecord {
+    pub project: PathBuf,
+    pub verdict: ProjectVerdict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectVerdict {
+    /// Compared against the oracle. `sources` are the loaded Compile files, in
+    /// Compile order, with their text — what the comparison's byte ranges index.
+    Comparable {
+        assets: ProjectAssetsStatus,
+        sources: Vec<(PathBuf, Arc<str>)>,
+        comparison: Box<Comparison>,
+    },
+    Skipped(ProjectSkip),
+}
+
+/// Why a visited project was not compared — the structured form of
+/// [`CorpusSkip::reason`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectSkip {
+    /// The LSP's own load refused it.
+    Load(LoadSkip),
+    /// `fcs-dump` did not answer, or answered unsuccessfully.
+    FcsInvoke,
+    /// `fcs-dump`'s answer could not be read back.
+    FcsParse,
+    /// The oracle type-checked the project with errors, which **grades
+    /// nothing**: an erroring file's records are FCS's recovery, not its
+    /// answer, so the whole project is set aside.
+    FcsErrors { files: Vec<FcsErrorFile> },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2061,10 +2202,11 @@ pub enum CorpusRunFailure {
         max_divergences: usize,
         divergences: usize,
     },
-    DivergenceExpectation {
-        expected: DivergenceCounts,
-        observed: DivergenceCounts,
-    },
+    /// The run could not be rendered as a manifest.
+    ManifestUnrenderable(manifest::ManifestError),
+    /// The run does not reproduce the checked-in manifest; the message is the
+    /// line diff.
+    ManifestMismatch(String),
 }
 
 impl fmt::Display for CorpusRunFailure {
@@ -2116,48 +2258,8 @@ impl fmt::Display for CorpusRunFailure {
                 f,
                 "project resolution divergences ({divergences} > {max_divergences})"
             ),
-            Self::DivergenceExpectation { expected, observed } => {
-                write!(
-                    f,
-                    "divergence expectation failed: expected {expected}, observed {observed}"
-                )?;
-                let moved = |name: &str, exp: usize, obs: usize| -> String {
-                    match obs.cmp(&exp) {
-                        Ordering::Greater => format!(" {name} +{}", obs - exp),
-                        Ordering::Less => format!(" {name} -{}", exp - obs),
-                        Ordering::Equal => String::new(),
-                    }
-                };
-                write!(f, " —")?;
-                write!(
-                    f,
-                    "{}",
-                    moved("assembly", expected.assembly, observed.assembly)
-                )?;
-                write!(
-                    f,
-                    "{}",
-                    moved("project", expected.project, observed.project)
-                )?;
-                write!(
-                    f,
-                    "{}",
-                    moved("reverse", expected.reverse, observed.reverse)
-                )?;
-                if observed.total() < expected.total() {
-                    write!(
-                        f,
-                        ". Some of this is a fix: lower BORZOI_PROJECT_EXPECT_DIVERGENCES to \
-                         \"{observed}\" so the ratchet holds the new floor"
-                    )
-                } else {
-                    write!(
-                        f,
-                        ". A raised count is a wrong target the corpus did not have before; \
-                         raise the recorded count only with a reason"
-                    )
-                }
-            }
+            Self::ManifestUnrenderable(e) => write!(f, "manifest: {e}"),
+            Self::ManifestMismatch(diff) => f.write_str(diff),
         }
     }
 }
@@ -2188,59 +2290,91 @@ pub fn run_project_corpus_diff_with_options(
         build_properties: options.build_properties,
     };
 
+    let mut projects = Vec::new();
     for project in visited {
         summary.record_project_visited();
-        let loaded = match load_lsp_project_with_options(&project, &load_options) {
-            Ok(loaded) => loaded,
-            Err(reason) => {
-                summary.record_skip(project, reason.to_string());
-                continue;
+        let verdict = match visit_project(&project, &load_options, &mut summary) {
+            Ok((assets, sources, comparison)) => {
+                summary.record_comparison(&comparison);
+                record_divergence_details(&comparison, &mut divergence_details);
+                ProjectVerdict::Comparable {
+                    assets,
+                    sources,
+                    comparison: Box::new(comparison),
+                }
+            }
+            Err((skip, reason)) => {
+                summary.record_skip(project.clone(), reason);
+                ProjectVerdict::Skipped(skip)
             }
         };
-        summary.record_project_assets(loaded.project.clone(), loaded.project_assets.clone());
-        let json = match invoke_fcs_uses_project(&loaded) {
-            Ok(json) => json,
-            Err(err) => {
-                summary.record_skip(loaded.project.clone(), err.to_string());
-                continue;
-            }
-        };
-        let sources: Vec<_> = loaded
-            .parses
-            .paths
-            .iter()
-            .cloned()
-            .zip(loaded.parses.texts.iter().cloned())
-            .collect();
-        let fcs = match parse_project_uses(&json, &sources) {
-            Ok(fcs) => fcs,
-            Err(err) => {
-                summary.record_skip(loaded.project.clone(), err.to_string());
-                continue;
-            }
-        };
-        let comparison = compare_project_uses(&loaded, &fcs);
-        if !comparison.fcs_error_files.is_empty() {
-            summary.record_skip(
-                loaded.project.clone(),
-                fcs_error_skip_reason(&comparison.fcs_error_files),
-            );
-            continue;
-        }
-        summary.record_comparison(&comparison);
-        record_divergence_details(&comparison, &mut divergence_details);
+        projects.push(ProjectRecord { project, verdict });
     }
 
     CorpusRun {
         summary,
         exhaustive,
         divergence_details,
+        projects,
     }
 }
 
+/// A comparable project's assets status, sources and comparison.
+type Visited = (ProjectAssetsStatus, Vec<(PathBuf, Arc<str>)>, Comparison);
+
+/// Load `project`, ask the oracle about it and compare, or say why not (the
+/// structured skip and the report's sentence for it).
+fn visit_project(
+    project: &Path,
+    load_options: &LoadOptions,
+    summary: &mut CorpusSummary,
+) -> Result<Visited, (ProjectSkip, String)> {
+    let loaded = load_lsp_project_with_options(project, load_options).map_err(|reason| {
+        let text = reason.to_string();
+        (ProjectSkip::Load(reason), text)
+    })?;
+    summary.record_project_assets(loaded.project.clone(), loaded.project_assets.clone());
+    let json = invoke_fcs_uses_project(&loaded)
+        .map_err(|err| (ProjectSkip::FcsInvoke, err.to_string()))?;
+    let sources: Vec<(PathBuf, Arc<str>)> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let fcs = parse_project_uses(&json, &sources)
+        .map_err(|err| (ProjectSkip::FcsParse, err.to_string()))?;
+    let comparison = compare_project_uses(&loaded, &fcs);
+    if !comparison.fcs_error_files.is_empty() {
+        let reason = fcs_error_skip_reason(&comparison.fcs_error_files);
+        return Err((
+            ProjectSkip::FcsErrors {
+                files: comparison.fcs_error_files,
+            },
+            reason,
+        ));
+    }
+    Ok((loaded.project_assets, sources, comparison))
+}
+
+/// Every gate `config` names, in order; a configured manifest is rewritten
+/// rather than compared when `BORZOI_UPDATE_MANIFESTS` is set.
 pub fn check_project_corpus_run(
     run: &CorpusRun,
-    config: CorpusRunnerConfig,
+    config: &CorpusRunnerConfig,
+) -> Result<(), CorpusRunFailure> {
+    check_project_corpus_run_with(
+        run,
+        config,
+        borzoi_oracle_harness::manifest::update_requested(),
+    )
+}
+
+fn check_project_corpus_run_with(
+    run: &CorpusRun,
+    config: &CorpusRunnerConfig,
+    update_manifest: bool,
 ) -> Result<(), CorpusRunFailure> {
     if run.summary.projects_visited == 0 {
         return Err(CorpusRunFailure::NoProjectsVisited);
@@ -2292,24 +2426,24 @@ pub fn check_project_corpus_run(
             });
         }
     }
-    // A recorded expectation owns this check in both directions, because it can
-    // say which category moved and which way; the one-sided ceiling only knows
-    // a total. The `comparable_projects` floor `passes_soundness_gate` carries
-    // is kept explicitly: a run that measured nothing must not satisfy an
-    // expectation of zero by arithmetic.
-    if let Some(expected) = config.expect_divergences {
-        if run.summary.comparable_projects == 0 {
-            return Err(CorpusRunFailure::NoComparableProjects);
-        }
-        let observed = run.summary.divergence_counts();
-        if observed != expected {
-            return Err(CorpusRunFailure::DivergenceExpectation { expected, observed });
-        }
-    } else if !run.summary.passes_soundness_gate(config.max_divergences) {
+    if !run.summary.passes_soundness_gate(config.max_divergences) {
         return Err(CorpusRunFailure::SoundnessGate {
             max_divergences: config.max_divergences,
             divergences: run.summary.total_divergences(),
         });
+    }
+    // Last, so every gate above has passed first: in particular, a run with a
+    // divergence never reaches the manifest, so regenerating it cannot bless one.
+    if let Some(manifest) = &config.manifest {
+        let actual = manifest::project_corpus_manifest(&run.projects, &manifest.root)
+            .map_err(CorpusRunFailure::ManifestUnrenderable)?;
+        borzoi_oracle_harness::manifest::compare_with(
+            &manifest.path,
+            &actual,
+            PROJECT_CORPUS_MANIFEST_REGENERATE,
+            update_manifest,
+        )
+        .map_err(CorpusRunFailure::ManifestMismatch)?;
     }
     Ok(())
 }
@@ -2950,7 +3084,7 @@ fn infer_for_comparison(
 /// so that a surface going dark (no answer of its kind graded any more) is
 /// visible, rather than silently passing every divergence check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AnswerSurface {
+pub enum AnswerSurface {
     /// The resolver's main occurrence map.
     Resolver,
     /// The resolver's attribute-type map.
@@ -2967,7 +3101,7 @@ enum ServedAnswer {
     /// not say what that position means and adjudicates nothing there.
     Contested,
     /// The LSP serves a deferral, or nothing: no claim.
-    Declined,
+    Declined(ServedDecline),
     /// The LSP serves this answer, from this surface.
     Committed(Resolution, AnswerSurface),
 }
@@ -3024,7 +3158,13 @@ fn served_answer(
         return ServedAnswer::Contested;
     }
     match served_resolution_with_range(rf, inferred, probe) {
-        Some((range, res)) if is_concrete_resolution(res) => {
+        Some((
+            range,
+            res @ (Resolution::Local(_)
+            | Resolution::Item(_)
+            | Resolution::Entity(_)
+            | Resolution::Member { .. }),
+        )) => {
             let surface = if rf.resolution_at(range) == Some(res) {
                 AnswerSurface::Resolver
             } else if rf.attribute_resolution_at(range) == Some(res) {
@@ -3034,7 +3174,11 @@ fn served_answer(
             };
             ServedAnswer::Committed(res, surface)
         }
-        Some(_) | None => ServedAnswer::Declined,
+        Some((_, Resolution::Deferred(reason))) => {
+            ServedAnswer::Declined(ServedDecline::Deferred(reason))
+        }
+        Some((_, Resolution::Unresolved)) => ServedAnswer::Declined(ServedDecline::Unresolved),
+        None => ServedAnswer::Declined(ServedDecline::Unrecorded),
     }
 }
 
@@ -3089,14 +3233,20 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
     let mut comparable_fcs_files = Vec::new();
 
     for file_uses in fcs {
+        let loaded_idx = index_by_path.get(&path_key(&file_uses.path)).copied();
         if file_uses.has_error_diagnostics() {
             comparison.fcs_error_files.push(FcsErrorFile {
-                path: file_uses.path.clone(),
+                // Our spelling of the path where we have one, so a manifest keys
+                // the file the same way whichever side named it.
+                path: loaded_idx.map_or_else(
+                    || file_uses.path.clone(),
+                    |idx| loaded.parses.paths[idx].clone(),
+                ),
                 errors: file_uses.error_diagnostics().cloned().collect(),
             });
             continue;
         }
-        let Some(&file_idx) = index_by_path.get(&path_key(&file_uses.path)) else {
+        let Some(file_idx) = loaded_idx else {
             comparison.divergences.push(Divergence {
                 file: file_uses.path.clone(),
                 range: (0, 0),
@@ -3111,164 +3261,30 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             continue;
         };
         comparison.files_compared += 1;
+        comparison
+            .compared_files
+            .push(loaded.parses.paths[file_idx].clone());
         comparison.uses_reported += file_uses.uses.len();
         let rf = loaded.resolved.file(file_idx);
         let (inferred, members) = infer_for_comparison(loaded, file_idx);
         let shape = oracle_shape(file_uses);
         for u in &file_uses.uses {
-            if u.is_from_definition {
-                comparison.skipped_uses.definitions += 1;
-                continue;
-            }
-            if u.start == u.end {
-                comparison.skipped_uses.zero_width += 1;
-                continue;
-            }
-            if u.is_compiler_generated {
-                comparison.skipped_uses.compiler_generated += 1;
-                continue;
-            }
-            if !shape.grades(u) {
-                comparison.skipped_uses.shadowed_constructor_use += 1;
-                continue;
-            }
-            if shape.is_ambiguous(u) {
-                comparison.skipped_uses.ambiguous_oracle_range += 1;
-                continue;
-            }
-            let range = TextRange::new(
-                u32::try_from(u.start).expect("use start fits u32").into(),
-                u32::try_from(u.end).expect("use end fits u32").into(),
+            let outcome = grade_use(
+                loaded,
+                file_idx,
+                rf,
+                inferred.as_ref(),
+                file_uses,
+                &shape,
+                u,
+                &mut comparison,
             );
-            let UseDecl::InProject(expected) = &u.decl else {
-                match assembly_decl(u) {
-                    Some(expected) => {
-                        let served = served_answer(rf, inferred.as_ref(), file_uses, u);
-                        if served == ServedAnswer::Contested {
-                            comparison.skipped_uses.ambiguous_oracle_range += 1;
-                            continue;
-                        }
-                        comparison.assembly_uses_considered += 1;
-                        comparison.observe_surface(served);
-                        match served {
-                            ServedAnswer::Contested | ServedAnswer::Declined => {
-                                comparison.assembly_deferrals += 1;
-                                comparison
-                                    .assembly_decline_census
-                                    .observe(rf.decline_site(range));
-                            }
-                            ServedAnswer::Committed(
-                                res @ (Resolution::Entity(_) | Resolution::Member { .. }),
-                                _,
-                            ) => {
-                                let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-                                if canonical_assembly(&actual.assembly)
-                                    == canonical_assembly(&expected.assembly)
-                                    && assembly_full_name_agrees_for(
-                                        &loaded.assembly_env,
-                                        res,
-                                        &actual.full_name,
-                                        &expected,
-                                    )
-                                {
-                                    comparison.assembly_matches += 1;
-                                } else {
-                                    comparison.assembly_divergences.push(AssemblyDivergence {
-                                        file: file_uses.path.clone(),
-                                        range: (u.start, u.end),
-                                        name: u.name.clone(),
-                                        expected,
-                                        actual: format!(
-                                            "assembly {} full_name {}",
-                                            actual.assembly, actual.full_name
-                                        ),
-                                    });
-                                }
-                            }
-                            ServedAnswer::Committed(other, _) => {
-                                comparison.assembly_divergences.push(AssemblyDivergence {
-                                    file: file_uses.path.clone(),
-                                    range: (u.start, u.end),
-                                    name: u.name.clone(),
-                                    expected,
-                                    actual: format!("{other:?}"),
-                                })
-                            }
-                        }
-                    }
-                    // No assembly identity to compare against either. An
-                    // out-of-project *file* is its own bucket: it says the
-                    // symbol has a real source we simply do not hold (an F#
-                    // assembly's embedded ranges, a linked file), which is
-                    // worth seeing in the report rather than folding into the
-                    // oracle-said-nothing count.
-                    None if matches!(u.decl, UseDecl::OutsideProject(_)) => {
-                        comparison.skipped_uses.out_of_project_declarations += 1;
-                    }
-                    None if u.assembly.is_some() || u.full_name.is_some() => {
-                        comparison.skipped_uses.non_project_declarations += 1;
-                    }
-                    None => {
-                        comparison.skipped_uses.no_oracle_declaration += 1;
-                    }
-                }
-                continue;
-            };
-            let served = served_answer(rf, inferred.as_ref(), file_uses, u);
-            if served == ServedAnswer::Contested {
-                comparison.skipped_uses.ambiguous_oracle_range += 1;
-                continue;
-            }
-            comparison.uses_considered += 1;
-            comparison.observe_surface(served);
-            match served {
-                ServedAnswer::Contested | ServedAnswer::Declined => {
-                    comparison.deferrals += 1;
-                    comparison
-                        .project_decline_census
-                        .observe(rf.decline_site(range));
-                }
-                ServedAnswer::Committed(res @ (Resolution::Local(_) | Resolution::Item(_)), _) => {
-                    match resolution_def(loaded, file_idx, res) {
-                        Some((actual_file_idx, def))
-                            if path_key(&loaded.parses.paths[actual_file_idx])
-                                == path_key(&expected.file)
-                                && range_pair(def.range) == (expected.start, expected.end) =>
-                        {
-                            comparison.matches += 1;
-                        }
-                        Some((actual_file_idx, def)) => {
-                            comparison.divergences.push(Divergence {
-                                file: file_uses.path.clone(),
-                                range: (u.start, u.end),
-                                name: u.name.clone(),
-                                expected: expected.clone(),
-                                actual: format!(
-                                    "binder {:?} at {}:{}..{}",
-                                    def.name,
-                                    loaded.parses.paths[actual_file_idx].display(),
-                                    u32::from(def.range.start()),
-                                    u32::from(def.range.end())
-                                ),
-                            });
-                        }
-                        None => comparison.divergences.push(Divergence {
-                            file: file_uses.path.clone(),
-                            range: (u.start, u.end),
-                            name: u.name.clone(),
-                            expected: expected.clone(),
-                            actual: format!("{res:?} (no project def)"),
-                        }),
-                    }
-                }
-                ServedAnswer::Committed(other, _) => comparison.divergences.push(Divergence {
-                    file: file_uses.path.clone(),
-                    range: (u.start, u.end),
-                    name: u.name.clone(),
-                    expected: expected.clone(),
-                    actual: format!("{other:?}"),
-                }),
-            }
+            comparison.record(LedgerItem {
+                file: loaded.parses.paths[file_idx].clone(),
+                range: (u.start, u.end),
+                name: u.name.clone(),
+                outcome,
+            });
         }
         // The reverse direction reads the same three surfaces, so it is handed
         // the member table this file's forward pass already solved rather than
@@ -3283,6 +3299,157 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             .then(a.actual.cmp(&b.actual))
     });
     comparison
+}
+
+/// Grade oracle record `u` of `file_uses` against what the LSP serves for it.
+///
+/// Returns the record's [`ItemOutcome`] for [`Comparison::record`] to count; the
+/// only things written to `comparison` here are what the outcome alone cannot
+/// carry — a divergence's detail, and which surface served the answer.
+#[allow(clippy::too_many_arguments)]
+fn grade_use(
+    loaded: &LoadedProject,
+    file_idx: usize,
+    rf: &ResolvedFile,
+    inferred: Option<&InferredFile>,
+    file_uses: &FileUses,
+    shape: &OracleShape,
+    u: &ProjectUse,
+    comparison: &mut Comparison,
+) -> ItemOutcome {
+    if u.is_from_definition {
+        return ItemOutcome::SetAside(SetAside::Definition);
+    }
+    if u.start == u.end {
+        return ItemOutcome::SetAside(SetAside::ZeroWidth);
+    }
+    if u.is_compiler_generated {
+        return ItemOutcome::SetAside(SetAside::CompilerGenerated);
+    }
+    if !shape.grades(u) {
+        return ItemOutcome::SetAside(SetAside::ShadowedConstructorUse);
+    }
+    if shape.is_ambiguous(u) {
+        return ItemOutcome::SetAside(SetAside::AmbiguousOracleRange);
+    }
+    let range = TextRange::new(
+        u32::try_from(u.start).expect("use start fits u32").into(),
+        u32::try_from(u.end).expect("use end fits u32").into(),
+    );
+    let (graded, expected) = match &u.decl {
+        UseDecl::InProject(expected) => (Graded::Project, Ok(expected)),
+        UseDecl::Unlocated | UseDecl::OutsideProject(_) => match assembly_decl(u) {
+            Some(expected) => (Graded::Assembly, Err(expected)),
+            // No assembly identity to compare against either. An out-of-project
+            // *file* is its own bucket: it says the symbol has a real source we
+            // simply do not hold (an F# assembly's embedded ranges, a linked
+            // file), which is worth seeing in the report rather than folding
+            // into the oracle-said-nothing count.
+            None if matches!(u.decl, UseDecl::OutsideProject(_)) => {
+                return ItemOutcome::SetAside(SetAside::OutOfProjectDeclaration);
+            }
+            None if u.assembly.is_some() || u.full_name.is_some() => {
+                return ItemOutcome::SetAside(SetAside::NonProjectDeclaration);
+            }
+            None => return ItemOutcome::SetAside(SetAside::NoOracleDeclaration),
+        },
+    };
+    let served = served_answer(rf, inferred, file_uses, u);
+    comparison.observe_surface(served);
+    let res = match served {
+        ServedAnswer::Contested => return ItemOutcome::SetAside(SetAside::AmbiguousOracleRange),
+        ServedAnswer::Declined(served) => {
+            return ItemOutcome::Deferral {
+                graded,
+                served,
+                site: rf.decline_site(range),
+            };
+        }
+        ServedAnswer::Committed(res, surface) => {
+            if served_answer_agrees(loaded, file_idx, res, &expected) {
+                return ItemOutcome::Match(graded, surface);
+            }
+            res
+        }
+    };
+    match expected {
+        Ok(expected) => comparison.divergences.push(Divergence {
+            file: file_uses.path.clone(),
+            range: (u.start, u.end),
+            name: u.name.clone(),
+            expected: expected.clone(),
+            actual: match res {
+                Resolution::Local(_) | Resolution::Item(_) => {
+                    match resolution_def(loaded, file_idx, res) {
+                        Some((actual_file_idx, def)) => format!(
+                            "binder {:?} at {}:{}..{}",
+                            def.name,
+                            loaded.parses.paths[actual_file_idx].display(),
+                            u32::from(def.range.start()),
+                            u32::from(def.range.end())
+                        ),
+                        None => format!("{res:?} (no project def)"),
+                    }
+                }
+                other => format!("{other:?}"),
+            },
+        }),
+        Err(expected) => comparison.assembly_divergences.push(AssemblyDivergence {
+            file: file_uses.path.clone(),
+            range: (u.start, u.end),
+            name: u.name.clone(),
+            actual: match res {
+                Resolution::Entity(_) | Resolution::Member { .. } => {
+                    let actual = assembly_resolution_decl(&loaded.assembly_env, res);
+                    format!(
+                        "assembly {} full_name {}",
+                        actual.assembly, actual.full_name
+                    )
+                }
+                other => format!("{other:?}"),
+            },
+            expected,
+        }),
+    }
+    ItemOutcome::Divergence(graded)
+}
+
+/// Whether committed answer `res` names the oracle's declaration: the
+/// in-project definition site (`Ok`) or the assembly identity (`Err`). An
+/// answer of the other kind never agrees.
+fn served_answer_agrees(
+    loaded: &LoadedProject,
+    file_idx: usize,
+    res: Resolution,
+    expected: &Result<&DeclSite, AssemblyDecl>,
+) -> bool {
+    match (res, expected) {
+        (Resolution::Local(_) | Resolution::Item(_), Ok(expected)) => {
+            resolution_def(loaded, file_idx, res).is_some_and(|(actual_file_idx, def)| {
+                path_key(&loaded.parses.paths[actual_file_idx]) == path_key(&expected.file)
+                    && range_pair(def.range) == (expected.start, expected.end)
+            })
+        }
+        (Resolution::Entity(_) | Resolution::Member { .. }, Err(expected)) => {
+            let actual = assembly_resolution_decl(&loaded.assembly_env, res);
+            canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly)
+                && assembly_full_name_agrees_for(
+                    &loaded.assembly_env,
+                    res,
+                    &actual.full_name,
+                    expected,
+                )
+        }
+        (
+            Resolution::Local(_)
+            | Resolution::Item(_)
+            | Resolution::Entity(_)
+            | Resolution::Member { .. }
+            | Resolution::Deferred(_)
+            | Resolution::Unresolved,
+            Ok(_) | Err(_),
+        ) => false,
+    }
 }
 
 /// How this file's oracle records are to be read where several land on one
@@ -3500,21 +3667,28 @@ fn add_reverse_divergences(
                 .uses
                 .iter()
                 .any(|u| u.start == start && u.end == end);
-            if !spoke_here {
-                if is_defining_occurrence(loaded, *file_idx, res, start, end) {
-                    comparison.unoracled_definitions += 1;
-                    continue;
-                }
-                if rf.is_or_pattern_alias(range) {
-                    comparison.unoracled_or_pattern_aliases += 1;
-                    continue;
-                }
-            }
-            comparison.reverse_divergences.push(ReverseDivergence {
+            let outcome =
+                if !spoke_here && is_defining_occurrence(loaded, *file_idx, res, start, end) {
+                    ItemOutcome::UnoracledDefinition
+                } else if !spoke_here && rf.is_or_pattern_alias(range) {
+                    ItemOutcome::UnoracledOrPatternAlias
+                } else {
+                    comparison.reverse_divergences.push(ReverseDivergence {
+                        file: loaded.parses.paths[*file_idx].clone(),
+                        range: (start, end),
+                        actual: resolution_summary(loaded, *file_idx, res),
+                        covering_oracles,
+                    });
+                    ItemOutcome::ReverseDivergence
+                };
+            comparison.record(LedgerItem {
                 file: loaded.parses.paths[*file_idx].clone(),
                 range: (start, end),
-                actual: resolution_summary(loaded, *file_idx, res),
-                covering_oracles,
+                name: loaded.parses.texts[*file_idx]
+                    .get(start..end)
+                    .unwrap_or("<out of range>")
+                    .to_string(),
+                outcome,
             });
         }
     }
@@ -4195,17 +4369,26 @@ impl CorpusRunnerConfig {
     }
 
     pub fn from_raw_env(raw: CorpusRunnerRawEnv) -> Result<Self, CorpusRunnerConfigError> {
-        let expect_divergences = parse_divergence_expectation(raw.expect_divergences)?;
-        if expect_divergences.is_some() && raw.max_divergences.is_some() {
-            return Err(CorpusRunnerConfigError::ConflictingDivergenceRatchets);
+        let max_divergences =
+            parse_runner_usize("BORZOI_PROJECT_MAX_DIVERGENCES", raw.max_divergences)?.unwrap_or(0);
+        let manifest = match (raw.manifest, raw.manifest_root) {
+            (None, None) => None,
+            (Some(path), Some(root)) => Some(ManifestConfig {
+                path: PathBuf::from(path),
+                root: PathBuf::from(root),
+            }),
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(CorpusRunnerConfigError::ManifestNeedsRoot);
+            }
+        };
+        if manifest.is_some() && max_divergences != 0 {
+            return Err(CorpusRunnerConfigError::ManifestWithDivergenceAllowance {
+                max_divergences,
+            });
         }
         Ok(Self {
-            expect_divergences,
-            max_divergences: parse_runner_usize(
-                "BORZOI_PROJECT_MAX_DIVERGENCES",
-                raw.max_divergences,
-            )?
-            .unwrap_or(0),
+            manifest,
+            max_divergences,
             min_comparable_projects: parse_runner_nonzero(
                 "BORZOI_PROJECT_MIN_COMPARABLE",
                 raw.min_comparable_projects,
@@ -4228,7 +4411,8 @@ impl CorpusRunnerConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CorpusRunnerRawEnv {
-    pub expect_divergences: Option<OsString>,
+    pub manifest: Option<OsString>,
+    pub manifest_root: Option<OsString>,
     pub max_divergences: Option<OsString>,
     pub min_comparable_projects: Option<OsString>,
     pub max_skipped_projects: Option<OsString>,
@@ -4239,7 +4423,8 @@ pub struct CorpusRunnerRawEnv {
 impl CorpusRunnerRawEnv {
     pub fn current() -> Self {
         Self {
-            expect_divergences: std::env::var_os("BORZOI_PROJECT_EXPECT_DIVERGENCES"),
+            manifest: std::env::var_os("BORZOI_PROJECT_MANIFEST"),
+            manifest_root: std::env::var_os("BORZOI_PROJECT_MANIFEST_ROOT"),
             max_divergences: std::env::var_os("BORZOI_PROJECT_MAX_DIVERGENCES"),
             min_comparable_projects: std::env::var_os("BORZOI_PROJECT_MIN_COMPARABLE"),
             max_skipped_projects: std::env::var_os("BORZOI_PROJECT_MAX_SKIPPED"),
@@ -4251,14 +4436,16 @@ impl CorpusRunnerRawEnv {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CorpusRunnerConfigError {
-    /// `BORZOI_PROJECT_EXPECT_DIVERGENCES` and `BORZOI_PROJECT_MAX_DIVERGENCES`
-    /// were both set. They are two incompatible readings of the same quantity —
-    /// a two-sided expectation and a one-sided ceiling — so a precedence rule
-    /// would silently discard whichever the caller meant.
-    ConflictingDivergenceRatchets,
-    InvalidDivergenceExpectation {
-        value: String,
-        reason: &'static str,
+    /// One of `BORZOI_PROJECT_MANIFEST` and `BORZOI_PROJECT_MANIFEST_ROOT`
+    /// without the other: a manifest's keys mean nothing without the root they
+    /// are relative to.
+    ManifestNeedsRoot,
+    /// A manifest alongside a non-zero `BORZOI_PROJECT_MAX_DIVERGENCES`. The
+    /// manifest records state and would record the allowed divergences as
+    /// state, so regenerating it would bless them; the divergence gate stays a
+    /// hard zero whenever a manifest is checked.
+    ManifestWithDivergenceAllowance {
+        max_divergences: usize,
     },
     InvalidUsize {
         key: &'static str,
@@ -4277,13 +4464,14 @@ pub enum CorpusRunnerConfigError {
 impl fmt::Display for CorpusRunnerConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ConflictingDivergenceRatchets => write!(
+            Self::ManifestNeedsRoot => write!(
                 f,
-                "set BORZOI_PROJECT_EXPECT_DIVERGENCES or BORZOI_PROJECT_MAX_DIVERGENCES, not both"
+                "set both BORZOI_PROJECT_MANIFEST and BORZOI_PROJECT_MANIFEST_ROOT, or neither"
             ),
-            Self::InvalidDivergenceExpectation { value, reason } => write!(
+            Self::ManifestWithDivergenceAllowance { max_divergences } => write!(
                 f,
-                "BORZOI_PROJECT_EXPECT_DIVERGENCES must be \"assembly=<n>,project=<n>,reverse=<n>\"                  ({reason}); got {value:?}"
+                "BORZOI_PROJECT_MANIFEST requires zero divergences, but \
+                 BORZOI_PROJECT_MAX_DIVERGENCES={max_divergences}"
             ),
             Self::InvalidUsize { key, value } => {
                 write!(f, "{key} must be a non-negative integer; got {value:?}")
@@ -4379,53 +4567,6 @@ impl fmt::Display for ProjectCandidateSettingsError {
 }
 
 impl std::error::Error for ProjectCandidateSettingsError {}
-
-/// Parse `BORZOI_PROJECT_EXPECT_DIVERGENCES`, spelled
-/// `assembly=<n>,project=<n>,reverse=<n>` in any order.
-///
-/// All three categories are required and no category may repeat: the value is a
-/// *record* of what the corpus produces, and a spelling that silently defaults a
-/// category would record a claim nobody wrote. An unknown key is an error for
-/// the same reason — a typo would otherwise leave the category it meant to pin
-/// at its default.
-fn parse_divergence_expectation(
-    raw: Option<OsString>,
-) -> Result<Option<DivergenceCounts>, CorpusRunnerConfigError> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let text = raw.to_string_lossy().into_owned();
-    let invalid = |reason: &'static str| CorpusRunnerConfigError::InvalidDivergenceExpectation {
-        value: text.clone(),
-        reason,
-    };
-    let (mut project, mut assembly, mut reverse) = (None, None, None);
-    for field in text.split(',') {
-        let (key, value) = field
-            .split_once('=')
-            .ok_or_else(|| invalid("each field is <category>=<count>"))?;
-        let count: usize = value
-            .parse()
-            .map_err(|_| invalid("each count is a non-negative integer"))?;
-        let slot = match key.trim() {
-            "project" => &mut project,
-            "assembly" => &mut assembly,
-            "reverse" => &mut reverse,
-            _ => return Err(invalid("categories are assembly, project and reverse")),
-        };
-        if slot.replace(count).is_some() {
-            return Err(invalid("each category appears exactly once"));
-        }
-    }
-    match (project, assembly, reverse) {
-        (Some(project), Some(assembly), Some(reverse)) => Ok(Some(DivergenceCounts {
-            project,
-            assembly,
-            reverse,
-        })),
-        _ => Err(invalid("all three categories are required")),
-    }
-}
 
 fn parse_runner_usize(
     key: &'static str,
@@ -5706,7 +5847,8 @@ mod tests {
             max_skipped_projects: Some(OsString::from("4")),
             max_skipped_project_rate: Some(OsString::from("2500")),
             min_coverage: Some(OsString::from("9000")),
-            expect_divergences: None,
+            manifest: None,
+            manifest_root: None,
         })
         .expect("runner config is valid");
 
@@ -5868,6 +6010,8 @@ mod tests {
                 covering_oracles: vec!["no oracle declaration".to_string()],
             }],
             fcs_error_files: Vec::new(),
+            compared_files: Vec::new(),
+            ledger: Vec::new(),
         };
 
         summary.record_comparison(&comparison);
@@ -6009,189 +6153,6 @@ mod tests {
         assert!(summary.passes_soundness_gate(1));
     }
 
-    /// A summary carrying `project`/`assembly`/`reverse` divergences, for the
-    /// expectation tests below.
-    fn summary_with_divergences(counts: DivergenceCounts) -> CorpusSummary {
-        let mut summary = CorpusSummary::new(1);
-        summary.record_project_visited();
-        summary.record_comparison(&Comparison {
-            divergences: (0..counts.project)
-                .map(|i| Divergence {
-                    file: PathBuf::from("/tmp/B.fs"),
-                    range: (i, i + 1),
-                    name: "x".to_string(),
-                    expected: DeclSite {
-                        file: PathBuf::from("/tmp/A.fs"),
-                        start: 1,
-                        end: 2,
-                    },
-                    actual: "Unresolved".to_string(),
-                })
-                .collect(),
-            assembly_divergences: (0..counts.assembly)
-                .map(|i| AssemblyDivergence {
-                    file: PathBuf::from("/tmp/B.fs"),
-                    range: (i, i + 1),
-                    name: "y".to_string(),
-                    expected: AssemblyDecl {
-                        assembly: "Lib".to_string(),
-                        full_name: "Lib.T".to_string(),
-                        structural: None,
-                    },
-                    actual: "Other.T".to_string(),
-                })
-                .collect(),
-            reverse_divergences: (0..counts.reverse)
-                .map(|i| ReverseDivergence {
-                    file: PathBuf::from("/tmp/B.fs"),
-                    range: (i, i + 1),
-                    actual: "project \"x\" at /tmp/A.fs:1..2".to_string(),
-                    covering_oracles: Vec::new(),
-                })
-                .collect(),
-            ..Comparison::default()
-        });
-        summary
-    }
-
-    fn run_with_divergences(counts: DivergenceCounts) -> CorpusRun {
-        CorpusRun {
-            summary: summary_with_divergences(counts),
-            exhaustive: false,
-            divergence_details: Vec::new(),
-        }
-    }
-
-    const RECORDED: DivergenceCounts = DivergenceCounts {
-        project: 1,
-        assembly: 16,
-        reverse: 16,
-    };
-
-    fn expecting(counts: DivergenceCounts) -> CorpusRunnerConfig {
-        CorpusRunnerConfig {
-            expect_divergences: Some(counts),
-            ..CorpusRunnerConfig::default()
-        }
-    }
-
-    #[test]
-    fn a_divergence_expectation_passes_only_on_the_exact_counts() {
-        assert_eq!(
-            check_project_corpus_run(&run_with_divergences(RECORDED), expecting(RECORDED)),
-            Ok(())
-        );
-    }
-
-    /// The regression direction — what a `#204`-shaped change does.
-    #[test]
-    fn a_divergence_expectation_fails_when_a_category_regresses() {
-        let observed = DivergenceCounts {
-            assembly: 17,
-            ..RECORDED
-        };
-        assert_eq!(
-            check_project_corpus_run(&run_with_divergences(observed), expecting(RECORDED)),
-            Err(CorpusRunFailure::DivergenceExpectation {
-                expected: RECORDED,
-                observed,
-            })
-        );
-    }
-
-    /// The other side of the ratchet: fixing a divergence fails until the
-    /// recorded count comes down with it. Without this the ceiling never
-    /// descends and the gate decays into a rubber stamp.
-    #[test]
-    fn a_divergence_expectation_fails_when_a_category_improves() {
-        let observed = DivergenceCounts {
-            assembly: 15,
-            ..RECORDED
-        };
-        assert_eq!(
-            check_project_corpus_run(&run_with_divergences(observed), expecting(RECORDED)),
-            Err(CorpusRunFailure::DivergenceExpectation {
-                expected: RECORDED,
-                observed,
-            })
-        );
-    }
-
-    /// Why the expectation is per-category rather than a single total: a change
-    /// that introduces an assembly wrong target while fixing a project one
-    /// leaves the total untouched, and a total-only ratchet cannot see it.
-    #[test]
-    fn a_divergence_expectation_sees_a_trade_that_keeps_the_total() {
-        let observed = DivergenceCounts {
-            project: 0,
-            assembly: 17,
-            reverse: 16,
-        };
-        assert_eq!(observed.total(), RECORDED.total());
-        assert_eq!(
-            check_project_corpus_run(&run_with_divergences(observed), expecting(RECORDED)),
-            Err(CorpusRunFailure::DivergenceExpectation {
-                expected: RECORDED,
-                observed,
-            })
-        );
-    }
-
-    /// An expectation is still a ceiling: a run that measured nothing at all
-    /// must not satisfy it by accident.
-    #[test]
-    fn a_divergence_expectation_still_requires_a_comparable_project() {
-        let empty = CorpusRun {
-            summary: CorpusSummary::new(1),
-            exhaustive: false,
-            divergence_details: Vec::new(),
-        };
-        assert!(check_project_corpus_run(&empty, expecting(RECORDED)).is_err());
-    }
-
-    #[test]
-    fn a_divergence_expectation_parses_its_three_categories_in_any_order() {
-        let parsed = CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
-            expect_divergences: Some(OsString::from("reverse=16,assembly=16,project=1")),
-            ..CorpusRunnerRawEnv::default()
-        })
-        .expect("parses");
-        assert_eq!(parsed.expect_divergences, Some(RECORDED));
-    }
-
-    #[test]
-    fn a_divergence_expectation_rejects_a_malformed_spelling() {
-        for bad in [
-            "assembly=16,project=1",                        // reverse missing
-            "assembly=16,project=1,reverse=16,x=0",         // unknown category
-            "assembly=16,assembly=16,project=1,reverse=16", // duplicate
-            "assembly=16 project=1 reverse=16",             // wrong separator
-            "assembly=-1,project=1,reverse=16",             // not a count
-        ] {
-            let parsed = CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
-                expect_divergences: Some(OsString::from(bad)),
-                ..CorpusRunnerRawEnv::default()
-            });
-            assert!(parsed.is_err(), "{bad:?} must not parse");
-        }
-    }
-
-    /// The two knobs say the same thing in incompatible ways — one-sided
-    /// ceiling versus two-sided expectation — so setting both is a
-    /// configuration error rather than a silent precedence rule.
-    #[test]
-    fn a_divergence_expectation_conflicts_with_a_max_divergences_ceiling() {
-        let parsed = CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
-            expect_divergences: Some(OsString::from("assembly=16,project=1,reverse=16")),
-            max_divergences: Some(OsString::from("33")),
-            ..CorpusRunnerRawEnv::default()
-        });
-        assert_eq!(
-            parsed,
-            Err(CorpusRunnerConfigError::ConflictingDivergenceRatchets)
-        );
-    }
-
     #[test]
     fn project_corpus_run_gate_reports_runner_failures() {
         let config = CorpusRunnerConfig::default();
@@ -6199,9 +6160,10 @@ mod tests {
             summary: CorpusSummary::new(0),
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
-            check_project_corpus_run(&empty, config),
+            check_project_corpus_run(&empty, &config),
             Err(CorpusRunFailure::NoProjectsVisited)
         );
 
@@ -6211,9 +6173,10 @@ mod tests {
             summary: no_comparable_summary,
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
-            check_project_corpus_run(&no_comparable, config),
+            check_project_corpus_run(&no_comparable, &config),
             Err(CorpusRunFailure::NoComparableProjects)
         );
 
@@ -6229,9 +6192,10 @@ mod tests {
             summary: discovery_summary,
             exhaustive: true,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
-            check_project_corpus_run(&discovery, config),
+            check_project_corpus_run(&discovery, &config),
             Err(CorpusRunFailure::ExhaustiveDiscoveryErrors { errors: 1 })
         );
 
@@ -6255,13 +6219,98 @@ mod tests {
             summary: divergent_summary,
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
-            check_project_corpus_run(&divergent, config),
+            check_project_corpus_run(&divergent, &config),
             Err(CorpusRunFailure::SoundnessGate {
                 max_divergences: 0,
                 divergences: 1,
             })
+        );
+
+        // The divergence gate runs before the manifest is consulted, even when
+        // regenerating — here into a directory that cannot be created, which
+        // would be its own failure — so a regenerated manifest can never record
+        // a divergence as state.
+        let with_manifest = CorpusRunnerConfig {
+            manifest: Some(ManifestConfig {
+                path: PathBuf::from("/nonexistent/project_corpus.txt"),
+                root: PathBuf::from("/tmp"),
+            }),
+            ..CorpusRunnerConfig::default()
+        };
+        assert_eq!(
+            check_project_corpus_run_with(&divergent, &with_manifest, true),
+            Err(CorpusRunFailure::SoundnessGate {
+                max_divergences: 0,
+                divergences: 1,
+            })
+        );
+        // And with the divergence gate passed, the manifest is checked.
+        assert!(matches!(
+            check_project_corpus_run_with(&clean_run(), &with_manifest, false),
+            Err(CorpusRunFailure::ManifestMismatch(message)) if message.contains("no manifest at")
+        ));
+    }
+
+    /// A run with one comparable project and nothing wrong with it.
+    fn clean_run() -> CorpusRun {
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison::default());
+        CorpusRun {
+            summary,
+            exhaustive: false,
+            divergence_details: Vec::new(),
+            projects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_manifest_needs_its_root_and_a_zero_divergence_gate() {
+        let manifest = || Some(OsString::from("m.txt"));
+        let root = || Some(OsString::from("/corpus"));
+        assert_eq!(
+            CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
+                manifest: manifest(),
+                manifest_root: root(),
+                ..CorpusRunnerRawEnv::default()
+            })
+            .map(|c| c.manifest),
+            Ok(Some(ManifestConfig {
+                path: PathBuf::from("m.txt"),
+                root: PathBuf::from("/corpus"),
+            }))
+        );
+        for (manifest, manifest_root) in [(manifest(), None), (None, root())] {
+            assert_eq!(
+                CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
+                    manifest,
+                    manifest_root,
+                    ..CorpusRunnerRawEnv::default()
+                }),
+                Err(CorpusRunnerConfigError::ManifestNeedsRoot)
+            );
+        }
+        assert_eq!(
+            CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
+                manifest: manifest(),
+                manifest_root: root(),
+                max_divergences: Some(OsString::from("1")),
+                ..CorpusRunnerRawEnv::default()
+            }),
+            Err(CorpusRunnerConfigError::ManifestWithDivergenceAllowance { max_divergences: 1 })
+        );
+        // An explicit zero is the gate the manifest requires, so it is accepted.
+        assert!(
+            CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
+                manifest: manifest(),
+                manifest_root: root(),
+                max_divergences: Some(OsString::from("0")),
+                ..CorpusRunnerRawEnv::default()
+            })
+            .is_ok()
         );
     }
 
@@ -6284,11 +6333,12 @@ mod tests {
             summary: min_comparable_summary,
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
             check_project_corpus_run(
                 &min_comparable,
-                CorpusRunnerConfig {
+                &CorpusRunnerConfig {
                     min_comparable_projects: NonZeroUsize::new(3),
                     ..CorpusRunnerConfig::default()
                 },
@@ -6314,11 +6364,12 @@ mod tests {
             summary: max_skipped_summary,
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
             check_project_corpus_run(
                 &max_skipped,
-                CorpusRunnerConfig {
+                &CorpusRunnerConfig {
                     max_skipped_projects: Some(1),
                     ..CorpusRunnerConfig::default()
                 },
@@ -6339,11 +6390,12 @@ mod tests {
             summary: max_skipped_rate_summary,
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
             check_project_corpus_run(
                 &max_skipped_rate,
-                CorpusRunnerConfig {
+                &CorpusRunnerConfig {
                     max_skipped_project_rate: Some(bps(4_999)),
                     ..CorpusRunnerConfig::default()
                 },
@@ -6363,11 +6415,12 @@ mod tests {
             summary: coverage_unavailable_summary,
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
             check_project_corpus_run(
                 &coverage_unavailable,
-                CorpusRunnerConfig {
+                &CorpusRunnerConfig {
                     min_coverage: Some(bps(1)),
                     ..CorpusRunnerConfig::default()
                 },
@@ -6386,11 +6439,12 @@ mod tests {
             summary: min_coverage_summary,
             exhaustive: false,
             divergence_details: Vec::new(),
+            projects: Vec::new(),
         };
         assert_eq!(
             check_project_corpus_run(
                 &min_coverage,
-                CorpusRunnerConfig {
+                &CorpusRunnerConfig {
                     min_coverage: Some(bps(8_000)),
                     ..CorpusRunnerConfig::default()
                 },
@@ -6418,6 +6472,7 @@ mod tests {
             divergence_details: vec![
                 "divergence /tmp/B.fs:5..6 x expected /tmp/A.fs:1..2, got Unresolved".to_string(),
             ],
+            projects: Vec::new(),
         };
 
         let report = render_project_corpus_run_report(&run);

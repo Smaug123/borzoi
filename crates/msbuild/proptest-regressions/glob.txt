@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 44feb0eeb4fdbfc7a188188bc43f22e70def3034a4c127bb0a433301ca48c21c # shrinks to items = [Item { visible: false, form: 37 }]
+cc 0ba6bd2d76287dda062a0580917ed5d11f5a1226747e331c1507cc61c106439b # shrinks to (cands, incl, excl) = (["c", "c"], ["**"], [])

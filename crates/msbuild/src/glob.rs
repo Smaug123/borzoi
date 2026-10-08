@@ -1,13 +1,12 @@
 //! Pure MSBuild-style glob matching for `.fsproj` item includes.
 //!
-//! This is the policy half of the `borzoi-msbuild` glob *seam*
-//! (`GlobResolver`): the `msbuild` core deliberately stays
-//! filesystem-free and dependency-light, so the LSP shell owns glob
-//! semantics and ordering. This module is the *pure* core of that —
-//! pattern parsing and matching against relative paths, plus a
-//! deterministic selection over a candidate set. The filesystem
-//! enumeration that produces those candidates, and the wiring into the
-//! parser, live separately (phase 9b-2).
+//! This is the policy half of the glob *seam* (`GlobResolver`): the
+//! evaluator never globs, it hands each globbing item element to a
+//! caller-supplied resolver. This module is the *pure* core of the
+//! resolver this crate ships ([`crate::glob_resolver`]) — pattern parsing
+//! and matching against relative paths, plus a deterministic selection
+//! over a candidate set. The filesystem enumeration that produces those
+//! candidates lives in `glob_resolver`.
 //!
 //! ## Semantics modelled
 //!
@@ -20,19 +19,22 @@
 //! - Matching is **case-sensitive** and paths are compared with `/`
 //!   separators (backslashes normalise to `/`, runs of `/` collapse, and
 //!   lone `.` current-directory segments are dropped). `..` is left for
-//!   the filesystem layer to resolve against the base directory (9b-2).
-//!   Case-sensitivity is the dominant Linux-CI / agent behaviour; it
-//!   diverges from MSBuild on case-insensitive filesystems. This and the
-//!   embedded-`**` rule are pinned against real `dotnet msbuild` by the
-//!   oracle diff test in phase 9b-2.
+//!   the filesystem layer to resolve against the base directory.
+//!   MSBuild's own case behaviour depends on the host, so [`select`]
+//!   **declines** ([`GlobDecline::CaseAmbiguous`]) whenever folding ASCII
+//!   case would change what a fragment selects: the answer is then the
+//!   same under either rule, or there is no answer.
 //!
 //! [`select`] is an information-preserving primitive: it orders but does
 //! not deduplicate. Across Include fragments it keeps document order; and
-//! *within* one fragment's expansion it sorts **lexicographically** by the
-//! `/`-normalised relative path — our deterministic, platform-independent
-//! stand-in for MSBuild's filesystem-dependent enumeration order. Whether
-//! the final Compile list folds duplicates from overlapping fragments is a
-//! faithfulness decision deferred to the 9b-2 resolver and its oracle.
+//! *within* one fragment's expansion it sorts exactly as MSBuild does —
+//! `EngineFileUtilities.GetFileList` sorts each wildcard fragment's matches
+//! with `StringComparer.OrdinalIgnoreCase` before returning them, so the
+//! order is a function of the names, not of the filesystem. Where that sort
+//! cannot be reproduced exactly it declines: two matches equal under it
+//! (only possible on a case-sensitive filesystem) leave the order to .NET's
+//! unstable `Array.Sort`, and a non-ASCII name would need .NET's per-UTF-16
+//! simple case mapping, which this module does not model.
 //!
 //! ## Testing
 //!
@@ -41,6 +43,58 @@
 //! implementation bugs — but *not* MSBuild-faithfulness (both could share
 //! a wrong assumption). MSBuild-faithfulness is a separate concern pinned
 //! by the 9b-2 `dotnet msbuild` oracle.
+
+/// Why a fragment's expansion cannot be reproduced exactly, so the resolver
+/// declines rather than commit a list MSBuild may not produce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GlobDecline {
+    /// Two matches of one fragment compare equal under `OrdinalIgnoreCase`
+    /// (`A.fs` and `a.fs` on a case-sensitive filesystem). MSBuild orders
+    /// them with an unstable sort, so no order is *the* order.
+    OrderTie { first: String, second: String },
+    /// A fragment matched several files and one name is not ASCII. Its
+    /// position under `OrdinalIgnoreCase` depends on .NET's per-UTF-16 simple
+    /// case mapping, which is not modelled.
+    NonAsciiOrder { path: String },
+    /// Folding ASCII case changes whether `path` is selected — by the include
+    /// or by an exclude. MSBuild's matching is case-insensitive on some hosts
+    /// and not on others, so the selection is not knowable here.
+    CaseAmbiguous { path: String },
+    /// A recursive walk reached [`crate::glob_resolver`]'s depth bound with
+    /// directories still below it, so matches may be missing.
+    DepthLimit { dir: String },
+    /// The walk met a symbolic link back to a directory already on its path.
+    /// What MSBuild does with a cycle is not modelled.
+    SymlinkCycle { path: String },
+}
+
+impl std::fmt::Display for GlobDecline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GlobDecline::OrderTie { first, second } => write!(
+                f,
+                "`{first}` and `{second}` differ only in case, so MSBuild's order between them is unspecified"
+            ),
+            GlobDecline::NonAsciiOrder { path } => write!(
+                f,
+                "`{path}` has a non-ASCII name, whose position in MSBuild's case-insensitive order is not modelled"
+            ),
+            GlobDecline::CaseAmbiguous { path } => write!(
+                f,
+                "whether `{path}` is selected depends on whether matching ignores case"
+            ),
+            GlobDecline::DepthLimit { dir } => {
+                write!(
+                    f,
+                    "the recursive walk stopped at its depth bound in `{dir}`"
+                )
+            }
+            GlobDecline::SymlinkCycle { path } => {
+                write!(f, "the symbolic link `{path}` closes a directory cycle")
+            }
+        }
+    }
+}
 
 /// One token inside a single-segment pattern piece.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +195,110 @@ impl Pattern {
         let path = split_segments(candidate);
         path_match(&self.segs, &path)
     }
+
+    /// [`Self::matches`] with ASCII case folded on both sides.
+    pub fn matches_ignoring_ascii_case(&self, candidate: &str) -> bool {
+        let folded = Pattern {
+            segs: self
+                .segs
+                .iter()
+                .map(|seg| match seg {
+                    Seg::DoubleStar => Seg::DoubleStar,
+                    Seg::Match(toks) => Seg::Match(
+                        toks.iter()
+                            .map(|tok| match tok {
+                                Tok::Lit(c) => Tok::Lit(c.to_ascii_lowercase()),
+                                other => other.clone(),
+                            })
+                            .collect(),
+                    ),
+                })
+                .collect(),
+        };
+        folded.matches(&candidate.to_ascii_lowercase())
+    }
+}
+
+/// Whether `candidate` survives `include` and `excludes` — and the same
+/// verdict with ASCII case folded. A caller that cannot rule out
+/// case-insensitive matching must decline when the two differ.
+fn selected_both_ways(include: &Pattern, excludes: &[Pattern], candidate: &str) -> (bool, bool) {
+    let exact = include.matches(candidate) && !excludes.iter().any(|e| e.matches(candidate));
+    let folded = include.matches_ignoring_ascii_case(candidate)
+        && !excludes
+            .iter()
+            .any(|e| e.matches_ignoring_ascii_case(candidate));
+    (exact, folded)
+}
+
+/// Whether `candidate` survives `excludes`, declining when ASCII case decides
+/// it. The literal-include counterpart of [`select`]'s check.
+pub fn survives_excludes(excludes: &[Pattern], candidate: &str) -> Result<bool, GlobDecline> {
+    let exact = !excludes.iter().any(|e| e.matches(candidate));
+    let folded = !excludes
+        .iter()
+        .any(|e| e.matches_ignoring_ascii_case(candidate));
+    if exact != folded {
+        return Err(GlobDecline::CaseAmbiguous {
+            path: candidate.to_string(),
+        });
+    }
+    Ok(exact)
+}
+
+/// The length in bytes of the longest prefix all of `strings` share.
+fn common_prefix_len(strings: &[String]) -> usize {
+    let Some((first, rest)) = strings.split_first() else {
+        return 0;
+    };
+    rest.iter().fold(first.len(), |len, s| {
+        first.as_bytes()[..len]
+            .iter()
+            .zip(s.as_bytes())
+            .take_while(|(a, b)| a == b)
+            .count()
+    })
+}
+
+/// `StringComparer.OrdinalIgnoreCase` restricted to ASCII: compare UTF-16 code
+/// units after upper-casing. Upper, not lower, is load-bearing: `_` (0x5F)
+/// sorts *after* `Z` (0x5A) but before `z` (0x7A).
+fn ordinal_ignore_case(a: &str, b: &str) -> std::cmp::Ordering {
+    a.bytes()
+        .map(|c| c.to_ascii_uppercase())
+        .cmp(b.bytes().map(|c| c.to_ascii_uppercase()))
+}
+
+/// Sort one fragment's matches the way MSBuild does, or decline where that
+/// order is not reproducible (see [`GlobDecline::OrderTie`] and
+/// [`GlobDecline::NonAsciiOrder`]). A single match has no order to get wrong.
+///
+/// The text every match shares — the glob root and the project directory
+/// above it — cannot decide their order, so only what follows it must be
+/// ASCII: a checkout under `/home/José/` still commits.
+fn sort_like_msbuild(matched: &mut [String]) -> Result<(), GlobDecline> {
+    if matched.len() < 2 {
+        return Ok(());
+    }
+    let shared = common_prefix_len(matched);
+    // A shared prefix ending inside a multi-byte character leaves the rest of
+    // that character in every suffix, which then fails the ASCII check.
+    if let Some(path) = matched.iter().find(|m| !m.as_bytes()[shared..].is_ascii()) {
+        return Err(GlobDecline::NonAsciiOrder { path: path.clone() });
+    }
+    matched.sort_by(|a, b| ordinal_ignore_case(a, b));
+    // Identical strings are interchangeable, so only *distinct* names that
+    // compare equal leave the order open.
+    if let Some(pair) = matched
+        .windows(2)
+        .find(|pair| pair[0] != pair[1] && ordinal_ignore_case(&pair[0], &pair[1]).is_eq())
+    {
+        return Err(GlobDecline::OrderTie {
+            first: pair[0].clone(),
+            second: pair[1].clone(),
+        });
+    }
+    Ok(())
 }
 
 /// The fixed (wildcard-free) leading directory of a glob fragment.
@@ -260,35 +418,39 @@ fn path_match(segs: &[Seg], path: &[&str]) -> bool {
 /// This is an *information-preserving* primitive: it matches and orders,
 /// but does **not** deduplicate. The `includes` are processed in document
 /// (fragment) order — each fragment's matches appear before the next
-/// fragment's, even if a later fragment sorts lower lexicographically.
-/// *Within* one fragment's expansion the matches are sorted
-/// lexicographically (our deterministic, platform-independent stand-in for
-/// MSBuild's filesystem enumeration order).
-///
+/// fragment's, whatever their names. *Within* one fragment's expansion the
+/// matches are in MSBuild's `OrdinalIgnoreCase` order (see the module docs).
 /// Overlapping fragments therefore yield duplicates (a literal also caught
-/// by a later glob appears twice). MSBuild item evaluation keeps such
-/// duplicates by default; whether and how the final Compile list should
-/// fold them is a faithfulness decision left to the 9b-2 resolver and its
-/// `dotnet msbuild` oracle — `select` keeps everything so that policy can
-/// be applied (or not) downstream. The 9b-2 filesystem enumerator is
-/// expected to list each file once, so within a single fragment no
-/// duplicates arise.
+/// by a later glob appears twice), as MSBuild keeps them.
+///
+/// Declines — rather than guess — when folding ASCII case would change a
+/// fragment's selection, or when its MSBuild order is not reproducible.
 ///
 /// Output paths are `/`-normalised (backslashes → `/`, runs of `/`
-/// collapsed, lone `.` dropped) so the order is platform-independent even
-/// when candidates arrive with OS-native separators.
-pub fn select(candidates: &[&str], includes: &[Pattern], excludes: &[Pattern]) -> Vec<String> {
+/// collapsed, lone `.` dropped).
+pub fn select(
+    candidates: &[&str],
+    includes: &[Pattern],
+    excludes: &[Pattern],
+) -> Result<Vec<String>, GlobDecline> {
     let mut out: Vec<String> = Vec::new();
     for inc in includes {
-        let mut matched: Vec<String> = candidates
-            .iter()
-            .filter(|c| inc.matches(c) && !excludes.iter().any(|p| p.matches(c)))
-            .map(|c| split_segments(c).join("/"))
-            .collect();
-        matched.sort();
+        let mut matched: Vec<String> = Vec::new();
+        for candidate in candidates {
+            let (exact, folded) = selected_both_ways(inc, excludes, candidate);
+            if exact != folded {
+                return Err(GlobDecline::CaseAmbiguous {
+                    path: candidate.to_string(),
+                });
+            }
+            if exact {
+                matched.push(split_segments(candidate).join("/"));
+            }
+        }
+        sort_like_msbuild(&mut matched)?;
         out.append(&mut matched);
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -347,7 +509,9 @@ mod tests {
                 .filter(|c| matches_naive(inc, c) && !excl.iter().any(|p| matches_naive(p, c)))
                 .map(|c| split_segments(c).join("/"))
                 .collect();
-            matched.sort();
+            // MSBuild's `OrdinalIgnoreCase`; the generated names are lower-case
+            // ASCII, so this is total and decidable.
+            matched.sort_by_key(|m| m.to_ascii_uppercase());
             out.append(&mut matched);
         }
         out
@@ -562,7 +726,7 @@ mod tests {
             let compiled_incl: Vec<Pattern> = incl.iter().map(|p| Pattern::parse(p)).collect();
             let compiled_excl: Vec<Pattern> = excl.iter().map(|p| Pattern::parse(p)).collect();
             let cand_refs: Vec<&str> = cands.iter().map(String::as_str).collect();
-            let got = select(&cand_refs, &compiled_incl, &compiled_excl);
+            let got = select(&cand_refs, &compiled_incl, &compiled_excl).unwrap();
             let want = select_naive(&cands, &incl, &excl);
             prop_assert_eq!(got, want);
         }
@@ -667,7 +831,7 @@ mod tests {
         let cands = ["a.fs", "b.fs", "z.fs"];
         let incl = [Pattern::parse("z.fs"), Pattern::parse("a.fs")];
         assert_eq!(
-            select(&cands, &incl, &[]),
+            select(&cands, &incl, &[]).unwrap(),
             vec!["z.fs".to_string(), "a.fs".to_string()],
             "fragment order must beat lexicographic order"
         );
@@ -684,7 +848,7 @@ mod tests {
         let cands = ["a.fs", "b.fs"];
         let incl = [Pattern::parse("a.fs"), Pattern::parse("*.fs")];
         assert_eq!(
-            select(&cands, &incl, &[]),
+            select(&cands, &incl, &[]).unwrap(),
             vec!["a.fs".to_string(), "a.fs".to_string(), "b.fs".to_string()],
         );
     }
@@ -742,7 +906,84 @@ mod tests {
         // normalise to `a/b.fs` and sort before `c0.fs` (`/` < `c`), not
         // after it as the raw `\` (0x5C) byte would.
         let incl = [Pattern::parse("**/*.fs")];
-        let got = select(&["c0.fs", "a\\b.fs"], &incl, &[]);
+        let got = select(&["c0.fs", "a\\b.fs"], &incl, &[]).unwrap();
         assert_eq!(got, vec!["a/b.fs".to_string(), "c0.fs".to_string()]);
+    }
+
+    #[test]
+    fn select_orders_like_ordinal_ignore_case() {
+        // Probed against `dotnet msbuild` (10.0.301): upper-case folding puts
+        // `_` after `Z`; `-` < `.` < `/` keeps `ab-c.fs`, `ab.fs`, `ab/x.fs`
+        // in that order. The generated differential pins it in general.
+        let cands = [
+            "_u.fs", "Zeta.fs", "alpha.fs", "ab/x.fs", "ab.fs", "ab-c.fs", "Beta.fs",
+        ];
+        let got = select(&cands, &[Pattern::parse("**/*.fs")], &[]).unwrap();
+        assert_eq!(
+            got,
+            [
+                "ab-c.fs", "ab.fs", "ab/x.fs", "alpha.fs", "Beta.fs", "Zeta.fs", "_u.fs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_prefix_shared_by_every_match_does_not_decline() {
+        let incl = [Pattern::parse("/home/José/app/*.fs")];
+        let got = select(&["/home/José/app/b.fs", "/home/José/app/a.fs"], &incl, &[]);
+        assert_eq!(got.unwrap(), ["home/José/app/a.fs", "home/José/app/b.fs"]);
+        // Where the matches differ in a non-ASCII position, it still declines.
+        let incl = [Pattern::parse("/home/*/a.fs")];
+        let got = select(&["/home/José/a.fs", "/home/Josa/a.fs"], &incl, &[]);
+        assert!(
+            matches!(got, Err(GlobDecline::NonAsciiOrder { .. })),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn select_declines_a_case_only_tie() {
+        // Possible only on a case-sensitive filesystem: MSBuild's unstable sort
+        // leaves the pair's order unspecified.
+        let got = select(&["a.fs", "A.fs"], &[Pattern::parse("*.fs")], &[]);
+        assert!(matches!(got, Err(GlobDecline::OrderTie { .. })), "{got:?}");
+    }
+
+    #[test]
+    fn select_declines_non_ascii_order_but_not_a_lone_match() {
+        let incl = [Pattern::parse("*.fs")];
+        let got = select(&["é.fs", "a.fs"], &incl, &[]);
+        assert!(
+            matches!(got, Err(GlobDecline::NonAsciiOrder { .. })),
+            "{got:?}"
+        );
+        // One match has no order to get wrong.
+        assert_eq!(select(&["é.fs"], &incl, &[]).unwrap(), ["é.fs"]);
+    }
+
+    #[test]
+    fn select_declines_when_case_decides_selection() {
+        // Include side: `a*.fs` meets `Ab.fs`.
+        let got = select(&["Ab.fs"], &[Pattern::parse("a*.fs")], &[]);
+        assert!(
+            matches!(got, Err(GlobDecline::CaseAmbiguous { .. })),
+            "{got:?}"
+        );
+        // Exclude side: `bin/**` meets `Bin/x.fs`.
+        let got = select(
+            &["Bin/x.fs"],
+            &[Pattern::parse("**/*.fs")],
+            &[Pattern::parse("bin/**")],
+        );
+        assert!(
+            matches!(got, Err(GlobDecline::CaseAmbiguous { .. })),
+            "{got:?}"
+        );
+        // A literal include survives or not regardless of case: no decline.
+        assert_eq!(
+            survives_excludes(&[Pattern::parse("b.fs")], "a.fs"),
+            Ok(true)
+        );
+        assert!(survives_excludes(&[Pattern::parse("A.fs")], "a.fs").is_err());
     }
 }

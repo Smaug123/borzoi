@@ -59,7 +59,7 @@ fn workspace_root() -> PathBuf {
 
 /// Run `fcs-dump <subcommand> <source>` and return its stdout as a UTF-8 string.
 ///
-/// Honours `BORZOI_FCS_DUMP` (path to a pre-built self-contained binary)
+/// Honours `BORZOI_FCS_DUMP` (path to a pre-built framework-dependent binary)
 /// when set; otherwise builds `tools/fcs-dump` **once** per test binary and
 /// execs the resulting assembly on every call.
 ///

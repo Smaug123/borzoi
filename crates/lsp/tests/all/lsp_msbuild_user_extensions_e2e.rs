@@ -29,8 +29,8 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use borzoi::fsproj_diagnostics::msbuild_user_extensions_path;
-use borzoi::glob_resolver;
 use borzoi::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use borzoi_msbuild::glob_resolver;
 use borzoi_msbuild::{GlobResolver, SdkResolver, parse_fsproj_with_imports};
 use borzoi_spawn::BoundedCommand;
 

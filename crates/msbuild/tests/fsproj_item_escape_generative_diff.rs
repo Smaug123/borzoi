@@ -148,7 +148,7 @@ fn norm(path: &str) -> String {
 /// carry a `;`/`*`/`?` past the classification that already happened), so it is
 /// free to split and glob naively — which is exactly what the real resolver does,
 /// and exactly why that decline exists.
-fn resolve_globs(request: &GlobRequest<'_>) -> Vec<PathBuf> {
+fn resolve_globs(request: &GlobRequest<'_>) -> Result<Vec<PathBuf>, borzoi_msbuild::GlobDecline> {
     let resolve = |spec: &str| -> Vec<PathBuf> {
         let joined = request.base_dir.join(spec);
         if !spec.contains(['*', '?']) {
@@ -175,14 +175,14 @@ fn resolve_globs(request: &GlobRequest<'_>) -> Vec<PathBuf> {
     };
 
     let excluded: Vec<PathBuf> = request.excludes.iter().flat_map(|e| resolve(e)).collect();
-    request
+    Ok(request
         .include
         .split(';')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .flat_map(resolve)
         .filter(|p| !excluded.contains(p))
-        .collect()
+        .collect())
 }
 
 /// `with_resolver` selects the seam under test: with one, includes route through

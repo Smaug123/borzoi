@@ -176,14 +176,20 @@ jobs:
           esac
           echo "rid=$rid" >> "$GITHUB_OUTPUT"
 
-      - name: Publish fcs-dump (self-contained)
+      - name: Publish fcs-dump (framework-dependent)
         if: steps.gate.outputs.run == 'true'
+        # Framework-dependent, like the local `dotnet build` the harnesses fall
+        # back to: FCS's script checks take their framework references from the
+        # runtime fcs-dump runs on, which must be the SDK's (the reference pack).
+        # A self-contained bundle would hand every check its own directory —
+        # implementation assemblies plus FSharp.Compiler.Service itself — and
+        # fcs-dump refuses to run that way. Every consumer runs under
+        # `nix develop`, whose DOTNET_ROOT the apphost resolves the runtime from.
         run: |
           nix develop --command dotnet publish tools/fcs-dump \
             -c Release \
             -r ${{ steps.rid.outputs.rid }} \
-            --self-contained true \
-            -p:PublishSingleFile=false \
+            --self-contained false \
             -o "$RUNNER_TEMP/fcs-dump-bundle"
 
       - name: Package fcs-dump bundle
@@ -679,10 +685,11 @@ jobs:
 
       - name: Gate on the resolution corpus sweep
         if: steps.gate.outputs.run == 'true'
-        # The ratcheted half of what `stats.yml` publishes as
-        # `resolution-divergence`: the soundness gate
-        # (`MAX_RESOLUTION_DIVERGENCES = 0`) and the B1 completeness floor. The
-        # report generator records those numbers; only this asserts on them.
+        # The gated half of what `stats.yml` publishes as
+        # `resolution-divergence`: zero divergences, and every use's bucket
+        # pinned exactly by `crates/sema/tests/manifests/resolve_corpus_diff.txt`
+        # (any movement fails, with a line diff and the regeneration command).
+        # The report generator records the numbers; only this asserts on them.
         # Same stride as the series, so the two see the same sample.
         env:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
@@ -694,9 +701,9 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         # The generative attribute matrix runs in the crate's ordinary suite;
         # this is the same certain-implies-exact property over real code, where
-        # every attribute in the corpus is a test point for free. It carries its
-        # own commit floor, so it cannot decay into wholesale deferral and
-        # report that as a pass.
+        # every attribute in the corpus is a test point for free. Every
+        # attribute's outcome is pinned by a checked-in manifest, so it cannot
+        # decay into deferral and report that as a pass.
         env:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
         run: |
@@ -707,9 +714,9 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         # Every expression and binder type inference commits on a sampled
         # corpus file must match FCS on a line FCS checked cleanly
-        # (`MAX_DIVERGENCES = 0`), with an agreement floor so the gate cannot
-        # decay into wholesale deferral. It also prints coverage by FCS node
-        # kind — the worklist for the next inference slice.
+        # (zero divergences), with every commit's bucket pinned by a checked-in
+        # manifest so the gate cannot decay into deferral. It also prints
+        # coverage by FCS node kind — the worklist for the next inference slice.
         env:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
         run: |
@@ -797,6 +804,16 @@ jobs:
         run: |
           nix develop --command cargo test -p borzoi --test all \
             parser_corpus_sweep:: -- --ignored --nocapture
+
+      - name: Gate on the shipped XML-doc sweep
+        if: steps.gate.outputs.run == 'true'
+        # Hover's XML-doc reader and renderer over every doc file the SDK ships
+        # (the reference pack and FSharp.Core): each indexes, each entry renders
+        # with no Markdown structure leaking from its text, and no tag in them
+        # falls back to plain text. The SDK comes from `nix develop`.
+        run: |
+          nix develop --command cargo test -p borzoi --test all \
+            xml_doc_shipped_sweep:: -- --ignored --nocapture
 
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
@@ -966,27 +983,6 @@ jobs:
     # cst, sema, assembly, msbuild, nuget and lsp together, so a filter narrow
     # enough to be worth having would be one wrong entry away from skipping the
     # gate silently. The job is ~4 minutes.
-    env:
-      # The divergences this corpus is known to produce, per comparison. A
-      # **two-sided** record: a run that diverges more fails, and so does one
-      # that diverges less, so a fix cannot land without bringing the number
-      # down with it and a one-sided ceiling cannot quietly decay into a rubber
-      # stamp. Per category rather than a total, because a change that trades a
-      # project wrong target for an assembly one moves the total by zero.
-      #
-      # Lowering it is the good direction and needs no ceremony beyond the diff
-      # that earns it. Raising it means this corpus now resolves something to
-      # the wrong declaration and wants a reason in the commit message.
-      #
-      # **Zero, in every direction.** Both sides read one reference set — ours,
-      # netstandard's BCL included — so neither can resolve a name in an
-      # assembly the other cannot see, and the oracle's compiler-generated
-      # values (a destructuring pattern's synthetic parameter, whose use spans
-      # the pattern) are skipped rather than compared against the case the
-      # author actually wrote. Raising any of these means this corpus now
-      # resolves something to the wrong declaration and wants a reason in the
-      # commit message.
-      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=0,project=0,reverse=0"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1018,19 +1014,16 @@ jobs:
         # `stats.yml`'s job: that one records the same numbers into the series
         # and deliberately ignores this status, so without this job nothing ever
         # asserted on them at a decision point.
-        run: |
-          summary="$RUNNER_TEMP/project-corpus-summary.json"
-          nix develop --command env \
-            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
-            BORZOI_PROJECT_SUMMARY_JSON="$summary" \
-            cargo run --locked -p borzoi-corpus-diff
-          # A run that measured less than the whole corpus can satisfy the
-          # expectation by not looking, so assert the coverage separately.
-          comparable="$(jq -er '.statistics.projects.comparable' "$summary")"
-          if [ "$comparable" -ne "$BORZOI_PROJECT_PINNED" ]; then
-            echo "only $comparable of $BORZOI_PROJECT_PINNED pinned projects became comparable" >&2
-            exit 1
-          fi
+        #
+        # Two gates, in order. Zero divergences in every direction is a hard
+        # assertion: both sides read one reference set, so neither can resolve a
+        # name in an assembly the other cannot see. Then the run must reproduce
+        # `crates/corpus-diff/manifests/project_corpus.txt` exactly — every
+        # project's verdict, every file's match counts, every graded record that
+        # is not a match — so a change that makes the LSP answer less, or moves
+        # a project to "skipped", fails here even though it diverges nowhere.
+        # The script header says how to regenerate the manifest.
+        run: bash tools/ci/project-corpus-gate.sh
 
       - name: Gate on whole-assembly projection losses
         # This sweep wants a populated package cache rather than a fixture,

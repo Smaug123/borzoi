@@ -19,7 +19,7 @@ use tempfile::TempDir;
 // wildcard, `UnsupportedItemOperation` for `Exclude`) are preserved.
 //
 // These tests use a stub resolver so the seam can be exercised without a
-// real filesystem matcher (that lives in the LSP shell, phase 9b).
+// real filesystem matcher (that is `crate::glob_resolver`).
 
 /// Owned snapshot of a [`GlobRequest`] the evaluator handed the stub
 /// resolver, so tests can assert on what the seam carried.
@@ -47,7 +47,7 @@ fn parse_capturing_glob(
             include: req.include.to_string(),
             excludes: req.excludes.to_vec(),
         });
-        out.clone()
+        Ok(out.clone())
     };
     let result = parse_fsproj_with_imports(
         source,
