@@ -232,7 +232,8 @@ impl ManifestDiff {
     }
 }
 
-fn update_requested() -> bool {
+/// Whether [`UPDATE_ENV`] asks for manifests to be rewritten rather than compared.
+pub fn update_requested() -> bool {
     std::env::var_os(UPDATE_ENV).is_some_and(|v| !v.is_empty() && v != "0")
 }
 
@@ -255,7 +256,9 @@ pub fn compare(path: &Path, actual: &Manifest, regenerate: &str) -> Result<(), S
     compare_with(path, actual, regenerate, update_requested())
 }
 
-fn compare_with(
+/// [`compare`] with the rewrite decision passed in rather than read from
+/// [`UPDATE_ENV`], for a caller whose own tests must not depend on it.
+pub fn compare_with(
     path: &Path,
     actual: &Manifest,
     regenerate: &str,

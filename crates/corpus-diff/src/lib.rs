@@ -2355,9 +2355,23 @@ fn visit_project(
     Ok((loaded.project_assets, sources, comparison))
 }
 
+/// Every gate `config` names, in order; a configured manifest is rewritten
+/// rather than compared when `BORZOI_UPDATE_MANIFESTS` is set.
 pub fn check_project_corpus_run(
     run: &CorpusRun,
     config: &CorpusRunnerConfig,
+) -> Result<(), CorpusRunFailure> {
+    check_project_corpus_run_with(
+        run,
+        config,
+        borzoi_oracle_harness::manifest::update_requested(),
+    )
+}
+
+fn check_project_corpus_run_with(
+    run: &CorpusRun,
+    config: &CorpusRunnerConfig,
+    update_manifest: bool,
 ) -> Result<(), CorpusRunFailure> {
     if run.summary.projects_visited == 0 {
         return Err(CorpusRunFailure::NoProjectsVisited);
@@ -2420,10 +2434,11 @@ pub fn check_project_corpus_run(
     if let Some(manifest) = &config.manifest {
         let actual = manifest::project_corpus_manifest(&run.projects, &manifest.root)
             .map_err(CorpusRunFailure::ManifestUnrenderable)?;
-        borzoi_oracle_harness::manifest::compare(
+        borzoi_oracle_harness::manifest::compare_with(
             &manifest.path,
             &actual,
             PROJECT_CORPUS_MANIFEST_REGENERATE,
+            update_manifest,
         )
         .map_err(CorpusRunFailure::ManifestMismatch)?;
     }
@@ -6211,9 +6226,10 @@ mod tests {
             })
         );
 
-        // The divergence gate runs before the manifest is consulted — here a
-        // manifest that does not even exist, which would be its own failure —
-        // so regenerating a manifest can never record a divergence as state.
+        // The divergence gate runs before the manifest is consulted, even when
+        // regenerating — here into a directory that cannot be created, which
+        // would be its own failure — so a regenerated manifest can never record
+        // a divergence as state.
         let with_manifest = CorpusRunnerConfig {
             manifest: Some(ManifestConfig {
                 path: PathBuf::from("/nonexistent/project_corpus.txt"),
@@ -6222,7 +6238,7 @@ mod tests {
             ..CorpusRunnerConfig::default()
         };
         assert_eq!(
-            check_project_corpus_run(&divergent, &with_manifest),
+            check_project_corpus_run_with(&divergent, &with_manifest, true),
             Err(CorpusRunFailure::SoundnessGate {
                 max_divergences: 0,
                 divergences: 1,
@@ -6230,7 +6246,7 @@ mod tests {
         );
         // And with the divergence gate passed, the manifest is checked.
         assert!(matches!(
-            check_project_corpus_run(&clean_run(), &with_manifest),
+            check_project_corpus_run_with(&clean_run(), &with_manifest, false),
             Err(CorpusRunFailure::ManifestMismatch(message)) if message.contains("no manifest at")
         ));
     }
