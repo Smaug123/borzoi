@@ -229,6 +229,57 @@ fn a_named_argument_name_declines() {
 }
 
 #[test]
+fn an_optional_named_argument_name_declines() {
+    let src = "module M\ntype A(?other: int) =\n    member _.X = other\nlet h () =\n    /// local\n    let other = 1\n    A(?other = Some other)\n";
+    let sites = occurrences(src, "other");
+    let lhs = src.find("?other =").unwrap() + 1;
+    let (_, verdict, fcs) = sites
+        .iter()
+        .find(|(at, _, _)| *at == lhs)
+        .unwrap_or_else(|| panic!("no graded site at {lhs}: {sites:?}"));
+    assert_eq!(fcs, &Vec::<String>::new());
+    assert_eq!(
+        verdict,
+        &Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
+    );
+}
+
+#[test]
+fn same_named_types_in_reopened_namespaces_decline() {
+    let src = "namespace N\n/// generic\ntype T<'a> = int -> 'a\nnamespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
+    let sites = occurrences(src, "T");
+    let generic_use = src.find("T<int>").unwrap();
+    let (_, _, fcs) = sites
+        .iter()
+        .find(|(at, _, _)| *at == generic_use)
+        .expect("graded");
+    assert_eq!(fcs, &[" generic"]);
+    for (at, verdict, _) in &sites {
+        assert_eq!(
+            verdict,
+            &Verdict::Declined(SourceDocDecline::SameNameDeclarations),
+            "at {at}"
+        );
+    }
+}
+
+#[test]
+fn same_named_types_across_files_decline() {
+    let a = "namespace N\n/// generic\ntype T<'a> = int -> 'a\n";
+    let b = "namespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
+    let files = [("A.fs", a), ("B.fs", b)];
+    let (graded, _) = run_fixture(&files, &[]);
+    let sites: Vec<_> = graded.iter().filter(|g| g.name == "T").collect();
+    assert!(!sites.is_empty());
+    for g in sites {
+        assert_eq!(
+            g.verdict,
+            Verdict::Declined(SourceDocDecline::SameNameDeclarations)
+        );
+    }
+}
+
+#[test]
 fn duplicate_union_cases_decline() {
     let src =
         "module M\ntype C =\n    /// one\n    | Dup of int\n    /// two\n    | Dup of string\n";

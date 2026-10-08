@@ -339,7 +339,10 @@ fn judge(
             .iter()
             .filter(|c| expected_kind(kind).contains(&c.kind.as_str()))
             .collect();
-        (of_kind.len() == 1).then(|| *of_kind[0])
+        // Several uses of the expected kind (one symbol reported twice) still
+        // name one doc when they agree on it.
+        (!of_kind.is_empty() && of_kind.iter().all(|c| c.lines() == of_kind[0].lines()))
+            .then(|| *of_kind[0])
     };
     if let Some(fcs) = chosen {
         assert!(
