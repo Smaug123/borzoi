@@ -145,7 +145,10 @@ not belong" look identical from a workflow file.
   moves when the corpus pin does is a constant with extra steps. Run it by hand
   when a pin changes.
 - `lexfilter_corpus` is a divergence *histogram*, not an assertion, and its FCS
-  side costs ~1.65 s per file — hours over the corpus. It points at the next
+  side costs seconds per file (FCS's own tokenizer, not the JSON: measured on
+  2026-10-08, 40 files of `src/Compiler/Checking` took 261 s through the public
+  stream and 487 s through the internal one, under load) — hours over the
+  corpus. It points at the next
   LexFilter arm worth porting, which is a question you ask deliberately.
 - The per-area report generators (`tier_order_diff`, `companion_head_diff`,
   `classify_diff`, `classify_assembly_diff`, `extension_shadow_diff`,
@@ -211,6 +214,8 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
 | `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). A file either parser rejects also carries its recovered-tree verdict ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
 | `recovery_sweep` (cst) | one per sampled single-token deletion graded against FCS: the relation and its compared/undamaged/total counts ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
+| `accessor_coverage` (cst) | one per typed-AST accessor the parser differential's projection reads on a file that matches FCS (written by `parser_corpus_diff`). The ordinary suite holds sema's and the LSP's accessor calls to it, so it is the contract between the parser oracle and its consumers rather than a measurement. |
+| `dot_index_spacing` (cst, not ignored) | one per cell of the dotted-indexer spacing matrix whose recovered tree diverges from FCS's. |
 | `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
 | `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
 

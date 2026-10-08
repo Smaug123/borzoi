@@ -3,7 +3,8 @@
 //! Walks the corpus rooted at `BORZOI_CORPUS` (the `fsharp-src` flake
 //! input under `nix develop`), runs our `filter` on every ASCII-only F# file whose
 //! raw lex succeeds, and compares the resulting token stream against FCS's
-//! parser-facing stream (via `fcs-dump tokens-filtered-batch`).
+//! parser-facing stream (via `fcs-dump tokens-lexfilter-internal-batch`, block
+//! ends included).
 //!
 //! This is intentionally *not* an assertion: the port is incomplete, so most
 //! files diverge somewhere. The output is a histogram of divergence categories
@@ -17,11 +18,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::directives::{PreprocError, lex_with_symbols};
-use borzoi_cst::lexfilter::{FilteredToken, Virtual, filter};
+use borzoi_cst::lexfilter::filter;
 use serde::Deserialize;
 
 use crate::common::{
-    NormalisedToken, corpus_root, fcs_tokens_filtered_batch, filtered_kind_name, parse_fcs_dump,
+    NormalisedToken, corpus_root, fcs_tokens_parser_stream_batch, filtered_kind_name,
+    parse_fcs_parser_stream,
 };
 
 /// Same list `tests/all/corpus.rs` uses: paths containing any of these are
@@ -41,7 +43,7 @@ fn is_expected_failure(path: &Path) -> bool {
     EXPECTED_FAILURE_SUBSTRINGS.iter().any(|s| p.contains(s))
 }
 
-// Ignored by default: the FCS side (`fcs-dump tokens-filtered-batch`) takes
+// Ignored by default: the FCS side (`fcs-dump tokens-lexfilter-internal-batch`) takes
 // ~1.65 s per file on average — multiple hours over the full F# corpus.
 // The Rust filter itself runs in ~1.4 ms per file (debug), so this is
 // purely the cost of dotnet/FCS, not our code. The test is a diagnostic that
@@ -116,7 +118,7 @@ fn diff_filtered_corpus() {
     let mut filter_panicked = 0usize;
 
     for payload in &payloads {
-        let line = fcs_tokens_filtered_batch(&payload.path);
+        let line = fcs_tokens_parser_stream_batch(&payload.path);
 
         // A malformed response is a broken oracle, not a divergence: the request
         // was answered with something that isn't a record. The streaming driver
@@ -135,7 +137,7 @@ fn diff_filtered_corpus() {
             continue;
         }
 
-        let fcs_tokens = parse_fcs_dump(&line, &payload.source);
+        let fcs_tokens = parse_fcs_parser_stream(&line, &payload.source);
         let rust_tokens = match run_rust_filter(&payload.source) {
             Ok(t) => t,
             Err(_) => {
@@ -248,22 +250,6 @@ fn run_rust_filter(source: &str) -> Result<Vec<NormalisedToken>, ()> {
             (tok, span)
         });
         filter(source, raw)
-            // Drop `BlockEnd` and `AndBang`: both are absent from FCS's public
-            // token stream, for *different* reasons. `OAND_BANG` has no
-            // `FSharpTokenKind` arm (→ `None`). `OBLOCKEND` *does* map to a real
-            // kind (`OffsideBlockEnd`), but FCS's outer LexFilter wrapper
-            // swallows every one and re-inserts `OBLOCKEND_COMING_SOON`/`_IS_HERE`
-            // tokens (→ `None`) in its place, so a real block end never reaches
-            // the public tokenizer. Either way `tokens-filtered` shows neither
-            // (see `common::assert_filtered_streams_match` for the full
-            // mechanism, and `lexfilter_diff::block_end` for the placement pins
-            // this drop would otherwise leave unverified).
-            .filter(|(tok, _)| {
-                !matches!(
-                    tok,
-                    Ok(FilteredToken::Virtual(Virtual::BlockEnd | Virtual::AndBang))
-                )
-            })
             .filter_map(|(tok, span)| {
                 let tok = tok.ok()?;
                 Some(NormalisedToken {

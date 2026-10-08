@@ -704,7 +704,16 @@ fn normalise_extern(e: &ExternDecl) -> NormalisedDecl {
         .map(|a| {
             let mut c = 0u32;
             let attrs = normalise_attribute_lists(a.attributes(), &mut c);
-            let ty = extern_ctype(a.c_type_base(), a.c_type_suffixes());
+            let base = a.c_type_base();
+            assert_eq!(
+                a.ty(),
+                match &base {
+                    Some(ExternCTypeBase::Path(p)) => Some(p.clone()),
+                    _ => None,
+                },
+                "ExternArg::ty disagrees with c_type_base"
+            );
+            let ty = extern_ctype(base, a.c_type_suffixes());
             let inner = match a.name() {
                 Some(tok) => NormalisedPat::Named(strip_backticks(tok.text()).to_string()),
                 None => NormalisedPat::Wildcard,
@@ -735,13 +744,25 @@ fn normalise_extern(e: &ExternDecl) -> NormalisedDecl {
     // as the segment text).
     let ret_ty = e
         .return_info()
-        .map(|r| extern_ctype(r.c_type_base(), r.c_type_suffixes()))
+        .map(|r| {
+            let base = r.c_type_base();
+            assert_eq!(
+                r.ty(),
+                match &base {
+                    Some(ExternCTypeBase::Path(p)) => Some(p.clone()),
+                    _ => None,
+                },
+                "ExternRet::ty disagrees with c_type_base"
+            );
+            extern_ctype(base, r.c_type_suffixes())
+        })
         .unwrap_or_else(|| app_type(Vec::new()));
 
     let expr = NormalisedExpr::Typed {
         expr: Box::new(NormalisedExpr::App {
             is_atomic: false,
             is_infix: false,
+            bracket_indexer: false,
             func: Box::new(NormalisedExpr::Ident("failwith".to_string())),
             arg: Box::new(NormalisedExpr::Const(NormalisedConst::String {
                 value: "extern was not given a DllImport attribute"
@@ -1141,6 +1162,12 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
                 MemberLeading::Default => NormalisedLeadingKeyword::Default,
                 MemberLeading::New => NormalisedLeadingKeyword::New,
             };
+            // Sema reads `is_static`; it must agree with the compared keyword.
+            assert_eq!(
+                mm.is_static(),
+                leading == NormalisedLeadingKeyword::StaticMember,
+                "MemberMethod::is_static disagrees with its leading keyword"
+            );
             let mut counter = 0u32;
             // The member's attribute lists (phase 10.7f) — leading `MEMBER_DEFN`
             // children, homed by FCS in `SynBinding.attributes`. Normalise them
@@ -1336,8 +1363,22 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
                     body,
                 }
             };
+            // `name()` is the head's `LONG_IDENT`, which sema reads; the
+            // projected path is the whole head, which may add a trailing
+            // active-pattern segment after it.
+            if let Some(path) = gsm.name() {
+                let path: Vec<String> = path
+                    .idents()
+                    .map(|t| strip_backticks(t.text()).to_string())
+                    .collect();
+                assert!(
+                    name.starts_with(&path),
+                    "GetSetMember::name {path:?} is not the head of the property path {name:?}"
+                );
+            }
             NormalisedMember::GetSetMember {
                 name,
+                is_static: gsm.is_static(),
                 get: gsm.getter().map(|a| accessor(a, false)),
                 set: gsm.setter().map(|a| accessor(a, true)),
             }
@@ -1552,11 +1593,14 @@ fn normalise_enum_case(c: &EnumCase) -> NormalisedEnumCase {
         // An operator-named enum case (`| ([]) = 0`) is valid (FCS's bar-led
         // `unionCaseName EQUALS atomicExpr`), with the same `op_Nil` /
         // `op_ColonColon` name as a union case — the shared production accessor.
-        ident: c
-            .ident()
-            .map(|t| strip_backticks(t.text()).to_string())
-            .or_else(|| c.operator_name().map(|(n, _)| n.to_string()))
-            .unwrap_or_default(),
+        ident: match (c.ident(), c.operator_name()) {
+            (Some(t), None) => strip_backticks(t.text()).to_string(),
+            (None, Some((n, _))) => n.to_string(),
+            (None, None) => String::new(),
+            (Some(t), Some((n, _))) => {
+                panic!("a case has both an ident {t} and an operator name {n}")
+            }
+        },
         value: normalise_expr(
             &c.value()
                 .expect("ENUM_CASE must contain a value expression"),
@@ -1579,11 +1623,14 @@ fn normalise_union_case(c: &UnionCase) -> NormalisedUnionCase {
     };
     NormalisedUnionCase {
         attributes: normalise_attribute_lists(c.attributes(), &mut counter),
-        ident: c
-            .ident()
-            .map(|t| strip_backticks(t.text()).to_string())
-            .or_else(|| c.operator_name().map(|(n, _)| n.to_string()))
-            .unwrap_or_default(),
+        ident: match (c.ident(), c.operator_name()) {
+            (Some(t), None) => strip_backticks(t.text()).to_string(),
+            (None, Some((n, _))) => n.to_string(),
+            (None, None) => String::new(),
+            (Some(t), Some((n, _))) => {
+                panic!("a case has both an ident {t} and an operator name {n}")
+            }
+        },
         kind,
     }
 }
@@ -1644,7 +1691,8 @@ fn normalise_val_field(f: &ValField) -> NormalisedField {
 /// (`SynOpenDeclTarget.Type`); the plain `open Foo.Bar` form carries a bare
 /// [`LongIdent`] child (`SynOpenDeclTarget.ModuleOrNamespace`).
 fn normalise_open_target(o: &OpenDecl) -> NormalisedOpenTarget {
-    if let Some(ty) = o.ty() {
+    if o.is_type() {
+        let ty = o.ty().expect("`open type` must contain a type");
         NormalisedOpenTarget::Type(normalise_type(&ty))
     } else {
         let path = o
@@ -1782,7 +1830,13 @@ fn normalise_pat(p: &Pat, counter: &mut u32) -> NormalisedPat {
         Pat::Wildcard(_) => NormalisedPat::Wildcard,
         Pat::Paren(p) => NormalisedPat::Paren(Box::new(normalise_paren_pat(p, counter))),
         Pat::Const(c) => NormalisedPat::Const(normalise_const_pat(c)),
-        Pat::Null(_) => NormalisedPat::Null,
+        Pat::Null(n) => {
+            assert_eq!(
+                n.keyword().map(|t| t.text().to_string()).as_deref(),
+                Some("null")
+            );
+            NormalisedPat::Null
+        }
         Pat::Typed(t) => normalise_typed_pat(t, counter),
         Pat::Tuple(t) => normalise_tuple_pat(t, counter),
         Pat::As(a) => normalise_as_pat(a, counter),
@@ -1880,6 +1934,10 @@ fn normalise_pat(p: &Pat, counter: &mut u32) -> NormalisedPat {
 }
 
 fn normalise_as_pat(a: &AsPat, counter: &mut u32) -> NormalisedPat {
+    assert_eq!(
+        a.as_token().map(|t| t.text().to_string()).as_deref(),
+        Some("as")
+    );
     let lhs = a.lhs().expect("AS_PAT must contain a left-hand pattern");
     let rhs = a.rhs().expect("AS_PAT must contain a right-hand pattern");
     NormalisedPat::As {
@@ -2028,7 +2086,13 @@ fn normalise_expr(e: &Expr, counter: &mut u32) -> NormalisedExpr {
     match e {
         Expr::Const(c) => NormalisedExpr::Const(normalise_const(c)),
         Expr::MeasureLit(m) => NormalisedExpr::Const(normalise_measure_lit(m)),
-        Expr::Null(_) => NormalisedExpr::Null,
+        Expr::Null(n) => {
+            assert_eq!(
+                n.keyword().map(|t| t.text().to_string()).as_deref(),
+                Some("null")
+            );
+            NormalisedExpr::Null
+        }
         Expr::Ident(i) => NormalisedExpr::Ident(normalise_ident(i)),
         Expr::Typar(t) => NormalisedExpr::Typar({
             let tok = t.ident().expect("TYPAR_EXPR must contain an IDENT_TOK");
@@ -2230,6 +2294,18 @@ fn normalise_expr(e: &Expr, counter: &mut u32) -> NormalisedExpr {
             // Bindings are projected before the body so the shared `_argN`
             // counter advances in source order.
             let is_rec = l.is_rec();
+            // The keyword token sema anchors on spells the compared head.
+            let keyword = l.keyword().expect("LET_OR_USE_EXPR has a keyword");
+            assert_eq!(
+                keyword.text(),
+                match (l.is_bang(), l.is_use()) {
+                    (false, false) => "let",
+                    (false, true) => "use",
+                    (true, false) => "let!",
+                    (true, true) => "use!",
+                },
+                "LetOrUseExpr::keyword disagrees with is_bang/is_use"
+            );
             let (head, follower) = match (l.is_bang(), l.is_use(), is_rec) {
                 (true, false, _) => (
                     NormalisedLeadingKeyword::LetBang,
@@ -3312,6 +3388,7 @@ fn normalise_app(a: &AppExpr, counter: &mut u32) -> NormalisedExpr {
     NormalisedExpr::App {
         is_atomic: a.is_atomic(),
         is_infix: a.is_infix(),
+        bracket_indexer: a.is_bracket_indexer(),
         func: Box::new(normalise_expr(&func, counter)),
         arg: Box::new(normalise_expr(&arg, counter)),
     }
@@ -3336,6 +3413,7 @@ fn normalise_cons(c: &ConsExpr, counter: &mut u32) -> NormalisedExpr {
     NormalisedExpr::App {
         is_atomic: false,
         is_infix: true,
+        bracket_indexer: false,
         func: Box::new(NormalisedExpr::LongIdent(vec!["::".to_string()])),
         arg: Box::new(NormalisedExpr::Tuple {
             is_struct: false,
@@ -3771,6 +3849,22 @@ fn normalise_long_ident(l: &LongIdentExpr) -> Vec<String> {
 /// `LONG_IDENT` (and a `DotGet` member list can be an active-pattern `opName`
 /// off a non-ident head — `(id 1).(|Bar|_|)`).
 fn long_ident_segment_texts(inner: &LongIdent) -> Vec<String> {
+    // The segments interleave tokens and `ACTIVE_PAT_NAME` nodes, which no one
+    // accessor yields in order, so walk the children; the nodes must be the
+    // ones `active_pat_names` (which the type inferrer reads) reports.
+    let nodes: Vec<borzoi_cst::syntax::SyntaxNode> = inner
+        .syntax()
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::ACTIVE_PAT_NAME)
+        .collect();
+    assert_eq!(
+        inner
+            .active_pat_names()
+            .map(|a| a.syntax().clone())
+            .collect::<Vec<_>>(),
+        nodes,
+        "LongIdent::active_pat_names disagrees with the path's children"
+    );
     inner
         .syntax()
         .children_with_tokens()

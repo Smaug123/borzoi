@@ -16,6 +16,7 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
+pub mod accessor_coverage;
 pub mod corpus_manifest;
 pub mod normalised_ast;
 mod range_audit;
@@ -262,11 +263,12 @@ pub fn fcs_ast_batch(source: &Path) -> String {
         .request(source)
 }
 
-/// Run `source` through the shared `tokens-filtered-batch` pool. Drop-in for
-/// one-shot `invoke_fcs_dump("tokens-filtered", source)`.
-pub fn fcs_tokens_filtered_batch(source: &Path) -> String {
+/// Run `source` through the shared `tokens-lexfilter-internal-batch` pool: the
+/// parser-facing stream including the tokens FCS's public tokenizer drops
+/// (block ends). Read it with [`parse_fcs_parser_stream`].
+pub fn fcs_tokens_parser_stream_batch(source: &Path) -> String {
     static P: OnceLock<BatchPool> = OnceLock::new();
-    P.get_or_init(|| BatchPool::new("tokens-filtered-batch"))
+    P.get_or_init(|| BatchPool::new("tokens-lexfilter-internal-batch"))
         .request(source)
 }
 
@@ -791,6 +793,36 @@ pub fn fcs_diagnostics_with_severity(
         .collect()
 }
 
+/// [`parse_fcs_dump`] for a `tokens-lexfilter-internal-batch` record: the
+/// stream FCS's parser reads, put in the vocabulary our filter's output is
+/// named in.
+///
+/// FCS's `LexFilter` replaces each `OBLOCKEND` with six `OBLOCKEND_COMING_SOON`
+/// and one `OBLOCKEND_IS_HERE` at the same position, so the `_IS_HERE` token
+/// is the block end, and is named as one (`OffsideBlockEnd`); the look-ahead
+/// copies are dropped. It does the same to `)`, `}`, and to the `type` and
+/// `module` keywords in some contexts. Our filter emits none of those (the
+/// parser reads them off the raw stream), so their `_IS_HERE` tokens are
+/// dropped too, as is the stream's `EOF`. `OAND_BANG` has no public kind; ours
+/// is named `OffsideAndBang`.
+pub fn parse_fcs_parser_stream(json: &str, source: &str) -> Vec<NormalisedToken> {
+    parse_fcs_dump(json, source)
+        .into_iter()
+        .filter_map(|mut t| {
+            let kind = match t.kind.as_str() {
+                k if k.ends_with("_COMING_SOON") => return None,
+                "OBLOCKEND_IS_HERE" => "OffsideBlockEnd",
+                k if k.ends_with("_IS_HERE") => return None,
+                "EOF" => return None,
+                "OAND_BANG" => "OffsideAndBang",
+                _ => return Some(t),
+            };
+            t.kind = kind.to_string();
+            Some(t)
+        })
+        .collect()
+}
+
 pub fn parse_fcs_dump(json: &str, source: &str) -> Vec<NormalisedToken> {
     let dump: FcsDump = serde_json::from_str(json).expect("fcs-dump JSON shape");
     let line_index = LineIndex::new(source);
@@ -1185,12 +1217,8 @@ fn virtual_kind_name(v: &Virtual) -> &'static str {
     match v {
         Virtual::Let => "OffsideLet",
         Virtual::Binder => "OffsideBinder",
-        // `OAND_BANG` has no `FSharpTokenKind` arm (→ `None`), so FCS's public
-        // lexer drops it and `assert_filtered_streams_match` drops our
-        // `Virtual::AndBang` to match. This name is therefore a sentinel that
-        // never reaches a comparison — if the drop is ever removed, the diff
-        // fails loudly (the name appears nowhere in any FCS dump) rather than
-        // silently passing.
+        // `OAND_BANG` has no `FSharpTokenKind`; `parse_fcs_parser_stream`
+        // gives FCS's this name.
         Virtual::AndBang => "OffsideAndBang",
         Virtual::BlockBegin => "OffsideBlockBegin",
         Virtual::BlockEnd => "OffsideBlockEnd",
@@ -1760,38 +1788,24 @@ pub fn assert_asts_match_fcs_accepts_ours_rejects(source: &str) {
 // Filtered token-stream differential assertion
 // ============================================================================
 //
-// Used by the `tests/lexfilter_diff/` binary's submodules (split out of the
-// former monolithic `tests/all/lexfilter_diff/`). Writes `source` to a tempfile,
-// drives `fcs-dump tokens-filtered`, runs our `lexfilter::filter`, normalises
-// both sides, and diffs them.
+// Used by the `lexfilter_diff` case groups. Writes `source` to a tempfile,
+// drives `fcs-dump tokens-lexfilter-internal-batch`, runs our
+// `lexfilter::filter`, normalises both sides, and diffs them.
 
-/// Assert our `lexfilter::filter` output matches FCS's post-`UseLexFilter`
-/// token stream for `source`.
+/// Assert our `lexfilter::filter` output matches the token stream FCS's parser
+/// reads for `source`, block ends (`OBLOCKEND`) and `OAND_BANG` included (see
+/// [`parse_fcs_parser_stream`]).
 pub fn assert_filtered_streams_match(source: &str) {
     let mut tmp = NamedTempFile::with_suffix(".fs").expect("create temp .fs file");
     tmp.write_all(source.as_bytes()).expect("write source");
 
-    let fcs_json = fcs_tokens_filtered_batch(tmp.path());
-    let fcs_tokens = parse_fcs_dump(&fcs_json, source);
+    let fcs_json = fcs_tokens_parser_stream_batch(tmp.path());
+    let fcs_tokens = parse_fcs_parser_stream(&fcs_json, source);
 
     // `filter` consumes trivia internally (for offside line/column tracking)
     // and never emits Raw whitespace/comments — so no trivia filter is needed
-    // on the output. We do drop `Virtual::BlockEnd` because FCS's outer
-    // LexFilter wrapper (LexFilter.fs:2837) swallows OBLOCKEND, replacing it
-    // with OBLOCKEND_*_COMING_SOON/IS_HERE tokens that all map to
-    // `FSharpTokenKind.None` and get filtered. The public-facing stream the
-    // harness sees from FCS therefore has no OBLOCKEND. We drop
-    // `Virtual::AndBang` for the same reason: `OAND_BANG` has no
-    // `FSharpTokenKind` arm (→ `None`), so FCS's public lexer never surfaces
-    // the `and!` keyword. The real stream the parser consumes still carries
-    // both virtuals; `and_bang_emits_virtual` pins `Virtual::AndBang` directly.
+    // on the output.
     let rust_tokens: Vec<NormalisedToken> = filter(source, lex(source))
-        .filter(|(tok, _)| {
-            !matches!(
-                tok,
-                Ok(FilteredToken::Virtual(Virtual::BlockEnd | Virtual::AndBang))
-            )
-        })
         .map(|(tok, span)| {
             let tok = tok.unwrap_or_else(|e| panic!("rust lex error {e:?} in {source:?}"));
             NormalisedToken {
