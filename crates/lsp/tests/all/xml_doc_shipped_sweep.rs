@@ -290,13 +290,14 @@ fn shipped_doc_files_index_and_render_with_no_fallback() {
 /// and every member keyed with its assembly's census, and no committed key
 /// (within one assembly — one doc file) names two targets. The census is
 /// what makes this hold by construction; the sweep checks it does, and
-/// reports how many targets real assemblies have it refuse.
+/// reports how many targets real assemblies have it refuse. FSharp.Core is in
+/// the F# dialect, so its members are refused and only its types keyed; every
+/// reference-pack assembly is Roslyn's, so none of theirs is.
 #[test]
 #[ignore = "builds an env over the whole reference pack; run with --ignored"]
 fn doc_keys_are_injective_over_a_real_env() {
     use borzoi::xml_doc::key::{DocTarget, KeyCensus, KeyError, doc_key};
-    use borzoi_assembly::{Ecma335Assembly, EcmaView};
-    use borzoi_sema::AssemblyEnv;
+    use borzoi_assembly::doc_id::DocIdDialect;
 
     let pack = ensure_system_runtime_dll()
         .parent()
@@ -310,27 +311,18 @@ fn doc_keys_are_injective_over_a_real_env() {
         .collect();
     dlls.push(sdk_fsharp_core_xml().with_extension("dll"));
     dlls.sort();
-    let assemblies: Vec<_> = dlls
+    let env = crate::common::doc_key_env(&dlls);
+    let read = env
+        .top_level_handles()
         .iter()
-        .filter_map(|dll| {
-            let bytes = std::fs::read(dll).ok()?;
-            let types = Ecma335Assembly::parse(&bytes)
-                .ok()?
-                .enumerate_type_defs()
-                .ok()?;
-            Some((dll.clone(), types))
-        })
-        .collect();
-    assert!(
-        assemblies.len() >= 100,
-        "read {} assemblies",
-        assemblies.len()
-    );
-    let env = AssemblyEnv::from_assemblies(assemblies);
+        .filter_map(|&h| env.assembly_path(h))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert!(read >= 100, "read {read} assemblies");
 
     let mut censuses: BTreeMap<PathBuf, KeyCensus> = BTreeMap::new();
     let mut keyed: BTreeMap<(PathBuf, String), DocTarget> = BTreeMap::new();
-    let (mut targets, mut shared) = (0usize, 0usize);
+    let (mut targets, mut shared, mut fsharp_members) = (0usize, 0usize, 0usize);
     for handle in env.all_handles() {
         let dll = env
             .assembly_path(handle)
@@ -355,14 +347,34 @@ fn doc_keys_are_injective_over_a_real_env() {
                     }
                 }
                 Err(KeyError::Shared) => shared += 1,
-                Err(KeyError::Unplaced) => panic!("{target:?} is unplaced in a real env"),
+                Err(KeyError::FSharpMember) => {
+                    // Only an F#-compiled assembly may refuse its members so;
+                    // the reference pack is Roslyn's throughout.
+                    assert_eq!(
+                        dll.file_name().and_then(|n| n.to_str()),
+                        Some("FSharp.Core.dll"),
+                        "{target:?}: a reference-pack member refused as F#"
+                    );
+                    fsharp_members += 1;
+                }
+                Err(e @ (KeyError::Unplaced | KeyError::DialectUnknown)) => {
+                    panic!("{target:?}: {e:?} in a real env")
+                }
             }
         }
     }
     eprintln!(
-        "{} assemblies, {targets} targets, {} keys committed, {shared} refused as sharing a key",
+        "{} assemblies, {targets} targets, {} keys committed, {shared} refused as sharing a key, \
+         {fsharp_members} F# members refused",
         censuses.len(),
         keyed.len()
     );
+    let fsharp_core = env
+        .top_level_handles()
+        .iter()
+        .find(|&&h| env.entity(h).assembly.name == "FSharp.Core")
+        .expect("FSharp.Core is in the env");
+    assert_eq!(env.doc_id_dialect(*fsharp_core), Some(DocIdDialect::FSharp));
+    assert!(fsharp_members > 0, "FSharp.Core's members are refused");
     assert!(keyed.len() >= 50_000, "keyed only {}", keyed.len());
 }

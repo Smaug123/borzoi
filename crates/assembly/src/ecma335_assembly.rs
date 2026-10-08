@@ -6,6 +6,7 @@
 //! service).
 
 use crate::ImportError;
+use crate::doc_id::DocIdDialect;
 use crate::fsharp_pickle::model::PickledCcu;
 use crate::fsharp_resource::{
     b_stream_signature_resource_for_host, classify_fsharp_resource, decompress_deflate,
@@ -162,6 +163,34 @@ impl EcmaView for Ecma335Assembly {
                 assembly: f.assembly.clone(),
             })
             .collect())
+    }
+
+    fn doc_id_dialect(&self) -> Result<DocIdDialect, ImportError> {
+        // Three marks, any one sufficient: the assembly-level interface-data
+        // attribute, an F# resource (signature or optimisation data), and the
+        // `CompilationMappingAttribute` fsc puts on every type it generates from
+        // F# source — module, record, union, class, exception. The last survives
+        // a build that strips the first two.
+        let mapped = |td: &TypeDef| {
+            self.find_attribute(
+                &td.attributes,
+                "Microsoft.FSharp.Core",
+                "CompilationMappingAttribute",
+            )
+            .is_some()
+        };
+        let fsharp = self.fsharp_interface_data_version()?.is_some()
+            || self
+                .image
+                .resources
+                .iter()
+                .any(|r| r.name.starts_with("FSharp"))
+            || self.image.type_defs.iter().any(mapped);
+        Ok(if fsharp {
+            DocIdDialect::FSharp
+        } else {
+            DocIdDialect::Metadata
+        })
     }
 
     fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
