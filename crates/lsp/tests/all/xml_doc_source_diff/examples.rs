@@ -184,25 +184,38 @@ fn occurrences(src: &str, name: &str) -> Vec<(usize, Verdict, Vec<String>)> {
         .collect()
 }
 
+/// The verdict at the occurrence of a type name starting at byte `at`, with
+/// FCS's lines there, from graded `sites`.
+fn site(sites: &[(usize, Verdict, Vec<String>)], at: usize) -> (Verdict, Vec<String>) {
+    let (_, verdict, fcs) = sites
+        .iter()
+        .find(|(offset, _, _)| *offset == at)
+        .unwrap_or_else(|| panic!("no graded site at {at}: {sites:?}"));
+    (verdict.clone(), fcs.clone())
+}
+
 #[test]
-fn same_named_types_of_different_arity_decline() {
+fn a_use_whose_type_argument_count_differs_from_its_resolution_declines() {
     // Resolution reads `CT<int>` as the non-generic `CT` (#323); FCS binds the
-    // generic one. Neither type's doc may be shown at any of their sites.
+    // generic one. The bare `CT` agrees with both, so it keeps its doc.
     let src = "module M\n/// generic\ntype CT<'T> = int -> 'T\n/// plain\ntype CT = int -> unit\nlet f (x: CT<int>) = x\nlet g (x: CT) = x\n";
     let sites = occurrences(src, "CT");
-    let generic_use = src.find("CT<int>").unwrap();
-    let (_, _, fcs) = sites
-        .iter()
-        .find(|(at, _, _)| *at == generic_use)
-        .expect("graded");
-    assert_eq!(fcs, &[" generic"]);
-    for (at, verdict, _) in &sites {
-        assert_eq!(
-            verdict,
-            &Verdict::Declined(SourceDocDecline::SameNameDeclarations),
-            "at {at}"
-        );
-    }
+    let (verdict, fcs) = site(&sites, src.find("CT<int>").unwrap());
+    assert_eq!(fcs, [" generic"]);
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
+    let (verdict, fcs) = site(&sites, src.find("CT) =").unwrap());
+    assert_eq!(fcs, [" plain"]);
+    assert_eq!(verdict, Verdict::Agree { attached: true });
+}
+
+#[test]
+fn an_assembly_namesake_of_another_arity_is_not_shown_the_source_doc() {
+    // `Action<int>` is `System.Action<'T>` to FCS, not the project's `Action`.
+    let src = "module M\nopen System\n/// mine\ntype Action = int\nlet f (x: Action<int>) = x\n";
+    let sites = occurrences(src, "Action");
+    let (verdict, fcs) = site(&sites, src.find("Action<int>").unwrap());
+    assert_eq!(fcs, Vec::<String>::new());
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
 }
 
 #[test]
@@ -245,38 +258,30 @@ fn an_optional_named_argument_name_declines() {
 }
 
 #[test]
-fn same_named_types_in_reopened_namespaces_decline() {
-    let src = "namespace N\n/// generic\ntype T<'a> = int -> 'a\nnamespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
-    let sites = occurrences(src, "T");
-    let generic_use = src.find("T<int>").unwrap();
-    let (_, _, fcs) = sites
-        .iter()
-        .find(|(at, _, _)| *at == generic_use)
-        .expect("graded");
-    assert_eq!(fcs, &[" generic"]);
-    for (at, verdict, _) in &sites {
-        assert_eq!(
-            verdict,
-            &Verdict::Declined(SourceDocDecline::SameNameDeclarations),
-            "at {at}"
-        );
-    }
+fn a_named_argument_name_in_a_new_expression_declines() {
+    let src = "module M\ntype A(arg: int) =\n    member _.X = arg\nlet h () =\n    /// local\n    let arg = 1\n    new A(arg = arg)\n";
+    let sites = occurrences(src, "arg");
+    let (verdict, fcs) = site(&sites, src.find("A(arg =").unwrap() + 2);
+    assert_eq!(fcs, Vec::<String>::new());
+    assert_eq!(
+        verdict,
+        Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
+    );
 }
 
 #[test]
-fn same_named_types_across_files_decline() {
+fn arity_mismatch_declines_across_reopened_namespaces_and_files() {
+    let src = "namespace N\n/// generic\ntype T<'a> = int -> 'a\nnamespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
+    let sites = occurrences(src, "T");
+    let (verdict, fcs) = site(&sites, src.find("T<int>").unwrap());
+    assert_eq!(fcs, [" generic"]);
+    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
+
     let a = "namespace N\n/// generic\ntype T<'a> = int -> 'a\n";
     let b = "namespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
     let files = [("A.fs", a), ("B.fs", b)];
     let (graded, _) = run_fixture(&files, &[]);
-    let sites: Vec<_> = graded.iter().filter(|g| g.name == "T").collect();
-    assert!(!sites.is_empty());
-    for g in sites {
-        assert_eq!(
-            g.verdict,
-            Verdict::Declined(SourceDocDecline::SameNameDeclarations)
-        );
-    }
+    assert!(super::harness::failures(&graded).is_empty(), "{graded:?}");
 }
 
 #[test]

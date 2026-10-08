@@ -49,10 +49,13 @@
 //!
 //! A doc is only as right as the resolution that chose its declaration, and
 //! the differential found two shapes resolution gets wrong (#323, #324); they
-//! decline here too ([`SourceDocDecline::SameNameDeclarations`],
+//! decline here too ([`SourceDocDecline::ArityMismatch`],
 //! [`SourceDocDecline::NamedArgumentCandidate`]) until resolution is fixed.
+//! Both guards check an invariant of the occurrence itself — the type
+//! arguments it supplies, the `=` it stands left of — rather than enumerate
+//! the declarations that could collide.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use borzoi_sema::{
@@ -102,11 +105,15 @@ pub enum SourceDocDecline {
     /// (`Val.XmlDoc` falls back to `val_other_xmldoc`, set during signature
     /// conformance), which is not located here.
     SignatureFallback,
-    /// The project declares types of this name at different generic arities,
-    /// which resolution does not yet choose between (#323), so the occurrence
-    /// may name the other one; or the type declares another case of this name,
-    /// an error FCS resolves to the first.
+    /// The type declares another case of this name, an error FCS resolves to
+    /// the first.
     SameNameDeclarations,
+    /// A use of a type supplies a different number of type arguments than the
+    /// type resolution chose declares (or a shape whose count is not read).
+    /// Resolution does not yet choose among same-named types by arity (#323),
+    /// so FCS binds another type there — a source namesake or a referenced
+    /// assembly's (`Action<int>` against a project's `type Action`).
+    ArityMismatch,
     /// The occurrence is the left of `=` in a parenthesised application
     /// argument — a named argument when the callee is a method or constructor,
     /// which FCS binds to the parameter, not to the value resolution found
@@ -238,6 +245,14 @@ impl SourceDocIndex {
             }
         }
         Ok(lines)
+    }
+
+    /// The generic arity of the type definition `def` names.
+    fn type_arity_of(&self, def: &Def) -> Option<usize> {
+        let element = covering(&self.root, def.range)?;
+        ancestors(&element)
+            .find(|n| n.kind() == SyntaxKind::TYPE_DEFN)
+            .map(|defn| type_arity(&defn))
     }
 
     fn index_of(&self, token: &SyntaxToken) -> usize {
@@ -617,37 +632,38 @@ pub fn member_text(elaborated: &[String]) -> String {
     text
 }
 
-impl ProjectDocs<'_> {
-    /// Whether some type of `def`'s name is declared, anywhere in the
-    /// project's sources, at a different generic arity than another — the shape
-    /// resolution does not yet tell apart (#323), so an occurrence resolved to
-    /// one of them may be the other's. Project-wide because namespaces reopen
-    /// and span files; a referenced assembly's namesake is not seen.
-    fn has_namesake_of_other_arity(&mut self, def: &Def) -> bool {
-        let files = self.files;
-        let arities = self.type_arities.get_or_insert_with(|| {
-            let mut arities: HashMap<String, BTreeSet<usize>> = HashMap::new();
-            for file in files {
-                for defn in file
-                    .file
-                    .syntax()
-                    .descendants()
-                    .filter(|n| n.kind() == SyntaxKind::TYPE_DEFN)
-                {
-                    if let Some(name) = defn.children().find(|c| c.kind() == SyntaxKind::LONG_IDENT)
-                    {
-                        arities
-                            .entry(ident_text(&name))
-                            .or_default()
-                            .insert(type_arity(&defn));
-                    }
-                }
-            }
-            arities
-        });
-        arities
-            .get(&unticked(&def.name))
-            .is_some_and(|set| set.len() > 1)
+/// The type-argument count an occurrence of a type name at `at` supplies:
+/// `T<a, b>` (and `T<a>.M` in an expression) supplies two (one), the postfix
+/// `a T` one, and a bare `T` none. `None` when the shape is not one of those.
+fn requested_arity(root: &SyntaxNode, at: TextRange) -> Option<usize> {
+    if !root.text_range().contains_range(at) {
+        return None;
+    }
+    let head = ancestors(&root.covering_element(at)).find(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::LONG_IDENT_TYPE | SyntaxKind::IDENT_EXPR | SyntaxKind::LONG_IDENT_EXPR
+        )
+    })?;
+    let Some(app) = head
+        .parent()
+        .filter(|p| matches!(p.kind(), SyntaxKind::APP_TYPE | SyntaxKind::TYPE_APP_EXPR))
+    else {
+        return Some(0);
+    };
+    let args: Vec<SyntaxNode> = app.children().filter(|c| *c != head).collect();
+    let prefix = app.children().next().as_ref() == Some(&head);
+    let angle = app
+        .children_with_tokens()
+        .any(|e| e.kind() == SyntaxKind::LESS_TOK);
+    match (prefix, angle) {
+        // `T<a, b>`: every other child node is an argument.
+        (true, true) => Some(args.len()),
+        // `a T`: one argument (a parenthesised tuple of them is not modelled).
+        (false, false) if app.children().last().as_ref() == Some(&head) && args.len() == 1 => {
+            (args[0].kind() != SyntaxKind::PAREN_TYPE).then_some(1)
+        }
+        _ => None,
     }
 }
 
@@ -660,10 +676,10 @@ fn type_arity(defn: &SyntaxNode) -> usize {
         .count()
 }
 
-/// Whether the name at `at` is the left of `=` in a parenthesised (possibly
-/// tupled) application argument — `M(x = 1)`, `M(?x = o)`, `f (x = 1, y)` —
-/// which is a named argument when the callee is a method or constructor and an
-/// equality test otherwise; syntax cannot tell which.
+/// Whether the name at `at` is the left of `=` in parentheses, possibly
+/// tupled — `M(x = 1)`, `new A(?x = o)`, `f (x = 1, y)` — which is a named
+/// argument when the parentheses are a method's or constructor's argument list
+/// and an equality test otherwise; syntax cannot tell which.
 fn is_named_argument_candidate(root: &SyntaxNode, at: TextRange) -> bool {
     if !root.text_range().contains_range(at) {
         return false;
@@ -707,12 +723,10 @@ fn is_named_argument_candidate(root: &SyntaxNode, at: TextRange) -> bool {
     {
         arg = arg.parent().expect("checked");
     }
-    arg.parent().is_some_and(|paren| {
-        paren.kind() == SyntaxKind::PAREN_EXPR
-            && paren
-                .parent()
-                .is_some_and(|app| app.kind() == SyntaxKind::APP_EXPR)
-    })
+    // Whatever applies the parentheses — an application, `new`, a method call
+    // through a dotted path, or nothing at all — they may be an argument list.
+    arg.parent()
+        .is_some_and(|paren| paren.kind() == SyntaxKind::PAREN_EXPR)
 }
 
 /// Why attached `///` lines yield no documentation tree.
@@ -758,9 +772,6 @@ pub struct ProjectDocs<'a> {
     resolved: &'a ResolvedProject,
     partners: Vec<Option<usize>>,
     indexes: HashMap<usize, SourceDocIndex>,
-    /// Every type name the project's sources declare, with the generic
-    /// arities it is declared at; built on first need.
-    type_arities: Option<HashMap<String, BTreeSet<usize>>>,
 }
 
 impl<'a> ProjectDocs<'a> {
@@ -771,7 +782,6 @@ impl<'a> ProjectDocs<'a> {
             resolved,
             partners: signature_partners(files),
             indexes: HashMap::new(),
-            type_arities: None,
         }
     }
 
@@ -803,9 +813,6 @@ impl<'a> ProjectDocs<'a> {
                 SourceDocDecline::NamedArgumentCandidate,
             ));
         }
-        if def.kind == DefKind::Type && self.has_namesake_of_other_arity(def) {
-            return Some(SourceDoc::Declined(SourceDocDecline::SameNameDeclarations));
-        }
         let constrained = matches!(project_file.file, SourceFile::Impl(_))
             && self.partners.get(file).copied().flatten().is_some();
         if constrained && file != from {
@@ -815,6 +822,17 @@ impl<'a> ProjectDocs<'a> {
             .indexes
             .entry(file)
             .or_insert_with(|| SourceDocIndex::new(project_file.file.syntax()));
+        let at_definition = file == from && at == def.range;
+        if def.kind == DefKind::Type && !at_definition {
+            let declared = index.type_arity_of(def);
+            let requested = self
+                .files
+                .get(from)
+                .and_then(|f| requested_arity(f.file.syntax(), at));
+            if declared.is_none() || declared != requested {
+                return Some(SourceDoc::Declined(SourceDocDecline::ArityMismatch));
+            }
+        }
         Some(match index.doc_for(def) {
             SourceDoc::Attached(lines) if constrained && is_blank(&lines) => {
                 SourceDoc::Declined(SourceDocDecline::SignatureFallback)
