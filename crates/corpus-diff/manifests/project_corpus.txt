@@ -1523,7 +1523,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:5:6-12
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:60:9-36 "AllowTrailingCommas" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:61:9-30 "WriteIndented" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:65:23-42 "JsonDocumentOptions" assembly-deferral unbound-name unattributed
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:65:44-63 "AllowTrailingCommas" assembly-deferral unbound-name unattributed
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:65:44-63 "AllowTrailingCommas" assembly-deferral unrecorded unattributed
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:68:35-37 "T" project-deferral unrecorded unattributed
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:68:67-69 "T" project-deferral unrecorded unattributed
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Domain.fs:69:15-29 "Snapshot" project-deferral qualified-access unattributed
@@ -13518,7 +13518,7 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:211:9-32 "PackedTrieSerialization" project-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:30:43-53 "PackedTrie" project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:31:26-38 "BinaryWriter" shadowed-constructor
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:31:63-72 "leaveOpen" project-deferral unbound-name unattributed
+Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:31:63-72 "leaveOpen" project-deferral unrecorded unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:34:9-21 "Write" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:35:9-21 "Write" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:38:22-38 "Length" assembly-deferral qualified-access unattributed
@@ -13572,7 +13572,7 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:83:17-29 "Write" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:85:59-69 "PackedTrie" project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:86:26-38 "BinaryReader" shadowed-constructor
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:86:63-72 "leaveOpen" project-deferral unbound-name unattributed
+Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:86:63-72 "leaveOpen" project-deferral unrecorded unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:89:25-41 "ReadBytes" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:91:22-24 "(<>)" assembly-deferral unbound-name unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:96:27-42 "ReadByte" assembly-deferral qualified-access unattributed
@@ -20222,9 +20222,9 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:387:13-31 "ToImmutable" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:390:21-38 "GetLayout" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:392:16-27 "IsDefault" assembly-deferral qualified-access unattributed
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:395:32-36 "size" project-deferral unbound-name unattributed
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:395:32-36 "size" project-deferral unrecorded unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:395:39-45 "Size" assembly-deferral qualified-access unattributed
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:395:47-58 "packingSize" project-deferral unbound-name unattributed
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:395:47-58 "packingSize" project-deferral unrecorded unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:395:61-74 "PackingSize" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:398:13-22 "Namespace" project-deferral unrecorded unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:399:13-17 "Name" project-deferral unrecorded unattributed
