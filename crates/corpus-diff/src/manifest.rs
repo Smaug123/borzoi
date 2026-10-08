@@ -44,6 +44,7 @@ use borzoi_oracle_harness::corpus_key::{Positions, corpus_relative};
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::DeferredReason;
 
+use crate::handler_diff::{HandlerReport, PerturbedSkip, Variant, consistent};
 use crate::{
     AnswerSurface, Graded, ItemOutcome, LoadSkip, ProjectAssetsStatus, ProjectRecord, ProjectSkip,
     ProjectVerdict, ServedDecline, SetAside,
@@ -116,7 +117,9 @@ pub fn project_corpus_manifest(
                 assets,
                 sources,
                 comparison,
+                handlers,
             } => {
+                handler_entries(root, record, &project, sources, handlers, &mut entries)?;
                 entries.push(format!(
                     "{project} comparable assets={}",
                     assets_label(assets)
@@ -185,6 +188,108 @@ pub fn project_corpus_manifest(
         }
     }
     Manifest::from_counted(entries).map_err(|e| ManifestError::Entry(e.to_string()))
+}
+
+/// The handler differential's lines for one comparable project
+/// ([`crate::handler_diff`]):
+///
+/// - `<file> handlers <copy> <handler> <outcome>=<n> …` — per file, copy
+///   (`plain` or `perturbed`) and handler, how many probes came to each
+///   outcome;
+/// - `<file>:<span> "<name>" handlers <copy> <handler> <probe> <outcome>
+///   expected <verdict>` — every probe whose answer is not the one the
+///   comparator's verdict on its record implies;
+/// - `<project> handlers perturbed skipped <why>`, with the oracle's errors on
+///   the copy, when the perturbed run could not be made;
+/// - `<file> handlers skipped owned-by-another-project` for a source the server
+///   answers as another project's, which is not probed.
+///
+/// A perturbed probe's span is in the perturbed copy's text.
+fn handler_entries(
+    root: &Path,
+    record: &ProjectRecord,
+    project: &str,
+    sources: &[(PathBuf, std::sync::Arc<str>)],
+    handlers: &HandlerReport,
+    entries: &mut Vec<String>,
+) -> Result<(), ManifestError> {
+    let plain: HashMap<&Path, Positions<'_>> = sources
+        .iter()
+        .map(|(path, text)| (path.as_path(), Positions::new(text)))
+        .collect();
+    let perturbed: HashMap<&Path, Positions<'_>> = sources
+        .iter()
+        .zip(&handlers.perturbed_texts)
+        .map(|((path, _), text)| (path.as_path(), Positions::new(text)))
+        .collect();
+    let mut counts: BTreeMap<(String, &str, &str), BTreeMap<&str, usize>> = BTreeMap::new();
+    for probe in &handlers.probes {
+        let file = file_key(root, &record.project, project, &probe.file)?;
+        *counts
+            .entry((file.clone(), probe.variant.label(), probe.handler.label()))
+            .or_default()
+            .entry(probe.outcome.label())
+            .or_default() += 1;
+        if consistent(probe.handler, probe.expectation, probe.outcome) {
+            continue;
+        }
+        let positions = match probe.variant {
+            Variant::Plain => &plain,
+            Variant::Perturbed => &perturbed,
+        };
+        let at = positions.get(probe.file.as_path()).ok_or_else(|| {
+            ManifestError::Entry(format!(
+                "a handler probe in {}, which is not a source of {}",
+                probe.file.display(),
+                record.project.display()
+            ))
+        })?;
+        entries.push(format!(
+            "{file}:{} {:?} handlers {} {} {} {} expected {}",
+            span(at, probe.range),
+            probe.name,
+            probe.variant.label(),
+            probe.handler.label(),
+            probe.probe.label(),
+            probe.outcome.label(),
+            probe.expectation.label()
+        ));
+    }
+    for ((file, variant, handler), outcomes) in counts {
+        let outcomes: Vec<String> = outcomes
+            .into_iter()
+            .map(|(outcome, n)| format!("{outcome}={n}"))
+            .collect();
+        entries.push(format!(
+            "{file} handlers {variant} {handler} {}",
+            outcomes.join(" ")
+        ));
+    }
+    for path in &handlers.owned_elsewhere {
+        entries.push(format!(
+            "{} handlers skipped owned-by-another-project",
+            file_key(root, &record.project, project, path)?
+        ));
+    }
+    match &handlers.perturbed_skip {
+        None => {}
+        Some(PerturbedSkip::Fcs(_)) => {
+            entries.push(format!("{project} handlers perturbed skipped fcs-failed"));
+        }
+        Some(PerturbedSkip::FcsErrors(errors)) => {
+            entries.push(format!(
+                "{project} handlers perturbed skipped fcs-errors errors={}",
+                errors.len()
+            ));
+            for (path, line, col, number) in errors {
+                entries.push(format!(
+                    "{}:{line}:{col} handlers perturbed fcs-error FS{number:04}",
+                    file_key(root, &record.project, project, path)?
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `line:col-col` for a range on one line, `line:col-line:col` otherwise. The

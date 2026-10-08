@@ -60,3 +60,13 @@ tempfile = "3"
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = "0.3"
+
+# The whole-project corpus gate (`tools/ci/project-corpus-gate.sh`) asks the
+# LSP's request handlers tens of thousands of questions, which unoptimised takes
+# the better part of half an hour. Optimised, but keeping the debug assertions
+# and overflow checks a test build has: the gate is a test, and an assertion
+# the handlers make is part of what it checks.
+[profile.gate]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
