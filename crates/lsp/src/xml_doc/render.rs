@@ -10,9 +10,12 @@
 //! than prose (`is_ignored`). Each fallback is recorded in the
 //! [`RenderReport`], which is what the shipped-file sweep censuses.
 //!
-//! `<inheritdoc>` and `<include>` are not resolved. Where one appears, the
-//! rendering says so in place, and the report records it, so an incomplete
-//! documentation is never presented as a complete one.
+//! `<inheritdoc>` and `<include>` are not resolved here: hover hands this the
+//! entry [`super::inherit`] expanded, so an `<inheritdoc>` that reaches the
+//! renderer is one that could not be expanded exactly (and `<include>` never
+//! can be). Where one appears, the rendering says so in place, and the report
+//! records it, so an incomplete documentation is never presented as a
+//! complete one.
 
 use super::markdown::{Block, Inline};
 use super::tree::{DocElement, DocNode};
@@ -1534,11 +1537,7 @@ mod tests {
                 attributes.push((k.to_string(), v));
             }
         }
-        DocElement {
-            name: name.to_string(),
-            attributes,
-            children,
-        }
+        DocElement::new(name, attributes, children)
     }
 
     fn all_names() -> Vec<&'static str> {

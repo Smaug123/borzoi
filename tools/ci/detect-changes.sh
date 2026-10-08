@@ -35,7 +35,9 @@ filter_prefixes() {
     # differential tests, so both live under one filter (mirrors nuget).
     msbuild)   echo "crates/msbuild tools/msbuild-condition-oracle" ;;
     assembly)  echo "crates/assembly" ;;
-    lsp)       echo "crates/lsp" ;;
+    # The inheritdoc oracle exists solely for crates/lsp's differential
+    # tests, so both live under one filter (mirrors nuget).
+    lsp)       echo "crates/lsp tools/inheritdoc-oracle" ;;
     sema)      echo "crates/sema" ;;
     # The oracle tool exists solely for crates/nuget's differential tests,
     # so both live under one filter.

@@ -24,11 +24,17 @@ pub enum DocNode {
 ///
 /// Names are local names: no doc-comment tag is namespaced, and a stray default
 /// namespace on an ancestor must not stop `<summary>` from being a summary.
+/// What the local name forgets is kept as one bit, [`Self::namespaced`]: the
+/// renderer ignores it, but `<inheritdoc>` expansion reproduces a consumer
+/// (Roslyn) for which a namespaced `<inheritdoc>`, `cref` or path step is a
+/// different name, so it declines wherever the bit is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocElement {
     pub name: String,
     pub attributes: Vec<(String, String)>,
     pub children: Vec<DocNode>,
+    /// The element, or one of its attributes, has a non-empty namespace URI.
+    pub namespaced: bool,
 }
 
 impl DocElement {
@@ -79,7 +85,99 @@ impl DocElement {
                 .map(|a| (a.name().to_string(), a.value().to_string()))
                 .collect(),
             children,
+            namespaced: node.tag_name().namespace().is_some()
+                || node.attributes().any(|a| a.namespace().is_some()),
         })
+    }
+
+    /// An element with no namespace, as a consumer would build it.
+    pub fn new(name: &str, attributes: Vec<(String, String)>, children: Vec<DocNode>) -> Self {
+        DocElement {
+            name: name.to_string(),
+            attributes,
+            children,
+            namespaced: false,
+        }
+    }
+
+    /// Whether this element or any descendant is [`Self::namespaced`].
+    pub fn any_namespaced(&self) -> bool {
+        self.namespaced
+            || self.children.iter().any(|c| match c {
+                DocNode::Element(e) => e.any_namespaced(),
+                DocNode::Text(_) => false,
+            })
+    }
+
+    /// The deepest element nesting below this element (0 for a leaf).
+    pub fn depth(&self) -> usize {
+        self.children
+            .iter()
+            .filter_map(|c| match c {
+                DocNode::Element(e) => Some(1 + e.depth()),
+                DocNode::Text(_) => None,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// How many nodes (elements and text runs) the tree holds, this element
+    /// included.
+    pub fn node_count(&self) -> usize {
+        1 + self
+            .children
+            .iter()
+            .map(|c| match c {
+                DocNode::Element(e) => e.node_count(),
+                DocNode::Text(_) => 1,
+            })
+            .sum::<usize>()
+    }
+
+    /// The same tree with adjacent text runs merged and empty ones dropped,
+    /// at every level: the form an XML parser hands back for the
+    /// serialisation of this tree, so two trees that serialise identically
+    /// compare equal.
+    pub fn normalized(self) -> Self {
+        let mut children: Vec<DocNode> = Vec::with_capacity(self.children.len());
+        for child in self.children {
+            match child {
+                DocNode::Text(t) if t.is_empty() => {}
+                DocNode::Text(t) => match children.last_mut() {
+                    Some(DocNode::Text(prev)) => prev.push_str(&t),
+                    _ => children.push(DocNode::Text(t)),
+                },
+                DocNode::Element(e) => children.push(DocNode::Element(e.normalized())),
+            }
+        }
+        DocElement { children, ..self }
+    }
+}
+
+/// .NET's `OrdinalIgnoreCase` equality of an element name against an ASCII
+/// lower-case word — how C# compares documentation element names
+/// (`DocumentationCommentXmlNames.ElementEquals`): per character, equal, or
+/// equal once upper-cased by its simple mapping, which also lets `ı` (U+0131,
+/// upper-casing to `I`) stand for `i`.
+pub fn name_is(name: &str, word: &str) -> bool {
+    debug_assert!(word.bytes().all(|b| b.is_ascii_lowercase()));
+    let mut a = name.chars();
+    let mut b = word.chars();
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) => {
+                let mut upper = x.to_uppercase();
+                let single = match (upper.next(), upper.next()) {
+                    (Some(u), None) => u,
+                    _ => return false,
+                };
+                if x != y && single != y.to_ascii_uppercase() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
     }
 }
 
