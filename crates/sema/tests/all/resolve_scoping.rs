@@ -170,7 +170,12 @@ fn optional_value_parameter_is_visible_in_the_body() {
 
 #[test]
 fn equality_operands_in_an_ordinary_application_both_resolve() {
-    let src = "let x = 1\nlet y = 2\nlet result = not (x = y)\n";
+    // The head is an in-file function, so `x = y` is an equality and not a
+    // named argument. A head this empty environment cannot identify (`not`,
+    // which could as well be a constructor or a union case) leaves `x`
+    // unclaimed; `resolve_named_args_diff` checks `not (x = y)` against FCS
+    // with FSharp.Core referenced, where `not` is known to be a function.
+    let src = "let x = 1\nlet y = 2\nlet negate b = not b\nlet result = negate (x = y)\n";
     let rf = resolve(src);
 
     assert_resolves_to(&rf, nth(src, "x", 1), nth(src, "x", 0));

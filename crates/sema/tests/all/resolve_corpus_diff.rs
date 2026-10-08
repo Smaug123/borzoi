@@ -81,7 +81,7 @@ use crate::common::corpus_manifest::{
     Positions, check_manifest, corpus_relative, regenerate_ignored,
 };
 use crate::common::{
-    Bucket, FileCensus, census_resolve_uses, env_usize_or, invoke_fcs_dump_census,
+    Bucket, CensusDecl, FileCensus, census_resolve_uses, env_usize_or, invoke_fcs_dump_census,
     parse_census_jsonl,
 };
 use borzoi_cst::parser::parse;
@@ -329,7 +329,7 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
         if u.is_from_definition || u.start == u.end || u.bucket != Some(Bucket::B1) {
             continue;
         }
-        let Some((ds, de)) = u.decl else {
+        let CensusDecl::InFile(ds, de) = u.decl else {
             continue;
         };
         let use_range = TextRange::new(

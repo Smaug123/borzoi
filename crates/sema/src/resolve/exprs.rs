@@ -81,11 +81,19 @@ impl<'a> Resolver<'a> {
                 }
             }
             Expr::App(e) => {
-                if let Some(f) = e.func() {
-                    self.resolve_expr(&f);
+                let func = e.func();
+                if let Some(f) = &func {
+                    self.resolve_expr(f);
                 }
                 if let Some(a) = e.arg() {
-                    self.resolve_expr(&a);
+                    // Resolved after the function, so the head's resolution is
+                    // already recorded when deciding whether `a` may carry
+                    // named arguments.
+                    if !e.is_infix() && func.is_some_and(|f| !self.applies_an_in_file_value(&f)) {
+                        self.resolve_method_args(&a);
+                    } else {
+                        self.resolve_expr(&a);
+                    }
                 }
             }
             Expr::DotGet(e) => {
@@ -167,7 +175,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
                 if let Some(arg) = e.arg() {
-                    self.resolve_expr(&arg);
+                    self.resolve_method_args(&arg);
                 }
             }
             Expr::ObjExpr(e) => {
@@ -186,7 +194,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
                 if let Some(arg) = e.arg() {
-                    self.resolve_expr(&arg);
+                    self.resolve_method_args(&arg);
                 }
             }
             Expr::InferredUpcast(e) => {
@@ -899,14 +907,11 @@ impl<'a> Resolver<'a> {
     /// than types will need the same treatment; it will not arrive via
     /// `decide_type_path`.
     ///
-    /// One limitation remains, and it is *not* one `decide_type_path` owns: an F#
-    /// **named-argument label** (`M(arg = 1)`) reaches the bare-ident path at all,
-    /// since named arguments are unmodelled and the walker recurses into
-    /// application arguments blindly. [`is_named_arg_label`] keeps the *fallback*
-    /// off it, but the label still resolves against the enclosing scope, so one
-    /// naming a project value binds that value where F# binds the callee's
-    /// parameter — a defect that predates this fallback. Fixing it means modelling
-    /// the argument shape at the walker.
+    /// An `x = y` argument of a provable *function* application
+    /// ([`Self::applies_an_in_file_value`]) is an equality test and reaches the
+    /// bare-ident path; [`is_named_arg_label`] keeps the *fallback* off its `x`.
+    /// Every other application's named-argument labels are skipped before they
+    /// get here ([`Self::resolve_method_args`]).
     /// Whether the container this use sits in — or any container enclosing it —
     /// was marked as holding values the resolver cannot enumerate.
     ///
@@ -948,6 +953,113 @@ impl<'a> Resolver<'a> {
             .filter(|(p, _)| p.len() == container.len() + 1 && p.starts_with(container))
             .map(|(p, _)| p.clone())
             .collect()
+    }
+
+    /// Whether an application whose function is `func` is provably an F#
+    /// **function** application — one whose head names an in-file value,
+    /// function or local — so that an `x = y` argument is an equality test.
+    ///
+    /// Anything else may be a method, constructor or union-case application,
+    /// where FCS reads a trailing `x = y` argument as a **named argument**
+    /// *syntactically* (`GetMethodArgs`): `x` then names the callee's
+    /// parameter (or field, or settable property), never the `x` in scope.
+    /// Telling the two apart in general needs the callee's identity — `not`,
+    /// `printfn` and `System.Math.Max` are all bare or dotted names, and only
+    /// the last is a method — so the answer is `false` unless it is proved.
+    ///
+    /// Must be asked after `func` is resolved: it reads the head's recorded
+    /// resolution.
+    fn applies_an_in_file_value(&self, func: &Expr) -> bool {
+        // A curried application `f a (x = y)` applies whatever `f` is.
+        let mut head = func.clone();
+        while let Expr::App(app) = &head {
+            // An infix operator's application is never a method call.
+            if app.is_infix() {
+                return true;
+            }
+            let Some(f) = app.func() else {
+                return false;
+            };
+            head = f;
+        }
+        // What the application applies is what the *whole* path names, which a
+        // dotted path records at its whole span (`List.contains`); in
+        // `x.M (a = b)` nothing is recorded there — `x` is a value and `M` a
+        // member of it — so it stays unproved.
+        let range = match &head {
+            Expr::Ident(e) => e.ident().map(|t| t.text_range()),
+            Expr::LongIdent(e) => e.long_ident().and_then(|li| {
+                let mut idents = li.idents();
+                let first = idents.next()?;
+                let last = idents.last().unwrap_or_else(|| first.clone());
+                Some(first.text_range().cover(last.text_range()))
+            }),
+            _ => None,
+        };
+        let Some(range) = range else {
+            return false;
+        };
+        let def = match self.resolutions.get(&range) {
+            // A member of an F# module is a `let`-bound function or value, never
+            // a method: FCS applies it as a function.
+            Some(Resolution::Member { parent, .. }) => return self.assemblies.is_module(*parent),
+            Some(Resolution::Local(id)) => Some(*id),
+            Some(Resolution::Item(item)) => item
+                .index()
+                .checked_sub(self.item_base as usize)
+                .and_then(|i| self.items.get(i))
+                .and_then(|it| match it.def {
+                    super::model::ExportDef::Own(def) => Some(def),
+                    super::model::ExportDef::Sig { .. } => None,
+                }),
+            _ => None,
+        };
+        def.is_some_and(|id| {
+            matches!(
+                self.defs[id.index()].kind,
+                DefKind::Value { .. } | DefKind::Parameter | DefKind::PatternLocal
+            )
+        })
+    }
+
+    /// Resolve the argument of an application that may be a method,
+    /// constructor or union-case call: every argument as an ordinary
+    /// expression, except that a **named argument**'s label (`x` in `x = e` or
+    /// `?x = e`) is left unresolved, since it names something of the callee's
+    /// and not a value in scope. Its value `e` resolves as usual.
+    ///
+    /// The argument shapes are FCS's `GetMethodArgs`: a parenthesised
+    /// (non-struct) tuple, a bare one, or a single expression, parenthesised or
+    /// not.
+    pub(super) fn resolve_method_args(&mut self, arg: &Expr) {
+        let inner = match arg {
+            Expr::Paren(p) => match p.inner() {
+                Some(inner) => inner,
+                None => return,
+            },
+            other => other.clone(),
+        };
+        match &inner {
+            // A struct tuple is one argument, not an argument list.
+            Expr::Tuple(t) if t.is_struct() => self.resolve_expr(&inner),
+            Expr::Tuple(t) => {
+                for el in t.elements() {
+                    self.resolve_method_arg(&el);
+                }
+            }
+            other => self.resolve_method_arg(other),
+        }
+    }
+
+    fn resolve_method_arg(&mut self, el: &Expr) {
+        match named_arg_shape(el) {
+            Some((Some(lhs), value)) if is_label_shaped(&lhs) => {
+                if let Some(value) = value {
+                    self.resolve_expr(&value);
+                }
+            }
+            _ => self.resolve_expr(el),
+        }
     }
 
     fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
@@ -1028,6 +1140,17 @@ pub(crate) fn named_arg_shape(el: &Expr) -> Option<(Option<Expr>, Option<Expr>)>
         return None;
     }
     Some((op_app.arg(), outer.arg()))
+}
+
+/// Whether the left of a [`named_arg_shape`] element can be a named-argument
+/// label: FCS's `LongOrSingleIdent` with exactly one segment, optionally behind
+/// the `?` of an optional argument (`x`, `?x`; not `a.b`).
+fn is_label_shaped(lhs: &Expr) -> bool {
+    match lhs {
+        Expr::Ident(_) => true,
+        Expr::LongIdent(e) => e.long_ident().is_some_and(|li| li.idents().count() == 1),
+        _ => false,
+    }
 }
 
 /// Whether this bare ident is the **label** of a named argument (`M(Thing = 1)`)

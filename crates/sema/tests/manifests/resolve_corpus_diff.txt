@@ -2180,7 +2180,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefi
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:23:23 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:23:38 "'a" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:33:17 "oo" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:42:20 "x" alt-binder fcs=22:93 ours=41:5 fcs-clean
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OptionalArguments/SanityCheck02.fs:42:20 "x" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/ConsumeOverloadGenericMethods.fs compared fcs-check-errors match=0
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/NoOverloadIDSpecified.fs compared fcs-clean match=4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/OverloadingMembers/NoOverloadIDSpecified.fs:9:14 "oo" gap
@@ -2247,11 +2247,15 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotation
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs compared fcs-clean match=172
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs:104:13 "Foo<char>" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs:104:14 "oo<char>" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs compared fcs-check-errors match=12
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs compared fcs-check-errors match=12
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs:15:17 "r1" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs:14:17 "r1" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test28.fs compared fcs-check-errors match=0
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs compared fcs-check-errors match=12
-tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs compared fcs-check-errors match=12
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs:12:17 "r1" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs compared fcs-check-errors match=11
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs:12:17 "r1" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/IComparison/DU.fs compared fcs-clean match=6
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestArrayParam.fs compared fcs-check-errors match=6
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestStructParam.fs compared fcs-check-errors match=7
@@ -2629,7 +2633,7 @@ tests/FSharp.Test.Utilities/CompilerAssert.fs:1042:9 "CompilerAssert" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1042:9 "CompilerAssert.RunScriptWithOptions" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1054:28 "CompilerAssert" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1054:28 "CompilerAssert.Parse" gap
-tests/FSharp.Test.Utilities/CompilerAssert.fs:1054:59 "langVersion" alt-binder fcs=1044:43 ours=1053:53 fcs-check-errors
+tests/FSharp.Test.Utilities/CompilerAssert.fs:1054:59 "langVersion" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:123:21 "Fsi" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:124:21 "Fsx" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:125:20 "Cs" gap
@@ -2678,11 +2682,11 @@ tests/FSharp.Test.Utilities/CompilerAssert.fs:719:55 "errors, _, _" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:726:9 "CompilerAssert" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:726:9 "CompilerAssert.CompileWithErrors" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:751:55 "errors, _, outputFilePath" gap
-tests/FSharp.Test.Utilities/CompilerAssert.fs:761:128 "newProcess" alt-binder fcs=739:83 ours=760:80 fcs-check-errors
+tests/FSharp.Test.Utilities/CompilerAssert.fs:761:128 "newProcess" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:761:29 "CompilerAssert" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:761:29 "CompilerAssert.ExecuteAux" gap
-tests/FSharp.Test.Utilities/CompilerAssert.fs:761:62 "ignoreWarnings" alt-binder fcs=739:50 ours=760:47 fcs-check-errors
-tests/FSharp.Test.Utilities/CompilerAssert.fs:761:96 "beforeExecute" alt-binder fcs=739:67 ours=760:64 fcs-check-errors
+tests/FSharp.Test.Utilities/CompilerAssert.fs:761:62 "ignoreWarnings" gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:761:96 "beforeExecute" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:769:28 "CompilerAssert" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:769:28 "CompilerAssert.ExecuteAux" gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:769:60 "newProcess" gap

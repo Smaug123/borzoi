@@ -208,10 +208,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 An alt-binder entry says whether FCS checked its file cleanly (`fcs-clean`) or
 with errors (`fcs-check-errors`). In the latter it is usually FCS's isolation
 recovery binding differently; in the former there is no recovery to blame, so
-it is a wrong answer. One stands today, and the manifest names it:
-`SanityCheck02.fs:42:20`, the label of a named argument (`M(x = x)`) bound to
-an enclosing `let x` where F# binds the callee's parameter — the limitation
-`resolve/exprs.rs` documents at `is_named_arg_label`.
+it is a wrong answer, and none stands today.
 
 A manifest is only exact if every host computes the same one, and two things
 had to be pinned for that:
