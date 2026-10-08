@@ -322,17 +322,24 @@ fn same_path(path: &std::path::Path, request_uri: &Url) -> bool {
 /// Every `(range, res)` in `file.resolutions()` — chained with the
 /// attribute-type resolutions, which live in their own map (EX-3 §2(d)) but
 /// are ordinary occurrences for reference listing (`[<MyAttr>]` is a use of
-/// the attribute type) — where `res == target`. Wraps the filter as a
-/// function so the caller iterates with a stable shape.
-fn matching_in_file(
-    file: &ResolvedFile,
-    target: Resolution,
-) -> impl Iterator<Item = (TextRange, Resolution)> + '_ {
-    file.resolutions()
+/// the attribute type) — where `res == target`, in source order.
+///
+/// Both maps are `HashMap`s, whose iteration order is randomised per instance,
+/// so without the sort two folds of the same text — a cache hit and a cold
+/// session, or two cold sessions — list the same references in different
+/// orders.
+fn matching_in_file(file: &ResolvedFile, target: Resolution) -> Vec<(TextRange, Resolution)> {
+    let mut matches: Vec<(TextRange, Resolution)> = file
+        .resolutions()
         .iter()
         .chain(file.attribute_resolutions().iter())
-        .filter(move |(_, r)| **r == target)
+        .filter(|(_, r)| **r == target)
         .map(|(r, res)| (*r, *res))
+        .collect();
+    // Each map is keyed by range, so within one map the key is unique; the
+    // sort is stable, so a range present in both keeps the chain's order.
+    matches.sort_by_key(|(range, _)| (range.start(), range.end()));
+    matches
 }
 
 /// Single-file fallback: parse the buffer in isolation. Resolves locals /
@@ -398,25 +405,18 @@ fn single_file_references(
     let _scan_guard = scan_span.enter();
     let mut out = Vec::new();
     // Attribute-type occurrences live in their own map (EX-3 §2(d)) but are
-    // ordinary references of the target type — chain them in, exactly as the
-    // project path's `matching_in_file` does.
-    for (range, res) in resolved
-        .resolutions()
-        .iter()
-        .chain(resolved.attribute_resolutions().iter())
-    {
-        if *res != target_res {
+    // ordinary references of the target type — `matching_in_file` chains them
+    // in, exactly as for the project path.
+    for (range, _) in matching_in_file(&resolved, target_res) {
+        if ambiguous_labels.contains(&range) {
             continue;
         }
-        if ambiguous_labels.contains(range) {
-            continue;
-        }
-        if !include_declaration && decl_range == Some(*range) {
+        if !include_declaration && decl_range == Some(range) {
             continue;
         }
         out.push(Location {
             uri: uri.clone(),
-            range: range_to_lsp(text, *range),
+            range: range_to_lsp(text, range),
         });
     }
     scan_span.record("result_count", out.len() as i64);
@@ -440,8 +440,10 @@ fn single_file_references(
 /// label, but the callee's type is still needed to identify its parameter.
 /// Explicit construction and object expressions carry the same argument shape
 /// directly on their `New` / `ObjExpr` nodes. Find-references makes no claim for
-/// these label ranges. The ordinary resolver remains untouched: definition,
-/// hover, and non-reference consumers retain both equality operands.
+/// these label ranges. The resolver already leaves a label unresolved unless the
+/// callee is provably a function, where `name = value` is an equality and both
+/// operands resolve (`Resolver::resolve_method_args` in `borzoi-sema`); this
+/// filter is coarser, dropping the left operand of such an equality too.
 fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
     let mut ranges = HashSet::new();
     for expression in root.descendants().filter_map(Expr::cast) {

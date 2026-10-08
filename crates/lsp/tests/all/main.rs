@@ -30,6 +30,7 @@ mod handlers_references_diff;
 mod handlers_semantic_tokens;
 mod handlers_workspace_symbol;
 mod ifdef_diagnostics_integration;
+mod incremental_state_machine;
 mod lsp_integration;
 mod lsp_msbuild_user_extensions_e2e;
 mod parse_cache;
