@@ -947,6 +947,7 @@ fn sort_tiebreaks_on_generic_arity() {
         metadata_token: 0,
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        has_other_method_impl: false,
     };
     let generic = MethodLike {
         definition_range: None,
@@ -1247,6 +1248,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 metadata_token: 0,
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
+                has_other_method_impl: false,
             }),
             Member::Method(MethodLike {
                 definition_range: None,
@@ -1279,6 +1281,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 metadata_token: 0,
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
+                has_other_method_impl: false,
             }),
             Member::Method(MethodLike {
                 definition_range: None,
@@ -1311,6 +1314,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 metadata_token: 0,
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
+                has_other_method_impl: false,
             }),
             Member::Method(MethodLike {
                 definition_range: None,
@@ -1346,6 +1350,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 metadata_token: 0,
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
+                has_other_method_impl: false,
             }),
         ],
     }]
@@ -1480,6 +1485,7 @@ fn fixture_my_lib() -> Vec<Entity> {
                 metadata_token: 0,
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
+                has_other_method_impl: false,
             }),
         ],
     }]

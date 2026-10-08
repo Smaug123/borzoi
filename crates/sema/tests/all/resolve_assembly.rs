@@ -3055,6 +3055,8 @@ fn a_non_authoritative_module_still_contests_a_type_position() {
         auto_opens: Vec::new(),
         manifest_identity: None,
         type_forwarders: Vec::new(),
+        has_assembly_references: None,
+        culture_qualified_names: None,
     };
     let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
         input("class.dll", vec![class_color], false),
@@ -5985,6 +5987,8 @@ fn non_authoritative_assembly_declines_module_classification() {
                 auto_opens: Vec::new(),
                 manifest_identity: None,
                 type_forwarders: Vec::new(),
+                has_assembly_references: None,
+                culture_qualified_names: None,
             },
         ])
     };
@@ -6041,6 +6045,8 @@ fn module_leaf_filter_honours_signature_authority() {
                 auto_opens: Vec::new(),
                 manifest_identity: None,
                 type_forwarders: Vec::new(),
+                has_assembly_references: None,
+                culture_qualified_names: None,
             },
         ])
     };
@@ -6126,6 +6132,8 @@ fn non_authoritative_module_uses_the_type_rule_for_qualified_ownership() {
                 auto_opens: Vec::new(),
                 manifest_identity: None,
                 type_forwarders: Vec::new(),
+                has_assembly_references: None,
+                culture_qualified_names: None,
             },
         ])
     };

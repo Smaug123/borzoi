@@ -19,14 +19,14 @@
 //!   targets — which makes the map from target to committed key injective by
 //!   construction.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use borzoi_assembly::doc_id::{TypeDocName, member_doc_id, type_doc_name};
 use borzoi_sema::{AssemblyEnv, EntityHandle, MemberIndex};
 
 /// A referenced-assembly symbol whose documentation hover wants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DocTarget {
     Entity(EntityHandle),
     Member {
@@ -105,6 +105,69 @@ impl KeyCensus {
     }
 }
 
+/// Every target of an env by documentation-comment ID, across all its
+/// assemblies — the inverse of [`doc_key`], for following an `<inheritdoc
+/// cref="…">`, which names its target by ID alone. Keys are generated exactly
+/// as [`doc_key`] generates them; a key with several targets (in one assembly
+/// or across several) keeps them all, so a caller sees the ambiguity.
+#[derive(Debug, Clone, Default)]
+pub struct DocIdIndex {
+    by_key: HashMap<String, Vec<DocTarget>>,
+}
+
+impl DocIdIndex {
+    /// The index of every target under every top-level type of `env`.
+    pub fn of_env(env: &AssemblyEnv) -> DocIdIndex {
+        Self::of_roots(env, |_| true)
+    }
+
+    /// The index of the targets of one assembly of `env`: those under the
+    /// top-level types read from `dll`.
+    pub fn of_assembly(env: &AssemblyEnv, dll: &Path) -> DocIdIndex {
+        Self::of_roots(env, |root| env.assembly_path(root) == Some(dll))
+    }
+
+    fn of_roots(env: &AssemblyEnv, include: impl Fn(EntityHandle) -> bool) -> DocIdIndex {
+        let mut by_key: HashMap<String, Vec<DocTarget>> = HashMap::new();
+        fn walk(
+            env: &AssemblyEnv,
+            handle: EntityHandle,
+            enclosing: Option<&TypeDocName>,
+            by_key: &mut HashMap<String, Vec<DocTarget>>,
+        ) {
+            let entity = env.entity(handle);
+            let name = type_doc_name(entity, enclosing);
+            by_key
+                .entry(name.type_id())
+                .or_default()
+                .push(DocTarget::Entity(handle));
+            for idx in env.member_indices(handle) {
+                by_key
+                    .entry(member_doc_id(&name, env.member_at(handle, idx)))
+                    .or_default()
+                    .push(DocTarget::Member {
+                        parent: handle,
+                        idx,
+                    });
+            }
+            for &child in env.children(handle) {
+                walk(env, child, Some(&name), by_key);
+            }
+        }
+        for &root in env.top_level_handles() {
+            if include(root) {
+                walk(env, root, None, &mut by_key);
+            }
+        }
+        DocIdIndex { by_key }
+    }
+
+    /// Every target whose ID is `key`.
+    pub fn targets(&self, key: &str) -> &[DocTarget] {
+        self.by_key.get(key).map_or(&[], Vec::as_slice)
+    }
+}
+
 /// The documentation-comment ID of `target`, refused when `census` (the
 /// census of `target`'s assembly) records it as generated more than once.
 pub fn doc_key(
@@ -126,7 +189,7 @@ pub fn doc_key(
 }
 
 /// The doc-ID type name of `handle`, threaded down its enclosing chain.
-fn type_name(env: &AssemblyEnv, handle: EntityHandle) -> Result<TypeDocName, KeyError> {
+pub fn type_name(env: &AssemblyEnv, handle: EntityHandle) -> Result<TypeDocName, KeyError> {
     let chain = env
         .enclosing_chain_from_root(handle)
         .ok_or(KeyError::Unplaced)?;

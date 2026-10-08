@@ -367,6 +367,12 @@ pub(crate) struct Method {
     /// in-image identical; deciding needs the referenced assembly, so the
     /// rows are surfaced raw rather than dropped or guessed at.
     pub(crate) unclassified_impls: Vec<UnclassifiedImpl>,
+    /// Whether a `MethodImpl` row whose body is this method (and whose
+    /// `Class` is its owner) contributed to neither [`Self::implements`] nor
+    /// [`Self::unclassified_impls`]: an ancestor-class redirection (a C#
+    /// covariant-return override), or a declaration that could not be read
+    /// or classified.
+    pub(crate) has_other_method_impl: bool,
 }
 
 /// One undecidable `MethodImpl` row: the declaration's parent type and the

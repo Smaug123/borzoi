@@ -814,6 +814,18 @@ jobs:
           nix develop --command cargo test -p borzoi --test all \
             xml_doc_shipped_sweep:: -- --ignored --nocapture
 
+      - name: Gate on the <inheritdoc> sweep against Roslyn
+        if: steps.gate.outputs.run == 'true'
+        # Every <inheritdoc> entry of the ASP.NET Core targeting pack, expanded
+        # by hover and by Roslyn's IDE (tools/inheritdoc-oracle) over the same
+        # reference set: no expansion may differ from Roslyn's, and the count
+        # expanded is pinned exactly. The packs come from `nix develop`. The
+        # generated-program properties run deep here (the normal suite runs a
+        # few dozen cases each).
+        run: |
+          nix develop --command cargo test -p borzoi --test all -- --ignored --nocapture \
+            xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_generated_diff::deep_
+
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
     needs: changes

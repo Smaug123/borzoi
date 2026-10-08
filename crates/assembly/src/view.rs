@@ -81,6 +81,18 @@ pub trait EcmaView {
         Ok(Vec::new())
     }
 
+    /// The simple names — this assembly's own and those it references —
+    /// that its manifest qualifies by a non-neutral culture
+    /// (`Assembly.Culture`, `AssemblyRef.Culture`). A binder matches culture
+    /// as well as simple name, so binding by simple name alone is exact only
+    /// for names no manifest qualifies.
+    ///
+    /// Defaults to `None`, "not read": a consumer must then treat every name
+    /// as possibly qualified.
+    fn culture_qualified_names(&self) -> Option<Vec<String>> {
+        None
+    }
+
     /// All managed resources whose name begins with `FSharp`. Returning
     /// every match (not just those the importer can decode) lets the
     /// projector decide what to do — including raising the
