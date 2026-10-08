@@ -354,6 +354,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
                 end: use_end,
                 is_from_definition: false,
                 is_compiler_generated: false,
+                symbol_kind: None,
                 decl: UseDecl::InProject(DeclSite {
                     file: sig_path,
                     start: decl_start,
@@ -396,6 +397,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
         end: 14,
         is_from_definition: false,
         is_compiler_generated: false,
+        symbol_kind: None,
         decl: UseDecl::Unlocated,
         assembly: None,
         full_name: None,
@@ -406,6 +408,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
     let generated = ProjectUse {
         name: "_arg1".to_string(),
         is_compiler_generated: true,
+        symbol_kind: None,
         ..compared.clone()
     };
     let loaded = synthetic_loaded_project(src, AssemblyEnv::from_entities(Vec::new()));
@@ -799,6 +802,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     end: first + 2,
                     is_from_definition: true,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -816,6 +820,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     end: body + 2,
                     is_from_definition: false,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -892,6 +897,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     end: pattern_end,
                     is_from_definition: false,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: pattern_start,
@@ -909,6 +915,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     end: first + 2,
                     is_from_definition: true,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -926,6 +933,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     end: body + 2,
                     is_from_definition: false,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -970,6 +978,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     end: 1,
                     is_from_definition: true,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: 0,
@@ -987,6 +996,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     end: 4,
                     is_from_definition: false,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: 0,
@@ -1004,6 +1014,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     end: 7,
                     is_from_definition: false,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::Unlocated,
                     assembly: Some("FSharp.Core".to_string()),
                     full_name: None,
@@ -1017,6 +1028,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     end: 9,
                     is_from_definition: false,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::Unlocated,
                     assembly: None,
                     full_name: None,
@@ -1068,6 +1080,7 @@ fn comparison_matches_assembly_oracle_declarations() {
                 end,
                 is_from_definition: false,
                 is_compiler_generated: false,
+                symbol_kind: None,
                 decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Value".to_string()),
@@ -1128,6 +1141,7 @@ let value = 1
                 end: use_end,
                 is_from_definition: false,
                 is_compiler_generated: false,
+                symbol_kind: None,
                 decl: UseDecl::InProject(DeclSite {
                     file,
                     start: decl_start,
@@ -1174,6 +1188,7 @@ fn a_constructor_record_steps_aside_for_the_name_the_author_wrote() {
         end: use_end,
         is_from_definition: false,
         is_compiler_generated: false,
+        symbol_kind: None,
         decl: UseDecl::InProject(DeclSite {
             file: file.clone(),
             start: x_def_start,
@@ -1235,6 +1250,7 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
         end: use_end,
         is_from_definition: false,
         is_compiler_generated: false,
+        symbol_kind: None,
         decl: UseDecl::InProject(DeclSite {
             file: file.clone(),
             start: x_def_start,
@@ -1294,6 +1310,7 @@ fn string_length_use(span: (usize, usize)) -> ProjectUse {
         end: span.1,
         is_from_definition: false,
         is_compiler_generated: false,
+        symbol_kind: None,
         decl: UseDecl::Unlocated,
         assembly: Some("System.Runtime".to_string()),
         full_name: Some("System.String.Length".to_string()),
@@ -1478,6 +1495,7 @@ fn comparison_reports_wrong_assembly_resolution() {
                 end,
                 is_from_definition: false,
                 is_compiler_generated: false,
+                symbol_kind: None,
                 decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Other".to_string()),
@@ -1507,6 +1525,7 @@ fn project_use(name: &str, at: (usize, usize), decl: DeclSite) -> ProjectUse {
         end: at.1,
         is_from_definition: false,
         is_compiler_generated: false,
+        symbol_kind: None,
         decl: UseDecl::InProject(decl),
         assembly: None,
         full_name: None,
@@ -1635,6 +1654,7 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
                     .zip(loaded.parses.texts.iter().cloned())
                     .collect(),
                 comparison: Box::new(comparison),
+                handlers: Box::default(),
             },
         },
         ProjectRecord {
@@ -1679,6 +1699,7 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
         assets,
         sources,
         comparison,
+        ..
     } = &projects[0].verdict
     else {
         unreachable!("built comparable above")
@@ -1701,6 +1722,7 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
                     assets: assets.clone(),
                     sources: sources.clone(),
                     comparison: Box::new(comparison.clone()),
+                    handlers: Box::default(),
                 },
             })
             .to_vec()
@@ -1849,6 +1871,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     end: module_end,
                     is_from_definition: true,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: module_start,
@@ -1866,6 +1889,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     end: x_def_end,
                     is_from_definition: true,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: x_def_start,
@@ -1883,6 +1907,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     end: y_def_end,
                     is_from_definition: true,
                     is_compiler_generated: false,
+                    symbol_kind: None,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: y_def_start,
@@ -3260,4 +3285,429 @@ fn generated_qualifier_cursors_agree_with_the_project_use_stream() {
          graded, leaf shapes matched {leaf_matched:?}",
         cells.len()
     );
+}
+
+/// The handler differential's manifest lines: per file, copy and handler, how
+/// many probes came to each outcome; and every probe whose answer is not the
+/// one the comparator's verdict implies, at its span in the copy it asked.
+#[test]
+fn the_manifest_counts_handler_probes_and_lists_every_inconsistent_one() {
+    use borzoi_corpus_diff::AnswerSurface;
+    use borzoi_corpus_diff::handler_diff::{
+        Expectation, Handler, HandlerReport, Outcome, PerturbedSkip, Probe, ProbeItem, Variant,
+    };
+
+    let lib = "module Shared\nlet foo = 1\n";
+    let using = "module Other\nlet bar = Shared.foo\n";
+    let loaded = synthetic_multi_file_project(&[("A.fs", lib), ("B.fs", using)]);
+    let root = PathBuf::from("/tmp/corpus-diff-synthetic-multi");
+    let b = loaded.parses.paths[1].clone();
+    // The perturbed copy is longer, so a span in it is not the original's.
+    let perturbed_using = "module Other\nlet bar = (* 𝔸 *) Shared.foo\n";
+    let probe = |variant, range, handler, probe, expectation, outcome| ProbeItem {
+        variant,
+        file: b.clone(),
+        range,
+        name: "foo".to_string(),
+        handler,
+        probe,
+        expectation,
+        outcome,
+    };
+    let served = Expectation::Served(Graded::Project, AnswerSurface::Resolver);
+    let foo = text_range(using, "Shared.foo");
+    let perturbed_foo = text_range(perturbed_using, "Shared.foo");
+    let handlers = HandlerReport {
+        probes: vec![
+            probe(
+                Variant::Plain,
+                foo,
+                Handler::Definition,
+                Probe::Last,
+                served,
+                Outcome::Located,
+            ),
+            probe(
+                Variant::Plain,
+                foo,
+                Handler::Definition,
+                Probe::First,
+                served,
+                Outcome::Declined,
+            ),
+            probe(
+                Variant::Plain,
+                foo,
+                Handler::Hover,
+                Probe::Last,
+                served,
+                Outcome::Described,
+            ),
+            probe(
+                Variant::Perturbed,
+                perturbed_foo,
+                Handler::References,
+                Probe::Middle,
+                served,
+                Outcome::ReferencedDifferently,
+            ),
+        ],
+        divergences: Vec::new(),
+        perturbed_skip: Some(PerturbedSkip::FcsErrors(vec![(b.clone(), 2, 5, 39)])),
+        perturbed_texts: vec![Arc::from(lib), Arc::from(perturbed_using)],
+        owned_elsewhere: vec![loaded.parses.paths[0].clone()],
+    };
+    let projects = vec![ProjectRecord {
+        project: loaded.project.clone(),
+        verdict: ProjectVerdict::Comparable {
+            assets: ProjectAssetsStatus::NotChecked,
+            sources: loaded
+                .parses
+                .paths
+                .iter()
+                .cloned()
+                .zip(loaded.parses.texts.iter().cloned())
+                .collect(),
+            comparison: Box::new(Comparison::default()),
+            handlers: Box::new(handlers),
+        },
+    }];
+    let manifest = project_corpus_manifest(&projects, &root).expect("renders");
+    let lines: Vec<&String> = manifest
+        .entries()
+        .iter()
+        .filter(|line| line.contains(" handlers "))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "Synthetic.fsproj A.fs handlers skipped owned-by-another-project",
+            "Synthetic.fsproj B.fs handlers perturbed references referenced-differently=1",
+            "Synthetic.fsproj B.fs handlers plain definition declined=1 located=1",
+            "Synthetic.fsproj B.fs handlers plain hover described=1",
+            "Synthetic.fsproj B.fs:2:11-21 \"foo\" handlers plain definition first declined \
+             expected served-project",
+            "Synthetic.fsproj B.fs:2:19-29 \"foo\" handlers perturbed references middle \
+             referenced-differently expected served-project",
+            "Synthetic.fsproj B.fs:2:5 handlers perturbed fcs-error FS0039",
+            "Synthetic.fsproj handlers perturbed skipped fcs-errors errors=1",
+        ]
+        .map(String::from)
+        .iter()
+        .collect::<Vec<_>>()
+    );
+}
+
+/// The handler differential end to end, on projects shaped to break its own
+/// grading rather than the server: each must come out with no divergence, and
+/// each must actually have been asked.
+///
+/// - Two sibling projects compiling one `B.fs`, each with its own `A.x`. The
+///   server answers `B.fs` as whichever project it finds owns it, so for the
+///   other project the oracle's answer is not the one the user is served, and
+///   the file must not be graded against it.
+/// - A local `String` module whose `length` the appended perturbation code also
+///   calls: the references answer for an original use rightly gains the
+///   appended use, which is not a movement of the original answer.
+/// - A quoted name containing ` : `, which a hover renders before its type.
+/// - A zoo of declaration and use kinds (unions and their cases, records and
+///   fields, a class with members, an exception, total and partial active
+///   patterns, an operator, a generic, quoted names) across two files.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn handler_fixtures_agree_with_fcs() {
+    use borzoi_corpus_diff::handler_diff::Variant;
+    use borzoi_corpus_diff::{ProjectCandidates, ProjectCorpusRunOptions};
+
+    let siblings = tempfile::tempdir().expect("tempdir");
+    for (name, a) in [("Alpha", "A1.fs"), ("Zeta", "A2.fs")] {
+        write(
+            &siblings.path().join(format!("{name}.fsproj")),
+            &format!(
+                "<Project>\n  <ItemGroup>\n    <Compile Include=\"{a}\" />\n    \
+                 <Compile Include=\"B.fs\" />\n  </ItemGroup>\n</Project>\n"
+            ),
+        );
+    }
+    write(&siblings.path().join("A1.fs"), "module A\nlet x = 1\n");
+    write(&siblings.path().join("A2.fs"), "module A\nlet x = 2\n");
+    write(&siblings.path().join("B.fs"), "module B\nlet y = A.x\n");
+
+    let single = |file: &str, src: &str| {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("P.fsproj");
+        write(
+            &project,
+            &format!(
+                "<Project>\n  <ItemGroup>\n    <Compile Include=\"{file}\" />\n  \
+                 </ItemGroup>\n</Project>\n"
+            ),
+        );
+        write(&tmp.path().join(file), src);
+        (tmp, project)
+    };
+    let (_strings, strings) = single(
+        "M.fs",
+        "module M\n\nmodule String =\n    let length (s : string) = s.Length\n\n\
+         let n = (* count *) String.length \"ab\"\n",
+    );
+    let (_quoted, quoted) = single(
+        "Q.fs",
+        "module Q\n\nlet ``a : b`` = 1\nlet c = (* quoted *) ``a : b`` + 1\n",
+    );
+
+    // Every kind of declaration and use the handlers answer for, across two
+    // files, with comments on the lines whose uses the perturbed run should
+    // re-ask.
+    let zoo = tempfile::tempdir().expect("tempdir");
+    write(
+        &zoo.path().join("Zoo.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"Zoo.fs\" />\n    \
+         <Compile Include=\"Use.fs\" />\n  </ItemGroup>\n</Project>\n",
+    );
+    write(&zoo.path().join("Zoo.fs"), ZOO_SOURCE);
+    write(&zoo.path().join("Use.fs"), ZOO_USE_SOURCE);
+
+    let visited = vec![
+        siblings.path().join("Alpha.fsproj"),
+        siblings.path().join("Zeta.fsproj"),
+        strings,
+        quoted,
+        zoo.path().join("Zoo.fsproj"),
+    ];
+    let run = run_project_corpus_diff_with_options(
+        ProjectCandidates {
+            discovered: visited.len(),
+            exhaustive: false,
+            max_files: None,
+            visited,
+            discovery_errors: Vec::new(),
+        },
+        ProjectCorpusRunOptions {
+            // The fixtures are small enough to ask every record everything.
+            handler_sample_stride: Some(NonZeroUsize::MIN),
+            ..ProjectCorpusRunOptions::default()
+        },
+    );
+    assert_eq!(run.divergence_details, Vec::<String>::new());
+    let mut owned_elsewhere = 0;
+    for record in &run.projects {
+        let ProjectVerdict::Comparable { handlers, .. } = &record.verdict else {
+            panic!(
+                "{} was not comparable: {:?}",
+                record.project.display(),
+                record.verdict
+            );
+        };
+        assert_eq!(
+            handlers.perturbed_skip,
+            None,
+            "{}",
+            record.project.display()
+        );
+        assert!(
+            handlers
+                .probes
+                .iter()
+                .any(|p| p.variant == Variant::Perturbed),
+            "{} was not asked about its perturbed copy",
+            record.project.display()
+        );
+        owned_elsewhere += handlers.owned_elsewhere.len();
+    }
+    assert_eq!(
+        owned_elsewhere, 1,
+        "one sibling answers `B.fs` as the other's"
+    );
+}
+
+const ZOO_SOURCE: &str = r#"module Zoo
+
+/// A union, a record, a generic struct record, a class, an exception, and the
+/// active patterns, each declared and used.
+type Shape =
+    | Circle of radius : float
+    | Square of side : float
+
+type Point = { X : int; Y : int }
+
+[<Struct>]
+type Pair<'a> = { First : 'a; Second : 'a }
+
+type Counter() =
+    let mutable n = 0
+    member _.Next() =
+        n <- n + 1
+        n
+    static member Zero = 0
+
+exception Oops of string
+
+let (|Even|Odd|) n = if n % 2 = 0 then Even else Odd
+let (|Positive|_|) n = if n > 0 then Some n else None
+
+let classify n =
+    match n with
+    | Even -> (* even *) "even"
+    | Odd -> "odd"
+
+let positive n =
+    match (* n *) n with
+    | Positive p -> p
+    | _ -> 0
+
+let area s =
+    match s with
+    | Circle r -> (* circle *) 3.14 * r * r
+    | Square side -> side * side
+
+let origin = { X = 0; Y = 0 }
+let moved = { origin with X = 1 }
+let sum = (* sum *) origin.X + moved.Y
+let pair = { First = 1; Second = 2 }
+let (+.) a b = a + b + 1
+let opResult = 1 +. (* op *) 2
+let ``quoted name`` = 3
+let useQuoted = (* q *) ``quoted name`` + 1
+let generic<'t> (x : 't) : 't = x
+let applied = generic<int> 4
+let counter = Counter()
+let next = (* next *) counter.Next()
+let zero = Counter.Zero
+let fail () = raise (Oops "no")
+let rec fact n = if n <= 1 then 1 else n * fact (n - 1)
+let nested = List.map (fun x -> x + 1) [ 1; 2 ]
+let lambda = fun (a, b) -> a + b
+let tupled = lambda (1, 2)
+
+type Holder<'a> =
+    static member Empty : 'a list = []
+
+let functions = Holder<int -> string>.Empty
+let ints = (* holder *) Holder<int>.Empty
+let comparable (x : System.IComparable) (y : System.IComparable<int>) = x.CompareTo y + y.CompareTo 1
+"#;
+
+const ZOO_USE_SOURCE: &str = r#"module Use
+
+open Zoo
+
+let a = Zoo.area (Circle 1.0)
+let b = (* shape *) area (Shape.Square 2.0)
+let c = classify 3 + (* positive *) string (positive 4)
+let d : Point = { origin with Y = sum }
+let e = Zoo.fact 5 + fact 3
+let f = (* counter *) Counter.Zero + counter.Next()
+let g : int Pair = pair
+let h = match 5 with Even -> 0 | Odd -> 1
+let i = ``quoted name`` + Zoo.``quoted name``
+let j = (* holders *) Holder<int -> int>.Empty, Holder<string>.Empty
+"#;
+
+/// No two probes can trade outcomes without moving a manifest line: for every
+/// handler, every pair of comparator verdicts and every pair of distinct
+/// outcomes, the manifest of two records with those outcomes differs from the
+/// manifest with the outcomes swapped. A design that let two outcomes both pass
+/// as "expected" for one verdict fails this, because the per-file counts are
+/// all that would record them, and a trade leaves counts unchanged.
+#[test]
+fn no_two_handler_probes_can_trade_outcomes_unseen() {
+    use borzoi_corpus_diff::AnswerSurface;
+    use borzoi_corpus_diff::handler_diff::{
+        Expectation, Handler, HandlerReport, Outcome, Probe, ProbeItem, Variant,
+    };
+
+    let lib = "module Shared\nlet foo = 1\nlet bar = foo + foo\n";
+    let loaded = synthetic_multi_file_project(&[("A.fs", lib)]);
+    let root = PathBuf::from("/tmp/corpus-diff-synthetic-multi");
+    let a = loaded.parses.paths[0].clone();
+    let sources: Vec<_> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let (first, second) = (nth_text_range(lib, "foo", 1), nth_text_range(lib, "foo", 2));
+    let expectations = [
+        Expectation::Served(Graded::Project, AnswerSurface::Resolver),
+        Expectation::Served(Graded::Project, AnswerSurface::Member),
+        Expectation::Served(Graded::Assembly, AnswerSurface::Resolver),
+        Expectation::Served(Graded::Assembly, AnswerSurface::Attribute),
+        Expectation::Declined(Graded::Project),
+        Expectation::Declined(Graded::Assembly),
+        Expectation::Fresh(Graded::Project),
+        Expectation::Fresh(Graded::Assembly),
+    ];
+    let outcomes = [
+        Outcome::Declined,
+        Outcome::Located,
+        Outcome::LocatedElsewhere,
+        Outcome::Described,
+        Outcome::DescribedUnread,
+        Outcome::Explained,
+        Outcome::Other,
+        Outcome::Referenced,
+        Outcome::ReferencedDifferently,
+        Outcome::Wrong,
+    ];
+    let manifest = |handler, probes: [(usize, usize, Expectation, Outcome); 2]| {
+        let probes = probes
+            .into_iter()
+            .map(|(start, end, expectation, outcome)| ProbeItem {
+                variant: Variant::Plain,
+                file: a.clone(),
+                range: (start, end),
+                name: "foo".to_string(),
+                handler,
+                probe: Probe::Last,
+                expectation,
+                outcome,
+            })
+            .collect();
+        project_corpus_manifest(
+            &[ProjectRecord {
+                project: loaded.project.clone(),
+                verdict: ProjectVerdict::Comparable {
+                    assets: ProjectAssetsStatus::NotChecked,
+                    sources: sources.clone(),
+                    comparison: Box::default(),
+                    handlers: Box::new(HandlerReport {
+                        probes,
+                        ..HandlerReport::default()
+                    }),
+                },
+            }],
+            &root,
+        )
+        .expect("renders")
+    };
+    let mut pairs = 0;
+    for handler in [Handler::Definition, Handler::Hover, Handler::References] {
+        for &e1 in &expectations {
+            for &e2 in &expectations {
+                for &o1 in &outcomes {
+                    for &o2 in &outcomes {
+                        if o1 == o2 {
+                            continue;
+                        }
+                        let before = manifest(
+                            handler,
+                            [(first.0, first.1, e1, o1), (second.0, second.1, e2, o2)],
+                        );
+                        let after = manifest(
+                            handler,
+                            [(first.0, first.1, e1, o2), (second.0, second.1, e2, o1)],
+                        );
+                        assert_ne!(
+                            before, after,
+                            "{handler:?}: {e1:?}/{e2:?} trading {o1:?} and {o2:?} moves no line"
+                        );
+                        pairs += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(pairs, 3 * 8 * 8 * 10 * 9);
 }
