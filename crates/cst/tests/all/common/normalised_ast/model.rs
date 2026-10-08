@@ -1152,7 +1152,9 @@ pub enum NormalisedExpr {
         /// marker token rather than the argument's shape. (The checker's other
         /// arm, a `NonAtomic` application whose list argument is merely
         /// range-adjacent, as in `(f x)[1]`, is a checking rule, not a parse
-        /// fact.)
+        /// fact. Both arms are type-directed in the end: the checker reads
+        /// either shape as an application when the receiver unifies with a
+        /// function type.)
         bracket_indexer: bool,
         func: Box<NormalisedExpr>,
         arg: Box<NormalisedExpr>,

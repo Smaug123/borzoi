@@ -1618,8 +1618,10 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
                 _ => format!("({x} +. {y})"),
             }
         }
-        12 => format!("System.String.IsNullOrEmpty({x})"),
-        13 => format!("\"s\".StartsWith({x})"),
+        // Parenthesised: an argument that ends in a high-precedence
+        // application (`gib "s".StartsWith(x) …`) is FS0597.
+        12 => format!("(System.String.IsNullOrEmpty({x}))"),
+        13 => format!("(\"s\".StartsWith({x}))"),
         _ => format!("({f} >> {g})"),
     }
 }

@@ -2570,11 +2570,14 @@ impl<'a> Gen<'a> {
             // (non-infix) `APP_EXPR` applying the inner `INFIX_APP_EXPR` `(+) x`,
             // so it is matched here and its inner application is a callee
             // ([`Self::infer_callee`]). A **bracket indexer** (`arr[i]`, which F#
-            // lowers to a `GetSlice`/`Item` member lookup, *not* a function
-            // application, but the parser still stores under `APP_EXPR`) stays
-            // unmodelled ⇒ incomplete, as do `TypeApp`, applied `DotGet`, and
-            // everything else (the catch-all below / other arms). Curried `f x y`
-            // falls out of the nested `App`s.
+            // lowers to a `GetSlice`/`Item` member lookup unless `arr` unifies
+            // with a function type, but the parser still stores under `APP_EXPR`)
+            // stays unmodelled ⇒ incomplete, as do `TypeApp`, applied `DotGet`,
+            // and everything else (the catch-all below / other arms). Curried
+            // `f x y` falls out of the nested `App`s. A markerless `(f x)[1]` is
+            // an application here, which is FCS's reading whenever the shape `Eq`
+            // succeeds (see `AppExpr::is_bracket_indexer`); when it fails, the
+            // result is poisoned, as for any failed application.
             Expr::App(app) if !app.is_infix() && !app.is_bracket_indexer() => {
                 let r = self.infer_app(app)?;
                 self.emit(node_span(app.syntax()), r, expected);
