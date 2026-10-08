@@ -17,7 +17,9 @@
 //! what the harnesses share for suppressing *expected* panic messages now that
 //! each crate's cases live in one test binary and a hook swap would race.
 //!
-//! Test-only: a `dev-dependency` of the harnesses, never of shipping code.
+//! Test-only: a `dev-dependency` of the harnesses — and a regular dependency of
+//! `borzoi-corpus-diff`, which is itself an unpublished test shell whose gate
+//! runs in its binary — never of shipping code.
 
 pub mod corpus_key;
 pub mod manifest;

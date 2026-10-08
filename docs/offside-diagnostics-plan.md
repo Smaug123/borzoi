@@ -152,9 +152,10 @@ offside dedent**: a newline separates the previous real token from the cursor
   (`while true do () done 42`) still error, and the col1-attr+col1-type case emits
   FS58 (via Stage 2) matching FCS.
 - Corpus: `RecordTypes.fs` and siblings move from `we_reject_fcs_accepts` to
-  match; raise `MIN_AST_MATCHES` (currently 5452 in `parser_corpus_diff.rs`).
-  As diagnostics land, also re-measure and tighten `MAX_WE_ACCEPT_FCS_REJECTS`
-  (currently 31); investigate any file where we now emit an FS58 FCS does not (an
+  match; regenerate the `parser_corpus_diff` manifest
+  (`crates/cst/tests/manifests/`) and check that the moved lines are exactly
+  those files. As diagnostics land, files leave the we-accept/FCS-rejects bucket
+  the same way; investigate any file where we now emit an FS58 FCS does not (an
   offside-arithmetic edge).
 
 ## Non-goals / risks

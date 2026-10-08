@@ -353,29 +353,32 @@ nix develop -c cargo test -p borzoi      --test all xml_doc_source_diff::corpus:
 # Over the pinned *project* corpus (restored, as `tools/ci/project-corpus.sh` does):
 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi --test all xml_doc_source_diff::project::pinned -- --ignored  # ~20 s
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
-nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~15 s
+nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~20 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s
 nix develop -c cargo test -p borzoi-msbuild --test sdk_chain_decline_attribution -- --ignored  # ~1 s
 ```
 
-`parser_corpus`'s `CLEAN_PARSES` is **two-sided**, so **improving the parser
-fails it**: parse one more file cleanly and it goes red until you bump the
-constant, with the date and the new figure. That is deliberate — the corpus is
-content-addressed and the parser deterministic, so there is no drift for a
-one-sided floor to absorb, and a one-sided floor is exactly what rotted 2,401
-files deep while nothing ran the sweep. The same discipline `ci.yml`'s
-`BORZOI_PROJECT_EXPECT_DIVERGENCES` already applies, for the reason stated
-there: a one-sided bound quietly decays into a rubber stamp.
-
-The sema sweeps go one step further and pin every graded *item*, not a count:
-each compares its run against a checked-in manifest
-(`crates/sema/tests/manifests/`) and fails on any movement in either direction,
-printing a line diff. If every moved line is intended, regenerate with
-`BORZOI_UPDATE_MANIFESTS=1` on the same command (the failure message prints it)
-and commit the manifest diff, so the reviewer sees exactly which items moved.
-Their hard soundness gates (zero divergences) are separate assertions that
+The cst and sema sweeps, `borzoi-assembly`'s reference-pack sweep (an
+ordinary test rather than an ignored one), and the whole-project gate
+(`ci.yml`'s `corpus-diff` job) pin every graded *item*, not a count: each
+compares its run against a checked-in manifest (`crates/<crate>/tests/manifests/`,
+`crates/corpus-diff/manifests/`) and fails on any movement **in either
+direction**, printing a line diff. So **improving the parser fails
+`parser_corpus`**: parse one more file cleanly and it goes red until the
+manifest records it. That is deliberate — the corpus is content-addressed and
+the parser deterministic, so there is no drift for slack to absorb, and a
+one-sided floor is exactly what rotted 2,401 files deep while nothing ran the
+sweep. If every moved line is intended, regenerate with
+`BORZOI_UPDATE_MANIFESTS=1` on the same command (the failure message prints it;
+for the whole-project gate it is
+`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`, run outside
+`nix develop`) and commit the manifest diff, so the reviewer sees exactly which
+items moved. The hard gates (zero divergences, no parser panic or round-trip
+failure, no dropped reference-pack type) are separate assertions that
 regeneration cannot bless. `docs/continuous-measurements.md` ("Exact
-manifests") has the format and the helper, `borzoi_oracle_harness::manifest`.
+manifests") has the format and the helpers: `borzoi_oracle_harness::manifest`,
+and `borzoi_oracle_harness::corpus_key`, which spells a corpus file the same way
+on macOS (where Nix renames case-colliding names) and on Linux CI.
 
 The remaining sweeps' floors are one-sided and documented as such. What must
 never happen to any of them is loosening one to make a red run green without

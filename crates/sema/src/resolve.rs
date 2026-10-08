@@ -1892,6 +1892,7 @@ impl<'a> Resolver<'a> {
             own_type_simple_names: HashSet::new(),
             own_module_simple_names: HashSet::new(),
             own_binder_simple_names: HashSet::new(),
+            case_field_names: HashMap::new(),
             own_generic_type_simple_names: HashSet::new(),
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),

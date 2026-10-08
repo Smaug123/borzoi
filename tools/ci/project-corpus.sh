@@ -34,10 +34,16 @@ while IFS=$'\t' read -r repository revision project; do
   if [ ! -e "$dir" ]; then
     mkdir -p "$(dirname "$dir")"
     git clone --quiet --no-checkout "https://github.com/$repository" "$dir"
-    # Detached at the exact pin: a branch would let the corpus drift under a
-    # series that claims its points are comparable.
-    git -C "$dir" checkout --quiet --detach "$revision"
+  elif ! git -C "$dir" cat-file -e "$revision^{commit}" 2>/dev/null; then
+    # A checkout reused from an earlier run (a local cache, see
+    # `project-corpus-gate.sh`) may predate the pin.
+    git -C "$dir" fetch --quiet origin
   fi
+  # Detached at the exact pin, every time: a branch would let the corpus drift
+  # under a series that claims its points are comparable, and a reused checkout
+  # may sit at an older pin.
+  git -C "$dir" checkout --quiet --detach "$revision"
+  test "$(git -C "$dir" rev-parse HEAD)" = "$revision"
   test -f "$dir/$project"
 done <"$plan"
 

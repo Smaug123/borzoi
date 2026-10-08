@@ -31,18 +31,45 @@
 //!   are, by construct — is the sibling report generator `resolve_divergence.rs`
 //!   (its `gap_b1.txt`).
 //!
+//! # Uses FCS resolves outside the file
+//!
+//! Every other use FCS resolves — in **any** bucket — names a symbol declared
+//! in a different file (FSharp.Core, the BCL): `id`, `printfn`, `List`, a
+//! named argument's parameter. With the empty environment this sweep resolves
+//! under, the only correct outcome there is to decline. Any in-file binder we
+//! commit to instead (a local that leaked out of its scope and captured
+//! `string`, a label `?x = …` bound to the local `x`), and `Unresolved`, is a
+//! **divergence**, gated by the same assertion. Two kinds of use are not
+//! graded, and are counted on the summary line instead:
+//!
+//! * one whose symbol FCS gave **no** declaration location (IL members and
+//!   fields, unsolved trait calls). That is no evidence about where the target
+//!   lives — FCS's `rangeOfItem` returns none for a default struct
+//!   constructor too, which can be in-file;
+//! * one at a range where FCS *also* records an in-file symbol, as a use or a
+//!   definition: a type name and its constructor, or the
+//!   `OptionalArgumentAttribute` FCS synthesises at a member whose parameter is
+//!   `?optional`. The in-file record is the one to grade there.
+//!
+//! The other direction — FCS resolves in-file, we commit to an assembly
+//! `Entity`/`Member` — is graded too (a divergence), but cannot occur here:
+//! the empty `AssemblyEnv` holds no entity to point at.
+//!
 //! # The manifest
 //!
 //! The corpus is pinned by the flake and both sides are deterministic, so every
 //! outcome is a fixed fact, and the sweep checks it **exactly** against
 //! `tests/manifests/resolve_corpus_diff.txt` rather than through count bounds.
 //! It holds one line per sampled file (whether it was compared or skipped, and
-//! why; for a compared file, whether FCS's check errored and its match count)
-//! and one line per non-match use (gap, alt-binder, divergence), keyed by
-//! corpus-relative path and `line:col`. Matches are counted per file rather than
-//! listed — there are ~22k of them — but since every gap, alt-binder and
-//! divergence is listed by key, a use moving between match and any other bucket
-//! moves a listed line, so the per-file count loses no movement.
+//! why; for a compared file, whether FCS's check errored, its match count and
+//! its count of graded external-target uses) and one line per non-match use
+//! (gap, alt-binder, divergence), keyed by corpus-relative path and `line:col`.
+//! Matches are counted per file rather than listed — there are ~22k of them —
+//! but since every gap, alt-binder and divergence is listed by key, a use
+//! moving between match and any other bucket moves a listed line, so the
+//! per-file count loses no movement. External-target uses (~18k) are counted
+//! the same way: every one that is not declined is a divergence, which fails
+//! before the manifest is compared, so the count is all that can move.
 //!
 //! Any difference fails with a line diff. A movement in either direction is
 //! signal: a lost match is a regression, a gained one an improvement, and both
@@ -54,8 +81,10 @@
 //!
 //! Regeneration cannot bless a divergence: that assertion runs first.
 //!
-//! Only the **B1 lexical** slice is checked: B2/B3 uses (`x.Length`, overloaded
-//! members) need inference we do not do, so they are skipped — not divergences.
+//! Of the uses FCS resolves in-file, only the **B1 lexical** slice is checked:
+//! B2/B3 uses (`x.Length`, overloaded members) need inference we do not do, so
+//! they are skipped — not divergences. (External-target uses are graded in
+//! every bucket, since declining is right whatever machinery FCS needed.)
 //! FCS type-checks each file *in isolation* (`uses-census-batch`). Our resolver
 //! runs single-file with empty `ProjectItems` / `AssemblyEnv`, exactly as
 //! `resolve_diff.rs` does.
@@ -74,6 +103,7 @@
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 
+use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
@@ -81,8 +111,8 @@ use crate::common::corpus_manifest::{
     Positions, check_manifest, corpus_relative, regenerate_ignored,
 };
 use crate::common::{
-    Bucket, FileCensus, census_resolve_uses, env_usize_or, invoke_fcs_dump_census,
-    parse_census_jsonl,
+    Bucket, CensusDecl, FileCensus, ResolveDiffUse, census_resolve_uses, env_usize_or,
+    invoke_fcs_dump_census, parse_census_jsonl,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -100,8 +130,9 @@ struct Site {
     path: PathBuf,
     range: TextRange,
     text: String,
-    /// FCS's declaration range for this use (the binder we *should* point at).
-    expected: TextRange,
+    /// FCS's declaration for this use: the in-file binder's range we *should*
+    /// point at, or that it lies outside the file.
+    expected: String,
     /// What we said (FCS resolved an in-file binder here).
     ours: String,
     /// Whether FCS's isolated check of the file reported an error.
@@ -114,13 +145,22 @@ struct Tally {
     files_compared: usize,
     matches: usize,
     /// Unambiguous faults (gated to zero): `Unresolved`, assembly entity, or a
-    /// wrong-*named* binder where FCS found an in-file binder.
+    /// wrong-*named* binder where FCS found an in-file binder; any in-file
+    /// answer where FCS's target is outside the file.
     divergences: Vec<Site>,
     /// Same-named in-file binder at a different range.
     alt_binders: Vec<Site>,
     /// In-file B1 uses we left `Deferred` or recorded nothing at — modeling
     /// gaps, not bugs.
     gaps: usize,
+    /// Uses FCS resolved to a symbol declared outside the file, every bucket,
+    /// each checked to be one we did not commit an in-file answer for.
+    external_graded: usize,
+    /// External uses at a range where FCS also records an in-file symbol, left
+    /// to the in-file slice.
+    external_shared_range: usize,
+    /// Uses whose symbol FCS gave no declaration location: no claim to grade.
+    external_absent: usize,
     /// FCS reported the file as not Ok (its check aborted or threw): skipped.
     fcs_not_ok: usize,
     /// Our parse produced errors, so its resolution isn't meaningful to diff.
@@ -206,6 +246,11 @@ fn resolution_matches_fcs_over_corpus() {
         tally.our_skipped,
         tally.unreadable,
     );
+    eprintln!(
+        "resolve-diff: {} external-target uses graded | {} left to a same-range \
+         in-file record | {} with no FCS declaration",
+        tally.external_graded, tally.external_shared_range, tally.external_absent,
+    );
 
     print_sites("divergences (gated faults)", &tally.divergences);
     print_sites(
@@ -217,9 +262,10 @@ fn resolution_matches_fcs_over_corpus() {
     // bless.
     assert!(
         tally.divergences.is_empty(),
-        "{} in-file B1 uses are unambiguous faults (`Unresolved`, an assembly \
-         entity, or a differently-named binder where FCS found an in-file \
-         binder). A resolver bug or soundness violation regressed in.",
+        "{} uses are unambiguous faults: `Unresolved`, an assembly entity, or a \
+         differently-named binder where FCS found an in-file binder, or any \
+         in-file answer where FCS's target is outside the file. A resolver bug \
+         or soundness violation regressed in.",
         tally.divergences.len(),
     );
 
@@ -251,7 +297,7 @@ fn print_sites(label: &str, sites: &[Site]) {
     );
     for s in sites.iter().take(SAMPLE) {
         eprintln!(
-            "  {}:{:?} {:?} -> FCS decl {:?}, we gave {}{}",
+            "  {}:{:?} {:?} -> FCS decl {}, we gave {}{}",
             s.path.display(),
             s.range,
             s.text,
@@ -320,38 +366,107 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
         "fcs-clean"
     };
     let mut file_matches = 0usize;
+    let mut file_external = 0usize;
 
-    for u in census_resolve_uses(file, &source) {
+    let all_uses = census_resolve_uses(file, &source);
+    // The ranges at which FCS records an in-file symbol, as a use *or* a
+    // definition. FCS can record several symbols at one range: a type name and
+    // its constructor, an attribute's type and its constructor, and — at a
+    // type name whose primary constructor takes a `?optional` parameter — the
+    // `OptionalArgumentAttribute` it synthesises, together with its namespace
+    // path. Where one of them is in-file, an in-file answer is the in-file
+    // slice's to grade (or, at a definition, nobody's), not the external one's.
+    let in_file_ranges: HashSet<(usize, usize)> = all_uses
+        .iter()
+        .filter(|u| matches!(u.decl, CensusDecl::InFile(..)))
+        .map(|u| (u.start, u.end))
+        .collect();
+    let uses: Vec<ResolveDiffUse> = all_uses
+        .into_iter()
         // A definition is not a name to resolve; the implicit anonymous-module
-        // symbol is reported at a zero-width range; only in-file declarations
-        // are in this slice; only the lexical (B1) bucket is reproducible
-        // without inference.
-        if u.is_from_definition || u.start == u.end || u.bucket != Some(Bucket::B1) {
-            continue;
-        }
-        let Some((ds, de)) = u.decl else {
-            continue;
-        };
+        // symbol is reported at a zero-width range.
+        .filter(|u| !u.is_from_definition && u.start != u.end)
+        .collect();
+
+    for u in uses {
         let use_range = TextRange::new(
             u32::try_from(u.start).unwrap().into(),
             u32::try_from(u.end).unwrap().into(),
         );
+        let text = source.get(u.start..u.end).unwrap_or("");
+        let key = format!("{rel}:{} {text:?}", positions.at(u.start));
+        let at = |r: TextRange| positions.at(usize::from(r.start()));
+
+        let (ds, de) = match u.decl {
+            CensusDecl::InFile(ds, de) => (ds, de),
+            // FCS gave no declaration: no claim either way.
+            CensusDecl::Absent => {
+                tally.external_absent += 1;
+                continue;
+            }
+            CensusDecl::OtherFile if in_file_ranges.contains(&(u.start, u.end)) => {
+                tally.external_shared_range += 1;
+                continue;
+            }
+            // FCS resolved the use to a symbol declared outside this file
+            // (FSharp.Core, the BCL). Every bucket is graded: whatever machinery
+            // FCS needed to find the target, the target is not ours, so any
+            // in-file binder we commit to is a wrong answer. Declining is the
+            // only correct outcome with the empty environment this sweep
+            // resolves under.
+            CensusDecl::OtherFile => {
+                let wrong = match rf.resolution_at(use_range) {
+                    None | Some(Resolution::Deferred(_)) => None,
+                    Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => {
+                        Some(match rf.resolved_def(res) {
+                            Some(def) => {
+                                format!("binder={:?} at {}", def.name, at(def.range))
+                            }
+                            None => "no-in-file-def".to_string(),
+                        })
+                    }
+                    Some(Resolution::Unresolved) => Some("unresolved".to_string()),
+                    // Unreachable under `AssemblyEnv::default()`, which holds no
+                    // entity to point at; graded rather than assumed.
+                    Some(Resolution::Entity(_) | Resolution::Member { .. }) => {
+                        Some("assembly".to_string())
+                    }
+                };
+                tally.external_graded += 1;
+                file_external += 1;
+                if let Some(ours) = wrong {
+                    tally
+                        .manifest
+                        .push(format!("{key} divergence external-target {ours}"));
+                    tally.divergences.push(Site {
+                        path: path.clone(),
+                        range: use_range,
+                        text: text.to_string(),
+                        expected: "outside the file".to_string(),
+                        ours,
+                        fcs_check_errors: file.has_check_errors,
+                    });
+                }
+                continue;
+            }
+        };
+        // Of in-file declarations, only the lexical (B1) bucket is reproducible
+        // without inference.
+        if u.bucket != Some(Bucket::B1) {
+            continue;
+        }
         let expected = TextRange::new(
             u32::try_from(ds).unwrap().into(),
             u32::try_from(de).unwrap().into(),
         );
-
-        let text = source.get(u.start..u.end).unwrap_or("");
-        let key = format!("{rel}:{} {text:?}", positions.at(u.start));
         let site = |ours: String| Site {
             path: path.clone(),
             range: use_range,
             text: text.to_string(),
-            expected,
+            expected: format!("{expected:?}"),
             ours,
             fcs_check_errors: file.has_check_errors,
         };
-        let at = |r: TextRange| positions.at(usize::from(r.start()));
 
         match rf.resolution_at(use_range) {
             // We recorded nothing here, or honestly deferred: a modeling gap,
@@ -409,9 +524,9 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
             }
         }
     }
-    tally
-        .manifest
-        .push(format!("{rel} compared {check} match={file_matches}"));
+    tally.manifest.push(format!(
+        "{rel} compared {check} match={file_matches} external={file_external}"
+    ));
 }
 
 /// Recursively collect `.fs` implementation files (not `.fsi`), skipping

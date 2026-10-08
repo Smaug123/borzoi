@@ -14,6 +14,10 @@ borzoi-sema = { path = "../sema", features = ["test-support"] }
 # integration-test shell (see the module docs), and the drivers live in its
 # library, not its tests.
 borzoi-spawn = { path = "../spawn" }
+# The exact-manifest comparison and the corpus-key spelling the runner's gate
+# checks a run against. A regular dependency for the same reason as
+# `borzoi-spawn`: the gate lives in the runner binary, not only in its tests.
+borzoi-oracle-harness = { path = "../oracle-harness" }
 lsp-types = "0.95"
 rowan = "0.16"
 serde = { version = "1", features = ["derive"] }
@@ -21,10 +25,6 @@ serde_json = "1"
 
 [dev-dependencies]
 borzoi-assembly = { path = "../assembly" }
-# The resident-oracle driver. A generated per-project sweep spawns one child and
-# sends a request per case; a one-shot per case pays a `dotnet build` and a
-# process start each time.
-borzoi-oracle-harness = { path = "../oracle-harness" }
 borzoi-cst = { path = "../cst" }
 # The recorder that publishes this crate's generator summary. A dev-dependency
 # so the contract is checked by the real validator rather than by a second copy

@@ -232,7 +232,8 @@ impl ManifestDiff {
     }
 }
 
-fn update_requested() -> bool {
+/// Whether [`UPDATE_ENV`] asks for manifests to be rewritten rather than compared.
+pub fn update_requested() -> bool {
     std::env::var_os(UPDATE_ENV).is_some_and(|v| !v.is_empty() && v != "0")
 }
 
@@ -244,11 +245,25 @@ fn update_requested() -> bool {
 /// moved) and passes.
 #[track_caller]
 pub fn check(path: &Path, actual: &Manifest, regenerate: &str) {
-    check_with(path, actual, regenerate, update_requested());
+    if let Err(message) = compare(path, actual, regenerate) {
+        panic!("{message}");
+    }
 }
 
-#[track_caller]
-fn check_with(path: &Path, actual: &Manifest, regenerate: &str, update: bool) {
+/// [`check`] for a caller that reports a failure itself — a binary that exits
+/// non-zero with the message — rather than by panicking.
+pub fn compare(path: &Path, actual: &Manifest, regenerate: &str) -> Result<(), String> {
+    compare_with(path, actual, regenerate, update_requested())
+}
+
+/// [`compare`] with the rewrite decision passed in rather than read from
+/// [`UPDATE_ENV`], for a caller whose own tests must not depend on it.
+pub fn compare_with(
+    path: &Path,
+    actual: &Manifest,
+    regenerate: &str,
+    update: bool,
+) -> Result<(), String> {
     let header = format!(
         "Generated; do not edit by hand. One line per graded item, sorted.\n\
          Regenerate with:\n  {regenerate}"
@@ -262,40 +277,41 @@ fn check_with(path: &Path, actual: &Manifest, regenerate: &str, update: bool) {
             }
         }
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         }
         std::fs::write(path, actual.render(&header))
-            .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
         eprintln!(
             "manifest {}: wrote {} entries ({UPDATE_ENV} is set)",
             path.display(),
             actual.entries().len()
         );
-        return;
+        return Ok(());
     }
     let Some(text) = existing else {
-        panic!(
+        return Err(format!(
             "no manifest at {}. Generate it with:\n  {regenerate}",
             path.display()
-        );
+        ));
     };
-    let expected = Manifest::parse(&text).unwrap_or_else(|(line, e)| {
-        panic!(
+    let expected = Manifest::parse(&text).map_err(|(line, e)| {
+        format!(
             "manifest {} is malformed at line {line}: {e}. Regenerate it with:\n  {regenerate}",
             path.display()
         )
-    });
+    })?;
     let d = expected.diff(actual);
-    assert!(
-        d.is_empty(),
+    if d.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
         "the run does not match the checked-in manifest {}.\n{}\n\
          Every movement is signal: a lost entry may be a regression, and a gained \
          one an improvement to acknowledge. If every moved line is intended, \
          regenerate the manifest and commit the diff:\n  {regenerate}",
         path.display(),
         d.render(DIFF_LIMIT),
-    );
+    ))
 }
 
 #[cfg(test)]
@@ -412,19 +428,20 @@ mod tests {
         let path = dir.path().join("m.txt");
         let m = |es: &[&str]| Manifest::from_entries(es.iter().map(|s| s.to_string())).unwrap();
         std::fs::write(&path, m(&["a 1", "b 2"]).render("hdr")).unwrap();
-        check_with(&path, &m(&["a 1", "b 2"]), "regen", false);
-        let err = {
-            let _quiet = crate::panic_silence::silence_panics_here();
-            std::panic::catch_unwind(|| check_with(&path, &m(&["a 1", "b 3"]), "regen-cmd", false))
-                .expect_err("a moved entry must fail")
-        };
-        let msg = err
-            .downcast_ref::<String>()
-            .expect("formatted panic message");
+        assert_eq!(
+            compare_with(&path, &m(&["a 1", "b 2"]), "regen", false),
+            Ok(())
+        );
+        let msg = compare_with(&path, &m(&["a 1", "b 3"]), "regen-cmd", false)
+            .expect_err("a moved entry must fail");
         assert!(msg.contains("- b 2\n+ b 3\n"), "{msg}");
         assert!(msg.contains("regen-cmd"), "{msg}");
+        let missing = dir.path().join("absent.txt");
+        let msg = compare_with(&missing, &m(&["a 1"]), "regen-cmd", false)
+            .expect_err("a missing manifest must fail");
+        assert!(msg.contains("regen-cmd"), "{msg}");
 
-        check_with(&path, &m(&["c"]), "regen", true);
+        assert_eq!(compare_with(&path, &m(&["c"]), "regen", true), Ok(()));
         assert_eq!(
             Manifest::parse(&std::fs::read_to_string(&path).unwrap()),
             Ok(m(&["c"]))
