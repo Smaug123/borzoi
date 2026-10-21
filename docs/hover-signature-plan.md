@@ -135,8 +135,8 @@ from the `.xml` beside the DLL the env read and keyed by `doc_id`
 (`crates/lsp/src/xml_doc/`). Lookup is exact-or-nothing: a miss, an ambiguous
 key, a malformed or foreign file, or a symbol whose key some other symbol of
 the same assembly also generates (the doc-ID format is not injective: `T:A.B`
-names both a type `B` in namespace `A` and one nested in type `A`), all show
-no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaining:
+names both a type `B` in namespace `A` and one nested in type `A`), and any
+member of an F#-compiled assembly (below), all show no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaining:
 
 - **`<inheritdoc>` is not resolved.** It renders an explicit "(Documentation
   inherited from … is not shown.)" marker in place, so a partial entry never
@@ -155,11 +155,25 @@ no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaini
   read.
 - **Project-local `///` comments** are not rendered yet; the renderer takes a
   `DocElement` tree and does not care where it came from.
+- **An F#-compiled assembly's members show nothing** — FSharp.Core's
+  included; its types and modules do. fsc keys a member from its F#
+  signature, not its IL: a measure type parameter counts towards the generic
+  arity and is then erased, an SRTP witness adds a parameter, and so on. So
+  the ID computed from IL can be the ID fsc wrote for a *different* member
+  (`static member Measured<[<Measure>] 'u>` and `Plain<'T>`, both
+  `[<CompiledName("F")>]`: `Plain`'s IL-derived key is `Measured`'s real
+  one), and the per-assembly census cannot see that, because it is never
+  computed for its owner. Any mark of the F# compiler
+  (`EcmaView::doc_id_dialect`) therefore refuses every member key. Restoring
+  them needs the key fsc wrote, which it pickles per val (open PR
+  `docid-fsharp-fidelity` carries it on the projected member); committing only
+  that key, censused against every other pickled key, is the follow-up.
 - **Doc-ID misses** are the generator's: the explicit-interface `@`/`,` and
-  `nint` drift (`docs/xmldoc-explicit-interface-plan.md`, Stages 2 and 4) and
-  FSharp.Core's `M:`/`T:` residue
-  (`docs/completed/fsharp-member-rebranding-docid-plan.md`). Each is a missing
-  doc, never a wrong one.
+  `nint` drift (`docs/xmldoc-explicit-interface-plan.md`, Stages 2 and 4).
+  For a Roslyn-compiled assembly the generator is a function of the metadata
+  Roslyn keys from, so each is a missing doc; that it is never a wrong one
+  rests on the differential against Roslyn's own `.xml`
+  (`crates/assembly/tests/all/doc_id_diff.rs`).
 
 ### 2. A union case's payload and its `[<Obsolete>]` marker
 

@@ -5,14 +5,14 @@
 //! `<member name="…">` per documented type/member, keyed by a *documentation
 //! comment ID string* (ECMA-334 / the C# spec, §"Processing the documentation
 //! file"): `T:System.Console`, `M:System.Console.WriteLine(System.String)`,
-//! `P:`, `F:`, `E:`. The format is a function of **metadata**, not source
-//! language — Roslyn (for the BCL) and the F# compiler (for `FSharp.Core`) both
-//! emit the same standard IDs for the same IL shape — so we can reconstruct an
-//! ID from our own [`Entity`]/[`Member`] model and it matches the file's key
-//! regardless of which compiler wrote the assembly. That decouples doc lookup
-//! from FCS entirely. (The ID *format* is language-agnostic; the caveat is that
-//! our F# member *projection* re-interprets some members away from their IL
-//! kind — see "Limitations".)
+//! `P:`, `F:`, `E:`. Roslyn keys a member from its metadata, so for a
+//! Roslyn-compiled assembly we can reconstruct an ID from our own
+//! [`Entity`]/[`Member`] model and it matches the file's key. The F# compiler
+//! keys a member from its F# signature instead, which IL does not determine —
+//! see [`DocIdDialect`] — so a *member* ID computed here for an F#-compiled
+//! assembly may be another member's key; a type's ID is its compiled name under
+//! both. (The F# member *projection* also re-interprets some members away from
+//! their IL kind — see "Limitations".)
 //!
 //! This module is the *generation* half: a pure [`Entity`]/[`Member`] →
 //! ID-string function. Finding, parsing and rendering the `.xml` for hover is
@@ -78,6 +78,28 @@
 //! FCS-surfaced type properties the projection drops.
 
 use crate::model::{Entity, Member, Parameter, Primitive, TypeRef};
+
+/// Which compiler's documentation-comment IDs an assembly's doc file carries —
+/// [`crate::EcmaView::doc_id_dialect`].
+///
+/// The format is shared, but the two compilers key a *member* from different
+/// things. Roslyn keys it from its symbol, which is its IL metadata: the ID this
+/// module computes. The F# compiler keys it from the member's F# signature
+/// (`XmlDocSigOfVal`), where much of what IL erases still counts — a measure
+/// type parameter adds to the generic arity, an SRTP witness to the parameters —
+/// so the computed ID of one member can be the F# compiler's ID of another, and
+/// the doc file's entry under it belongs to that other member. A *type*'s ID is
+/// its compiled full name under both (`XmlDocSigOfTycon` builds it from the
+/// compiled path), so only member IDs depend on the dialect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum DocIdDialect {
+    /// The assembly carries no mark of the F# compiler, so its doc file's
+    /// member IDs are functions of the metadata.
+    Metadata,
+    /// The F# compiler may have written the assembly, and so its doc file.
+    FSharp,
+}
 
 /// The XML-doc *type name* of a type: the text after the `T:` prefix, e.g.
 /// `System.Collections.Generic.Dictionary`2`. Produced by [`type_doc_name`] and

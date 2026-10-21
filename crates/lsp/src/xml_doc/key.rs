@@ -3,8 +3,16 @@
 //!
 //! The ID *format* is [`borzoi_assembly::doc_id`]'s, pinned against Roslyn's and
 //! fsc's own `.xml` output. What this adds is the env side — walking a handle's
-//! enclosing chain — and the two refusals that keep a lookup exact:
+//! enclosing chain — and the refusals that keep a lookup exact:
 //!
+//! - a *member* of an assembly the F# compiler may have written
+//!   ([`DocIdDialect::FSharp`]) has no knowable ID: fsc keys a member from its
+//!   F# signature, which IL does not record (a measure type parameter counts
+//!   towards the generic arity, then is erased), so the ID computed from IL can
+//!   be the ID fsc wrote for a *different* member — and no census of computed
+//!   IDs sees that, since the colliding ID is never computed for its owner. A
+//!   member of an assembly whose dialect the env does not record is refused
+//!   the same way. A *type*'s ID is its compiled name in both dialects;
 //! - a handle the env cannot place under a top-level type has no knowable
 //!   enclosing chain, so no knowable ID (a guessed `T:Name` could be another
 //!   type's key);
@@ -22,7 +30,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use borzoi_assembly::doc_id::{TypeDocName, member_doc_id, type_doc_name};
+use borzoi_assembly::doc_id::{DocIdDialect, TypeDocName, member_doc_id, type_doc_name};
 use borzoi_sema::{AssemblyEnv, EntityHandle, MemberIndex};
 
 /// A referenced-assembly symbol whose documentation hover wants.
@@ -53,6 +61,11 @@ pub enum KeyError {
     Unplaced,
     /// Another target of the same assembly generates the same ID.
     Shared,
+    /// A member of an assembly the F# compiler may have written: the doc file
+    /// keys it from its F# signature, which the IL-derived ID need not match.
+    FSharpMember,
+    /// A member of an assembly whose [`DocIdDialect`] the env does not record.
+    DialectUnknown,
 }
 
 /// The documentation-comment IDs that more than one target of one assembly
@@ -106,7 +119,9 @@ impl KeyCensus {
 }
 
 /// The documentation-comment ID of `target`, refused when `census` (the
-/// census of `target`'s assembly) records it as generated more than once.
+/// census of `target`'s assembly) records it as generated more than once, and
+/// for a member unless its assembly's doc file is keyed in the
+/// [`DocIdDialect::Metadata`] dialect.
 pub fn doc_key(
     env: &AssemblyEnv,
     census: &KeyCensus,
@@ -114,9 +129,13 @@ pub fn doc_key(
 ) -> Result<String, KeyError> {
     let key = match target {
         DocTarget::Entity(handle) => type_name(env, handle)?.type_id(),
-        DocTarget::Member { parent, idx } => {
-            member_doc_id(&type_name(env, parent)?, env.member_at(parent, idx))
-        }
+        DocTarget::Member { parent, idx } => match env.doc_id_dialect(parent) {
+            Some(DocIdDialect::Metadata) => {
+                member_doc_id(&type_name(env, parent)?, env.member_at(parent, idx))
+            }
+            Some(DocIdDialect::FSharp) => return Err(KeyError::FSharpMember),
+            None => return Err(KeyError::DialectUnknown),
+        },
     };
     if census.shared.contains(&key) {
         Err(KeyError::Shared)

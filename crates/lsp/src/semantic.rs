@@ -17,6 +17,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use borzoi_assembly::doc_id::DocIdDialect;
 use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, ImportError, Version};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
@@ -95,6 +96,11 @@ struct ReferencedAssemblyProjection {
     /// (`netstandard`). `#[serde(default)]` for old cache entries.
     #[serde(default)]
     type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
+    /// The DLL's [`DocIdDialect`] (`EcmaView::doc_id_dialect`), or `None` when it
+    /// could not be read — which declines every member's documentation key.
+    /// Deliberately not `#[serde(default)]`: an entry that predates the field
+    /// must miss rather than read as unknown-but-cached.
+    doc_id_dialect: Option<DocIdDialect>,
 }
 
 /// Why one referenced DLL contributed nothing to the [`AssemblyEnv`]. The two
@@ -2824,6 +2830,7 @@ pub fn build_env_from_dll_paths<'a>(
                 auto_opens: projection.assembly_auto_opens,
                 manifest_identity: projection.manifest_identity,
                 type_forwarders: projection.type_forwarders,
+                doc_id_dialect: projection.doc_id_dialect,
             }
         })
         .collect();
@@ -2990,6 +2997,22 @@ fn enumerate_view_catching<V: EcmaView>(
                 }
             })
             .unwrap_or_default();
+            // Unreadable degrades to unknown, which declines member doc keys:
+            // a guessed dialect could attach another member's documentation.
+            let doc_id_dialect = catch_reader_panic(path, "doc_id_dialect", || {
+                view.doc_id_dialect()
+            })
+            .and_then(|r| match r {
+                Ok(dialect) => Some(dialect),
+                Err(err) => {
+                    tracing::warn!(
+                        dll = %path.display(),
+                        error = %err,
+                        "failed to read the doc-ID dialect; declining member documentation keys"
+                    );
+                    None
+                }
+            });
             Some(ReferencedAssemblyProjection {
                 entities: types,
                 fsharp_abbreviations_unknowable: skipped.fsharp_abbreviations_unknowable,
@@ -3002,6 +3025,7 @@ fn enumerate_view_catching<V: EcmaView>(
                 // still count this DLL's name for referenced-CCU uniqueness.
                 manifest_identity: Some(view.identity().clone()),
                 type_forwarders,
+                doc_id_dialect,
             })
         }
         Err(err) => {
@@ -5975,6 +5999,10 @@ mod tests {
         fn assembly_auto_opens(&self) -> Result<Vec<String>, ImportError> {
             Ok(vec![])
         }
+        fn doc_id_dialect(&self) -> Result<borzoi_assembly::doc_id::DocIdDialect, ImportError> {
+            Ok(borzoi_assembly::doc_id::DocIdDialect::Metadata)
+        }
+
         fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
             Ok(vec![])
         }

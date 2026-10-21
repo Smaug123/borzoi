@@ -102,6 +102,25 @@ struct Project {
 }
 
 fn project(src: &str, runtime_xml: Xml, fsharp_core_xml: Option<Xml>) -> Project {
+    let packages = match fsharp_core_xml {
+        Some(xml) => vec![Package {
+            id: "FSharp.Core",
+            dll: sdk_fsharp_core(),
+            xml,
+        }],
+        None => Vec::new(),
+    };
+    project_with(src, runtime_xml, packages)
+}
+
+/// A DLL staged as a NuGet package's `lib/netstandard2.1` compile asset.
+struct Package {
+    id: &'static str,
+    dll: Shipped,
+    xml: Xml,
+}
+
+fn project_with(src: &str, runtime_xml: Xml, packages: Vec<Package>) -> Project {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     let dotnet_root = root.join("dotnet");
@@ -110,25 +129,31 @@ fn project(src: &str, runtime_xml: Xml, fsharp_core_xml: Option<Xml>) -> Project
 
     let pkgs = root.join("pkgs");
     fs::create_dir_all(&pkgs).unwrap();
-    let (targets, libraries) = match &fsharp_core_xml {
-        Some(xml) => {
-            stage(
-                &sdk_fsharp_core(),
-                &pkgs.join("fsharp.core/10.0.0/lib/netstandard2.1"),
-                xml,
-            );
-            (
-                serde_json::json!({ "net10.0": { "FSharp.Core/10.0.0": {
-                    "type": "package",
-                    "compile": { "lib/netstandard2.1/FSharp.Core.dll": {} }
-                } } }),
-                serde_json::json!({ "FSharp.Core/10.0.0": {
-                    "type": "package", "path": "fsharp.core/10.0.0"
-                } }),
-            )
-        }
-        None => (serde_json::json!({ "net10.0": {} }), serde_json::json!({})),
-    };
+    let mut target = serde_json::Map::new();
+    let mut libraries = serde_json::Map::new();
+    for package in &packages {
+        let folder = format!("{}/10.0.0", package.id.to_lowercase());
+        stage(
+            &package.dll,
+            &pkgs.join(&folder).join("lib/netstandard2.1"),
+            &package.xml,
+        );
+        let file = package.dll.dll.file_name().unwrap().to_str().unwrap();
+        let key = format!("{}/10.0.0", package.id);
+        target.insert(
+            key.clone(),
+            serde_json::json!({
+                "type": "package",
+                "compile": { format!("lib/netstandard2.1/{file}"): {} }
+            }),
+        );
+        libraries.insert(
+            key,
+            serde_json::json!({ "type": "package", "path": folder }),
+        );
+    }
+    let targets = serde_json::json!({ "net10.0": target });
+    let libraries = serde_json::Value::Object(libraries);
     let assets = serde_json::json!({
         "version": 3,
         "targets": targets,
@@ -231,28 +256,36 @@ fn a_bcl_type_shows_its_doc() {
     );
 }
 
+/// An F# module is a type, keyed by its compiled name in either compiler's
+/// dialect: FSharp.Core's `List` shows its documentation.
 #[test]
-fn an_fsharp_core_function_shows_its_whole_doc() {
+fn an_fsharp_core_module_shows_its_doc() {
+    let src = "module M\nlet ys = List.map (fun x -> x + 1) [1]\n";
+    let mut p = project(src, Xml::Absent, Some(Xml::Shipped));
+    let body = hover_at(&mut p, 1, "List");
+    let (signature, doc) = split(&body);
+    assert!(signature.contains("List"), "signature first:\n{body}");
+    let doc = doc.unwrap_or_else(|| panic!("the List module is documented:\n{body}"));
+    assert!(
+        doc.starts_with("Contains operations for working with values of type"),
+        "{doc}"
+    );
+}
+
+/// An F# function's documentation is keyed by its F# signature, which the
+/// IL-derived key need not match (see
+/// [`an_fsharp_member_never_shows_another_members_doc`]), so FSharp.Core's
+/// members show none — though `List.map` has an entry.
+#[test]
+fn an_fsharp_core_function_shows_no_doc() {
+    let shipped = fs::read_to_string(sdk_fsharp_core().xml).unwrap();
+    assert!(shipped.contains(r#"<member name="M:Microsoft.FSharp.Collections.ListModule.Map``2("#));
     let src = "module M\nlet ys = List.map (fun x -> x + 1) [1]\n";
     let mut p = project(src, Xml::Absent, Some(Xml::Shipped));
     let body = hover_at(&mut p, 1, "map");
     let (signature, doc) = split(&body);
     assert!(signature.contains("map"), "signature first:\n{body}");
-    let doc = doc.unwrap_or_else(|| panic!("List.map is documented:\n{body}"));
-    for part in [
-        "Builds a new collection whose elements are the results of applying the given function \
-         to each of the elements of the collection.",
-        "**Parameters**",
-        "- `mapping` — The function to transform elements from the input list.",
-        "- `list` — The input list.",
-        "**Returns**: The list of transformed elements.",
-        "**Remarks**: This is an O(n) operation, where n is the length of the list.",
-        "**Example**",
-        "```fsharp\nlet inputs = [ \"a\"; \"bbb\"; \"cc\" ]\n\ninputs |> List.map (fun x -> x.Length)\n```",
-        "Evaluates to `[ 1; 3; 2 ]`",
-    ] {
-        assert!(doc.contains(part), "missing {part:?} in:\n{doc}");
-    }
+    assert_eq!(doc, None, "{body}");
 }
 
 /// The `.xml` is read, but carries no entry for this symbol: no doc, and the
@@ -337,6 +370,112 @@ fn a_rewritten_xml_is_reread() {
     );
 }
 
+/// How to build the `MeasureKey` fixture.
+#[derive(Clone, Copy)]
+enum Build {
+    Plain,
+    /// With no F# signature or optimisation data, which also drops the
+    /// assembly-level `FSharpInterfaceDataVersionAttribute`: the image's only
+    /// mark of the F# compiler is then its types' `CompilationMappingAttribute`.
+    Stripped,
+}
+
+/// The `MeasureKey` fixture (`tests/fixtures/xml_doc/MeasureKey`), built once
+/// per [`Build`] with its fsc-written `.xml`.
+fn measure_key(how: Build) -> Shipped {
+    static PLAIN: std::sync::OnceLock<(TempDir, PathBuf)> = std::sync::OnceLock::new();
+    static STRIPPED: std::sync::OnceLock<(TempDir, PathBuf)> = std::sync::OnceLock::new();
+    let cell = match how {
+        Build::Plain => &PLAIN,
+        Build::Stripped => &STRIPPED,
+    };
+    let (_, dll) = cell.get_or_init(|| {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xml_doc/MeasureKey");
+        let build = TempDir::new().unwrap();
+        for file in ["MeasureKey.fsproj", "Library.fs"] {
+            fs::copy(fixture.join(file), build.path().join(file)).unwrap();
+        }
+        let out = build.path().join("out");
+        let mut cmd = std::process::Command::new("dotnet");
+        cmd.args(["build", "-c", "Release", "--nologo", "-o"])
+            .arg(&out)
+            .arg(build.path().join("MeasureKey.fsproj"));
+        if let Build::Stripped = how {
+            cmd.arg("-p:OtherFlags=--nointerfacedata%20--nooptimizationdata");
+        }
+        borzoi_spawn::BoundedCommand::new(cmd)
+            .timeout(std::time::Duration::from_secs(1800))
+            .run_ok("dotnet build MeasureKey fixture");
+        let dll = out.join("MeasureKey.dll");
+        (build, dll)
+    });
+    Shipped {
+        dll: dll.clone(),
+        xml: dll.with_extension("xml"),
+    }
+}
+
+/// Both builds of the fixture read as the F# dialect — the stripped one by
+/// its types' `CompilationMappingAttribute` alone, as it carries no other mark.
+#[test]
+fn every_build_of_an_fsharp_assembly_is_the_fsharp_dialect() {
+    use borzoi_assembly::doc_id::DocIdDialect;
+    use borzoi_assembly::{Ecma335Assembly, EcmaView};
+    for how in [Build::Plain, Build::Stripped] {
+        let bytes = fs::read(measure_key(how).dll).unwrap();
+        let view = Ecma335Assembly::parse(&bytes).unwrap();
+        if let Build::Stripped = how {
+            assert_eq!(view.fsharp_resources().unwrap(), Vec::new());
+            let (_, skips) = view.enumerate_type_defs_with_skips().unwrap();
+            assert!(skips.fsharp_signature_non_authoritative);
+        }
+        assert_eq!(view.doc_id_dialect().unwrap(), DocIdDialect::FSharp);
+    }
+}
+
+/// fsc keys a member from its F# signature, where a measure type parameter
+/// counts towards the generic arity although IL erases it. `D.Measured` (IL
+/// `F(float64)`) is keyed ``M:MeasureKey.D.F``1(System.Double)`` — which is
+/// also the key computed from `D.Plain`'s IL (``F<T>(float64)``), and no other
+/// target's computed key, so no census of computed keys sees the clash.
+/// `Plain` is undocumented, so must not show `Measured`'s documentation; and
+/// `Measured`'s own entry is out of reach of an IL-derived key, so neither
+/// shows any.
+#[test]
+fn an_fsharp_member_never_shows_another_members_doc() {
+    let fixture = measure_key(Build::Plain);
+    let shipped = fs::read_to_string(&fixture.xml).unwrap();
+    assert!(
+        shipped.contains(r#"<member name="M:MeasureKey.D.F``1(System.Double)">"#),
+        "fsc keys `measured` with its measure parameter counted:\n{shipped}"
+    );
+    let src =
+        "module M\nlet a = MeasureKey.D.Plain<int>(1.0)\nlet b = MeasureKey.D.Measured(1.0)\n";
+    let mut p = project_with(
+        src,
+        Xml::Absent,
+        vec![
+            Package {
+                id: "FSharp.Core",
+                dll: sdk_fsharp_core(),
+                xml: Xml::Absent,
+            },
+            Package {
+                id: "MeasureKey",
+                dll: fixture,
+                xml: Xml::Shipped,
+            },
+        ],
+    );
+    for (line, name) in [(1, "Plain"), (2, "Measured")] {
+        let body = hover_at(&mut p, line, name);
+        let (signature, doc) = split(&body);
+        assert!(signature.contains(name), "{name} resolves:\n{body}");
+        assert_eq!(doc, None, "{name} shows no documentation:\n{body}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Keys from the env
 // ---------------------------------------------------------------------------
@@ -346,9 +485,11 @@ mod keys {
     use std::path::Path;
 
     use borzoi::xml_doc::key::{DocTarget, KeyCensus, KeyError, doc_key};
-    use borzoi_assembly::doc_id::walk_doc_ids;
+    use borzoi_assembly::doc_id::{DocIdDialect, walk_doc_ids};
     use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity};
     use borzoi_sema::AssemblyEnv;
+
+    use crate::common::doc_key_env_of;
 
     use super::{sdk_fsharp_core, system_runtime};
 
@@ -358,6 +499,20 @@ mod keys {
             .unwrap()
             .enumerate_type_defs()
             .unwrap()
+    }
+
+    fn dialect(dll: &Path) -> DocIdDialect {
+        let bytes = std::fs::read(dll).unwrap();
+        Ecma335Assembly::parse(&bytes)
+            .unwrap()
+            .doc_id_dialect()
+            .unwrap()
+    }
+
+    /// The env over `roots`, read from `dll` (possibly doctored since), with
+    /// `dll`'s own dialect.
+    fn env_of(dll: &Path, roots: Vec<Entity>) -> AssemblyEnv {
+        doc_key_env_of(vec![(dll.to_path_buf(), roots, dialect(dll))])
     }
 
     /// Every target the env exposes: each entity, and each member of each.
@@ -376,7 +531,8 @@ mod keys {
     }
 
     /// Key every target of `env`, census taken per assembly: the keys
-    /// committed to, and how many targets were refused as sharing a key.
+    /// committed to, and how many targets were refused as sharing a key. A
+    /// member refused as F# is neither.
     fn key_all(env: &AssemblyEnv) -> (BTreeMap<String, DocTarget>, usize) {
         let mut censuses: BTreeMap<std::path::PathBuf, KeyCensus> = BTreeMap::new();
         let mut keyed: BTreeMap<String, DocTarget> = BTreeMap::new();
@@ -400,6 +556,7 @@ mod keys {
                     }
                 }
                 Err(KeyError::Shared) => shared += 1,
+                Err(KeyError::FSharpMember) => {}
                 Err(e) => panic!("{target:?}: {e:?}"),
             }
         }
@@ -410,22 +567,26 @@ mod keys {
     /// walk recurses down the entity tree. Over every type and member of two
     /// real assemblies the two must produce the same keys — so the chain walk
     /// threads nested types' arity exactly as the generator does — and the
-    /// keys committed to must be injective over every target.
+    /// keys committed to must be injective over every target. FSharp.Core is
+    /// in the F# dialect, so of its keys only the types' are committed.
     #[test]
     fn every_target_keys_as_the_generator_walk_does_and_injectively() {
+        assert_eq!(dialect(&system_runtime().dll), DocIdDialect::Metadata);
+        assert_eq!(dialect(&sdk_fsharp_core().dll), DocIdDialect::FSharp);
         for dll in [system_runtime().dll, sdk_fsharp_core().dll] {
+            let fsharp = dialect(&dll) == DocIdDialect::FSharp;
             let roots = roots(&dll);
             let mut walked: BTreeMap<String, usize> = BTreeMap::new();
             for root in &roots {
                 walk_doc_ids(root, None, &mut |id| *walked.entry(id).or_default() += 1);
             }
-            let env = AssemblyEnv::from_assemblies(vec![(dll.clone(), roots)]);
+            let env = env_of(&dll, roots);
             let (keyed, shared) = key_all(&env);
             let prefix = format!("{}|", dll.display());
             let keyed: BTreeSet<&str> = keyed.keys().map(|k| &k[prefix.len()..]).collect();
             let unique: BTreeSet<&str> = walked
                 .iter()
-                .filter(|(_, n)| **n == 1)
+                .filter(|(k, n)| **n == 1 && (!fsharp || k.starts_with("T:")))
                 .map(|(k, _)| k.as_str())
                 .collect();
             assert_eq!(
@@ -475,7 +636,7 @@ mod keys {
             .chain([outer.name.clone()])
             .collect();
         roots.push(twin);
-        let env = AssemblyEnv::from_assemblies(vec![(dll.clone(), roots)]);
+        let env = env_of(&dll, roots);
         let census = KeyCensus::of_assembly(&env, &dll);
 
         let named = |h: borzoi_sema::EntityHandle| env.entity(h).name == nested.name;
@@ -530,7 +691,7 @@ mod keys {
             .expect("System.String");
         let twin = string.members[0].clone();
         string.members.push(twin);
-        let env = AssemblyEnv::from_assemblies(vec![(dll.clone(), roots)]);
+        let env = env_of(&dll, roots);
         let census = KeyCensus::of_assembly(&env, &dll);
         let handle = env
             .all_handles()
