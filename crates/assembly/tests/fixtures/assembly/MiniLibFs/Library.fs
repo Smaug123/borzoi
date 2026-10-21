@@ -96,7 +96,13 @@ type Choice =
     | Yes
     | No
 
-type Point = { X: int; Y: int }
+// A record with a user-defined member property and method: FCS surfaces both
+// as members of the record, beside its fields.
+type Point =
+    { X: int; Y: int }
+
+    member p.Sum = p.X + p.Y
+    member p.Scale(k: int) = { X = p.X * k; Y = p.Y * k }
 
 // A record whose canonical fields are `mutable`: FCS surfaces these
 // through `FSharpField.IsMutable = true`, which translates to a field
@@ -106,6 +112,12 @@ type Point = { X: int; Y: int }
 type MutPoint = { mutable MX: int; mutable MY: int }
 
 exception MyError of string
+
+// An exception with a user-defined member property and a `Message` override.
+exception Detailed of code: int
+    with
+        member x.Doubled = x.code * 2
+        override x.Message = "detailed"
 
 // A `[<Struct>]` record — same Record-kind shape as `Point` above but
 // emitted as a CLR value type. The struct-ness is hidden by the F#
