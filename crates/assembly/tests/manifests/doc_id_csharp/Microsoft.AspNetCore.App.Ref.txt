@@ -1,0 +1,714 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_csharp_diff::
+(pack) Microsoft.AspNetCore.App.Ref 10.0.9/ref/net10.0
+Microsoft.AspNetCore.Antiforgery.dll keys=82 hits=81
+Microsoft.AspNetCore.Antiforgery.dll miss member-absent M:Microsoft.AspNetCore.Antiforgery.DefaultAntiforgery.SetDoNotCacheHeaders(Microsoft.AspNetCore.Http.HttpContext)
+Microsoft.AspNetCore.Authentication.Abstractions.dll keys=142 hits=141
+Microsoft.AspNetCore.Authentication.Abstractions.dll miss member-absent F:Microsoft.AspNetCore.Authentication.AuthenticationOptions._disableAutoDefaultScheme
+Microsoft.AspNetCore.Authentication.BearerToken.dll keys=33 hits=33
+Microsoft.AspNetCore.Authentication.Cookies.dll keys=104 hits=104
+Microsoft.AspNetCore.Authentication.Core.dll keys=37 hits=37
+Microsoft.AspNetCore.Authentication.OAuth.dll keys=124 hits=120
+Microsoft.AspNetCore.Authentication.OAuth.dll miss member-absent M:Microsoft.AspNetCore.Authentication.OAuth.OAuthTokenResponse.#ctor(System.Text.Json.JsonDocument)
+Microsoft.AspNetCore.Authentication.OAuth.dll miss member-absent M:Microsoft.AspNetCore.Authentication.OAuth.Resources.FormatException_OptionMustBeProvided(System.Object)
+Microsoft.AspNetCore.Authentication.OAuth.dll miss member-absent P:Microsoft.AspNetCore.Authentication.OAuth.Resources.Exception_OptionMustBeProvided
+Microsoft.AspNetCore.Authentication.OAuth.dll miss member-absent P:Microsoft.AspNetCore.Authentication.OAuth.Resources.Exception_ValidatorHandlerMismatch
+Microsoft.AspNetCore.Authentication.dll keys=239 hits=232
+Microsoft.AspNetCore.Authentication.dll miss member-absent M:Microsoft.AspNetCore.Authentication.Resources.FormatException_OptionMustBeProvided(System.Object)
+Microsoft.AspNetCore.Authentication.dll miss member-absent P:Microsoft.AspNetCore.Authentication.Resources.Exception_AuthenticationTokenDoesNotProvideSyncMethods
+Microsoft.AspNetCore.Authentication.dll miss member-absent P:Microsoft.AspNetCore.Authentication.Resources.Exception_DefaultDpapiRequiresAppNameKey
+Microsoft.AspNetCore.Authentication.dll miss member-absent P:Microsoft.AspNetCore.Authentication.Resources.Exception_OptionMustBeProvided
+Microsoft.AspNetCore.Authentication.dll miss member-absent P:Microsoft.AspNetCore.Authentication.Resources.Exception_RemoteSignInSchemeCannotBeSelf
+Microsoft.AspNetCore.Authentication.dll miss member-absent P:Microsoft.AspNetCore.Authentication.Resources.Exception_UnhookAuthenticationStateType
+Microsoft.AspNetCore.Authentication.dll miss member-absent P:Microsoft.AspNetCore.Authentication.SystemClock.Default
+Microsoft.AspNetCore.Authorization.Policy.dll keys=44 hits=42
+Microsoft.AspNetCore.Authorization.Policy.dll miss member-absent M:Microsoft.AspNetCore.Authorization.Policy.Resources.FormatException_UnableToFindServices(System.Object,System.Object)
+Microsoft.AspNetCore.Authorization.Policy.dll miss member-absent P:Microsoft.AspNetCore.Authorization.Policy.Resources.Exception_UnableToFindServices
+Microsoft.AspNetCore.Authorization.dll keys=171 hits=171
+Microsoft.AspNetCore.Components.Authorization.dll keys=44 hits=44
+Microsoft.AspNetCore.Components.Endpoints.dll keys=202 hits=202
+Microsoft.AspNetCore.Components.Forms.dll keys=64 hits=64
+Microsoft.AspNetCore.Components.Server.dll keys=377 hits=360
+Microsoft.AspNetCore.Components.Server.dll miss member-absent F:MessagePack.SequencePool.MinimumSpanLength
+Microsoft.AspNetCore.Components.Server.dll miss member-absent F:MessagePack.SequencePool.arrayPool
+Microsoft.AspNetCore.Components.Server.dll miss member-absent F:Nerdbank.Streams.Sequence`1.SequenceSegment.IsValueTypeElement
+Microsoft.AspNetCore.Components.Server.dll miss member-absent F:Nerdbank.Streams.Sequence`1.SequenceSegment.array
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.BufferWriter.EnsureMore(System.Int32)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.BufferWriter.WriteMultiBuffer(System.ReadOnlySpan{System.Byte})
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackReader.GetStringLengthInBytes
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackReader.ReadStringSlow(System.Int32)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackReader.ThrowInsufficientBufferUnless(System.Boolean)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackReader.ThrowInvalidCode(System.Byte)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackReader.ThrowNotEnoughBytesException
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackReader.ThrowNotEnoughBytesException(System.Exception)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackReader.TryGetStringLengthInBytes(System.Int32@)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackWriter.WriteString_PostEncoding(System.Byte*,System.Int32,System.Int32)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.MessagePackWriter.WriteString_PrepareSpan(System.Int32,System.Int32@,System.Int32@)
+Microsoft.AspNetCore.Components.Server.dll miss member-absent M:MessagePack.SequenceReader`1.GetNextSpan
+Microsoft.AspNetCore.Components.Server.dll miss member-absent P:Nerdbank.Streams.Sequence`1.DebuggerDisplay
+Microsoft.AspNetCore.Components.Web.dll keys=466 hits=465
+Microsoft.AspNetCore.Components.Web.dll miss member-absent M:Microsoft.AspNetCore.Components.Forms.InputBase`1.ConvertToDictionary(System.Collections.Generic.IReadOnlyDictionary{System.String,System.Object},System.Collections.Generic.Dictionary{System.String,System.Object}@)
+Microsoft.AspNetCore.Components.dll keys=987 hits=961
+Microsoft.AspNetCore.Components.dll miss member-absent F:Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder.ChildContent
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Components.RenderTree.Renderer.HandleExceptionViaErrorBoundary(System.Exception,Microsoft.AspNetCore.Components.Rendering.ComponentState)
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Components.Rendering.RendererSynchronizationContext.DispatchException(System.Exception)
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Components.Rendering.RendererSynchronizationContext.InvokeWithThisAsCurrentSyncCtxThenSetResult``1(System.Runtime.CompilerServices.AsyncTaskMethodBuilder,System.Action{``0},``0)
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Components.Rendering.RendererSynchronizationContext.PostAsync``1(System.Threading.Tasks.Task,System.Action{``0},``0)
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Components.Rendering.RendererSynchronizationContext.SendIfQuiescedOrElsePost``1(System.Action{``0},``0)
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Char})
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.Span{System.Byte})
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Components.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.Components.dll miss member-absent P:Microsoft.AspNetCore.Routing.Constraints.AlphaRouteConstraint.AlphaRouteRegex
+Microsoft.AspNetCore.Components.dll miss type-absent F:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.Instance
+Microsoft.AspNetCore.Components.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_asciiLetters
+Microsoft.AspNetCore.Components.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_defaultTimeout
+Microsoft.AspNetCore.Components.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_hasTimeout
+Microsoft.AspNetCore.Components.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.#ctor
+Microsoft.AspNetCore.Components.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.CreateInstance
+Microsoft.AspNetCore.Components.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Components.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Components.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Components.dll miss type-absent T:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0
+Microsoft.AspNetCore.Components.dll miss type-absent T:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory
+Microsoft.AspNetCore.Components.dll miss type-absent T:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner
+Microsoft.AspNetCore.Components.dll miss type-absent T:System.Text.RegularExpressions.Generated.Utilities
+Microsoft.AspNetCore.Connections.Abstractions.dll keys=192 hits=192
+Microsoft.AspNetCore.CookiePolicy.dll keys=40 hits=40
+Microsoft.AspNetCore.Cors.dll keys=113 hits=112
+Microsoft.AspNetCore.Cors.dll miss member-absent M:Microsoft.AspNetCore.Cors.Infrastructure.CorsPolicyBuilder.Combine(Microsoft.AspNetCore.Cors.Infrastructure.CorsPolicy)
+Microsoft.AspNetCore.Cryptography.Internal.dll keys=33 hits=33
+Microsoft.AspNetCore.Cryptography.KeyDerivation.dll keys=22 hits=22
+Microsoft.AspNetCore.DataProtection.Abstractions.dll keys=47 hits=46
+Microsoft.AspNetCore.DataProtection.Abstractions.dll miss member-absent F:Microsoft.Extensions.Internal.WebEncoders.s_base64vsBase64UrlDifferentiators
+Microsoft.AspNetCore.DataProtection.Extensions.dll keys=29 hits=29
+Microsoft.AspNetCore.DataProtection.dll keys=382 hits=375
+Microsoft.AspNetCore.DataProtection.dll miss member-absent F:Microsoft.AspNetCore.DataProtection.KeyManagement.DefaultKeyResolver._keyPropagationWindow
+Microsoft.AspNetCore.DataProtection.dll miss member-absent F:Microsoft.AspNetCore.DataProtection.KeyManagement.DefaultKeyResolver._maxServerToServerClockSkew
+Microsoft.AspNetCore.DataProtection.dll miss member-absent F:Microsoft.AspNetCore.DataProtection.SP800_108.ManagedSP800_108_CTR_HMACSHA512.FipsMinimumKeyLengthInBytes
+Microsoft.AspNetCore.DataProtection.dll miss member-absent F:Microsoft.AspNetCore.DataProtection.XmlConstants.RootNamespace
+Microsoft.AspNetCore.DataProtection.dll miss member-absent M:Microsoft.AspNetCore.DataProtection.KeyManagement.KeyRingProvider.GetKeyRingFromCompletedTaskUnsynchronized(System.Threading.Tasks.Task{Microsoft.AspNetCore.DataProtection.KeyManagement.Internal.CacheableKeyRing},System.DateTime)
+Microsoft.AspNetCore.DataProtection.dll miss member-absent M:Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager.ProcessAllElements(System.Collections.Generic.IReadOnlyCollection{System.Xml.Linq.XElement},System.Nullable{System.DateTimeOffset}@)
+Microsoft.AspNetCore.DataProtection.dll miss overload-absent M:Microsoft.AspNetCore.DataProtection.SP800_108.ManagedSP800_108_CTR_HMACSHA512.DeriveKeys(System.ReadOnlySpan{System.Byte},System.ReadOnlySpan{System.Byte},System.ReadOnlySpan{System.Byte},System.ReadOnlySpan{System.Byte},System.Span{System.Byte},System.Span{System.Byte},System.Security.Cryptography.HashAlgorithm)
+Microsoft.AspNetCore.Diagnostics.Abstractions.dll keys=41 hits=41
+Microsoft.AspNetCore.Diagnostics.HealthChecks.dll keys=20 hits=18
+Microsoft.AspNetCore.Diagnostics.HealthChecks.dll miss member-absent M:Microsoft.AspNetCore.Diagnostics.HealthChecks.Resources.FormatUnableToFindServices(System.Object,System.Object,System.Object)
+Microsoft.AspNetCore.Diagnostics.HealthChecks.dll miss member-absent P:Microsoft.AspNetCore.Diagnostics.HealthChecks.Resources.UnableToFindServices
+Microsoft.AspNetCore.Diagnostics.dll keys=229 hits=229
+Microsoft.AspNetCore.HostFiltering.dll keys=11 hits=11
+Microsoft.AspNetCore.Hosting.Abstractions.dll keys=85 hits=85
+Microsoft.AspNetCore.Hosting.Server.Abstractions.dll keys=19 hits=19
+Microsoft.AspNetCore.Hosting.dll keys=126 hits=126
+Microsoft.AspNetCore.Html.Abstractions.dll keys=45 hits=45
+Microsoft.AspNetCore.Http.Abstractions.dll keys=625 hits=618
+Microsoft.AspNetCore.Http.Abstractions.dll miss member-absent M:Microsoft.AspNetCore.Http.HostString.GetParts(Microsoft.Extensions.Primitives.StringSegment,Microsoft.Extensions.Primitives.StringSegment@,Microsoft.Extensions.Primitives.StringSegment@)
+Microsoft.AspNetCore.Http.Abstractions.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.Http.Abstractions.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Char})
+Microsoft.AspNetCore.Http.Abstractions.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Http.Abstractions.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.Span{System.Byte})
+Microsoft.AspNetCore.Http.Abstractions.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Http.Abstractions.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.Http.Connections.Common.dll keys=22 hits=22
+Microsoft.AspNetCore.Http.Connections.dll keys=74 hits=72
+Microsoft.AspNetCore.Http.Connections.dll miss member-absent F:Microsoft.Extensions.Internal.WebEncoders.s_base64vsBase64UrlDifferentiators
+Microsoft.AspNetCore.Http.Connections.dll miss member-absent M:Microsoft.AspNetCore.Http.Connections.ServerSentEventsMessageFormatter.GetLastSegment(System.Buffers.ReadOnlySequence{System.Byte}@,System.Int64@)
+Microsoft.AspNetCore.Http.Extensions.dll keys=204 hits=201
+Microsoft.AspNetCore.Http.Extensions.dll miss member-absent M:Microsoft.AspNetCore.Http.Extensions.UriHelper.CopyTextToBuffer(System.Span{System.Char},System.Int32,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Http.Extensions.dll miss member-absent M:Microsoft.AspNetCore.Http.Extensions.UriHelper.InitializeAbsoluteUriString(System.Span{System.Char},System.ValueTuple{System.String,System.String,System.String,System.String,System.String,System.String})
+Microsoft.AspNetCore.Http.Extensions.dll miss member-absent M:System.Text.ValueStringBuilder.Grow(System.Int32)
+Microsoft.AspNetCore.Http.Features.dll keys=284 hits=284
+Microsoft.AspNetCore.Http.Results.dll keys=484 hits=484
+Microsoft.AspNetCore.Http.dll keys=339 hits=339
+Microsoft.AspNetCore.HttpLogging.dll keys=130 hits=127
+Microsoft.AspNetCore.HttpLogging.dll miss member-absent F:System.Threading.Tasks.TaskToApm.TaskAsyncResult._callback
+Microsoft.AspNetCore.HttpLogging.dll miss member-absent M:System.Text.ValueStringBuilder.Grow(System.Int32)
+Microsoft.AspNetCore.HttpLogging.dll miss member-absent M:System.Threading.Tasks.TaskToApm.TaskAsyncResult.InvokeCallback
+Microsoft.AspNetCore.HttpOverrides.dll keys=66 hits=65
+Microsoft.AspNetCore.HttpOverrides.dll miss member-absent M:Microsoft.AspNetCore.HttpOverrides.IPNetwork.TryParseComponents(System.ReadOnlySpan{System.Char},System.Net.IPAddress@,System.Int32@)
+Microsoft.AspNetCore.HttpsPolicy.dll keys=24 hits=24
+Microsoft.AspNetCore.Identity.dll keys=417 hits=415
+Microsoft.AspNetCore.Identity.dll miss member-absent M:Microsoft.AspNetCore.Identity.PasskeyHandler`1.PerformAssertionCoreAsync(Microsoft.AspNetCore.Identity.PasskeyAssertionContext)
+Microsoft.AspNetCore.Identity.dll miss member-absent M:Microsoft.AspNetCore.Identity.PasskeyHandler`1.PerformAttestationCoreAsync(Microsoft.AspNetCore.Identity.PasskeyAttestationContext)
+Microsoft.AspNetCore.Localization.Routing.dll keys=4 hits=4
+Microsoft.AspNetCore.Localization.dll keys=70 hits=69
+Microsoft.AspNetCore.Localization.dll miss member-absent P:Microsoft.AspNetCore.Localization.Resources.Exception_CulturesShouldNotBeEmpty
+Microsoft.AspNetCore.Metadata.dll keys=5 hits=5
+Microsoft.AspNetCore.Mvc.Abstractions.dll keys=765 hits=763
+Microsoft.AspNetCore.Mvc.Abstractions.dll miss member-absent P:Microsoft.AspNetCore.Mvc.ModelBinding.ModelMetadata.IsEnhancedModelMetadataSupported
+Microsoft.AspNetCore.Mvc.Abstractions.dll miss overload-absent M:Microsoft.AspNetCore.Mvc.ModelBinding.ModelStateDictionary.#ctor(System.Int32,System.Int32,System.Int32)
+Microsoft.AspNetCore.Mvc.ApiExplorer.dll keys=30 hits=28
+Microsoft.AspNetCore.Mvc.ApiExplorer.dll miss member-absent M:System.Runtime.CompilerServices.TypeHelper.IsCompilerGeneratedMethod(System.Reflection.MethodInfo)
+Microsoft.AspNetCore.Mvc.ApiExplorer.dll miss member-absent M:System.Runtime.CompilerServices.TypeHelper.TryParseLocalFunctionName(System.String,System.String@)
+Microsoft.AspNetCore.Mvc.Core.dll keys=2676 hits=2676
+Microsoft.AspNetCore.Mvc.Cors.dll keys=21 hits=21
+Microsoft.AspNetCore.Mvc.DataAnnotations.dll keys=71 hits=71
+Microsoft.AspNetCore.Mvc.Formatters.Json.dll keys=0 hits=0
+Microsoft.AspNetCore.Mvc.Formatters.Xml.dll keys=146 hits=146
+Microsoft.AspNetCore.Mvc.Localization.dll keys=81 hits=81
+Microsoft.AspNetCore.Mvc.Razor.dll keys=330 hits=330
+Microsoft.AspNetCore.Mvc.RazorPages.dll keys=661 hits=660
+Microsoft.AspNetCore.Mvc.RazorPages.dll miss member-absent M:Microsoft.AspNetCore.Mvc.ApplicationModels.DefaultPageApplicationModelProvider.CreateModel(Microsoft.AspNetCore.Mvc.RazorPages.PageActionDescriptor,System.Reflection.TypeInfo)
+Microsoft.AspNetCore.Mvc.TagHelpers.dll keys=315 hits=315
+Microsoft.AspNetCore.Mvc.ViewFeatures.dll keys=1263 hits=1261
+Microsoft.AspNetCore.Mvc.ViewFeatures.dll miss member-absent P:Microsoft.AspNetCore.Mvc.ViewFeatures.FormContext.InvariantFields
+Microsoft.AspNetCore.Mvc.ViewFeatures.dll miss member-absent P:Microsoft.AspNetCore.Mvc.ViewFeatures.FormContext.RenderedFields
+Microsoft.AspNetCore.Mvc.dll keys=9 hits=9
+Microsoft.AspNetCore.OutputCaching.dll keys=200 hits=196
+Microsoft.AspNetCore.OutputCaching.dll miss member-absent F:System.Threading.Tasks.TaskToApm.TaskAsyncResult._callback
+Microsoft.AspNetCore.OutputCaching.dll miss member-absent M:Microsoft.AspNetCore.OutputCaching.OutputCacheMiddleware.OnStartResponse(Microsoft.AspNetCore.OutputCaching.OutputCacheContext)
+Microsoft.AspNetCore.OutputCaching.dll miss member-absent M:Microsoft.AspNetCore.OutputCaching.VaryByHostPolicy.#ctor(System.Boolean)
+Microsoft.AspNetCore.OutputCaching.dll miss member-absent M:System.Threading.Tasks.TaskToApm.TaskAsyncResult.InvokeCallback
+Microsoft.AspNetCore.RateLimiting.dll keys=38 hits=38
+Microsoft.AspNetCore.Razor.Runtime.dll keys=63 hits=63
+Microsoft.AspNetCore.Razor.dll keys=159 hits=158
+Microsoft.AspNetCore.Razor.dll miss member-absent M:Microsoft.AspNetCore.Razor.TagHelpers.NullHtmlEncoder.#ctor
+Microsoft.AspNetCore.RequestDecompression.dll keys=22 hits=22
+Microsoft.AspNetCore.ResponseCaching.Abstractions.dll keys=2 hits=2
+Microsoft.AspNetCore.ResponseCaching.dll keys=42 hits=38
+Microsoft.AspNetCore.ResponseCaching.dll miss member-absent F:System.Threading.Tasks.TaskToApm.TaskAsyncResult._callback
+Microsoft.AspNetCore.ResponseCaching.dll miss member-absent M:Microsoft.AspNetCore.ResponseCaching.ResponseCachingMiddleware.OnFinalizeCacheHeaders(Microsoft.AspNetCore.ResponseCaching.ResponseCachingContext)
+Microsoft.AspNetCore.ResponseCaching.dll miss member-absent M:Microsoft.AspNetCore.ResponseCaching.ResponseCachingMiddleware.OnStartResponse(Microsoft.AspNetCore.ResponseCaching.ResponseCachingContext)
+Microsoft.AspNetCore.ResponseCaching.dll miss member-absent M:System.Threading.Tasks.TaskToApm.TaskAsyncResult.InvokeCallback
+Microsoft.AspNetCore.ResponseCompression.dll keys=63 hits=60
+Microsoft.AspNetCore.ResponseCompression.dll miss member-absent F:System.Threading.Tasks.TaskToApm.TaskAsyncResult._callback
+Microsoft.AspNetCore.ResponseCompression.dll miss member-absent M:Microsoft.AspNetCore.ResponseCompression.ResponseCompressionBody.InitializeCompressionHeaders
+Microsoft.AspNetCore.ResponseCompression.dll miss member-absent M:System.Threading.Tasks.TaskToApm.TaskAsyncResult.InvokeCallback
+Microsoft.AspNetCore.Rewrite.dll keys=89 hits=86
+Microsoft.AspNetCore.Rewrite.dll miss member-absent M:Microsoft.AspNetCore.Rewrite.ApacheModRewrite.ConditionPatternParser.ParseProperty(Microsoft.AspNetCore.Rewrite.ParserContext,System.Boolean)
+Microsoft.AspNetCore.Rewrite.dll miss member-absent M:Microsoft.AspNetCore.Rewrite.ApacheModRewrite.TestStringParser.ParseConditionParameter(Microsoft.AspNetCore.Rewrite.ParserContext,System.Collections.Generic.IList{Microsoft.AspNetCore.Rewrite.PatternSegment})
+Microsoft.AspNetCore.Rewrite.dll miss member-absent M:Microsoft.AspNetCore.Rewrite.ApacheModRewrite.TestStringParser.ParseLiteral(Microsoft.AspNetCore.Rewrite.ParserContext,System.Collections.Generic.IList{Microsoft.AspNetCore.Rewrite.PatternSegment})
+Microsoft.AspNetCore.Routing.Abstractions.dll keys=73 hits=73
+Microsoft.AspNetCore.Routing.dll keys=812 hits=794
+Microsoft.AspNetCore.Routing.dll miss member-absent M:Microsoft.AspNetCore.Routing.Matching.ILEmitTrieFactory.IsUInt64KeyAsciiLettersOnly(System.String,System.Int32)
+Microsoft.AspNetCore.Routing.dll miss member-absent M:Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.CreateRoutePatternPolicyReferences(Microsoft.AspNetCore.Routing.RouteValueDictionary)
+Microsoft.AspNetCore.Routing.dll miss member-absent M:System.Runtime.CompilerServices.TypeHelper.IsCompilerGeneratedMethod(System.Reflection.MethodInfo)
+Microsoft.AspNetCore.Routing.dll miss member-absent M:System.Runtime.CompilerServices.TypeHelper.TryParseLocalFunctionName(System.String,System.String@)
+Microsoft.AspNetCore.Routing.dll miss member-absent P:Microsoft.AspNetCore.Routing.Constraints.AlphaRouteConstraint.AlphaRouteRegex
+Microsoft.AspNetCore.Routing.dll miss type-absent F:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.Instance
+Microsoft.AspNetCore.Routing.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_asciiLetters
+Microsoft.AspNetCore.Routing.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_defaultTimeout
+Microsoft.AspNetCore.Routing.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_hasTimeout
+Microsoft.AspNetCore.Routing.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.#ctor
+Microsoft.AspNetCore.Routing.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.CreateInstance
+Microsoft.AspNetCore.Routing.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Routing.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Routing.dll miss type-absent M:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Routing.dll miss type-absent T:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0
+Microsoft.AspNetCore.Routing.dll miss type-absent T:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory
+Microsoft.AspNetCore.Routing.dll miss type-absent T:System.Text.RegularExpressions.Generated.AlphaRouteRegex_0.RunnerFactory.Runner
+Microsoft.AspNetCore.Routing.dll miss type-absent T:System.Text.RegularExpressions.Generated.Utilities
+Microsoft.AspNetCore.Server.HttpSys.dll keys=16 hits=16
+Microsoft.AspNetCore.Server.IIS.dll keys=20 hits=20
+Microsoft.AspNetCore.Server.IISIntegration.dll keys=17 hits=17
+Microsoft.AspNetCore.Server.Kestrel.Core.dll keys=886 hits=809
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.OpenSslCertificateDirectoryVariableName
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.DiagnosticMemoryPool.AnySize
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.DiagnosticPoolBlock._pool
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool.AnySize
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._blockSize
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._blocks
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._isDisposed
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.CertificatePathWatcher._metadataForDirectory
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.CertificatePathWatcher._metadataForFile
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2.Http2Connection.MaximumEnhanceYourCalmCountProperty
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2.Http2FrameWriter.MaximumFlowControlQueueSizeProperty
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions._disableHttp1LineFeedTerminators
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions._enableWebTransportAndH3Datagrams
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:Microsoft.AspNetCore.Server.Kestrel.KestrelConfigurationLoader._certificatePathWatcher
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent F:System.Threading.Tasks.TaskToApm.TaskAsyncResult._callback
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.IsCertificateInNssDb(System.String,Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.NssDb)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.IsRunningOnWslWithInterop
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.TrustCertificateInWindowsStore(System.Security.Cryptography.X509Certificates.X509Certificate2)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.TryAddCertificateToNssDb(System.String,System.String,Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.NssDb)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.TryGetOpenSslDirectory(System.String@)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.TryGetOpenSslHash(System.String,System.String@)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.TryRehashOpenSslCertificates(System.String)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.TryRemoveCertificateFromNssDb(System.String,Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.NssDb)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.Span{System.Byte})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Server.Kestrel.Core.HttpsConfigurationService.EnsureInitialized(System.String)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http.DateHeaderValueManager.SetDateValues
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2.Http2FrameWriter.AbortConnectionFlowControl
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2.Http2FrameWriter.CompleteUnsynchronized
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:Microsoft.AspNetCore.Server.Kestrel.Core.Middleware.TlsListener.TryParseClientHello(System.Buffers.ReadOnlySequence{System.Byte},System.Int16@,System.Buffers.ReadOnlySequence{System.Byte}@)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:System.Buffers.BufferWriter`1.EnsureMore(System.Int32)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:System.Buffers.BufferWriter`1.WriteMultiBuffer(System.ReadOnlySpan{System.Byte})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:System.Net.Http.HPack.DynamicHPackEncoder.EnsureCapacity(System.UInt32)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:System.Net.Http.HPack.DynamicHPackEncoder.RemoveHeaderEntry
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent M:System.Threading.Tasks.TaskToApm.TaskAsyncResult.InvokeCallback
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent P:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.OpenSslCertificateExtensionRegex
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent P:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.OpenSslHashFilenameRegex
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent P:Microsoft.AspNetCore.Certificates.Generation.UnixCertificateManager.OpenSslVersionRegex
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent P:Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions.EndpointDefaults
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss member-absent P:Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions.HttpsDefaults
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss overload-absent M:Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2.HPackHeaderWriter.BeginEncodeHeaders(System.Net.Http.HPack.DynamicHPackEncoder,Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2.Http2HeadersEnumerator,System.Span{System.Byte},System.Boolean,System.Int32@)
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent F:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.Instance
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent F:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.Instance
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent F:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.Instance
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_asciiHexDigitsLower
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_defaultTimeout
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_hasTimeout
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent F:System.Text.RegularExpressions.Generated.Utilities.s_indexOfString_6561199BCBB8490829F71D3C0AB5A8D82E7C7C1A521E49F6E6880A55FADC7161
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.#ctor
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.RunnerFactory.CreateInstance
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.#ctor
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.RunnerFactory.CreateInstance
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.#ctor
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.RunnerFactory.CreateInstance
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent M:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.RunnerFactory
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslCertificateExtensionRegex_2.RunnerFactory.Runner
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.RunnerFactory
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslHashFilenameRegex_1.RunnerFactory.Runner
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.RunnerFactory
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.OpenSslVersionRegex_0.RunnerFactory.Runner
+Microsoft.AspNetCore.Server.Kestrel.Core.dll miss type-absent T:System.Text.RegularExpressions.Generated.Utilities
+Microsoft.AspNetCore.Server.Kestrel.Transport.NamedPipes.dll keys=40 hits=34
+Microsoft.AspNetCore.Server.Kestrel.Transport.NamedPipes.dll miss member-absent F:Microsoft.AspNetCore.DiagnosticMemoryPool.AnySize
+Microsoft.AspNetCore.Server.Kestrel.Transport.NamedPipes.dll miss member-absent F:Microsoft.AspNetCore.DiagnosticPoolBlock._pool
+Microsoft.AspNetCore.Server.Kestrel.Transport.NamedPipes.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool.AnySize
+Microsoft.AspNetCore.Server.Kestrel.Transport.NamedPipes.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._blockSize
+Microsoft.AspNetCore.Server.Kestrel.Transport.NamedPipes.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._blocks
+Microsoft.AspNetCore.Server.Kestrel.Transport.NamedPipes.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._isDisposed
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll keys=55 hits=47
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent F:Microsoft.AspNetCore.DiagnosticMemoryPool.AnySize
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent F:Microsoft.AspNetCore.DiagnosticPoolBlock._pool
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool.AnySize
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._blockSize
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._blocks
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent F:Microsoft.AspNetCore.PinnedBlockMemoryPool._isDisposed
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent F:System.Threading.Tasks.TaskToApm.TaskAsyncResult._callback
+Microsoft.AspNetCore.Server.Kestrel.Transport.Quic.dll miss member-absent M:System.Threading.Tasks.TaskToApm.TaskAsyncResult.InvokeCallback
+Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.dll keys=31 hits=31
+Microsoft.AspNetCore.Server.Kestrel.dll keys=8 hits=8
+Microsoft.AspNetCore.Session.dll keys=41 hits=34
+Microsoft.AspNetCore.Session.dll miss member-absent M:Microsoft.AspNetCore.Session.Resources.FormatException_KeyLengthIsExceeded(System.Object)
+Microsoft.AspNetCore.Session.dll miss member-absent P:Microsoft.AspNetCore.Session.Resources.ArgumentCannotBeNullOrEmpty
+Microsoft.AspNetCore.Session.dll miss member-absent P:Microsoft.AspNetCore.Session.Resources.Exception_InvalidSessionEstablishment
+Microsoft.AspNetCore.Session.dll miss member-absent P:Microsoft.AspNetCore.Session.Resources.Exception_InvalidToSerializeIn2Bytes
+Microsoft.AspNetCore.Session.dll miss member-absent P:Microsoft.AspNetCore.Session.Resources.Exception_InvalidToSerializeIn3Bytes
+Microsoft.AspNetCore.Session.dll miss member-absent P:Microsoft.AspNetCore.Session.Resources.Exception_KeyLengthIsExceeded
+Microsoft.AspNetCore.Session.dll miss member-absent P:Microsoft.AspNetCore.Session.Resources.Exception_NumberShouldNotBeNegative
+Microsoft.AspNetCore.SignalR.Common.dll keys=112 hits=112
+Microsoft.AspNetCore.SignalR.Core.dll keys=301 hits=301
+Microsoft.AspNetCore.SignalR.Protocols.Json.dll keys=16 hits=15
+Microsoft.AspNetCore.SignalR.Protocols.Json.dll miss member-absent F:Microsoft.AspNetCore.SignalR.Protocol.JsonHubProtocol._payloadSerializerOptions
+Microsoft.AspNetCore.SignalR.dll keys=14 hits=14
+Microsoft.AspNetCore.StaticAssets.dll keys=50 hits=50
+Microsoft.AspNetCore.StaticFiles.dll keys=95 hits=95
+Microsoft.AspNetCore.WebSockets.dll keys=26 hits=25
+Microsoft.AspNetCore.WebSockets.dll miss member-absent M:System.Text.ValueStringBuilder.Grow(System.Int32)
+Microsoft.AspNetCore.WebUtilities.dll keys=254 hits=247
+Microsoft.AspNetCore.WebUtilities.dll miss member-absent F:Microsoft.AspNetCore.WebUtilities.WebEncoders.s_base64vsBase64UrlDifferentiators
+Microsoft.AspNetCore.WebUtilities.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.WebUtilities.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.DecodeCore(System.Int32@,System.Int32@,System.Span{System.Char})
+Microsoft.AspNetCore.WebUtilities.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.WebUtilities.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.ReadHex(System.Int32@,System.Span{System.Byte})
+Microsoft.AspNetCore.WebUtilities.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.ReadOnlySpan{System.Char})
+Microsoft.AspNetCore.WebUtilities.dll miss member-absent M:Microsoft.AspNetCore.Internal.UrlDecoder.UnescapePercentEncoding(System.Int32@,System.Span{System.Byte},System.Boolean)
+Microsoft.AspNetCore.dll keys=64 hits=64
+Microsoft.Extensions.Caching.Abstractions.dll keys=144 hits=144
+Microsoft.Extensions.Caching.Memory.dll keys=50 hits=42
+Microsoft.Extensions.Caching.Memory.dll miss member-absent M:Microsoft.Extensions.Caching.Memory.MemoryCache.UpdateCacheSizeExceedsCapacity(Microsoft.Extensions.Caching.Memory.CacheEntry,Microsoft.Extensions.Caching.Memory.CacheEntry,Microsoft.Extensions.Caching.Memory.MemoryCache.CoherentState)
+Microsoft.Extensions.Caching.Memory.dll miss member-absent P:Microsoft.Extensions.Caching.Memory.MemoryCache.Size
+Microsoft.Extensions.Caching.Memory.dll miss type-absent P:Microsoft.Extensions.Caching.Memory.CacheEntry.ExpirationTokens
+Microsoft.Extensions.Caching.Memory.dll miss type-absent P:Microsoft.Extensions.Caching.Memory.CacheEntry.PostEvictionCallbacks
+Microsoft.Extensions.Caching.Memory.dll miss type-absent P:Microsoft.Extensions.Caching.Memory.CacheEntry.Priority
+Microsoft.Extensions.Caching.Memory.dll miss type-absent P:Microsoft.Extensions.Caching.Memory.CacheEntry.SlidingExpiration
+Microsoft.Extensions.Caching.Memory.dll miss type-absent P:System.SR.CacheEntryHasEmptySize
+Microsoft.Extensions.Caching.Memory.dll miss type-absent T:Microsoft.Extensions.Caching.Memory.MemoryCache.CoherentState
+Microsoft.Extensions.Configuration.Abstractions.dll keys=52 hits=51
+Microsoft.Extensions.Configuration.Abstractions.dll miss type-absent P:System.SR.InvalidSectionName
+Microsoft.Extensions.Configuration.Binder.dll keys=29 hits=15
+Microsoft.Extensions.Configuration.Binder.dll miss member-absent M:Microsoft.Extensions.Configuration.ConfigurationBinder.CreateInstance(System.Type,Microsoft.Extensions.Configuration.IConfiguration,Microsoft.Extensions.Configuration.BinderOptions,System.Reflection.ParameterInfo[]@)
+Microsoft.Extensions.Configuration.Binder.dll miss member-absent M:Microsoft.Extensions.Configuration.ConfigurationBinder.ResetPropertyValue(System.Reflection.PropertyInfo,System.Object,Microsoft.Extensions.Configuration.BinderOptions)
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_CannotActivateAbstractOrInterface
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_CannotBindToConstructorParameter
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_ConstructorParametersDoNotMatchProperties
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_FailedBinding
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_FailedToActivate
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_GeneralErrorWhenBinding
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_MissingConfig
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_MissingPublicInstanceConstructor
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_MultipleParameterizedConstructors
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_ParameterBeingBoundToIsUnnamed
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_ParameterHasNoMatchingConfig
+Microsoft.Extensions.Configuration.Binder.dll miss type-absent P:System.SR.Error_UnsupportedMultidimensionalArray
+Microsoft.Extensions.Configuration.CommandLine.dll keys=15 hits=12
+Microsoft.Extensions.Configuration.CommandLine.dll miss type-absent P:System.SR.Error_DuplicatedKeyInSwitchMappings
+Microsoft.Extensions.Configuration.CommandLine.dll miss type-absent P:System.SR.Error_InvalidSwitchMapping
+Microsoft.Extensions.Configuration.CommandLine.dll miss type-absent P:System.SR.Error_ShortSwitchNotDefined
+Microsoft.Extensions.Configuration.EnvironmentVariables.dll keys=12 hits=12
+Microsoft.Extensions.Configuration.FileExtensions.dll keys=31 hits=28
+Microsoft.Extensions.Configuration.FileExtensions.dll miss type-absent P:System.SR.Error_ExpectedPhysicalPath
+Microsoft.Extensions.Configuration.FileExtensions.dll miss type-absent P:System.SR.Error_FailedToLoad
+Microsoft.Extensions.Configuration.FileExtensions.dll miss type-absent P:System.SR.Error_FileNotFound
+Microsoft.Extensions.Configuration.Ini.dll keys=21 hits=18
+Microsoft.Extensions.Configuration.Ini.dll miss type-absent P:System.SR.Error_InvalidFilePath
+Microsoft.Extensions.Configuration.Ini.dll miss type-absent P:System.SR.Error_KeyIsDuplicated
+Microsoft.Extensions.Configuration.Ini.dll miss type-absent P:System.SR.Error_UnrecognizedLineFormat
+Microsoft.Extensions.Configuration.Json.dll keys=22 hits=17
+Microsoft.Extensions.Configuration.Json.dll miss type-absent P:System.SR.Error_InvalidFilePath
+Microsoft.Extensions.Configuration.Json.dll miss type-absent P:System.SR.Error_InvalidTopLevelJSONElement
+Microsoft.Extensions.Configuration.Json.dll miss type-absent P:System.SR.Error_JSONParseError
+Microsoft.Extensions.Configuration.Json.dll miss type-absent P:System.SR.Error_KeyIsDuplicated
+Microsoft.Extensions.Configuration.Json.dll miss type-absent P:System.SR.Error_UnsupportedJSONToken
+Microsoft.Extensions.Configuration.KeyPerFile.dll keys=20 hits=20
+Microsoft.Extensions.Configuration.UserSecrets.dll keys=19 hits=14
+Microsoft.Extensions.Configuration.UserSecrets.dll miss member-absent M:Microsoft.Extensions.Configuration.UserSecrets.PathHelper.InternalGetSecretsPathFromSecretsId(System.String,System.Boolean)
+Microsoft.Extensions.Configuration.UserSecrets.dll miss type-absent P:System.SR.Common_StringNullOrEmpty
+Microsoft.Extensions.Configuration.UserSecrets.dll miss type-absent P:System.SR.Error_Invalid_Character_In_UserSecrets_Id
+Microsoft.Extensions.Configuration.UserSecrets.dll miss type-absent P:System.SR.Error_Missing_UserSecretsIdAttribute
+Microsoft.Extensions.Configuration.UserSecrets.dll miss type-absent P:System.SR.Error_Missing_UserSecretsLocation
+Microsoft.Extensions.Configuration.Xml.dll keys=32 hits=23
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:Microsoft.Extensions.Configuration.Xml.XmlConfigurationElement.ChildrenBySiblingName
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:Microsoft.Extensions.Configuration.Xml.XmlConfigurationElement.SiblingName
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:Microsoft.Extensions.Configuration.Xml.XmlConfigurationElement.SingleChild
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:System.SR.Error_InvalidFilePath
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:System.SR.Error_KeyIsDuplicated
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:System.SR.Error_NamespaceIsNotSupported
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:System.SR.Error_UnsupportedNodeType
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent P:System.SR.Msg_LineInfo
+Microsoft.Extensions.Configuration.Xml.dll miss type-absent T:Microsoft.Extensions.Configuration.Xml.Prefix
+Microsoft.Extensions.Configuration.dll keys=92 hits=84
+Microsoft.Extensions.Configuration.dll miss member-absent P:Microsoft.Extensions.Configuration.ConfigurationKeyComparer.Comparison
+Microsoft.Extensions.Configuration.dll miss type-absent M:Microsoft.Extensions.Configuration.InternalConfigurationRootExtensions.GetChildrenImplementation(Microsoft.Extensions.Configuration.IConfigurationRoot,System.String)
+Microsoft.Extensions.Configuration.dll miss type-absent M:Microsoft.Extensions.Internal.ChangeCallbackRegistrar.UnsafeRegisterChangeCallback``1(System.Action{System.Object},System.Object,System.Threading.CancellationToken,System.Action{``0},``0)
+Microsoft.Extensions.Configuration.dll miss type-absent P:System.SR.Error_NoSources
+Microsoft.Extensions.Configuration.dll miss type-absent P:System.SR.InvalidNullArgument
+Microsoft.Extensions.Configuration.dll miss type-absent P:System.SR.StreamConfigurationProvidersAlreadyLoaded
+Microsoft.Extensions.Configuration.dll miss type-absent P:System.SR.StreamConfigurationSourceStreamCannotBeNull
+Microsoft.Extensions.Configuration.dll miss type-absent T:Microsoft.Extensions.Configuration.InternalConfigurationRootExtensions
+Microsoft.Extensions.DependencyInjection.Abstractions.dll keys=246 hits=230
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss member-absent M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.ThrowHelperNullReferenceException
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.AmbiguousConstructorMatch
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.CannotCreateAbstractClasses
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.CannotResolveService
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.CtorNotLocated
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.KeyedServicesNotSupported
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.MarkedCtorMissingArgumentTypes
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.MultipleCtorsFound
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.MultipleCtorsFoundWithBestLength
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.MultipleCtorsMarkedWithAttribute
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.NoConstructorMatch
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.NoServiceRegistered
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.NonKeyedDescriptorMisuse
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.ServiceCollectionReadOnly
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.TryAddIndistinguishableTypeToEnumerable
+Microsoft.Extensions.DependencyInjection.Abstractions.dll miss type-absent P:System.SR.UnableToResolveService
+Microsoft.Extensions.DependencyInjection.dll keys=52 hits=18
+Microsoft.Extensions.DependencyInjection.dll miss type-absent M:Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(Microsoft.Extensions.DependencyInjection.ServiceLookup.ServiceIdentifier,System.Type,Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteChain,System.Reflection.ParameterInfo[],System.Boolean)
+Microsoft.Extensions.DependencyInjection.dll miss type-absent M:Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.ValidateTrimmingAnnotations(System.Type,System.Type[],System.Type,System.Type[])
+Microsoft.Extensions.DependencyInjection.dll miss type-absent M:Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.VerifyOpenGenericAotCompatibility(System.Type,System.Type[])
+Microsoft.Extensions.DependencyInjection.dll miss type-absent M:Microsoft.Extensions.DependencyInjection.ServiceLookup.ServiceCacheKey.Equals(Microsoft.Extensions.DependencyInjection.ServiceLookup.ServiceCacheKey)
+Microsoft.Extensions.DependencyInjection.dll miss type-absent M:Microsoft.Extensions.Internal.TypeNameHelper.GetTypeDisplayName(System.Type,System.Boolean,System.Boolean,System.Boolean,System.Char)
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:Microsoft.Extensions.DependencyInjection.ServiceLookup.ServiceCacheKey.ServiceIdentifier
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:Microsoft.Extensions.DependencyInjection.ServiceLookup.ServiceCacheKey.Slot
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.AmbiguousConstructorException
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.AotCannotCreateEnumerableValueType
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.AotCannotCreateGenericValueType
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.ArityOfOpenGenericServiceNotEqualArityOfOpenGenericImplementation
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.AsyncDisposableServiceDispose
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.CallSiteTypeNotSupported
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.CannotResolveService
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.CircularDependencyException
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.ConstantCantBeConvertedToServiceType
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.DirectScopedResolvedFromRootException
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.GetCaptureDisposableNotSupported
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.ImplementationTypeCantBeConvertedToServiceType
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.InvalidServiceDescriptor
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.InvalidServiceKeyType
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.KeyedServiceAnyKeyUsedToResolveService
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.NoConstructorMatch
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.NoKeyedServiceRegistered
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.NoServiceRegistered
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.OpenGenericServiceRequiresOpenGenericImplementation
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.ScopedInSingletonException
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.ScopedResolvedFromRootException
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.ServiceDescriptorNotExist
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.TrimmingAnnotationsDoNotMatch
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.TrimmingAnnotationsDoNotMatch_NewConstraint
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.TypeCannotBeActivated
+Microsoft.Extensions.DependencyInjection.dll miss type-absent P:System.SR.UnableToActivateTypeException
+Microsoft.Extensions.DependencyInjection.dll miss type-absent T:Microsoft.Extensions.DependencyInjection.ServiceLookup.ServiceCallSite
+Microsoft.Extensions.Diagnostics.Abstractions.dll keys=44 hits=43
+Microsoft.Extensions.Diagnostics.Abstractions.dll miss type-absent M:Microsoft.Extensions.Internal.TypeNameHelper.GetTypeDisplayName(System.Type,System.Boolean,System.Boolean,System.Boolean,System.Char)
+Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions.dll keys=48 hits=48
+Microsoft.Extensions.Diagnostics.HealthChecks.dll keys=40 hits=40
+Microsoft.Extensions.Diagnostics.dll keys=14 hits=11
+Microsoft.Extensions.Diagnostics.dll miss type-absent M:System.Diagnostics.DiagnosticsHelper.CompareTags(System.Collections.Generic.IList{System.Collections.Generic.KeyValuePair{System.String,System.Object}},System.Collections.Generic.IEnumerable{System.Collections.Generic.KeyValuePair{System.String,System.Object}})
+Microsoft.Extensions.Diagnostics.dll miss type-absent P:System.SR.InvalidScope
+Microsoft.Extensions.Diagnostics.dll miss type-absent P:System.SR.MoreThanOneWildcard
+Microsoft.Extensions.Features.dll keys=43 hits=43
+Microsoft.Extensions.FileProviders.Abstractions.dll keys=38 hits=37
+Microsoft.Extensions.FileProviders.Abstractions.dll miss type-absent P:System.SR.FileNotExists
+Microsoft.Extensions.FileProviders.Composite.dll keys=11 hits=11
+Microsoft.Extensions.FileProviders.Embedded.dll keys=33 hits=29
+Microsoft.Extensions.FileProviders.Embedded.dll miss member-absent M:Microsoft.Extensions.FileProviders.EmbeddedFileProvider.IsValidEverettIdChar(System.Char)
+Microsoft.Extensions.FileProviders.Embedded.dll miss member-absent M:Microsoft.Extensions.FileProviders.EmbeddedFileProvider.IsValidEverettIdFirstChar(System.Char)
+Microsoft.Extensions.FileProviders.Embedded.dll miss member-absent M:Microsoft.Extensions.FileProviders.EmbeddedFileProvider.MakeValidEverettIdentifier(System.String)
+Microsoft.Extensions.FileProviders.Embedded.dll miss member-absent M:Microsoft.Extensions.FileProviders.EmbeddedFileProvider.MakeValidEverettSubFolderIdentifier(System.Text.StringBuilder,System.String)
+Microsoft.Extensions.FileProviders.Physical.dll keys=65 hits=57
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.ArgumentOutOfRange_NeedNonNegNum
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.Argument_InvalidOffLen
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.CannotCreateStream
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.CannotModifyWhenFileWatcherInitialized
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.Cryptography_HashAlgorithmNameNullOrEmpty
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.Error_FileSystemWatcherRequiredWithoutPolling
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.FileSystemWatcher_PlatformNotSupported
+Microsoft.Extensions.FileProviders.Physical.dll miss type-absent P:System.SR.UnexpectedFileSystemInfo
+Microsoft.Extensions.FileSystemGlobbing.dll keys=177 hits=177
+Microsoft.Extensions.Hosting.Abstractions.dll keys=103 hits=102
+Microsoft.Extensions.Hosting.Abstractions.dll miss type-absent P:System.SR.HostAbortedExceptionMessage
+Microsoft.Extensions.Hosting.dll keys=97 hits=85
+Microsoft.Extensions.Hosting.dll miss type-absent M:Microsoft.Extensions.Hosting.Internal.Host.StartAsync(System.Threading.CancellationToken)
+Microsoft.Extensions.Hosting.dll miss type-absent M:Microsoft.Extensions.Hosting.Internal.Host.StopAsync(System.Threading.CancellationToken)
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.ApplicationNameChangeNotSupported
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.BackgroundServiceExceptionStoppedHost
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.BuildCalled
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.ContentRootChangeNotSupported
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.CreateBuilderCallBeforeCreateServiceProvider
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.EnvironmentNameChangeNotSupoprted
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.IHostApplicationLifetimeReplacementNotSupported
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.NullIServiceProvider
+Microsoft.Extensions.Hosting.dll miss type-absent P:System.SR.ResolverReturnedNull
+Microsoft.Extensions.Hosting.dll miss type-absent T:Microsoft.Extensions.Hosting.Internal.NullLifetime
+Microsoft.Extensions.Http.dll keys=108 hits=99
+Microsoft.Extensions.Http.dll miss member-absent M:Microsoft.Extensions.Http.Logging.LoggingHttpMessageHandler.Send(System.Net.Http.HttpRequestMessage,System.Threading.CancellationToken)
+Microsoft.Extensions.Http.dll miss member-absent M:Microsoft.Extensions.Http.Logging.LoggingScopeHttpMessageHandler.Send(System.Net.Http.HttpRequestMessage,System.Threading.CancellationToken)
+Microsoft.Extensions.Http.dll miss type-absent M:Microsoft.Extensions.Internal.TypeNameHelper.GetTypeDisplayName(System.Type,System.Boolean,System.Boolean,System.Boolean,System.Char)
+Microsoft.Extensions.Http.dll miss type-absent P:System.SR.HandlerLifetime_InvalidValue
+Microsoft.Extensions.Http.dll miss type-absent P:System.SR.HttpMessageHandlerBuilder_AdditionHandlerIsInvalid
+Microsoft.Extensions.Http.dll miss type-absent P:System.SR.HttpMessageHandlerBuilder_AdditionalHandlerIsNull
+Microsoft.Extensions.Http.dll miss type-absent P:System.SR.HttpMessageHandlerBuilder_PrimaryHandlerIsNull
+Microsoft.Extensions.Http.dll miss type-absent P:System.SR.SocketsHttpHandlerBuilder_PrimaryHandlerIsInvalid
+Microsoft.Extensions.Http.dll miss type-absent P:System.SR.TypedClient_NoHttpClientCtor
+Microsoft.Extensions.Identity.Core.dll keys=570 hits=570
+Microsoft.Extensions.Identity.Stores.dll keys=180 hits=180
+Microsoft.Extensions.Localization.Abstractions.dll keys=29 hits=29
+Microsoft.Extensions.Localization.dll keys=49 hits=49
+Microsoft.Extensions.Logging.Abstractions.dll keys=173 hits=158
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:Microsoft.Extensions.Internal.TypeNameHelper.GetTypeDisplayName(System.Type,System.Boolean,System.Boolean,System.Boolean,System.Char)
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#ForEachScope``1(System.Action{System.Object,``0},``0)
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#Push(System.Object)
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:Microsoft.Extensions.Logging.NullScope.Dispose
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:System.Text.ValueStringBuilder.AsSpan(System.Boolean)
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:System.Text.ValueStringBuilder.GetPinnableReference
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:System.Text.ValueStringBuilder.GetPinnableReference(System.Boolean)
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent M:System.Text.ValueStringBuilder.Grow(System.Int32)
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent P:Microsoft.Extensions.Logging.NullExternalScopeProvider.Instance
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent P:System.SR.UnexpectedNumberOfNamedParameters
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent P:System.Text.ValueStringBuilder.RawChars
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent T:Microsoft.Extensions.Logging.FormattedLogValues
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent T:Microsoft.Extensions.Logging.LogValuesFormatter
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent T:Microsoft.Extensions.Logging.NullExternalScopeProvider
+Microsoft.Extensions.Logging.Abstractions.dll miss type-absent T:Microsoft.Extensions.Logging.NullScope
+Microsoft.Extensions.Logging.Configuration.dll keys=16 hits=12
+Microsoft.Extensions.Logging.Configuration.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.GetValue``1(Microsoft.Extensions.Configuration.IConfiguration,System.String,``0)
+Microsoft.Extensions.Logging.Configuration.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.TryGetConfigurationValue(Microsoft.Extensions.Configuration.IConfiguration,System.String,System.String@)
+Microsoft.Extensions.Logging.Configuration.dll miss type-absent P:System.SR.ValueNotSupported
+Microsoft.Extensions.Logging.Configuration.dll miss type-absent T:Microsoft.Extensions.Logging.Configuration.LoggerProviderConfigureOptions`2
+Microsoft.Extensions.Logging.Console.dll keys=110 hits=83
+Microsoft.Extensions.Logging.Console.dll miss type-absent F:System.ConsoleUtils.s_emitAnsiColorCodes
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.Bind_ConsoleFormatterOptions(Microsoft.Extensions.Configuration.IConfiguration,System.Object)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.Bind_ConsoleLoggerOptions(Microsoft.Extensions.Configuration.IConfiguration,System.Object)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.Bind_JsonConsoleFormatterOptions(Microsoft.Extensions.Configuration.IConfiguration,System.Object)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.Bind_SimpleConsoleFormatterOptions(Microsoft.Extensions.Configuration.IConfiguration,System.Object)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.TryGetConfigurationValue(Microsoft.Extensions.Configuration.IConfiguration,System.String,System.String@)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Configuration.Binder.SourceGeneration.BindingExtensions.ValidateConfigurationKeys(System.Type,System.Lazy{System.Collections.Generic.HashSet{System.String}},Microsoft.Extensions.Configuration.IConfiguration,Microsoft.Extensions.Configuration.BinderOptions)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.Console.AnsiParser.Parse(System.String)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.Console.ConsoleLogger.BeginScope``1(``0)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.Console.ConsoleLogger.IsEnabled(Microsoft.Extensions.Logging.LogLevel)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.Console.ConsoleLogger.LogRecords(System.Collections.Generic.IEnumerable{Microsoft.Extensions.Logging.Abstractions.BufferedLogRecord})
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.Console.ConsoleLogger.Log``1(Microsoft.Extensions.Logging.LogLevel,Microsoft.Extensions.Logging.EventId,``0,System.Exception,System.Func{``0,System.Exception,System.String})
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#ForEachScope``1(System.Action{System.Object,``0},``0)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#Push(System.Object)
+Microsoft.Extensions.Logging.Console.dll miss type-absent M:Microsoft.Extensions.Logging.NullScope.Dispose
+Microsoft.Extensions.Logging.Console.dll miss type-absent P:Microsoft.Extensions.Logging.NullExternalScopeProvider.Instance
+Microsoft.Extensions.Logging.Console.dll miss type-absent P:System.ConsoleUtils.EmitAnsiColorCodes
+Microsoft.Extensions.Logging.Console.dll miss type-absent P:System.SR.InvalidConfigurationData
+Microsoft.Extensions.Logging.Console.dll miss type-absent P:System.SR.MaxQueueLengthBadValue
+Microsoft.Extensions.Logging.Console.dll miss type-absent P:System.SR.QueueModeNotSupported
+Microsoft.Extensions.Logging.Console.dll miss type-absent P:System.SR.WarningMessageOnDrop
+Microsoft.Extensions.Logging.Console.dll miss type-absent T:Microsoft.Extensions.Logging.Console.AnsiLogConsole
+Microsoft.Extensions.Logging.Console.dll miss type-absent T:Microsoft.Extensions.Logging.Console.ConsoleLogger
+Microsoft.Extensions.Logging.Console.dll miss type-absent T:Microsoft.Extensions.Logging.ConsoleFormatterConfigureOptions
+Microsoft.Extensions.Logging.Console.dll miss type-absent T:Microsoft.Extensions.Logging.ConsoleLoggerConfigureOptions
+Microsoft.Extensions.Logging.Console.dll miss type-absent T:Microsoft.Extensions.Logging.NullExternalScopeProvider
+Microsoft.Extensions.Logging.Console.dll miss type-absent T:Microsoft.Extensions.Logging.NullScope
+Microsoft.Extensions.Logging.Debug.dll keys=19 hits=8
+Microsoft.Extensions.Logging.Debug.dll miss type-absent M:Microsoft.Extensions.Logging.Debug.DebugLogger.#ctor(System.String)
+Microsoft.Extensions.Logging.Debug.dll miss type-absent M:Microsoft.Extensions.Logging.Debug.DebugLogger.BeginScope``1(``0)
+Microsoft.Extensions.Logging.Debug.dll miss type-absent M:Microsoft.Extensions.Logging.Debug.DebugLogger.IsEnabled(Microsoft.Extensions.Logging.LogLevel)
+Microsoft.Extensions.Logging.Debug.dll miss type-absent M:Microsoft.Extensions.Logging.Debug.DebugLogger.Log``1(Microsoft.Extensions.Logging.LogLevel,Microsoft.Extensions.Logging.EventId,``0,System.Exception,System.Func{``0,System.Exception,System.String})
+Microsoft.Extensions.Logging.Debug.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#ForEachScope``1(System.Action{System.Object,``0},``0)
+Microsoft.Extensions.Logging.Debug.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#Push(System.Object)
+Microsoft.Extensions.Logging.Debug.dll miss type-absent M:Microsoft.Extensions.Logging.NullScope.Dispose
+Microsoft.Extensions.Logging.Debug.dll miss type-absent P:Microsoft.Extensions.Logging.NullExternalScopeProvider.Instance
+Microsoft.Extensions.Logging.Debug.dll miss type-absent T:Microsoft.Extensions.Logging.Debug.DebugLogger
+Microsoft.Extensions.Logging.Debug.dll miss type-absent T:Microsoft.Extensions.Logging.NullExternalScopeProvider
+Microsoft.Extensions.Logging.Debug.dll miss type-absent T:Microsoft.Extensions.Logging.NullScope
+Microsoft.Extensions.Logging.EventLog.dll keys=35 hits=19
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.EventLog.EventLogLogger.#ctor(System.String,Microsoft.Extensions.Logging.EventLog.EventLogSettings,Microsoft.Extensions.Logging.IExternalScopeProvider)
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.EventLog.EventLogLogger.BeginScope``1(``0)
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.EventLog.EventLogLogger.IsEnabled(Microsoft.Extensions.Logging.LogLevel)
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.EventLog.EventLogLogger.Log``1(Microsoft.Extensions.Logging.LogLevel,Microsoft.Extensions.Logging.EventId,``0,System.Exception,System.Func{``0,System.Exception,System.String})
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.EventLog.WindowsEventLog.#ctor(System.String,System.String,System.String)
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#ForEachScope``1(System.Action{System.Object,``0},``0)
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#Push(System.Object)
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent M:Microsoft.Extensions.Logging.NullScope.Dispose
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent P:Microsoft.Extensions.Logging.EventLog.EventLogLogger.EventLog
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent P:Microsoft.Extensions.Logging.EventLog.WindowsEventLog.DiagnosticsEventLog
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent P:Microsoft.Extensions.Logging.EventLog.WindowsEventLog.MaxMessageSize
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent P:Microsoft.Extensions.Logging.NullExternalScopeProvider.Instance
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent T:Microsoft.Extensions.Logging.EventLog.EventLogLogger
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent T:Microsoft.Extensions.Logging.EventLog.WindowsEventLog
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent T:Microsoft.Extensions.Logging.NullExternalScopeProvider
+Microsoft.Extensions.Logging.EventLog.dll miss type-absent T:Microsoft.Extensions.Logging.NullScope
+Microsoft.Extensions.Logging.EventSource.dll keys=33 hits=14
+Microsoft.Extensions.Logging.EventSource.dll miss member-absent F:Microsoft.Extensions.Logging.EventSource.LoggingEventSource.Instance
+Microsoft.Extensions.Logging.EventSource.dll miss member-absent M:Microsoft.Extensions.Logging.EventSource.LoggingEventSource.ActivityStart(System.Int32,System.Int32,System.String,System.Collections.Generic.IEnumerable{System.Collections.Generic.KeyValuePair{System.String,System.String}})
+Microsoft.Extensions.Logging.EventSource.dll miss member-absent M:Microsoft.Extensions.Logging.EventSource.LoggingEventSource.FormattedMessage(Microsoft.Extensions.Logging.LogLevel,System.Int32,System.String,System.Int32,System.String,System.String,System.String,System.String,System.String)
+Microsoft.Extensions.Logging.EventSource.dll miss member-absent M:Microsoft.Extensions.Logging.EventSource.LoggingEventSource.Message(Microsoft.Extensions.Logging.LogLevel,System.Int32,System.String,System.Int32,System.String,Microsoft.Extensions.Logging.EventSource.ExceptionInfo,System.Collections.Generic.IEnumerable{System.Collections.Generic.KeyValuePair{System.String,System.String}},System.String,System.String,System.String)
+Microsoft.Extensions.Logging.EventSource.dll miss member-absent M:Microsoft.Extensions.Logging.EventSource.LoggingEventSource.ParseFilterSpec(System.String,Microsoft.Extensions.Logging.LogLevel)
+Microsoft.Extensions.Logging.EventSource.dll miss member-absent M:Microsoft.Extensions.Logging.EventSource.LoggingEventSource.SetFilterSpec(System.String)
+Microsoft.Extensions.Logging.EventSource.dll miss member-absent M:Microsoft.Extensions.Logging.EventSource.LoggingEventSource.TryParseLevel(Microsoft.Extensions.Logging.LogLevel,System.String,Microsoft.Extensions.Logging.LogLevel@)
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent M:Microsoft.Extensions.Logging.EventSource.EventSourceLogger.GetExceptionInfo(System.Exception)
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent M:Microsoft.Extensions.Logging.EventSource.EventSourceLogger.GetProperties(System.Object)
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent M:Microsoft.Extensions.Logging.EventSource.EventSourceLogger.Log``1(Microsoft.Extensions.Logging.LogLevel,Microsoft.Extensions.Logging.EventId,``0,System.Exception,System.Func{``0,System.Exception,System.String})
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#ForEachScope``1(System.Action{System.Object,``0},``0)
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#Push(System.Object)
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent M:Microsoft.Extensions.Logging.NullScope.Dispose
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent P:Microsoft.Extensions.Logging.NullExternalScopeProvider.Instance
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent T:Microsoft.Extensions.Logging.EventSource.EventSourceLogger
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent T:Microsoft.Extensions.Logging.EventSource.EventSourceLogger.ActivityScope
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent T:Microsoft.Extensions.Logging.EventSource.ExceptionInfo
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent T:Microsoft.Extensions.Logging.NullExternalScopeProvider
+Microsoft.Extensions.Logging.EventSource.dll miss type-absent T:Microsoft.Extensions.Logging.NullScope
+Microsoft.Extensions.Logging.TraceSource.dll keys=20 hits=14
+Microsoft.Extensions.Logging.TraceSource.dll miss type-absent M:Microsoft.Extensions.Logging.TraceSource.TraceSourceLogger.#ctor(System.Diagnostics.TraceSource)
+Microsoft.Extensions.Logging.TraceSource.dll miss type-absent M:Microsoft.Extensions.Logging.TraceSource.TraceSourceLogger.Log``1(Microsoft.Extensions.Logging.LogLevel,Microsoft.Extensions.Logging.EventId,``0,System.Exception,System.Func{``0,System.Exception,System.String})
+Microsoft.Extensions.Logging.TraceSource.dll miss type-absent M:Microsoft.Extensions.Logging.TraceSource.TraceSourceScope.#ctor(System.Object)
+Microsoft.Extensions.Logging.TraceSource.dll miss type-absent M:Microsoft.Extensions.Logging.TraceSource.TraceSourceScope.Dispose
+Microsoft.Extensions.Logging.TraceSource.dll miss type-absent T:Microsoft.Extensions.Logging.TraceSource.TraceSourceLogger
+Microsoft.Extensions.Logging.TraceSource.dll miss type-absent T:Microsoft.Extensions.Logging.TraceSource.TraceSourceScope
+Microsoft.Extensions.Logging.dll keys=72 hits=63
+Microsoft.Extensions.Logging.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#ForEachScope``1(System.Action{System.Object,``0},``0)
+Microsoft.Extensions.Logging.dll miss type-absent M:Microsoft.Extensions.Logging.NullExternalScopeProvider.Microsoft#Extensions#Logging#IExternalScopeProvider#Push(System.Object)
+Microsoft.Extensions.Logging.dll miss type-absent M:Microsoft.Extensions.Logging.NullScope.Dispose
+Microsoft.Extensions.Logging.dll miss type-absent P:Microsoft.Extensions.Logging.NullExternalScopeProvider.Instance
+Microsoft.Extensions.Logging.dll miss type-absent P:System.SR.InvalidActivityTrackingOptions
+Microsoft.Extensions.Logging.dll miss type-absent P:System.SR.MoreThanOneWildcard
+Microsoft.Extensions.Logging.dll miss type-absent T:Microsoft.Extensions.Logging.LoggerFactoryScopeProvider
+Microsoft.Extensions.Logging.dll miss type-absent T:Microsoft.Extensions.Logging.NullExternalScopeProvider
+Microsoft.Extensions.Logging.dll miss type-absent T:Microsoft.Extensions.Logging.NullScope
+Microsoft.Extensions.ObjectPool.dll keys=45 hits=45
+Microsoft.Extensions.Options.ConfigurationExtensions.dll keys=19 hits=19
+Microsoft.Extensions.Options.DataAnnotations.dll keys=6 hits=6
+Microsoft.Extensions.Options.dll keys=297 hits=290
+Microsoft.Extensions.Options.dll miss member-absent M:Microsoft.Extensions.Options.OptionsCache`1.TryGetValue(System.String,`0@)
+Microsoft.Extensions.Options.dll miss type-absent P:System.SR.Error_CannotActivateAbstractOrInterface
+Microsoft.Extensions.Options.dll miss type-absent P:System.SR.Error_FailedBinding
+Microsoft.Extensions.Options.dll miss type-absent P:System.SR.Error_FailedToActivate
+Microsoft.Extensions.Options.dll miss type-absent P:System.SR.Error_MissingParameterlessConstructor
+Microsoft.Extensions.Options.dll miss type-absent P:System.SR.Error_NoConfigurationServices
+Microsoft.Extensions.Options.dll miss type-absent P:System.SR.Error_NoConfigurationServicesAndAction
+Microsoft.Extensions.Primitives.dll keys=148 hits=142
+Microsoft.Extensions.Primitives.dll miss type-absent M:Microsoft.Extensions.Internal.ChangeCallbackRegistrar.UnsafeRegisterChangeCallback``1(System.Action{System.Object},System.Object,System.Threading.CancellationToken,System.Action{``0},``0)
+Microsoft.Extensions.Primitives.dll miss type-absent P:System.SR.Argument_InvalidOffsetLength
+Microsoft.Extensions.Primitives.dll miss type-absent P:System.SR.Argument_InvalidOffsetLengthStringSegment
+Microsoft.Extensions.Primitives.dll miss type-absent P:System.SR.Capacity_CannotChangeAfterWriteStarted
+Microsoft.Extensions.Primitives.dll miss type-absent P:System.SR.Capacity_NotEnough
+Microsoft.Extensions.Primitives.dll miss type-absent P:System.SR.Capacity_NotUsedEntirely
+Microsoft.Extensions.Validation.dll keys=52 hits=52
+Microsoft.Extensions.WebEncoders.dll keys=31 hits=31
+Microsoft.JSInterop.dll keys=184 hits=184
+Microsoft.Net.Http.Headers.dll keys=342 hits=342
+System.Diagnostics.EventLog.dll keys=407 hits=407
+System.Formats.Cbor.dll keys=186 hits=138
+System.Formats.Cbor.dll miss type-absent M:System.Formats.Cbor.CborWriter.DecimalHelpers.Deconstruct(System.Decimal,System.Decimal@,System.Byte@)
+System.Formats.Cbor.dll miss type-absent M:System.Formats.Cbor.CborWriter.DecimalHelpers.ReconstructFromNegativeScale(System.Decimal,System.Byte)
+System.Formats.Cbor.dll miss type-absent P:System.SR.Argument_EncodeDestinationTooSmall
+System.Formats.Cbor.dll miss type-absent P:System.SR.CborContentException_DefaultMessage
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_ConformanceMode_ContainsDuplicateKeys
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_ConformanceMode_IndefiniteLengthItemsNotSupported
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_ConformanceMode_InvalidSimpleValueEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_ConformanceMode_KeysNotInSortedOrder
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_ConformanceMode_NonCanonicalIntegerRepresentation
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_ConformanceMode_RequiresDefiniteLengthItems
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_ConformanceMode_TagsNotSupported
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_NotAtEndOfDefiniteLengthDataItem
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_NotAtEndOfIndefiniteLengthDataItem
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_PopMajorTypeMismatch
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_DefiniteLengthExceedsBufferSize
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidBigNumEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidCbor_IndefiniteLengthStringContainsInvalidDataItem
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidCbor_InvalidIntegerEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidCbor_InvalidUtf8StringEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidCbor_KeyMissingValue
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidCbor_TagNotFollowedByValue
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidCbor_UnexpectedBreakByte
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidCbor_UnexpectedEndOfBuffer
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidDateTimeEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidDecimalEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_InvalidUnixTimeEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_IsAtRootContext
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_MajorTypeMismatch
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_NoMoreDataItemsToRead
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_NotABooleanEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_NotAFloatEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_NotANullEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_NotASimpleValueEncoding
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_NotIndefiniteLengthString
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_ReadingAsLowerPrecision
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_Skip_InvalidState
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Reader_TagMismatch
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_CannotNestDataItemsInIndefiniteLengthStrings
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_DecimalOverflow
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_DefiniteLengthExceeded
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_IncompleteCborDocument
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_InvalidUtf8String
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_MapIncompleteKeyValuePair
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_PayloadIsNotValidCbor
+System.Formats.Cbor.dll miss type-absent P:System.SR.Cbor_Writer_ValueCannotBeInfiniteOrNaN
+System.Formats.Cbor.dll miss type-absent T:System.Formats.Cbor.CborAdditionalInfo
+System.Formats.Cbor.dll miss type-absent T:System.Formats.Cbor.CborInitialByte
+System.Formats.Cbor.dll miss type-absent T:System.Formats.Cbor.CborMajorType
+System.Security.Cryptography.Xml.dll keys=454 hits=449
+System.Security.Cryptography.Xml.dll miss type-absent M:System.Security.Cryptography.Xml.CryptoSignedXmlRecursionException.#ctor
+System.Security.Cryptography.Xml.dll miss type-absent M:System.Security.Cryptography.Xml.CryptoSignedXmlRecursionException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)
+System.Security.Cryptography.Xml.dll miss type-absent M:System.Security.Cryptography.Xml.CryptoSignedXmlRecursionException.#ctor(System.String)
+System.Security.Cryptography.Xml.dll miss type-absent M:System.Security.Cryptography.Xml.CryptoSignedXmlRecursionException.#ctor(System.String,System.Exception)
+System.Security.Cryptography.Xml.dll miss type-absent T:System.Security.Cryptography.Xml.CryptoSignedXmlRecursionException
+System.Threading.RateLimiting.dll keys=149 hits=136
+System.Threading.RateLimiting.dll miss type-absent P:System.SR.PermitLimitExceeded
+System.Threading.RateLimiting.dll miss type-absent P:System.SR.ReplenishmentLimitTooHigh
+System.Threading.RateLimiting.dll miss type-absent P:System.SR.ShouldBeGreaterThan0
+System.Threading.RateLimiting.dll miss type-absent P:System.SR.ShouldBeGreaterThanOrEqual0
+System.Threading.RateLimiting.dll miss type-absent P:System.SR.ShouldBeGreaterThanTimeSpan0
+System.Threading.RateLimiting.dll miss type-absent P:System.SR.TokenLimitExceeded
+System.Threading.RateLimiting.dll miss type-absent T:System.Collections.Generic.Deque`1
+System.Threading.RateLimiting.dll miss type-absent T:System.Threading.RateLimiting.ChainedPartitionedRateLimiter`1
+System.Threading.RateLimiting.dll miss type-absent T:System.Threading.RateLimiting.ChainedRateLimiter
+System.Threading.RateLimiting.dll miss type-absent T:System.Threading.RateLimiting.ConcurrencyLimiter.RequestRegistration.Disposer
+System.Threading.RateLimiting.dll miss type-absent T:System.Threading.RateLimiting.FixedWindowRateLimiter.RequestRegistration.Disposer
+System.Threading.RateLimiting.dll miss type-absent T:System.Threading.RateLimiting.SlidingWindowRateLimiter.RequestRegistration.Disposer
+System.Threading.RateLimiting.dll miss type-absent T:System.Threading.RateLimiting.TokenBucketRateLimiter.RequestRegistration.Disposer

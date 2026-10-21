@@ -49,6 +49,9 @@ borzoi-spawn = { path = "../spawn" }
 # are deterministic (fixed fixtures, exhaustive coverage floor) so
 # committed counterexamples aren't needed for replay.
 proptest = "1"
+# Reads the sidecar doc XML of the targeting-pack assemblies
+# (`tests/all/doc_id_csharp_diff.rs`), as the LSP's doc index does.
+roxmltree = "0.21"
 # Each fixture build runs in a fresh copy of the fixtures tree (see
 # `tests/all/common/mod.rs`), so concurrent `dotnet build`s in sibling test
 # binaries never race on a shared `obj/`/`bin/`. `TempDir` gives each copy
