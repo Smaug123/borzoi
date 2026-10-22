@@ -241,10 +241,6 @@ pub struct PlantedRef {
     pub range: TextRange,
     pub expected: Expected,
     pub kind: RefKind,
-    /// For a use that reaches its target through an `[<AutoOpen>]` fold, the
-    /// binder a resolver that ignores the fold would name instead: the latest
-    /// same-named binder beneath the target that no fold brought in.
-    pub fold_back_fallback: Option<usize>,
 }
 
 /// The product of generation.
@@ -386,19 +382,6 @@ impl Scope {
         (any, across)
     }
 
-    /// The latest binder of `name` beneath the visible one that was not
-    /// brought in by an `[<AutoOpen>]` fold.
-    fn unfolded_beneath(&self, name: &str) -> Option<usize> {
-        let mut entries = self.values.iter().rev().filter(|(n, _)| n == name);
-        entries.next();
-        entries.find_map(|(_, e)| match e {
-            Entry::Bound(b, via) if !matches!(via, Via::AutoOpened | Via::OpenedFolded) => {
-                Some(b.uid)
-            }
-            _ => None,
-        })
-    }
-
     fn push(&mut self, b: &Binder, via: Via) {
         self.values
             .push((b.name.clone(), Entry::Bound(b.clone(), via)));
@@ -524,7 +507,6 @@ impl Gen {
             range: span(start, self.out.len()),
             expected,
             kind,
-            fold_back_fallback: None,
         });
     }
 
@@ -560,14 +542,6 @@ impl Gen {
         };
         let name = b.name.clone();
         self.planted(&name, Expected::Binder(b.uid), kind);
-        let fallback = match via {
-            Via::AutoOpened | Via::OpenedFolded => scope.unfolded_beneath(&b.name),
-            _ => None,
-        };
-        self.refs
-            .last_mut()
-            .expect("just planted")
-            .fold_back_fallback = fallback;
     }
 
     // ---- program ----

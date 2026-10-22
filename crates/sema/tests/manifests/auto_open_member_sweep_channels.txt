@@ -1,0 +1,635 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all auto_open_member_sweep::the_fold_agrees_with_fcs_over_every_member_pair
+open-cross-file: ap ; auto-open-static/expr gap
+open-cross-file: ap ; auto-open-static/pattern gap
+open-cross-file: ap ; case/expr gap
+open-cross-file: ap ; case/pattern gap
+open-cross-file: ap ; exn/expr gap
+open-cross-file: ap ; exn/pattern gap
+open-cross-file: ap ; extern/expr gap
+open-cross-file: ap ; extern/pattern gap
+open-cross-file: ap ; nested-auto/expr gap
+open-cross-file: ap ; nested-auto/pattern gap
+open-cross-file: ap ; private auto-open-static/expr gap
+open-cross-file: ap ; private auto-open-static/pattern gap
+open-cross-file: ap ; private case/after-enclosing-type #52
+open-cross-file: ap ; private case/pattern gap
+open-cross-file: ap ; private exn/after-enclosing-type #52
+open-cross-file: ap ; private exn/pattern gap
+open-cross-file: ap ; private extern/expr gap
+open-cross-file: ap ; private extern/pattern gap
+open-cross-file: ap ; private nested-auto/after-enclosing-type #52
+open-cross-file: ap ; private nested-auto/pattern gap
+open-cross-file: ap ; private type/after-enclosing-type #52
+open-cross-file: ap ; private type/pattern gap
+open-cross-file: ap ; private value/after-enclosing-type #52
+open-cross-file: ap ; private value/pattern gap
+open-cross-file: ap ; type/expr gap
+open-cross-file: ap ; type/pattern gap
+open-cross-file: ap ; value/expr gap
+open-cross-file: ap ; value/pattern gap
+open-cross-file: ap/after-enclosing-type #52
+open-cross-file: ap/pattern gap
+open-cross-file: auto-open-static ; ap/expr gap
+open-cross-file: auto-open-static ; ap/pattern gap
+open-cross-file: auto-open-static ; auto-open-static/expr gap
+open-cross-file: auto-open-static ; case/expr gap
+open-cross-file: auto-open-static ; case/pattern gap
+open-cross-file: auto-open-static ; exn/expr gap
+open-cross-file: auto-open-static ; exn/pattern gap
+open-cross-file: auto-open-static ; extern/expr gap
+open-cross-file: auto-open-static ; nested-auto/expr gap
+open-cross-file: auto-open-static ; private ap/expr gap
+open-cross-file: auto-open-static ; private auto-open-static/expr gap
+open-cross-file: auto-open-static ; private case/expr gap
+open-cross-file: auto-open-static ; private exn/expr gap
+open-cross-file: auto-open-static ; private extern/expr gap
+open-cross-file: auto-open-static ; private nested-auto/expr gap
+open-cross-file: auto-open-static ; private type/expr gap
+open-cross-file: auto-open-static ; private value/expr gap
+open-cross-file: auto-open-static ; type/expr gap
+open-cross-file: auto-open-static ; value/expr gap
+open-cross-file: auto-open-static/expr gap
+open-cross-file: case ; ap/expr gap
+open-cross-file: case ; ap/pattern gap
+open-cross-file: case ; auto-open-static/expr gap
+open-cross-file: case ; auto-open-static/pattern gap
+open-cross-file: case ; case/expr gap
+open-cross-file: case ; case/pattern gap
+open-cross-file: case ; exn/expr gap
+open-cross-file: case ; exn/pattern gap
+open-cross-file: case ; extern/expr gap
+open-cross-file: case ; extern/pattern gap
+open-cross-file: case ; nested-auto/expr gap
+open-cross-file: case ; nested-auto/pattern gap
+open-cross-file: case ; private ap/expr gap
+open-cross-file: case ; private ap/pattern gap
+open-cross-file: case ; private auto-open-static/expr gap
+open-cross-file: case ; private auto-open-static/pattern gap
+open-cross-file: case ; private case/expr gap
+open-cross-file: case ; private case/pattern gap
+open-cross-file: case ; private exn/expr gap
+open-cross-file: case ; private exn/pattern gap
+open-cross-file: case ; private extern/expr gap
+open-cross-file: case ; private extern/pattern gap
+open-cross-file: case ; private nested-auto/expr gap
+open-cross-file: case ; private nested-auto/pattern gap
+open-cross-file: case ; private type/expr gap
+open-cross-file: case ; private type/pattern gap
+open-cross-file: case ; private value/expr gap
+open-cross-file: case ; private value/pattern gap
+open-cross-file: case ; type/expr gap
+open-cross-file: case ; type/pattern gap
+open-cross-file: case ; value/expr gap
+open-cross-file: case ; value/pattern gap
+open-cross-file: case/expr gap
+open-cross-file: case/pattern gap
+open-cross-file: exn ; ap/expr gap
+open-cross-file: exn ; ap/pattern gap
+open-cross-file: exn ; auto-open-static/expr gap
+open-cross-file: exn ; auto-open-static/pattern gap
+open-cross-file: exn ; case/expr gap
+open-cross-file: exn ; case/pattern gap
+open-cross-file: exn ; extern/expr gap
+open-cross-file: exn ; extern/pattern gap
+open-cross-file: exn ; nested-auto/expr gap
+open-cross-file: exn ; nested-auto/pattern gap
+open-cross-file: exn ; private ap/expr gap
+open-cross-file: exn ; private ap/pattern gap
+open-cross-file: exn ; private auto-open-static/expr gap
+open-cross-file: exn ; private auto-open-static/pattern gap
+open-cross-file: exn ; private case/expr gap
+open-cross-file: exn ; private case/pattern gap
+open-cross-file: exn ; private extern/expr gap
+open-cross-file: exn ; private extern/pattern gap
+open-cross-file: exn ; private nested-auto/expr gap
+open-cross-file: exn ; private nested-auto/pattern gap
+open-cross-file: exn ; private value/expr gap
+open-cross-file: exn ; private value/pattern gap
+open-cross-file: exn ; value/expr gap
+open-cross-file: exn ; value/pattern gap
+open-cross-file: exn/expr gap
+open-cross-file: exn/pattern gap
+open-cross-file: extern ; ap/expr gap
+open-cross-file: extern ; ap/pattern gap
+open-cross-file: extern ; auto-open-static/expr gap
+open-cross-file: extern ; case/expr gap
+open-cross-file: extern ; case/pattern gap
+open-cross-file: extern ; exn/expr gap
+open-cross-file: extern ; exn/pattern gap
+open-cross-file: extern ; nested-auto/expr gap
+open-cross-file: extern ; private ap/expr gap
+open-cross-file: extern ; private auto-open-static/expr gap
+open-cross-file: extern ; private case/expr gap
+open-cross-file: extern ; private exn/expr gap
+open-cross-file: extern ; private nested-auto/expr gap
+open-cross-file: extern ; private type/expr gap
+open-cross-file: extern ; type/expr gap
+open-cross-file: extern/expr gap
+open-cross-file: nested-auto ; ap/expr gap
+open-cross-file: nested-auto ; ap/pattern gap
+open-cross-file: nested-auto ; auto-open-static/expr gap
+open-cross-file: nested-auto ; case/expr gap
+open-cross-file: nested-auto ; case/pattern gap
+open-cross-file: nested-auto ; exn/expr gap
+open-cross-file: nested-auto ; exn/pattern gap
+open-cross-file: nested-auto ; extern/expr gap
+open-cross-file: nested-auto ; nested-auto/expr gap
+open-cross-file: nested-auto ; private ap/expr gap
+open-cross-file: nested-auto ; private auto-open-static/expr gap
+open-cross-file: nested-auto ; private case/expr gap
+open-cross-file: nested-auto ; private exn/expr gap
+open-cross-file: nested-auto ; private extern/expr gap
+open-cross-file: nested-auto ; private nested-auto/expr gap
+open-cross-file: nested-auto ; private type/expr gap
+open-cross-file: nested-auto ; private value/expr gap
+open-cross-file: nested-auto ; type/expr gap
+open-cross-file: nested-auto ; value/expr gap
+open-cross-file: nested-auto/expr gap
+open-cross-file: private ap ; auto-open-static/expr gap
+open-cross-file: private ap ; case/expr gap
+open-cross-file: private ap ; case/pattern gap
+open-cross-file: private ap ; exn/expr gap
+open-cross-file: private ap ; exn/pattern gap
+open-cross-file: private ap ; extern/expr gap
+open-cross-file: private ap ; nested-auto/expr gap
+open-cross-file: private ap ; private auto-open-static/expr gap
+open-cross-file: private ap ; private case/after-enclosing-type #52
+open-cross-file: private ap ; private exn/after-enclosing-type #52
+open-cross-file: private ap ; private extern/expr gap
+open-cross-file: private ap ; private nested-auto/after-enclosing-type #52
+open-cross-file: private ap ; private type/after-enclosing-type #52
+open-cross-file: private ap ; private value/after-enclosing-type #52
+open-cross-file: private ap ; type/expr gap
+open-cross-file: private ap ; value/expr gap
+open-cross-file: private ap/after-enclosing-type #52
+open-cross-file: private auto-open-static ; ap/expr gap
+open-cross-file: private auto-open-static ; ap/pattern gap
+open-cross-file: private auto-open-static ; auto-open-static/expr gap
+open-cross-file: private auto-open-static ; case/expr gap
+open-cross-file: private auto-open-static ; case/pattern gap
+open-cross-file: private auto-open-static ; exn/expr gap
+open-cross-file: private auto-open-static ; exn/pattern gap
+open-cross-file: private auto-open-static ; extern/expr gap
+open-cross-file: private auto-open-static ; nested-auto/expr gap
+open-cross-file: private auto-open-static ; private ap/expr gap
+open-cross-file: private auto-open-static ; private auto-open-static/expr gap
+open-cross-file: private auto-open-static ; private case/expr gap
+open-cross-file: private auto-open-static ; private exn/expr gap
+open-cross-file: private auto-open-static ; private extern/expr gap
+open-cross-file: private auto-open-static ; private nested-auto/expr gap
+open-cross-file: private auto-open-static ; private type/expr gap
+open-cross-file: private auto-open-static ; private value/expr gap
+open-cross-file: private auto-open-static ; type/expr gap
+open-cross-file: private auto-open-static ; value/expr gap
+open-cross-file: private auto-open-static/expr gap
+open-cross-file: private case ; ap/after-enclosing-type #52
+open-cross-file: private case ; ap/pattern gap
+open-cross-file: private case ; auto-open-static/expr gap
+open-cross-file: private case ; case/expr gap
+open-cross-file: private case ; case/pattern gap
+open-cross-file: private case ; exn/expr gap
+open-cross-file: private case ; exn/pattern gap
+open-cross-file: private case ; extern/expr gap
+open-cross-file: private case ; nested-auto/expr gap
+open-cross-file: private case ; private ap/after-enclosing-type #52
+open-cross-file: private case ; private auto-open-static/expr gap
+open-cross-file: private case ; private case/after-enclosing-type #52
+open-cross-file: private case ; private exn/after-enclosing-type #52
+open-cross-file: private case ; private extern/expr gap
+open-cross-file: private case ; private nested-auto/after-enclosing-type #52
+open-cross-file: private case ; private type/after-enclosing-type #52
+open-cross-file: private case ; private value/after-enclosing-type #52
+open-cross-file: private case ; type/expr gap
+open-cross-file: private case ; value/expr gap
+open-cross-file: private case/after-enclosing-type #52
+open-cross-file: private exn ; ap/after-enclosing-type #52
+open-cross-file: private exn ; ap/pattern gap
+open-cross-file: private exn ; auto-open-static/expr gap
+open-cross-file: private exn ; case/expr gap
+open-cross-file: private exn ; case/pattern gap
+open-cross-file: private exn ; extern/expr gap
+open-cross-file: private exn ; nested-auto/expr gap
+open-cross-file: private exn ; private ap/after-enclosing-type #52
+open-cross-file: private exn ; private auto-open-static/expr gap
+open-cross-file: private exn ; private case/after-enclosing-type #52
+open-cross-file: private exn ; private extern/expr gap
+open-cross-file: private exn ; private nested-auto/after-enclosing-type #52
+open-cross-file: private exn ; private value/after-enclosing-type #52
+open-cross-file: private exn ; value/expr gap
+open-cross-file: private exn/after-enclosing-type #52
+open-cross-file: private extern ; ap/expr gap
+open-cross-file: private extern ; ap/pattern gap
+open-cross-file: private extern ; auto-open-static/expr gap
+open-cross-file: private extern ; case/expr gap
+open-cross-file: private extern ; case/pattern gap
+open-cross-file: private extern ; exn/expr gap
+open-cross-file: private extern ; exn/pattern gap
+open-cross-file: private extern ; nested-auto/expr gap
+open-cross-file: private extern ; private ap/expr gap
+open-cross-file: private extern ; private auto-open-static/expr gap
+open-cross-file: private extern ; private case/expr gap
+open-cross-file: private extern ; private exn/expr gap
+open-cross-file: private extern ; private nested-auto/expr gap
+open-cross-file: private extern ; private type/expr gap
+open-cross-file: private extern ; type/expr gap
+open-cross-file: private extern/expr gap
+open-cross-file: private nested-auto ; ap/after-enclosing-type #52
+open-cross-file: private nested-auto ; ap/pattern gap
+open-cross-file: private nested-auto ; auto-open-static/expr gap
+open-cross-file: private nested-auto ; case/expr gap
+open-cross-file: private nested-auto ; case/pattern gap
+open-cross-file: private nested-auto ; exn/expr gap
+open-cross-file: private nested-auto ; exn/pattern gap
+open-cross-file: private nested-auto ; extern/expr gap
+open-cross-file: private nested-auto ; nested-auto/expr gap
+open-cross-file: private nested-auto ; private ap/after-enclosing-type #52
+open-cross-file: private nested-auto ; private auto-open-static/expr gap
+open-cross-file: private nested-auto ; private case/after-enclosing-type #52
+open-cross-file: private nested-auto ; private exn/after-enclosing-type #52
+open-cross-file: private nested-auto ; private extern/expr gap
+open-cross-file: private nested-auto ; private nested-auto/after-enclosing-type #52
+open-cross-file: private nested-auto ; private type/after-enclosing-type #52
+open-cross-file: private nested-auto ; private value/after-enclosing-type #52
+open-cross-file: private nested-auto ; type/expr gap
+open-cross-file: private nested-auto ; value/expr gap
+open-cross-file: private nested-auto/after-enclosing-type #52
+open-cross-file: private type ; ap/after-enclosing-type #52
+open-cross-file: private type ; ap/pattern gap
+open-cross-file: private type ; auto-open-static/expr gap
+open-cross-file: private type ; case/expr gap
+open-cross-file: private type ; case/pattern gap
+open-cross-file: private type ; extern/expr gap
+open-cross-file: private type ; nested-auto/expr gap
+open-cross-file: private type ; private ap/after-enclosing-type #52
+open-cross-file: private type ; private auto-open-static/expr gap
+open-cross-file: private type ; private case/after-enclosing-type #52
+open-cross-file: private type ; private extern/expr gap
+open-cross-file: private type ; private nested-auto/after-enclosing-type #52
+open-cross-file: private type ; private value/after-enclosing-type #52
+open-cross-file: private type ; value/expr gap
+open-cross-file: private type/after-enclosing-type #52
+open-cross-file: private value ; ap/after-enclosing-type #52
+open-cross-file: private value ; ap/pattern gap
+open-cross-file: private value ; auto-open-static/expr gap
+open-cross-file: private value ; case/expr gap
+open-cross-file: private value ; case/pattern gap
+open-cross-file: private value ; exn/expr gap
+open-cross-file: private value ; exn/pattern gap
+open-cross-file: private value ; nested-auto/expr gap
+open-cross-file: private value ; private ap/after-enclosing-type #52
+open-cross-file: private value ; private auto-open-static/expr gap
+open-cross-file: private value ; private case/after-enclosing-type #52
+open-cross-file: private value ; private exn/after-enclosing-type #52
+open-cross-file: private value ; private nested-auto/after-enclosing-type #52
+open-cross-file: private value ; private type/after-enclosing-type #52
+open-cross-file: private value ; type/expr gap
+open-cross-file: private value/after-enclosing-type #52
+open-cross-file: type ; ap/expr gap
+open-cross-file: type ; ap/pattern gap
+open-cross-file: type ; auto-open-static/expr gap
+open-cross-file: type ; case/expr gap
+open-cross-file: type ; case/pattern gap
+open-cross-file: type ; extern/expr gap
+open-cross-file: type ; nested-auto/expr gap
+open-cross-file: type ; private ap/expr gap
+open-cross-file: type ; private auto-open-static/expr gap
+open-cross-file: type ; private case/expr gap
+open-cross-file: type ; private extern/expr gap
+open-cross-file: type ; private nested-auto/expr gap
+open-cross-file: type ; private value/expr gap
+open-cross-file: type ; value/expr gap
+open-cross-file: type/expr gap
+open-cross-file: value ; ap/expr gap
+open-cross-file: value ; ap/pattern gap
+open-cross-file: value ; auto-open-static/expr gap
+open-cross-file: value ; case/expr gap
+open-cross-file: value ; case/pattern gap
+open-cross-file: value ; exn/expr gap
+open-cross-file: value ; exn/pattern gap
+open-cross-file: value ; nested-auto/expr gap
+open-cross-file: value ; private ap/expr gap
+open-cross-file: value ; private auto-open-static/expr gap
+open-cross-file: value ; private case/expr gap
+open-cross-file: value ; private exn/expr gap
+open-cross-file: value ; private nested-auto/expr gap
+open-cross-file: value ; private type/expr gap
+open-cross-file: value ; type/expr gap
+open-cross-file: value/expr gap
+open-same-file: ap ; auto-open-static/expr gap
+open-same-file: ap ; auto-open-static/pattern gap
+open-same-file: ap ; case/expr gap
+open-same-file: ap ; case/pattern gap
+open-same-file: ap ; exn/expr gap
+open-same-file: ap ; exn/pattern gap
+open-same-file: ap ; extern/expr gap
+open-same-file: ap ; extern/pattern gap
+open-same-file: ap ; nested-auto/expr gap
+open-same-file: ap ; nested-auto/pattern gap
+open-same-file: ap ; private auto-open-static/expr gap
+open-same-file: ap ; private auto-open-static/pattern gap
+open-same-file: ap ; private case/expr gap
+open-same-file: ap ; private case/pattern gap
+open-same-file: ap ; private exn/expr gap
+open-same-file: ap ; private exn/pattern gap
+open-same-file: ap ; private extern/expr gap
+open-same-file: ap ; private extern/pattern gap
+open-same-file: ap ; private nested-auto/expr gap
+open-same-file: ap ; private nested-auto/pattern gap
+open-same-file: ap ; private type/expr gap
+open-same-file: ap ; private type/pattern gap
+open-same-file: ap ; private value/expr gap
+open-same-file: ap ; private value/pattern gap
+open-same-file: ap ; type/expr gap
+open-same-file: ap ; type/pattern gap
+open-same-file: ap ; value/expr gap
+open-same-file: ap ; value/pattern gap
+open-same-file: ap/expr gap
+open-same-file: ap/pattern gap
+open-same-file: auto-open-static ; ap/expr gap
+open-same-file: auto-open-static ; ap/pattern gap
+open-same-file: auto-open-static ; auto-open-static/expr gap
+open-same-file: auto-open-static ; case/expr gap
+open-same-file: auto-open-static ; case/pattern gap
+open-same-file: auto-open-static ; exn/expr gap
+open-same-file: auto-open-static ; exn/pattern gap
+open-same-file: auto-open-static ; extern/expr gap
+open-same-file: auto-open-static ; nested-auto/expr gap
+open-same-file: auto-open-static ; private ap/expr gap
+open-same-file: auto-open-static ; private auto-open-static/expr gap
+open-same-file: auto-open-static ; private case/expr gap
+open-same-file: auto-open-static ; private exn/expr gap
+open-same-file: auto-open-static ; private extern/expr gap
+open-same-file: auto-open-static ; private nested-auto/expr gap
+open-same-file: auto-open-static ; private type/expr gap
+open-same-file: auto-open-static ; private value/expr gap
+open-same-file: auto-open-static ; type/expr gap
+open-same-file: auto-open-static ; value/expr gap
+open-same-file: auto-open-static/expr gap
+open-same-file: case ; ap/expr gap
+open-same-file: case ; ap/pattern gap
+open-same-file: case ; auto-open-static/expr gap
+open-same-file: case ; auto-open-static/pattern gap
+open-same-file: case ; case/expr gap
+open-same-file: case ; case/pattern gap
+open-same-file: case ; exn/expr gap
+open-same-file: case ; exn/pattern gap
+open-same-file: case ; extern/expr gap
+open-same-file: case ; extern/pattern gap
+open-same-file: case ; nested-auto/expr gap
+open-same-file: case ; nested-auto/pattern gap
+open-same-file: case ; private ap/expr gap
+open-same-file: case ; private ap/pattern gap
+open-same-file: case ; private auto-open-static/expr gap
+open-same-file: case ; private auto-open-static/pattern gap
+open-same-file: case ; private case/expr gap
+open-same-file: case ; private case/pattern gap
+open-same-file: case ; private exn/expr gap
+open-same-file: case ; private exn/pattern gap
+open-same-file: case ; private extern/expr gap
+open-same-file: case ; private extern/pattern gap
+open-same-file: case ; private nested-auto/expr gap
+open-same-file: case ; private nested-auto/pattern gap
+open-same-file: case ; private type/expr gap
+open-same-file: case ; private type/pattern gap
+open-same-file: case ; private value/expr gap
+open-same-file: case ; private value/pattern gap
+open-same-file: case ; type/expr gap
+open-same-file: case ; type/pattern gap
+open-same-file: case ; value/expr gap
+open-same-file: case ; value/pattern gap
+open-same-file: case/expr gap
+open-same-file: case/pattern gap
+open-same-file: exn ; ap/expr gap
+open-same-file: exn ; ap/pattern gap
+open-same-file: exn ; auto-open-static/expr gap
+open-same-file: exn ; auto-open-static/pattern gap
+open-same-file: exn ; case/expr gap
+open-same-file: exn ; case/pattern gap
+open-same-file: exn ; extern/expr gap
+open-same-file: exn ; extern/pattern gap
+open-same-file: exn ; nested-auto/expr gap
+open-same-file: exn ; nested-auto/pattern gap
+open-same-file: exn ; private ap/expr gap
+open-same-file: exn ; private ap/pattern gap
+open-same-file: exn ; private auto-open-static/expr gap
+open-same-file: exn ; private auto-open-static/pattern gap
+open-same-file: exn ; private case/expr gap
+open-same-file: exn ; private case/pattern gap
+open-same-file: exn ; private extern/expr gap
+open-same-file: exn ; private extern/pattern gap
+open-same-file: exn ; private nested-auto/expr gap
+open-same-file: exn ; private nested-auto/pattern gap
+open-same-file: exn ; private value/expr gap
+open-same-file: exn ; private value/pattern gap
+open-same-file: exn ; value/expr gap
+open-same-file: exn ; value/pattern gap
+open-same-file: exn/expr gap
+open-same-file: exn/pattern gap
+open-same-file: extern ; ap/expr gap
+open-same-file: extern ; ap/pattern gap
+open-same-file: extern ; auto-open-static/expr gap
+open-same-file: extern ; case/expr gap
+open-same-file: extern ; case/pattern gap
+open-same-file: extern ; exn/expr gap
+open-same-file: extern ; exn/pattern gap
+open-same-file: extern ; nested-auto/expr gap
+open-same-file: extern ; private ap/expr gap
+open-same-file: extern ; private auto-open-static/expr gap
+open-same-file: extern ; private case/expr gap
+open-same-file: extern ; private exn/expr gap
+open-same-file: extern ; private nested-auto/expr gap
+open-same-file: extern ; private type/expr gap
+open-same-file: extern ; type/expr gap
+open-same-file: extern/expr gap
+open-same-file: nested-auto ; ap/expr gap
+open-same-file: nested-auto ; ap/pattern gap
+open-same-file: nested-auto ; auto-open-static/expr gap
+open-same-file: nested-auto ; case/expr gap
+open-same-file: nested-auto ; case/pattern gap
+open-same-file: nested-auto ; exn/expr gap
+open-same-file: nested-auto ; exn/pattern gap
+open-same-file: nested-auto ; extern/expr gap
+open-same-file: nested-auto ; nested-auto/expr gap
+open-same-file: nested-auto ; private ap/expr gap
+open-same-file: nested-auto ; private auto-open-static/expr gap
+open-same-file: nested-auto ; private case/expr gap
+open-same-file: nested-auto ; private exn/expr gap
+open-same-file: nested-auto ; private extern/expr gap
+open-same-file: nested-auto ; private nested-auto/expr gap
+open-same-file: nested-auto ; private type/expr gap
+open-same-file: nested-auto ; private value/expr gap
+open-same-file: nested-auto ; type/expr gap
+open-same-file: nested-auto ; value/expr gap
+open-same-file: nested-auto/expr gap
+open-same-file: private ap ; auto-open-static/expr gap
+open-same-file: private ap ; case/expr gap
+open-same-file: private ap ; case/pattern gap
+open-same-file: private ap ; exn/expr gap
+open-same-file: private ap ; exn/pattern gap
+open-same-file: private ap ; extern/expr gap
+open-same-file: private ap ; nested-auto/expr gap
+open-same-file: private ap ; private auto-open-static/expr gap
+open-same-file: private ap ; private case/expr gap
+open-same-file: private ap ; private exn/expr gap
+open-same-file: private ap ; private extern/expr gap
+open-same-file: private ap ; private nested-auto/expr gap
+open-same-file: private ap ; private type/expr gap
+open-same-file: private ap ; private value/expr gap
+open-same-file: private ap ; type/expr gap
+open-same-file: private ap ; value/expr gap
+open-same-file: private ap/expr gap
+open-same-file: private auto-open-static ; ap/expr gap
+open-same-file: private auto-open-static ; ap/pattern gap
+open-same-file: private auto-open-static ; auto-open-static/expr gap
+open-same-file: private auto-open-static ; case/expr gap
+open-same-file: private auto-open-static ; case/pattern gap
+open-same-file: private auto-open-static ; exn/expr gap
+open-same-file: private auto-open-static ; exn/pattern gap
+open-same-file: private auto-open-static ; extern/expr gap
+open-same-file: private auto-open-static ; nested-auto/expr gap
+open-same-file: private auto-open-static ; private ap/expr gap
+open-same-file: private auto-open-static ; private auto-open-static/expr gap
+open-same-file: private auto-open-static ; private case/expr gap
+open-same-file: private auto-open-static ; private exn/expr gap
+open-same-file: private auto-open-static ; private extern/expr gap
+open-same-file: private auto-open-static ; private nested-auto/expr gap
+open-same-file: private auto-open-static ; private type/expr gap
+open-same-file: private auto-open-static ; private value/expr gap
+open-same-file: private auto-open-static ; type/expr gap
+open-same-file: private auto-open-static ; value/expr gap
+open-same-file: private auto-open-static/expr gap
+open-same-file: private case ; ap/expr gap
+open-same-file: private case ; ap/pattern gap
+open-same-file: private case ; auto-open-static/expr gap
+open-same-file: private case ; case/expr gap
+open-same-file: private case ; case/pattern gap
+open-same-file: private case ; exn/expr gap
+open-same-file: private case ; exn/pattern gap
+open-same-file: private case ; extern/expr gap
+open-same-file: private case ; nested-auto/expr gap
+open-same-file: private case ; private ap/expr gap
+open-same-file: private case ; private auto-open-static/expr gap
+open-same-file: private case ; private case/after-enclosing-type #52
+open-same-file: private case ; private exn/after-enclosing-type #52
+open-same-file: private case ; private extern/expr gap
+open-same-file: private case ; private nested-auto/after-enclosing-type #52
+open-same-file: private case ; private type/after-enclosing-type #52
+open-same-file: private case ; private value/after-enclosing-type #52
+open-same-file: private case ; type/expr gap
+open-same-file: private case ; value/expr gap
+open-same-file: private case/after-enclosing-type #52
+open-same-file: private exn ; ap/expr gap
+open-same-file: private exn ; ap/pattern gap
+open-same-file: private exn ; auto-open-static/expr gap
+open-same-file: private exn ; case/expr gap
+open-same-file: private exn ; case/pattern gap
+open-same-file: private exn ; extern/expr gap
+open-same-file: private exn ; nested-auto/expr gap
+open-same-file: private exn ; private ap/expr gap
+open-same-file: private exn ; private auto-open-static/expr gap
+open-same-file: private exn ; private case/after-enclosing-type #52
+open-same-file: private exn ; private extern/expr gap
+open-same-file: private exn ; private nested-auto/after-enclosing-type #52
+open-same-file: private exn ; private value/after-enclosing-type #52
+open-same-file: private exn ; value/expr gap
+open-same-file: private exn/after-enclosing-type #52
+open-same-file: private extern ; ap/expr gap
+open-same-file: private extern ; ap/pattern gap
+open-same-file: private extern ; auto-open-static/expr gap
+open-same-file: private extern ; case/expr gap
+open-same-file: private extern ; case/pattern gap
+open-same-file: private extern ; exn/expr gap
+open-same-file: private extern ; exn/pattern gap
+open-same-file: private extern ; nested-auto/expr gap
+open-same-file: private extern ; private ap/expr gap
+open-same-file: private extern ; private auto-open-static/expr gap
+open-same-file: private extern ; private case/expr gap
+open-same-file: private extern ; private exn/expr gap
+open-same-file: private extern ; private nested-auto/expr gap
+open-same-file: private extern ; private type/expr gap
+open-same-file: private extern ; type/expr gap
+open-same-file: private extern/expr gap
+open-same-file: private nested-auto ; ap/expr gap
+open-same-file: private nested-auto ; ap/pattern gap
+open-same-file: private nested-auto ; auto-open-static/expr gap
+open-same-file: private nested-auto ; case/expr gap
+open-same-file: private nested-auto ; case/pattern gap
+open-same-file: private nested-auto ; exn/expr gap
+open-same-file: private nested-auto ; exn/pattern gap
+open-same-file: private nested-auto ; extern/expr gap
+open-same-file: private nested-auto ; nested-auto/expr gap
+open-same-file: private nested-auto ; private ap/expr gap
+open-same-file: private nested-auto ; private auto-open-static/expr gap
+open-same-file: private nested-auto ; private case/after-enclosing-type #52
+open-same-file: private nested-auto ; private exn/after-enclosing-type #52
+open-same-file: private nested-auto ; private extern/expr gap
+open-same-file: private nested-auto ; private nested-auto/after-enclosing-type #52
+open-same-file: private nested-auto ; private type/after-enclosing-type #52
+open-same-file: private nested-auto ; private value/after-enclosing-type #52
+open-same-file: private nested-auto ; type/expr gap
+open-same-file: private nested-auto ; value/expr gap
+open-same-file: private nested-auto/after-enclosing-type #52
+open-same-file: private type ; ap/expr gap
+open-same-file: private type ; ap/pattern gap
+open-same-file: private type ; auto-open-static/expr gap
+open-same-file: private type ; case/expr gap
+open-same-file: private type ; case/pattern gap
+open-same-file: private type ; extern/expr gap
+open-same-file: private type ; nested-auto/expr gap
+open-same-file: private type ; private ap/expr gap
+open-same-file: private type ; private auto-open-static/expr gap
+open-same-file: private type ; private case/after-enclosing-type #52
+open-same-file: private type ; private extern/expr gap
+open-same-file: private type ; private nested-auto/after-enclosing-type #52
+open-same-file: private type ; private value/after-enclosing-type #52
+open-same-file: private type ; value/expr gap
+open-same-file: private type/after-enclosing-type #52
+open-same-file: private value ; ap/expr gap
+open-same-file: private value ; ap/pattern gap
+open-same-file: private value ; auto-open-static/expr gap
+open-same-file: private value ; case/expr gap
+open-same-file: private value ; case/pattern gap
+open-same-file: private value ; exn/expr gap
+open-same-file: private value ; exn/pattern gap
+open-same-file: private value ; nested-auto/expr gap
+open-same-file: private value ; private ap/expr gap
+open-same-file: private value ; private auto-open-static/expr gap
+open-same-file: private value ; private case/after-enclosing-type #52
+open-same-file: private value ; private exn/after-enclosing-type #52
+open-same-file: private value ; private nested-auto/after-enclosing-type #52
+open-same-file: private value ; private type/after-enclosing-type #52
+open-same-file: private value ; type/expr gap
+open-same-file: private value/after-enclosing-type #52
+open-same-file: type ; ap/expr gap
+open-same-file: type ; ap/pattern gap
+open-same-file: type ; auto-open-static/expr gap
+open-same-file: type ; case/expr gap
+open-same-file: type ; case/pattern gap
+open-same-file: type ; extern/expr gap
+open-same-file: type ; nested-auto/expr gap
+open-same-file: type ; private ap/expr gap
+open-same-file: type ; private auto-open-static/expr gap
+open-same-file: type ; private case/expr gap
+open-same-file: type ; private extern/expr gap
+open-same-file: type ; private nested-auto/expr gap
+open-same-file: type ; private value/expr gap
+open-same-file: type ; value/expr gap
+open-same-file: type/expr gap
+open-same-file: value ; ap/expr gap
+open-same-file: value ; ap/pattern gap
+open-same-file: value ; auto-open-static/expr gap
+open-same-file: value ; case/expr gap
+open-same-file: value ; case/pattern gap
+open-same-file: value ; exn/expr gap
+open-same-file: value ; exn/pattern gap
+open-same-file: value ; nested-auto/expr gap
+open-same-file: value ; private ap/expr gap
+open-same-file: value ; private auto-open-static/expr gap
+open-same-file: value ; private case/expr gap
+open-same-file: value ; private exn/expr gap
+open-same-file: value ; private nested-auto/expr gap
+open-same-file: value ; private type/expr gap
+open-same-file: value ; type/expr gap
+open-same-file: value/expr gap

@@ -39,6 +39,13 @@ pub struct Cell {
     /// contest cells project `let` bindings between them (the round-10 shape:
     /// a binding a *later* cross-kind open's generation barrier stales).
     pub body: &'static [&'static str],
+    /// The declaration lines *following* the probe, at the same indent. A
+    /// declaration a use precedes is invisible to it in an ordinary block, so
+    /// these are only interesting where F# makes them visible anyway: a
+    /// `module rec` block, where every declaration is in scope for every other
+    /// — including an `[<AutoOpen>]` submodule's folded-back surface
+    /// (fcs-dump-probed).
+    pub after: &'static [&'static str],
     /// The exact source text of the reference — the probe span.
     pub probe: &'static str,
     /// Where the probe sits.
@@ -67,10 +74,21 @@ pub enum Container {
     /// namespace and a module name would be a duplicate definition, which
     /// poisons resolution for both.
     Namespace(&'static str),
+    /// [`Self::Namespace`] with the probe's nested module marked
+    /// `[<AutoOpen>]` — the shape that dominates real code (`namespace N` plus
+    /// one auto-open module holding the whole file). A use *inside* such a
+    /// module can never be shadowed by that module's own fold-back: FCS folds
+    /// its surface into the ENCLOSING scope when the declaration is processed,
+    /// while inside it the same names are in scope by ordinary position.
+    NamespaceAutoOpen(&'static str),
     /// `module <path>` — a dotted top-level module header, whose enclosing
     /// namespace is everything *before* the last segment. `<path>` must be
     /// distinct per cell, for the same batched-project reason.
     Module(&'static str),
+    /// `module rec <path>` — [`Self::Module`] where every declaration is in
+    /// scope for every other, so a probe may precede the declarations in
+    /// [`Cell::after`] that bind it.
+    ModuleRec(&'static str),
 }
 
 /// How a cell places its probe.
@@ -94,15 +112,21 @@ pub enum Position {
 fn cell_source(cell: &Cell) -> (String, TextRange) {
     // A `namespace` header cannot hold values, so its probe goes in a nested
     // module and every line below it is indented one level.
+    let probe_module: String = std::iter::once('P')
+        .chain(cell.label.chars().filter(char::is_ascii_alphanumeric))
+        .collect();
     let (mut src, indent) = match cell.container {
         Container::Anon => (String::new(), ""),
-        Container::Namespace(path) => {
-            let module: String = std::iter::once('P')
-                .chain(cell.label.chars().filter(char::is_ascii_alphanumeric))
-                .collect();
-            (format!("namespace {path}\n\nmodule {module} =\n"), "    ")
-        }
+        Container::Namespace(path) => (
+            format!("namespace {path}\n\nmodule {probe_module} =\n"),
+            "    ",
+        ),
+        Container::NamespaceAutoOpen(path) => (
+            format!("namespace {path}\n\n[<AutoOpen>]\nmodule {probe_module} =\n"),
+            "    ",
+        ),
         Container::Module(path) => (format!("module {path}\n\n"), ""),
+        Container::ModuleRec(path) => (format!("module rec {path}\n\n"), ""),
     };
     for line in cell.body {
         src.push_str(indent);
@@ -140,6 +164,12 @@ fn cell_source(cell: &Cell) -> (String, TextRange) {
             }
         }
         src.push_str(line);
+    }
+    // The suffix always ends the probe's last line, so `after` starts fresh.
+    for line in cell.after {
+        src.push_str(indent);
+        src.push_str(line);
+        src.push('\n');
     }
     let span = TextRange::new(
         u32::try_from(start).unwrap().into(),
@@ -281,12 +311,18 @@ pub fn run_matrix(
     let autoopen = ensure_autoopen_fixture_built();
     let abbrev = ensure_abbrev_fixture_built();
 
+    // FSharp.Core rides along with the two fixtures because the oracle has it:
+    // FCS type-checks every cell against it, and `[<AutoOpen>]` names a type it
+    // declares. Without it the marker is unresolvable, so we decline every fold
+    // and the matrix measures the reference set rather than the fold.
     let env = {
         let a = std::fs::read(autoopen).expect("read autoopen fixture dll");
         let b = std::fs::read(abbrev).expect("read abbrev fixture dll");
         let va = Ecma335Assembly::parse(&a).expect("parse autoopen fixture");
         let vb = Ecma335Assembly::parse(&b).expect("parse abbrev fixture");
-        AssemblyEnv::from_views(&[va, vb]).expect("build AssemblyEnv")
+        let vc = Ecma335Assembly::parse(crate::common::fsharp_core_bytes())
+            .expect("parse FSharp.Core.dll");
+        AssemblyEnv::from_views(&[va, vb, vc]).expect("build AssemblyEnv")
     };
 
     // Build one PROBE file per cell — each gets a distinct filename (hence its

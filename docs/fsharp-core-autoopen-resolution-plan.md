@@ -137,13 +137,108 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   anywhere then become reachable — a later constructible type taking the value
   slot, and a same-block `[<AutoOpen>]` container folding above it — so the fold
   **declines** rather than committing a target FCS shadows
-  (`screen_block_local_shadows`). The auto-open arm is a single closed flag
-  rather than a name set on purpose: that surface is open-ended (values, union
-  and exception cases, `extern`s, active-pattern tags, a single-case union
-  spelled like an abbreviation, an auto-open type's statics, statics borrowed
-  through an abbreviation), so an enumeration is a list that grows under review
-  and can only be audited by inspection. Both shadowings reproduce through an
-  explicit `open` too and have their own tasks; the screen goes when they land.
+  (`screen_block_local_shadows`).
+
+  The auto-open arm has since narrowed to what position ordering genuinely
+  cannot express. A `[<AutoOpen>]` **module** now folds its own surface into the
+  enclosing frame at its declaration position (`fold_own_auto_open_module`) —
+  the same fold an `open` of it there would perform — and fcs-dump probes
+  (`OrderAfter`/`OrderBefore`) confirm that which of the two wins is decided
+  purely by which comes later. What is left on the flag is an `[<AutoOpen>]`
+  **type**, whose statics sema does not model at all, and any auto-open module
+  inside a `rec` block, where FCS makes every declaration visible to every other
+  — a use *preceding* the module binds it, and it beats even a later `open` of a
+  colliding module (probes `Rec`/`RecOpen`) — so nothing there can be ordered by
+  position. Those two keep the closed flag rather than a name set, for the
+  original reason: that surface is open-ended (values, union and exception
+  cases, `extern`s, active-pattern tags, a single-case union spelled like an
+  abbreviation, an auto-open type's statics, statics borrowed through an
+  abbreviation), so an enumeration is a list that grows under review and can
+  only be audited by inspection. The type arm reproduces through an explicit
+  `open` too and has its own task.
+
+  The fold-back is *values only*, and its conservatism is one rule: **decline
+  by name everything it can name, and raise the blanket barrier only for the
+  residue.** Folding the file's *own* module is what makes that possible — an
+  explicit `open M` cannot see M's contents and must be blunt about all of it.
+  Concretely:
+
+  - no `opaque_dotted_open`, because the declaration-side machinery has already
+    recorded M's submodules and types name-keyed;
+  - no `latest_open_pos` bump, because that frontier's only consumer is the
+    attribute-candidate guard and the auto-open attribute hazard already has a
+    name-keyed guard (`own_auto_open_type_names`, AO-2) — advancing it too just
+    re-opens the gap that guard closed;
+  - `unenumerated_member_names_in` reads `export_decls` for the members
+    `open_module_values` cannot point at — active-pattern cases (constructor
+    namespace; FCS does not admit one as a value, `let v = Even` is FS0039) and
+    `extern` prototypes (value namespace) — and declines each by name, filtered
+    by accessibility, so a `let private (|Case|_|)` contests nothing outside its
+    own module. The declines land **after** the value push, the top of the
+    ladder below, so a member the fold cannot point at still takes the name
+    from one it can;
+  - the `open_generation` barrier is left for what remains unnameable — a module
+    alias, a case-opaque repr, or any path an earlier Compile-order file marked
+    hidden, where the reason is unclassified
+    (`modules_with_hidden_expression_values`).
+
+  What the fold pushes is ordered by a **kind ladder, not source position**
+  (`fold_rank`): FCS folds a module's exception definitions, then its tycons and
+  their union cases, then its values
+  (`AddModuleOrNamespaceContentsToNameEnv`), so a name several members share is
+  decided by kind first and position only within a kind. fcs-dump-probed over
+  every well-formed same-named pair a module can declare — a value beats a case,
+  an exception or a class either way round; a case beats an exception either way
+  round; a case and a class are one rank, so between those two the later wins.
+  (A same-name pair *within* any other rank is `FS0037`, so no order is
+  claimed.) The type-eviction override therefore lands before the fold when the
+  fragment's own case or value outranks the class, and after it otherwise.
+
+  That ladder is what `auto_open_member_sweep` exists to hold: every ordered
+  pair of same-named members a fragment can declare, generated and diffed
+  against FCS by **in-file binder identity**. The fold matrices cannot express
+  it — their currency is assembly reach, in which a deferral and a correct
+  local answer both render as "nothing", so an ordering defect reads as
+  agreement. Against `main` that grid gives 182 disagreements, 114 of them
+  wrong targets; with the fold and the ladder, 70 disagreements and none.
+
+  The fold acts on the **attribute, not its spelling**: a module folds only
+  when its `[<AutoOpen>]` resolves to FSharp.Core's `AutoOpenAttribute`
+  (`AutoOpenVerdict`). Any other resolution — a project type, an opened
+  assembly's type, a written qualifier the attribute resolver defers — leaves
+  the marker *unprovable*, because a type of that name may abbreviate the core
+  marker and FCS chases abbreviations. An unprovable fragment is neither folded
+  nor dropped. It stays in every fold list in its place, uncertain, and folds
+  as a **decline of exactly the names it contributes**: under one reading of
+  the marker a use binds the fragment's member, under the other whatever was in
+  scope before, and the two readings disagree on precisely those names. So a
+  proven parent's member still commits where an unprovable child supplies
+  nothing of that name, and the enclosing module's own `let`s and union cases
+  keep their binders. The same list, in declaration order, serves the
+  same-file fold-back, a later block's or file's namespace fold, and an
+  explicit `open M`, which folds M's `[<AutoOpen>]` submodules after M's own
+  contents, as FCS does (`AddModuleOrNamespaceRefsToNameEnv`). The marker an
+  earlier file pushes onto an unprovable fragment's container stays for every
+  consumer that does not enumerate the fragment, and a fold, which does, owes
+  it no barrier (`fold_hidden_value_modules`).
+
+  `auto_open_member_sweep` crosses its member grid with the **channel** a
+  fragment reaches the probe through: the fold-back, an `open` of a same-file
+  module holding it, the same from a later file, and an `open` of an earlier
+  file's namespace. The fold-back commits and agrees with FCS on every cell.
+  An explicit `open M` folds M's submodules as declines (`ChildFolds::Declined`)
+  rather than commits, because the namespace fold's member ordering is wrong
+  for a fragment opened from outside its own block. The namespace channel
+  shows it: 116 disagreements, identical on `main`, from a constructible type
+  the opening block declares after the `open`, which does not take the name
+  back, and from an earlier file's same-named members, which are not ranked by
+  kind. That channel is swept by an ignored test until those are fixed.
+
+  `resolve_scope_gen_diff` holds this from the other side: its generated
+  programs `open` sibling modules before an `[<AutoOpen>]` one, which defers the
+  attribute (an opened project module could supply an `AutoOpenAttribute`), so
+  the uncertain fold is exercised constantly, and a must-commit use of a name
+  it does not contribute must still commit.
 
   The project half lends no **shortening prefix** (task #30), which is the one
   place this channel still gives ground. Where a project `[<AutoOpen>]` module
