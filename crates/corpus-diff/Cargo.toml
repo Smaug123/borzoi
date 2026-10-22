@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 borzoi = { path = "../lsp" }
+# The parse tree the handler differential's perturbation finds comments and
+# strings in.
+borzoi-cst = { path = "../cst" }
 borzoi-msbuild = { path = "../msbuild" }
 borzoi-sema = { path = "../sema", features = ["test-support"] }
 # The bounded driver for the `fcs-dump` children this harness shells out to. A
@@ -18,17 +21,18 @@ borzoi-spawn = { path = "../spawn" }
 # checks a run against. A regular dependency for the same reason as
 # `borzoi-spawn`: the gate lives in the runner binary, not only in its tests.
 borzoi-oracle-harness = { path = "../oracle-harness" }
+lsp-server = "0.7"
 lsp-types = "0.95"
 rowan = "0.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The directory the handler differential's perturbed copy is put to FCS from.
+tempfile = "3"
 
 [dev-dependencies]
 borzoi-assembly = { path = "../assembly" }
-borzoi-cst = { path = "../cst" }
 # The recorder that publishes this crate's generator summary. A dev-dependency
 # so the contract is checked by the real validator rather than by a second copy
 # of its rules restated in an assertion.
 borzoi-stats = { path = "../../tools/stats" }
 proptest = "1"
-tempfile = "3"
