@@ -22,7 +22,11 @@
 
 mod common;
 
-use common::{Oracle, SplitMix64, Verdict, check_certain_implies_exact, gen_bool_expr, gen_props};
+use common::case_axis::{CaseContext, gen_case_comparison, respell_case, respell_keys};
+use common::{
+    Oracle, SplitMix64, Verdict, check_certain_implies_exact, gen_bool_expr, gen_props,
+    soak_parameters,
+};
 
 fn props(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
@@ -276,4 +280,152 @@ fn fixed_seed_sweep() {
     // evaluator to a constant — or to all-`Unsupported` — would.
     assert!(trues >= 250, "too few committed-true cases: {trues}");
     assert!(falses >= 250, "too few committed-false cases: {falses}");
+}
+
+/// What one run of [`case_variant_sweep`] saw.
+#[derive(Default, Debug)]
+struct CaseCensus {
+    /// Cases whose original spelling we committed, and whose respelling differs
+    /// from it — the points at which the metamorphic check has teeth.
+    committed_respelt: usize,
+    /// Committed `==` cases whose two operands are distinct but equal under
+    /// ASCII case folding, and which came out `True` — so the case-insensitive
+    /// branch of `==` is what decided them. Without these, a case-sensitive
+    /// `==` agrees with MSBuild on every input.
+    committed_case_equal_true: usize,
+    /// Cases carrying a non-ASCII letter, by our verdict.
+    non_ascii_committed: usize,
+    non_ascii_declined: usize,
+}
+
+/// One case of the case-variant axis, three properties at once:
+///
+/// 1. **Certain-implies-exact** on the original *and* on the respelling, against
+///    the oracle.
+/// 2. **The respelling preserves MSBuild's answer.** This is the respeller's
+///    claim, not ours, and it is checked rather than assumed — a scanning
+///    mistake in [`respell_case`] would otherwise quietly widen what property 3
+///    believes is equivalent.
+/// 3. **The respelling preserves our verdict** — committed or declined, and
+///    which boolean. This is the only one of the three that sees a
+///    case-sensitivity bug which *declines*: `AND` falling through to a bare
+///    word, a case-sensitive function-name match. Certain-implies-exact passes
+///    every such bug, because a decline makes no claim.
+fn respelled_condition_is_invariant(
+    oracle: &mut Oracle,
+    rng: &mut SplitMix64,
+    condition: &str,
+    props: &[(String, String)],
+    census: &mut CaseCensus,
+) {
+    let respelt = respell_case(rng, condition, CaseContext::Condition);
+    let respelt_props = respell_keys(rng, props);
+
+    let ours = check_certain_implies_exact(oracle, condition, props);
+    let ours_respelt = check_certain_implies_exact(oracle, &respelt, &respelt_props);
+
+    let theirs = oracle.eval(condition, props);
+    let theirs_respelt = oracle.eval(&respelt, &respelt_props);
+    assert_eq!(
+        theirs, theirs_respelt,
+        "the respeller changed MSBuild's answer, so it flipped a letter MSBuild reads \
+         case-sensitively:\n  original {condition:?} with {props:?}\n  respelt  \
+         {respelt:?} with {respelt_props:?}"
+    );
+
+    // Exempt: a condition carrying a non-ASCII letter. String equality over
+    // non-ASCII operands that are not byte-equal is a documented decline
+    // (`compare_equality_values` carries no Unicode case table), so flipping an
+    // ASCII letter beside a non-ASCII one legitimately turns a byte-equal,
+    // committed pair into a declined one — and back.
+    if condition.is_ascii() {
+        assert_eq!(
+            ours, ours_respelt,
+            "a case respelling moved our verdict where MSBuild's stood still ({theirs:?}):\n  \
+             original {condition:?} with {props:?} -> {ours:?}\n  respelt  {respelt:?} with \
+             {respelt_props:?} -> {ours_respelt:?}"
+        );
+    }
+
+    if ours != Verdict::Unsupported && respelt != condition {
+        census.committed_respelt += 1;
+    }
+    if ours == Verdict::True && case_equal_operands(condition, "==") {
+        census.committed_case_equal_true += 1;
+    }
+    if !condition.is_ascii() {
+        match ours {
+            Verdict::Unsupported => census.non_ascii_declined += 1,
+            _ => census.non_ascii_committed += 1,
+        }
+    }
+}
+
+/// Whether `condition` is a single `lhs OP rhs` whose operands are distinct but
+/// equal under ASCII case folding.
+fn case_equal_operands(condition: &str, op: &str) -> bool {
+    let Some((lhs, rhs)) = condition.split_once(&format!(" {op} ")) else {
+        return false;
+    };
+    lhs != rhs && lhs.eq_ignore_ascii_case(rhs)
+}
+
+fn case_variant_sweep(oracle: &mut Oracle, rng: &mut SplitMix64, cases: usize) -> CaseCensus {
+    let mut census = CaseCensus::default();
+    for _ in 0..cases {
+        let props = gen_props(rng);
+        let condition = if rng.below(2) == 0 {
+            let depth = rng.below(3) as u32;
+            gen_bool_expr(rng, depth)
+        } else {
+            gen_case_comparison(rng, &props)
+        };
+        respelled_condition_is_invariant(oracle, rng, &condition, &props, &mut census);
+    }
+    census
+}
+
+/// The case-variant axis, at a fixed seed.
+///
+/// The generators above spell every keyword, function, property name and
+/// operand one way, so a case-*sensitive* `==` — or property lookup, or keyword
+/// match — agreed with MSBuild on every input they built. This sweep respells
+/// them, and makes operands that differ only in case meet, including the
+/// non-ASCII letters where `OrdinalIgnoreCase` is not what a Unicode-aware
+/// reimplementation would guess.
+#[test]
+fn case_variant_sweep_fixed_seed() {
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(0xca5e_f01d_5eed);
+    let census = case_variant_sweep(&mut oracle, &mut rng, 3000);
+    eprintln!("case-variant sweep: {census:?}");
+    // Non-vacuity of the metamorphic check, and of the case-equal operand pairs
+    // it exists for. Each is a floor on a *generated shape* reaching a commit,
+    // not on the evaluator's commit rate overall. Observed at this seed: 1654
+    // respelt, 104 case-equal `==` true, 620 non-ASCII.
+    assert!(
+        census.committed_respelt >= 500,
+        "only {} committed cases were respelt — the metamorphic check is testing nothing",
+        census.committed_respelt
+    );
+    assert!(
+        census.committed_case_equal_true >= 60,
+        "only {} committed `==` cases had operands equal only modulo case",
+        census.committed_case_equal_true
+    );
+    assert!(
+        census.non_ascii_declined + census.non_ascii_committed >= 200,
+        "the non-ASCII case families stopped reaching the evaluator: {census:?}"
+    );
+}
+
+/// Fresh-seed twin of [`case_variant_sweep_fixed_seed`].
+#[test]
+#[ignore = "fresh-seed soak; run it when touching condition.rs"]
+fn case_variant_sweep_soak() {
+    let (seed, cases) = soak_parameters("condition case-variant", 50_000);
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(seed);
+    let census = case_variant_sweep(&mut oracle, &mut rng, cases);
+    eprintln!("case-variant soak: {census:?}");
 }

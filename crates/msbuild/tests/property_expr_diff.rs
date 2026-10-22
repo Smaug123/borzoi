@@ -24,9 +24,12 @@
 
 mod common;
 
+use borzoi_msbuild::test_support::{PropertyMap, substitute};
+use common::case_axis::{CaseContext, non_ascii_lookalike, respell_case, respell_keys};
 use common::{
-    ExpandVerdict, Oracle, SplitMix64, check_expand_certain_implies_exact, gen_expand_props,
-    gen_expand_value, gen_grammar_value,
+    CONTROLLED_PROPERTY_NAMES, ExpandVerdict, Oracle, SplitMix64,
+    check_expand_certain_implies_exact, gen_expand_props, gen_expand_value, gen_grammar_value,
+    soak_parameters,
 };
 
 fn props(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -590,6 +593,31 @@ fn hand_picked_corners() {
             props(&[("Foo", "a`b")]),
             ExpandVerdict::Exact,
         ),
+        // A quote of the *outer* delimiter inside a nested call's argument
+        // (`'…"a'b"…'`) ends MSBuild's scan of the outer argument early, so it
+        // does not recognise the expression at all and passes the text through
+        // verbatim. Found by the case-variant soak; committing `False` here was a
+        // wrong answer.
+        (
+            "$([MSBuild]::IsOSPlatform('$([System.IO.Path]::Combine(\"a'b\"))'))",
+            props(&[]),
+            ExpandVerdict::Partial,
+        ),
+        // The same flat scan splits *arguments*: inside `'…'` the quote of
+        // `Split(','` closes the outer literal, so the comma after it separates
+        // two arguments, and `Parse` handed two is a project error.
+        (
+            "$([System.Version]::Parse('$(V.Split(',')[0])').Major)",
+            props(&[("V", "1.2,3")]),
+            ExpandVerdict::Partial,
+        ),
+        // A doubled outer quote: MSBuild trims *every* leading and trailing
+        // quote of the argument's delimiter, so `''a''` is the needle `a`.
+        (
+            "$(V.Contains(''a''))",
+            props(&[("V", "xay")]),
+            ExpandVerdict::Partial,
+        ),
         // --- IsOSPlatform: non-ASCII spelling ------------------------------
         // MSBuild matches under invariant uppercasing (`oſx` → `OSX`,
         // True on macOS); we compare ASCII-only, so non-ASCII declines.
@@ -685,4 +713,158 @@ fn grammar_acceptance_sweep() {
     // against the parser/evaluator silently refusing everything.
     assert!(exact >= 150, "too few committed (exact) cases: {exact}");
     assert!(partial >= 1000, "too few partial cases: {partial}");
+}
+
+/// Our expansion of `value`: the string, when it committed.
+fn ours(value: &str, props: &[(String, String)]) -> Option<String> {
+    let mut map = PropertyMap::new();
+    for (k, v) in props {
+        map.insert(k.clone(), v.clone());
+    }
+    let (expanded, issues) = substitute(value, &map);
+    issues.is_empty().then_some(expanded)
+}
+
+/// What one run of [`case_variant_sweep`] saw.
+#[derive(Default, Debug)]
+struct CaseCensus {
+    /// Cases we committed whose respelling differs from the original — the
+    /// points at which the metamorphic check has teeth.
+    committed_respelt: usize,
+    /// Of those, cases whose respelling changed a static call's type or function
+    /// name, or a member name — not only a property name.
+    committed_respelt_function: usize,
+    /// References spelt with a non-ASCII lookalike of a defined name.
+    lookalikes: usize,
+}
+
+/// One case of the case-variant axis. The same three properties as the
+/// condition sweep's `respelled_condition_is_invariant`:
+///
+/// 1. certain-implies-exact on the original and on the respelling;
+/// 2. the respelling preserves MSBuild's answer (the respeller's claim, checked
+///    rather than assumed);
+/// 3. the respelling preserves *our* answer — committed or not, and the string.
+///    Only this one sees a case-sensitive name match that declines, which is
+///    what a case-sensitive property lookup *is* here: an undefined reference
+///    raises an issue, so certain-implies-exact never compares it.
+fn respelled_value_is_invariant(
+    oracle: &mut Oracle,
+    rng: &mut SplitMix64,
+    value: &str,
+    props: &[(String, String)],
+    census: &mut CaseCensus,
+) {
+    let respelt = respell_case(rng, value, CaseContext::PropertyBody);
+    let respelt_props = respell_keys(rng, props);
+
+    check_expand_certain_implies_exact(oracle, value, props);
+    check_expand_certain_implies_exact(oracle, &respelt, &respelt_props);
+
+    // MSBuild passes text it does not recognise as an expression through
+    // verbatim, so its answer can carry the *respelt* source back out: the two
+    // answers then agree only modulo ASCII case. Anything more is the respeller
+    // flipping a letter MSBuild reads case-sensitively.
+    let same_modulo_case = |a: &Option<String>, b: &Option<String>| match (a, b) {
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        (a, b) => a == b,
+    };
+    let theirs = oracle.expand(&format!("|{value}|"), props);
+    let theirs_respelt = oracle.expand(&format!("|{respelt}|"), &respelt_props);
+    assert!(
+        same_modulo_case(&theirs, &theirs_respelt),
+        "the respeller changed MSBuild's answer, so it flipped a letter MSBuild reads \
+         case-sensitively:\n  original {value:?} with {props:?} -> {theirs:?}\n  respelt  \
+         {respelt:?} with {respelt_props:?} -> {theirs_respelt:?}"
+    );
+
+    // Ours must move no more than MSBuild's did: commit on both or neither, and
+    // where MSBuild's two answers are byte-identical, so are ours.
+    let ours_original = ours(value, props);
+    let ours_respelt = ours(&respelt, &respelt_props);
+    let invariant = if theirs == theirs_respelt {
+        ours_original == ours_respelt
+    } else {
+        same_modulo_case(&ours_original, &ours_respelt)
+    };
+    assert!(
+        invariant,
+        "a case respelling moved our expansion further than MSBuild's \
+         ({theirs:?} -> {theirs_respelt:?}):\n  original {value:?} with {props:?} -> \
+         {ours_original:?}\n  respelt  {respelt:?} with {respelt_props:?} -> {ours_respelt:?}"
+    );
+
+    if ours_original.is_some() && respelt != value {
+        census.committed_respelt += 1;
+        if calls_a_function_or_member(value) {
+            census.committed_respelt_function += 1;
+        }
+    }
+}
+
+/// Whether `value` holds a static call (`[T]::F`) or a member access on a
+/// property (`$(Name.Member`), so that a respelling can reach a name other than
+/// a property's.
+fn calls_a_function_or_member(value: &str) -> bool {
+    value.contains("]::")
+        || CONTROLLED_PROPERTY_NAMES
+            .iter()
+            .any(|name| value.contains(&format!("$({name}.")))
+}
+
+fn case_variant_sweep(oracle: &mut Oracle, rng: &mut SplitMix64, cases: usize) -> CaseCensus {
+    let mut census = CaseCensus::default();
+    for _ in 0..cases {
+        let props = gen_expand_props(rng);
+        let mut value = match rng.below(2) {
+            0 => gen_expand_value(rng),
+            _ => gen_grammar_value(rng),
+        };
+        // Now and then a reference spelt with a non-ASCII lookalike of a
+        // defined name (`ſ` for `s`, `ı` for `i`, the Kelvin sign for `k`):
+        // MSBuild's names are ASCII, so none may resolve to the property — and
+        // a lookup that folded with Unicode tables would make one do so.
+        if !props.is_empty() && rng.below(6) == 0 {
+            let (name, _) = rng.pick(&props).clone();
+            if let Some(lookalike) = non_ascii_lookalike(&name) {
+                value.push_str(&format!("$({lookalike})"));
+                census.lookalikes += 1;
+            }
+        }
+        respelled_value_is_invariant(oracle, rng, &value, &props, &mut census);
+    }
+    census
+}
+
+/// The case-variant axis over property bodies, at a fixed seed: property names,
+/// static type and function names (`[MSBuild]::`, `[System.IO.Path]::`) and
+/// member names respelt, all of which MSBuild resolves case-insensitively.
+#[test]
+fn case_variant_sweep_fixed_seed() {
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(0x00ca_5eb0_d1e5);
+    let census = case_variant_sweep(&mut oracle, &mut rng, 3000);
+    eprintln!("property-body case-variant sweep: {census:?}");
+    assert!(
+        census.committed_respelt >= 400,
+        "only {} committed cases were respelt — the metamorphic check is testing nothing",
+        census.committed_respelt
+    );
+    assert!(
+        census.committed_respelt_function >= 100,
+        "only {} committed cases respelt a function or member name",
+        census.committed_respelt_function
+    );
+    assert!(census.lookalikes >= 100, "{census:?}");
+}
+
+/// Fresh-seed twin of [`case_variant_sweep_fixed_seed`].
+#[test]
+#[ignore = "fresh-seed soak; run it when touching the property-expression evaluator"]
+fn case_variant_sweep_soak() {
+    let (seed, cases) = soak_parameters("property-body case-variant", 40_000);
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(seed);
+    let census = case_variant_sweep(&mut oracle, &mut rng, cases);
+    eprintln!("property-body case-variant soak: {census:?}");
 }
