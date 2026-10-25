@@ -69,6 +69,7 @@ mod parser_diff_pat_opname_path;
 mod parser_diff_pat_typars;
 mod parser_diff_quote_pat;
 mod parser_diff_ranges;
+mod parser_diff_recovery;
 mod parser_diff_reserved_idents;
 mod parser_diff_sig_files;
 mod parser_diff_srtp_support_matrix;

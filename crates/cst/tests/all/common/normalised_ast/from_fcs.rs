@@ -1862,6 +1862,9 @@ fn fcs_syn_long_ident(v: &Value) -> Vec<String> {
 fn fcs_pat(v: &Value) -> NormalisedPat {
     let case = case_name(v);
     match case {
+        // `SynPat.FromParseError(pat, range)` — the survivor of a failed
+        // pattern.
+        "FromParseError" => NormalisedPat::FromParseError(Box::new(fcs_pat(&fields(v)[0]))),
         "Wild" => {
             // `SynPat.Wild(range)` — single-field DU case carrying only
             // the range. Our normaliser elides ranges, so the variant has
@@ -3078,6 +3081,18 @@ fn fcs_expr(v: &Value) -> NormalisedExpr {
                 expr2: Box::new(fcs_expr(&f[3])),
             }
         }
+        "FromParseError" => {
+            // `SynExpr.FromParseError(expr, range)` — the survivor of a failed
+            // expression. See the model variant for which CST shapes match it.
+            NormalisedExpr::FromParseError(Box::new(fcs_expr(&fields(v)[0])))
+        }
+        "DiscardAfterMissingQualificationAfterDot" => {
+            // `SynExpr.DiscardAfterMissingQualificationAfterDot(expr, dotRange,
+            // range)` — `expr.` with nothing after the dot.
+            NormalisedExpr::DiscardAfterMissingQualificationAfterDot(Box::new(fcs_expr(
+                &fields(v)[0],
+            )))
+        }
         "ArbitraryAfterError" => {
             // `SynExpr.ArbitraryAfterError of debugStr: string * range`
             // (`SyntaxTree.fsi`) — FCS's error-recovery placeholder for a
@@ -3252,6 +3267,8 @@ fn fcs_syn_string_kind(v: &Value) -> SynStringKind {
 fn fcs_type(v: &Value) -> NormalisedType {
     let case = case_name(v);
     match case {
+        // `SynType.FromParseError(range)` — a required type the source omits.
+        "FromParseError" => NormalisedType::FromParseError,
         "LongIdent" => {
             // `SynType.LongIdent of longDotId: SynLongIdent`. Field 0 is
             // the SynLongIdent. Same projection as `SynExpr.LongIdent`.

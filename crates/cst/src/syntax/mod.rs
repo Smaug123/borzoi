@@ -2791,6 +2791,15 @@ impl DotIndexedGetExpr {
     }
 }
 
+impl DotMissingExpr {
+    /// The receiver of the cut-off member access — FCS's
+    /// `SynExpr.DiscardAfterMissingQualificationAfterDot.expr` (`(f x)` in
+    /// `(f x).`). The sole `Expr` child. `None` only on malformed input.
+    pub fn receiver(&self) -> Option<Expr> {
+        child(&self.0)
+    }
+}
+
 impl LibraryOnlyFieldGetExpr {
     /// The object whose cons-cell field is read — FCS's
     /// `SynExpr.LibraryOnlyUnionCaseFieldGet.expr` (`expr.( :: ).<int>`). The sole
