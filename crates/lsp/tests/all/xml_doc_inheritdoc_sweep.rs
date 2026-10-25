@@ -28,8 +28,8 @@ use crate::common::ensure_system_runtime_dll;
 use crate::common::inheritdoc_diff::{Census, compare_assembly};
 
 /// ASP.NET Core entries expanded exactly as Roslyn expands them, measured
-/// 2026-10-08 over Microsoft.AspNetCore.App.Ref 10.0.9.
-const ASPNET_EXPANDED: usize = 2104;
+/// 2026-10-25 over Microsoft.AspNetCore.App.Ref 10.0.12.
+const ASPNET_EXPANDED: usize = 2106;
 
 fn dlls_in(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
