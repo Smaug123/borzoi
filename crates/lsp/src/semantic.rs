@@ -11,6 +11,7 @@
 //! invalidates strictly by project path; sema's prefix-monotone fold makes
 //! sub-project incrementality a later optimisation, not a v1 requirement.
 
+use crate::uri::UriExt as _;
 use borzoi_cst::parser::FileKind;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -25,7 +26,7 @@ use borzoi_msbuild::ItemKind;
 use borzoi_sema::{
     AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery,
 };
-use lsp_types::Url;
+use lsp_types::Uri;
 
 use crate::assembly_cache::AssemblyCache;
 use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
@@ -886,7 +887,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Url, String>,
+        docs: &HashMap<Uri, String>,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
         // `usize::MAX` clamps to the project size, i.e. the whole project.
         self.resolved_prefix_and_env_for(project, usize::MAX, workspace, docs)
@@ -913,7 +914,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &HashMap<Url, String>,
+        docs: &HashMap<Uri, String>,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
         let key = canonicalise(project);
         let lookup_span = tracing::info_span!(
@@ -1140,7 +1141,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Url, String>,
+        docs: &HashMap<Uri, String>,
     ) -> Option<Arc<ResolvedProject>> {
         self.resolved_project_and_env_for(project, workspace, docs)
             .map(|(resolved, _env)| resolved)
@@ -1159,7 +1160,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &HashMap<Url, String>,
+        docs: &HashMap<Uri, String>,
     ) -> Option<Arc<ResolvedProject>> {
         self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)
             .map(|(resolved, _env)| resolved)
@@ -1191,7 +1192,7 @@ impl SemanticState {
         &'a mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Url, String>,
+        docs: &HashMap<Uri, String>,
     ) -> Option<&'a ProjectParses> {
         let key = canonicalise(project);
         if !self.project_parses.contains_key(&key) {
@@ -1214,7 +1215,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Url, String>,
+        docs: &HashMap<Uri, String>,
     ) -> Result<ProjectParses, FoldRefusal> {
         let outcome = build_parses(project, workspace, docs, &mut self.file_parses);
         let key = canonicalise(project);
@@ -1252,7 +1253,7 @@ impl SemanticState {
 fn build_parses(
     project: &Path,
     workspace: &mut Workspace,
-    docs: &HashMap<Url, String>,
+    docs: &HashMap<Uri, String>,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
 ) -> Result<ProjectParses, FoldRefusal> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
@@ -3053,13 +3054,13 @@ fn catch_reader_panic<T>(path: &Path, stage: &str, op: impl FnOnce() -> T) -> Op
 /// Pick the text for `path`: prefer the editor buffer if open, else read
 /// from disk. `None` if neither is available.
 ///
-/// Buffer lookup is by **platform path equality**, not by exact `Url` match:
+/// Buffer lookup is by **platform path equality**, not by exact `Uri` match:
 /// on case-insensitive filesystems (Windows, macOS) the client may open
 /// `lib.fs` while the project lists `Lib.fs`, and the buffer must still win
 /// over disk. Matches the rule [`crate::workspace::Workspace::owning_project`]
 /// already uses, so an open buffer that decides project ownership also
 /// supplies the text we fold. O(N) over open `docs`; N is small in practice.
-fn read_text(path: &Path, docs: &HashMap<Url, String>) -> Option<String> {
+fn read_text(path: &Path, docs: &HashMap<Uri, String>) -> Option<String> {
     let target = lexically_normalize(path);
     for (url, text) in docs {
         if let Ok(doc_path) = url.to_file_path()
@@ -3460,7 +3461,7 @@ mod tests {
         sema.invalidate_project(&proj);
         let mut docs = HashMap::new();
         docs.insert(
-            Url::from_file_path(&file).unwrap(),
+            Uri::from_file_path(&file).unwrap(),
             "let buffer = 1\n".to_string(),
         );
         let parses = sema
@@ -3917,7 +3918,7 @@ mod tests {
         let opened = tmp.path().join("lib.fs");
         let mut docs = HashMap::new();
         docs.insert(
-            Url::from_file_path(&opened).unwrap(),
+            Uri::from_file_path(&opened).unwrap(),
             "let buffer = 1\n".to_string(),
         );
 
@@ -6373,7 +6374,7 @@ mod tests {
 
         let mut docs = HashMap::new();
         docs.insert(
-            Url::from_file_path(&file).unwrap(),
+            Uri::from_file_path(&file).unwrap(),
             "let buffer = 1\n".to_string(),
         );
 
@@ -6407,12 +6408,12 @@ mod tests {
         write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
         write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
         write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
-        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
-        let b_uri = Url::from_file_path(tmp.path().join("B.fs")).unwrap();
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
+        let b_uri = Uri::from_file_path(tmp.path().join("B.fs")).unwrap();
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Url, String> = HashMap::new();
+        let mut docs: HashMap<Uri, String> = HashMap::new();
         sema.resolved_project_for(&proj, &mut ws, &docs)
             .expect("warm initial");
 
@@ -6484,7 +6485,7 @@ mod tests {
         write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
         let b_src = "module B\nlet y = A.x\n";
         write(&tmp.path().join("B.fs"), b_src);
-        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
 
         let range = {
             let start = b_src.find("A.x").unwrap();
@@ -6656,11 +6657,11 @@ mod tests {
         write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
         write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
         write(&tmp.path().join("D.fs"), "module D\nlet w = C.z\n");
-        let c_uri = Url::from_file_path(tmp.path().join("C.fs")).unwrap();
+        let c_uri = Uri::from_file_path(tmp.path().join("C.fs")).unwrap();
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Url, String> = HashMap::new();
+        let mut docs: HashMap<Uri, String> = HashMap::new();
 
         // Warm: request file 2 (C) — folds prefix [0, 1, 2], not D.
         let (p, _) = sema
@@ -6715,11 +6716,11 @@ mod tests {
         write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
         write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
         write(&tmp.path().join("D.fs"), "module D\nlet w = C.z\n");
-        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Url, String> = HashMap::new();
+        let mut docs: HashMap<Uri, String> = HashMap::new();
 
         // Warm the FULL project (as a hover/references request would).
         let (full, _) = sema
@@ -6769,11 +6770,11 @@ mod tests {
         write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
         write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
         write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
-        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Url, String> = HashMap::new();
+        let mut docs: HashMap<Uri, String> = HashMap::new();
 
         // Warm the whole project (as an open editor would): a cold fold, no refresh.
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
@@ -6810,11 +6811,11 @@ mod tests {
         write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
         write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
         write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
-        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Url, String> = HashMap::new();
+        let mut docs: HashMap<Uri, String> = HashMap::new();
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("warm");
         assert!(
@@ -6876,11 +6877,11 @@ mod tests {
         write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
         write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
         write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
-        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Url, String> = HashMap::new();
+        let mut docs: HashMap<Uri, String> = HashMap::new();
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("warm");
         assert!(!sema.take_wants_refresh());

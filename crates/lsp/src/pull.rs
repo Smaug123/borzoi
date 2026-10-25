@@ -31,7 +31,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use borzoi_cst::language_version::LanguageVersion;
 use lsp_types::{
     Diagnostic, FullDocumentDiagnosticReport, RelatedFullDocumentDiagnosticReport,
-    UnchangedDocumentDiagnosticReport, Url, WorkspaceDocumentDiagnosticReport,
+    UnchangedDocumentDiagnosticReport, Uri, WorkspaceDocumentDiagnosticReport,
     WorkspaceFullDocumentDiagnosticReport, WorkspaceUnchangedDocumentDiagnosticReport,
 };
 
@@ -88,7 +88,7 @@ pub fn diagnostic_result_id(
 /// `result_id` is always `None` — this first cut returns a `Full` report every
 /// time (no `Unchanged` caching; see `docs/completed/pull-diagnostics-plan.md` Stage 3).
 pub fn document_report(
-    requested: &Url,
+    requested: &Uri,
     groups: Vec<FileDiagnostics>,
 ) -> RelatedFullDocumentDiagnosticReport {
     let mut items: Vec<Diagnostic> = Vec::new();
@@ -125,7 +125,7 @@ pub fn document_report(
 /// deferred per the module docs), so a workspace pull and a document pull agree
 /// on any one file. `version: None`: the server tracks no document versions.
 pub fn workspace_entry(
-    uri: Url,
+    uri: Uri,
     groups: Vec<FileDiagnostics>,
     result_id: Option<String>,
 ) -> WorkspaceDocumentDiagnosticReport {
@@ -141,7 +141,7 @@ pub fn workspace_entry(
 /// Assemble one **`Unchanged`** `workspace/diagnostic` entry: the client's
 /// cached report for `uri` is still valid, so we only echo `result_id`.
 /// `version: None`, as for [`workspace_entry`].
-pub fn workspace_unchanged(uri: Url, result_id: String) -> WorkspaceDocumentDiagnosticReport {
+pub fn workspace_unchanged(uri: Uri, result_id: String) -> WorkspaceDocumentDiagnosticReport {
     WorkspaceDocumentDiagnosticReport::Unchanged(WorkspaceUnchangedDocumentDiagnosticReport {
         uri,
         version: None,
@@ -152,12 +152,13 @@ pub fn workspace_unchanged(uri: Url, result_id: String) -> WorkspaceDocumentDiag
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::uri::UriExt as _;
     use lsp_types::{DiagnosticSeverity, Range};
 
     use crate::publish::PublishState;
 
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
+    fn url(s: &str) -> Uri {
+        Uri::parse(s).unwrap()
     }
 
     fn diag(message: &str) -> Diagnostic {
@@ -257,7 +258,7 @@ mod tests {
     /// both represent "`A`'s own diagnostics". (Pull defers `A`'s *cross-file*
     /// contributions to push, so only the own-URI set is compared.) This pins
     /// the stateless pull assembler to the trusted push planner.
-    fn assert_pull_eq_push_own(doc: &Url, groups: Vec<FileDiagnostics>) {
+    fn assert_pull_eq_push_own(doc: &Uri, groups: Vec<FileDiagnostics>) {
         // Push: the publish addressed to `doc`'s own URI (always present, and
         // first, in a fresh single-document plan).
         let mut push = PublishState::new();
@@ -277,7 +278,12 @@ mod tests {
             .map(|d| d.message.clone())
             .collect();
 
-        assert_eq!(pull_own, push_own, "pull/push disagree on {doc}'s own set");
+        assert_eq!(
+            pull_own,
+            push_own,
+            "pull/push disagree on {}'s own set",
+            doc.as_str()
+        );
     }
 
     #[test]

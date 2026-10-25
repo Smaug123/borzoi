@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5c6fa2059070e5f9aa8b34b65afc85923dd42d8b6651e8391b7653ef26c55506 # shrinks to s = "ftp:///{"
+cc 5e47796c33d05ff9089a2d912ea174dbfbd1133587f781e05bfd3fc9c987d04f # shrinks to segments = [".."]
+cc e7368a22f23884db5bdbd5561185470c20997035dd2f8d7781a77b70673b597b # shrinks to s = "ftp:///A\\%+a"

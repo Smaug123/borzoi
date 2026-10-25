@@ -3,6 +3,7 @@
 //! file that changed and reuse every other file's tree verbatim, and the cache
 //! must never serve a stale tree.
 
+use borzoi::uri::UriExt as _;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use borzoi::semantic::ProjectParses;
 use borzoi::server::State;
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use lsp_types::Url;
+use lsp_types::Uri;
 use rowan::GreenNode;
 use tempfile::TempDir;
 
@@ -97,7 +98,7 @@ fn syntax_node_equality_is_identity_not_structural() {
 fn edit_reparses_only_the_changed_file() {
     let tmp = TempDir::new().unwrap();
     let proj = two_file_project(&tmp, "let a = 1\n", "let b = 1\n");
-    let b_uri = Url::from_file_path(tmp.path().join("B.fs")).unwrap();
+    let b_uri = Uri::from_file_path(tmp.path().join("B.fs")).unwrap();
 
     let mut state = State::default();
 
@@ -154,8 +155,8 @@ fn edit_reparses_only_the_changed_file() {
 fn cache_matches_a_cold_build_after_edits() {
     let tmp = TempDir::new().unwrap();
     let proj = two_file_project(&tmp, "let a = 1\n", "let b = 1\n");
-    let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
-    let b_uri = Url::from_file_path(tmp.path().join("B.fs")).unwrap();
+    let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
+    let b_uri = Uri::from_file_path(tmp.path().join("B.fs")).unwrap();
 
     // Warm state: build, then apply a few edits, re-building through the cache
     // after each — including an edit and a revert (which must land back on the
@@ -390,7 +391,7 @@ fn linked_file_under_divergent_projects_does_not_thrash() {
 
     // Edit OnlyA.fs and rebuild A. Shared.fs is untouched, so its tree must be
     // reused from A's own variant — not re-parsed because B overwrote it.
-    let only_a = Url::from_file_path(tmp.path().join("OnlyA.fs")).unwrap();
+    let only_a = Uri::from_file_path(tmp.path().join("OnlyA.fs")).unwrap();
     state.docs.insert(only_a.clone(), "let a = 2\n".to_string());
     state.invalidate_owning_project(&only_a);
 

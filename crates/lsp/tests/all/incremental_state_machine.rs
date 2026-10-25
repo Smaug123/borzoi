@@ -64,6 +64,7 @@
 //! `BORZOI_LSP_STATE_MACHINE_CASES` and `BORZOI_LSP_STATE_MACHINE_SEED`. A
 //! failure prints the minimal script ([`minimise`]), ready to pin.
 
+use borzoi::uri::UriExt as _;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -79,7 +80,7 @@ use lsp_server::{Connection, Message, Notification, Request, RequestId, Response
 use lsp_types::{
     ClientCapabilities, DiagnosticClientCapabilities, DiagnosticWorkspaceClientCapabilities,
     DocumentSymbolClientCapabilities, PublishDiagnosticsClientCapabilities,
-    SemanticTokensWorkspaceClientCapabilities, TextDocumentClientCapabilities, Url,
+    SemanticTokensWorkspaceClientCapabilities, TextDocumentClientCapabilities, Uri,
     WorkspaceClientCapabilities,
 };
 use proptest::prelude::*;
@@ -928,8 +929,7 @@ impl Client {
                     .sender
                     .send(Message::Response(Response {
                         id: req.id,
-                        result: Some(Value::Null),
-                        error: None,
+                        response_result: Ok(Value::Null),
                     }))
                     .expect("reply to server request");
             }
@@ -958,7 +958,12 @@ impl Client {
                 .unwrap_or_else(|e| panic!("no response to {method}: {e}"));
             match msg {
                 Message::Response(resp) if resp.id == id => {
-                    return json!({ "result": resp.result, "error": resp.error.map(|e| json!({"code": e.code, "message": e.message})) });
+                    return match resp.response_result {
+                        Ok(result) => json!({ "result": result, "error": null }),
+                        Err(e) => {
+                            json!({ "result": null, "error": {"code": e.code, "message": e.message} })
+                        }
+                    };
                 }
                 other => self.absorb(other),
             }
@@ -1114,7 +1119,7 @@ impl World {
     }
 
     fn uri(&self, file: FileId) -> String {
-        Url::from_file_path(self.path(file))
+        Uri::from_file_path(self.path(file))
             .expect("absolute path")
             .to_string()
     }

@@ -13,6 +13,9 @@ borzoi-msbuild.workspace = true
 borzoi-sema.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
+# lsp-types' `Uri` has no file-path conversion; `uri` delegates it (and URI
+# parsing) to `url`, so path <-> URI behaviour is the WHATWG one.
+url.workspace = true
 rowan.workspace = true
 # Compact binary serde format for the on-disk assembly-projection cache
 # (`assembly_cache`). Faster + smaller than JSON for the warm-restart deserialize

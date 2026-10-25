@@ -2,6 +2,7 @@
 //! that map between sema's byte-offset world and LSP's
 //! (line, UTF-16 column) world.
 
+use crate::uri::UriExt as _;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -10,7 +11,7 @@ use borzoi_sema::{
     AssemblyEnv, DefKind, InferredFile, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, Ty,
     resolve_file,
 };
-use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Url};
+use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Uri};
 use rowan::{TextRange, TextSize};
 
 use crate::paths::{lexically_normalize, paths_equal};
@@ -127,7 +128,7 @@ pub fn symbol_kind_for(kind: DefKind) -> Option<SymbolKind> {
 /// flat). `container_name` is `None` until sema exports nested-module
 /// hierarchy.
 pub fn symbol_information(
-    uri: &Url,
+    uri: &Uri,
     name: String,
     kind: SymbolKind,
     range: Range,
@@ -262,15 +263,15 @@ pub fn smallest_member_resolution_with_range(
 /// The URI the LSP client almost certainly knows `target_path` by: prefer an
 /// open document whose path is path-equal (case-insensitive on
 /// Windows/macOS, lexically-normalised) to `target_path` over a freshly-
-/// constructed `Url::from_file_path(target_path)`. Used by every handler
+/// constructed `Uri::from_file_path(target_path)`. Used by every handler
 /// that surfaces a `Location` pointing at a project file the editor may
 /// already have open under a different spelling.
 ///
 /// Falls back to building a `file://` URI from `target_path` when no open
 /// buffer matches. Returns `None` only when the path can't be turned into
-/// any URI at all (a non-absolute path on platforms `Url::from_file_path`
+/// any URI at all (a non-absolute path on platforms `Uri::from_file_path`
 /// rejects, or a path with no representation).
-pub fn preferred_uri(target_path: &Path, docs: &HashMap<Url, String>) -> Option<Url> {
+pub fn preferred_uri(target_path: &Path, docs: &HashMap<Uri, String>) -> Option<Uri> {
     let target = lexically_normalize(target_path);
     for url in docs.keys() {
         if let Ok(doc_path) = url.to_file_path()
@@ -279,5 +280,5 @@ pub fn preferred_uri(target_path: &Path, docs: &HashMap<Url, String>) -> Option<
             return Some(url.clone());
         }
     }
-    Url::from_file_path(target_path).ok()
+    Uri::from_file_path(target_path).ok()
 }

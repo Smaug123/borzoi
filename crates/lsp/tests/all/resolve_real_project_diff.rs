@@ -268,7 +268,7 @@ fn project_resolution_matches_fcs() {
     // 1. Compile order + defines, via the real workspace evaluation.
     let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
     let mut sema = SemanticState::new();
-    let docs: HashMap<lsp_types::Url, String> = HashMap::new();
+    let docs: HashMap<lsp_types::Uri, String> = HashMap::new();
     let dotnet_root = workspace.dotnet_root_for_project(&project);
 
     let parses = sema

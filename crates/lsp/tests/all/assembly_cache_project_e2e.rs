@@ -28,7 +28,7 @@ fn build_env_len(project: &std::path::Path, cache_dir: &std::path::Path) -> (usi
     let mut sema = SemanticState::new();
     sema.set_assembly_cache(AssemblyCache::at(cache_dir.to_path_buf()));
     // Prime the parses cache so the timing isolates the assembly-env build.
-    let docs: HashMap<lsp_types::Url, String> = HashMap::new();
+    let docs: HashMap<lsp_types::Uri, String> = HashMap::new();
     let mut workspace2 = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
     let _ = sema.parses_for_project(project, &mut workspace2, &docs);
 

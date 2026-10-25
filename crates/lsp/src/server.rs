@@ -5,6 +5,7 @@
 //! shrinks to the stdio bootstrap (`Connection::stdio()` + `initialize` +
 //! [`run`]); everything else lives here.
 
+use crate::uri::UriExt as _;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsStr;
@@ -26,7 +27,7 @@ use lsp_types::request::{
     WorkspaceSymbolRequest,
 };
 use lsp_types::{
-    ClientCapabilities, FileChangeType, FileEvent, MessageType, ShowMessageParams, Url,
+    ClientCapabilities, FileChangeType, FileEvent, MessageType, ShowMessageParams, Uri,
     WorkspaceFolder,
 };
 
@@ -142,7 +143,7 @@ pub fn client_capabilities_from_initialize(
 
 /// Mutable server state threaded through every request and notification.
 pub struct State {
-    pub docs: HashMap<Url, String>,
+    pub docs: HashMap<Uri, String>,
     /// Per-file preprocessor symbol resolution. Looks up the owning
     /// `.fsproj` on first request for each new project and caches the
     /// evaluated `$(DefineConstants)` (including SDK-supplied defines
@@ -194,7 +195,7 @@ pub struct State {
     /// only thing that can move an *existing* buffer's owner. See
     /// [`recompute_deferral_scope`] for why an open `.fsproj` is not in scope on
     /// its own account.
-    doc_projects: HashMap<Url, CanonicalProject>,
+    doc_projects: HashMap<Uri, CanonicalProject>,
     /// Monotonic counter for the ids of repeated server→client refresh requests.
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
     /// accidentally.
@@ -314,7 +315,7 @@ impl State {
     /// orphan or non-`file:` buffers fall back to the implicit set for their
     /// kind. Mutating because [`Workspace::symbols_for`] populates its project
     /// cache on first lookup.
-    pub fn symbols_for_uri(&mut self, uri: &Url) -> HashSet<String> {
+    pub fn symbols_for_uri(&mut self, uri: &Uri) -> HashSet<String> {
         match uri.to_file_path() {
             Ok(path) => self.workspace.symbols_for(&path),
             Err(()) => implicit_symbols_for_uri(uri),
@@ -328,7 +329,7 @@ impl State {
     /// guess-flag). For navigation handlers the parse tree does not depend on
     /// this — the language gate is diagnostic-only — but threading the real
     /// version keeps every parse call consistent.
-    pub fn lang_version_for_uri(&mut self, uri: &Url) -> LanguageVersion {
+    pub fn lang_version_for_uri(&mut self, uri: &Uri) -> LanguageVersion {
         match uri.to_file_path() {
             Ok(path) => self.workspace.lang_version_for(&path),
             Err(()) => LanguageVersion::Preview,
@@ -352,7 +353,7 @@ impl State {
     ///   `owning_project` only returns one. Invalidating just that one
     ///   leaves stale parses in every other cached project that sees the
     ///   file. See [`crate::semantic::SemanticState::invalidate_file`].
-    pub fn invalidate_owning_project(&mut self, uri: &Url) {
+    pub fn invalidate_owning_project(&mut self, uri: &Uri) {
         if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
             return;
         }
@@ -501,9 +502,10 @@ enum ChangeClass {
 /// `Directory.Build.{props,targets}` fall through to the `.props` / `.targets`
 /// extension arm. A source file's create/delete is `Structural` (it moves a
 /// glob-expanded `<Compile>` set); a source content change is `Source`.
-fn classify_change(uri: &Url, typ: FileChangeType) -> ChangeClass {
+fn classify_change(uri: &Uri, typ: FileChangeType) -> ChangeClass {
     let name = uri
         .path()
+        .as_str()
         .rsplit('/')
         .next()
         .unwrap_or("")
@@ -1007,7 +1009,7 @@ pub struct WatchedChangeEffect {
     /// moved.
     pub structural: bool,
     /// The open-document URIs whose diagnostics the shell must republish.
-    pub republish: Vec<Url>,
+    pub republish: Vec<Uri>,
 }
 
 pub fn handle_notification(state: &mut State, conn: &Connection, not: Notification) {
@@ -1076,8 +1078,8 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
     }
 }
 
-fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
-    let _span = tracing::info_span!("publish_diagnostics", uri = %uri).entered();
+fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Uri) {
+    let _span = tracing::info_span!("publish_diagnostics", uri = uri.as_str()).entered();
     if state.supports_pull_diagnostics() {
         return;
     }
@@ -1199,7 +1201,7 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
 ///
 /// `compiling_project`, not `owning_project`: a standalone `.fsx` beside an
 /// unrelated `.fsproj` must not be told that project's problems.
-fn scope_project_of(state: &mut State, uri: &Url) -> Option<CanonicalProject> {
+fn scope_project_of(state: &mut State, uri: &Uri) -> Option<CanonicalProject> {
     if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
         return None;
     }
@@ -1210,7 +1212,7 @@ fn scope_project_of(state: &mut State, uri: &Url) -> Option<CanonicalProject> {
 
 /// Put `uri`'s project in scope, if it has one. One ownership lookup, so
 /// restoring N tabs costs N walks rather than N(N+1)/2.
-fn extend_deferral_scope(state: &mut State, uri: &Url) {
+fn extend_deferral_scope(state: &mut State, uri: &Uri) {
     if let Some(project) = scope_project_of(state, uri) {
         state.doc_projects.insert(uri.clone(), project);
     }
@@ -1219,7 +1221,7 @@ fn extend_deferral_scope(state: &mut State, uri: &Url) {
 /// Drop `uri` from scope. A project with no remaining open buffer leaves scope
 /// and is forgotten, so reopening a file reports afresh rather than being
 /// deduped against a message from a previous session with the file.
-fn shrink_deferral_scope(state: &mut State, uri: &Url) {
+fn shrink_deferral_scope(state: &mut State, uri: &Uri) {
     state.doc_projects.remove(uri);
     forget_projects_out_of_scope(state);
 }
@@ -1231,7 +1233,7 @@ fn shrink_deferral_scope(state: &mut State, uri: &Url) {
 /// `.fsproj`). Opens and closes are handled incrementally, because this walks
 /// ancestor directories with `read_dir` per buffer.
 fn recompute_deferral_scope(state: &mut State) {
-    let uris: Vec<Url> = state.docs.keys().cloned().collect();
+    let uris: Vec<Uri> = state.docs.keys().cloned().collect();
     state.doc_projects.clear();
     for uri in uris {
         extend_deferral_scope(state, &uri);
@@ -1381,7 +1383,7 @@ fn report_deferral(
 /// Anything else → a single empty same-file group, so a previous diagnostic
 /// publish is cleared.
 pub(crate) fn grouped_for_uri(
-    uri: &Url,
+    uri: &Uri,
     text: &str,
     workspace: &mut Workspace,
 ) -> Option<Vec<FileDiagnostics>> {
@@ -1395,7 +1397,7 @@ pub(crate) fn grouped_for_uri(
 /// `workspace/diagnostic` sweep has one in hand; every other caller goes
 /// through [`grouped_for_uri`].
 pub(crate) fn grouped_for_uri_linked(
-    uri: &Url,
+    uri: &Uri,
     text: &str,
     workspace: &mut Workspace,
     linking_project: Option<&Path>,
@@ -1457,7 +1459,7 @@ pub(crate) fn grouped_for_uri_linked(
 /// caller-supplied `linking_project` refines the resolution
 /// ([`Workspace::symbols_for_linked`]).
 fn symbols_for_uri(
-    uri: &Url,
+    uri: &Uri,
     workspace: &mut Workspace,
     linking_project: Option<&Path>,
 ) -> HashSet<String> {
@@ -1477,7 +1479,7 @@ fn symbols_for_uri(
 /// [`LanguageVersion::Preview`] — every feature on, the same don't-guess-flag
 /// default `lang_version_for` uses for orphans.
 fn lang_version_for_uri(
-    uri: &Url,
+    uri: &Uri,
     workspace: &mut Workspace,
     linking_project: Option<&Path>,
 ) -> LanguageVersion {
@@ -1495,7 +1497,7 @@ fn lang_version_for_uri(
 /// still tells us the file kind, so hand back the same implicit set
 /// [`Workspace::symbols_for`] would (`INTERACTIVE`+`EDITING` for a `.fsx`,
 /// `COMPILED`+`EDITING` otherwise) instead of a now-incomplete `{COMPILED}`.
-fn implicit_symbols_for_uri(uri: &Url) -> HashSet<String> {
+fn implicit_symbols_for_uri(uri: &Uri) -> HashSet<String> {
     let is_script = path_extension(uri).as_deref() == Some("fsx");
     crate::workspace::implicit_symbols(is_script)
 }
@@ -1506,8 +1508,8 @@ fn implicit_symbols_for_uri(uri: &Url) -> HashSet<String> {
 /// served from, e.g., a virtual filesystem). Lowercased so
 /// `.FsProj` and `.fsproj` are equivalent. `pub(crate)` so the diagnostic
 /// handler can gate `result_id` caching on the file type.
-pub(crate) fn path_extension(uri: &Url) -> Option<String> {
-    let path = uri.path();
+pub(crate) fn path_extension(uri: &Uri) -> Option<String> {
+    let path = uri.path().as_str();
     let last = path.rsplit('/').next()?;
     let ext = std::path::Path::new(last)
         .extension()
@@ -1522,7 +1524,7 @@ pub(crate) fn path_extension(uri: &Url) -> Option<String> {
 /// the precedence.
 pub fn workspace_roots_from_init(
     workspace_folders: Option<&[WorkspaceFolder]>,
-    root_uri: Option<&Url>,
+    root_uri: Option<&Uri>,
 ) -> Vec<PathBuf> {
     if let Some(folders) = workspace_folders {
         let roots: Vec<PathBuf> = folders
@@ -1629,8 +1631,7 @@ where
 fn ok_response<T: serde::Serialize>(id: RequestId, value: &T) -> Response {
     Response {
         id,
-        result: Some(serde_json::to_value(value).expect("response serialises")),
-        error: None,
+        response_result: Ok(serde_json::to_value(value).expect("response serialises")),
     }
 }
 
@@ -1647,8 +1648,7 @@ fn references_response(id: RequestId, value: &Option<Vec<lsp_types::Location>>) 
 fn err_response(id: RequestId, code: lsp_server::ErrorCode, message: String) -> Response {
     Response {
         id,
-        result: None,
-        error: Some(lsp_server::ResponseError {
+        response_result: Err(lsp_server::ResponseError {
             code: code as i32,
             message,
             data: None,
@@ -1682,11 +1682,11 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
+    fn url(s: &str) -> Uri {
+        Uri::parse(s).unwrap()
     }
 
-    fn event(uri: Url, typ: FileChangeType) -> FileEvent {
+    fn event(uri: Uri, typ: FileChangeType) -> FileEvent {
         FileEvent { uri, typ }
     }
 
@@ -1824,7 +1824,7 @@ mod tests {
         );
     }
 
-    fn changed(uri: Url) -> FileEvent {
+    fn changed(uri: Uri) -> FileEvent {
         event(uri, FileChangeType::CHANGED)
     }
 
@@ -1849,7 +1849,7 @@ mod tests {
         let proj_path = tmp.path().join("App.fsproj");
         std::fs::write(&proj_path, "<Project/>").unwrap();
         let mut state = State::default();
-        let project_uri = Url::from_file_path(&proj_path).unwrap();
+        let project_uri = Uri::from_file_path(&proj_path).unwrap();
         state.invalidate_owning_project(&project_uri);
         // Inspect the workspace's project cache via a real test path. The
         // cache is private, but `Workspace::project` exposes the effect:
@@ -2104,7 +2104,7 @@ mod tests {
         .unwrap();
 
         let mut ws = Workspace::default();
-        let groups = grouped_for_uri(&Url::from_file_path(&a).unwrap(), a_text, &mut ws)
+        let groups = grouped_for_uri(&Uri::from_file_path(&a).unwrap(), a_text, &mut ws)
             .expect("dispatch returned Some");
         let diags = only_same_file(groups);
         assert!(
@@ -2138,7 +2138,7 @@ mod tests {
             r#"<Project><ItemGroup><ProjectReference Include="C.fsproj" /></ItemGroup></Project>"#;
         let mut ws = Workspace::default();
         let groups =
-            grouped_for_uri(&Url::from_file_path(&a).unwrap(), buffer, &mut ws).expect("Some");
+            grouped_for_uri(&Uri::from_file_path(&a).unwrap(), buffer, &mut ws).expect("Some");
         let diags = only_same_file(groups);
         assert!(
             diags
@@ -2172,7 +2172,7 @@ mod tests {
             r#"<Project><ItemGroup><ProjectReference Include="C.fsproj" /></ItemGroup></Project>"#;
         fs::write(&a, a_acyclic).unwrap();
         let mut ws = Workspace::default();
-        let url_a = Url::from_file_path(&a).unwrap();
+        let url_a = Uri::from_file_path(&a).unwrap();
         let first = only_same_file(grouped_for_uri(&url_a, a_acyclic, &mut ws).expect("Some"));
         assert!(
             first
@@ -2221,14 +2221,14 @@ mod tests {
 
         let mut state = State::new();
         // The client opens / edits the project file first.
-        state.invalidate_owning_project(&Url::from_file_path(&proj).unwrap());
+        state.invalidate_owning_project(&Uri::from_file_path(&proj).unwrap());
 
         // The project then changes on disk (e.g. the user saves a new define).
         fs::write(&proj, fsproj_define_compile("BAR", "Lib.fs")).unwrap();
 
         // A later source lookup must see the *current* disk state, proving the
         // `.fsproj` sync did not prematurely pin the stale defines.
-        let symbols = state.symbols_for_uri(&Url::from_file_path(&file).unwrap());
+        let symbols = state.symbols_for_uri(&Uri::from_file_path(&file).unwrap());
         assert!(
             symbols.contains("BAR") && !symbols.contains("FOO"),
             "fsproj sync pinned the cache to stale defines: {symbols:?}"
@@ -2258,7 +2258,7 @@ mod tests {
         }
 
         // Overlay a buffer and sync the `.fs` file.
-        let file_url = Url::from_file_path(&file).unwrap();
+        let file_url = Uri::from_file_path(&file).unwrap();
         state
             .docs
             .insert(file_url.clone(), "let buffer = 1\n".to_string());
@@ -2376,7 +2376,7 @@ mod tests {
 
         // Deliver the watched-file change for the project.
         let republish = state
-            .apply_watched_changes(&[changed(Url::from_file_path(&proj).unwrap())])
+            .apply_watched_changes(&[changed(Uri::from_file_path(&proj).unwrap())])
             .republish;
         assert!(republish.is_empty(), "no open buffers to republish here");
 
@@ -2486,7 +2486,7 @@ mod tests {
         let new = tmp.path().join("New.fs");
         fs::write(&new, "let y = 2\n").unwrap();
         state.apply_watched_changes(&[event(
-            Url::from_file_path(&new).unwrap(),
+            Uri::from_file_path(&new).unwrap(),
             FileChangeType::CREATED,
         )]);
 
@@ -2824,7 +2824,7 @@ mod tests {
         .unwrap();
         std::fs::write(tmp.path().join("A.fs"), "module A\nlet x = 1\n").unwrap();
         std::fs::write(tmp.path().join("B.fs"), "module B\nlet y = A.x\n").unwrap();
-        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
 
         let (server, client) = Connection::memory();
         let mut state = State::default();
@@ -3043,7 +3043,7 @@ mod tests {
 
     /// The `uri` of a `textDocument/definition` scalar-location response.
     fn response_uri(resp: &Response) -> String {
-        let value = resp.result.clone().expect("a result");
+        let value = resp.response_result.clone().expect("a result");
         let loc: lsp_types::Location =
             serde_json::from_value(value).expect("a scalar Location result");
         loc.uri.to_string()
@@ -3065,9 +3065,12 @@ mod tests {
 
         let resp = recv_response(&client);
         assert_eq!(resp.id, RequestId::from(7));
-        assert!(resp.error.is_none());
+        assert!(resp.response_result.is_ok());
         // A real location (Scalar), not the null `result`.
-        assert_ne!(resp.result, Some(serde_json::Value::Null));
+        assert_ne!(
+            resp.response_result.as_ref().ok(),
+            Some(&serde_json::Value::Null)
+        );
         // The fetch was written to the cache path the worker was handed.
         assert_eq!(std::fs::read(&dest).unwrap(), b"let x = 1\n");
     }
@@ -3088,7 +3091,7 @@ mod tests {
         // client can still open it.
         let resp = recv_response(&client);
         assert_eq!(resp.id, RequestId::from(9));
-        assert!(resp.error.is_none());
+        assert!(resp.response_result.is_ok());
         assert_eq!(response_uri(&resp), "https://example.com/src.fs");
     }
 
@@ -3186,6 +3189,9 @@ mod tests {
         dispatch_fetch(&server, None, RequestId::from(5), pending).expect("send ok");
         let resp = recv_response(&client);
         assert_eq!(resp.id, RequestId::from(5));
-        assert_eq!(resp.result, Some(serde_json::Value::Null));
+        assert_eq!(
+            resp.response_result.as_ref().ok(),
+            Some(&serde_json::Value::Null)
+        );
     }
 }

@@ -40,6 +40,7 @@
 //! a versioned `summary.json` are written under `references-diff/` at the
 //! workspace root; override that with `BORZOI_REFERENCES_DIFF_OUT`.
 
+use borzoi::uri::UriExt as _;
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -50,7 +51,7 @@ use borzoi::server::State;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use lsp_types::{
     PartialResultParams, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
-    TextDocumentPositionParams, Url, WorkDoneProgressParams,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 use serde::Serialize;
 
@@ -279,7 +280,7 @@ fn basis_points(numerator: usize, denominator: usize) -> u32 {
         .expect("a ratio in basis points fits u32")
 }
 
-fn params(uri: &Url, source: &str, byte: usize) -> ReferenceParams {
+fn params(uri: &Uri, source: &str, byte: usize) -> ReferenceParams {
     ReferenceParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -384,7 +385,7 @@ fn compare_file(file: &FileCensus, ordinal: usize, tally: &mut Tally) {
     }
     tally.files_with_targets += 1;
 
-    let uri = Url::parse(&format!(
+    let uri = Uri::parse(&format!(
         "inmemory:///borzoi-references-corpus/{ordinal}.fs"
     ))
     .unwrap();
@@ -421,7 +422,7 @@ fn compare_file(file: &FileCensus, ordinal: usize, tally: &mut Tally) {
                     path: path.clone(),
                     target: target.key.clone(),
                     result: (0, 0),
-                    occupants: vec![(format!("unexpected URI {}", location.uri), None)],
+                    occupants: vec![(format!("unexpected URI {}", location.uri.as_str()), None)],
                 });
                 continue;
             }

@@ -14,3 +14,9 @@ disallowed-methods = [
     { path = "std::process::Command::status", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
     { path = "std::process::Command::output", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
 ]
+
+# `lsp_types::Uri` wraps a `fluent_uri::Uri`, which caches its parsed
+# authority in a `Cell`; `lsp_types::Uri`'s `Hash`/`Eq` read only
+# `as_str()`, so the cache cannot move a key and `mutable_key_type` is a
+# false positive for it.
+ignore-interior-mutability = ["lsp_types::Uri"]

@@ -106,6 +106,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use borzoi::uri::UriExt as _;
 use serde_json::{Value, json};
 
 use crate::lsp_client::{LspClient, file_uri};
@@ -482,7 +483,7 @@ fn read_locations(copy: &Copy<'_>, value: &Value) -> Result<Vec<Located>, String
 /// Whether `uri` names one of the project's sources under another spelling —
 /// an answer that would make the client open a second buffer for the file.
 fn names_an_open_source(copy: &Copy<'_>, uri: &str) -> bool {
-    lsp_types::Url::parse(uri)
+    lsp_types::Uri::parse(uri)
         .ok()
         .and_then(|u| u.to_file_path().ok())
         .is_some_and(|path| {
