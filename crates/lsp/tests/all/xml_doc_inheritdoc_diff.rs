@@ -1732,3 +1732,51 @@ public class C{i}<T> : C{prev}<Pair<T, T>>
         }
     }
 }
+
+/// A `<typeparamref>` inherited from `B<X>` is rewritten to the ID of the
+/// argument `X` stands for, and Roslyn renders a type constructed from its
+/// own type parameters as its definition (`` T:F.Self`1 ``). A type nested in
+/// the context inherits the context's parameters, so `Outer<T>.S` is `S`'s
+/// own definition too (`` T:F.Outer`1.S ``), not a constructed
+/// `` T:F.Outer{`0}.S ``. Unrelated generics (`G<T>`) render constructed.
+#[test]
+fn a_type_argument_nested_in_the_context_renders_as_roslyn_does() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>B of <typeparamref name="X"/>.</summary>
+public class B<X> { }
+
+/// <summary>G.</summary>
+public class G<A> { }
+
+/// <inheritdoc/>
+public class Outer<T> : B<Outer<T>.S>
+{
+    /// <summary>S.</summary>
+    public class S { }
+}
+
+/// <inheritdoc/>
+public class Self<T> : B<Self<T>> { }
+
+/// <inheritdoc/>
+public class Plain<T> : B<G<T>> { }
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("type arguments nested in the context");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in ["T:F.Self`1", "T:F.Plain`1"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Agrees)),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+}

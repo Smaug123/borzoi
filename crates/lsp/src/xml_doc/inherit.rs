@@ -701,6 +701,9 @@ fn type_argument_id(
                 }
                 return Err(TypeArgMiss::SelfConstructed);
             }
+            if own(type_args) && may_share_parameters(env, &enclosing, def) {
+                return Err(TypeArgMiss::SelfConstructed);
+            }
             // The same rendering applies inside the braces, where it is not
             // modelled: decline if any nested argument may take it.
             if self_constructed_inside(env, inst.context, &enclosing, type_args, &own)? {
@@ -723,6 +726,17 @@ fn primitives_bind(core: Option<&HashSet<String>>, ty: &TypeRef) -> bool {
     }
 }
 
+/// Whether `def` may declare some of its type parameters through the same
+/// encloser as the context, whose chain from the root is `enclosing`: a type
+/// nested in the context or beside it inherits their encloser's parameters,
+/// so one constructed from the context's parameters may be its own
+/// definition, which Roslyn renders unconstructed. Where the chains share no
+/// type the parameters cannot coincide.
+fn may_share_parameters(env: &AssemblyEnv, enclosing: &[EntityHandle], def: EntityHandle) -> bool {
+    env.enclosing_chain_from_root(def)
+        .is_none_or(|chain| chain.iter().any(|h| enclosing.contains(h)))
+}
+
 /// Whether some type nested in `args` is constructed from the context's
 /// type parameters `0..n`, in order, *and* is the context or one of its
 /// enclosers — a type Roslyn renders as its own definition.
@@ -738,7 +752,9 @@ fn self_constructed_inside(
             TypeRef::Named { type_args, .. } => {
                 if own(type_args) {
                     match env.il_type_definition(context, &a.ty) {
-                        IlTypeDefinition::Resolved(def) if !enclosing.contains(&def) => {}
+                        IlTypeDefinition::Resolved(def)
+                            if !enclosing.contains(&def)
+                                && !may_share_parameters(env, enclosing, def) => {}
                         IlTypeDefinition::Resolved(_) => return Ok(true),
                         _ => return Err(TypeArgMiss::Unbound),
                     }
