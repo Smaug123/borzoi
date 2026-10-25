@@ -20,8 +20,8 @@
 //!   `op_*` use to an in-file definition, we commit; and FSharp.Core's
 //!   operators are reached.
 //!
-//! A *prefix* application (`-x`) is the one form we decline: FCS names it
-//! `~-`, after the position, and the resolver leaves it deferred.
+//! A *prefix* application names its operator after the position: `-x` uses
+//! `~-` (`op_UnaryNegation`), never the binary `-`.
 
 use std::collections::HashMap;
 
@@ -30,8 +30,7 @@ use borzoi_assembly::op_name::operator_display_name;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery,
-    resolve_file,
+    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
 use rowan::TextRange;
 
@@ -138,7 +137,6 @@ fn fcs_declaring(u: &NormalisedUse) -> Option<&str> {
 struct Tally {
     in_file_agreed: usize,
     assembly_agreed: usize,
-    prefix_declined: usize,
 }
 
 /// Certain-implies-exact over every operator site we commit at, and the
@@ -154,10 +152,6 @@ fn assert_agrees(c: &Checked, env: &AssemblyEnv, tally: &mut Tally) {
         let (s, e) = (usize::from(range.start()), usize::from(range.end()));
         let text = &c.src[s..e];
         if !is_operator_site(text) {
-            continue;
-        }
-        if matches!(res, Resolution::Deferred(DeferredReason::PrefixOperator)) {
-            tally.prefix_declined += 1;
             continue;
         }
         // A binder's own occurrence is a definition, not a use.
@@ -236,7 +230,7 @@ fn assert_agrees(c: &Checked, env: &AssemblyEnv, tally: &mut Tally) {
             );
         }
     }
-    // Owed: every non-prefix operator site FCS binds in-file, we bind too.
+    // Owed: every operator site FCS binds in-file, we bind too.
     for u in by_range.values() {
         let text = &c.src[u.start..u.end];
         if u.decl.is_none() || !is_operator_site(text) {
@@ -373,18 +367,100 @@ fn a_reopened_core_module_reshadows_an_opened_definition() {
     assert_eq!(tally.assembly_agreed, TABLE_OPS.len() - 2, "{tally:?}");
 }
 
-/// A prefix application names its operator after the position (`-x` is
-/// `~-`), so it declines — never the binary operator its token spells.
+/// A prefix operator: its spelling, the name FCS gives a prefix use of it, and
+/// that name compiled. A `+`, `-` or `%` spelling takes a `~` (`-x` uses `~-`,
+/// not the binary `-`); a `!` or `~` spelling is its own name (`!r` uses `!`).
+const PREFIX_OPS: &[(&str, &str, &str)] = &[
+    ("-", "~-", "op_UnaryNegation"),
+    ("+", "~+", "op_UnaryPlus"),
+    ("-.", "~-.", "op_TwiddleMinusDot"),
+    ("+.", "~+.", "op_TwiddlePlusDot"),
+    ("%", "~%", "op_Splice"),
+    ("%%", "~%%", "op_SpliceUntyped"),
+    ("?-", "~?-", "op_TwiddleQmarkMinus"),
+    ("!", "!", "op_Dereference"),
+    ("~~~", "~~~", "op_LogicalNot"),
+    ("~~", "~~", "op_TwiddleTwiddle"),
+    ("!!", "!!", "op_BangBang"),
+    ("!+", "!+", "op_BangPlus"),
+];
+
+/// Every way to apply prefix operator `op` (named `name`, compiled `compiled`)
+/// to `v`. `?-` is never an argument-position prefix: `id ?-v` is the infix
+/// `id ?- v`.
+fn prefix_uses(op: &str, name: &str, compiled: &str) -> Vec<String> {
+    let mut uses = vec![
+        format!("{op}v"),
+        format!("{op} v"),
+        format!("( {name} ) v"),
+        format!("{compiled} v"),
+    ];
+    if op != "?-" {
+        uses.push(format!("id {op}v"));
+    }
+    uses
+}
+
+/// Each prefix operator defined under the name FCS gives its prefix use, under
+/// that name compiled, as a decoy binary operator of its token's spelling, and
+/// not at all — then applied in every form. A prefix use binds the prefix
+/// definition, never the binary one: beside only a binary `( - )`, `-v` is
+/// still FSharp.Core's `~-`. A `!` or `~` spelling has one name in both
+/// positions, so its binary definition is what `~~v` applies.
+///
+/// Only the rows FCS accepts are generated (each was checked as a file of its
+/// own): `-.`, `+.`, `~~`, `!!`, `!+` and `?-` have no FSharp.Core definition,
+/// `%`/`%%` are splices outside a quotation, and a binary `( ! )` applied to
+/// one argument is a function where `!r` wants a value.
 #[test]
-fn a_prefix_operator_declines() {
-    let src =
-        "module Prefix\nlet neg (x: int) = - x\nlet neg2 (x: int) = -x\nlet pos (x: int) = +x\n\
-               let deref (r: int ref) = !r\nlet lnot (x: int) = ~~~x\nlet fneg (x: float) = -.x\n\
-               let lit = -1\nlet ( - ) a b = a\nlet shadowed (x: int) = -x\n"
-            .to_string();
+fn a_prefix_operator_is_named_after_its_position() {
+    let mut src = String::from("module Prefix\n");
+    let mut owed_in_file = 0;
+    let mut owed_core = 0;
+    let mut module = |def: &str, v: &str, uses: &[String]| {
+        src.push_str(&format!(
+            "module M{} =\n    {def}\n    let v = {v}\n",
+            src.matches("module M").count()
+        ));
+        for (k, u) in uses.iter().enumerate() {
+            src.push_str(&format!("    let r{k} = {u}\n"));
+        }
+    };
+    for &(op, name, compiled) in PREFIX_OPS {
+        let uses = prefix_uses(op, name, compiled);
+        module(&format!("let ( {name} ) (x: int) = x"), "1", &uses);
+        module(&format!("let {compiled} (x: int) = x"), "1", &uses);
+        owed_in_file += 2 * uses.len();
+        let binary = format!("let ( {op} ) (a: int) (b: int) = a");
+        match op {
+            "-" | "+" => {
+                module(&binary, "1", &uses);
+                owed_core += uses.len();
+            }
+            "~~~" | "~~" | "!!" | "!+" => {
+                module(&binary, "1", &uses);
+                owed_in_file += uses.len();
+            }
+            _ => {}
+        }
+        match op {
+            "-" | "+" | "~~~" => {
+                module("", "1", &uses);
+                owed_core += uses.len();
+            }
+            "!" => {
+                module("", "ref 1", &uses);
+                owed_core += uses.len();
+            }
+            _ => {}
+        }
+    }
+    // A sign-folded literal is not an application: FCS reports no use.
+    module("let ( ~- ) (x: int) = x", "-1", &[]);
     let mut tally = Tally::default();
     assert_agrees(&check("op_prefix", src), full_bcl_env(), &mut tally);
-    assert_eq!(tally.prefix_declined, 7, "{tally:?}");
+    assert_eq!(tally.in_file_agreed, owed_in_file, "{tally:?}");
+    assert_eq!(tally.assembly_agreed, owed_core, "{tally:?}");
 }
 
 /// A quoted operator spelling stays the identifier it quotes in every

@@ -63,12 +63,7 @@ impl<'a> Resolver<'a> {
                 // as the whole path, resolving the `Foo` qualifier / the `.Bar`
                 // member as a value. So skip: a coverage gap (active-pattern
                 // value references are not modelled yet), never wrong.
-                if let Some(op) = prefix_operator(e) {
-                    self.record(
-                        op.text_range(),
-                        Resolution::Deferred(DeferredReason::PrefixOperator),
-                    );
-                } else if let Some(li) = e.long_ident()
+                if let Some(li) = e.long_ident()
                     && li.active_pat_names().next().is_none()
                 {
                     let segments: Vec<SyntaxToken> = li.idents().collect();
@@ -1268,30 +1263,4 @@ fn is_named_arg_label(ident: &borzoi_cst::syntax::IdentExpr) -> bool {
         named_arg_shape(&el),
         Some((Some(Expr::Ident(lhs)), _)) if lhs.syntax() == ident.syntax()
     )
-}
-
-/// The operator token of `e` when `e` is a bare operator anywhere but the
-/// operator slot of an infix application: the operator of a prefix
-/// application (`-x`, `!r`, `~~~n`).
-///
-/// FCS names a prefix operator after its position, not its token: `-x` and
-/// `+x` use `~-` and `~+` (`op_UnaryNegation`, `op_UnaryPlus`), while `!r`
-/// keeps `!`. The token's own name ([`id_text`]) is the *binary* operator, so
-/// resolving it would bind `-x` to `(-)`. A parenthesised operator value
-/// (`(+)`) is not bare: it is its spelling's operator wherever it sits.
-fn prefix_operator(e: &borzoi_cst::syntax::LongIdentExpr) -> Option<SyntaxToken> {
-    let li = e.long_ident()?;
-    let mut idents = li.idents();
-    let tok = idents.next()?;
-    let bare = idents.next().is_none()
-        && !li
-            .syntax()
-            .children_with_tokens()
-            .any(|c| c.kind() == borzoi_cst::syntax::SyntaxKind::LPAREN_TOK)
-        && borzoi_assembly::op_name::is_operator_spelling(tok.text());
-    let infix_slot = e
-        .syntax()
-        .parent()
-        .is_some_and(|p| p.kind() == borzoi_cst::syntax::SyntaxKind::INFIX_APP_EXPR);
-    (bare && !infix_slot).then_some(tok)
 }

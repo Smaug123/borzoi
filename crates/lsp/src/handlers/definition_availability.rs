@@ -51,11 +51,6 @@ pub enum UnavailableReason {
     /// analyzer's view of the project is not — which is why this is worth
     /// distinguishing from an ordinary unresolved access.
     IncompleteAssemblies,
-    /// The operator of a prefix application (`-x`, `!r`)
-    /// ([`DeferredReason::PrefixOperator`]). F# names it after its position —
-    /// `-x` calls `~-`, not the binary `-` its token spells — which the
-    /// analyzer does not model, so it declines rather than name the wrong one.
-    PrefixOperator,
     /// The name resolves to nothing in any scope or import we model
     /// ([`Resolution::Unresolved`]). Sema reserves this for Phase 4 and does
     /// not produce it yet; carried so the mapping is total the day it does.
@@ -137,11 +132,6 @@ impl UnavailableReason {
                  that's missing — the analyzer declines all of them rather than guess. The \
                  server log names the DLL."
             }
-            UnavailableReason::PrefixOperator => {
-                "This is a prefix operator (`-x`), which F# resolves under a different name from \
-                 the binary operator it is spelled like (`~-`, not `-`); the analyzer doesn't \
-                 resolve prefix operators yet."
-            }
             UnavailableReason::Unresolved => {
                 "This name resolves to nothing in any scope or import the analyzer models."
             }
@@ -204,9 +194,6 @@ pub fn classify(
         }
         Some(Resolution::Deferred(DeferredReason::IncompleteAssemblies)) => {
             UnavailableReason::IncompleteAssemblies
-        }
-        Some(Resolution::Deferred(DeferredReason::PrefixOperator)) => {
-            UnavailableReason::PrefixOperator
         }
         Some(Resolution::Unresolved) => UnavailableReason::Unresolved,
         // No recorded occurrence: only an *identifier* under the cursor is worth
@@ -351,9 +338,6 @@ mod tests {
                 }
                 Some(Resolution::Deferred(DeferredReason::IncompleteAssemblies)) => {
                     Some(UnavailableReason::IncompleteAssemblies)
-                }
-                Some(Resolution::Deferred(DeferredReason::PrefixOperator)) => {
-                    Some(UnavailableReason::PrefixOperator)
                 }
                 Some(Resolution::Unresolved) => Some(UnavailableReason::Unresolved),
                 None => identifier_token_range(&root, byte)
