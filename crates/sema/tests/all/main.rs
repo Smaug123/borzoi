@@ -36,6 +36,7 @@ mod member_hiding_diff;
 mod module_open_matrix;
 mod namespace_fold_matrix;
 mod open_shortening_matrix;
+mod operator_name_diff;
 mod overload_corpus_diff;
 mod overloads_oracle;
 mod project_half_matrix;

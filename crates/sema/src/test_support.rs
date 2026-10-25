@@ -73,6 +73,25 @@ pub fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
     unquote(actual) == unquote(expected)
 }
 
+/// The oracle's full name for a symbol with its own trailing rendering swapped
+/// for the name the name environment keys it by.
+///
+/// FCS renders an operator's full name with its *display* leaf —
+/// `Microsoft.FSharp.Core.Operators.(+)` — while every name on our side is the
+/// logical one, `op_Addition`, which is also what the oracle reports as the
+/// symbol's `LogicalName`. Only an operator and a constructor (`.ctor`) differ
+/// between the two, and a constructor's full name is its type's, which does not
+/// end in its display name, so it is returned unchanged.
+pub fn logical_full_name(full_name: &str, display: &str, logical: Option<&str>) -> String {
+    match logical {
+        Some(logical) if logical != display => match full_name.strip_suffix(display) {
+            Some(head) if head.ends_with('.') => format!("{head}{logical}"),
+            Some(_) | None => full_name.to_string(),
+        },
+        Some(_) | None => full_name.to_string(),
+    }
+}
+
 /// The oracle declaration named the way **we** name it, or `None` when our own
 /// resolution does not certify it — leaving the oracle's rendered name to be
 /// compared exactly as it arrived.
@@ -182,4 +201,46 @@ fn chain_position(
         }
     }
     (!env.is_module(chain[position])).then_some(position)
+}
+
+#[cfg(test)]
+mod logical_full_name_tests {
+    use super::logical_full_name;
+
+    #[test]
+    fn an_operator_leaf_takes_its_logical_name() {
+        assert_eq!(
+            logical_full_name(
+                "Microsoft.FSharp.Core.Operators.(+)",
+                "(+)",
+                Some("op_Addition")
+            ),
+            "Microsoft.FSharp.Core.Operators.op_Addition"
+        );
+        assert_eq!(
+            logical_full_name(
+                "Microsoft.FSharp.Core.Operators.(..)",
+                "(..)",
+                Some("op_Range")
+            ),
+            "Microsoft.FSharp.Core.Operators.op_Range"
+        );
+    }
+
+    #[test]
+    fn a_constructor_or_plain_name_is_unchanged() {
+        assert_eq!(
+            logical_full_name(
+                "System.Collections.Generic.List",
+                "ResizeArray",
+                Some(".ctor")
+            ),
+            "System.Collections.Generic.List"
+        );
+        assert_eq!(
+            logical_full_name("System.String.Length", "Length", Some("Length")),
+            "System.String.Length"
+        );
+        assert_eq!(logical_full_name("Ns.T", "T", None), "Ns.T");
+    }
 }

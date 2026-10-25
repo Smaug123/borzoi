@@ -32,6 +32,7 @@ mod fsharp_resource;
 mod model;
 #[cfg(feature = "test-support")]
 pub mod modifier_metamorphic;
+pub mod op_name;
 pub mod pdb;
 mod reader;
 #[cfg(feature = "test-support")]

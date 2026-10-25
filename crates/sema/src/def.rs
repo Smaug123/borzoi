@@ -1,6 +1,9 @@
 //! The definition model: a name introduced by F# source, and what sort of
 //! binder it is.
 
+use std::borrow::Cow;
+
+use borzoi_assembly::op_name::compile_op_name;
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::TextRange;
 
@@ -274,5 +277,44 @@ impl Def {
             provisional: true,
             ..Self::from_token(token, kind)
         }
+    }
+}
+
+/// FCS `idText` semantics: the name an identifier token denotes.
+///
+/// A double-backtick-quoted identifier (`` ``my name`` ``) denotes the same
+/// name as the bare form, so the delimiters are stripped. An unquoted operator
+/// spelling denotes its compiled name ([`compile_op_name`]: `+` is
+/// `op_Addition`), which is what FCS's parser stores in `Ident.idText` and so
+/// what its name environment is keyed by. A *quoted* operator spelling is not
+/// compiled — `` ``+`` `` is the identifier `+`, a different name from the
+/// operator. Every other spelling is returned unchanged.
+///
+/// It takes a **token**, not a string, because it is not idempotent: the
+/// name of `` ``+`` `` is `+`, whose own name would be `op_Addition`. A
+/// function handed a name that is already canonical must use it as it is, and
+/// the type keeps it from normalising twice. A binder's stored text goes
+/// through [`Def::key`], the one other entry point.
+///
+/// Not the name of a **prefix** application's operator, which FCS names after
+/// the position (`-x` uses `~-`); the resolver does not route those here.
+pub(crate) fn id_text(tok: &SyntaxToken) -> Cow<'_, str> {
+    ident_name(tok.text())
+}
+
+/// [`id_text`] over a token's verbatim text. Private: a caller with a string
+/// in hand cannot tell whether it is still verbatim.
+fn ident_name(raw: &str) -> Cow<'_, str> {
+    match raw.strip_prefix("``").and_then(|s| s.strip_suffix("``")) {
+        Some(quoted) => Cow::Borrowed(quoted),
+        None => compile_op_name(raw),
+    }
+}
+
+impl Def {
+    /// The name this binder is keyed by in the name environment: [`id_text`]
+    /// of its verbatim [`name`](Self::name).
+    pub(crate) fn key(&self) -> Cow<'_, str> {
+        ident_name(&self.name)
     }
 }

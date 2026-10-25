@@ -1892,6 +1892,11 @@ pub enum DeferredReason {
     /// declined, which is worth saying out loud rather than reporting as an
     /// ordinary unresolved qualified access.
     IncompleteAssemblies,
+    /// The operator of a **prefix** application (`-x`, `!r`). FCS names it
+    /// after the position — `-x` uses `~-` (`op_UnaryNegation`), a different
+    /// name from the binary `(-)` its token spells — which the resolver does
+    /// not model, so it declines rather than bind the binary operator.
+    PrefixOperator,
 }
 
 /// How a name use resolves. A closed, inspectable value (not a callback), per
@@ -3211,11 +3216,9 @@ impl ResolvedFile {
             None => false,
             Some(Resolution::Deferred(_)) => true,
             Some(Resolution::Entity(h)) => env.is_abbreviation(*h) || is_target(*h),
-            Some(Resolution::Local(id)) => {
-                let name = &self.defs[id.index()].name;
-                self.own_abbrev_type_simple_names
-                    .contains(super::id_text(name))
-            }
+            Some(Resolution::Local(id)) => self
+                .own_abbrev_type_simple_names
+                .contains(&*self.defs[id.index()].key()),
             // No other variant is ever recorded for an attribute; if one
             // appears, defer rather than trust it.
             Some(_) => true,

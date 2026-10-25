@@ -149,7 +149,7 @@ impl<'a> Resolver<'a> {
         access_root_len: Option<usize>,
     ) {
         let def = Def::from_token(name, DefKind::Type);
-        let key = id_text(&def.name).to_string();
+        let key = def.key().to_string();
         let range = def.range;
         let id = self.intern(def);
         self.record(range, Resolution::Local(id));
@@ -221,7 +221,7 @@ impl<'a> Resolver<'a> {
             // The lookup key is the bare name (`T`), matching a `Type::Var` use's
             // `ident()`; the binder's range/name is the sigil-inclusive `'T`
             // occurrence (trivia-trimmed by `typar_occurrence`), matching FCS.
-            let key = id_text(ident.text()).to_string();
+            let key = id_text(&ident).to_string();
             let id = self.intern(Def::from_range(&name, range, DefKind::TypeParam));
             self.record(range, Resolution::Local(id));
             frame.push((key, id));
@@ -285,7 +285,7 @@ impl<'a> Resolver<'a> {
         // A case of a `private` union type is scoped to the type's container
         // (oracle-pinned D3), so its export inherits that privacy.
         let type_is_private = super::decls::header_is_private(defn.syntax());
-        let type_key = id_text(type_name.text()).to_string();
+        let type_key = id_text(type_name).to_string();
         for case in u.cases() {
             // An operator-named case (`([])` / `( :: )`, FSharp.Core's `list`) has
             // no identifier token; FCS records its compiled `op_Nil` /
@@ -297,7 +297,7 @@ impl<'a> Resolver<'a> {
             } else {
                 continue;
             };
-            let name = id_text(&def.name).to_string();
+            let name = def.key().to_string();
             let range = def.range;
             let id = self.intern(def);
             // An anonymous field has the name F# generates for it: `Item` when
@@ -310,7 +310,7 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .enumerate()
                     .map(|(i, f)| match f.ident() {
-                        Some(t) => id_text(t.text()).to_string(),
+                        Some(t) => id_text(&t).to_string(),
                         None if lone => "Item".to_string(),
                         None => format!("Item{}", i + 1),
                     })
@@ -403,7 +403,7 @@ impl<'a> Resolver<'a> {
     /// [`ProjectItems`](super::model::ProjectItems) type-qualified-case index. The caller clears any prior
     /// cases at `type_name` (last-wins on redefinition) before this runs.
     pub(super) fn define_enum_cases(&mut self, defn: &TypeDefn, type_name: &SyntaxToken) {
-        let type_key = id_text(type_name.text()).to_string();
+        let type_key = id_text(type_name).to_string();
         let Some(TypeDefnRepr::Enum(e)) = defn.repr() else {
             return;
         };
@@ -420,7 +420,7 @@ impl<'a> Resolver<'a> {
             } else {
                 continue;
             };
-            let case_name = id_text(&def.name).to_string();
+            let case_name = def.key().to_string();
             let range = def.range;
             let id = self.intern(def);
             // Reachable only as `Color.Red`: give it a cross-file handle so a later
@@ -465,7 +465,7 @@ impl<'a> Resolver<'a> {
     /// qualified references is a later slice, mirroring the union-case path.
     pub(super) fn define_exception_case(&mut self, name: &SyntaxToken, is_private: bool) {
         let def = Def::from_token(name, DefKind::ExceptionCase);
-        let entry_name = id_text(&def.name).to_string();
+        let entry_name = def.key().to_string();
         let range = def.range;
         let id = self.intern(def);
         // An exception constructor is a value-namespace member, like a non-qualified
@@ -599,7 +599,7 @@ impl<'a> Resolver<'a> {
             // distinct symbol from the recognizer (FCS reports it with full name
             // `Even`, not `…(|Even|Odd|)`).
             let token_def = Def::from_token(&tok, DefKind::ActivePatternCase);
-            let case_name = id_text(&token_def.name).to_string();
+            let case_name = token_def.key().to_string();
             let token_range = token_def.range;
             let token_id = self.intern(token_def);
             self.record(token_range, Resolution::Local(token_id));
@@ -719,7 +719,7 @@ impl<'a> Resolver<'a> {
                     // self-abbreviation. See `resolve_types.rs`'s regressions.
                     let self_union = super::abbrev_target_single_ident(&ty)
                         .zip(defn.long_id().and_then(super::single_ident))
-                        .is_some_and(|(rhs, name)| id_text(rhs.text()) == id_text(name.text()));
+                        .is_some_and(|(rhs, name)| id_text(&rhs) == id_text(&name));
                     if !self_union {
                         self.resolve_type(&ty);
                     }
@@ -1058,7 +1058,7 @@ impl<'a> Resolver<'a> {
         if raw == "_" {
             return None;
         }
-        let name = id_text(raw).to_string();
+        let name = id_text(tok).to_string();
         let range = tok.text_range();
         let id = self.intern(Def {
             name: raw.to_string(),
@@ -1194,7 +1194,7 @@ impl<'a> Resolver<'a> {
             // constraint-only variable), it stays unrecorded: a sound deferral.
             Type::Var(t) => {
                 if let Some(tok) = t.ident()
-                    && let Some(id) = self.lookup_typar(id_text(tok.text()))
+                    && let Some(id) = self.lookup_typar(&id_text(&tok))
                     && let Some((range, _)) = typar_occurrence(t.syntax())
                 {
                     self.record(range, Resolution::Local(id));
@@ -1262,7 +1262,7 @@ impl<'a> Resolver<'a> {
     /// the path is project-shadowed. The `resolve_assembly_diff.rs` completeness
     /// property measures the remaining gap.
     pub(super) fn resolve_type_path(&mut self, segs: &[SyntaxToken], arity: usize) {
-        let names: Vec<String> = segs.iter().map(|t| id_text(t.text()).to_string()).collect();
+        let names: Vec<String> = segs.iter().map(|t| id_text(t).to_string()).collect();
         match self.decide_type_path(&names, arity) {
             // A single-segment in-file `type` shadows any assembly type of that
             // name — record the local, exactly as
@@ -1761,9 +1761,9 @@ impl<'a> Resolver<'a> {
             return;
         }
 
-        let names: Vec<String> = toks.iter().map(|t| id_text(t.text()).to_string()).collect();
+        let names: Vec<String> = toks.iter().map(|t| id_text(t).to_string()).collect();
         let mut suffixed = names.clone();
-        *suffixed.last_mut().expect("split checked") = format!("{}Attribute", id_text(last.text()));
+        *suffixed.last_mut().expect("split checked") = format!("{}Attribute", id_text(last));
 
         let mut declined_at = None;
         let mut defer = |site: DeclineSite| {
@@ -2356,7 +2356,7 @@ impl<'a> Resolver<'a> {
     /// the wrong arity (`type Demo.Pair<'T> with …` is ``Pair`1``, not `Pair`).
     pub(super) fn resolve_in_file_type_path(&mut self, segs: &[SyntaxToken]) -> bool {
         if let [only] = segs
-            && let Some(id) = self.lookup_type_def(only.text())
+            && let Some(id) = self.lookup_type_def(&id_text(only))
         {
             self.record(only.text_range(), Resolution::Local(id));
             return true;
@@ -2369,8 +2369,8 @@ impl<'a> Resolver<'a> {
     /// nested module sees its enclosing module/namespace's types and a nested
     /// type of the same name shadows the enclosing one. `None` if no in-file type
     /// of that name is in scope. (Cross-file / assembly types are a later slice.)
+    /// `name` is already a name ([`id_text`]), not a token's text.
     pub(super) fn lookup_type_def(&self, name: &str) -> Option<DefId> {
-        let name = id_text(name);
         (0..=self.container_path.len()).rev().find_map(|k| {
             self.type_defs
                 .get(&self.container_path[..k])
@@ -2494,7 +2494,7 @@ impl<'a> Resolver<'a> {
                     } else if applied
                         && let [single] = segs.as_slice()
                         && let Some((res, opened_shape)) =
-                            self.applied_active_pattern_case(single.text())
+                            self.applied_active_pattern_case(&id_text(single))
                     {
                         // An *applied* single-segment head (`B n`, `Some x`) is a
                         // constructor / active-pattern reference that `binders` drops;
@@ -2535,7 +2535,7 @@ impl<'a> Resolver<'a> {
                         // `id_text`-stripped), so a quoted head `` `Scale` `` must be
                         // normalized too or the guard silently misses the shadow.
                         let shadowed =
-                            opened_shape.is_some() && self.lookup(id_text(single.text())).is_some();
+                            opened_shape.is_some() && self.lookup(&id_text(single)).is_some();
                         if let Some(shape) =
                             opened_shape.or_else(|| self.resolution_active_pattern_shape(res))
                             && !shadowed
@@ -2926,7 +2926,7 @@ impl<'a> Resolver<'a> {
     /// [`Self::type_defs`] / [`Self::type_cases`]): a redefinition drops the
     /// earlier member set before repopulating.
     pub(super) fn define_type_members(&mut self, defn: &TypeDefn, type_name: &SyntaxToken) {
-        let type_key = id_text(type_name.text()).to_string();
+        let type_key = id_text(type_name).to_string();
         if let Some(by_type) = self.type_members.get_mut(&self.container_path) {
             by_type.remove(&type_key);
         }
@@ -2955,7 +2955,7 @@ impl<'a> Resolver<'a> {
         let segs: Vec<SyntaxToken> = li.idents().collect();
         let visible_from = defn.syntax().text_range().start();
         if let [seg] = segs.as_slice() {
-            let type_key = id_text(seg.text()).to_string();
+            let type_key = id_text(seg).to_string();
             if self
                 .type_defs
                 .get(&self.container_path)
@@ -2972,7 +2972,7 @@ impl<'a> Resolver<'a> {
         }
         if let Some(last) = segs.last() {
             self.unindexed_augmented_names
-                .insert(id_text(last.text()).to_string());
+                .insert(id_text(last).to_string());
         }
     }
 
@@ -2984,7 +2984,7 @@ impl<'a> Resolver<'a> {
     /// *emission* index ([`Self::index_augmentation_members`], which needs the
     /// head to resolve), the names are walkable for **every** augmentation
     /// shape; only a member whose name itself cannot be extracted (an
-    /// operator/active-pattern head, an `inherit`) sets
+    /// active-pattern head, an `inherit`) sets
     /// [`Resolver::augmentation_names_unknowable`], keeping the wholesale
     /// defer. Deliberately over-approximate where classification is uncertain:
     /// an unknown staticness lands in both sets, an `override` counts as an
@@ -3010,24 +3010,10 @@ impl<'a> Resolver<'a> {
                                 return None;
                             }
                             let tok = l.head().and_then(|h| h.idents().last())?;
-                            let raw = tok.text();
-                            let name = id_text(raw).to_string();
                             // An operator member (`static member (+.) …`)
-                            // joins resolution under its COMPILED `op_*`
-                            // name, which we do not re-derive — unknowable.
-                            // A quoted identifier (`` ``odd name`` ``) is a
-                            // genuine group key and stays. The ident-shape
-                            // test is on the stripped text; the backtick
-                            // test on the raw.
-                            let quoted = raw.starts_with("``");
-                            if !quoted
-                                && !name
-                                    .chars()
-                                    .all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
-                            {
-                                return None;
-                            }
-                            Some(name)
+                            // joins its group under its compiled name
+                            // (`op_PlusDot`), which is what `id_text` gives.
+                            Some(id_text(&tok).to_string())
                         }
                         _ => None,
                     });
@@ -3046,7 +3032,7 @@ impl<'a> Resolver<'a> {
                     match g
                         .name()
                         .and_then(|n| n.idents().last())
-                        .map(|t| id_text(t.text()).to_string())
+                        .map(|t| id_text(&t).to_string())
                     {
                         Some(name) => {
                             if g.is_static() {
@@ -3060,7 +3046,7 @@ impl<'a> Resolver<'a> {
                 }
                 MemberDefn::AutoProperty(a) => match a.ident() {
                     Some(name) => {
-                        let name = id_text(name.text()).to_string();
+                        let name = id_text(&name).to_string();
                         if a.is_static() {
                             self.augmentation_static_names.insert(name);
                         } else {
@@ -3074,7 +3060,7 @@ impl<'a> Resolver<'a> {
                 // groups rather than trusting the illegality.
                 MemberDefn::AbstractSlot(s) => match s.val_sig().and_then(|v| v.ident()) {
                     Some(name) => {
-                        let name = id_text(name.text()).to_string();
+                        let name = id_text(&name).to_string();
                         self.augmentation_instance_names.insert(name.clone());
                         self.augmentation_static_names.insert(name);
                     }
@@ -3082,7 +3068,7 @@ impl<'a> Resolver<'a> {
                 },
                 MemberDefn::ValField(v) => match v.ident() {
                     Some(name) => {
-                        let name = id_text(name.text()).to_string();
+                        let name = id_text(&name).to_string();
                         self.augmentation_instance_names.insert(name.clone());
                         self.augmentation_static_names.insert(name);
                     }
@@ -3090,7 +3076,7 @@ impl<'a> Resolver<'a> {
                 },
                 MemberDefn::MemberSig(ms) => match ms.val_sig().and_then(|v| v.ident()) {
                     Some(name) => {
-                        let name = id_text(name.text()).to_string();
+                        let name = id_text(&name).to_string();
                         self.augmentation_instance_names.insert(name.clone());
                         self.augmentation_static_names.insert(name);
                     }
@@ -3255,7 +3241,7 @@ impl<'a> Resolver<'a> {
         emit_eligible: bool,
         visible_from: rowan::TextSize,
     ) {
-        let name = id_text(name_tok.text()).to_string();
+        let name = id_text(name_tok).to_string();
         if let Some(entry) = self
             .type_members
             .get_mut(container)

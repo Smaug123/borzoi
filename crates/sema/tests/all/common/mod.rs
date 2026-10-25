@@ -1741,6 +1741,10 @@ pub struct NormalisedUse {
     /// Whether the use is a constructor, which names its own type rather than a
     /// member of it.
     pub is_constructor: bool,
+    /// For a value or member, the name FCS's name environment keys it by
+    /// (`FSharpMemberOrFunctionOrValue.LogicalName`): an operator's compiled
+    /// name, `op_Addition`, where [`name`](Self::name) is the rendering `(+)`.
+    pub logical_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1753,6 +1757,8 @@ struct UsesDump {
 struct RawUse {
     #[serde(rename = "SymbolName")]
     symbol_name: String,
+    #[serde(rename = "LogicalName", default)]
+    logical_name: Option<String>,
     #[serde(rename = "Range")]
     range: FcsRange,
     #[serde(rename = "IsFromDefinition")]
@@ -1836,6 +1842,7 @@ pub fn parse_fcs_uses(json: &str, source: &str) -> Vec<NormalisedUse> {
                         .collect()
                 }),
                 is_constructor: u.is_constructor,
+                logical_name: u.logical_name,
             }
         })
         .collect()

@@ -885,6 +885,8 @@ fn assembly_head(head: &str) -> Option<(&'static [&'static str], &str)> {
         .find_map(|(keyword, kinds)| head.strip_prefix(keyword).map(|rest| (*kinds, rest)))?;
     let name = match rest.strip_prefix("``") {
         Some(quoted) => &rest[..quoted.find("``")? + 4],
+        // An operator, shown parenthesised as F# writes it: `(+)`, `( ** )`.
+        None if rest.starts_with('(') => &rest[..=rest.find(')')?],
         None => {
             let end = rest.find([':', '<', ' ', '(']).unwrap_or(rest.len());
             &rest[..end]
@@ -1479,6 +1481,14 @@ mod tests {
         assert_eq!(
             assembly_head("val id<'T>: x: 'T -> 'T"),
             Some((&["field", "member"][..], "id"))
+        );
+        assert_eq!(
+            assembly_head("val ( ** )<'T, 'U>: x: 'T * y: 'U -> 'T"),
+            Some((&["field", "member"][..], "( ** )"))
+        );
+        assert_eq!(
+            assembly_head("val (=)<'T>: x: 'T * y: 'T -> bool"),
+            Some((&["field", "member"][..], "(=)"))
         );
         assert_eq!(assembly_head("new: unit -> Foo"), None);
     }

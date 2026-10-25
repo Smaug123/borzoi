@@ -144,8 +144,21 @@ definition, an assembly-level auto-open, a signature-screened earlier file, an
 Neither a scoped lookup nor an enumeration of sources closed that set. The
 sound route is operator resolution in the resolver itself — `+` looked up
 under its compiled name `op_Addition` with the vetted machinery ordinary names
-use — once the resolver's auto-open folding (#233) is complete; inference then
-trusts that resolution.
+use; inference then trusts that resolution.
+
+**The resolver half has landed.** Every name the resolver derives from a token
+is FCS's `Ident.idText` (`id_text`), which for an operator spelling is its
+compiled name (`borzoi_assembly::op_name`, a port of `CompileOpName` and its
+inverse, which hover uses to show `op_Addition` as `(+)`). So
+`+`, `( + )` and `op_Addition` are one name, a quoted `` ``+`` `` is a
+different one, and with nothing in-file `+` resolves to FSharp.Core's
+`Operators.(+)` through the same lookup as `id`. A *prefix* application (`-x`)
+declines (`DeferredReason::PrefixOperator`): FCS names it `~-` after its
+position, which the path machinery has no way to be told. `operator_name_diff`
+grades the space against FCS (every operator × definition form × use form, plus
+an opened-then-reopened `Operators`). Still to do: the inference half (type an
+application whose callee resolves to FSharp.Core's operator), and resolving
+prefix operators.
 
 ### Remaining 3.x hard piles (census-priority order)
 

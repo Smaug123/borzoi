@@ -59,7 +59,7 @@ impl<'a> Resolver<'a> {
     ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
         let base = prefix.len();
         let mut names: Vec<String> = prefix.to_vec();
-        names.extend(segments.iter().map(|t| id_text(t.text()).to_string()));
+        names.extend(segments.iter().map(|t| id_text(t).to_string()));
         let n = names.len();
 
         // Decline a path F# resolves within the project (see

@@ -346,10 +346,8 @@ impl<'a> Resolver<'a> {
                 // nested module) so a reference rooted at it does not fall through
                 // to a colliding referenced-assembly member.
                 if let Some(ident) = a.ident() {
-                    let segs: Vec<String> = ident
-                        .idents()
-                        .map(|t| id_text(t.text()).to_string())
-                        .collect();
+                    let segs: Vec<String> =
+                        ident.idents().map(|t| id_text(&t).to_string()).collect();
                     // `X` is a module-like name in this container, so it shadows a
                     // same-named enclosing type for member access (`X.foo`).
                     if let Some(first) = segs.first() {
@@ -367,10 +365,8 @@ impl<'a> Resolver<'a> {
                     // so `module X = X` cannot resolve to itself.
                     let target = a.long_id().and_then(|li| {
                         let idents: Vec<SyntaxToken> = li.idents().collect();
-                        let mut rhs: Vec<String> = idents
-                            .iter()
-                            .map(|t| id_text(t.text()).to_string())
-                            .collect();
+                        let mut rhs: Vec<String> =
+                            idents.iter().map(|t| id_text(t).to_string()).collect();
                         let rooted = idents.first().is_some_and(|t| t.text() == "global");
                         if rooted {
                             rhs.remove(0);
@@ -453,7 +449,7 @@ impl<'a> Resolver<'a> {
                     let genuine = !augmentation && defn.long_id().and_then(single_ident).is_some();
                     if let Some(li) = defn.long_id() {
                         let segs: Vec<String> =
-                            li.idents().map(|t| id_text(t.text()).to_string()).collect();
+                            li.idents().map(|t| id_text(&t).to_string()).collect();
                         if augmentation {
                             self.record_augmentation_head_shadow(segs.clone());
                         } else {
@@ -544,14 +540,14 @@ impl<'a> Resolver<'a> {
                         } else {
                             slot
                         };
-                        self.export_type_path(id_text(name.text()), cases_enumerable, export_slot);
+                        self.export_type_path(&id_text(&name), cases_enumerable, export_slot);
                         // The export-decl-list twin: a genuine `Type` decl feeding
                         // `type_paths` (keyed by its own path), the nested-module
                         // shadow set, and — when `[<AutoOpen>]` — its container's
                         // hidden-value marker.
                         {
                             let mut path = self.container_path.clone();
-                            path.push(id_text(name.text()).to_string());
+                            path.push(id_text(&name).to_string());
                             self.push_export_decl(
                                 path,
                                 name.text_range().start(),
@@ -571,7 +567,7 @@ impl<'a> Resolver<'a> {
                         // same defn (only one matches the repr) and must not clobber
                         // the other's just-added cases.
                         if let Some(by_type) = self.type_cases.get_mut(&self.container_path) {
-                            by_type.remove(id_text(name.text()));
+                            by_type.remove(&*id_text(&name));
                         }
                         // A union's cases enter the container-scoped case index
                         // here, so the whole group's cases are visible before any
@@ -672,13 +668,13 @@ impl<'a> Resolver<'a> {
                 // ordinary value-name use (see below) — *before* the alias is
                 // bound, so the alias never shadows its own target.
                 if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
-                    self.record_project_name_shadow(vec![id_text(name.text()).to_string()]);
+                    self.record_project_name_shadow(vec![id_text(&name).to_string()]);
                     // The export-decl-list twin of the tycon-side name shadow (the
                     // value-namespace ctor is a separate `Item` decl from
                     // `define_exception_case` → `export_case` below).
                     {
                         let mut path = self.container_path.clone();
-                        path.push(id_text(name.text()).to_string());
+                        path.push(id_text(&name).to_string());
                         self.push_export_decl(
                             path,
                             name.text_range().start(),
@@ -727,11 +723,7 @@ impl<'a> Resolver<'a> {
                 // conservative (unresolved) path, which is sound.
                 let ext_name: Vec<String> = ext
                     .name()
-                    .map(|name| {
-                        name.idents()
-                            .map(|t| id_text(t.text()).to_string())
-                            .collect()
-                    })
+                    .map(|name| name.idents().map(|t| id_text(&t).to_string()).collect())
                     .unwrap_or_default();
                 if !ext_name.is_empty() {
                     self.record_project_name_shadow(ext_name.clone());
@@ -781,7 +773,7 @@ impl<'a> Resolver<'a> {
                     idents
                         .iter()
                         .skip(usize::from(rooted))
-                        .map(|t| id_text(t.text()).to_string())
+                        .map(|t| id_text(t).to_string())
                         .collect()
                 } else {
                     Vec::new()
@@ -915,10 +907,8 @@ impl<'a> Resolver<'a> {
                     self.open_extension_unknowable = true;
                 } else if let Some(li) = open.long_ident() {
                     let idents: Vec<SyntaxToken> = li.idents().collect();
-                    let mut path: Vec<String> = idents
-                        .iter()
-                        .map(|t| id_text(t.text()).to_string())
-                        .collect();
+                    let mut path: Vec<String> =
+                        idents.iter().map(|t| id_text(t).to_string()).collect();
                     // `open global.Demo` ≡ `open Demo` *from the root*: `global` is
                     // F#'s root-namespace qualifier, surfaced by the parser as a
                     // leading ident. Strip it (matching the raw keyword, not an
@@ -1582,7 +1572,7 @@ impl<'a> Resolver<'a> {
         let Some(li) = nm.long_id() else {
             return;
         };
-        let segs: Vec<String> = li.idents().map(|t| id_text(t.text()).to_string()).collect();
+        let segs: Vec<String> = li.idents().map(|t| id_text(&t).to_string()).collect();
         if segs.is_empty() {
             return;
         }
@@ -1788,7 +1778,7 @@ impl<'a> Resolver<'a> {
                         if let Some(name) = defn.long_id().and_then(single_ident) {
                             merge_auto_open_shadow(
                                 &mut self.auto_open_type_shadow_names,
-                                id_text(name.text()).to_string(),
+                                id_text(&name).to_string(),
                                 AutoOpenTypeShadow {
                                     import_pos,
                                     min_depth: if own_private { parent_depth } else { 0 },
@@ -1869,23 +1859,25 @@ impl<'a> Resolver<'a> {
 
     /// Note `name` as a *module-like* declaration (nested module / abbreviation)
     /// in the current container, so member access through it shadows a same-named
-    /// enclosing type (see [`Self::module_like_names`]).
+    /// enclosing type (see [`Self::module_like_names`]). `name` is already a
+    /// name ([`id_text`]), not a token's text.
     pub(super) fn note_module_like_name(&mut self, name: &str) {
         self.module_like_names
             .entry(self.container_path.clone())
             .or_default()
-            .insert(id_text(name).to_string());
+            .insert(name.to_string());
     }
 
     /// The [`DeclKinds`](super::state::DeclKinds) slot for `name` in the current
     /// container ([`Self::container_decls`]), inserting an empty one if absent. The
     /// single mutation point for the per-container declared-name view: each definition
     /// site sets the relevant namespace flag (`mark_decl(name).value = true`, …).
+    /// `name` is already a name ([`id_text`]), not a token's text.
     pub(super) fn mark_decl(&mut self, name: &str) -> &mut super::state::DeclKinds {
         self.container_decls
             .entry(self.container_path.clone())
             .or_default()
-            .entry(id_text(name).to_string())
+            .entry(name.to_string())
             .or_default()
     }
 }
