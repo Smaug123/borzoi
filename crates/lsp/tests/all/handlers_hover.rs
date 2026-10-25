@@ -276,6 +276,41 @@ fn a_signature_file_in_its_project_is_not_explained_as_an_orphan() {
     assert!(body.contains("signature file"), "{body}");
 }
 
+/// A signature buffer is read under the signature grammar, so a `val`'s name
+/// is an identifier the analyzer explains, not the debris of a stray `val`
+/// under the implementation grammar. Signature files are not resolved, so the
+/// name is untracked, and an orphan carries the without-project-context note.
+#[test]
+fn an_orphan_signature_file_explains_a_val_name() {
+    let mut state = State::default();
+    let uri = Uri::parse("inmemory:///Sample.fsi").unwrap();
+    let sig = "module A\nval f : int -> 'a list\n";
+    state.docs.insert(uri.clone(), sig.to_string());
+
+    let hover = run(&mut state, &uri, 1, 4).expect("an explanation for `f`");
+    let body = body(&hover);
+    assert!(body.starts_with("**No definition available**"), "{body}");
+    assert!(body.contains("without project context"), "{body}");
+    let range = hover.range.expect("hover.range pins the name");
+    assert_eq!((range.start.character, range.end.character), (4, 5));
+}
+
+/// A signature buffer whose names the single-file resolver *can* place (a
+/// type abbreviation's target, which parses alike under both grammars) is
+/// described, as go-to-definition answers it: hover must not claim there is no
+/// definition where navigation finds one.
+#[test]
+fn a_signature_file_name_the_resolver_places_is_not_explained_away() {
+    let mut state = State::default();
+    let uri = Uri::parse("inmemory:///Sample.fsi").unwrap();
+    let sig = "module A\ntype T = int\ntype U = T\n";
+    state.docs.insert(uri.clone(), sig.to_string());
+
+    let hover = run(&mut state, &uri, 2, 9).expect("a hover for `T`");
+    let body = body(&hover);
+    assert!(!body.starts_with("**No definition available**"), "{body}");
+}
+
 #[test]
 fn cursor_off_identifier_returns_none() {
     // Cursor on whitespace — no recorded resolution contains it.
