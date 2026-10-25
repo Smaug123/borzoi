@@ -64,6 +64,7 @@ hit P:DocIdsFs.Hidden.Renamed.B(System.String) <= Property D(System.String)
 hit P:DocIdsFs.Hidden.RenamedAlike.A(System.Int32) <= Property B(System.Int32)
 hit P:DocIdsFs.Hidden.RenamedAlike.B(System.Int32) <= Property D(System.Int32)
 hit P:DocIdsFs.IShape.Area <= Property Area()
+hit P:DocIdsFs.Point.Sum <= Property Sum()
 hit P:DocIdsFs.Point.X <= Field X()
 hit P:DocIdsFs.Point.Y <= Field Y()
 hit P:DocIdsFs.Quantity.Amount <= Field Amount()
@@ -123,7 +124,6 @@ miss M:DocIdsFs.IShape.remove_Fired(System.EventHandler)
 miss M:DocIdsFs.Widget.add_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
 miss M:DocIdsFs.Widget.remove_Changed(Microsoft.FSharp.Control.FSharpHandler{System.Int32})
 miss P:DocIdsFs.Hidden.SharedHidden.Second
-miss P:DocIdsFs.Point.Sum
 miss P:DocIdsFs.SharedName.First
 miss P:DocIdsFs.SharedName.Second
 miss T:DocIdsFs.metre
