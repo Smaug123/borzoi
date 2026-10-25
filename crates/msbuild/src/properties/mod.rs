@@ -642,34 +642,11 @@ fn is_rooted(part: &str) -> bool {
 /// text inside it.
 const STRING_DELIMS: [char; 3] = ['\'', '`', '"'];
 
+/// The argument split is MSBuild's own (`Expander.ExtractFunctionArguments`),
+/// shared with the expression parser so the two can never disagree about where
+/// an argument ends.
 fn split_args(args: &str) -> Option<Vec<&str>> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut depth = 0usize;
-    let mut in_string: Option<char> = None;
-    for (i, c) in args.char_indices() {
-        if let Some(delim) = in_string {
-            if c == delim {
-                in_string = None;
-            }
-            continue;
-        }
-        match c {
-            _ if STRING_DELIMS.contains(&c) => in_string = Some(c),
-            '(' => depth += 1,
-            ')' => depth = depth.checked_sub(1)?,
-            ',' if depth == 0 => {
-                parts.push(args[start..i].trim());
-                start = i + c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    if in_string.is_some() || depth != 0 {
-        return None;
-    }
-    parts.push(args[start..].trim());
-    Some(parts)
+    expr::split_args(args)
 }
 
 fn string_literal_arg(arg: &str) -> Option<&str> {
