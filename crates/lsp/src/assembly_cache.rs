@@ -43,10 +43,9 @@
 //! a read-only deployment can leave it entirely untouched.
 
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use bincode::Options;
 use borzoi_assembly::Entity;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -56,11 +55,16 @@ use serde::de::DeserializeOwned;
 /// covered separately by the binary-mtime component of [`AssemblyCache::tag`] (a
 /// projector change means a rebuilt binary), so this only needs bumping for
 /// changes to *this* module's framing.
-const CACHE_SCHEMA: u32 = 2;
+const CACHE_SCHEMA: u32 = 3;
 
-/// Leading marker in every entry — a corrupt/foreign file fails the check and is
-/// treated as a miss rather than mis-deserialized.
-const MAGIC: u32 = 0xDF5A_C0DE;
+/// Leading marker in every entry, as four little-endian bytes ahead of the
+/// postcard-encoded parts — a corrupt/foreign file (or an entry in an earlier
+/// framing) fails the check and is a miss rather than mis-deserialized.
+const MAGIC: u32 = 0xDF5A_C0D3;
+
+/// Bytes ahead of the header: [`MAGIC`] then the header's length, each a
+/// little-endian `u32`.
+const PREFIX_LEN: u64 = 8;
 
 /// The environment variable selecting the cache directory. Empty disables the
 /// cache entirely; unset falls back to a default location. Shared with the
@@ -81,12 +85,15 @@ pub struct AssemblyCache {
     tag: u64,
 }
 
-/// The fixed-size front matter of an entry, deserialized and validated before the
-/// (larger) entity payload is read, so a stale/foreign/mismatched entry is
-/// rejected cheaply.
+/// The front matter of an entry, deserialized and validated before the (larger)
+/// entity payload is read, so a stale/foreign/mismatched entry is rejected
+/// cheaply.
+///
+/// An entry is `MAGIC (u32 LE) | header length (u32 LE) | Header | payload`,
+/// both parts postcard-encoded. The explicit length lets a read stop after the
+/// header without touching the payload.
 #[derive(Serialize, serde::Deserialize)]
 struct Header {
-    magic: u32,
     tag: u64,
     /// The canonical DLL path this entry was computed from — a guard so a
     /// filename-hash collision cannot hand back another DLL's entities.
@@ -229,16 +236,28 @@ impl AssemblyCache {
         self.dir.as_ref()?;
         let canonical = canonical_string(dll);
         let entry = self.entry_path(&canonical)?;
-        let file = std::fs::File::open(&entry).ok()?;
-        // Bound every deserialize by the entry's own byte length: a value can't
-        // decode to more bytes than the file holds, so a corrupt/foreign entry
-        // with a bogus huge length prefix (in the `path` string or a payload
-        // `Vec`) is rejected *before* allocating, keeping "corrupt ⇒ miss" honest
-        // rather than OOM-ing on a bad file in the cache dir.
-        let limit = file.metadata().ok()?.len();
-        let mut r = std::io::BufReader::new(file);
-        let header: Header = read_bounded(&mut r, limit)?;
-        if header.magic != MAGIC || header.tag != self.tag || header.path != canonical {
+        let mut file = std::fs::File::open(&entry).ok()?;
+        // Every allocation is bounded by the entry's own byte length: the header
+        // length is checked against it before its buffer is made, and postcard
+        // decodes from a slice, checking each length prefix (the `path` string,
+        // a payload `Vec`) against the bytes left. So a corrupt/foreign entry
+        // with a bogus huge length is a miss, not an OOM on a bad file in the
+        // cache dir.
+        let len = file.metadata().ok()?.len();
+        let mut prefix = [0u8; PREFIX_LEN as usize];
+        file.read_exact(&mut prefix).ok()?;
+        let [m0, m1, m2, m3, l0, l1, l2, l3] = prefix;
+        if u32::from_le_bytes([m0, m1, m2, m3]) != MAGIC {
+            return None;
+        }
+        let header_len = u64::from(u32::from_le_bytes([l0, l1, l2, l3]));
+        if header_len > len - PREFIX_LEN {
+            return None;
+        }
+        let mut header_bytes = vec![0u8; usize::try_from(header_len).ok()?];
+        file.read_exact(&mut header_bytes).ok()?;
+        let header: Header = decode_exact(&header_bytes)?;
+        if header.tag != self.tag || header.path != canonical {
             return None;
         }
         // Staleness guard: a single `stat` of the DLL (no read). A changed size
@@ -248,7 +267,10 @@ impl AssemblyCache {
         if header.size != cur.size || header.mtime != cur.mtime {
             return None;
         }
-        read_bounded(&mut r, limit)
+        let payload_len = usize::try_from(len - PREFIX_LEN - header_len).ok()?;
+        let mut payload = Vec::with_capacity(payload_len);
+        file.read_to_end(&mut payload).ok()?;
+        decode_exact(&payload)
     }
 
     /// Store `value` under `dll`, re-`stat`ing it now for the staleness header.
@@ -270,7 +292,6 @@ impl AssemblyCache {
             return;
         };
         let header = Header {
-            magic: MAGIC,
             tag: self.tag,
             path: canonical,
             size: stat.size,
@@ -283,14 +304,14 @@ impl AssemblyCache {
         // reader (another server instance) never observes a half-written entry.
         let tmp = entry.with_extension(format!("{}.tmp", std::process::id()));
         let ok = (|| -> std::io::Result<()> {
+            let header = postcard::to_allocvec(&header).map_err(std::io::Error::other)?;
+            let header_len = u32::try_from(header.len()).map_err(std::io::Error::other)?;
             let file = std::fs::File::create(&tmp)?;
             let mut w = std::io::BufWriter::new(file);
-            bincode_opts()
-                .serialize_into(&mut w, &header)
-                .map_err(std::io::Error::other)?;
-            bincode_opts()
-                .serialize_into(&mut w, value)
-                .map_err(std::io::Error::other)?;
+            w.write_all(&MAGIC.to_le_bytes())?;
+            w.write_all(&header_len.to_le_bytes())?;
+            w.write_all(&header)?;
+            postcard::to_io(value, &mut w).map_err(std::io::Error::other)?;
             w.flush()?;
             // No `fsync`: the atomic rename gives crash-consistency (a torn temp
             // never becomes the entry), and durability is pointless for a cache —
@@ -313,22 +334,13 @@ impl AssemblyCache {
     }
 }
 
-/// The bincode encoding shared by cache reads and writes — explicit (not the
-/// top-level `bincode::serialize` helpers) so a read can bound allocation with
-/// `.with_limit` without changing the on-disk format. Fixint keeps the framing
-/// simple and stable.
-fn bincode_opts() -> impl bincode::Options {
-    bincode::DefaultOptions::new().with_fixint_encoding()
-}
-
-/// Deserialize one value, refusing to read (or allocate for) more than `limit`
-/// bytes — so a corrupt length prefix is an `Err` (→ a cache miss), never a
-/// runaway allocation. `None` on any decode/IO error.
-fn read_bounded<T: DeserializeOwned, R: std::io::Read>(reader: R, limit: u64) -> Option<T> {
-    bincode_opts()
-        .with_limit(limit)
-        .deserialize_from(reader)
-        .ok()
+/// Decode one postcard value that must occupy all of `bytes`. `None` on a decode
+/// error or trailing bytes, so a truncated or overlong entry is a miss.
+fn decode_exact<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    match postcard::take_from_bytes(bytes) {
+        Ok((value, [])) => Some(value),
+        _ => None,
+    }
 }
 
 /// The DLL's size and mtime — the cheap staleness signals stored in, and
@@ -605,24 +617,75 @@ mod tests {
         assert_eq!(cache.read::<Vec<u32>>(&dll), None);
     }
 
+    /// The postcard varint encoding of `u64::MAX`: an absurd length prefix.
+    const HUGE_VARINT: [u8; 10] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01];
+
+    /// A cache, a DLL, and the bytes of a valid entry for it (a two-element
+    /// `Vec<u32>` payload), split at the end of the header.
+    fn valid_entry(tmp: &Path) -> (AssemblyCache, PathBuf, Vec<u8>, usize) {
+        let cache = enabled_cache(tmp.join("cache"));
+        let dll = dll_fixture(tmp, "a.dll", b"bytes");
+        cache.write(&dll, &vec![1u32, 2]);
+        let entry = cache.entry_path(&canonical_string(&dll)).unwrap();
+        let bytes = std::fs::read(&entry).unwrap();
+        let header_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        (cache, dll, bytes, PREFIX_LEN as usize + header_len)
+    }
+
+    fn overwrite_entry(cache: &AssemblyCache, dll: &Path, bytes: &[u8]) {
+        std::fs::write(cache.entry_path(&canonical_string(dll)).unwrap(), bytes).unwrap();
+    }
+
     #[test]
     fn huge_length_prefix_is_a_bounded_miss_not_an_oom() {
-        // A tiny entry whose framing claims a `u64::MAX`-long string must be
-        // rejected by the file-size limit *before* allocating — a miss, not a
-        // multi-exabyte allocation. Framing: fixint LE magic(u32) + tag(u64) +
-        // then the `path` String's length(u64).
+        // Each length prefix in the framing claims far more than the file
+        // holds; each must be a miss before allocating, not a multi-exabyte
+        // allocation.
         let tmp = tempfile::tempdir().unwrap();
-        let cache = enabled_cache(tmp.path().join("cache"));
-        let dll = dll_fixture(tmp.path(), "a.dll", b"bytes");
-        let entry = cache.entry_path(&canonical_string(&dll)).unwrap();
-        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        let (cache, dll, bytes, header_end) = valid_entry(tmp.path());
+        assert_eq!(cache.read::<Vec<u32>>(&dll), Some(vec![1, 2]));
 
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&MAGIC.to_le_bytes()); // magic: u32
-        bytes.extend_from_slice(&0u64.to_le_bytes()); // tag: u64
-        bytes.extend_from_slice(&u64::MAX.to_le_bytes()); // path len: u64 — absurd
-        std::fs::write(&entry, &bytes).unwrap();
+        // The raw header length.
+        let mut huge_header = bytes.clone();
+        huge_header[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        overwrite_entry(&cache, &dll, &huge_header);
+        assert_eq!(cache.read::<Vec<u32>>(&dll), None);
 
+        // The header's `path` string, after the varint `tag`.
+        let mut huge_path = MAGIC.to_le_bytes().to_vec();
+        let header = [&[0u8][..], &HUGE_VARINT].concat();
+        huge_path.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        huge_path.extend_from_slice(&header);
+        overwrite_entry(&cache, &dll, &huge_path);
+        assert_eq!(cache.read::<Vec<u32>>(&dll), None);
+
+        // The payload `Vec`, behind a header that validates.
+        let mut huge_vec = bytes[..header_end].to_vec();
+        huge_vec.extend_from_slice(&HUGE_VARINT);
+        overwrite_entry(&cache, &dll, &huge_vec);
+        assert_eq!(cache.read::<Vec<u32>>(&dll), None);
+    }
+
+    #[test]
+    fn every_truncation_and_any_trailing_byte_is_a_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cache, dll, bytes, _) = valid_entry(tmp.path());
+        for len in 0..bytes.len() {
+            overwrite_entry(&cache, &dll, &bytes[..len]);
+            assert_eq!(cache.read::<Vec<u32>>(&dll), None, "truncated to {len}");
+        }
+        overwrite_entry(&cache, &dll, &[&bytes[..], &[0]].concat());
+        assert_eq!(cache.read::<Vec<u32>>(&dll), None, "one trailing byte");
+        overwrite_entry(&cache, &dll, &bytes);
+        assert_eq!(cache.read::<Vec<u32>>(&dll), Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn entry_in_another_framing_is_a_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cache, dll, mut bytes, _) = valid_entry(tmp.path());
+        bytes[..4].copy_from_slice(&0xDF5A_C0DEu32.to_le_bytes());
+        overwrite_entry(&cache, &dll, &bytes);
         assert_eq!(cache.read::<Vec<u32>>(&dll), None);
     }
 
