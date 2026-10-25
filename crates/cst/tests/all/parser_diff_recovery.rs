@@ -62,3 +62,20 @@ fn diff_ast_dot_missing_as_argument() {
 fn diff_ast_dot_missing_as_module_expr() {
     assert_asts_match_allow_errors("foo.\nlet y = 2\n");
 }
+
+/// The beyond-FCS exemption anchors a module's offside column on a declaration
+/// both parsers agree on, never on one of ours that FCS does not have. Here FCS
+/// keeps only `N`'s header, and our only unit inside `N` is the spill of a stray
+/// `member` (`this.Foo`, off the body's column); anchoring on it would align it
+/// with itself and pass it as agreement.
+#[test]
+fn recovery_oracle_does_not_anchor_the_offside_column_on_an_unconfirmed_unit() {
+    let verdict =
+        crate::common::recovery::recovered_verdict("module M\nmodule N =\n    member this.Foo\n");
+    assert_eq!(
+        verdict.relation,
+        crate::common::recovery::Relation::Divergent,
+        "{}",
+        verdict.token()
+    );
+}
