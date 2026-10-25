@@ -645,7 +645,7 @@ fn explain_recovered_file() {
     for (side, units) in [("fcs ", fcs), ("ours", our_units(&parse))] {
         for u in units {
             let s = u.range.start.min(src.len());
-            let e = u.range.end.min(src.len()).min(s + 60).max(s);
+            let e = src.floor_char_boundary(u.range.end.min(src.len()).min(s + 60).max(s));
             eprintln!(
                 "{side} {} {:?} damaged={} {:?}{}",
                 u.key,

@@ -120,3 +120,14 @@ fn recover_function_body_after_a_local_module_is_debris() {
         0,
     );
 }
+
+/// A single `;` in a stray token's debris may belong to the abandoned
+/// construct (here, inside the parenthesis of a `fun` that lost its `->`), so
+/// it does not end the debris: `b <- y` is not a declaration of its own.
+#[test]
+fn recover_semicolon_inside_abandoned_parens_stays_debris() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "let a = 0\nlet f = g (fun (x, y)  x)\n|> h (fun (x, y) -> a <- x; b <- y)\nlet z = 3\n",
+        2,
+    );
+}

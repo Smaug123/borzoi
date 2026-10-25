@@ -1355,10 +1355,16 @@ impl<'src> Parser<'src> {
             self.bump_into(SyntaxKind::ERROR);
             // The rest of this line belongs to whatever the stray token began
             // (`member this.P = 1` outside a type), so it is not a fresh
-            // declaration either.
-            debris_until = self.source[stray_end..]
-                .find('\n')
-                .map_or(self.source.len(), |nl| stray_end + nl);
+            // declaration either. A stray token ending at or before the
+            // current `debris_until` is on the line already marked (no `\n`
+            // lies between the earlier stray and that line end), so only a
+            // token past it needs a fresh scan; rescanning for each stray on
+            // one long line would be quadratic.
+            if stray_end > debris_until {
+                debris_until = self.source[stray_end..]
+                    .find('\n')
+                    .map_or(self.source.len(), |nl| stray_end + nl);
+            }
             seen_decl = true;
             seen_non_hash_decl = true;
         }
