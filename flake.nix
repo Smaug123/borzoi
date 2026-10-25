@@ -299,6 +299,7 @@
             # the F# compiler source we test against uses a prerelease SDK
             # we don't want to take a dependency on.
             dotnet-sdk
+            pkgs.cargo-audit
           ];
 
           # Make every `dotnet` invocation under `cargo test` resolve packages

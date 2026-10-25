@@ -1,7 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all bcl_ref_pack_sweep::ref_pack_projection_matches_the_manifest
-(pack) 10.0.9/ref/net10.0
+(pack) 10.0.12/ref/net10.0
 Microsoft.CSharp.dll Microsoft.CSharp.RuntimeBinder.Binder members=11
 Microsoft.CSharp.dll Microsoft.CSharp.RuntimeBinder.CSharpArgumentInfo members=2
 Microsoft.CSharp.dll Microsoft.CSharp.RuntimeBinder.CSharpArgumentInfoFlags members=8

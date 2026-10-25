@@ -1,7 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all bcl_ref_pack_sweep::explicit_impl_classification_agrees_with_roslyn_convention_across_the_pack
-(pack) 10.0.9/ref/net10.0
+(pack) 10.0.12/ref/net10.0
 Microsoft.VisualBasic.Core.dll Microsoft.VisualBasic.Collection interface-impls=15 implicit-static=0
 System.Collections.Concurrent.dll System.Collections.Concurrent.BlockingCollection`1 interface-impls=5 implicit-static=0
 System.Collections.Concurrent.dll System.Collections.Concurrent.ConcurrentBag`1 interface-impls=5 implicit-static=0
