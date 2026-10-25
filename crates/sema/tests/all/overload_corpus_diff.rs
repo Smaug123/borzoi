@@ -32,8 +32,16 @@
 //!    matcher against itself can establish.
 //!
 //! Direction 1 alone is satisfiable by an engine that defers everything, so the
-//! differential also floors the commit count ([`MIN_COMMITS`]) — a corpus that
-//! stops committing is a regression, not a pass.
+//! differential also pins *which* call sites commit, exactly: the checked-in
+//! manifest `tests/manifests/overload_corpus_commits.txt` lists every committing
+//! site, and whether it went through a genuine (≥ 2 candidate) overload set —
+//! the §1 keystone — or FCS's single-candidate arity shortcut. A site that stops
+//! committing is a regression and one that starts is an improvement; either
+//! fails the run until the manifest is regenerated:
+//!
+//! ```text
+//! BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all overload_corpus_diff::our_commit_agrees_with_fcs_or_we_deferred
+//! ```
 //!
 //! Every published expression type is *additionally* checked against the `types`
 //! oracle at its exact range (the D5 soundness net the OV-6/OV-7 differentials
@@ -56,6 +64,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::overload_corpus::{Corpus, Site, corpus};
 use crate::common::{
     FcsCall, ensure_overload_corpus_built, ensure_system_runtime_dll, invoke_fcs_dump_with_refs,
@@ -64,24 +73,11 @@ use crate::common::{
 use borzoi_assembly::{Ecma335Assembly, Member, MethodLike, Primitive, TypeRef};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::{
     AssemblyEnv, EntityHandle, InferredFile, ProjectItems, Resolution, SyntaxRecovery, Ty,
     arity_window, infer_file, resolve_file,
 };
-
-/// Floor on the number of call sites we commit. Guards against the differential
-/// going vacuous: "we deferred" satisfies the property trivially, so a corpus
-/// that stops committing would silently pass. Measured 2026-07-12 (380); raise it
-/// when a stage lands (OV-8 will), never lower it without a stated reason.
-const MIN_COMMITS: usize = 350;
-
-/// Floor on the commits made on a **genuine overload set** — a group of ≥ 2
-/// candidates, where the commit went through the §1 keystone (unique `may_apply`
-/// survivor, affirmed by `must_apply`) rather than through FCS's
-/// single-candidate arity shortcut. Without this the headline count above could
-/// stay green while the keystone itself — the thing this whole plan exists to
-/// get right — was exercised by nothing. Measured 2026-07-12 (250).
-const MIN_OVERLOAD_SET_COMMITS: usize = 200;
 
 /// Everything one run of the corpus produces: the generated universe, our
 /// inference of it, and FCS's two oracles over the *same* file.
@@ -401,8 +397,8 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
     // The generated prelude must actually type: every corpus receiver and every
     // factory-produced argument value comes from a single-candidate static call,
     // and if those deferred, every call site would defer on a non-ground argument
-    // and the whole differential would go vacuous in a way `MIN_COMMITS` alone
-    // would not localise.
+    // and the whole differential would go vacuous in a way the commit manifest
+    // alone would not localise.
     for (binder, expected) in [
         ("o", "System.Object"),
         ("b", "OvCorpus.BaseTy"),
@@ -445,6 +441,10 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
     let mut overload_set_commits = 0usize;
     let mut fcs_resolved = 0usize;
     let mut may_apply_checked = 0usize;
+    // One entry per committing site: the generated call (without its `let rN =`
+    // binder, whose numbering shifts whenever the generator adds a site) and the
+    // path the commit took.
+    let mut manifest = Vec::new();
 
     for site in &run.corpus.sites {
         let ours = run.our_choice(site);
@@ -453,9 +453,18 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
         // ── Direction 1: we commit ⇒ FCS chose the same overload. ─────────────
         if let Some((_, m)) = ours {
             commits += 1;
-            if run.group(site).is_some_and(|g| g.len() >= 2) {
+            let via = if run.group(site).is_some_and(|g| g.len() >= 2) {
                 overload_set_commits += 1;
-            }
+                "overload-set"
+            } else {
+                "single-candidate"
+            };
+            let call = site
+                .text
+                .split_once(" = ")
+                .map_or(site.text.as_str(), |(_, call)| call)
+                .trim();
+            manifest.push(format!("{call} commit {via}"));
             match theirs {
                 None => violations.push(format!(
                     "COMMITTED WHERE FCS RESOLVED NOTHING (FCS errors here, so we must defer)\n    \
@@ -561,18 +570,12 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
         run.corpus.sites.len(),
         violations.join("\n\n"),
     );
-    assert!(
-        commits >= MIN_COMMITS,
-        "the differential has gone vacuous: only {commits} commits over {} call sites \
-         (floor {MIN_COMMITS}). \"We deferred\" satisfies the property trivially, so a \
-         collapse in coverage is a regression, not a pass.",
-        run.corpus.sites.len(),
-    );
-    assert!(
-        overload_set_commits >= MIN_OVERLOAD_SET_COMMITS,
-        "only {overload_set_commits} commits went through the §1 keystone on a genuine \
-         (≥ 2 candidate) overload set (floor {MIN_OVERLOAD_SET_COMMITS}); the rest rode FCS's \
-         single-candidate arity shortcut, which does not exercise the matcher at all.",
+    let manifest =
+        Manifest::from_counted(manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    check_manifest(
+        "overload_corpus_commits",
+        &manifest,
+        &regenerate("overload_corpus_diff::our_commit_agrees_with_fcs_or_we_deferred"),
     );
 }
 

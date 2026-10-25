@@ -431,3 +431,33 @@ mod panic_safe {
         }
     }
 }
+
+/// The response order is a function of the open buffers, not of the order the
+/// server's map of them happens to iterate in (a `HashMap`, randomised per
+/// instance): projects are searched in their open buffers' URI order. Six
+/// one-file projects, so a random order passes by chance once in 720 runs.
+#[test]
+fn projects_are_searched_in_open_buffer_order() {
+    let tmp = TempDir::new().unwrap();
+    let mut state = State::default();
+    for i in 0..6 {
+        let dir = tmp.path().join(format!("P{i}"));
+        write(
+            &dir.join(format!("P{i}.fsproj")),
+            r#"<Project><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
+        );
+        let src = format!("module M{i}\nlet v{i} = {i}\n");
+        write(&dir.join("A.fs"), &src);
+        state
+            .docs
+            .insert(Url::from_file_path(dir.join("A.fs")).unwrap(), src);
+    }
+    let uris: Vec<String> = run(&mut state, "")
+        .iter()
+        .map(|s| s.location.uri.to_string())
+        .collect();
+    assert_eq!(uris.len(), 6, "{uris:#?}");
+    let mut sorted = uris.clone();
+    sorted.sort();
+    assert_eq!(uris, sorted);
+}

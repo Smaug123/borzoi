@@ -4,16 +4,22 @@
 //! occurrence is omitted. Its soundness promise is the other direction — every
 //! location it *does* return names the cursor's symbol. This test asks FCS for
 //! every symbol use in a small project, queries the handler at each source-side
-//! declaration it can answer, and asserts:
+//! declaration **and at each use** FCS reports, and asserts:
 //!
 //! ```text
-//! handler locations ⊆ FCS uses of the cursor symbol
+//! handler locations ⊆ FCS uses of the cursor symbol          (soundness)
+//! FCS uses − handler locations = EXPECTED_DECLINED           (completeness, pinned)
+//! a use site's answer, when non-empty, = its definition's    (cursor independence)
 //! ```
+//!
+//! The declined set is pinned exactly rather than bounded, so a reference the
+//! handler stops returning fails the test as surely as a wrong one does.
 //!
 //! The currency is `(display name, declaration file, declaration byte range)`.
 //! A source declaration gives FCS and the handler a common stable identity
 //! without comparing sema's private `DefId` / project-local `ItemId` handles.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -148,7 +154,7 @@ fn check_answer(
     target: &Target,
     include_declaration: bool,
     coverage: &mut Coverage,
-) -> usize {
+) -> BTreeSet<Span> {
     let cursor_source = source_for(sources, &target.cursor_file);
     let cursor_uri = Url::from_file_path(&target.cursor_file).unwrap();
     let locations = references::handle(
@@ -162,6 +168,7 @@ fn check_answer(
     )
     .expect("the queried buffer is open");
 
+    let mut answered = BTreeSet::new();
     for location in &locations {
         let path = location
             .uri
@@ -203,9 +210,68 @@ fn check_answer(
         } else {
             coverage.use_locations += 1;
         }
+        assert!(
+            answered.insert((path, start, end)),
+            "references returned one location twice for {:?}",
+            target.key
+        );
     }
-    locations.len()
+    answered
 }
+
+/// A location: file and byte range.
+type Span = (PathBuf, usize, usize);
+
+/// Every use FCS reports of `key`'s symbol, its defining occurrence included.
+fn fcs_uses_of(fcs: &[FileUses], key: &SymbolKey) -> BTreeSet<Span> {
+    fcs.iter()
+        .flat_map(|file| {
+            file.uses
+                .iter()
+                .filter(|u| u.name == key.name && u.decl.as_ref() == Some(&key.decl))
+                .map(|u| (file.path.clone(), u.start, u.end))
+        })
+        .collect()
+}
+
+/// `span` as `<file name>:<line>:<col>` (both 1-based), for a pinned list.
+fn render_span(sources: &[(PathBuf, String)], (path, start, _): &Span) -> String {
+    let position = offset_to_position(source_for(sources, path), *start);
+    format!(
+        "{}:{}:{}",
+        path.file_name().unwrap().to_string_lossy(),
+        position.line + 1,
+        position.character + 1
+    )
+}
+
+/// The references FCS reports in the fixture below that the handler does not
+/// return: `<file>:<line>:<col> <symbol> (from …)`, sorted. Each is either a
+/// location missing from the definition site's answer or a use site whose own
+/// query returned nothing.
+///
+/// Two shapes today, both deferrals rather than wrong answers: a module is
+/// answered nowhere, and a value reached through a qualified path into another
+/// file (`Library.alpha`) is answered neither from that use nor from the
+/// value's definition — the resolver defers the path, so the handler omits it.
+const EXPECTED_DECLINED: &[&str] = &[
+    "Client.fs:1:8 Client (from its definition)",
+    "Client.fs:3:6 Library (from its definition)",
+    "Client.fs:3:6 Library (from this use)",
+    "Client.fs:6:19 Library (from its definition)",
+    "Client.fs:6:19 Library (from this use)",
+    "Client.fs:6:19 alpha (from its definition)",
+    "Client.fs:6:19 alpha (from this use)",
+    "Client.fs:8:17 Library (from its definition)",
+    "Client.fs:8:17 Library (from this use)",
+    "Client.fs:8:17 add (from its definition)",
+    "Client.fs:8:17 add (from this use)",
+    "Client.fs:9:18 Library (from its definition)",
+    "Client.fs:9:18 Library (from this use)",
+    "Client.fs:9:18 pair (from its definition)",
+    "Client.fs:9:18 pair (from this use)",
+    "Library.fs:1:8 Library (from its definition)",
+];
 
 #[test]
 fn every_reported_reference_is_the_cursor_symbol_according_to_fcs() {
@@ -278,21 +344,92 @@ let classify c =
         queried_targets: targets.len(),
         ..Coverage::default()
     };
+    // What the handler declined that FCS reports — the completeness direction.
+    // The handler omits a `Deferred` occurrence by design, so this is not
+    // asserted empty; it is pinned below, both ways, so a newly dropped
+    // reference fails exactly as a newly found one does.
+    let mut declined: Vec<String> = Vec::new();
+    // What a query from a *use* site returned, against the definition site's.
+    let mut use_site_queries = 0usize;
     for target in &targets {
         let with_declaration =
             check_answer(&mut state, &sources, &fcs, target, true, &mut coverage);
-        if with_declaration == 0 {
-            continue;
+        let oracle = fcs_uses_of(&fcs, &target.key);
+        for span in oracle.difference(&with_declaration) {
+            declined.push(format!(
+                "{} {} (from its definition)",
+                render_span(&sources, span),
+                target.key.name
+            ));
         }
-        coverage.answered_targets += 1;
-        let without_declaration =
-            check_answer(&mut state, &sources, &fcs, target, false, &mut coverage);
-        assert!(
-            without_declaration < with_declaration,
-            "including the declaration added nothing for {:?}",
-            target.key,
-        );
+        if !with_declaration.is_empty() {
+            coverage.answered_targets += 1;
+            let without_declaration =
+                check_answer(&mut state, &sources, &fcs, target, false, &mut coverage);
+            assert!(
+                without_declaration.len() < with_declaration.len(),
+                "including the declaration added nothing for {:?}",
+                target.key,
+            );
+        }
+
+        // The same question asked from every use FCS reports, with the cursor
+        // on the use's last byte (FCS names a use by its final identifier, so
+        // in `Library.alpha` the record's first byte is on the module). Every
+        // answer is held to the oracle by `check_answer`; a non-empty one must
+        // also be the definition site's answer, since both name one symbol.
+        for (path, start, end) in &oracle {
+            let Some(cursor) = uses_for(&fcs, path)
+                .uses
+                .iter()
+                .find(|u| (u.start, u.end) == (*start, *end) && u.name == target.key.name)
+            else {
+                continue;
+            };
+            if cursor.is_from_definition || cursor.start == cursor.end {
+                continue;
+            }
+            use_site_queries += 1;
+            let from_use = check_answer(
+                &mut state,
+                &sources,
+                &fcs,
+                &Target {
+                    key: target.key.clone(),
+                    cursor_file: path.clone(),
+                    cursor_start: end - 1,
+                },
+                true,
+                // The floors below are about the definition-site queries.
+                &mut Coverage::default(),
+            );
+            if from_use.is_empty() {
+                declined.push(format!(
+                    "{} {} (from this use)",
+                    render_span(&sources, &(path.clone(), *start, *end)),
+                    target.key.name
+                ));
+            } else {
+                assert_eq!(
+                    from_use,
+                    with_declaration,
+                    "a cursor on the use of {:?} at {} was answered differently from its definition",
+                    target.key,
+                    render_span(&sources, &(path.clone(), *start, *end)),
+                );
+            }
+        }
     }
+    declined.sort();
+    assert_eq!(
+        declined, EXPECTED_DECLINED,
+        "the references FCS reports that the handler does not changed; a removed line \
+         is a reference now found, an added one a reference now lost"
+    );
+    assert!(
+        use_site_queries >= 20,
+        "{use_site_queries} use-site queries"
+    );
 
     // Distribution assertions are part of the property: an all-Deferred
     // resolver, a project scan accidentally restricted to one file, or a

@@ -125,9 +125,9 @@ top of `resolve_type_member_bodies` enforces it, and
   scoping: both were fixed only after review found wrong-binds by hand, so the
   matrix now checks them mechanically.
 - **Corpus differential** (`resolve_corpus_diff.rs`): the sweep's
-  `MAX_RESOLUTION_DIVERGENCES = 0` gate is the whole-corpus soundness guard,
-  `MIN_RESOLUTION_MATCHES` / `MIN_B1_COVERAGE_PERMILLE` the completeness ratchets
-  (re-baselined up by this slice).
+  zero-divergence assertion is the whole-corpus soundness guard, and its
+  per-use manifest pins completeness exactly (this slice's new matches are
+  movements in it).
 
 ## Still to do
 

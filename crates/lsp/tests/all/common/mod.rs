@@ -59,7 +59,7 @@ fn workspace_root() -> PathBuf {
 
 /// Run `fcs-dump <subcommand> <source>` and return its stdout as a UTF-8 string.
 ///
-/// Honours `BORZOI_FCS_DUMP` (path to a pre-built self-contained binary)
+/// Honours `BORZOI_FCS_DUMP` (path to a pre-built framework-dependent binary)
 /// when set; otherwise builds `tools/fcs-dump` **once** per test binary and
 /// execs the resulting assembly on every call.
 ///
@@ -1018,4 +1018,51 @@ pub fn write_offline_nuget_config(dir: &Path) {
 pub fn write_boundary_global_json(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create project dir");
     std::fs::write(dir.join("global.json"), "{}\n").expect("write global.json");
+}
+
+/// An env over `dlls`, each carrying its source path and its
+/// [`borzoi_assembly::doc_id::DocIdDialect`] read from the DLL itself — what
+/// hover's doc lookup needs, and what [`borzoi_sema::AssemblyEnv::from_assemblies`]
+/// does not record. A DLL that does not read is left out.
+pub fn doc_key_env(dlls: &[PathBuf]) -> borzoi_sema::AssemblyEnv {
+    use borzoi_assembly::{Ecma335Assembly, EcmaView};
+    doc_key_env_of(
+        dlls.iter()
+            .filter_map(|dll| {
+                let bytes = std::fs::read(dll).ok()?;
+                let view = Ecma335Assembly::parse(&bytes).ok()?;
+                let roots = view.enumerate_type_defs().ok()?;
+                let dialect = view.doc_id_dialect().expect("doc-ID dialect");
+                Some((dll.clone(), roots, dialect))
+            })
+            .collect(),
+    )
+}
+
+/// [`doc_key_env`] over entity trees the caller supplies (possibly doctored),
+/// each with the dialect to record for it.
+pub fn doc_key_env_of(
+    assemblies: Vec<(
+        PathBuf,
+        Vec<borzoi_assembly::Entity>,
+        borzoi_assembly::doc_id::DocIdDialect,
+    )>,
+) -> borzoi_sema::AssemblyEnv {
+    let inputs = assemblies
+        .into_iter()
+        .map(
+            |(path, roots, dialect)| borzoi_sema::AssemblyProjectionInput {
+                path,
+                roots,
+                abbreviation_visibility: borzoi_sema::AbbreviationVisibility::Modelled,
+                extension_index_unknowable: false,
+                signature_non_authoritative: false,
+                auto_opens: Vec::new(),
+                manifest_identity: None,
+                type_forwarders: Vec::new(),
+                doc_id_dialect: Some(dialect),
+            },
+        )
+        .collect();
+    borzoi_sema::AssemblyEnv::from_assemblies_with_projection_knowability(inputs)
 }

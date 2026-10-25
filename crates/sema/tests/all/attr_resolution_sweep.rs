@@ -14,16 +14,27 @@
 //! `attr_resolution_diff`, which FCS cannot be fed without real DLLs.
 //!
 //! The property is stage 3's: **certain-implies-exact** — our commit names
-//! FCS's resolution, or we decline; plus an aggregate commit floor so the
-//! matrix cannot silently decay into wholesale deferral.
+//! FCS's resolution, or we decline. Each attribute's outcome (commit, decline,
+//! or ambiguous on FCS's side) is pinned exactly by a checked-in manifest
+//! (`tests/manifests/attr_resolution_matrix.txt`), so the matrix cannot
+//! silently decay into deferral, and a cell that starts committing is
+//! acknowledged rather than absorbed.
 //!
 //! The `#[ignore]`d corpus sweep runs the same comparison over a real F#
 //! source tree (`BORZOI_CORPUS`, each file checked in isolation): every
-//! attribute in real code becomes a test point for free.
+//! attribute in real code becomes a test point for free. Its per-attribute
+//! outcomes are pinned the same way (`attr_resolution_corpus.txt`), with one
+//! line per sampled file recording whether it was compared and whether FCS's
+//! check of it errored.
 
 use std::path::{Path, PathBuf};
 
-use crate::attr_resolution_diff::{check_attrs_agree, fsharp_core_env};
+use borzoi_oracle_harness::manifest::Manifest;
+
+use crate::attr_resolution_diff::{AttrOutcome, check_attrs_outcomes, fsharp_core_env};
+use crate::common::corpus_manifest::{
+    Positions, check_manifest, corpus_relative, regenerate, regenerate_ignored,
+};
 use crate::common::{
     env_usize_or, invoke_fcs_dump_attrs_batch, parse_fcs_attrs_batch, temp_fs_file,
 };
@@ -38,6 +49,12 @@ use borzoi_sema::{ProjectItems, SyntaxRecovery, resolve_file};
 fn recovery_of(src: &str) -> SyntaxRecovery {
     SyntaxRecovery::of(&parse(src))
 }
+
+/// The corpus sample the checked-in manifest describes: every
+/// `DEFAULT_STRIDE`th file, sized to the oracle child's one-hour budget (an
+/// isolation check of a compiler-sized corpus file runs ~5s, so ~250 files fits
+/// with margin; stride 7 = 745 files hit the deadline at ~700).
+const DEFAULT_STRIDE: usize = 19;
 
 /// One generated cell of the matrix.
 struct Case {
@@ -170,8 +187,8 @@ fn matrix() -> Vec<Case> {
 /// The exhaustive matrix, diffed cell-by-cell against FCS through one
 /// resident `attrs-batch` child. Certain-implies-exact per cell (the reverse
 /// direction only where FCS's check is clean — an erroring check can
-/// under-report its sink without implicating us), plus an aggregate commit
-/// floor.
+/// under-report its sink without implicating us), and every attribute's
+/// outcome pinned by the manifest.
 #[test]
 fn generative_matrix_agrees_with_fcs() {
     let env = fsharp_core_env();
@@ -194,6 +211,7 @@ fn generative_matrix_agrees_with_fcs() {
 
     let mut commits = 0usize;
     let mut declines = 0usize;
+    let mut manifest = Vec::new();
     for entry in &entries {
         let case = by_path[&entry.path];
         assert!(
@@ -216,9 +234,26 @@ fn generative_matrix_agrees_with_fcs() {
         let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
 
         let clean = entry.oracle.errors.is_empty();
-        let cell_commits = check_attrs_agree(&case.src, &env, &rf, &entry.oracle, clean);
+        let outcomes = check_attrs_outcomes(&case.src, &env, &rf, &entry.oracle, clean);
+        let positions = Positions::new(&case.src);
+        for (a, outcome) in entry.oracle.attrs.iter().zip(&outcomes) {
+            manifest.push(format!(
+                "{}:{} {:?} {}",
+                case.label,
+                positions.at(a.start),
+                case.src.get(a.start..a.end).unwrap_or(""),
+                outcome.label()
+            ));
+        }
+        let cell_commits = outcomes
+            .iter()
+            .filter(|o| **o == AttrOutcome::Committed)
+            .count();
         commits += cell_commits;
         declines += entry.oracle.attrs.len() - cell_commits;
+        if entry.oracle.attrs.is_empty() {
+            manifest.push(format!("{} no-attributes", case.label));
+        }
         let _ = std::fs::remove_file(&entry.path);
     }
 
@@ -226,14 +261,12 @@ fn generative_matrix_agrees_with_fcs() {
         "attr sweep: {} cells, {commits} commits, {declines} declines (of FCS-resolved attributes)",
         cases.len()
     );
-    // The aggregate floor: measured 172 with the auto-open dimension (AO-2 —
-    // 164 cells; each `[<AutoOpen>]` wrapper is itself a committing
-    // attribute), floored a little under to tolerate small FCS drift while
-    // still catching any decay toward wholesale deferral. Ratchet upward as
-    // coverage grows.
-    assert!(
-        commits >= 160,
-        "matrix commit floor: {commits} < 160 — the resolver decayed into wholesale deferral"
+    let manifest =
+        Manifest::from_counted(manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    check_manifest(
+        "attr_resolution_matrix",
+        &manifest,
+        &regenerate("attr_resolution_sweep::generative_matrix_agrees_with_fcs"),
     );
 }
 
@@ -254,7 +287,8 @@ fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
 /// The real-corpus sweep: every attribute FCS resolves in a real F# source
 /// tree, diffed against our resolver (empty cross-file context, real
 /// FSharp.Core env — the same conservative envelope the isolation census
-/// uses). Certain-implies-exact; reports commit/decline rates.
+/// uses). Certain-implies-exact, with every attribute's outcome pinned by the
+/// manifest.
 #[test]
 #[ignore = "corpus sweep: needs BORZOI_CORPUS + builds fcs-dump; run with --ignored under nix develop"]
 fn corpus_attributes_agree_with_fcs() {
@@ -263,15 +297,13 @@ fn corpus_attributes_agree_with_fcs() {
         return;
     };
     let env = fsharp_core_env();
-    // Default sized to the oracle child's one-hour budget: an isolation
-    // check of a compiler-sized corpus file runs ~5s, so ~250 files fits
-    // with margin (stride 7 = 745 files hit the deadline at ~700).
-    let stride = env_usize_or("BORZOI_ATTR_SWEEP_STRIDE", 19).max(1);
+    let stride = env_usize_or("BORZOI_ATTR_SWEEP_STRIDE", DEFAULT_STRIDE).max(1);
     let limit = env_usize_or("BORZOI_ATTR_SWEEP_LIMIT", usize::MAX);
 
     let mut all_files = Vec::new();
-    collect_fs(&PathBuf::from(root), &mut all_files);
-    all_files.sort();
+    let root = PathBuf::from(root);
+    collect_fs(&root, &mut all_files);
+    crate::common::corpus_manifest::sort_by_corpus_key(&root, &mut all_files);
     let sample: Vec<PathBuf> = all_files
         .iter()
         .step_by(stride)
@@ -289,17 +321,26 @@ fn corpus_attributes_agree_with_fcs() {
     let entries = parse_fcs_attrs_batch(&jsonl, |path| {
         std::fs::read_to_string(path).unwrap_or_default()
     });
+    assert_eq!(
+        entries.len(),
+        sample.len(),
+        "one oracle line per sampled file"
+    );
 
     let mut commits = 0usize;
     let mut fcs_attrs = 0usize;
     let mut skipped = 0usize;
+    let mut manifest = Vec::new();
     for entry in &entries {
+        let rel = corpus_relative(&root, Path::new(&entry.path));
         if !entry.ok {
             skipped += 1;
+            manifest.push(format!("{rel} fcs-not-ok"));
             continue;
         }
         let Ok(src) = std::fs::read_to_string(&entry.path) else {
             skipped += 1;
+            manifest.push(format!("{rel} unreadable"));
             continue;
         };
         // A corpus file our parser cannot yet accept is out of this sweep's
@@ -307,10 +348,12 @@ fn corpus_attributes_agree_with_fcs() {
         let p = parse(&src);
         if !p.errors.is_empty() {
             skipped += 1;
+            manifest.push(format!("{rel} our-parse-errors"));
             continue;
         }
         let Some(file) = ImplFile::cast(p.root) else {
             skipped += 1;
+            manifest.push(format!("{rel} not-an-impl-file"));
             continue;
         };
         let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery_of(&src));
@@ -318,7 +361,26 @@ fn corpus_attributes_agree_with_fcs() {
         // Reverse direction off: a corpus file checked in isolation errors
         // freely (missing project siblings), and those errors can suppress
         // sink records without implicating our commits.
-        commits += check_attrs_agree(&src, &env, &rf, &entry.oracle, false);
+        let outcomes = check_attrs_outcomes(&src, &env, &rf, &entry.oracle, false);
+        let check = if entry.oracle.errors.is_empty() {
+            "fcs-clean"
+        } else {
+            "fcs-check-errors"
+        };
+        manifest.push(format!("{rel} compared {check}"));
+        let positions = Positions::new(&src);
+        for (a, outcome) in entry.oracle.attrs.iter().zip(&outcomes) {
+            manifest.push(format!(
+                "{rel}:{} {:?} {}",
+                positions.at(a.start),
+                src.get(a.start..a.end).unwrap_or(""),
+                outcome.label()
+            ));
+        }
+        commits += outcomes
+            .iter()
+            .filter(|o| **o == AttrOutcome::Committed)
+            .count();
     }
 
     eprintln!(
@@ -327,6 +389,19 @@ fn corpus_attributes_agree_with_fcs() {
         entries.len(),
         fcs_attrs - commits
     );
-    let floor = env_usize_or("BORZOI_ATTR_SWEEP_COMMIT_FLOOR", 1);
-    assert!(commits >= floor, "corpus commit floor: {commits} < {floor}");
+    if stride != DEFAULT_STRIDE || limit != usize::MAX {
+        eprintln!(
+            "attr corpus sweep: NOT comparing the manifest — it describes the default \
+             sample (stride {DEFAULT_STRIDE}, no limit), and this run sampled \
+             stride {stride}, limit {limit}."
+        );
+        return;
+    }
+    let manifest =
+        Manifest::from_counted(manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    check_manifest(
+        "attr_resolution_corpus",
+        &manifest,
+        &regenerate_ignored("attr_resolution_sweep"),
+    );
 }

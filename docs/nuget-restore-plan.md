@@ -76,7 +76,7 @@ passes explicit cache roots and typed direct package inputs into the resolver.
   gating (`nuget` filter, `test-nuget` job).
 - **Slice 2** (#723) — `VersionRange`: bracket/float parse and `satisfies`
   against the float's resolved base min; float *selection* deferred to the
-  resolver. Fresh-seed `soak` differential (`tests/soak.rs`) landed alongside.
+  resolver. Fresh-seed `soak` differential (`tests/all/soak.rs`) landed alongside.
 - **Slice 3** — `NuGetFramework`: TFM parse (short + long), compatibility, and
   nearest-match. Over the canonical `GetShortFolderName` spelling, compatibility
   is *exact in both directions* for live frameworks (`.NETFramework`,

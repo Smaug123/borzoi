@@ -300,6 +300,13 @@ impl<'a> Resolver<'a> {
             let name = id_text(&def.name).to_string();
             let range = def.range;
             let id = self.intern(def);
+            let fields = case.full_type().is_none().then(|| {
+                case.fields()
+                    .filter_map(|f| f.ident())
+                    .map(|t| id_text(t.text()).to_string())
+                    .collect()
+            });
+            self.case_field_names.insert(id, fields);
             // A non-qualified union case is *also* a value-namespace member,
             // reachable unqualified (`open M; Red`) and via the shortcut (`M.Red`,
             // type elided). Export it ([`export_case`]) and use the resulting

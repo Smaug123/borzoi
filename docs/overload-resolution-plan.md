@@ -345,9 +345,9 @@ infrastructure, then engine).
   call-site matrix of 2584 sites);
   [`overload_corpus_diff.rs`](../crates/sema/tests/all/overload_corpus_diff.rs)
   asserts both directions of the keystone (we-commit ⇒ FCS-same-overload;
-  FCS-resolved ⇒ `may_apply` does not refute FCS's choice), the D5 net, and two
-  commit floors (`MIN_COMMITS` 380, `MIN_OVERLOAD_SET_COMMITS` 250 through genuine
-  ≥ 2-candidate groups). **Load-bearing finding:** an elaborated `Call` node does
+  FCS-resolved ⇒ `may_apply` does not refute FCS's choice), the D5 net, and the
+  exact set of committing sites (380, 250 of them through genuine ≥ 2-candidate
+  groups), pinned by the manifest `tests/manifests/overload_corpus_commits.txt`. **Load-bearing finding:** an elaborated `Call` node does
   **not** mean FCS *resolved* the call (the arity-based single-`IsCandidate`
   shortcut, §2.2, fires even inside a multi-candidate group), so `fcs-dump
   overloads` also emits **`Errors`** and the applicability direction is asserted

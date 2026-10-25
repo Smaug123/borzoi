@@ -1,0 +1,734 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_corpus:: -- --ignored
+(clean) 5625 files
+src/Compiler/Service/ServiceErrorResolutionHints.fs errors
+src/FSharp.Core/Nullable.fsi errors
+src/FSharp.Core/Query.fs errors
+src/FSharp.Core/Query.fsi errors
+src/FSharp.Core/fslib-extra-pervasives.fsi errors
+src/FSharp.Core/local.fs errors
+src/FSharp.Core/prim-types.fs errors
+src/FSharp.Core/prim-types.fsi errors
+src/FSharp.Core/seqcore.fs errors
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/codepage/libCodepage.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/times/times01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnTypeMembers/E_OnProperty02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface03.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface04.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface05.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface06.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_let01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_member01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_module01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_type01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod03.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/EntryPointAndAssemblyCulture.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_BeginWithUppercase02.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_BeginWithUppercase03.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_BeginWithUppercase04.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_ExnAsDiscriminatedUnion01.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ImportDeclarations/E_openInTypeDecl.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ImportDeclarations/E_openModInFun.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_ErrorsforIncompleteTryWith.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_GenericTypeAnnotations01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological03.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological05.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological06.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/E_Properties02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_InvalidAbbrevName01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_InvalidAbbrevName02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_UseInsideFunc.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/E_BasicOperatorNames01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_FlexibleType01.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_IncorrectRightSide_Hash.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_IncorrectRightSide_Keyword.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_IncorrectRightSide_Quotation.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_UnexpectedCharInTypeName01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ApplicationExpressions/BasicApplication/E_PostfixType01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ApplicationExpressions/BasicApplication/E_PostfixType03.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_WhitespaceErrors02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Joins01.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Ordering01.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/UppercaseIdentifier04.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Utils.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/E_final_yield_dash_gt_01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_InvalidQuotationLiteral01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators03.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators04.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/LexicalFiltering/OffsideExceptions/RelaxWhitespace2.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AsDeclarations/SanityCheck02.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/E_IllegalName01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/E_PropertyInvalidGetter01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_NoNestedTypes.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ZeroArity.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/E_ActivePatterns01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/E_SyntaxError01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/E_SyntaxError01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/E_NoRangeConst01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/TypeConstraint/E_typeconstraint01.fs errors
+tests/FSharp.Compiler.ComponentTests/Conformance/PseudoCustomAttributes/AssemblyCopyright_001.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_BeginWithUppercase02.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_BeginWithUppercase03.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_BeginWithUppercase04.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_SampleFromSpec01d.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_SampleFromSpec01d2.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/SampleFromSpec01d.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/W_SampleFromSpec01c.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Diagnostics/E_ParsingRationalExponents.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Diagnostics/E_ZeroDenominator.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error02.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error03.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error04.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error05.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error06.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_IncompleteParens01.fsx errors
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_IncompleteParens02.fsx errors
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Utils.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DerivedType.fs errors
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DoNotInlineX.fs errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_emptyRecord.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal01.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal_n01.fs.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal_tuple.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_id.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_id_equal01.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_id_equal_let_id_equal_n.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_mutable_equal.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_module_mutable_id_equal.fsx errors
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_type_id_equal_pipe.fsx errors
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/innerpoly.fsx errors
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/libtest.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/AlternateGenericTypeSyntax01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/E_MissingArgumentForGetterProp01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_HashDirectives01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_HashDirectives02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_NamespaceAndModule01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_NamespaceAndModule02.fsi errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/global/E_AsModuleName.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/global/E_InExceptionDecl.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/global/E_IsAKeyword.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/SignatureFiles/E_MissingSourceFile02.fsi errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_IncompleteComment01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_IncompleteComment02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_embeddedString005.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_ocamlstyle_nested006.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_ocamlstyle_nested007.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_star02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_MustBeIdent01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_UnmatchedEndif01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_UnmatchedIf01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_UnmatchedIf02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/InStringLiteral02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/Nested01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/Nested02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_InvalidIdentifier01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_KeywordIdent01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_MissingQualification.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_ValidIdentifier04.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/LineDirectives/Line01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_DecimalWO0Prefix.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_InvalidIEEE64.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_MaxLiterals01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_MaxLiterals02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_MaxLiterals04.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals001.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals002.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals003.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals004.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals005.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals006.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals007.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/casingIEEE-lf-LF03a.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/casingIEEE-lf-LF03b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/ByteChars02.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_BogusLongUnicodeEscape.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_ByteCharUnicodeChar01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_ByteChars02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_ByteStrUnicodeChar01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_MalformedShortUnicode01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/TripleQuoteString02.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_CantUseDollarSign.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/Basic/OffsideExceptions/Offside01c.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_SpacesAfterLetBinding.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_TABsNotAllowedIndentOff.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_UnclosedLetBlock01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/W_OffsideAccessibility01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_Regressions01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/TypeParameterDefinitions/E_LazyInType02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_AsBindingOnInheritDecl01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_BaseInObjectExpression01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_IncompleteConstruct01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_IncompleteConstruct01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_IndexedPropertySetter01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_TryFinallyIncompleteStructuredConstruct.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedKeywordAs01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedKeyworkWith01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/attrUnionCaseDecl01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/attrUnionCaseDecl01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceExpr01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceExpr01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl02b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl04.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator02b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator05.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator05b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator06.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator06b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/memberDefinitionWithoutType01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/memberDefinitionWithoutType01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicExprNonEmptyInitial01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicExprNonEmptyInitial01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicPatternClauses01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicPatternClauses01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/tuplewithlazy01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/tuplewithlazy01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typ01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typ01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typeConstraint01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typeConstraint01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock01b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock02b.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/for_in01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/for_in_range01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/if01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/match01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/try01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal01.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal02.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal02.fsi errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal_curly01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_parens01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/while_cond01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_emptyRecord.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_equal01.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_equal_n01.fs.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_equal_tuple.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_id.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_id_equal01.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_id_equal_let_id_equal_n.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_mutable_equal.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_module_mutable_id_equal.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_type_id_equal_pipe.fsx errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/E_productioncoverage01.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/E_productioncoverage03.fs errors
+tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/productioncoverage01.fs errors
+tests/FSharp.Core.UnitTests/FSharp.Core/RecordTypes.fs errors
+tests/fsharp/core/innerpoly/test.fsx errors
+tests/fsharp/core/large/conditionals/LargeConditionals-maxtested.fs errors
+tests/fsharp/core/large/lets/LargeLets-500.fs errors
+tests/fsharp/core/large/lets/LargeLets-maxtested.fs errors
+tests/fsharp/core/large/mixed/LargeSequentialLet-500.fs errors
+tests/fsharp/core/large/mixed/LargeSequentialLet-maxtested.fs errors
+tests/fsharp/core/letrec/test.fsx errors
+tests/fsharp/core/libtest/test.fsx errors
+tests/fsharp/core/load-script/loadfail1.fsx errors
+tests/fsharp/core/members/absil.fs errors
+tests/fsharp/core/members/absil.fsi errors
+tests/fsharp/core/members/basics-hw/test.fsx errors
+tests/fsharp/core/members/console/console2.fs errors
+tests/fsharp/core/members/incremental-hw-mutrec/test.fsx errors
+tests/fsharp/core/members/incremental-hw/test.fsx errors
+tests/fsharp/core/members/incremental/test.fsx errors
+tests/fsharp/core/patterns/test.fsx errors
+tests/fsharp/core/printing/test.fsx errors
+tests/fsharp/core/quotes/test.fsx errors
+tests/fsharp/core/recordResolution/test.fsx errors
+tests/fsharp/core/tlr/test.fsx errors
+tests/fsharp/core/unicode/kanji-unicode-utf16.fs non-utf8
+tests/fsharp/core/unicode/kanji-unicode-utf7-codepage-65000.fs errors
+tests/fsharp/regression/12322/test.fsx errors
+tests/fsharp/typecheck/sigs/neg01a.fs errors
+tests/fsharp/typecheck/sigs/neg01a.fsi errors
+tests/fsharp/typecheck/sigs/neg02.fs errors
+tests/fsharp/typecheck/sigs/neg104.fs errors
+tests/fsharp/typecheck/sigs/neg114.fs errors
+tests/fsharp/typecheck/sigs/neg115.fs errors
+tests/fsharp/typecheck/sigs/neg135.fs errors
+tests/fsharp/typecheck/sigs/neg25.fs errors
+tests/fsharp/typecheck/sigs/neg27.fs errors
+tests/fsharp/typecheck/sigs/neg27.fsi errors
+tests/fsharp/typecheck/sigs/neg29.fs errors
+tests/fsharp/typecheck/sigs/neg38.fs errors
+tests/fsharp/typecheck/sigs/neg41.fs errors
+tests/fsharp/typecheck/sigs/neg42.fsi errors
+tests/fsharp/typecheck/sigs/neg64.fsx errors
+tests/fsharp/typecheck/sigs/neg65.fs errors
+tests/fsharp/typecheck/sigs/neg66.fsx errors
+tests/fsharp/typecheck/sigs/neg67.fsx errors
+tests/fsharp/typecheck/sigs/neg69.fsx errors
+tests/fsharp/typecheck/sigs/neg70.fsx errors
+tests/fsharp/typecheck/sigs/neg71.fsx errors
+tests/fsharp/typecheck/sigs/neg72.fsx errors
+tests/fsharp/typecheck/sigs/neg73.fsx errors
+tests/fsharp/typecheck/sigs/neg74.fsx errors
+tests/fsharp/typecheck/sigs/neg75.fsx errors
+tests/fsharp/typecheck/sigs/neg76.fsx errors
+tests/fsharp/typecheck/sigs/neg77.fsx errors
+tests/fsharp/typecheck/sigs/neg79.fsx errors
+tests/fsharp/typecheck/sigs/neg80.fsx errors
+tests/fsharp/typecheck/sigs/neg81.fsx errors
+tests/fsharp/typecheck/sigs/neg82.fsx errors
+tests/fsharp/typecheck/sigs/neg83.fsx errors
+tests/fsharp/typecheck/sigs/neg84.fsx errors
+tests/fsharp/typecheck/sigs/neg86.fsx errors
+tests/fsharp/typecheck/sigs/neg_anon_2.fs errors
+tests/fsharp/typecheck/sigs/pos24.fs errors
+tests/service/data/SyntaxTree/Exception/Missing name 01.fs errors
+tests/service/data/SyntaxTree/Exception/Missing name 02.fs errors
+tests/service/data/SyntaxTree/Exception/Missing name 03.fs errors
+tests/service/data/SyntaxTree/Exception/Recover Function Type 01.fs errors
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-01.fs errors
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-02.fs errors
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-03.fs errors
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-04.fs errors
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-05.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Eq 03.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Eq 04.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Eq 05.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Eq 06.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Eq 07.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Plus 02.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Plus 03.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Plus 04.fs errors
+tests/service/data/SyntaxTree/Expression/Binary - Plus 05.fs errors
+tests/service/data/SyntaxTree/Expression/Do 03.fs errors
+tests/service/data/SyntaxTree/Expression/DotLambda - _ Recovery - Casts.fsx errors
+tests/service/data/SyntaxTree/Expression/DotLambda - _ Recovery - Eof.fsx errors
+tests/service/data/SyntaxTree/Expression/DotLambda - _ Recovery.fsx errors
+tests/service/data/SyntaxTree/Expression/DotLambda - _. Recovery - Eof.fsx errors
+tests/service/data/SyntaxTree/Expression/DotLambda - _. Recovery.fsx errors
+tests/service/data/SyntaxTree/Expression/DotLambda_WithoutUnderscore.fs errors
+tests/service/data/SyntaxTree/Expression/Downcast 01.fs errors
+tests/service/data/SyntaxTree/Expression/Downcast 02.fs errors
+tests/service/data/SyntaxTree/Expression/For 03.fs errors
+tests/service/data/SyntaxTree/Expression/Id 02.fs errors
+tests/service/data/SyntaxTree/Expression/Id 03.fs errors
+tests/service/data/SyntaxTree/Expression/Id 04.fs errors
+tests/service/data/SyntaxTree/Expression/Id 05.fs errors
+tests/service/data/SyntaxTree/Expression/Id 06.fs errors
+tests/service/data/SyntaxTree/Expression/Id 07.fs errors
+tests/service/data/SyntaxTree/Expression/If 03.fs errors
+tests/service/data/SyntaxTree/Expression/If 04.fs errors
+tests/service/data/SyntaxTree/Expression/If 05.fs errors
+tests/service/data/SyntaxTree/Expression/If 06.fs errors
+tests/service/data/SyntaxTree/Expression/If 07.fs errors
+tests/service/data/SyntaxTree/Expression/If 10.fs errors
+tests/service/data/SyntaxTree/Expression/Lambda - Missing expr 01.fs errors
+tests/service/data/SyntaxTree/Expression/Lambda - Missing expr 02.fs errors
+tests/service/data/SyntaxTree/Expression/Lazy 03.fs errors
+tests/service/data/SyntaxTree/Expression/Let 02.fs errors
+tests/service/data/SyntaxTree/Expression/List - Comprehension 02.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 04.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 05.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 06.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 07.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 08.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 09.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 10.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 11.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 12.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 13.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 14.fs errors
+tests/service/data/SyntaxTree/Expression/Object - Class 15.fs errors
+tests/service/data/SyntaxTree/Expression/Rarrow 01.fs errors
+tests/service/data/SyntaxTree/Expression/Rarrow 02.fs errors
+tests/service/data/SyntaxTree/Expression/Rarrow 03.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 02.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 03.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 04.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 05.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 06.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 07.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 08.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 10.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Anon 12.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 01.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 02.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 03.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 04.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 07.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 08.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 09.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 11.fs errors
+tests/service/data/SyntaxTree/Expression/Record - Field 13.fs errors
+tests/service/data/SyntaxTree/Expression/Return 07.fs errors
+tests/service/data/SyntaxTree/Expression/ReturnBang 03.fs errors
+tests/service/data/SyntaxTree/Expression/Set 04.fs errors
+tests/service/data/SyntaxTree/Expression/Try - Finally 04.fs errors
+tests/service/data/SyntaxTree/Expression/Try - With 04.fs errors
+tests/service/data/SyntaxTree/Expression/Try - With 05.fs errors
+tests/service/data/SyntaxTree/Expression/Try - With 06.fs errors
+tests/service/data/SyntaxTree/Expression/Try - With 08.fs errors
+tests/service/data/SyntaxTree/Expression/Try - With 09.fs errors
+tests/service/data/SyntaxTree/Expression/Try 01.fs errors
+tests/service/data/SyntaxTree/Expression/Try 02.fs errors
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 01.fs errors
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 02.fs errors
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 03.fs errors
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 04.fs errors
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 05.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 01.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 02.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 03.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 04.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 05.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 06.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 07.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 08.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 09.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 10.fs errors
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 11.fs errors
+tests/service/data/SyntaxTree/Expression/Type test 01.fs errors
+tests/service/data/SyntaxTree/Expression/Type test 02.fs errors
+tests/service/data/SyntaxTree/Expression/Type test 03.fs errors
+tests/service/data/SyntaxTree/Expression/Type test 04.fs errors
+tests/service/data/SyntaxTree/Expression/Typed 01.fs errors
+tests/service/data/SyntaxTree/Expression/Typed 02.fs errors
+tests/service/data/SyntaxTree/Expression/Typed 03.fs errors
+tests/service/data/SyntaxTree/Expression/Typed 04.fs errors
+tests/service/data/SyntaxTree/Expression/Unary - Reserved 01.fs errors
+tests/service/data/SyntaxTree/Expression/Unary - Reserved 02.fs errors
+tests/service/data/SyntaxTree/Expression/Unfinished escaped ident 01.fs errors
+tests/service/data/SyntaxTree/Expression/Unfinished escaped ident 02.fs errors
+tests/service/data/SyntaxTree/Expression/Unfinished escaped ident 03.fs errors
+tests/service/data/SyntaxTree/Expression/Upcast 01.fs errors
+tests/service/data/SyntaxTree/Expression/Upcast 02.fs errors
+tests/service/data/SyntaxTree/Expression/Upcast 04.fs errors
+tests/service/data/SyntaxTree/Expression/Upcast 05.fs errors
+tests/service/data/SyntaxTree/Expression/While 03.fs errors
+tests/service/data/SyntaxTree/Expression/While 04.fs errors
+tests/service/data/SyntaxTree/Expression/WhileBang 03.fs errors
+tests/service/data/SyntaxTree/Expression/WhileBang 04.fs errors
+tests/service/data/SyntaxTree/Expression/Yield 05.fs errors
+tests/service/data/SyntaxTree/Expression/Yield 06.fs errors
+tests/service/data/SyntaxTree/Expression/YieldBang 05.fs errors
+tests/service/data/SyntaxTree/Expression/YieldBang 06.fs errors
+tests/service/data/SyntaxTree/IfThenElse/Comment after else 02.fs errors
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 01.fs errors
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 02.fs errors
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 03.fs errors
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 04.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing expr 01.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing expr 02.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing expr 03.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing expr 04.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing expr 05.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing pat 01.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing pat 02.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing pat 03.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing pat 04.fs errors
+tests/service/data/SyntaxTree/MatchClause/Missing pat 05.fs errors
+tests/service/data/SyntaxTree/MatchClause/RangeOfSingleSynMatchClauseFollowedByBar.fs errors
+tests/service/data/SyntaxTree/Member/Abstract - Property 03.fs errors
+tests/service/data/SyntaxTree/Member/Abstract - Property 04.fs errors
+tests/service/data/SyntaxTree/Member/Abstract - Property 05.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 02.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 03.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 04.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 05.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 06.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 08.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 09.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 10.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 12.fs errors
+tests/service/data/SyntaxTree/Member/Auto property 13.fs errors
+tests/service/data/SyntaxTree/Member/Do 03.fs errors
+tests/service/data/SyntaxTree/Member/Do 04.fs errors
+tests/service/data/SyntaxTree/Member/Field 02.fs errors
+tests/service/data/SyntaxTree/Member/Field 03.fs errors
+tests/service/data/SyntaxTree/Member/Field 04.fs errors
+tests/service/data/SyntaxTree/Member/Field 05.fs errors
+tests/service/data/SyntaxTree/Member/Field 06.fs errors
+tests/service/data/SyntaxTree/Member/Field 07.fs errors
+tests/service/data/SyntaxTree/Member/Field 08.fs errors
+tests/service/data/SyntaxTree/Member/Field 09.fs errors
+tests/service/data/SyntaxTree/Member/Field 10.fs errors
+tests/service/data/SyntaxTree/Member/Field 11.fs errors
+tests/service/data/SyntaxTree/Member/Field 12.fs errors
+tests/service/data/SyntaxTree/Member/Field 13.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Missing type 01.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Missing type 02.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Pat - Tuple 02.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Fun 04.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Fun 05.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Fun 06.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Tuple 03.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Tuple 04.fs errors
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Tuple 05.fs errors
+tests/service/data/SyntaxTree/Member/Inherit 03.fs errors
+tests/service/data/SyntaxTree/Member/Inherit 04.fs errors
+tests/service/data/SyntaxTree/Member/Inherit 05.fs errors
+tests/service/data/SyntaxTree/Member/Inherit 06.fsi errors
+tests/service/data/SyntaxTree/Member/Inherit 07.fsi errors
+tests/service/data/SyntaxTree/Member/Inherit 08.fs errors
+tests/service/data/SyntaxTree/Member/Interface 08.fs errors
+tests/service/data/SyntaxTree/Member/Interface 09.fs errors
+tests/service/data/SyntaxTree/Member/Interface 10.fs errors
+tests/service/data/SyntaxTree/Member/Let 02.fs errors
+tests/service/data/SyntaxTree/Member/Let 03.fs errors
+tests/service/data/SyntaxTree/Member/Let 04.fs errors
+tests/service/data/SyntaxTree/Member/Member - Attributes 01.fs errors
+tests/service/data/SyntaxTree/Member/Member - Param - Missing type 01.fs errors
+tests/service/data/SyntaxTree/Member/Member 01.fs errors
+tests/service/data/SyntaxTree/Member/Member 02.fs errors
+tests/service/data/SyntaxTree/Member/Member 03.fs errors
+tests/service/data/SyntaxTree/Member/Member 04.fs errors
+tests/service/data/SyntaxTree/Member/Member 05.fs errors
+tests/service/data/SyntaxTree/Member/Member 07.fs errors
+tests/service/data/SyntaxTree/Member/Member 08.fs errors
+tests/service/data/SyntaxTree/Member/Member 09.fs errors
+tests/service/data/SyntaxTree/Member/Member 10.fs errors
+tests/service/data/SyntaxTree/Member/Member 11.fs errors
+tests/service/data/SyntaxTree/Member/Member 12.fs errors
+tests/service/data/SyntaxTree/Member/Member 13.fs errors
+tests/service/data/SyntaxTree/Member/MemberMispelledToMeme.fs errors
+tests/service/data/SyntaxTree/Member/Static 01.fs errors
+tests/service/data/SyntaxTree/Member/Static 02.fs errors
+tests/service/data/SyntaxTree/Member/Static 03.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Do 01.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Do 02.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Let 02.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Let 03.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Let 04.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Let 05.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Open 01.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Open 02.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Open 03.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Open 04.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Open 05.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Open 06.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Open 07.fs errors
+tests/service/data/SyntaxTree/ModuleMember/Val 01.fsi errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 04.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 05.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 06.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 07.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 02.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 03.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 04.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 06.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 07.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 09.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 02.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 03.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 04.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 05.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 06.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 07.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 08.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 09.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 10.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 11.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 12.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 13.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 14.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 15.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 16.fs errors
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 17.fs errors
+tests/service/data/SyntaxTree/NestedModule/IncompleteNestedModuleSigShouldBePresent.fsi errors
+tests/service/data/SyntaxTree/Nullness/IntListOrNullOrNullOrNull.fs errors
+tests/service/data/SyntaxTree/OperatorName/OperatorNameInValConstraint.fsi errors
+tests/service/data/SyntaxTree/Pattern/As 02.fs errors
+tests/service/data/SyntaxTree/Pattern/As 04.fs errors
+tests/service/data/SyntaxTree/Pattern/As 05.fs errors
+tests/service/data/SyntaxTree/Pattern/As 06.fs errors
+tests/service/data/SyntaxTree/Pattern/As 07.fs errors
+tests/service/data/SyntaxTree/Pattern/As 08.fs errors
+tests/service/data/SyntaxTree/Pattern/As 09.fs errors
+tests/service/data/SyntaxTree/Pattern/As 10.fs errors
+tests/service/data/SyntaxTree/Pattern/As 11.fs errors
+tests/service/data/SyntaxTree/Pattern/As 12.fs errors
+tests/service/data/SyntaxTree/Pattern/Cons 02.fs errors
+tests/service/data/SyntaxTree/Pattern/Cons 03.fs errors
+tests/service/data/SyntaxTree/Pattern/Cons 04.fs errors
+tests/service/data/SyntaxTree/Pattern/IsInst 02.fs errors
+tests/service/data/SyntaxTree/Pattern/IsInst 03.fs errors
+tests/service/data/SyntaxTree/Pattern/IsInst 04.fs errors
+tests/service/data/SyntaxTree/Pattern/IsInst 05.fs errors
+tests/service/data/SyntaxTree/Pattern/Named field 02.fs errors
+tests/service/data/SyntaxTree/Pattern/Named field 03.fs errors
+tests/service/data/SyntaxTree/Pattern/Named field 05.fs errors
+tests/service/data/SyntaxTree/Pattern/Named field 08.fs errors
+tests/service/data/SyntaxTree/Pattern/Named field 09.fs errors
+tests/service/data/SyntaxTree/Pattern/Record 03.fs errors
+tests/service/data/SyntaxTree/Pattern/Record 04.fs errors
+tests/service/data/SyntaxTree/Pattern/Record 05.fs errors
+tests/service/data/SyntaxTree/Pattern/Record 06.fs errors
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 01.fs errors
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 02.fs errors
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 03.fs errors
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 04.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 01.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 02.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 03.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 04.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 05.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 06.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 07.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 08.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 09.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 10.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 11.fs errors
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 12.fs errors
+tests/service/data/SyntaxTree/SignatureType/NestedTypeHasStaticTypeAsLeadingKeyword.fsi errors
+tests/service/data/SyntaxTree/SimplePats/SimplePats - Recover 01.fs errors
+tests/service/data/SyntaxTree/SynIdent/IncompleteLongIdent 01.fs errors
+tests/service/data/SyntaxTree/SynIdent/IncompleteLongIdent 02.fs errors
+tests/service/data/SyntaxTree/SynType/Div 05.fs errors
+tests/service/data/SyntaxTree/SynType/Div 06.fs errors
+tests/service/data/SyntaxTree/SynType/Fun 03.fs errors
+tests/service/data/SyntaxTree/SynType/Fun 04.fs errors
+tests/service/data/SyntaxTree/SynType/Fun 05.fs errors
+tests/service/data/SyntaxTree/SynType/Fun 08.fs errors
+tests/service/data/SyntaxTree/SynType/Fun 09.fs errors
+tests/service/data/SyntaxTree/SynType/Fun 10.fs errors
+tests/service/data/SyntaxTree/SynType/Named 08.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple - Nested 04.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple - Nested 05.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple - Nested 06.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 04.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 05.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 06.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 07.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 08.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 09.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 10.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 11.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 12.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 13.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 14.fs errors
+tests/service/data/SyntaxTree/SynType/Tuple 15.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 04.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 05.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 06.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 13.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 14.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 15.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 16.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 17.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang 18.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 15.fs errors
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 18.fs errors
+tests/service/data/SyntaxTree/SynType/Typed UseBang 03.fs errors
+tests/service/data/SyntaxTree/SynType/Typed UseBang 04.fs errors
+tests/service/data/SyntaxTree/SynType/Typed UseBang 05.fs errors
+tests/service/data/SyntaxTree/SynType/Typed UseBang 06.fs errors
+tests/service/data/SyntaxTree/Type/And 01.fs errors
+tests/service/data/SyntaxTree/Type/And 03.fs errors
+tests/service/data/SyntaxTree/Type/And 04.fs errors
+tests/service/data/SyntaxTree/Type/And 06.fs errors
+tests/service/data/SyntaxTree/Type/As 02.fs errors
+tests/service/data/SyntaxTree/Type/As 03.fs errors
+tests/service/data/SyntaxTree/Type/As 04.fs errors
+tests/service/data/SyntaxTree/Type/As 06.fs errors
+tests/service/data/SyntaxTree/Type/As 08.fs errors
+tests/service/data/SyntaxTree/Type/Cascading Nested Invalid Constructs 01.fs errors
+tests/service/data/SyntaxTree/Type/Deeply Indented Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Double Semicolon Delimiters 01.fs errors
+tests/service/data/SyntaxTree/Type/Enum 03.fs errors
+tests/service/data/SyntaxTree/Type/Enum 04.fs errors
+tests/service/data/SyntaxTree/Type/Enum 05.fs errors
+tests/service/data/SyntaxTree/Type/Enum 06.fs errors
+tests/service/data/SyntaxTree/Type/Enum 07 - Eof.fs errors
+tests/service/data/SyntaxTree/Type/Enum 08 - Eof.fs errors
+tests/service/data/SyntaxTree/Type/Enum 09 - Eof.fs errors
+tests/service/data/SyntaxTree/Type/Enum 10 - Eof.fs errors
+tests/service/data/SyntaxTree/Type/Exception Inside Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Interface 05.fs errors
+tests/service/data/SyntaxTree/Type/Interface 06.fs errors
+tests/service/data/SyntaxTree/Type/Interface 07.fs errors
+tests/service/data/SyntaxTree/Type/Module After Do Binding 01.fs errors
+tests/service/data/SyntaxTree/Type/Module After Inherit 01.fs errors
+tests/service/data/SyntaxTree/Type/Module After Members 01.fs errors
+tests/service/data/SyntaxTree/Type/Module After Static Members 01.fs errors
+tests/service/data/SyntaxTree/Type/Module And Exception Interleaved With Members 01.fs errors
+tests/service/data/SyntaxTree/Type/Module And Type After Do Binding 01.fs errors
+tests/service/data/SyntaxTree/Type/Module And Type Inside Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Between Constructors 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Class 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Class With Constructor 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Delegate 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Interface 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Interface End 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Nested Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Record 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Struct 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Type With Augmentation 01.fs errors
+tests/service/data/SyntaxTree/Type/Module Inside Union 01.fs errors
+tests/service/data/SyntaxTree/Type/Multiple Invalid Constructs In Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Nested Module Hierarchy 01.fs errors
+tests/service/data/SyntaxTree/Type/NestedTypeHasStaticTypeAsLeadingKeyword.fs errors
+tests/service/data/SyntaxTree/Type/Open Inside Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Primary ctor 02.fs errors
+tests/service/data/SyntaxTree/Type/Primary ctor 04.fs errors
+tests/service/data/SyntaxTree/Type/Record - Access 01.fs errors
+tests/service/data/SyntaxTree/Type/Record - Access 02.fs errors
+tests/service/data/SyntaxTree/Type/Record - Access 03.fs errors
+tests/service/data/SyntaxTree/Type/Record - Access 04.fs errors
+tests/service/data/SyntaxTree/Type/Record - Mutable 01.fs errors
+tests/service/data/SyntaxTree/Type/Record - Mutable 02.fs errors
+tests/service/data/SyntaxTree/Type/Record - Mutable 03.fs errors
+tests/service/data/SyntaxTree/Type/Record - Mutable 04.fs errors
+tests/service/data/SyntaxTree/Type/Record 01.fs errors
+tests/service/data/SyntaxTree/Type/Record 02.fs errors
+tests/service/data/SyntaxTree/Type/Record 03.fs errors
+tests/service/data/SyntaxTree/Type/Record 04.fs errors
+tests/service/data/SyntaxTree/Type/Record 05.fs errors
+tests/service/data/SyntaxTree/Type/Same Line Declarations 01.fs errors
+tests/service/data/SyntaxTree/Type/SynTypeTupleWithStructRecovery.fs errors
+tests/service/data/SyntaxTree/Type/Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Type 03.fs errors
+tests/service/data/SyntaxTree/Type/Type 04.fs errors
+tests/service/data/SyntaxTree/Type/Type 05.fs errors
+tests/service/data/SyntaxTree/Type/Type 06.fs errors
+tests/service/data/SyntaxTree/Type/Type 07.fs errors
+tests/service/data/SyntaxTree/Type/Type 09.fs errors
+tests/service/data/SyntaxTree/Type/Type 10.fs errors
+tests/service/data/SyntaxTree/Type/Type 11.fs errors
+tests/service/data/SyntaxTree/Type/Type 12.fs errors
+tests/service/data/SyntaxTree/Type/Type Inside Type 01.fs errors
+tests/service/data/SyntaxTree/Type/Union - Field 02.fs errors
+tests/service/data/SyntaxTree/Type/Union - Field 03.fs errors
+tests/service/data/SyntaxTree/Type/Union 03.fs errors
+tests/service/data/SyntaxTree/Type/Union 04.fs errors
+tests/service/data/SyntaxTree/Type/Union 05.fs errors
+tests/service/data/SyntaxTree/Type/Union 06.fs errors
+tests/service/data/SyntaxTree/Type/Union 07.fs errors
+tests/service/data/SyntaxTree/Type/With 02.fs errors
+tests/service/data/SyntaxTree/Type/With 03.fs errors
+tests/service/data/SyntaxTree/Type/With 05.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing keyword of.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 01.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 02.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 03.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 04.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 05.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 06.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 07.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 08.fs errors
+tests/service/data/SyntaxTree/UnionCase/Missing name 09.fs errors
+tests/service/data/SyntaxTree/UnionCase/Recover Function Type 01.fs errors
+tests/service/data/SyntaxTree/UnionCase/Recover Function Type 02.fs errors
+tests/service/data/SyntaxTree/UnionCase/Recover Function Type 03.fs errors
+tests/service/data/TestTP/ProvidedTypes.fs errors
+vsintegration/ItemTemplates/CodeFile/Template/File.fs errors
+vsintegration/ProjectTemplates/LibraryProject/Template/Library1.fs errors
+vsintegration/ProjectTemplates/LibraryProject/Template/Script.fsx errors

@@ -3,8 +3,6 @@ pub mod csharp_sidecar;
 pub mod cst_panic_safe;
 pub mod diagnostics;
 pub mod fsproj_diagnostics;
-mod glob;
-pub mod glob_resolver;
 pub mod goto_source;
 pub mod handlers;
 pub mod logging;
@@ -24,6 +22,7 @@ pub mod spawn;
 pub mod telemetry;
 mod tfm_policy;
 pub mod workspace;
+pub mod xml_doc;
 
 #[cfg(test)]
 mod test_trace;

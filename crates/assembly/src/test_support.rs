@@ -33,9 +33,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AbbreviationTarget, Access, CompilerFeatureRequired, DefaultMember, Entity, EntityKind, Event,
-    Experimental, Member, MethodLike, MethodSignature, Nullability, NullableType, Obsolete,
-    ParamDefault, Parameter, Primitive, Property, TypeParameter, TypeRef, Variance,
+    AbbreviationTarget, Access, AssemblyProjectionSkips, CompilerFeatureRequired, DefaultMember,
+    EcmaView, Entity, EntityKind, Event, Experimental, ImportError, Member, MethodLike,
+    MethodSignature, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive,
+    Property, TypeParameter, TypeRef, UnionCases, Variance,
 };
 use serde::Deserialize;
 
@@ -45,6 +46,10 @@ use serde::Deserialize;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalisedAssembly {
     pub name: String,
+    /// The assembly-level `[<assembly: AutoOpen("path")>]` paths, in manifest
+    /// order — the implicit opens a reference brings into scope, and the order
+    /// they shadow each other in. Empty for an assembly that declares none.
+    pub auto_opens: Vec<String>,
     pub entities: Vec<NormalisedEntity>,
 }
 
@@ -89,6 +94,12 @@ pub struct NormalisedEntity {
     /// Empty when the entity carries none. See
     /// [`format_compiler_feature_required`].
     pub compiler_feature_required: BTreeSet<String>,
+    /// The case names a referencing assembly can use, in declaration order:
+    /// `Some` for an F# union (empty when its representation is `private` or
+    /// `internal`), `None` for anything else. Our side's
+    /// [`UnionCases::Unknowable`] also renders `None`, so a union whose cases we
+    /// failed to recover diverges from FCS rather than passing as agreement.
+    pub union_cases: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +122,15 @@ pub struct NormalisedMember {
     /// methods only (the other [`Member`] kinds don't yet carry a
     /// projected `experimental` field on the Rust side).
     pub experimental: Option<String>,
+    /// A property's **getter** accessibility, which [`Self::access`] (the join
+    /// of both accessors) cannot show; `None` for a write-only property and for
+    /// every other member kind.
+    pub getter_access: Option<String>,
+    /// A method's F# argument-group count as a caller writes it. `None` on our
+    /// side is a *decline* ([`MethodLike::arg_group_count`] unknown), which
+    /// [`elide_declined_arg_groups`] reconciles before comparison; `None` on the
+    /// FCS side only for non-methods.
+    pub arg_groups: Option<usize>,
 }
 
 /// One generic-parameter declaration, projected to strings so the diff is
@@ -129,13 +149,96 @@ pub struct NormalisedGenericParameter {
 // Rust-side projection: Vec<Entity> -> NormalisedAssembly
 // ============================================================================
 
+/// Normalise a hand-built entity list. It carries no assembly-level facts, so
+/// [`NormalisedAssembly::auto_opens`] is empty; a real assembly goes through
+/// [`normalise_view`], which reads them.
 pub fn normalise_entities(assembly_name: &str, entities: &[Entity]) -> NormalisedAssembly {
     let mut entities: Vec<_> = entities.iter().map(normalise_entity).collect();
     sort_entities(&mut entities);
     NormalisedAssembly {
         name: assembly_name.to_string(),
+        auto_opens: Vec::new(),
         entities,
     }
+}
+
+/// Normalise a real assembly: its entities and its assembly-level facts,
+/// together with what the projection degraded. The skips are returned rather
+/// than dropped because a skipped F# overlay changes the projected tree (cases
+/// unknowable, members un-renamed) without failing, and a differential that
+/// does not look at them cannot tell a degraded projection from a faithful one.
+pub fn normalise_view(
+    view: &impl EcmaView,
+) -> Result<(NormalisedAssembly, AssemblyProjectionSkips), ImportError> {
+    let (entities, skips) = view.enumerate_type_defs_with_skips()?;
+    let normalised = NormalisedAssembly {
+        auto_opens: view.assembly_auto_opens()?,
+        ..normalise_entities(&view.identity().name, &entities)
+    };
+    Ok((normalised, skips))
+}
+
+/// One method whose argument-group count our projection declined (`None`)
+/// where FCS knows it. See [`elide_declined_arg_groups`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeclinedArgGroups {
+    /// The declaring entity's dotted path (nested entities joined by `.`).
+    pub entity: String,
+    /// The declaring entity's normalised kind string (`"Class"`,
+    /// `"auto_open Module"`, …).
+    pub entity_kind: String,
+    /// `name signature` of the declining method.
+    pub member: String,
+}
+
+/// Reconcile the one fact our projection may decline: a method's argument-group
+/// count. The contract is *certain implies exact* — where we commit a count,
+/// FCS must agree, and the whole-tree comparison checks that unchanged — so
+/// wherever we declined, FCS's count is elided too, and each such site is
+/// returned so the caller can hold the declines to an obligation (an F#
+/// assembly's module members must commit; a C# assembly's every method must).
+/// No decline is absorbed silently: the caller is handed the list.
+///
+/// Walks both trees pairwise, entity by matching `fqn` and member by matching
+/// `(kind, name, signature)`; where the shapes already differ the trees are
+/// left as they are, since the comparison fails there regardless.
+pub fn elide_declined_arg_groups(
+    ours: &NormalisedAssembly,
+    fcs: &mut NormalisedAssembly,
+) -> Vec<DeclinedArgGroups> {
+    fn walk(
+        prefix: &str,
+        ours: &[NormalisedEntity],
+        fcs: &mut [NormalisedEntity],
+        out: &mut Vec<DeclinedArgGroups>,
+    ) {
+        for (o, f) in ours.iter().zip(fcs.iter_mut()) {
+            if o.fqn != f.fqn {
+                continue;
+            }
+            let path = if prefix.is_empty() {
+                o.fqn.clone()
+            } else {
+                format!("{prefix}.{}", o.fqn)
+            };
+            for (om, fm) in o.members.iter().zip(f.members.iter_mut()) {
+                let same_member =
+                    om.kind == fm.kind && om.name == fm.name && om.signature == fm.signature;
+                if same_member && om.kind == "Method" && om.arg_groups.is_none() {
+                    fm.arg_groups = None;
+                    out.push(DeclinedArgGroups {
+                        entity: path.clone(),
+                        entity_kind: o.kind.clone(),
+                        member: format!("{} {}", om.name, om.signature),
+                    });
+                }
+            }
+            walk(&path, &o.nested_types, &mut f.nested_types, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk("", &ours.entities, &mut fcs.entities, &mut out);
+    out
 }
 
 fn normalise_entity(e: &Entity) -> NormalisedEntity {
@@ -144,7 +247,6 @@ fn normalise_entity(e: &Entity) -> NormalisedEntity {
         .iter()
         .filter(|m| accessible_from_some_fsharp_code(member_access(m)))
         .filter(|m| !is_unmirrorable_generic_module_method(e.kind, m))
-        .filter(|m| !is_module_literal(e.kind, m))
         .map(normalise_member)
         .collect();
     sort_members(&mut members);
@@ -182,6 +284,10 @@ fn normalise_entity(e: &Entity) -> NormalisedEntity {
             .iter()
             .map(format_compiler_feature_required)
             .collect(),
+        union_cases: match &e.union_cases {
+            UnionCases::Known(names) => Some(names.clone()),
+            UnionCases::Unknowable => None,
+        },
     }
 }
 
@@ -241,21 +347,6 @@ fn normalise_typar(p: &TypeParameter) -> NormalisedGenericParameter {
         declaration,
         constraints,
     }
-}
-
-/// A module's `[<Literal>]` constant, elided from the diff: the projection surfaces it
-/// (as the static literal field fsc emits) because FCS brings it into *scope* — `open M`
-/// then bare `MaxValue` compiles — but `fcs-dump` renders a module's public surface as
-/// its members-and-functions list, in which a literal does not appear. The elision
-/// mirrors fcs-dump's rendering limit, exactly as the generic-extension one below does;
-/// the owned model the LSP/sema consume carries the literal (and
-/// `resolve_autoopen.rs::a_literal_in_an_opened_assembly_module_resolves` pins that it
-/// resolves).
-fn is_module_literal(kind: EntityKind, m: &Member) -> bool {
-    // Every field the projector keeps on a module is a literal — a CLI-`Literal` one, or
-    // a `decimal` carrying `[DecimalConstantAttribute]` (which the CLI cannot express as
-    // a literal). Both are elided: fcs-dump renders neither.
-    matches!((kind, m), (EntityKind::Module, Member::Field(_)))
 }
 
 /// A generic module method `fcs-dump` cannot mirror, elided from the diff on
@@ -350,6 +441,9 @@ fn normalise_member(m: &Member) -> NormalisedMember {
                 if f.is_init_only {
                     s.insert("init_only".into());
                 }
+                if f.is_literal {
+                    s.insert("literal".into());
+                }
                 if f.is_volatile {
                     s.insert("volatile".into());
                 }
@@ -364,6 +458,8 @@ fn normalise_member(m: &Member) -> NormalisedMember {
             generic_parameters: vec![],
             obsolete: None,
             experimental: None,
+            getter_access: None,
+            arg_groups: None,
         },
         Member::Property(p) => normalise_property(p),
         Member::Event(e) => normalise_event(e),
@@ -391,6 +487,8 @@ fn normalise_event(e: &Event) -> NormalisedMember {
         generic_parameters: vec![],
         obsolete: None,
         experimental: None,
+        getter_access: None,
+        arg_groups: None,
     }
 }
 
@@ -418,6 +516,8 @@ fn normalise_property(p: &Property) -> NormalisedMember {
         generic_parameters: vec![],
         obsolete: None,
         experimental: None,
+        getter_access: p.getter_access.map(|a| access_str(a).to_string()),
+        arg_groups: None,
     }
 }
 
@@ -479,6 +579,8 @@ fn normalise_method(m: &MethodLike) -> NormalisedMember {
         generic_parameters: m.generic_parameters.iter().map(normalise_typar).collect(),
         obsolete: m.obsolete.as_ref().map(format_obsolete),
         experimental: m.experimental.as_ref().map(format_experimental),
+        getter_access: None,
+        arg_groups: m.arg_group_count,
     }
 }
 
@@ -894,6 +996,7 @@ pub fn parse_fcs_dump(json: &str) -> NormalisedAssembly {
     sort_entities(&mut entities);
     NormalisedAssembly {
         name: dump.assembly,
+        auto_opens: dump.assembly_auto_opens,
         entities,
     }
 }
@@ -1087,6 +1190,7 @@ fn json_to_entity(j: FcsEntity) -> NormalisedEntity {
         experimental: j.experimental,
         default_member: j.default_member,
         compiler_feature_required: j.compiler_feature_required.into_iter().collect(),
+        union_cases: j.union_cases,
     }
 }
 
@@ -1104,6 +1208,8 @@ fn json_to_member(j: FcsMember) -> NormalisedMember {
             .collect(),
         obsolete: j.obsolete,
         experimental: j.experimental,
+        getter_access: j.getter_access,
+        arg_groups: j.arg_groups,
     }
 }
 
@@ -1118,6 +1224,9 @@ fn json_to_typar(j: FcsGenericParameter) -> NormalisedGenericParameter {
 struct FcsDump {
     #[serde(rename = "Assembly")]
     assembly: String,
+    /// See [`NormalisedAssembly::auto_opens`].
+    #[serde(rename = "AssemblyAutoOpens", default)]
+    assembly_auto_opens: Vec<String>,
     #[serde(rename = "Entities")]
     entities: Vec<FcsEntity>,
 }
@@ -1171,6 +1280,9 @@ struct FcsEntity {
     /// [`fcs_abbreviation_targets`] instead.
     #[serde(rename = "AbbreviatedTarget", default)]
     abbreviated_target: Option<String>,
+    /// See [`NormalisedEntity::union_cases`].
+    #[serde(rename = "UnionCases", default)]
+    union_cases: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -1195,6 +1307,12 @@ struct FcsMember {
     /// member kinds always emit `null`.
     #[serde(rename = "Experimental", default)]
     experimental: Option<String>,
+    /// See [`NormalisedMember::getter_access`]. Properties only.
+    #[serde(rename = "GetterAccess", default)]
+    getter_access: Option<String>,
+    /// See [`NormalisedMember::arg_groups`]. Methods only.
+    #[serde(rename = "ArgGroups", default)]
+    arg_groups: Option<usize>,
 }
 
 #[derive(Deserialize)]

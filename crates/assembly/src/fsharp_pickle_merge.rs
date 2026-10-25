@@ -1552,9 +1552,8 @@ struct GroupFacts {
 /// - an IL-only artefact can never survive (nothing claims it) — witness
 ///   `$W` twins and any future compiler-emitted helper fall out here rather
 ///   than by name heuristics;
-/// - a `[<Literal>]` val is *elided deliberately* (fsc emits a literal field
-///   with no accessor; neither projector surfaces module literals — see the
-///   MiniLibFs fixture notes) — an elision, not a skip;
+/// - a `[<Literal>]` val claims the static field fsc emits for it (no
+///   accessor MethodDef exists), by name;
 /// - a non-literal val with no claimable member, and a projected member no
 ///   val claims, are both **recorded** on
 ///   [`skipped_members`](crate::Entity::skipped_members) — loud, bounded
@@ -1602,12 +1601,10 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
     let mut members = Vec::new();
     for v in &target.vals {
         // A `[<Literal>]` val compiles to a **static literal field**, not a method:
-        // it claims that field. It used to be elided from the member list entirely —
-        // but FCS brings it into scope (fsi: `open M` then bare `LitVal` compiles), so
-        // eliding it left an *invisible* bare name that no consumer could even know to
-        // be conservative about (found by the Slice-A review of
-        // `docs/assembly-module-open-plan.md`). The differential normaliser elides it
-        // instead, mirroring what fcs-dump renders.
+        // it claims that field. FCS brings it into scope (fsi: `open M` then bare
+        // `LitVal` compiles), so a module without it would hide a bare name no
+        // consumer could even know to be conservative about (see
+        // `docs/assembly-module-open-plan.md`).
         if v.is_literal {
             let name = v.il_name();
             // By name: a `decimal` literal's field carries `[DecimalConstantAttribute]`

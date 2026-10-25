@@ -12,11 +12,13 @@
 #![allow(dead_code)] // each importer uses a different subset.
 
 pub mod companion_corpus;
+pub mod corpus_manifest;
 pub mod fold_matrix;
 pub mod fsharp_member_corpus;
 pub mod generator;
 pub mod member_hiding_corpus;
 pub mod overload_corpus;
+pub mod scope_gen;
 pub mod tier_corpus;
 
 use std::collections::HashMap;
@@ -78,7 +80,7 @@ pub fn project_dir() -> PathBuf {
 
 /// Build the base `fcs-dump <subcommand>` command, without arguments.
 ///
-/// Honours `BORZOI_FCS_DUMP` (path to a pre-built self-contained binary)
+/// Honours `BORZOI_FCS_DUMP` (path to a pre-built framework-dependent binary)
 /// when set; otherwise builds `tools/fcs-dump` **once** per test binary and
 /// execs the resulting assembly on every call. The build-once strategy avoids
 /// the `dotnet run` incremental-build race when N test threads invoke it
@@ -224,7 +226,7 @@ impl BatchPool {
 }
 
 /// Spawn one resident `fcs-dump <subcommand>` child under `timeout` per request,
-/// honouring `BORZOI_FCS_DUMP` (a prebuilt self-contained binary) exactly as
+/// honouring `BORZOI_FCS_DUMP` (a prebuilt framework-dependent binary) exactly as
 /// [`fcs_dump_command`] does, and otherwise `dotnet <fcs-dump.dll>`.
 /// [`BatchChild::with_factory`] (not `spawn`) so the per-request deadline is the
 /// pool's, not the harness's fixed `default_timeout`; `2` attempts matches
@@ -420,6 +422,10 @@ pub struct FileCensus {
     pub path: String,
     #[serde(rename = "Ok")]
     pub ok: bool,
+    /// Whether FCS's check reported any error-severity diagnostic. Required, not
+    /// defaulted: a missing field must not read as "checked cleanly".
+    #[serde(rename = "HasCheckErrors")]
+    pub has_check_errors: bool,
     #[serde(rename = "Uses", default)]
     pub uses: Vec<CensusUse>,
 }
@@ -794,14 +800,29 @@ pub struct ResolveDiffUse {
     pub end: usize,
     /// FCS's defining-occurrence flag (a definition is not a name to resolve).
     pub is_from_definition: bool,
-    /// The declaration range as byte offsets *when the declaration lies in this
-    /// file* (file-equality test, as [`parse_fcs_uses`]). `None` for
-    /// referenced-assembly / FSharp.Core declarations — out of the sweep's
-    /// in-file slice.
-    pub decl: Option<(usize, usize)>,
+    /// Where FCS declares the use's symbol, relative to the checked file
+    /// (file-equality test, as [`parse_fcs_uses`]).
+    pub decl: CensusDecl,
     /// What machinery a resolver needs (see [`classify`]); `None` for a defining
-    /// occurrence. The sweep keeps only [`Bucket::B1`].
+    /// occurrence.
     pub bucket: Option<Bucket>,
+}
+
+/// Where FCS declares the symbol a census use resolves to, relative to the
+/// checked file.
+///
+/// Three cases rather than an `Option`, because "declared in another file" and
+/// "FCS gave no declaration" are different claims: the first is evidence that
+/// no binder of this file is the answer, the second is no evidence at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CensusDecl {
+    /// Declared in this file, at this half-open byte range.
+    InFile(usize, usize),
+    /// Declared in a *different* file — a referenced assembly or FSharp.Core.
+    /// FCS checked this file alone, so the target is not a binder of this file.
+    OtherFile,
+    /// FCS reported no declaration location for the symbol.
+    Absent,
 }
 
 /// Normalise one census file's uses against its source text. `source` must be
@@ -814,16 +835,16 @@ pub fn census_resolve_uses(file: &FileCensus, source: &str) -> Vec<ResolveDiffUs
         .iter()
         .map(|u| {
             let (bucket, _tag) = classify(u);
-            let decl = u.decl_range.as_ref().and_then(|d| {
-                // The use's own range is always in the checked file; an in-file
-                // declaration shares that file (see `parse_fcs_uses`).
-                (d.file == u.range.file).then(|| {
-                    (
-                        idx.offset(d.start.line, d.start.col),
-                        idx.offset(d.end.line, d.end.col),
-                    )
-                })
-            });
+            // The use's own range is always in the checked file; an in-file
+            // declaration shares that file (see `parse_fcs_uses`).
+            let decl = match &u.decl_range {
+                None => CensusDecl::Absent,
+                Some(d) if d.file == u.range.file => CensusDecl::InFile(
+                    idx.offset(d.start.line, d.start.col),
+                    idx.offset(d.end.line, d.end.col),
+                ),
+                Some(_) => CensusDecl::OtherFile,
+            };
             ResolveDiffUse {
                 start: idx.offset(u.range.start.line, u.range.start.col),
                 end: idx.offset(u.range.end.line, u.range.end.col),
@@ -1498,7 +1519,7 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
 /// `FSharp.Core.dll` into the same output directory as `fcs-dump.dll`, so we
 /// reuse the build-once helper and return the sibling. This lets a sema test
 /// resolve against the genuine shipped FSharp.Core in every lane (the
-/// `BORZOI_FCS_DUMP` self-contained-binary override is *not* honoured
+/// `BORZOI_FCS_DUMP` prebuilt-binary override is *not* honoured
 /// here — the sibling `.dll` only exists in a `dotnet build` output dir, so
 /// this path always builds `fcs-dump`). Mirrors the assembly crate's helper.
 pub fn ensure_fsharp_core_dll() -> PathBuf {

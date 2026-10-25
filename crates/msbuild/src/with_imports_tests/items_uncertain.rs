@@ -8,37 +8,21 @@ use super::*;
 use crate::CompileConditionReason;
 use tempfile::TempDir;
 
-#[test]
-fn conditional_compile_inside_the_sdk_is_tolerated() {
-    // The SDK's `Sdk.props` pulls in a sibling props that gates a `<Compile>`
-    // on a property the walk can't decide. Since C.2b a *plain* undefined
-    // name (e.g. `EnableDefaultItems`) reads exactly empty and the gate
-    // decides cleanly, so we gate on `TargetFramework` — the consumer-contract
-    // carve-out that stays inexact (the realistic multi-TFM default-item
-    // shape). It lives under the SDK installation tree, so it must NOT make
-    // the Compile set uncertain: the entry project's explicit list is what
-    // compiles.
+/// Parse `Demo.fsproj` (one literal `A.fs`) against a synthetic SDK whose
+/// `Sdk.props` imports `DefaultItems.props` with `default_items` as its body,
+/// and whose `Sdk.targets` is `targets`.
+fn parse_with_sdk_default_items(default_items: &str, targets: &str) -> ParsedProject {
     let tmp = TempDir::new().unwrap();
     let (root, props, targets) = write_synthetic_sdk(
         tmp.path(),
         "MySdk",
-        // Sdk.props imports a sibling that adds a conditional default-item.
         r#"<Project>
   <Import Project="DefaultItems.props" />
 </Project>"#,
-        "<Project/>",
+        targets,
     );
-    // The conditional-compile props lives alongside Sdk.props, i.e. under the
-    // SDK tolerance root (the SDK root's parent).
-    write_at(
-        &root,
-        "DefaultItems.props",
-        r#"<Project>
-  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
-    <Compile Include="**/*.fs" />
-  </ItemGroup>
-</Project>"#,
-    );
+    // Alongside Sdk.props, i.e. under the SDK tolerance root.
+    write_at(&root, "DefaultItems.props", default_items);
     let project_path = write_at(
         tmp.path(),
         "Demo.fsproj",
@@ -48,7 +32,7 @@ fn conditional_compile_inside_the_sdk_is_tolerated() {
   </ItemGroup>
 </Project>"#,
     );
-    let result = parse_file_with_sdk(&project_path, |name| {
+    parse_file_with_sdk(&project_path, |name| {
         if name == "MySdk" {
             Ok(SdkPaths {
                 root: root.clone(),
@@ -58,16 +42,84 @@ fn conditional_compile_inside_the_sdk_is_tolerated() {
         } else {
             Err(SdkResolveError::NotFound)
         }
-    });
-    // The SDK's conditional default-item is tolerated.
+    })
+}
+
+#[test]
+fn a_dead_compile_operation_inside_the_sdk_is_tolerated_under_an_inexact_group_gate() {
+    // The real SDK's shape: the default glob's *group* is gated on something
+    // the walk cannot always pin (here `TargetFramework`, the consumer-contract
+    // carve-out that stays inexact under C.2b), but the glob's *own* gate is
+    // cleanly false — F#'s props default `EnableDefaultCompileItems` off. The
+    // glob runs in no build, so the inexact group gate decides nothing.
+    let result = parse_with_sdk_default_items(
+        r#"<Project>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <Compile Include="**/*.fs" Condition="'$(EnableDefaultCompileItems)' == 'true'" />
+  </ItemGroup>
+</Project>"#,
+        r#"<Project>
+  <PropertyGroup>
+    <EnableDefaultCompileItems Condition="'$(EnableDefaultCompileItems)' == ''">false</EnableDefaultCompileItems>
+  </PropertyGroup>
+</Project>"#,
+    );
     assert!(
         !result.items_uncertain,
-        "SDK-internal conditional Compile must not flag items_uncertain; diags: {:?}",
+        "a cleanly dead SDK Compile operation must not flag items_uncertain; diags: {:?}",
         result.diagnostics
     );
     assert!(result.compile_condition_uncertainties.is_empty());
     // (The inexact `TargetFramework` read still flips the broad `is_partial`.)
     assert!(result.is_partial);
+}
+
+#[test]
+fn a_compile_operation_inside_the_sdk_that_may_run_is_not_tolerated() {
+    // The same glob with no gate of its own: whether it runs is decided by the
+    // inexact `TargetFramework` group gate alone, and when it runs it adds
+    // files in front of the project's list. Being SDK machinery does not make
+    // that decision any less load-bearing.
+    let result = parse_with_sdk_default_items(
+        r#"<Project>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <Compile Include="**/*.fs" />
+  </ItemGroup>
+</Project>"#,
+        "<Project/>",
+    );
+    assert!(
+        result.items_uncertain,
+        "an SDK Compile operation that may run decides the source set; diags: {:?}",
+        result.diagnostics
+    );
+    assert!(!result.compile_condition_uncertainties.is_empty());
+}
+
+#[test]
+fn a_running_compile_operation_inside_the_sdk_is_honoured_or_declined() {
+    // The F# repository's `tests/EndToEndBuildTests/**` shape: the glob's own
+    // gate is cleanly *true* (the SDK targets default
+    // `EnableDefaultCompileItems` on, and nothing turned it off), so it runs.
+    // Without a glob resolver the evaluator cannot expand it, and must say so
+    // rather than commit the project's own list alone.
+    let result = parse_with_sdk_default_items(
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="**/*.fs" Exclude="bin/**" Condition="'$(EnableDefaultCompileItems)' == 'true'" />
+  </ItemGroup>
+</Project>"#,
+        r#"<Project>
+  <PropertyGroup>
+    <EnableDefaultCompileItems Condition="'$(EnableDefaultCompileItems)' == ''">true</EnableDefaultCompileItems>
+  </PropertyGroup>
+</Project>"#,
+    );
+    assert!(
+        result.items_uncertain,
+        "a running SDK glob the evaluator cannot expand must decline; items: {:?}",
+        result.items
+    );
 }
 
 #[test]

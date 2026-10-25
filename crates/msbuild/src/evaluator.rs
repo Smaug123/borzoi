@@ -2082,9 +2082,8 @@ impl<'r> State<'r> {
         //
         // Deliberately the *non*-tolerant helper even inside the SDK subtree.
         // The tolerance in `mark_structural_skip_respecting_sdk_compile_tolerance`
-        // rests on "an SDK sub-import we can't follow never drops a
-        // *hand-written* source"; a wrongly-skipped `Directory.Build.props`
-        // drops hand-written sources by construction.
+        // is a coverage trade for SDK machinery; a wrongly-skipped
+        // `Directory.Build.props` drops hand-written sources by construction.
         self.mark_structural_skip(
             StructuralCompileItemUncertainty::ImportProjectUnresolved {
                 project: format!("$({path_name})"),
@@ -2650,8 +2649,10 @@ impl<'r> State<'r> {
         // Outside that context, a kind that can itself carry Compile items (a
         // failed import / unresolved SDK — see [`is_structural_compile_risk`])
         // does too, but only in a user-authored file: inside the SDK tree such
-        // failures are part of the machinery we tolerate (an SDK sub-import we
-        // can't follow never drops a *hand-written* source). Everything else (an
+        // failures are tolerated. That is a coverage trade, not a soundness
+        // fact — an SDK sub-import we can't follow could carry a Compile
+        // operation that runs (see the known gaps on
+        // `ParsedProject::items_uncertain`). Everything else (an
         // undefined property or skipped `<Target>` in an SDK file) leaves the
         // Compile set intact, even though it still flips `is_partial`.
         // A structural kind means a file's worth of content did not enter

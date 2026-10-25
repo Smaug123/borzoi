@@ -1,14 +1,15 @@
 //! Regenerate the categorised name-resolution divergence report — the
 //! resolution analogue of `cst`'s `fcs_divergence.rs`.
 //!
-//! [`resolve_corpus_diff.rs`](crate) *asserts* a floor of matches, a ceiling of
-//! divergences, and (now) a ceiling of B1 gaps over the corpus, but it only ever
-//! prints a sample of sites. When you want to *triage* — "which lexical names
-//! that FCS resolves do we still defer, and what are they?" — you need the full
-//! categorised lists. This is the generator for those: it sweeps the same corpus,
-//! classifies every FCS-resolved symbol *use* whose declaration is in the same
-//! file, and writes one file per bucket under `resolve-divergence/` at the
-//! workspace root (gitignored; override with `BORZOI_RESOLVE_DIVERGENCE_OUT`).
+//! [`resolve_corpus_diff.rs`](crate) *asserts* zero divergences and pins every
+//! B1 use's bucket exactly through its checked-in manifest, but the manifest is
+//! keyed by position, not by construct. When you want to *triage* — "which
+//! lexical names that FCS resolves do we still defer, and what are they?" — you
+//! need the categorised lists. This is the generator for those: it sweeps the
+//! same corpus, classifies every FCS-resolved symbol *use* whose declaration is
+//! in the same file, and writes one file per bucket under `resolve-divergence/`
+//! at the workspace root (gitignored; override with
+//! `BORZOI_RESOLVE_DIVERGENCE_OUT`).
 //!
 //! The classification crosses **outcome** (did our resolver agree, disagree, or
 //! decline?) with the [`Bucket`] taxonomy (what *machinery* the use needs), the
@@ -48,8 +49,11 @@
 //! empty `AssemblyEnv`, so it can only adjudicate **in-file** declarations.
 //! Uses FCS resolves into a referenced assembly (FSharp.Core / BCL / NuGet) have
 //! no in-file declaration to compare against and no env for us to resolve them
-//! through, so they are tallied under `out-of-file` and otherwise skipped — the
-//! target-identity check for those is the *whole-project* differential
+//! through, so they are tallied under `out-of-file` and otherwise skipped here.
+//! The gate (`resolve_corpus_diff`) does grade them, as a soundness check: the
+//! only correct answer for one under the empty environment is to decline, so
+//! any in-file binder committed there is a divergence. Their target identity is
+//! checked by the *whole-project* differential
 //! (`crates/lsp/tests/all/resolve_real_project_diff.rs` and the `corpus-diff`
 //! crate), which drives the real assembly closure and the `uses-project` oracle.
 //! Bringing assembly divergences into *this* report would mean extending the
@@ -66,7 +70,7 @@
 //! Honours the same `BORZOI_RESOLVE_DIFF_STRIDE` (default 13) /
 //! `BORZOI_RESOLVE_DIFF_LIMIT` sample controls as the gate, so the two see the
 //! same files: this report's `gap_b1` count is exactly the gate's `tally.gaps`,
-//! the denominator of its `MIN_B1_COVERAGE_PERMILLE` completeness ratchet.
+//! the number of uses (with multiplicity) its manifest lists as `gap`.
 
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use serde::Serialize;
@@ -243,7 +247,7 @@ fn regenerate_resolution_divergence_report() {
 
     let mut all_files = Vec::new();
     collect_fs(&root, &mut all_files);
-    all_files.sort();
+    crate::common::corpus_manifest::sort_by_corpus_key(&root, &mut all_files);
     let sample: Vec<PathBuf> = all_files
         .iter()
         .step_by(stride)

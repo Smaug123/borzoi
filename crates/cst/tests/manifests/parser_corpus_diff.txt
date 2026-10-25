@@ -1,0 +1,931 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_corpus_diff:: -- --ignored
+(match) 5428 files
+.github/skills/fsharp-diagnostics/server/Server.fs fcs-normaliser-unmodelled
+buildtools/fslex/Parsing.fs fcs-normaliser-unmodelled
+buildtools/fslex/fslexlex.fs fcs-normaliser-unmodelled
+buildtools/fslex/fslexpars.fs fcs-normaliser-unmodelled
+buildtools/fsyacc/Parsing.fs fcs-normaliser-unmodelled
+buildtools/fsyacc/fsyaccast.fs fcs-normaliser-unmodelled
+buildtools/fsyacc/fsyaccdriver.fs fcs-normaliser-unmodelled
+buildtools/fsyacc/fsyacclex.fs fcs-normaliser-unmodelled
+buildtools/fsyacc/fsyaccpars.fs fcs-normaliser-unmodelled
+docs/fcs-samples/FsiExe/console.fs fcs-normaliser-unmodelled
+src/Compiler/AbstractIL/il.fs fcs-normaliser-unmodelled
+src/Compiler/AbstractIL/ilascii.fs fcs-normaliser-unmodelled
+src/Compiler/AbstractIL/ilbinary.fs fcs-normaliser-unmodelled
+src/Compiler/AbstractIL/ilnativeres.fs fcs-normaliser-unmodelled
+src/Compiler/AbstractIL/ilread.fs fcs-normaliser-unmodelled
+src/Compiler/AbstractIL/ilwrite.fs fcs-normaliser-unmodelled
+src/Compiler/AbstractIL/ilwritepdb.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/CheckDeclarations.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/CheckFormatStrings.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/CheckIncrementalClasses.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/ConstraintSolver.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/Expressions/CheckComputationExpressions.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/Expressions/CheckExpressions.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/MethodOverrides.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/NameResolution.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/NicePrint.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/PostInferenceChecks.fs fcs-normaliser-unmodelled
+src/Compiler/Checking/SignatureConformance.fs fcs-normaliser-unmodelled
+src/Compiler/CodeGen/EraseClosures.fs fcs-normaliser-unmodelled
+src/Compiler/CodeGen/IlxGen.fs fcs-normaliser-unmodelled
+src/Compiler/Driver/CompilerDiagnostics.fs fcs-normaliser-unmodelled
+src/Compiler/Driver/CompilerImports.fs fcs-normaliser-unmodelled
+src/Compiler/Driver/FxResolver.fs fcs-normaliser-unmodelled
+src/Compiler/Driver/StaticLinking.fs fcs-normaliser-unmodelled
+src/Compiler/Driver/fsc.fs fcs-normaliser-unmodelled
+src/Compiler/Facilities/LanguageFeatures.fs fcs-normaliser-unmodelled
+src/Compiler/Facilities/prim-parsing.fs fcs-normaliser-unmodelled
+src/Compiler/Interactive/fsi.fs fcs-normaliser-unmodelled
+src/Compiler/Optimize/LowerSequences.fs fcs-normaliser-unmodelled
+src/Compiler/Optimize/LowerStateMachines.fs fcs-normaliser-unmodelled
+src/Compiler/Service/FSharpCheckerResults.fs fcs-normaliser-unmodelled
+src/Compiler/Service/FSharpParseFileResults.fs fcs-normaliser-unmodelled
+src/Compiler/Service/IncrementalBuild.fs fcs-normaliser-unmodelled
+src/Compiler/Service/SemanticClassification.fs fcs-normaliser-unmodelled
+src/Compiler/Service/ServiceErrorResolutionHints.fs both-reject
+src/Compiler/Service/ServiceLexing.fs fcs-normaliser-unmodelled
+src/Compiler/Service/SynExpr.fs fcs-normaliser-unmodelled
+src/Compiler/Service/TransparentCompiler.fs fcs-normaliser-unmodelled
+src/Compiler/Symbols/Exprs.fs fcs-normaliser-unmodelled
+src/Compiler/SyntaxTree/LexFilter.fs fcs-normaliser-unmodelled
+src/Compiler/SyntaxTree/LexHelpers.fs fcs-normaliser-unmodelled
+src/Compiler/SyntaxTree/ParseHelpers.fs fcs-normaliser-unmodelled
+src/Compiler/SyntaxTree/PrettyNaming.fs fcs-normaliser-unmodelled
+src/Compiler/SyntaxTree/SyntaxTree.fs fcs-normaliser-unmodelled
+src/Compiler/TypedTree/TypedTreeOps.ExprOps.fs fcs-normaliser-unmodelled
+src/Compiler/Utilities/sformat.fs fcs-normaliser-unmodelled
+src/FSharp.Build/FSharpEmbedResourceText.fs fcs-normaliser-unmodelled
+src/FSharp.Build/Fsc.fs fcs-normaliser-unmodelled
+src/FSharp.Core/Nullable.fsi both-reject
+src/FSharp.Core/Query.fs both-reject
+src/FSharp.Core/Query.fsi both-reject
+src/FSharp.Core/array.fs fcs-normaliser-unmodelled
+src/FSharp.Core/array2.fs we-accept-fcs-rejects
+src/FSharp.Core/array3.fs we-accept-fcs-rejects
+src/FSharp.Core/async.fs fcs-normaliser-unmodelled
+src/FSharp.Core/fslib-extra-pervasives.fsi both-reject
+src/FSharp.Core/local.fs both-reject
+src/FSharp.Core/nativeptr.fs we-accept-fcs-rejects
+src/FSharp.Core/prim-types-prelude.fs we-accept-fcs-rejects
+src/FSharp.Core/prim-types-prelude.fsi we-accept-fcs-rejects
+src/FSharp.Core/prim-types.fs both-reject
+src/FSharp.Core/prim-types.fsi both-reject
+src/FSharp.Core/quotations.fs fcs-normaliser-unmodelled
+src/FSharp.Core/seqcore.fs both-reject
+src/fsi/console.fs fcs-normaliser-unmodelled
+tests/AheadOfTime/Trimming/Program.fs fcs-normaliser-unmodelled
+tests/EndToEndBuildTests/ProvidedTypes/ProvidedTypes.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/CompilerDirectives/Nowarn.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/codepage/libCodepage.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/times/times01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/CompilerService/AsyncMemoize.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnTypeMembers/E_OnProperty02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface03.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface04.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface05.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface06.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_let01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_member01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_module01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_type01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/CustomAttributes/AttributeUsage/E_AttributeTargetIsMethod03.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/EntryPoint/EntryPointAndAssemblyCulture.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_BeginWithUppercase02.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_BeginWithUppercase03.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_BeginWithUppercase04.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ExceptionDefinitions/E_ExnAsDiscriminatedUnion01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ImportDeclarations/E_openInTypeDecl.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ImportDeclarations/E_openModInFun.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_ErrorsforIncompleteTryWith.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_GenericTypeAnnotations01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological03.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological05.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_Pathological06.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/E_DeclarePropertyTwice01.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/MemberDefinitions/MethodsAndProperties/E_Properties02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_InvalidAbbrevName01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_InvalidAbbrevName02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/ModuleAbbreviations/E_UseInsideFunc.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/OperatorNames/E_BasicOperatorNames01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/E_QuestionMark01.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/E_QuestionMark02.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/E_Tilde01.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/PrecedenceAndOperators/E_Tilde02.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_FlexibleType01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_IncorrectRightSide_Hash.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_IncorrectRightSide_Keyword.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_IncorrectRightSide_Quotation.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_UnexpectedCharInTypeName01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ApplicationExpressions/BasicApplication/E_PostfixType01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ApplicationExpressions/BasicApplication/E_PostfixType03.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ComputationExpressions/Capacity01.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_WhitespaceErrors02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Joins01.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Ordering01.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/OperatorsOverClass01.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/OperatorsOverRecords01.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/OperatorsOverTuples01.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/UppercaseIdentifier04.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Utils.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/E_final_yield_dash_gt_01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/ReallyLongArray01.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_InvalidQuotationLiteral01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators03.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators04.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/OverloadResolutionBasicTests.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefSafetyAnalysis.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Conformance/LexicalFiltering/OffsideExceptions/RelaxWhitespace2.fs we-reject-fcs-accepts
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AsDeclarations/SanityCheck02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/E_IllegalName01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/E_PropertyInvalidGetter01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/E_PropertyInvalidGetter02.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_NoNestedTypes.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ZeroArity.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/E_ActivePatterns01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/E_SyntaxError01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/E_SyntaxError01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/E_NoRangeConst01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/TypeConstraint/E_typeconstraint01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/PseudoCustomAttributes/AssemblyCopyright_001.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_BeginWithUppercase02.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_BeginWithUppercase03.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_BeginWithUppercase04.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_SampleFromSpec01d.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_SampleFromSpec01d2.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/SampleFromSpec01d.fsx we-reject-fcs-accepts
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/W_SampleFromSpec01c.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Diagnostics/E_ParsingRationalExponents.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Diagnostics/E_ZeroDenominator.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error02.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error03.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error04.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error05.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_Error06.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_IncompleteParens01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parenthesis/E_IncompleteParens02.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Utils.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DerivedType.fs both-reject
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DoNotInlineX.fs both-reject
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/LocalTypeFunctionInIf.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/FSharpChecker/TransparentCompiler.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_emptyRecord.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal_n01.fs.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal_tuple.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_id.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_id_equal01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_id_equal_let_id_equal_n.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_mutable_equal.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_module_mutable_id_equal.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_type_id_equal_pipe.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/Miscellaneous/ReallyLongList01.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/innerpoly.fsx fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/libtest.fsx fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/members_basics.fs range-divergent
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/QueryTrieTests.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/Scenarios.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/AlternateGenericTypeSyntax01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/E_MissingArgumentForGetterProp01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/E-SignatureAfterSource.fsi range-divergent
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/E_AnonSignatureFile.fsi range-divergent
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/NullAsTrueUnion01.fsi range-divergent
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_HashDirectives01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_HashDirectives02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_NamespaceAndModule01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/basic/E_NamespaceAndModule02.fsi both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/global/E_AsModuleName.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/global/E_InExceptionDecl.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/NamespacesFragmentsAndImplementationFiles/global/E_IsAKeyword.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/SignatureFiles/E_MissingSourceFile02.fsi both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_IncompleteComment01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_IncompleteComment02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_embeddedString005.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_ocamlstyle_nested006.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_ocamlstyle_nested007.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Comments/E_star02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_MustBeIdent01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_UnmatchedEndif01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_UnmatchedIf01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/E_UnmatchedIf02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/InStringLiteral02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/Nested01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/ConditionalCompilation/Nested02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/Directives/E_ShebangLocation.fsx we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_InvalidIdentifier01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_KeywordIdent01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_MissingQualification.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/IdentifiersAndKeywords/E_ValidIdentifier04.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/LineDirectives/Line01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_DecimalWO0Prefix.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_InvalidIEEE64.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_MaxLiterals01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_MaxLiterals02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_MaxLiterals04.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals001.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals002.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals003.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals004.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals005.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals006.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/E_enumNegativeLiterals007.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/casingIEEE-lf-LF03a.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/NumericLiterals/casingIEEE-lf-LF03b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/ByteChars02.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_BogusLongUnicodeEscape.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_ByteCharUnicodeChar01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_ByteChars02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_ByteStrUnicodeChar01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/E_MalformedShortUnicode01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/TripleQuoteString02.fs non-utf8
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_CantUseDollarSign.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_GreaterThanDotParen01.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/Basic/OffsideExceptions/Offside01c.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_SpacesAfterLetBinding.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_TABsNotAllowedIndentOff.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_UnclosedLetBlock01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/W_OffsideAccessibility01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/Signatures/SignatureConformance/MissingMethodInImplementation01.fsi range-divergent
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_Regression02.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_Regressions01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/TypeParameterDefinitions/E_LazyInType02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_AsBindingOnInheritDecl01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_BaseInObjectExpression01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_IncompleteConstruct01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_IncompleteConstruct01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_IndexedPropertySetter01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_TryFinallyIncompleteStructuredConstruct.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedKeywordAs01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedKeyworkWith01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/attrUnionCaseDecl01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/attrUnionCaseDecl01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceExpr01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceExpr01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl02b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/fileModuleImpl04.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator02b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator05.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator05b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator06.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator06b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/memberDefinitionWithoutType01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/memberDefinitionWithoutType01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicExprNonEmptyInitial01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicExprNonEmptyInitial01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicPatternClauses01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/monadicPatternClauses01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/tuplewithlazy01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/tuplewithlazy01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typ01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typ01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typeConstraint01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typeConstraint01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock01b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/typedSeqExprBlock02b.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/du_with01.fs we-accept-fcs-rejects
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/for_in01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/for_in_range01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/if01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/match01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/try01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal02.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal02.fsi both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_equal_curly01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/type_id_parens01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/ParsingAtEOF/while_cond01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_emptyRecord.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_equal01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_equal_n01.fs.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_equal_tuple.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_id.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_id_equal01.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_id_equal_let_id_equal_n.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_let_mutable_equal.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_module_mutable_id_equal.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/E_type_id_equal_pipe.fsx both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/PipingWithDirectives.fs range-divergent
+tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/E_productioncoverage01.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/E_productioncoverage03.fs both-reject
+tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/productioncoverage01.fs we-reject-fcs-accepts
+tests/FSharp.Compiler.Service.Tests/EditorTests.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.Service.Tests/ExprTests.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.Service.Tests/MultiProjectAnalysisTests.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.Service.Tests/PerfTests.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.Service.Tests/ProjectAnalysisTests.fs fcs-normaliser-unmodelled
+tests/FSharp.Compiler.Service.Tests/Symbols.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/ComparersRegression.fs fcs-error
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/Array2Module.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/SeqModule2.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/Cancellation.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/ContinuationsThreadingDetailsStandaloneExe.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/BigIntType.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/IntConversionsTestGenerator.fsx fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModule2.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/PrimTypes.fs fcs-normaliser-unmodelled
+tests/FSharp.Core.UnitTests/FSharp.Core/RecordTypes.fs we-reject-fcs-accepts
+tests/FSharp.Test.Utilities/TestFramework.fs fcs-normaliser-unmodelled
+tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest1.fs fcs-normaliser-unmodelled
+tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest10.fs fcs-normaliser-unmodelled
+tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest5.fs fcs-normaliser-unmodelled
+tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE200xnest5.fs fcs-normaliser-unmodelled
+tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CEwCO100xnest5.fs fcs-normaliser-unmodelled
+tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CEwCO500xnest1.fs fcs-normaliser-unmodelled
+tests/benchmarks/FCSBenchmarks/FCSSourceFiles/Program.fs fcs-normaliser-unmodelled
+tests/fsharp/Compiler/Libraries/Core/LanguagePrimitives/StringFormatTests.fs fcs-normaliser-unmodelled
+tests/fsharp/core/attributes/test.fsx range-divergent
+tests/fsharp/core/auto-widen/5.0/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/auto-widen/preview-default-warns/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/auto-widen/preview/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/csext/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/innerpoly/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/large/conditionals/LargeConditionals-200.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/conditionals/LargeConditionals-maxtested.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/lets/LargeLets-500.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/lets/LargeLets-maxtested.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/lists/LargeList-500.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/matches/LargeMatches-200.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/matches/LargeMatches-maxtested.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/mixed/LargeSequentialLet-500.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/mixed/LargeSequentialLet-maxtested.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/sequential/LargeSequential-500.fs fcs-normaliser-unmodelled
+tests/fsharp/core/large/sequential/LargeSequential-maxtested.fs fcs-error
+tests/fsharp/core/letrec/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/libtest/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/load-script/loadfail1.fsx both-reject
+tests/fsharp/core/longnames/test.fsx range-divergent
+tests/fsharp/core/math/numbers/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/math/numbersVS2008/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/members/absil.fs both-reject
+tests/fsharp/core/members/absil.fsi both-reject
+tests/fsharp/core/members/basics-hw/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/members/basics/test.fs range-divergent
+tests/fsharp/core/members/console/console2.fs both-reject
+tests/fsharp/core/members/incremental-hw-mutrec/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/members/incremental-hw/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/members/incremental/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/nested/test.fsx range-divergent
+tests/fsharp/core/patterns/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/printf-interpolated/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/printf/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/printing/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/quotes/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/recordResolution/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/subtype/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/syntax/test.fsx ast-divergent
+tests/fsharp/core/tlr/test.fsx we-reject-fcs-accepts
+tests/fsharp/core/topinit/generate.fsx fcs-normaliser-unmodelled
+tests/fsharp/core/unicode/kanji-unicode-utf16.fs non-utf8
+tests/fsharp/core/unicode/kanji-unicode-utf7-codepage-65000.fs both-reject
+tests/fsharp/regression/12322/test.fsx fcs-normaliser-unmodelled
+tests/fsharp/tests.fs fcs-normaliser-unmodelled
+tests/fsharp/typeProviders/helloWorld/provider.fsx fcs-normaliser-unmodelled
+tests/fsharp/typecheck/sigs/neg01a.fs both-reject
+tests/fsharp/typecheck/sigs/neg01a.fsi both-reject
+tests/fsharp/typecheck/sigs/neg02.fs both-reject
+tests/fsharp/typecheck/sigs/neg09.fsi range-divergent
+tests/fsharp/typecheck/sigs/neg10.fs range-divergent
+tests/fsharp/typecheck/sigs/neg104.fs both-reject
+tests/fsharp/typecheck/sigs/neg114.fs both-reject
+tests/fsharp/typecheck/sigs/neg115.fs both-reject
+tests/fsharp/typecheck/sigs/neg13.fs range-divergent
+tests/fsharp/typecheck/sigs/neg135.fs both-reject
+tests/fsharp/typecheck/sigs/neg19.fs we-accept-fcs-rejects
+tests/fsharp/typecheck/sigs/neg25.fs we-reject-fcs-accepts
+tests/fsharp/typecheck/sigs/neg27.fs both-reject
+tests/fsharp/typecheck/sigs/neg27.fsi both-reject
+tests/fsharp/typecheck/sigs/neg29.fs both-reject
+tests/fsharp/typecheck/sigs/neg33.fsi range-divergent
+tests/fsharp/typecheck/sigs/neg35.fs we-accept-fcs-rejects
+tests/fsharp/typecheck/sigs/neg38.fs both-reject
+tests/fsharp/typecheck/sigs/neg39.fs we-accept-fcs-rejects
+tests/fsharp/typecheck/sigs/neg40.fs we-accept-fcs-rejects
+tests/fsharp/typecheck/sigs/neg41.fs both-reject
+tests/fsharp/typecheck/sigs/neg42.fsi both-reject
+tests/fsharp/typecheck/sigs/neg43.fsi range-divergent
+tests/fsharp/typecheck/sigs/neg64.fsx both-reject
+tests/fsharp/typecheck/sigs/neg65.fs both-reject
+tests/fsharp/typecheck/sigs/neg66.fsx both-reject
+tests/fsharp/typecheck/sigs/neg67.fsx both-reject
+tests/fsharp/typecheck/sigs/neg69.fsx both-reject
+tests/fsharp/typecheck/sigs/neg70.fsx both-reject
+tests/fsharp/typecheck/sigs/neg71.fsx both-reject
+tests/fsharp/typecheck/sigs/neg72.fsx both-reject
+tests/fsharp/typecheck/sigs/neg73.fsx both-reject
+tests/fsharp/typecheck/sigs/neg74.fsx both-reject
+tests/fsharp/typecheck/sigs/neg75.fsx both-reject
+tests/fsharp/typecheck/sigs/neg76.fsx both-reject
+tests/fsharp/typecheck/sigs/neg77.fsx both-reject
+tests/fsharp/typecheck/sigs/neg79.fsx both-reject
+tests/fsharp/typecheck/sigs/neg80.fsx both-reject
+tests/fsharp/typecheck/sigs/neg81.fsx both-reject
+tests/fsharp/typecheck/sigs/neg82.fsx both-reject
+tests/fsharp/typecheck/sigs/neg83.fsx both-reject
+tests/fsharp/typecheck/sigs/neg84.fsx both-reject
+tests/fsharp/typecheck/sigs/neg86.fsx both-reject
+tests/fsharp/typecheck/sigs/neg_anon_2.fs both-reject
+tests/fsharp/typecheck/sigs/pos24.fs fcs-normaliser-unmodelled
+tests/service/data/SyntaxTree/Exception/Missing name 01.fs both-reject
+tests/service/data/SyntaxTree/Exception/Missing name 02.fs both-reject
+tests/service/data/SyntaxTree/Exception/Missing name 03.fs both-reject
+tests/service/data/SyntaxTree/Exception/Recover Function Type 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-01.fs both-reject
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-02.fs both-reject
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-03.fs both-reject
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-04.fs both-reject
+tests/service/data/SyntaxTree/Expression/AnonymousRecords-05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Eq 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Eq 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Eq 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Eq 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Eq 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Plus 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Plus 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Plus 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Binary - Plus 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Do 02.fs range-divergent
+tests/service/data/SyntaxTree/Expression/Do 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/DotLambda - _ Recovery - Casts.fsx both-reject
+tests/service/data/SyntaxTree/Expression/DotLambda - _ Recovery - Eof.fsx both-reject
+tests/service/data/SyntaxTree/Expression/DotLambda - _ Recovery.fsx both-reject
+tests/service/data/SyntaxTree/Expression/DotLambda - _. Recovery - Eof.fsx both-reject
+tests/service/data/SyntaxTree/Expression/DotLambda - _. Recovery.fsx both-reject
+tests/service/data/SyntaxTree/Expression/DotLambda_WithoutUnderscore.fs both-reject
+tests/service/data/SyntaxTree/Expression/Downcast 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Downcast 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/For 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Id 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Id 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Id 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Id 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Id 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/Id 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/If 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/If 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/If 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/If 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/If 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/If 10.fs both-reject
+tests/service/data/SyntaxTree/Expression/Lambda - Missing expr 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Lambda - Missing expr 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Lazy 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Let 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/List - Comprehension 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 08.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 09.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 10.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 11.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 12.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 13.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 14.fs both-reject
+tests/service/data/SyntaxTree/Expression/Object - Class 15.fs both-reject
+tests/service/data/SyntaxTree/Expression/Rarrow 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Rarrow 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Rarrow 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 08.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 10.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Anon 12.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 08.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 09.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 11.fs both-reject
+tests/service/data/SyntaxTree/Expression/Record - Field 13.fs both-reject
+tests/service/data/SyntaxTree/Expression/Return 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/ReturnBang 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Set 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/SynExprMatchBangContainsTheRangeOfTheMatchAndWithKeyword.fs range-divergent
+tests/service/data/SyntaxTree/Expression/Try - Finally 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try - With 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try - With 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try - With 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try - With 08.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try - With 09.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Try with - Missing expr 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 07.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 08.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 09.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 10.fs both-reject
+tests/service/data/SyntaxTree/Expression/Tuple - Missing item 11.fs both-reject
+tests/service/data/SyntaxTree/Expression/Type test 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Type test 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Type test 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Type test 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Typed 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Typed 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Typed 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Typed 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Unary - Reserved 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Unary - Reserved 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Unfinished escaped ident 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Unfinished escaped ident 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Unfinished escaped ident 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/Upcast 01.fs both-reject
+tests/service/data/SyntaxTree/Expression/Upcast 02.fs both-reject
+tests/service/data/SyntaxTree/Expression/Upcast 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Upcast 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/While 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/While 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/WhileBang 03.fs both-reject
+tests/service/data/SyntaxTree/Expression/WhileBang 04.fs both-reject
+tests/service/data/SyntaxTree/Expression/Yield 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/Yield 06.fs both-reject
+tests/service/data/SyntaxTree/Expression/YieldBang 01.fs range-divergent
+tests/service/data/SyntaxTree/Expression/YieldBang 05.fs both-reject
+tests/service/data/SyntaxTree/Expression/YieldBang 06.fs both-reject
+tests/service/data/SyntaxTree/IfThenElse/Comment after else 02.fs both-reject
+tests/service/data/SyntaxTree/Lambda/ComplexArgumentsLambdaHasArrowRange.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/DestructedLambdaHasArrowRange.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/LambdaWithTupleParameterWithWildCardGivesCorrectBody.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/LambdaWithTwoParametersGivesCorrectBody.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/LambdaWithWildCardParameterGivesCorrectBody.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/LambdaWithWildCardThatReturnsALambdaGivesCorrectBody.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/MultilineLambdaHasArrowRange.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 01.fs both-reject
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 02.fs both-reject
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 03.fs both-reject
+tests/service/data/SyntaxTree/Lambda/Param - Missing type 04.fs both-reject
+tests/service/data/SyntaxTree/Lambda/SimpleLambdaHasArrowRange.fs range-divergent
+tests/service/data/SyntaxTree/Lambda/TupleInLambdaHasArrowRange.fs range-divergent
+tests/service/data/SyntaxTree/MatchClause/Missing expr 01.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing expr 02.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing expr 03.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing expr 04.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing expr 05.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing pat 01.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing pat 02.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing pat 03.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing pat 04.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/Missing pat 05.fs both-reject
+tests/service/data/SyntaxTree/MatchClause/RangeOfSingleSynMatchClauseFollowedByBar.fs both-reject
+tests/service/data/SyntaxTree/Member/Abstract - Property 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Abstract - Property 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Abstract - Property 05.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 02.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 04.fs we-reject-fcs-accepts
+tests/service/data/SyntaxTree/Member/Auto property 05.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 06.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 08.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 09.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 10.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 12.fs both-reject
+tests/service/data/SyntaxTree/Member/Auto property 13.fs both-reject
+tests/service/data/SyntaxTree/Member/Do 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Do 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 02.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 05.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 06.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 07.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 08.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 09.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 10.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 11.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 12.fs both-reject
+tests/service/data/SyntaxTree/Member/Field 13.fs both-reject
+tests/service/data/SyntaxTree/Member/GetSetMember 01.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Member/Implicit ctor - Missing type 01.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Missing type 02.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Pat - Tuple 02.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Fun 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Fun 05.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Fun 06.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Tuple 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Tuple 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Implicit ctor - Type - Tuple 05.fs both-reject
+tests/service/data/SyntaxTree/Member/Inherit 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Inherit 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Inherit 05.fs both-reject
+tests/service/data/SyntaxTree/Member/Inherit 06.fsi both-reject
+tests/service/data/SyntaxTree/Member/Inherit 07.fsi both-reject
+tests/service/data/SyntaxTree/Member/Inherit 08.fs both-reject
+tests/service/data/SyntaxTree/Member/Interface 02.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Member/Interface 06.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Member/Interface 08.fs both-reject
+tests/service/data/SyntaxTree/Member/Interface 09.fs both-reject
+tests/service/data/SyntaxTree/Member/Interface 10.fs both-reject
+tests/service/data/SyntaxTree/Member/Let 02.fs both-reject
+tests/service/data/SyntaxTree/Member/Let 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Let 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Member - Attributes 01.fs both-reject
+tests/service/data/SyntaxTree/Member/Member - Param - Missing type 01.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 01.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 02.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 03.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 04.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 05.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 07.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 08.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 09.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 10.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 11.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 12.fs both-reject
+tests/service/data/SyntaxTree/Member/Member 13.fs both-reject
+tests/service/data/SyntaxTree/Member/MemberMispelledToMeme.fs both-reject
+tests/service/data/SyntaxTree/Member/Static 01.fs both-reject
+tests/service/data/SyntaxTree/Member/Static 02.fs both-reject
+tests/service/data/SyntaxTree/Member/Static 03.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Do 01.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Do 02.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Let 02.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Let 03.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Let 04.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Let 05.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Open 01.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Open 02.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Open 03.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Open 04.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Open 05.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Open 06.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Open 07.fs both-reject
+tests/service/data/SyntaxTree/ModuleMember/Val 01.fsi both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/DeclaredNamespaceRangeShouldStartAtNamespaceKeyword.fs range-divergent
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 04.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 05.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 06.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Module 07.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 02.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 03.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 04.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 05.fs range-divergent
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 06.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 07.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 08.fs range-divergent
+tests/service/data/SyntaxTree/ModuleOrNamespace/Namespace 09.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 02.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 03.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 04.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 05.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 06.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 07.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 08.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 09.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 10.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 11.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 12.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 13.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 14.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 15.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 16.fs both-reject
+tests/service/data/SyntaxTree/ModuleOrNamespace/Nested module 17.fs both-reject
+tests/service/data/SyntaxTree/NestedModule/IncompleteNestedModuleSigShouldBePresent.fsi both-reject
+tests/service/data/SyntaxTree/Nullness/IntListOrNullOrNullOrNull.fs both-reject
+tests/service/data/SyntaxTree/OperatorName/OperatorNameInValConstraint.fsi both-reject
+tests/service/data/SyntaxTree/Pattern/As 02.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 04.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 05.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 06.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 07.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 08.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 09.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 10.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 11.fs both-reject
+tests/service/data/SyntaxTree/Pattern/As 12.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Cons 02.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Cons 03.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Cons 04.fs both-reject
+tests/service/data/SyntaxTree/Pattern/IsInst 02.fs both-reject
+tests/service/data/SyntaxTree/Pattern/IsInst 03.fs both-reject
+tests/service/data/SyntaxTree/Pattern/IsInst 04.fs both-reject
+tests/service/data/SyntaxTree/Pattern/IsInst 05.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Named field 02.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Named field 03.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Named field 05.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Named field 08.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Named field 09.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Record 03.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Record 04.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Record 05.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Record 06.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 01.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 02.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 03.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Tuple - Recover 04.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 01.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 02.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 03.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 04.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 05.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 06.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 07.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 08.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 09.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 10.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 11.fs both-reject
+tests/service/data/SyntaxTree/Pattern/Typed - Missing type 12.fs both-reject
+tests/service/data/SyntaxTree/SignatureType/NestedTypeHasStaticTypeAsLeadingKeyword.fsi both-reject
+tests/service/data/SyntaxTree/SimplePats/SimplePats - Recover 01.fs both-reject
+tests/service/data/SyntaxTree/SynIdent/IncompleteLongIdent 01.fs both-reject
+tests/service/data/SyntaxTree/SynIdent/IncompleteLongIdent 02.fs both-reject
+tests/service/data/SyntaxTree/SynType/Div 05.fs both-reject
+tests/service/data/SyntaxTree/SynType/Div 06.fs both-reject
+tests/service/data/SyntaxTree/SynType/Fun 03.fs both-reject
+tests/service/data/SyntaxTree/SynType/Fun 04.fs both-reject
+tests/service/data/SyntaxTree/SynType/Fun 05.fs both-reject
+tests/service/data/SyntaxTree/SynType/Fun 08.fs both-reject
+tests/service/data/SyntaxTree/SynType/Fun 09.fs both-reject
+tests/service/data/SyntaxTree/SynType/Fun 10.fs both-reject
+tests/service/data/SyntaxTree/SynType/Named 08.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple - Nested 04.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple - Nested 05.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple - Nested 06.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 04.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 05.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 06.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 07.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 08.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 09.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 10.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 11.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 12.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 13.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 14.fs both-reject
+tests/service/data/SyntaxTree/SynType/Tuple 15.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 04.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 05.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 06.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 13.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 14.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 15.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 16.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 17.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang 18.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 15.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 18.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed UseBang 03.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed UseBang 04.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed UseBang 05.fs both-reject
+tests/service/data/SyntaxTree/SynType/Typed UseBang 06.fs both-reject
+tests/service/data/SyntaxTree/Type/And 01.fs both-reject
+tests/service/data/SyntaxTree/Type/And 03.fs both-reject
+tests/service/data/SyntaxTree/Type/And 04.fs both-reject
+tests/service/data/SyntaxTree/Type/And 06.fs both-reject
+tests/service/data/SyntaxTree/Type/As 02.fs both-reject
+tests/service/data/SyntaxTree/Type/As 03.fs both-reject
+tests/service/data/SyntaxTree/Type/As 04.fs both-reject
+tests/service/data/SyntaxTree/Type/As 05.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Type/As 06.fs both-reject
+tests/service/data/SyntaxTree/Type/As 07.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Type/As 08.fs both-reject
+tests/service/data/SyntaxTree/Type/Cascading Nested Invalid Constructs 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Deeply Indented Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Double Semicolon Delimiters 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 03.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 04.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 05.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 06.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 07 - Eof.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 08 - Eof.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 09 - Eof.fs both-reject
+tests/service/data/SyntaxTree/Type/Enum 10 - Eof.fs both-reject
+tests/service/data/SyntaxTree/Type/Exception Inside Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Inline IL With Type 01.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Type/Interface 05.fs both-reject
+tests/service/data/SyntaxTree/Type/Interface 06.fs both-reject
+tests/service/data/SyntaxTree/Type/Interface 07.fs both-reject
+tests/service/data/SyntaxTree/Type/Module After Do Binding 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module After Inherit 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module After Members 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module After Static Members 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module And Exception Interleaved With Members 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module And Type After Do Binding 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module And Type Inside Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Between Constructors 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Class 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Class With Constructor 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Delegate 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Interface 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Interface End 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Nested Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Record 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Struct 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Type With Augmentation 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Module Inside Union 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Multiple Invalid Constructs In Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Nested Module Hierarchy 01.fs both-reject
+tests/service/data/SyntaxTree/Type/NestedTypeHasStaticTypeAsLeadingKeyword.fs both-reject
+tests/service/data/SyntaxTree/Type/Open Inside Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Primary ctor 02.fs both-reject
+tests/service/data/SyntaxTree/Type/Primary ctor 03.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Type/Primary ctor 04.fs both-reject
+tests/service/data/SyntaxTree/Type/Primary ctor 05.fs we-accept-fcs-rejects
+tests/service/data/SyntaxTree/Type/Record - Access 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Record - Access 02.fs both-reject
+tests/service/data/SyntaxTree/Type/Record - Access 03.fs both-reject
+tests/service/data/SyntaxTree/Type/Record - Access 04.fs both-reject
+tests/service/data/SyntaxTree/Type/Record - Mutable 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Record - Mutable 02.fs both-reject
+tests/service/data/SyntaxTree/Type/Record - Mutable 03.fs both-reject
+tests/service/data/SyntaxTree/Type/Record - Mutable 04.fs both-reject
+tests/service/data/SyntaxTree/Type/Record 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Record 02.fs both-reject
+tests/service/data/SyntaxTree/Type/Record 03.fs both-reject
+tests/service/data/SyntaxTree/Type/Record 04.fs both-reject
+tests/service/data/SyntaxTree/Type/Record 05.fs both-reject
+tests/service/data/SyntaxTree/Type/Same Line Declarations 01.fs we-reject-fcs-accepts
+tests/service/data/SyntaxTree/Type/SynTypeTupleWithStructRecovery.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 03.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 04.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 05.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 06.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 07.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 09.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 10.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 11.fs both-reject
+tests/service/data/SyntaxTree/Type/Type 12.fs both-reject
+tests/service/data/SyntaxTree/Type/Type Inside Type 01.fs both-reject
+tests/service/data/SyntaxTree/Type/Union - Field 02.fs both-reject
+tests/service/data/SyntaxTree/Type/Union - Field 03.fs both-reject
+tests/service/data/SyntaxTree/Type/Union 03.fs both-reject
+tests/service/data/SyntaxTree/Type/Union 04.fs both-reject
+tests/service/data/SyntaxTree/Type/Union 05.fs both-reject
+tests/service/data/SyntaxTree/Type/Union 06.fs both-reject
+tests/service/data/SyntaxTree/Type/Union 07.fs both-reject
+tests/service/data/SyntaxTree/Type/With 02.fs both-reject
+tests/service/data/SyntaxTree/Type/With 03.fs both-reject
+tests/service/data/SyntaxTree/Type/With 05.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing keyword of.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 01.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 02.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 03.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 04.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 05.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 06.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 07.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 08.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Missing name 09.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Recover Function Type 01.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Recover Function Type 02.fs both-reject
+tests/service/data/SyntaxTree/UnionCase/Recover Function Type 03.fs both-reject
+tests/service/data/TestTP/ProvidedTypes.fs fcs-normaliser-unmodelled
+tests/service/data/TestTP/TestTP.fs fcs-normaliser-unmodelled
+vsintegration/ItemTemplates/CodeFile/Template/File.fs both-reject
+vsintegration/ProjectTemplates/LibraryProject/Template/Library1.fs both-reject
+vsintegration/ProjectTemplates/LibraryProject/Template/Script.fsx both-reject
+vsintegration/src/FSharp.Editor/CodeFixes/AddOpenCodeFixProvider.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.Editor/CodeFixes/ImplementInterface.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.Editor/CodeFixes/RemoveUnnecessaryParentheses.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.Editor/Commands/XmlDocCommandService.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.Editor/Completion/CompletionProvider.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.Editor/Completion/SignatureHelp.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.Editor/Refactor/AddExplicitTypeToParameter.fs fcs-normaliser-unmodelled
+vsintegration/src/FSharp.ProjectSystem.FSharp/Project.fs fcs-normaliser-unmodelled
+vsintegration/tests/FSharp.Editor.Tests/CodeFixes/RemoveUnnecessaryParenthesesTests.fs fcs-normaliser-unmodelled
+vsintegration/tests/MockTypeProviders/DummyProviderForLanguageServiceTesting/ProvidedTypes.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.GotoDefinition.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.NavigationBar.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.ParameterInfo.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.Script.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/LegacyProjectSystem/Tests.ProjectSystem.Miscellaneous.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/LegacyProjectSystem/Tests.ProjectSystem.Project.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/LegacyProjectSystem/Tests.ProjectSystem.UpToDate.fs fcs-normaliser-unmodelled
+vsintegration/tests/UnitTests/Tests.Build.fs fcs-normaliser-unmodelled

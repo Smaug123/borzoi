@@ -1,6 +1,6 @@
 //! `NuGetVersion`: NuGet's version model, matching `NuGet.Versioning`'s
 //! `NuGetVersion` / `VersionComparer.Default` semantics (differentially
-//! tested against them in `tests/version_diff.rs`).
+//! tested against them in `tests/all/version_diff.rs`).
 //!
 //! NuGet is *not* strict SemVer 2.0.0. The deviations this type reproduces:
 //!
@@ -40,7 +40,7 @@
 //! That `Compare` really is a *total* order — in particular transitive
 //! across the numeric/alphanumeric label split, the place a mixed rule like
 //! this usually isn't — is checked exhaustively over every triple of an
-//! adversarial pool in `tests/version_properties.rs`; `tests/version_diff.rs`
+//! adversarial pool in `tests/all/version_properties.rs`; `tests/all/version_diff.rs`
 //! checks NuGet's agreement with us on every *pair* of the same pool, which
 //! carries the conclusion over to `VersionComparer.Default` itself.
 

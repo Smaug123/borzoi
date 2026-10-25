@@ -11,9 +11,11 @@ use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
     UnionCases, Version,
 };
+use borzoi_corpus_diff::manifest::{ManifestError, project_corpus_manifest};
 use borzoi_corpus_diff::{
     Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
-    LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses,
+    Graded, ItemOutcome, LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus,
+    ProjectRecord, ProjectSkip, ProjectUse, ProjectVerdict, ServedDecline, SetAside, SkippedUses,
     UseDecl, check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env,
     explain_token, fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project,
     load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
@@ -341,7 +343,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
     let (decl_start, decl_end) = text_range(sig, "x");
     let (use_start, use_end) = text_range(use_src, "A.x");
 
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: use_path,
@@ -407,7 +409,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
         ..compared.clone()
     };
     let loaded = synthetic_loaded_project(src, AssemblyEnv::from_entities(Vec::new()));
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: path.clone(),
@@ -785,7 +787,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
     // alternative's `_n`.
     let first = src.find("| A _n").expect("first alternative") + 6 - 2;
     let body = src.rfind("_n").expect("body use");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -877,7 +879,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
     let pattern_end = src.find(") ->").expect("pattern end");
     let first = src.find("A _n").expect("first alternative") + 2;
     let body = src.rfind("_n").expect("body use");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -956,7 +958,7 @@ fn comparison_reports_skipped_oracle_categories() {
     let src = "module B\nlet _ = 1\n";
     let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1055,7 +1057,7 @@ fn comparison_matches_assembly_oracle_declarations() {
     let loaded = synthetic_loaded_project(src, synthetic_assembly_env());
     let file = loaded.parses.paths[0].clone();
     let (start, end) = text_range(src, "Demo.Widget.Value");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1094,9 +1096,9 @@ fn comparison_matches_assembly_oracle_declarations() {
 /// that asked only `resolution_at` would see silence here and bank a
 /// *deferral*, which claims nothing; the answer would go undiffed however wrong
 /// it was, with every headline number and the divergence gate unmoved. So this
-/// pins the join rather than the count: revert
-/// `committed_resolution_at` to `resolution_at` and `matches` falls to 0 while
-/// `deferrals` rises to 1.
+/// pins the join rather than the count: drop the attribute map from the LSP's
+/// served-answer rule (`smallest_resolution_with_range`) and `matches` falls to
+/// 0 while `deferrals` rises to 1.
 #[test]
 fn comparison_diffs_an_attribute_type_the_main_resolution_map_never_sees() {
     let src = "\
@@ -1114,7 +1116,7 @@ let value = 1
     // attribute name, which is where FCS reports the use.
     let (use_start, use_end) = nth_text_range(src, "Mark", 1);
     let (decl_start, decl_end) = text_range(src, "MarkAttribute");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1194,7 +1196,7 @@ fn a_constructor_record_steps_aside_for_the_name_the_author_wrote() {
         }),
         ..named.clone()
     };
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1251,7 +1253,7 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
         decl: UseDecl::Unlocated,
         ..gradable.clone()
     };
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1313,7 +1315,7 @@ fn a_member_answer_inference_supplies_is_put_to_the_oracle() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1353,7 +1355,7 @@ fn a_member_answer_is_graded_against_the_oracle_span_it_ends() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1374,7 +1376,7 @@ fn a_wrong_member_answer_is_a_divergence() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1403,7 +1405,7 @@ fn a_member_answer_the_oracle_is_silent_about_is_a_reverse_divergence() {
     let src = member_access_source();
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1437,7 +1439,7 @@ fn a_member_entry_the_resolver_answers_over_is_not_reported_twice() {
     let loaded = bcl_loaded_project(src);
     let file = loaded.parses.paths[0].clone();
     let path = text_range(src, "System.Object.ReferenceEquals");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1465,7 +1467,7 @@ fn comparison_reports_wrong_assembly_resolution() {
     let loaded = synthetic_loaded_project(src, synthetic_assembly_env());
     let file = loaded.parses.paths[0].clone();
     let (start, end) = text_range(src, "Demo.Widget.Value");
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file,
@@ -1496,6 +1498,336 @@ fn comparison_reports_wrong_assembly_resolution() {
     );
 }
 
+/// A record naming a project declaration, for the hand-written oracle streams
+/// below.
+fn project_use(name: &str, at: (usize, usize), decl: DeclSite) -> ProjectUse {
+    ProjectUse {
+        name: name.to_string(),
+        start: at.0,
+        end: at.1,
+        is_from_definition: false,
+        is_compiler_generated: false,
+        decl: UseDecl::InProject(decl),
+        assembly: None,
+        full_name: None,
+        generic_arity: None,
+        is_constructor: false,
+        declaring: None,
+    }
+}
+
+/// A qualifier is graded at the answer the LSP **serves** there, not at the
+/// answer recorded at its exact range.
+///
+/// In `Shared.foo` the resolver records `Item(foo)` over the whole path and a
+/// deferral over `Shared`. FCS reports module `Shared` at the qualifier's token
+/// and `foo` over the whole path — the shape [`tiny_project_matches_fcs`] pins
+/// against the real oracle. Read at the exact range, the qualifier's answer is
+/// a deferral and can never diverge; a cursor on it, though, is served whatever
+/// the LSP's containment rule picks, and serving `foo` there is a wrong target.
+/// This grades the served answer, so that wrong target is a divergence, and the
+/// correct one — the qualifier's own deferral — is a deferral.
+#[test]
+fn a_qualifier_is_graded_at_the_answer_served_there() {
+    let lib = "module Shared\nlet foo = 1\n";
+    let using = "module Other\nlet bar = Shared.foo\n";
+    let loaded = synthetic_multi_file_project(&[("A.fs", lib), ("B.fs", using)]);
+    let a = loaded.parses.paths[0].clone();
+    let b = loaded.parses.paths[1].clone();
+    let module_decl = DeclSite {
+        file: a.clone(),
+        start: text_range(lib, "Shared").0,
+        end: text_range(lib, "Shared").1,
+    };
+    let foo_decl = DeclSite {
+        file: a.clone(),
+        start: text_range(lib, "foo").0,
+        end: text_range(lib, "foo").1,
+    };
+    let comparison = compare(
+        &loaded,
+        &[
+            FileUses {
+                path: a,
+                diagnostics: Vec::new(),
+                uses: Vec::new(),
+            },
+            FileUses {
+                path: b,
+                diagnostics: Vec::new(),
+                uses: vec![
+                    project_use("Shared", text_range(using, "Shared"), module_decl),
+                    project_use("foo", text_range(using, "Shared.foo"), foo_decl),
+                ],
+            },
+        ],
+    );
+
+    assert_eq!(comparison.divergences, Vec::new());
+    assert_eq!(comparison.uses_considered, 2, "both records are graded");
+    assert_eq!(comparison.matches, 1, "the leaf is served `foo`");
+    assert_eq!(comparison.deferrals, 1, "the qualifier is served nothing");
+    assert_eq!(comparison.skipped_uses.ambiguous_oracle_range, 0);
+}
+
+/// The exact manifest names every project's verdict, every compared file's
+/// counts, and every graded record that is not a match — and keys all of them
+/// relative to the corpus root, so it reads the same on every host.
+///
+/// Pinned line by line because the format *is* the contract: a manifest whose
+/// lines lost the served verdict, or stopped listing an erroring project's
+/// errors, would still compare equal to itself on every run.
+#[test]
+fn the_manifest_lists_each_verdict_and_every_non_match() {
+    let lib = "module Shared\nlet foo = 1\n";
+    let using = "module Other\nlet bar = Shared.foo\n";
+    let loaded = synthetic_multi_file_project(&[("A.fs", lib), ("B.fs", using)]);
+    let root = PathBuf::from("/tmp/corpus-diff-synthetic-multi");
+    let (a, b) = (
+        loaded.parses.paths[0].clone(),
+        loaded.parses.paths[1].clone(),
+    );
+    let decl = |needle: &str| DeclSite {
+        file: a.clone(),
+        start: text_range(lib, needle).0,
+        end: text_range(lib, needle).1,
+    };
+    let comparison = compare(
+        &loaded,
+        &[
+            FileUses {
+                path: a.clone(),
+                diagnostics: Vec::new(),
+                uses: Vec::new(),
+            },
+            FileUses {
+                path: b.clone(),
+                diagnostics: Vec::new(),
+                uses: vec![
+                    project_use("Shared", text_range(using, "Shared"), decl("Shared")),
+                    project_use("foo", text_range(using, "Shared.foo"), decl("foo")),
+                    ProjectUse {
+                        is_from_definition: true,
+                        ..project_use(
+                            "bar",
+                            text_range(using, "bar"),
+                            DeclSite {
+                                file: b.clone(),
+                                start: text_range(using, "bar").0,
+                                end: text_range(using, "bar").1,
+                            },
+                        )
+                    },
+                ],
+            },
+        ],
+    );
+    let projects = vec![
+        ProjectRecord {
+            project: loaded.project.clone(),
+            verdict: ProjectVerdict::Comparable {
+                assets: ProjectAssetsStatus::NotChecked,
+                sources: loaded
+                    .parses
+                    .paths
+                    .iter()
+                    .cloned()
+                    .zip(loaded.parses.texts.iter().cloned())
+                    .collect(),
+                comparison: Box::new(comparison),
+            },
+        },
+        ProjectRecord {
+            project: root.join("Erroring/Erroring.fsproj"),
+            verdict: ProjectVerdict::Skipped(ProjectSkip::FcsErrors {
+                files: vec![FcsErrorFile {
+                    path: root.join("Erroring/E.fs"),
+                    errors: vec![
+                        fcs_error(39, "not defined", 3, 4),
+                        fcs_error(39, "not defined", 3, 4),
+                    ],
+                }],
+            }),
+        },
+        ProjectRecord {
+            project: root.join("Uncertain/Uncertain.fsproj"),
+            verdict: ProjectVerdict::Skipped(ProjectSkip::Load(LoadSkip::ProjectEvaluationFailed)),
+        },
+    ];
+    let manifest = project_corpus_manifest(&projects, &root).expect("renders");
+    assert_eq!(
+        manifest.entries(),
+        [
+            "Erroring/Erroring.fsproj E.fs:3:5 fcs-error FS0039 x2",
+            "Erroring/Erroring.fsproj skipped fcs-errors files=1 errors=2",
+            "Synthetic.fsproj A.fs compared match=0 assembly-match=0 attribute=0 member=0 definitions=0",
+            // Our own binder, which the oracle (given nothing for `A.fs`) is
+            // silent about.
+            "Synthetic.fsproj A.fs:2:5-8 \"foo\" unoracled-definition",
+            "Synthetic.fsproj B.fs compared match=1 assembly-match=0 attribute=0 member=0 definitions=1",
+            "Synthetic.fsproj B.fs:2:11-17 \"Shared\" project-deferral qualified-access unattributed",
+            "Synthetic.fsproj comparable assets=not_checked",
+            "Uncertain/Uncertain.fsproj skipped load project-evaluation-failed",
+        ]
+        .map(String::from)
+    );
+
+    // Two projects compiling one file are separate facts: swapping their
+    // results — a regression in one offset by an improvement in the other —
+    // must move the manifest.
+    let ProjectVerdict::Comparable {
+        assets,
+        sources,
+        comparison,
+    } = &projects[0].verdict
+    else {
+        unreachable!("built comparable above")
+    };
+    let mut declined = (**comparison).clone();
+    for item in &mut declined.ledger {
+        if let ItemOutcome::Match(graded, _) = item.outcome {
+            item.outcome = ItemOutcome::Deferral {
+                graded,
+                served: ServedDecline::Unrecorded,
+                site: None,
+            };
+        }
+    }
+    let pair = |first: &Comparison, second: &Comparison| {
+        [("P.fsproj", first), ("Q.fsproj", second)]
+            .map(|(name, comparison)| ProjectRecord {
+                project: root.join(name),
+                verdict: ProjectVerdict::Comparable {
+                    assets: assets.clone(),
+                    sources: sources.clone(),
+                    comparison: Box::new(comparison.clone()),
+                },
+            })
+            .to_vec()
+    };
+    assert_ne!(
+        project_corpus_manifest(&pair(comparison, &declined), &root),
+        project_corpus_manifest(&pair(&declined, comparison), &root),
+    );
+
+    // A key is only host-independent relative to the root it was taken from,
+    // so a project outside that root is refused rather than keyed absolutely.
+    assert_eq!(
+        project_corpus_manifest(&projects, Path::new("/elsewhere")),
+        Err(ManifestError::OutsideRoot {
+            path: loaded.project.clone(),
+            root: PathBuf::from("/elsewhere"),
+        })
+    );
+}
+
+/// [`compare_project_uses`], with its ledger checked against its counts — every
+/// comparison this file makes goes through here, so each fixture's shape is
+/// also a case of that agreement.
+fn compare(loaded: &LoadedProject, fcs: &[FileUses]) -> Comparison {
+    let comparison = compare_project_uses(loaded, fcs);
+    assert_ledger_accounts_for_counts(loaded, &comparison);
+    comparison
+}
+
+/// Every count `comparison` reports is backed by exactly that many ledger items.
+/// The manifest is rendered from the ledger and the report from the counts, so
+/// the two must not tell different stories. The recount here is written out
+/// independently of `Comparison::record` rather than calling it, so a bucket
+/// that one of them misroutes shows up as a disagreement.
+fn assert_ledger_accounts_for_counts(loaded: &LoadedProject, comparison: &Comparison) {
+    let of = |pred: &dyn Fn(&ItemOutcome) -> bool| {
+        comparison
+            .ledger
+            .iter()
+            .filter(|item| pred(&item.outcome))
+            .count()
+    };
+    let graded = |kind: Graded| {
+        move |o: &ItemOutcome| {
+            matches!(o, ItemOutcome::Match(g, _) | ItemOutcome::Divergence(g) if *g == kind)
+                || matches!(o, ItemOutcome::Deferral { graded, .. } if *graded == kind)
+        }
+    };
+    let set_aside = |kind: SetAside| move |o: &ItemOutcome| *o == ItemOutcome::SetAside(kind);
+    assert_eq!(comparison.uses_considered, of(&graded(Graded::Project)));
+    assert_eq!(
+        comparison.assembly_uses_considered,
+        of(&graded(Graded::Assembly))
+    );
+    assert_eq!(
+        comparison.matches,
+        of(&|o| matches!(o, ItemOutcome::Match(Graded::Project, _)))
+    );
+    assert_eq!(
+        comparison.assembly_matches,
+        of(&|o| matches!(o, ItemOutcome::Match(Graded::Assembly, _)))
+    );
+    assert_eq!(
+        comparison.deferrals,
+        of(&|o| matches!(
+            o,
+            ItemOutcome::Deferral {
+                graded: Graded::Project,
+                ..
+            }
+        ))
+    );
+    assert_eq!(
+        comparison.assembly_deferrals,
+        of(&|o| matches!(
+            o,
+            ItemOutcome::Deferral {
+                graded: Graded::Assembly,
+                ..
+            }
+        ))
+    );
+    assert_eq!(
+        comparison.divergences.len(),
+        of(&|o| *o == ItemOutcome::Divergence(Graded::Project))
+    );
+    assert_eq!(
+        comparison.assembly_divergences.len(),
+        of(&|o| *o == ItemOutcome::Divergence(Graded::Assembly))
+    );
+    assert_eq!(
+        comparison.reverse_divergences.len(),
+        of(&|o| *o == ItemOutcome::ReverseDivergence)
+    );
+    assert_eq!(
+        comparison.unoracled_definitions,
+        of(&|o| *o == ItemOutcome::UnoracledDefinition)
+    );
+    assert_eq!(
+        comparison.unoracled_or_pattern_aliases,
+        of(&|o| *o == ItemOutcome::UnoracledOrPatternAlias)
+    );
+    let s = &comparison.skipped_uses;
+    for (count, kind) in [
+        (s.definitions, SetAside::Definition),
+        (s.zero_width, SetAside::ZeroWidth),
+        (s.compiler_generated, SetAside::CompilerGenerated),
+        (s.non_project_declarations, SetAside::NonProjectDeclaration),
+        (
+            s.out_of_project_declarations,
+            SetAside::OutOfProjectDeclaration,
+        ),
+        (s.no_oracle_declaration, SetAside::NoOracleDeclaration),
+        (s.ambiguous_oracle_range, SetAside::AmbiguousOracleRange),
+        (s.shadowed_constructor_use, SetAside::ShadowedConstructorUse),
+    ] {
+        assert_eq!(count, of(&set_aside(kind)), "{kind:?}");
+    }
+    assert!(
+        comparison
+            .ledger
+            .iter()
+            .all(|item| loaded.parses.paths.contains(&item.file)),
+        "every item is keyed by the loaded project's spelling of its file"
+    );
+}
+
 #[test]
 fn comparison_reports_reverse_only_project_resolution() {
     let src = "module B\nlet x = 1\nlet y = x\n";
@@ -1505,7 +1837,7 @@ fn comparison_reports_reverse_only_project_resolution() {
     let (x_def_start, x_def_end) = nth_text_range(src, "x", 0);
     let (y_def_start, y_def_end) = text_range(src, "y");
     let (x_use_start, x_use_end) = nth_text_range(src, "x", 1);
-    let comparison = compare_project_uses(
+    let comparison = compare(
         &loaded,
         &[FileUses {
             path: file.clone(),
@@ -1673,7 +2005,7 @@ fn tiny_project_matches_fcs() {
         .zip(loaded.parses.texts.iter().cloned())
         .collect();
     let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
-    let comparison = compare_project_uses(&loaded, &fcs);
+    let comparison = compare(&loaded, &fcs);
     assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
     assert_eq!(comparison.divergences, Vec::new());
     assert_eq!(comparison.assembly_divergences, Vec::new());
@@ -1712,7 +2044,7 @@ fn alias_attribute_project_matches_fcs() {
         .zip(loaded.parses.texts.iter().cloned())
         .collect();
     let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
-    let comparison = compare_project_uses(&loaded, &fcs);
+    let comparison = compare(&loaded, &fcs);
     assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
     assert_eq!(comparison.divergences, Vec::new());
     assert_eq!(comparison.assembly_divergences, Vec::new());
@@ -1781,7 +2113,7 @@ fn fcs_reports_a_member_access_over_a_span_our_key_ends() {
         "the spans share their end and nothing else: oracle {reported:?}, ours {member:?}"
     );
 
-    let comparison = compare_project_uses(&loaded, &fcs);
+    let comparison = compare(&loaded, &fcs);
     assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
     assert_eq!(
         comparison.member_commits_compared, 1,
@@ -1799,7 +2131,7 @@ fn project_corpus_resolution_diff() {
     eprint!("{}", render_project_corpus_run_report(&run));
     write_json_report_if_requested(&run.summary);
 
-    check_project_corpus_run(&run, config).unwrap_or_else(|err| {
+    check_project_corpus_run(&run, &config).unwrap_or_else(|err| {
         panic!("{err}\n{}", run.summary.render_text_report());
     });
 }
@@ -2304,18 +2636,18 @@ fn run_attribute_cell(cell: &AttrCell) -> AttrCellOutcome {
         .collect();
     let fcs = parse_project_uses(&json, &sources)
         .unwrap_or_else(|e| panic!("cell {}: parse FCS uses: {e:?}", cell.label));
-    let runner = compare_project_uses(&loaded, &fcs);
+    let runner = compare(&loaded, &fcs);
     let mut relaxed = fcs.clone();
     for file in &mut relaxed {
         file.diagnostics.clear();
     }
-    let forward = compare_project_uses(&loaded, &relaxed);
+    let forward = compare(&loaded, &relaxed);
     let attr = attribute_name_range(&cell.src);
     let mut only_attr = relaxed.clone();
     for file in &mut only_attr {
         file.uses.retain(|u| (u.start, u.end) == attr);
     }
-    let forward_at_attr = compare_project_uses(&loaded, &only_attr);
+    let forward_at_attr = compare(&loaded, &only_attr);
     AttrCellOutcome {
         runner,
         forward,
@@ -2587,4 +2919,345 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
         errored.len(),
     );
     eprintln!("attribute uses-project sweep: cells whose check errored {errored:?}");
+}
+
+/// Where a qualifier sweep cell declares the modules its path walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QualRoot {
+    /// A top-level `module Alpha` file (or, same-file, a nested `module Alpha =`
+    /// under the using file's own top-level module).
+    TopModule,
+    /// `namespace Ns` holding `module Alpha = …` — cross-file, written through
+    /// the namespace (`Ns.Alpha.v`), which adds a namespace qualifier record.
+    Namespace,
+}
+
+/// Whether the declaring modules sit in an earlier Compile file or in the
+/// using file itself, above the use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QualPlacement {
+    CrossFile,
+    SameFile,
+}
+
+/// One generated cell of the qualifier sweep: a whole two-file project.
+struct QualCell {
+    /// The leaf shape, carried for the per-shape coverage floor.
+    leaf: &'static str,
+    label: String,
+    /// `(file name, source)` in Compile order.
+    files: Vec<(&'static str, String)>,
+}
+
+/// The declarations every cell's innermost module holds: one target per leaf
+/// shape the matrix writes.
+const QUAL_DECLS: &[&str] = &[
+    "let v = 1",
+    "let f x = x + 1",
+    "type Color = Red | Green",
+    "type Rec = { X : int }",
+];
+
+/// The leaf shapes, each a binding written in terms of the qualifier path `P`.
+/// Expression position (a value, an application, a type-qualified union case),
+/// type position (an annotation), and pattern position (a qualified case
+/// pattern) — the places a dotted path is resolved by different resolver arms.
+const QUAL_LEAVES: &[(&str, &str)] = &[
+    ("value", "let u = P.v"),
+    ("apply", "let u = P.f 1"),
+    ("case", "let u = P.Color.Red"),
+    ("annotation", "let u (r : P.Rec) = r.X"),
+    (
+        "pattern",
+        "let u c = match c with | P.Color.Red -> 1 | _ -> 0",
+    ),
+];
+
+/// The module names a path of depth `n` walks, outermost first.
+const QUAL_MODULES: &[&str] = &["Alpha", "Beta", "Gamma"];
+
+/// `names` as nested `module X =` blocks around [`QUAL_DECLS`], starting at
+/// column `indent`.
+fn nested_modules(names: &[&str], indent: usize) -> String {
+    let mut out = String::new();
+    for (level, name) in names.iter().enumerate() {
+        out.push_str(&" ".repeat(indent + 4 * level));
+        out.push_str(&format!("module {name} =\n"));
+    }
+    for decl in QUAL_DECLS {
+        out.push_str(&" ".repeat(indent + 4 * names.len()));
+        out.push_str(decl);
+        out.push('\n');
+    }
+    out
+}
+
+/// The generated qualifier matrix: every module depth, root form, placement
+/// and leaf shape, crossed.
+///
+/// The axes are the ones that change *which* records FCS reports in front of
+/// the leaf, and which resolver arm records the whole-path answer behind them:
+/// the depth sets how many module qualifiers there are, the namespace root adds
+/// a namespace qualifier, placement moves the target between the cross-file and
+/// same-file resolution paths, and the leaf kind selects a qualified value, a
+/// type-qualified case, a type path, or a case pattern.
+fn qualifier_matrix() -> Vec<QualCell> {
+    let mut cells = Vec::new();
+    for depth in 1..=QUAL_MODULES.len() {
+        let modules = &QUAL_MODULES[..depth];
+        for root in [QualRoot::TopModule, QualRoot::Namespace] {
+            for placement in [QualPlacement::CrossFile, QualPlacement::SameFile] {
+                for (leaf, template) in QUAL_LEAVES {
+                    let written = match root {
+                        QualRoot::TopModule => modules.join("."),
+                        QualRoot::Namespace => format!("Ns.{}", modules.join(".")),
+                    };
+                    let binding = template.replace("P.", &format!("{written}."));
+                    let lib = match (root, placement) {
+                        (QualRoot::TopModule, QualPlacement::CrossFile) => format!(
+                            "module {}\n\n{}",
+                            modules[0],
+                            nested_modules(&modules[1..], 0)
+                        ),
+                        (QualRoot::Namespace, QualPlacement::CrossFile) => {
+                            format!("namespace Ns\n\n{}", nested_modules(modules, 0))
+                        }
+                        (_, QualPlacement::SameFile) => {
+                            String::from("module Lib\n\nlet unrelated = 0\n")
+                        }
+                    };
+                    let using = match (root, placement) {
+                        (_, QualPlacement::CrossFile) => format!("module Use\n\n{binding}\n"),
+                        (QualRoot::TopModule, QualPlacement::SameFile) => {
+                            format!("module Use\n\n{}\n{binding}\n", nested_modules(modules, 0))
+                        }
+                        // A namespace's own name is not in scope for a later
+                        // declaration of the same file (FS0039), so the
+                        // same-file namespace cell writes the path from the
+                        // namespace's inside, through a sibling module.
+                        (QualRoot::Namespace, QualPlacement::SameFile) => format!(
+                            "namespace Ns\n\n{}\nmodule Use =\n    {}\n",
+                            nested_modules(modules, 0),
+                            template.replace("P.", &format!("{}.", modules.join(".")))
+                        ),
+                    };
+                    cells.push(QualCell {
+                        leaf,
+                        label: format!("depth{depth}-{root:?}-{placement:?}-{leaf}"),
+                        files: vec![("Lib.fs", lib), ("Use.fs", using)],
+                    });
+                }
+            }
+        }
+    }
+    cells
+}
+
+/// Run one generated qualifier cell as its own project, returning the loaded
+/// project, the oracle's uses, and the comparison the corpus runner makes.
+fn run_qualifier_cell(cell: &QualCell) -> (LoadedProject, Vec<FileUses>, Comparison) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("QualCell.fsproj");
+    let mut fsproj = String::from("<Project>\n  <ItemGroup>\n");
+    for (name, src) in &cell.files {
+        fsproj.push_str(&format!("    <Compile Include=\"{name}\" />\n"));
+        write(&tmp.path().join(name), src);
+    }
+    fsproj.push_str("  </ItemGroup>\n</Project>\n");
+    write(&project, &fsproj);
+    let loaded = load_lsp_project(&project)
+        .unwrap_or_else(|e| panic!("cell {} should load: {e:?}", cell.label));
+    let json = uses_project_batch(&loaded.parses.paths);
+    let sources: Vec<_> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let fcs = parse_project_uses(&json, &sources)
+        .unwrap_or_else(|e| panic!("cell {}: parse FCS uses: {e:?}", cell.label));
+    let comparison = compare(&loaded, &fcs);
+    (loaded, fcs, comparison)
+}
+
+/// The oracle's **qualifier** records in `fcs`: uses (not definitions) whose
+/// range is immediately followed by a `.` in the source — a module or
+/// namespace written in front of the rest of a dotted path.
+fn qualifier_records(loaded: &LoadedProject, fcs: &[FileUses]) -> Vec<(PathBuf, ProjectUse)> {
+    let mut out = Vec::new();
+    for file in fcs {
+        let Some(idx) = loaded.parses.paths.iter().position(|p| p == &file.path) else {
+            continue;
+        };
+        let text = loaded.parses.texts[idx].as_bytes();
+        for u in &file.uses {
+            if !u.is_from_definition && u.start < u.end && text.get(u.end) == Some(&b'.') {
+                out.push((file.path.clone(), u.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// How much one oracle record contributes to `full` — the comparison of the
+/// whole stream — as `(graded, matched)`, measured by comparing again without
+/// it. Asked by removal rather than by narrowing the stream to that record,
+/// because whether a record is graded depends on the *other* records around it
+/// (the cursor it is probed at must be its own), so a narrowed stream would
+/// answer a different question.
+fn record_contribution(
+    loaded: &LoadedProject,
+    fcs: &[FileUses],
+    full: &Comparison,
+    path: &Path,
+    record: &ProjectUse,
+) -> (usize, usize) {
+    let without: Vec<FileUses> = fcs
+        .iter()
+        .map(|f| FileUses {
+            path: f.path.clone(),
+            diagnostics: f.diagnostics.clone(),
+            uses: f
+                .uses
+                .iter()
+                .filter(|u| {
+                    !(f.path == path
+                        && (u.start, u.end, &u.name, u.is_constructor)
+                            == (
+                                record.start,
+                                record.end,
+                                &record.name,
+                                record.is_constructor,
+                            ))
+                })
+                .cloned()
+                .collect(),
+        })
+        .collect();
+    let rest = compare(loaded, &without);
+    let graded = |c: &Comparison| c.uses_considered + c.assembly_uses_considered;
+    let matched = |c: &Comparison| c.matches + c.assembly_matches;
+    (graded(full) - graded(&rest), matched(full) - matched(&rest))
+}
+
+/// The generated qualifier sweep: every dotted-path shape graded against the
+/// project use stream, at the positions a user's cursor actually lands on.
+///
+/// FCS reports a dotted path `Ns.Alpha.Beta.v` as one record per qualifier —
+/// the namespace and each module, each at its own token — and one for the leaf
+/// spanning the whole path. The resolver records the leaf's answer over the
+/// whole path and a deferral over each qualifier; the LSP serves the smallest
+/// recorded range containing the cursor. A rule that preferred the enclosing
+/// answer would serve the *leaf* for a cursor on any qualifier, which is a wrong
+/// target the record-by-record comparison never saw, because the qualifier's own
+/// record says "deferred". This sweep is what grades those cursors, across the
+/// shapes that put a qualifier in front of a leaf:
+///
+/// - per cell, **no forward divergence** — what the LSP serves at each oracle
+///   record agrees with FCS or declines;
+/// - per cell, **every qualifier record is graded** — the probe at its last
+///   byte is owned by it, so the comparison above actually examined it rather
+///   than skipping it as contested;
+/// - per leaf shape the resolver answers, **at least one cell matches its
+///   leaf** — so a resolver that stopped answering the whole path (and so
+///   trivially agreed at every qualifier) fails rather than passing vacuously.
+///   The annotation shape is exempt: a project type in type position is not
+///   answered today, so it is graded for its qualifiers alone.
+///
+/// A cell whose check errors fails loudly: the matrix is meant to be legal F#,
+/// and a cell that is not grades nothing.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn generated_qualifier_cursors_agree_with_the_project_use_stream() {
+    let cells = qualifier_matrix();
+    eprintln!("qualifier uses-project sweep: {} cells", cells.len());
+
+    let mut qualifiers_graded = 0usize;
+    let mut leaf_matched: BTreeSet<&str> = BTreeSet::new();
+    // A project type in type position is not answered at all today (project
+    // types are not exported as definitions), so the annotation shape is graded
+    // for its qualifiers alone and is exempt from the leaf floor.
+    let answered_leaves: BTreeSet<&str> = cells
+        .iter()
+        .map(|c| c.leaf)
+        .filter(|leaf| *leaf != "annotation")
+        .collect();
+    for cell in &cells {
+        let (loaded, fcs, comparison) = run_qualifier_cell(cell);
+        assert_eq!(
+            comparison.fcs_error_files,
+            Vec::<FcsErrorFile>::new(),
+            "cell {}: the generated project should type-check; sources {:#?}",
+            cell.label,
+            cell.files
+        );
+        assert_eq!(
+            comparison.divergences,
+            Vec::new(),
+            "cell {}: project-declaration divergence; sources {:#?}",
+            cell.label,
+            cell.files
+        );
+        assert_eq!(
+            comparison.assembly_divergences,
+            Vec::new(),
+            "cell {}: assembly-identity divergence",
+            cell.label
+        );
+        assert_eq!(
+            comparison.reverse_divergences,
+            Vec::new(),
+            "cell {}: reverse divergence",
+            cell.label
+        );
+
+        let qualifiers = qualifier_records(&loaded, &fcs);
+        assert!(
+            !qualifiers.is_empty(),
+            "cell {}: the oracle reported no qualifier record, so this cell no \
+             longer exercises the shape the sweep is about",
+            cell.label
+        );
+        for (path, q) in &qualifiers {
+            let (considered, _) = record_contribution(&loaded, &fcs, &comparison, path, q);
+            assert_eq!(
+                considered, 1,
+                "cell {}: the qualifier record {} at {}..{} was not graded",
+                cell.label, q.name, q.start, q.end
+            );
+            qualifiers_graded += 1;
+        }
+        // The leaf: the longest use starting where the path does. Its answer
+        // is the one the resolver records over the whole path.
+        let path_start = qualifiers
+            .iter()
+            .map(|(_, q)| q.start)
+            .min()
+            .expect("non-empty");
+        let (leaf_path, leaf) = fcs
+            .iter()
+            .flat_map(|f| f.uses.iter().map(move |u| (&f.path, u)))
+            .filter(|(p, u)| {
+                !u.is_from_definition && u.start == path_start && **p == qualifiers[0].0
+            })
+            .max_by_key(|(_, u)| u.end - u.start)
+            .expect("the path's leaf has a record");
+        let (_, matched) = record_contribution(&loaded, &fcs, &comparison, leaf_path, leaf);
+        if matched == 1 {
+            leaf_matched.insert(cell.leaf);
+        }
+    }
+    for leaf in &answered_leaves {
+        assert!(
+            leaf_matched.contains(leaf),
+            "no {leaf} cell matched anything, so the sweep no longer checks a \
+             served leaf answer for that shape; matched {leaf_matched:?}"
+        );
+    }
+    eprintln!(
+        "qualifier uses-project sweep: {} cells, {qualifiers_graded} qualifier records \
+         graded, leaf shapes matched {leaf_matched:?}",
+        cells.len()
+    );
 }

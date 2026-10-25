@@ -1743,7 +1743,7 @@ fn parse_with_optional_sdk(
     // Glob resolution is independent of SDK discovery, so both arms get the
     // filesystem-backed resolver. It borrows nothing, so it lives for the
     // whole function.
-    let glob_resolver: &GlobResolver<'_> = &crate::glob_resolver::resolve;
+    let glob_resolver: &GlobResolver<'_> = &borzoi_msbuild::glob_resolver::resolve;
     match disc {
         Some(d) => {
             let resolver: &SdkResolver<'_> = &|name| d.resolve(name);

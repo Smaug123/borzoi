@@ -630,3 +630,71 @@ fn or_pattern_alternatives_are_references_to_one_binder() {
     assert_eq!(locs.len(), 2, "{locs:#?}");
     assert!(locs.iter().all(|l| l.range.start != first), "{locs:#?}");
 }
+
+/// Whether `locs` lists each file's references in source order. (Which file
+/// comes first is the project's Compile order, asserted by the caller.)
+fn in_source_order(locs: &[Location]) -> bool {
+    locs.windows(2).all(|w| {
+        w[0].uri != w[1].uri
+            || (w[0].range.start.line, w[0].range.start.character)
+                < (w[1].range.start.line, w[1].range.start.character)
+    })
+}
+
+/// References come back in source order, file by file in Compile order. The
+/// resolver records occurrences in a `HashMap`, whose iteration order is
+/// randomised per instance, so without an explicit order two folds of the same
+/// text — a cache hit and a cold session, or two cold sessions — list the same
+/// references differently. With eight occurrences, a random order passes this
+/// by chance once in 40,320 runs.
+#[test]
+fn references_are_listed_in_source_order() {
+    let uses: String = ["a", "b", "c", "d", "e", "f", "g"]
+        .iter()
+        .map(|n| format!("let {n} = x\n"))
+        .collect();
+
+    // The single-file path.
+    let (mut state, uri) = orphan_state(&format!("let x = 1\n{uses}"));
+    let locs = run(&mut state, &uri, 0, 4, true);
+    assert_eq!(locs.len(), 8, "{locs:#?}");
+    assert!(in_source_order(&locs), "{locs:#?}");
+
+    // The project path, across two files.
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("P.fsproj"),
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fs" />
+            <Compile Include="B.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    let a_src = format!("module Lib\nlet x = 1\n{uses}");
+    let b_src: String = std::iter::once("module Use\n".to_string())
+        .chain(
+            ["h", "i", "j", "k", "l", "m", "n"]
+                .iter()
+                .map(|n| format!("let {n} = Lib.x\n")),
+        )
+        .collect();
+    let a = tmp.path().join("A.fs");
+    let b = tmp.path().join("B.fs");
+    write(&a, &a_src);
+    write(&b, &b_src);
+    let a_uri = Url::from_file_path(&a).unwrap();
+    let b_uri = Url::from_file_path(&b).unwrap();
+    let mut state = State::default();
+    state.docs.insert(a_uri.clone(), a_src);
+    state.docs.insert(b_uri.clone(), b_src);
+    let locs = run(&mut state, &a_uri, 1, 4, true);
+    assert_eq!(locs.len(), 15, "{locs:#?}");
+    let first_b = locs.iter().position(|l| l.uri == b_uri).expect("uses in B");
+    assert!(
+        locs[..first_b].iter().all(|l| l.uri == a_uri)
+            && locs[first_b..].iter().all(|l| l.uri == b_uri),
+        "A's references, then B's: {locs:#?}"
+    );
+    assert!(in_source_order(&locs), "{locs:#?}");
+}

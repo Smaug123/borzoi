@@ -7,11 +7,12 @@ description: How to regenerate the categorised name-resolution divergence report
 
 `crates/sema/tests/all/resolve_divergence.rs`
 (`regenerate_resolution_divergence_report`) is the **resolution analogue of
-`cst`'s `fcs_divergence.rs`**. Where the gate `resolve_corpus_diff.rs` only
-*asserts* a floor of matches / ceiling of divergences and prints a sample, this
+`cst`'s `fcs_divergence.rs`**. Where the gate `resolve_corpus_diff.rs` asserts
+zero divergences and pins every use's bucket by position in its checked-in
+manifest (`crates/sema/tests/manifests/resolve_corpus_diff.txt`), this
 generator sweeps the same corpus sample, classifies every FCS-resolved symbol
-*use whose declaration is in the same file*, and writes the **full categorised
-worklists** — so you can triage rather than guess.
+*use whose declaration is in the same file*, and writes the **categorised
+worklists** by construct — so you can triage rather than guess.
 
 It is a **measurement, not a gate**: it asserts only that the sweep was
 non-vacuous (so a broken oracle or empty corpus fails loudly). The gate is
@@ -54,8 +55,9 @@ is unset the test skips with guidance instead of failing.
 - `BORZOI_RESOLVE_DIFF_STRIDE` (default `13`) / `BORZOI_RESOLVE_DIFF_LIMIT`
   (default unbounded) — the corpus sample. **These are shared verbatim with the
   `resolve_corpus_diff` gate**, so the two see the same files: this report's
-  `gap_b1` count is exactly the gate's `tally.gaps`, the denominator of its
-  B1-coverage ratchet. To sweep every file, set `BORZOI_RESOLVE_DIFF_STRIDE=1`.
+  `gap_b1` count is exactly the gate's `tally.gaps`, the uses its manifest
+  lists as `gap`. To sweep every file, set `BORZOI_RESOLVE_DIFF_STRIDE=1` (the
+  gate then skips its manifest, which describes the default sample).
 
 ## The report — what each file means
 

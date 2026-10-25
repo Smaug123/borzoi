@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use borzoi_assembly::doc_id::DocIdDialect;
 use borzoi_assembly::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, EcmaView, Entity, EntityKind,
     ImportError, Member, MethodLike, TypeRef, UnionCases,
@@ -37,7 +38,7 @@ const ABBREV_CHASE_FUEL: u32 = 32;
 /// Index of a source assembly in [`AssemblyEnv::assemblies`]. Identifies which
 /// referenced DLL an interned entity came from, so a resolved member can name
 /// the file to read its portable PDB from (go-to-definition).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AssemblyId(u32);
 
 /// Which loaded DLL an interned entity belongs to, for same-assembly
@@ -650,6 +651,12 @@ pub struct AssemblyEnv {
     /// through its forwarder, exactly as the CLR's loader does (FSharp.Core's
     /// pickle names its BCL targets through the `netstandard` CCU).
     assembly_forwarders: Vec<HashMap<(String, String), String>>,
+    /// Per-[`AssemblyId`] [`DocIdDialect`], for the assemblies whose build path
+    /// supplied one. A map rather than a vector in lockstep with
+    /// [`Self::assemblies`], so a constructor that has no dialect to give
+    /// records nothing — and [`Self::doc_id_dialect`] reports it unknown —
+    /// rather than shifting another assembly's into its place.
+    assembly_doc_id_dialects: HashMap<AssemblyId, DocIdDialect>,
     /// Memo for [`Self::resolve_abbreviation_target`] /
     /// [`Self::resolve_abbreviation_tycon`], keyed by `(marker, allow_args)`.
     /// The chase is a pure function of the env's immutable entity data, but
@@ -849,6 +856,9 @@ pub struct AssemblyProjectionInput {
     /// ([`borzoi_assembly::EcmaView::type_forwarders`]) — how an abbreviation
     /// target chase continues out of a facade assembly (`netstandard`).
     pub type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
+    /// [`borzoi_assembly::EcmaView::doc_id_dialect`]; `None` when it could not
+    /// be read, which [`AssemblyEnv::doc_id_dialect`] reports as unknown.
+    pub doc_id_dialect: Option<DocIdDialect>,
 }
 
 /// Whether entity `e`'s **logical name** — its IL `name` or its `source_name` —
@@ -1046,7 +1056,8 @@ impl AssemblyEnv {
                     // (extension index known, F# signature authoritative), an
                     // identity derivable from the first root (its callers do
                     // not carry a rootless DLL), and no forwarder surface —
-                    // the runtime path supplies all three.
+                    // the runtime path supplies all three. It has no doc-ID
+                    // dialect to give, so records none (unknown).
                     AssemblyProjectionInput {
                         path,
                         roots,
@@ -1056,6 +1067,7 @@ impl AssemblyEnv {
                         auto_opens,
                         manifest_identity: None,
                         type_forwarders: Vec::new(),
+                        doc_id_dialect: None,
                     }
                 })
                 .collect(),
@@ -1090,11 +1102,15 @@ impl AssemblyEnv {
                 auto_opens: raw_auto_opens,
                 manifest_identity,
                 type_forwarders,
+                doc_id_dialect,
             } = input;
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(Some(path));
+            if let Some(dialect) = doc_id_dialect {
+                env.assembly_doc_id_dialects.insert(id, dialect);
+            }
             env.assembly_forwarders.push(
                 type_forwarders
                     .into_iter()
@@ -1401,6 +1417,8 @@ impl AssemblyEnv {
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(None);
+            env.assembly_doc_id_dialects
+                .insert(id, view.doc_id_dialect()?);
             // Every view is a distinct loaded DLL with a known identity — register
             // it (even a rootless one) so a referenced-CCU name is counted per DLL.
             env.assembly_identities.push(Some(view.identity().clone()));
@@ -2002,6 +2020,16 @@ impl AssemblyEnv {
             .and_then(|p| p.as_deref())
     }
 
+    /// Which compiler's documentation-comment IDs the doc file of `handle`'s
+    /// assembly carries — `None` when the env was built without that fact
+    /// ([`Self::from_entities`], [`Self::from_assemblies`]) or could not read
+    /// it. A nested type reports its enclosing assembly's.
+    pub fn doc_id_dialect(&self, handle: EntityHandle) -> Option<DocIdDialect> {
+        self.assembly_provenance(handle)
+            .and_then(|id| self.assembly_doc_id_dialects.get(&id))
+            .copied()
+    }
+
     /// The total number of interned entities (top-level + nested).
     pub fn len(&self) -> usize {
         self.nodes.len()
@@ -2021,6 +2049,12 @@ impl AssemblyEnv {
     /// ones no ordinary lookup reaches, e.g. a compiler-generated nested type).
     pub fn all_handles(&self) -> impl Iterator<Item = EntityHandle> + use<> {
         (0..self.nodes.len()).map(EntityHandle::new)
+    }
+
+    /// The top-level types of every assembly in the env, in interning order —
+    /// the roots of the trees [`Self::children`] descends.
+    pub fn top_level_handles(&self) -> &[EntityHandle] {
+        &self.top_level_types
     }
 
     /// Resolve a top-level type by its namespace, simple name, and generic
@@ -2980,9 +3014,6 @@ impl AssemblyEnv {
         })
     }
 
-    /// The F# source full name of `handle`: namespace segments, enclosing
-    /// entity names for nested types, and the entity's source name when metadata
-    /// records one (`List`, not `ListModule`).
     /// The entities whose names [`Self::entity_full_name`] joins after the
     /// namespace: the enclosing chain outermost-first, ending at `handle`.
     ///
@@ -2992,16 +3023,27 @@ impl AssemblyEnv {
     /// can say which entity any given segment names. (The differential
     /// harnesses use it to decide whether a generic-arity marker FCS wrote onto
     /// a segment is one our own resolution vouches for.)
+    ///
+    /// A handle unreachable from any top-level type yields the one-entry chain
+    /// `[handle]`, the same fallback [`Self::entity_full_name`] takes; a caller
+    /// that must not mistake such a handle for a top-level one asks
+    /// [`Self::enclosing_chain_from_root`] instead.
     pub fn enclosing_chain(&self, handle: EntityHandle) -> Vec<EntityHandle> {
+        self.enclosing_chain_from_root(handle)
+            .unwrap_or_else(|| vec![handle])
+    }
+
+    /// As [`Self::enclosing_chain`], but `None` when `handle` is unreachable
+    /// from every top-level type — so the first entry, when there is one, is
+    /// provably top-level and its namespace provably the chain's.
+    pub fn enclosing_chain_from_root(&self, handle: EntityHandle) -> Option<Vec<EntityHandle>> {
         let mut chain = Vec::new();
         for &root in &self.top_level_types {
             if self.push_enclosing_chain_from(root, handle, &mut chain) {
-                return chain;
+                return Some(chain);
             }
         }
-        // Unreachable from a root: `entity_full_name` falls back to the
-        // entity's own namespace and name, which is a one-entry chain.
-        vec![handle]
+        None
     }
 
     fn push_enclosing_chain_from(
@@ -3023,6 +3065,9 @@ impl AssemblyEnv {
         false
     }
 
+    /// The F# source full name of `handle`: namespace segments, enclosing
+    /// entity names for nested types, and the entity's source name when metadata
+    /// records one (`List`, not `ListModule`).
     pub fn entity_full_name(&self, handle: EntityHandle) -> String {
         let mut segments = Vec::new();
         if self.push_entity_full_name(handle, &mut segments) {
@@ -5738,6 +5783,16 @@ impl AssemblyEnv {
             .map(MemberIndex::new)
     }
 
+    /// Every member index of `handle`, in member order — for a sweep over all
+    /// of an entity's members ([`MemberIndex`]'s constructor is private, as
+    /// [`EntityHandle`]'s is; see [`Self::all_handles`]).
+    pub fn member_indices(
+        &self,
+        handle: EntityHandle,
+    ) -> impl Iterator<Item = MemberIndex> + use<> {
+        (0..self.entity(handle).members.len()).map(MemberIndex::new)
+    }
+
     /// The member an [`EntityHandle`] + [`MemberIndex`] names.
     pub fn member_at(&self, handle: EntityHandle, idx: MemberIndex) -> &Member {
         &self.entity(handle).members[idx.index()]
@@ -6143,6 +6198,10 @@ mod from_views_tests {
         fn assembly_auto_opens(&self) -> Result<Vec<String>, ImportError> {
             Ok(vec![])
         }
+        fn doc_id_dialect(&self) -> Result<borzoi_assembly::doc_id::DocIdDialect, ImportError> {
+            Ok(borzoi_assembly::doc_id::DocIdDialect::Metadata)
+        }
+
         fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
             Ok(vec![])
         }
@@ -6218,6 +6277,10 @@ mod from_views_tests {
         fn assembly_auto_opens(&self) -> Result<Vec<String>, ImportError> {
             Ok(self.auto_opens.clone())
         }
+        fn doc_id_dialect(&self) -> Result<borzoi_assembly::doc_id::DocIdDialect, ImportError> {
+            Ok(borzoi_assembly::doc_id::DocIdDialect::Metadata)
+        }
+
         fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
             Ok(vec![])
         }
@@ -7127,6 +7190,7 @@ mod from_views_tests {
             auto_opens: Vec::new(),
             manifest_identity: Some(ident("Lib")),
             type_forwarders: Vec::new(),
+            doc_id_dialect: None,
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
             input("Contributor.dll", vec![widget, marker]),
@@ -7277,6 +7341,7 @@ mod from_views_tests {
             auto_opens: Vec::new(),
             manifest_identity: Some(ident(dll)),
             type_forwarders: forwarders,
+            doc_id_dialect: None,
         }
     }
 

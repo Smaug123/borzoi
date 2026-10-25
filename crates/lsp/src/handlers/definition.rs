@@ -51,7 +51,9 @@ use crate::goto_source::{
     entity_definition_source_with_range_fallback, plan_source, sidecar_pdb_matches,
     sidecar_pdb_name,
 };
-use crate::handlers::{preferred_uri, range_to_lsp, smallest_resolution_at};
+use crate::handlers::{
+    preferred_uri, range_to_lsp, served_resolution_with_range, smallest_resolution_at,
+};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
 use crate::semantic::{ProjectParses, SemanticState};
@@ -221,18 +223,20 @@ fn project_definition(state: &mut State, uri: &Url, byte: usize) -> Option<Locat
     let file_idx = find_file_idx(&parses, &path)?;
     let resolved = semantic.resolved_prefix_for(&project, file_idx, workspace, docs)?;
     let file = resolved.file(file_idx);
-    // The resolver's answer first; where it leaves a member-name as
-    // `Deferred(QualifiedAccess)` (a `recv.Name` inference resolves), fall back to
-    // inference's member-resolution side-table (Stage 3.3b), so go-to-definition on
-    // the member name behaves like a resolver-resolved `Resolution::Member`.
+    // The served answer ([`served_resolution_with_range`]): the resolver's first;
+    // where it leaves a member-name as `Deferred(QualifiedAccess)` (a `recv.Name`
+    // inference resolves), inference's member-resolution side-table (Stage 3.3b),
+    // so go-to-definition on the member name behaves like a resolver-resolved
+    // `Resolution::Member`. Inference runs only when the resolver's answer leaves
+    // it something to decide.
     let res = match smallest_resolution_at(file, byte) {
         Some(res) if !matches!(res, Resolution::Deferred(_)) => res,
-        deferred_or_none => {
+        _ => {
             // A `.fsi` Compile slot has no implementation tree to infer over
             // (Stage 1 keeps signature slots inert), so the member-resolution
             // enrichment is impl-only; a signature buffer falls straight
             // through to the resolver's verdict.
-            let member_res = parses.files[file_idx].file.as_impl().and_then(|impl_file| {
+            let inferred = parses.files[file_idx].file.as_impl().map(|impl_file| {
                 let dotnet_root = workspace.dotnet_root_for_project(&project);
                 let target_framework = workspace.served_tfm_for_project(&project);
                 let env = semantic.assembly_env_for_project(
@@ -241,18 +245,11 @@ fn project_definition(state: &mut State, uri: &Url, byte: usize) -> Option<Locat
                     &target_framework,
                     workspace,
                 );
-                let inferred = {
-                    let _span = tracing::info_span!("infer_file").entered();
-                    infer_file(impl_file, file, &env)
-                };
-                smallest_member_resolution_at(&inferred, byte)
+                let _span = tracing::info_span!("infer_file").entered();
+                infer_file(impl_file, file, &env)
             });
-            match member_res {
-                Some(member_res) => member_res,
-                // No member resolution: honour the resolver's (deferred / absent)
-                // verdict — D5 silence, unless it was a concrete resolution.
-                None => deferred_or_none?,
-            }
+            // A deferred or absent verdict is D5 silence: `?` / the arms below.
+            served_resolution_with_range(file, inferred.as_ref(), byte)?.1
         }
     };
     // A referenced-assembly member or entity resolves to source via its DLL's
@@ -265,17 +262,6 @@ fn project_definition(state: &mut State, uri: &Url, byte: usize) -> Option<Locat
         return assembly_entity_location(semantic, workspace, &project, handle);
     }
     location_for_resolution(&parses, file_idx, &resolved, res, uri, docs).map(Located::Ready)
-}
-
-/// The smallest inference-recorded member resolution containing `byte` — the
-/// go-to-definition analogue of hover's
-/// [`smallest_member_resolution_with_range`](crate::handlers::smallest_member_resolution_with_range),
-/// dropping the range (definition navigates, it doesn't scope a tooltip).
-fn smallest_member_resolution_at(
-    inferred: &borzoi_sema::InferredFile,
-    byte: usize,
-) -> Option<Resolution> {
-    crate::handlers::smallest_member_resolution_with_range(inferred, byte).map(|(_, res)| res)
 }
 
 /// Locate the source of a referenced-assembly **method**: obtain its owning

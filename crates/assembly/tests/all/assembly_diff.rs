@@ -20,8 +20,9 @@ use borzoi_assembly::{
 };
 
 use crate::common::{
-    ensure_literal_consts_built, ensure_measure_attr_args_built, ensure_minilib_built,
-    ensure_minilib_fs_built, ensure_minilib_fs_ext_built, invoke_fcs_dump,
+    ArgGroupObligation, assert_dll_projections_agree, ensure_literal_consts_built,
+    ensure_measure_attr_args_built, ensure_minilib_built, ensure_minilib_fs_built,
+    ensure_minilib_fs_ext_built,
 };
 
 /// `System.Object`, trimmed to the members that exercise the model:
@@ -55,33 +56,9 @@ fn diff_assembly_system_object() {
 /// Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 #[test]
 fn diff_assembly_minilib_one_class() {
-    let dll_path = ensure_minilib_built();
-    let dll_bytes = std::fs::read(dll_path).expect("read MiniLib.dll");
-
-    // Rust side: parse the bytes through `Ecma335Assembly` → owned Entity tree.
-    let view = Ecma335Assembly::parse(&dll_bytes).expect("Ecma335Assembly::parse MiniLib");
-    let rust_entities = view.enumerate_type_defs().expect("enumerate MiniLib types");
-    let rust_norm = normalise_entities(&view.identity().name, &rust_entities);
-
-    // FCS side: shell out to `fcs-dump entities <path>` and parse the JSON
-    // through the same normaliser the in-memory fixtures use.
-    let fcs_json = invoke_fcs_dump("entities", dll_path);
-    let fcs_norm = parse_fcs_dump(&fcs_json);
-
-    // Plain `assert_eq!` would print both trees; this format keeps the
-    // failure diff readable without separate-line interleaving from
-    // pretty-printing two big values.
-    assert_eq!(
-        rust_norm,
-        fcs_norm,
-        "MiniLib normalised assemblies diverge.\n\
-         rust ({} entities): {:#?}\n\
-         fcs  ({} entities): {:#?}\n",
-        rust_norm.entities.len(),
-        rust_norm,
-        fcs_norm.entities.len(),
-        fcs_norm,
-    );
+    // A C# assembly cannot curry, so every method's argument-group count is
+    // known: nothing may decline.
+    assert_dll_projections_agree(ensure_minilib_built(), ArgGroupObligation::AllCommit);
 }
 
 /// Absolute pin for phase B1's indexer projection. The differential test
@@ -617,29 +594,7 @@ fn minilib_nullable_index_parameter_projects_from_getter() {
 /// Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 #[test]
 fn diff_assembly_minilib_fs() {
-    let dll_path = ensure_minilib_fs_built();
-    let dll_bytes = std::fs::read(dll_path).expect("read MiniLibFs.dll");
-
-    let view = Ecma335Assembly::parse(&dll_bytes).expect("Ecma335Assembly::parse MiniLibFs");
-    let rust_entities = view
-        .enumerate_type_defs()
-        .expect("enumerate MiniLibFs types");
-    let rust_norm = normalise_entities(&view.identity().name, &rust_entities);
-
-    let fcs_json = invoke_fcs_dump("entities", dll_path);
-    let fcs_norm = parse_fcs_dump(&fcs_json);
-
-    assert_eq!(
-        rust_norm,
-        fcs_norm,
-        "MiniLibFs normalised assemblies diverge.\n\
-         rust ({} entities): {:#?}\n\
-         fcs  ({} entities): {:#?}\n",
-        rust_norm.entities.len(),
-        rust_norm,
-        fcs_norm.entities.len(),
-        fcs_norm,
-    );
+    assert_dll_projections_agree(ensure_minilib_fs_built(), ArgGroupObligation::ModulesCommit);
 }
 
 /// Regression for the `Expr.Op` attribute-argument decoder slice. The
@@ -884,28 +839,9 @@ fn fsharp_resources_minilib_csharp_empty() {
 /// Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 #[test]
 fn diff_assembly_minilib_fs_ext() {
-    let dll_path = ensure_minilib_fs_ext_built();
-    let dll_bytes = std::fs::read(dll_path).expect("read MiniLibFsExt.dll");
-
-    let view = Ecma335Assembly::parse(&dll_bytes).expect("Ecma335Assembly::parse MiniLibFsExt");
-    let rust_entities = view
-        .enumerate_type_defs()
-        .expect("enumerate MiniLibFsExt types");
-    let rust_norm = normalise_entities(&view.identity().name, &rust_entities);
-
-    let fcs_json = invoke_fcs_dump("entities", dll_path);
-    let fcs_norm = parse_fcs_dump(&fcs_json);
-
-    assert_eq!(
-        rust_norm,
-        fcs_norm,
-        "MiniLibFsExt normalised assemblies diverge.\n\
-         rust ({} entities): {:#?}\n\
-         fcs  ({} entities): {:#?}\n",
-        rust_norm.entities.len(),
-        rust_norm,
-        fcs_norm.entities.len(),
-        fcs_norm,
+    assert_dll_projections_agree(
+        ensure_minilib_fs_ext_built(),
+        ArgGroupObligation::ModulesCommit,
     );
 }
 
@@ -1364,19 +1300,19 @@ fn fixture_system_object_json() -> &'static str {
           "Members": [
             { "Kind": "Method", "Name": ".ctor",
               "Signature": "() -> System.Void",
-              "Access": "Public",
+              "Access": "Public", "ArgGroups": 1,
               "Flags": ["constructor", "instance"] },
             { "Kind": "Method", "Name": "Equals",
               "Signature": "(System.Object) -> System.Boolean",
-              "Access": "Public",
+              "Access": "Public", "ArgGroups": 1,
               "Flags": ["instance", "virtual"] },
             { "Kind": "Method", "Name": "GetHashCode",
               "Signature": "() -> System.Int32",
-              "Access": "Public",
+              "Access": "Public", "ArgGroups": 1,
               "Flags": ["instance", "virtual"] },
             { "Kind": "Method", "Name": "ReferenceEquals",
               "Signature": "(System.Object, System.Object) -> System.Boolean",
-              "Access": "Public",
+              "Access": "Public", "ArgGroups": 1,
               "Flags": ["static"] }
           ],
           "NestedTypes": []
@@ -1508,7 +1444,7 @@ fn fixture_my_lib_json() -> &'static str {
               "Flags": ["init_only", "instance"] },
             { "Kind": "Method", "Name": "Increment",
               "Signature": "() -> System.Void",
-              "Access": "Public",
+              "Access": "Public", "ArgGroups": 1,
               "Flags": ["instance"] }
           ],
           "NestedTypes": []

@@ -191,7 +191,7 @@ broadly will hit this, and will read it as five wrong commits.
    so work that merely moves items between buckets still forces a restatement.
    Improving the evaluator will fail `sdk_chain_decline_attribution.rs` and
    force the figures to be restated with a date and a direction, which is the
-   discipline `parser_corpus`'s `CLEAN_PARSES` already applies and for the same
+   discipline the `parser_corpus` manifest applies too, and for the same
    reason.
 3. **The real coverage worklist is the function list**, already printed by the
    census and now labelled as what it is. What this document establishes is only

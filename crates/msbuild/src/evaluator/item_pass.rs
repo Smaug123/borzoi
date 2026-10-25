@@ -273,8 +273,7 @@ fn evaluate_item_definition_group(node: Node<'_, '_>, state: &mut State<'_>) {
     // construct itself is unmodelled, and `is_partial` reports that
     // independently of whether this particular gate fired.
     let may_run = item_child_condition_may_run(node, state);
-    let compile_order_default_affecting =
-        may_run && !state.in_sdk_subtree && item_definition_group_sets_compile_order(node);
+    let compile_order_default_affecting = may_run && item_definition_group_sets_compile_order(node);
     let prev_compile = state.compile_context;
     state.compile_context = prev_compile || compile_order_default_affecting;
     state.push(
@@ -502,16 +501,13 @@ fn evaluate_item_group(node: Node<'_, '_>, state: &mut State<'_>) {
     // both the condition check and the body walk (so each Compile
     // child's own condition is covered too), then restore.
     //
-    // Not inside the SDK installation tree (`in_sdk_subtree`): the SDK's
-    // own targets/props are full of conditional default-item machinery
-    // (`<ItemGroup Condition="'$(EnableDefaultItems)' == 'true'"><Compile
-    // Include="**/*.fs"/></ItemGroup>`, the link-metadata `<Compile
-    // Update=…>` group) gated on properties we don't resolve. Treating
-    // those as Compile-affecting would flag essentially every real
-    // project (the very breakage this distinction fixes) and they never
-    // decide which *hand-written* sources compile. The same construct in
-    // the entry project or a user import (`Directory.Build.*`, an
-    // explicit `<Import>`) is respected.
+    // Inside the SDK installation tree (`in_sdk_subtree`) only the Compile
+    // children that can run count (see `sdk_compile_operation_may_run`): the
+    // SDK's default-item groups are gated on properties we cannot always pin
+    // (`<ItemGroup Condition="'$(EnableDefaultItems)' == 'true'">`), and when
+    // every Compile child inside is itself cleanly dead that gate decides
+    // nothing. The link-metadata `<Compile Update=…>` group never counts: it
+    // cannot change the source set.
     // Set `compile_context` for the group's *own* condition only (it
     // gates the inclusion of any Compile children), then restore before
     // walking the children — each child manages its own context in
@@ -537,7 +533,7 @@ fn evaluate_item_group(node: Node<'_, '_>, state: &mut State<'_>) {
     // the gate, so each arm below can poison the list appropriately.
     let reference_risk = project_reference_group_risk(node, state);
     let group_reads_untrusted = state.condition_reads_untrusted_value(node);
-    state.compile_context = prev || (!state.in_sdk_subtree && item_group_has_compile_child(node));
+    state.compile_context = prev || item_group_has_compile_child_that_may_run(node, state);
     state.package_context = prev_pkg || has_package_child;
     if has_package_child {
         state.note_package_uncertain_if_condition_uses_sdk_taint(node);
@@ -724,15 +720,14 @@ fn walk_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
         return;
     };
     // Only a Compile-flavoured item's *inclusion* decisions (its condition,
-    // item operations, and Include path) can change which sources compile, and
-    // only outside the SDK tree. Scope `compile_context` to exactly that span,
+    // item operations, and Include path) can change which sources compile —
+    // and inside the SDK tree only when the operation can run at all (see
+    // `sdk_compile_operation_may_run`). Scope `compile_context` to exactly that span,
     // so an unrelated diagnostic in the same group (a `<ProjectReference>`
     // problem, or `Link="$(Missing)"` display metadata) does not spuriously
     // mark the Compile set uncertain. Single restore on return.
-    let compile_affecting = is_compile_item_kind(kind)
-        && !state.in_sdk_subtree
-        && (!is_metadata_only_item_update(node)
-            || (kind == ItemKind::Compile && compile_item_sets_compile_order(node)));
+    let compile_affecting =
+        compile_child_can_change_source_set(node) && sdk_compile_operation_may_run(node, state);
     let prev = state.compile_context;
     state.compile_context = compile_affecting;
     walk_item_child_inner(node, kind, state);
@@ -2613,6 +2608,26 @@ fn route_item_through_resolver(
         };
         resolver(&request)
     };
+    let matched = match matched {
+        Ok(matched) => matched,
+        Err(reason) => {
+            // Nothing is spliced, and the list is missing whatever MSBuild
+            // expands here. `push` marks the Compile set uncertain in a
+            // Compile context; a reference list is marked by hand, since a
+            // dropped `<ProjectReference>` glob is a missing edge.
+            if kind == ItemKind::ProjectReference {
+                state.project_references_uncertain = true;
+            }
+            state.push(
+                DiagnosticKind::GlobDeclined {
+                    include: include_joined.clone(),
+                    reason,
+                },
+                node.range(),
+            );
+            return;
+        }
+    };
     let span = state.effective_span(node.range());
     for path in matched {
         push_resolved_item(
@@ -2762,12 +2777,35 @@ fn evaluate_item_condition(node: Node<'_, '_>, state: &mut State<'_>) -> CondGat
 
 /// Whether an `<ItemGroup>` has at least one Compile-flavoured child
 /// (`<Compile>` / `<CompileBefore>` / `<CompileAfter>`) that can change the
-/// source set — the trigger for treating the group's own condition as
-/// Compile-affecting.
-fn item_group_has_compile_child(node: Node<'_, '_>) -> bool {
-    node.children()
-        .filter(Node::is_element)
-        .any(compile_child_can_change_source_set)
+/// source set and can run — the trigger for treating the group's own condition
+/// as Compile-affecting. Inside the SDK tree "can run" is
+/// [`sdk_compile_operation_may_run`]: the group's gate decides those children's
+/// inclusion, so it is Compile-affecting exactly when one of them is.
+fn item_group_has_compile_child_that_may_run(node: Node<'_, '_>, state: &State<'_>) -> bool {
+    node.children().filter(Node::is_element).any(|child| {
+        compile_child_can_change_source_set(child) && sdk_compile_operation_may_run(child, state)
+    })
+}
+
+/// Whether a Compile-flavoured operation must be treated as deciding the
+/// source set.
+///
+/// Outside the SDK tree, always. Inside it, unless the operation's own gate is
+/// a *clean* false — one that reads only exactly-known properties and decides
+/// against the final property table, so the operation runs in no build. The
+/// SDK's default-item machinery is full of such operations
+/// (`<Compile Include="**/*.fs" Condition="'$(EnableDefaultCompileItems)' ==
+/// 'true'"/>`, which F#'s props default off), and their enclosing groups are
+/// gated on properties we cannot always pin; once the operation itself is
+/// provably dead, that uncertainty decides nothing.
+///
+/// Every other SDK operation is honoured exactly like a user-authored one. The
+/// same default glob *does* run when a project sets `EnableDefaultCompileItems`
+/// to `true`, or when `$(FSharpPropsShim)` names a file that does not exist
+/// (the F# repository's own test projects do this), and the files it adds sit
+/// in front of the project's own list.
+fn sdk_compile_operation_may_run(node: Node<'_, '_>, state: &State<'_>) -> bool {
+    !state.in_sdk_subtree || item_child_condition_may_run(node, state)
 }
 
 pub(super) fn item_definition_group_sets_compile_order(node: Node<'_, '_>) -> bool {

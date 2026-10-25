@@ -58,6 +58,11 @@
 //! And what is simply not modelled yet: record / list / array / type-test
 //! patterns, local (in-expression) `let` deconstructions, type definitions with
 //! members, and nested modules.
+//!
+//! The scope graph — nested and `[<AutoOpen>]` modules, `open`s, classes with
+//! members, and the loop, `try`, `use` and `let rec` binding forms — is the
+//! sibling generator `scope_gen`'s, which also keeps its programs well-typed.
+//! This one stays the sweep over the pattern forms.
 
 use std::collections::HashMap;
 

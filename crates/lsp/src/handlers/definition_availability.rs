@@ -22,9 +22,7 @@ use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
 use borzoi_sema::{DeferredReason, InferredFile, Resolution, ResolvedFile};
 use rowan::{TextRange, TextSize};
 
-use super::{
-    smallest_member_resolution_with_range, smallest_resolution_at, smallest_resolution_with_range,
-};
+use super::served_resolution_with_range;
 
 /// Why go-to-definition produced no navigable location under the cursor. Each
 /// variant is a distinct, honest reason we declined — the closed set mirrors
@@ -190,22 +188,15 @@ pub fn classify(
     })
 }
 
-/// The resolution the LSP would *act* on at `byte`: the resolver's, unless it
-/// deferred or recorded nothing there and inference resolved the member. This is
-/// [`crate::handlers::definition`]'s precedence, shared so the explanation and
-/// the navigation can never disagree about which verdict is in force.
+/// The resolution the LSP would *act* on at `byte` — see
+/// [`served_resolution_with_range`], shared so the explanation and the
+/// navigation can never disagree about which verdict is in force.
 fn effective_resolution(
     file: &ResolvedFile,
     inferred: Option<&InferredFile>,
     byte: usize,
 ) -> Option<Resolution> {
-    match smallest_resolution_at(file, byte) {
-        Some(res) if !matches!(res, Resolution::Deferred(_)) => Some(res),
-        deferred_or_none => inferred
-            .and_then(|i| smallest_member_resolution_with_range(i, byte))
-            .map(|(_, res)| res)
-            .or(deferred_or_none),
-    }
+    served_resolution_with_range(file, inferred, byte).map(|(_, res)| res)
 }
 
 /// Where to anchor the explanation tooltip: the occurrence range the verdict in
@@ -223,24 +214,13 @@ pub fn explanation_range(
     root: &SyntaxNode,
     byte: usize,
 ) -> Option<TextRange> {
-    match smallest_resolution_with_range(file, byte) {
-        Some((range, res)) if !matches!(res, Resolution::Deferred(_)) => return Some(range),
-        resolver_side => {
-            if let Some((range, _)) =
-                inferred.and_then(|i| smallest_member_resolution_with_range(i, byte))
-            {
-                return Some(range);
-            }
-            if let Some((range, _)) = resolver_side {
-                return Some(range);
-            }
-        }
-    }
-    identifier_token_range(root, byte)
+    served_resolution_with_range(file, inferred, byte)
+        .map(|(range, _)| range)
+        .or_else(|| identifier_token_range(root, byte))
 }
 
 /// The [`TextRange`] of an `IDENT_TOK` touching `byte`, if any. Containment is
-/// inclusive at both ends (matching [`smallest_resolution_at`]'s rule), so a
+/// inclusive at both ends (matching [`smallest_resolution_at`](super::smallest_resolution_at)'s rule), so a
 /// cursor at a token boundary still finds an adjacent identifier.
 fn identifier_token_range(root: &SyntaxNode, byte: usize) -> Option<TextRange> {
     let offset = TextSize::try_from(byte).ok()?;
@@ -255,6 +235,7 @@ fn identifier_token_range(root: &SyntaxNode, byte: usize) -> Option<TextRange> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handlers::smallest_resolution_at;
     use borzoi_cst::syntax::{AstNode, ImplFile};
     use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
     use proptest::prelude::*;

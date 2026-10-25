@@ -181,7 +181,7 @@ fn parse_buffer(
     // Glob resolution is independent of SDK discovery, so both arms get the
     // filesystem-backed resolver. It borrows nothing, so it lives for the
     // whole function.
-    let glob_resolver: &GlobResolver<'_> = &crate::glob_resolver::resolve;
+    let glob_resolver: &GlobResolver<'_> = &borzoi_msbuild::glob_resolver::resolve;
     match disc {
         Some(d) => {
             let resolver: &SdkResolver<'_> = &|name| d.resolve(name);
@@ -678,6 +678,11 @@ fn message(kind: &DiagnosticKind) -> String {
         }
         DiagnosticKind::UnsupportedGlob { pattern } => {
             format!("glob pattern not expanded: {pattern}")
+        }
+        DiagnosticKind::GlobDeclined { include, reason } => {
+            format!(
+                "glob not expanded, because MSBuild's result is not reproducible: {include} ({reason})"
+            )
         }
         DiagnosticKind::UndefinedProperty { name } => {
             format!("$({name}) is not defined — substituted as empty")

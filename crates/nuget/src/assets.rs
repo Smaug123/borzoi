@@ -376,7 +376,7 @@ fn apply_reference_filter(
 ///   might not. Undecidable; the caller declines.
 ///
 /// Every arm is pinned against the real comparer in
-/// `tests/compile_assets.rs`; real packages combine a `<references>` allow-list
+/// `tests/all/compile_assets.rs`; real packages combine a `<references>` allow-list
 /// with a non-ASCII assembly name essentially never, so the undecidable arm
 /// costs nothing in practice.
 fn reference_matches(reference: &str, asset_file_name: &str) -> Option<bool> {

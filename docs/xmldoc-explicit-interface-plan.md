@@ -4,10 +4,10 @@
 > read from the ECMA-335 `MethodImpl` table — is **landed and hardened**.
 > Stage 3 (generator emits `@` for type-parameter interface args) is
 > **rejected** (it would diverge from fresh Roslyn). **Stages 2 and 4 are
-> deferred until the hover XML-doc lookup layer exists** — which it still does
-> not: `doc_id` only *generates* keys, and no hover consumer reads XML doc
-> summaries (see `crates/lsp/src/handlers/hover.rs`; the hover slice is tracked
-> in [`hover-signature-plan.md`](hover-signature-plan.md)). Detail below the
+> unblocked**: the hover XML-doc lookup layer now exists
+> (`crates/lsp/src/xml_doc/lookup.rs`, exact-key-only; tracked in
+> [`hover-signature-plan.md`](hover-signature-plan.md)). Until Stage 4 lands, an
+> explicit-interface member whose shipped key uses `@` simply shows no doc. Detail below the
 > landed list is only on the deferred Stages 2 and 4.
 
 ## Landed
@@ -48,10 +48,12 @@
 
 ---
 
-## Still to do — Stages 2 and 4 (deferred to the hover XML-doc lookup layer)
+## Still to do — Stages 2 and 4 (on the hover XML-doc lookup layer)
 
-Both test / serve the *lookup* layer rather than the generator, so both wait on
-the hover XML-doc lookup slice, which does not yet exist. Stage 1's structured
+Both test / serve the *lookup* layer rather than the generator; that layer is
+`crates/lsp/src/xml_doc/lookup.rs`. Any retry Stage 4 adds must keep its
+exactness: each candidate is a complete key for *this* member, and a member
+whose candidates match two different entries shows nothing. Stage 1's structured
 `implements` / `interface` info is the input available to Stage 4 when a precise
 (type-parameter vs concrete) decision is wanted instead of a dual-lookup.
 

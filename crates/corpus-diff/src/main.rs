@@ -39,5 +39,5 @@ fn run() -> Result<(), String> {
             .map_err(|err| format!("failed to write BORZOI_PROJECT_SUMMARY_JSON: {err}"))?;
     }
 
-    check_project_corpus_run(&run, config).map_err(|err| err.to_string())
+    check_project_corpus_run(&run, &config).map_err(|err| err.to_string())
 }

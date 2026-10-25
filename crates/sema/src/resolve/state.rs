@@ -1162,6 +1162,13 @@ pub(super) struct Resolver<'a> {
     /// over-approximate (a binder in a sibling scope the use cannot see counts
     /// too), which is sound — a spurious match only defers.
     pub(super) own_binder_simple_names: HashSet<String>,
+    /// Each in-file union case's field names, in source order, keyed by the
+    /// case's def — `None` for a case declared in the signature form
+    /// (`| Some : Value:'T -> 'T option`), whose fields this does not read. An
+    /// anonymous field contributes no name. F# reads `Case(x = e)` as a named
+    /// field only when `x` is one of these; otherwise `x = e` is an equality
+    /// passed positionally ([`Resolver::resolve_method_args`]).
+    pub(super) case_field_names: HashMap<DefId, Option<Vec<String>>>,
     /// The subset of [`Self::own_type_simple_names`] with a **generic**
     /// declaration anywhere in the file. FCS's attribute lookup is arity-0
     /// (`DefiniteEmpty`), so it skips a generic local type where the

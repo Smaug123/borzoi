@@ -164,9 +164,122 @@ What that cost is measurable. `MIN_CLEAN_PARSES` had been measured once, in June
 2026, and sat 2,401 files below the truth by the time anything ran it again — a
 regression could have un-parsed a third of the corpus and still passed. The
 resolution ratchets, which *were* maintained (other work re-ran them by hand),
-were current to within a few hundred. That is the difference a gate makes, and
-it is why the ratchets are now pinned to their exact measured values rather than
-left with slack nobody re-measures.
+were current to within a few hundred. That is the difference a gate makes.
+
+Being current is not the same as being exact, though, and a bound with slack
+hides whatever fits in the slack. A mutation audit (2026-09-23) planted bugs
+under the resolution ratchets: one lost 89 matches against a floor with 299 to
+spare, one added 13 wrong answers under an alt-binder ceiling of 90 against 72
+measured, and both stayed green. A count also cannot see movement inside itself
+— one answer gained while another is lost.
+
+### Exact manifests
+
+The corpus is content-addressed (the `fsharp-src` flake input) and both sides
+are deterministic, so a sweep's outcome for every item is a fixed fact. The sema
+and cst corpus sweeps, and assembly's reference-pack sweep, therefore pin that
+fact itself: each checks a run against a manifest checked in under
+`crates/<crate>/tests/manifests/`, one sorted line per item, and fails on
+**any** difference with a line diff of what moved. There is no slack,
+and no direction is privileged — a newly bound name fails the run exactly as a
+lost one does, because both are a change someone should look at. An intended
+movement is acknowledged by regenerating the manifest and committing it, so the
+pull request shows exactly which items moved:
+
+```sh
+BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored
+```
+
+(Each manifest's header and each failure message names its own command.)
+A manifest records state, so it cannot say a state is wrong; the hard
+gates — zero resolution divergences, zero inference divergences, the attribute
+and overload certain-implies-exact checks, the parser's lossless round-trip and
+zero panics, an `fcs-dump` record that always says whether FCS's parse erred,
+zero reference-pack *type* drops — remain separate assertions that run first,
+so regeneration cannot bless a wrong answer.
+
+Granularity is chosen per sweep, to keep each file reviewable:
+
+| manifest | entries |
+|---|---|
+| `resolve_corpus_diff` | one per sampled file (compared or skipped and why; whether FCS's check errored; its match count; its count of graded uses FCS resolves outside the file) and one per gap, alt-binder or divergence use. Matches are counted per file rather than listed — ~22k of them — which loses no movement, since every non-match use is listed by key. External-target uses (~18k) are counted likewise: any of them not declined is a divergence, which fails first. |
+| `infer_corpus_diff` | one per sampled file, and one per commit (agree or error-recovered, with both types when they differ). |
+| `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
+| `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
+| `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside. |
+| `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
+| `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). |
+| `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
+| `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
+
+The cst manifests count their dominant bucket for the same reason
+`resolve_corpus_diff` counts matches: every other file is listed by path, so a
+file entering or leaving the counted bucket moves a listed line, and the corpus
+is pinned, so no file can join the walk unlisted.
+
+The reference pack is not the F# corpus: it is whichever pack the SDK on `PATH`
+ships. Under `nix develop`, which is how CI and every documented command run
+it, that is the flake's pinned nixpkgs SDK (`Microsoft.NETCore.App.Ref`
+10.0.9 today), and the pack is platform-neutral *at the granularity the
+manifest records*: the Linux and macOS SDKs from the same nixpkgs pin ship
+byte-different copies of 57 of its 167 DLLs, yet both project to the identical
+manifest. A byte-level pin (a hash per DLL) would therefore fail on one
+platform or the other; a projection-level one does not. Outside the devshell
+the pack is whatever SDK is installed, so the manifest's first line names the
+pack version it describes, and a run against another SDK fails on that line
+first.
+
+An alt-binder entry says whether FCS checked its file cleanly (`fcs-clean`) or
+with errors (`fcs-check-errors`). In the latter it is usually FCS's isolation
+recovery binding differently; in the former there is no recovery to blame, so
+it is a wrong answer, and none stands today.
+
+A manifest is only exact if every host computes the same one, and two things
+had to be pinned for that:
+
+- **The oracle's reference set.** FCS's script checks take their framework
+  references from the runtime `fcs-dump` runs on. CI used to publish it
+  self-contained, which made that runtime the bundle's own directory: every
+  check, in every lane, resolved against implementation assemblies plus
+  `FSharp.Compiler.Service` and `fcs-dump` themselves, rather than the SDK
+  reference pack a local `dotnet build` uses. Corpus files that `open` the
+  compiler's namespaces then partly checked in CI, which moved ~870 resolution
+  matches. A one-sided floor could not see that; the manifest failed on it at
+  once. CI now publishes framework-dependent, and `fcs-dump` refuses to start
+  self-contained.
+- **File keys.** On a case-insensitive file system Nix stores a name that
+  collides case-insensitively with a sibling under a `~nix~case~hack~<n>`
+  suffix (the corpus has both `CompilerOptions/Fsc` and `CompilerOptions/fsc`).
+  Keys decode it (every crate's corpus entries go through
+  `corpus_key::corpus_relative`), files are sorted by their decoded components so a strided
+  sample picks the same files everywhere, and two files decoding to one key
+  fail the sweep (`borzoi_oracle_harness::corpus_key`).
+
+The comparison helper is `borzoi_oracle_harness::manifest`, and the corpus key
+spelling `borzoi_oracle_harness::corpus_key`, both shared by every crate's
+tests.
+
+The whole-project gate (`ci.yml`'s `corpus-diff` job) uses the same helper over
+the pinned *project* corpus, with
+`crates/corpus-diff/manifests/project_corpus.txt` (see
+`docs/project-corpus-diff-runner.md`). Its corpus is a set of Git checkouts
+rather than a store path, so keys are taken relative to the checkouts' root, and
+its manifest has one more kind of line: each project's verdict, so a project
+that silently moves from comparable to skipped fails the gate. It used to have
+only a divergence ceiling, which a change making the LSP answer *nothing* for
+locals passed — project matches fell from 14,304 to 2,702 and the job stayed
+green. Regenerate it with
+`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`, run outside
+`nix develop`; the script materialises the corpus first when run locally.
+
+The slack the cst and assembly manifests replaced was real too: on 2026-10-07
+the reference pack dropped 4 members under a ceiling of 180, and the parser
+accepted 26 FCS-rejected files under a ceiling of 28 (a margin once justified by
+`ast-batch` accept/reject nondeterminism that repeated runs do not reproduce).
+One corpus count is still one-sided: `projection_skip_sweep`'s `MIN_PROJECTED`,
+an anti-vacuity floor over a package cache that is pinned in CI (the restored
+project corpus) but not locally (`~/.nuget/packages`), so an exact record of it
+would describe only one machine.
 
 Two things follow for anyone adding a sweep:
 
@@ -492,6 +605,11 @@ BORZOI_PROJECT_LIST=/tmp/candidate/PATH/TO.fsproj \
   nix develop -c cargo run -p borzoi-corpus-diff
 ```
 
+Adding (or re-pinning) a project changes what the gate's manifest records, so
+the same pull request regenerates it
+(`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`) and the
+new project's lines are part of its diff.
+
 Not every revision survives this, and an old one is likelier not to: a project
 that pins `FSharp.Core` with `Include` while the SDK also adds it implicitly
 fails restore outright under the .NET 10 SDK (`NU1504`, duplicate
@@ -500,9 +618,8 @@ and it is exactly the kind of thing a stale fork pin walks into.
 
 ### Measurement, not gate
 
-The runner's own ratchets (`BORZOI_PROJECT_EXPECT_DIVERGENCES` and friends) are
-a gate, and they gate in `ci.yml`'s `corpus-diff` job, on the pull request,
-before the commit lands. This job is a measurement. It therefore does not fail
+The runner's own gates (zero divergences, then the exact manifest) gate in
+`ci.yml`'s `corpus-diff` job, on the pull request, before the commit lands. This job is a measurement. It therefore does not fail
 on the runner's exit code, because doing so would withhold the observation in
 exactly the run that found something. Divergence counts ride in `statistics` and
 the series carries the finding.
@@ -591,15 +708,25 @@ the LSP answers from: the member table **inference** fills in
 the resolver's `Deferred(QualifiedAccess)` at a member name. An entry there is a
 go-to-definition target, and read through the resolver alone the site still
 looks deferred, so a wrong member answer could stand forever without moving a
-number. It reads **0** on the pinned corpus today: every member answer inference
-commits there is one the resolver already committed itself, so nothing is
-answered by inference alone. That is the honest state of the surface, not a
-fault — the guard is in place for when inference starts answering where the
-resolver cannot, and the fixtures in `project_resolution.rs` are what exercise
-the grading meanwhile. The two sides key one answer at different spans (FCS
-reports the whole access, inference the member name), so the comparison aligns
-on the span's **end**; keying on whole ranges compares nothing while reporting a
-clean run.
+number. It reads **1** on the pinned corpus today (2026-10-07): nearly every
+member answer inference commits there is one the resolver already committed
+itself, so almost nothing is answered by inference alone. That is the honest
+state of the surface, not a fault — the guard is in place for when inference
+starts answering where the resolver cannot, and the fixtures in
+`project_resolution.rs` are what exercise the grading meanwhile.
+
+All three surfaces are graded the same way: each oracle record is put to the
+LSP's own served-answer rule (`handlers::served_resolution_with_range`) for a
+cursor on the record's **last byte**, not looked up at the record's exact range.
+The two sides key one answer at different spans — FCS reports a member access
+over the whole access and a qualified value over the whole path, while inference
+keys the member name and the resolver records a deferral over each qualifier —
+so an exact-range lookup compares the wrong thing at both. At a qualifier it is
+worse than comparing nothing: the record's own answer is a deferral, while the
+LSP's containment rule decides what a cursor there is actually served, and a
+rule that reached past the deferral to the whole path's answer served the leaf
+for every module qualifier (1,111 wrong targets on the pinned corpus, none of
+them visible to the exact-range comparison).
 
 Two skip buckets travel with the attribute number, because asking the oracle
 about a range for the first time exposed that it can answer more than once.
@@ -616,9 +743,12 @@ written name is something else.
 
 `skipped_uses.ambiguous_oracle_range` is what survives that: a range where two
 records still disagree about the declaration after the constructor has stepped
-aside, so the oracle genuinely does not say what the site resolves to. It is
-decided on the oracle's answers alone, never on whether ours agrees, so it cannot
-become the bucket a real disagreement escapes into. Watch it against
+aside, so the oracle genuinely does not say what the site resolves to — or where
+a second, shorter non-constructor record also contains the cursor a record is
+graded at, so the oracle has two answers for that position (the indexer:
+FCS reports `Item` over all of `counts.[line]`, whose last byte is just past
+`line`). It is decided on the oracle's answers alone, never on whether ours
+agrees, so it cannot become the bucket a real disagreement escapes into. Watch it against
 `attribute_commits_compared`: a rise here alongside a fall there is coverage
 draining into "unadjudicable", which is the honest bucket but not a free one.
 
