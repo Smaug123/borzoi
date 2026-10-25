@@ -39,17 +39,26 @@
 //      | {"ok":false,"why":..}   (where Roslyn's `TrySelectNodes` yields null)
 //
 //   {"op":"compile","source":s,"assemblyName":n,"outDir":d,
-//    "references":[dll | {"path":dll,"alias":a} ..]}
+//    "references":[dll | {"path":dll,"alias":a} ..], "publicKeyFrom":dll?}
 //     Compile one C# file (preview language, nullable on) to `d/n.dll` and its
 //     documentation file `d/n.xml` — the compiler's own `.xml`, which keeps
 //     `<inheritdoc>` verbatim and turns crefs into IDs — for purpose-built
-//     fixtures.
+//     fixtures. With `publicKeyFrom`, the assembly is public-signed with
+//     that DLL's public key, so references to it carry the key's token.
 //     -> {"ok":true} | {"ok":false,"diagnostics":[..errors..]}
 //
 //   {"op":"swap-method-names","assembly":dll,"a":m1,"b":m2}
 //     Exchange, in place, the `Name` columns of the `MethodDef` rows named m1
 //     and m2: metadata no compiler writes (an accessor named like another
 //     property's), for fixtures `compile` cannot make.
+//     -> {"ok":true}
+//
+//   {"op":"patch-assembly-ref","assembly":dll,"name":n,
+//    "version":"a.b.c.d"?,"token":hex16?,"dropToken":bool?}
+//     Rewrite, in place, the `AssemblyRef` row of `dll` named n: its version
+//     columns, the bytes of its (8-byte, unshared) public-key token, or its
+//     token cleared to the empty blob — references whose identity no loaded
+//     assembly carries, for fixtures `compile` cannot make.
 //     -> {"ok":true}
 //
 // Any per-request exception is reported as {"error":..} on that line; the
@@ -265,11 +274,21 @@ internal static class Program
                 var outDir = (string)request["outDir"]!;
                 var parse = new CSharpParseOptions(LanguageVersion.Preview, DocumentationMode.Diagnose);
                 var tree = CSharpSyntaxTree.ParseText((string)request["source"]!, parse);
+                var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable);
+                // Strong-named by public signing with another assembly's key,
+                // so a reference to this one carries that key's token.
+                if (request["publicKeyFrom"] is { } keySource)
+                {
+                    using var keyPe = new System.Reflection.PortableExecutable.PEReader(File.OpenRead((string)keySource!));
+                    var keyMd = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(keyPe);
+                    var key = keyMd.GetBlobContent(keyMd.GetAssemblyDefinition().PublicKey);
+                    options = options.WithCryptoPublicKey(key).WithPublicSign(true);
+                }
                 var compilation = CSharpCompilation.Create(
                     name,
                     new[] { tree },
                     references,
-                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+                    options);
                 Directory.CreateDirectory(outDir);
                 using var dll = new MemoryStream();
                 using var xml = new MemoryStream();
@@ -318,6 +337,60 @@ internal static class Program
                 for (var i = 0; i < nameSize; i++)
                 {
                     (bytes[offA + i], bytes[offB + i]) = (bytes[offB + i], bytes[offA + i]);
+                }
+                File.WriteAllBytes(path, bytes);
+                return new JsonObject { ["ok"] = true };
+            }
+            case "patch-assembly-ref":
+            {
+                var path = (string)request["assembly"]!;
+                var target = (string)request["name"]!;
+                var bytes = File.ReadAllBytes(path);
+                int rowOffset, blobIndexSize, tokenOffset, tokenLength;
+                using (var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(bytes)))
+                {
+                    var md = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+                    var refs = md.AssemblyReferences
+                        .Select(h => (Handle: h, Ref: md.GetAssemblyReference(h)))
+                        .ToList();
+                    var (handle, row) = refs.Single(r => md.GetString(r.Ref.Name) == target);
+                    var table = System.Reflection.Metadata.Ecma335.TableIndex.AssemblyRef;
+                    var rowSize = System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowSize(md, table);
+                    var tableStart = pe.PEHeaders.MetadataStartOffset
+                        + System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableMetadataOffset(md, table);
+                    rowOffset = tableStart + (System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber(handle) - 1) * rowSize;
+                    blobIndexSize = System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetHeapSize(md, System.Reflection.Metadata.Ecma335.HeapIndex.Blob) < 0x10000 ? 2 : 4;
+                    var tokenHeapOffset = System.Reflection.Metadata.Ecma335.MetadataTokens.GetHeapOffset(row.PublicKeyOrToken);
+                    tokenLength = md.GetBlobBytes(row.PublicKeyOrToken).Length;
+                    // An 8-byte blob has a one-byte length prefix.
+                    tokenOffset = pe.PEHeaders.MetadataStartOffset
+                        + System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetHeapMetadataOffset(md, System.Reflection.Metadata.Ecma335.HeapIndex.Blob)
+                        + tokenHeapOffset + 1;
+                    var shared = refs.Any(r => r.Handle != handle && r.Ref.PublicKeyOrToken == row.PublicKeyOrToken)
+                        || (md.IsAssembly && md.GetAssemblyDefinition().PublicKey == row.PublicKeyOrToken);
+                    if (request["token"] is { } && (tokenLength != 8 || shared))
+                    {
+                        throw new InvalidOperationException($"{target}'s token is not an unshared 8-byte blob");
+                    }
+                }
+                // AssemblyRef columns: Major, Minor, Build, Revision (2 each),
+                // Flags (4), PublicKeyOrToken (a blob index), Name, Culture,
+                // HashValue.
+                if (request["version"] is { } version)
+                {
+                    var parts = ((string)version!).Split('.').Select(ushort.Parse).ToArray();
+                    for (var i = 0; i < 4; i++)
+                    {
+                        BitConverter.TryWriteBytes(bytes.AsSpan(rowOffset + 2 * i, 2), parts[i]);
+                    }
+                }
+                if (request["token"] is { } token)
+                {
+                    Convert.FromHexString((string)token!).CopyTo(bytes, tokenOffset);
+                }
+                if (request["dropToken"] is { } drop && (bool)drop)
+                {
+                    bytes.AsSpan(rowOffset + 12, blobIndexSize).Clear();
                 }
                 File.WriteAllBytes(path, bytes);
                 return new JsonObject { ["ok"] = true };

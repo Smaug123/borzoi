@@ -648,12 +648,12 @@ pub struct AssemblyEnv {
     /// [`Self::unique_assembly_key_for_name`] falls back to the entities there.
     assembly_identities: Vec<Option<AssemblyIdentity>>,
     /// Per-[`AssemblyId`] type forwarders, `(dotted namespace, metadata
-    /// name) → target assembly simple name`, in lockstep with
+    /// name) → target assembly identity`, in lockstep with
     /// [`Self::assemblies`]. A facade assembly (`netstandard`) declares no
     /// TypeDefs — an abbreviation-target chase that lands in one continues
     /// through its forwarder, exactly as the CLR's loader does (FSharp.Core's
     /// pickle names its BCL targets through the `netstandard` CCU).
-    assembly_forwarders: Vec<HashMap<(String, String), String>>,
+    assembly_forwarders: Vec<HashMap<(String, String), AssemblyIdentity>>,
     /// Per-[`AssemblyId`] [`DocIdDialect`], for the assemblies whose build path
     /// supplied one. A map rather than a vector in lockstep with
     /// [`Self::assemblies`], so a constructor that has no dialect to give
@@ -4528,7 +4528,7 @@ impl AssemblyEnv {
                     if let Some(redirect) = self.assembly_forwarders[id.0 as usize]
                         .get(&(path[..split].join("."), path[split].clone()))
                     {
-                        queue.push((redirect.clone(), Some(split)));
+                        queue.push((redirect.name.clone(), Some(split)));
                     }
                 }
             }
@@ -7443,7 +7443,7 @@ mod from_views_tests {
         borzoi_assembly::TypeForwarder {
             namespace: ns.to_string(),
             name: name.to_string(),
-            assembly: to.to_string(),
+            assembly: ident(to),
         }
     }
 

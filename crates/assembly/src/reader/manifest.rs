@@ -89,30 +89,31 @@ pub(crate) fn read_assembly(tables: &Tables) -> Result<Option<AssemblyIdentity>,
 /// Project every `AssemblyRef` row (II.22.5), in table order.
 pub(crate) fn read_assembly_refs(tables: &Tables) -> Result<Vec<AssemblyIdentity>, Error> {
     let count = tables.row_count(table::ASSEMBLY_REF);
-    let mut refs = Vec::with_capacity(count as usize);
-    for r in 0..count {
-        // Columns: Major(0), Minor(1), Build(2), Revision(3), Flags(4),
-        // PublicKeyOrToken(5), Name(6), Culture(7), HashValue(8).
-        let row = tables.row(table::ASSEMBLY_REF, r)?;
-        let version = Version {
-            major: row.int(0) as u16,
-            minor: row.int(1) as u16,
-            build: row.int(2) as u16,
-            revision: row.int(3) as u16,
-        };
-        let flags = row.int(4);
-        let public_key = row.blob(5)?.to_vec();
-        let name = row.string(6)?.to_string();
-        let culture = row.string(7)?.to_string();
-        refs.push(AssemblyIdentity {
-            name,
-            version,
-            public_key,
-            has_full_key: flags & FLAG_PUBLIC_KEY != 0,
-            culture,
-        });
-    }
-    Ok(refs)
+    (0..count).map(|r| read_assembly_ref(tables, r)).collect()
+}
+
+/// Project the `AssemblyRef` row at 0-based index `r` (II.22.5).
+fn read_assembly_ref(tables: &Tables, r: u32) -> Result<AssemblyIdentity, Error> {
+    // Columns: Major(0), Minor(1), Build(2), Revision(3), Flags(4),
+    // PublicKeyOrToken(5), Name(6), Culture(7), HashValue(8).
+    let row = tables.row(table::ASSEMBLY_REF, r)?;
+    let version = Version {
+        major: row.int(0) as u16,
+        minor: row.int(1) as u16,
+        build: row.int(2) as u16,
+        revision: row.int(3) as u16,
+    };
+    let flags = row.int(4);
+    let public_key = row.blob(5)?.to_vec();
+    let name = row.string(6)?.to_string();
+    let culture = row.string(7)?.to_string();
+    Ok(AssemblyIdentity {
+        name,
+        version,
+        public_key,
+        has_full_key: flags & FLAG_PUBLIC_KEY != 0,
+        culture,
+    })
 }
 
 /// One `ExportedType` row (II.22.14) carrying the `Forwarder` flag whose
@@ -126,8 +127,9 @@ pub(crate) struct RawTypeForwarder {
     pub(crate) namespace: String,
     /// The metadata type name — mangled for generics (`IEnumerable`1`).
     pub(crate) name: String,
-    /// Simple name of the assembly the type forwards to.
-    pub(crate) assembly: String,
+    /// The `AssemblyRef` the type forwards to — its whole identity, which a
+    /// binder matches, not only its simple name.
+    pub(crate) assembly: AssemblyIdentity,
 }
 
 /// Project every **forwarder** `ExportedType` row (II.22.14). Non-forwarder
@@ -153,18 +155,14 @@ pub(crate) fn read_type_forwarders(tables: &Tables) -> Result<Vec<RawTypeForward
         if token.table != table::ASSEMBLY_REF {
             continue;
         }
-        // `AssemblyRef` columns: …, Name(6), … (see `read_assembly_refs`);
         // rids are 1-based.
-        let target = tables
-            .row(
-                table::ASSEMBLY_REF,
-                token
-                    .rid
-                    .checked_sub(1)
-                    .ok_or(Error::TableIndexOutOfRange)?,
-            )?
-            .string(6)?
-            .to_string();
+        let target = read_assembly_ref(
+            tables,
+            token
+                .rid
+                .checked_sub(1)
+                .ok_or(Error::TableIndexOutOfRange)?,
+        )?;
         out.push(RawTypeForwarder {
             namespace: row.string(3)?.to_string(),
             name: row.string(2)?.to_string(),

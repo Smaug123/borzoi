@@ -27,9 +27,33 @@ fn top(env: &AssemblyEnv, ns: &str, name: &str, arity: usize, assembly: &str) ->
         .unwrap_or_else(|| panic!("{assembly}: no {name}`{arity}"))
 }
 
+/// The identity of the loaded `name`, as a reference to it spells it.
+fn loaded(env: &AssemblyEnv, name: &str) -> AssemblyIdentity {
+    env.top_level_handles()
+        .iter()
+        .map(|&h| &env.entity(h).assembly)
+        .find(|a| a.name == name)
+        .unwrap_or_else(|| panic!("no loaded {name}"))
+        .clone()
+}
+
+/// A weak-named identity: no public-key token.
+fn unsigned(name: &str) -> AssemblyIdentity {
+    AssemblyIdentity {
+        name: name.to_string(),
+        version: Version {
+            major: 0,
+            minor: 0,
+            build: 0,
+            revision: 0,
+        },
+        public_key_token: None,
+    }
+}
+
 /// A reference in the projection's shape, from a metadata name: each
 /// `/`-segment's `` `n `` suffix stripped and recorded as its arity.
-fn named(assembly: Option<&str>, ns: &str, metadata_name: &str) -> TypeRef {
+fn named(assembly: Option<AssemblyIdentity>, ns: &str, metadata_name: &str) -> TypeRef {
     let (segments, segment_arities): (Vec<&str>, Vec<usize>) = metadata_name
         .split('/')
         .map(|seg| match seg.split_once('`') {
@@ -39,16 +63,7 @@ fn named(assembly: Option<&str>, ns: &str, metadata_name: &str) -> TypeRef {
         .unzip();
     let name = segments.join("/");
     TypeRef::Named {
-        assembly: assembly.map(|a| AssemblyIdentity {
-            name: a.to_string(),
-            version: Version {
-                major: 0,
-                minor: 0,
-                build: 0,
-                revision: 0,
-            },
-            public_key_token: None,
-        }),
+        assembly,
         namespace: ns.split('.').map(str::to_string).collect(),
         name,
         type_args: Vec::new(),
@@ -171,7 +186,7 @@ fn a_nested_reference_descends_from_its_encloser() {
         env.il_type_definition(
             int32,
             &named(
-                Some("System.Runtime"),
+                Some(loaded(env, "System.Runtime")),
                 "System",
                 "Environment/SpecialFolder"
             )
@@ -181,7 +196,11 @@ fn a_nested_reference_descends_from_its_encloser() {
     assert_eq!(
         env.il_type_definition(
             int32,
-            &named(Some("System.Runtime"), "System", "Environment/NoSuchNested")
+            &named(
+                Some(loaded(env, "System.Runtime")),
+                "System",
+                "Environment/NoSuchNested"
+            )
         ),
         IlTypeDefinition::NotFound
     );
@@ -192,7 +211,10 @@ fn an_assembly_nothing_loaded_carries_is_not_found() {
     let env = full_bcl_env();
     let int32 = top(env, "System", "Int32", 0, "System.Runtime");
     assert_eq!(
-        env.il_type_definition(int32, &named(Some("NoSuchAssembly"), "System", "Object")),
+        env.il_type_definition(
+            int32,
+            &named(Some(unsigned("NoSuchAssembly")), "System", "Object")
+        ),
         IlTypeDefinition::NotFound
     );
     assert_eq!(
@@ -215,13 +237,79 @@ fn an_assembly_nothing_loaded_carries_is_not_found() {
 fn a_reference_naming_a_loaded_assembly_in_another_case_is_ambiguous() {
     let env = full_bcl_env();
     let func = top(env, "Microsoft.FSharp.Core", "FSharpFunc", 2, "FSharp.Core");
+    let lower = AssemblyIdentity {
+        name: "system.runtime".to_string(),
+        ..loaded(env, "System.Runtime")
+    };
     assert_eq!(
-        env.il_type_definition(func, &named(Some("system.runtime"), "System", "Object")),
+        env.il_type_definition(func, &named(Some(lower), "System", "Object")),
         IlTypeDefinition::Ambiguous
     );
     let object = top(env, "System", "Object", 0, "System.Runtime");
     assert_eq!(
-        env.il_type_definition(func, &named(Some("System.Runtime"), "System", "Object")),
+        env.il_type_definition(
+            func,
+            &named(Some(loaded(env, "System.Runtime")), "System", "Object")
+        ),
         IlTypeDefinition::Resolved(object)
     );
+}
+
+/// A reference binds its assembly by public-key token, as Roslyn's reference
+/// manager does: across a version difference it unifies with the one loaded
+/// DLL of its name, but across tokens — or from a weak name to a strong one —
+/// it stays unresolved (`xml_doc_inheritdoc_diff`'s identity rows pin both
+/// against Roslyn).
+#[test]
+fn a_reference_binds_its_assembly_by_token_not_version() {
+    let env = full_bcl_env();
+    let func = top(env, "Microsoft.FSharp.Core", "FSharpFunc", 2, "FSharp.Core");
+    let object = top(env, "System", "Object", 0, "System.Runtime");
+    let runtime = loaded(env, "System.Runtime");
+    let token = runtime
+        .public_key_token
+        .expect("System.Runtime is strong-named");
+    let other_token = {
+        let mut t = token;
+        t[7] ^= 1;
+        t
+    };
+    let rows = [
+        (
+            "a lower version",
+            AssemblyIdentity {
+                version: Version {
+                    major: 4,
+                    minor: 0,
+                    build: 0,
+                    revision: 0,
+                },
+                ..runtime.clone()
+            },
+            IlTypeDefinition::Resolved(object),
+        ),
+        (
+            "another token",
+            AssemblyIdentity {
+                public_key_token: Some(other_token),
+                ..runtime.clone()
+            },
+            IlTypeDefinition::IdentityMismatch,
+        ),
+        (
+            "no token",
+            AssemblyIdentity {
+                public_key_token: None,
+                ..runtime.clone()
+            },
+            IlTypeDefinition::IdentityMismatch,
+        ),
+    ];
+    for (label, identity, expected) in rows {
+        assert_eq!(
+            env.il_type_definition(func, &named(Some(identity), "System", "Object")),
+            expected,
+            "{label}"
+        );
+    }
 }

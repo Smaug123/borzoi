@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 use crate::common::ensure_system_runtime_dll;
 use crate::common::inheritdoc_diff::{Census, Compared, Verdict, compare_assembly};
-use crate::common::inheritdoc_oracle::oracle;
+use crate::common::inheritdoc_oracle::{AssemblyRefPatch, oracle};
 
 /// `dynamic` needs `DynamicAttribute`, which the reference pack keeps in
 /// `System.Linq.Expressions`; a fixture over `System.Runtime` alone declares
@@ -92,17 +92,31 @@ pub struct Dep<'a> {
 /// [`fixture`], with `Fx` compiled against dependency assemblies built from
 /// `deps` (each against System.Runtime alone).
 pub fn fixture_with(source: &str, deps: &[Dep<'_>]) -> Result<Fixture, Vec<String>> {
-    fixture_over(source, deps, true)
+    fixture_over(source, deps, true, None)
+}
+
+/// [`fixture`], with `Fx`'s compiled DLL rewritten by `patch` before the
+/// env (and Roslyn) read it.
+pub fn fixture_patched(
+    source: &str,
+    patch: &dyn Fn(&std::path::Path),
+) -> Result<Fixture, Vec<String>> {
+    fixture_over(source, &[], true, Some(patch))
 }
 
 /// [`fixture`], compiled against System.Runtime but with a reference set
 /// (env and Roslyn alike) that leaves it out: no core library, so no
 /// primitive type binds.
 pub fn fixture_without_core_library(source: &str) -> Result<Fixture, Vec<String>> {
-    fixture_over(source, &[], false)
+    fixture_over(source, &[], false, None)
 }
 
-fn fixture_over(source: &str, deps: &[Dep<'_>], core: bool) -> Result<Fixture, Vec<String>> {
+fn fixture_over(
+    source: &str,
+    deps: &[Dep<'_>],
+    core: bool,
+    patch: Option<&dyn Fn(&std::path::Path)>,
+) -> Result<Fixture, Vec<String>> {
     let dir = TempDir::new().unwrap();
     let runtime = ensure_system_runtime_dll();
     let mut compile_against: Vec<(PathBuf, Option<&str>)> = vec![(runtime.clone(), None)];
@@ -136,6 +150,9 @@ fn fixture_over(source: &str, deps: &[Dep<'_>], core: bool) -> Result<Fixture, V
             .lock()
             .unwrap()
             .compile_aliased(source, "Fx", dir.path(), &compile_against)?;
+    if let Some(patch) = patch {
+        patch(&dll);
+    }
     references.push(dll.clone());
     // The runtime's on-disk projection cache, in a directory of this test
     // binary's own: the reference pack is projected once, not per fixture.
@@ -1247,4 +1264,204 @@ public class D : L.Base { }
     census.add(&compared);
     census.print("cultures");
     census.assert_sound();
+}
+
+/// Roslyn binds an `AssemblyRef` to a referenced assembly by identity — name,
+/// public-key token, version — not by simple name. Each row rewrites `Fx`'s
+/// reference to `System.Runtime`, the one loaded DLL of that name, so that
+/// some part of its identity no loaded DLL carries; every expansion must
+/// still agree with Roslyn's, whichever way Roslyn binds the reference.
+#[test]
+fn a_reference_binds_by_identity_not_simple_name() {
+    const SOURCE: &str = r#"
+namespace F;
+
+/// <inheritdoc/>
+public class D : System.Exception
+{
+    /// <inheritdoc/>
+    public override string ToString() => "";
+
+    /// <inheritdoc cref="System.IDisposable.Dispose"/>
+    public void Cref() { }
+}
+"#;
+    let rows: &[(&str, AssemblyRefPatch)] = &[
+        ("unchanged", AssemblyRefPatch::default()),
+        (
+            "another token",
+            AssemblyRefPatch {
+                token: Some("b03f5f7f11d50a3b"),
+                ..Default::default()
+            },
+        ),
+        (
+            "no token",
+            AssemblyRefPatch {
+                drop_token: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "a higher version",
+            AssemblyRefPatch {
+                version: Some("11.0.0.0"),
+                ..Default::default()
+            },
+        ),
+        (
+            "a lower version",
+            AssemblyRefPatch {
+                version: Some("4.0.0.0"),
+                ..Default::default()
+            },
+        ),
+        (
+            "a higher revision",
+            AssemblyRefPatch {
+                version: Some("10.0.0.1"),
+                ..Default::default()
+            },
+        ),
+    ];
+    // Every row's census is printed before any is asserted, so a failure
+    // shows the whole table.
+    let mut censuses = Vec::new();
+    for (label, patch) in rows {
+        let fx = fixture_patched(SOURCE, &|dll| {
+            oracle()
+                .lock()
+                .unwrap()
+                .patch_assembly_ref(dll, "System.Runtime", patch);
+        })
+        .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+        let compared = compare(&fx);
+        let mut census = Census::default();
+        census.add(&compared);
+        census.print(&format!("System.Runtime referenced with {label}"));
+        censuses.push(census);
+    }
+    for census in &censuses {
+        census.assert_sound();
+    }
+    assert_eq!(
+        censuses[0].agrees, 3,
+        "the unchanged reference must expand every entry"
+    );
+}
+
+/// The identity check holds through a type forwarder too. `Real` is
+/// strong-named and defines `F.T`; `Fwd` forwards `F.T` to it; `Fx` was
+/// compiled against a `Fwd` that still defined `F.T`, so its reference goes
+/// through the forwarder. Each row rewrites `Fwd`'s reference to `Real`, and
+/// every expansion must still agree with Roslyn's.
+#[test]
+fn a_forwarder_binds_its_target_by_identity() {
+    const T: &str = r#"
+namespace F;
+
+/// <summary>The real T.</summary>
+public class T
+{
+    /// <summary>T.M.</summary>
+    public virtual void M() { }
+}
+"#;
+    let dir = TempDir::new().unwrap();
+    let runtime = ensure_system_runtime_dll();
+    let key = runtime.with_file_name("netstandard.dll");
+    let mut oracle = oracle().lock().unwrap();
+    let real = oracle
+        .compile_signed(
+            T,
+            "Real",
+            &dir.path().join("real"),
+            std::slice::from_ref(&runtime),
+            &key,
+        )
+        .unwrap_or_else(|e| panic!("Real does not compile: {e:#?}"));
+    let fwd_defining = oracle
+        .compile(
+            T,
+            "Fwd",
+            &dir.path().join("fwd-defining"),
+            std::slice::from_ref(&runtime),
+        )
+        .unwrap_or_else(|e| panic!("the defining Fwd does not compile: {e:#?}"));
+    let fwd = oracle
+        .compile(
+            "[assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(F.T))]",
+            "Fwd",
+            &dir.path().join("fwd"),
+            &[runtime.clone(), real.clone()],
+        )
+        .unwrap_or_else(|e| panic!("the forwarding Fwd does not compile: {e:#?}"));
+    let fx = oracle
+        .compile(
+            r#"
+namespace G;
+
+/// <inheritdoc/>
+public class D : F.T
+{
+    /// <inheritdoc/>
+    public override void M() { }
+}
+"#,
+            "Fx",
+            &dir.path().join("fx"),
+            &[runtime.clone(), fwd_defining],
+        )
+        .unwrap_or_else(|e| panic!("Fx does not compile: {e:#?}"));
+    let rows: &[(&str, AssemblyRefPatch)] = &[
+        ("unchanged", AssemblyRefPatch::default()),
+        (
+            "another token",
+            AssemblyRefPatch {
+                token: Some("cc7b13ffcd2ddd52"),
+                ..Default::default()
+            },
+        ),
+        (
+            "no token",
+            AssemblyRefPatch {
+                drop_token: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "a higher version",
+            AssemblyRefPatch {
+                version: Some("2.0.0.0"),
+                ..Default::default()
+            },
+        ),
+    ];
+    let mut censuses = Vec::new();
+    for (i, (label, patch)) in rows.iter().enumerate() {
+        let patched = dir.path().join(format!("fwd{i}")).join("Fwd.dll");
+        std::fs::create_dir_all(patched.parent().unwrap()).unwrap();
+        std::fs::copy(&fwd, &patched).unwrap();
+        oracle.patch_assembly_ref(&patched, "Real", patch);
+        let references = vec![runtime.clone(), patched, real.clone(), fx.clone()];
+        let cache = AssemblyCache::at(dir.path().join(format!("cache{i}")));
+        let (env, _) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), &cache);
+        // `compare` drives the oracle itself.
+        drop(oracle);
+        let compared =
+            compare_assembly(&Arc::new(env), &mut DocSources::default(), &references, &fx);
+        oracle = crate::common::inheritdoc_oracle::oracle().lock().unwrap();
+        let mut census = Census::default();
+        census.add(&compared);
+        census.print(&format!("a forwarder to Real with {label}"));
+        censuses.push(census);
+    }
+    drop(oracle);
+    for census in &censuses {
+        census.assert_sound();
+    }
+    assert_eq!(
+        censuses[0].agrees, 2,
+        "the unchanged forwarder must expand both entries"
+    );
 }

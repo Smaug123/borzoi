@@ -172,7 +172,7 @@ impl EcmaView for Ecma335Assembly {
             .map(|f| crate::model::TypeForwarder {
                 namespace: f.namespace.clone(),
                 name: f.name.clone(),
-                assembly: f.assembly.clone(),
+                assembly: project_identity(&f.assembly),
             })
             .collect())
     }

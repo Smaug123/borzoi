@@ -582,8 +582,9 @@ pub struct TypeForwarder {
     /// The metadata type name — backtick-mangled for generics
     /// (`IEnumerable`1`).
     pub name: String,
-    /// Simple name of the assembly the type forwards to.
-    pub assembly: String,
+    /// The assembly the type forwards to, as the forwarder's `AssemblyRef`
+    /// names it: a binder matches this whole identity, not only the name.
+    pub assembly: AssemblyIdentity,
 }
 
 /// Assembly-level projection degradations. Whole-type drops and F# overlay

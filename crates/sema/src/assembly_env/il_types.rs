@@ -14,11 +14,19 @@
 //! only forwards the name. Accessibility plays no part — Roslyn imports every
 //! type of a referenced assembly.
 //!
+//! The assembly is bound by identity, as Roslyn's reference manager binds an
+//! `AssemblyRef`: the sole loaded DLL with the reference's simple name, and
+//! only when that DLL's public-key token is the reference's — a reference
+//! across tokens (or between a strong and a weak name) stays unresolved.
+//! Version does not take part: Roslyn unifies a reference with the one
+//! definition of its name whether that definition's version is higher or
+//! lower. A forwarder's `AssemblyRef` is bound the same way.
+//!
 //! Exact or nothing: an assembly name that no loaded DLL — or more than one —
 //! carries, a name that matches twice, or a namespace in which some DLL
 //! dropped an undecodable type, all decline with a typed reason.
 
-use borzoi_assembly::TypeRef;
+use borzoi_assembly::{AssemblyIdentity, TypeRef};
 
 use super::{AssemblyEnv, AssemblyKey, EntityHandle};
 
@@ -44,6 +52,11 @@ pub enum IlTypeDefinition {
     DroppedNearby,
     /// A forwarder chain longer than any real facade layering.
     ForwarderChainTooLong,
+    /// The one loaded DLL with the referenced assembly's simple name carries
+    /// another public-key token, or its identity was not read. Roslyn leaves
+    /// a reference across tokens unresolved — unless retargeting maps it
+    /// elsewhere, which is not modelled — so this binds nowhere certain.
+    IdentityMismatch,
 }
 
 /// More forwarder hops than any real facade layering has (`netstandard` →
@@ -82,7 +95,7 @@ impl AssemblyEnv {
         }
         let mut key = match assembly {
             None => self.assembly_key(from),
-            Some(identity) => match self.assembly_key_named(&identity.name) {
+            Some(identity) => match self.assembly_key_for(identity) {
                 Ok(key) => key,
                 Err(why) => return why,
             },
@@ -112,7 +125,7 @@ impl AssemblyEnv {
             else {
                 return IlTypeDefinition::NotFound;
             };
-            key = match self.assembly_key_named(redirect) {
+            key = match self.assembly_key_for(redirect) {
                 Ok(key) => key,
                 Err(why) => return why,
             };
@@ -120,13 +133,36 @@ impl AssemblyEnv {
         IlTypeDefinition::ForwarderChainTooLong
     }
 
-    /// The key of the sole loaded DLL with simple name `name`. Simple names
-    /// compare case-insensitively (Roslyn's `AssemblyIdentityComparer`, the
-    /// CLR binder alike), so a loaded DLL whose name differs from `name` only
-    /// in case could be the one bound: the binding is ambiguous. A binder also
-    /// matches culture, which a `TypeRef` does not carry, so a name some
-    /// manifest qualifies by culture — or any name, when cultures were not
-    /// read — is ambiguous too.
+    /// The key of the loaded DLL `reference` binds to: the sole one with its
+    /// simple name, and only when that one's public-key token is the
+    /// reference's. Simple names compare case-insensitively (Roslyn's
+    /// `AssemblyIdentityComparer`, the CLR binder alike), so a loaded DLL
+    /// whose name differs from the reference's only in case could be the one
+    /// bound: the binding is ambiguous. A binder also matches culture, which a
+    /// `TypeRef` does not carry, so a name some manifest qualifies by culture —
+    /// or any name, when cultures were not read — is ambiguous too.
+    fn assembly_key_for(
+        &self,
+        reference: &AssemblyIdentity,
+    ) -> Result<AssemblyKey<'_>, IlTypeDefinition> {
+        let key = self.assembly_key_named(&reference.name)?;
+        let bound = match key {
+            AssemblyKey::Provenance(id) => self
+                .assembly_identities
+                .get(id.0 as usize)
+                .and_then(Option::as_ref),
+            AssemblyKey::Identity(identity) => Some(identity),
+        };
+        match bound {
+            Some(definition) if definition.public_key_token == reference.public_key_token => {
+                Ok(key)
+            }
+            _ => Err(IlTypeDefinition::IdentityMismatch),
+        }
+    }
+
+    /// The key of the sole loaded DLL with simple name `name` — see
+    /// [`Self::assembly_key_for`], which also checks the token.
     fn assembly_key_named(&self, name: &str) -> Result<AssemblyKey<'_>, IlTypeDefinition> {
         if !self.culture_qualified_names_read
             || self.culture_qualified_names.contains(&name.to_lowercase())

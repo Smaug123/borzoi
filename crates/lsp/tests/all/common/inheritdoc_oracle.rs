@@ -172,6 +172,32 @@ impl Oracle {
         out_dir: &Path,
         references: &[(PathBuf, Option<&str>)],
     ) -> Result<PathBuf, Vec<String>> {
+        self.compile_request(source, name, out_dir, references, None)
+    }
+
+    /// [`Self::compile`], public-signed with `key_from`'s public key: a
+    /// strong-named assembly whose references carry that key's token.
+    pub fn compile_signed(
+        &mut self,
+        source: &str,
+        name: &str,
+        out_dir: &Path,
+        references: &[PathBuf],
+        key_from: &Path,
+    ) -> Result<PathBuf, Vec<String>> {
+        let plain: Vec<(PathBuf, Option<&str>)> =
+            references.iter().map(|r| (r.clone(), None)).collect();
+        self.compile_request(source, name, out_dir, &plain, Some(key_from))
+    }
+
+    fn compile_request(
+        &mut self,
+        source: &str,
+        name: &str,
+        out_dir: &Path,
+        references: &[(PathBuf, Option<&str>)],
+        key_from: Option<&Path>,
+    ) -> Result<PathBuf, Vec<String>> {
         let references: Vec<serde_json::Value> = references
             .iter()
             .map(|(path, alias)| match alias {
@@ -179,13 +205,17 @@ impl Oracle {
                 None => serde_json::json!(path),
             })
             .collect();
-        let r = self.request(&serde_json::json!({
+        let mut request = serde_json::json!({
             "op": "compile",
             "source": source,
             "assemblyName": name,
             "outDir": out_dir,
             "references": references,
-        }));
+        });
+        if let Some(key_from) = key_from {
+            request["publicKeyFrom"] = key_from.to_string_lossy().into_owned().into();
+        }
+        let r = self.request(&request);
         if r["ok"].as_bool() == Some(true) {
             Ok(out_dir.join(format!("{name}.dll")))
         } else {
@@ -251,9 +281,40 @@ impl Oracle {
         }));
     }
 
+    /// Rewrite the `AssemblyRef` row of `assembly` named `name` in place: its
+    /// version, its public-key token's bytes, or its token cleared.
+    pub fn patch_assembly_ref(&mut self, assembly: &Path, name: &str, patch: &AssemblyRefPatch) {
+        let mut request = serde_json::json!({
+            "op": "patch-assembly-ref",
+            "assembly": assembly,
+            "name": name,
+        });
+        if let Some(version) = patch.version {
+            request["version"] = version.into();
+        }
+        if let Some(token) = patch.token {
+            request["token"] = token.into();
+        }
+        if patch.drop_token {
+            request["dropToken"] = true.into();
+        }
+        self.request(&request);
+    }
+
     pub fn xpath(&mut self, xml: &str, path: &str) -> Option<String> {
         let r = self.request(&serde_json::json!({ "op": "xpath", "xml": xml, "path": path }));
         (r["ok"].as_bool() == Some(true))
             .then(|| r["selection"].as_str().expect("selection").to_string())
     }
+}
+
+/// A rewrite of one `AssemblyRef` row ([`Oracle::patch_assembly_ref`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AssemblyRefPatch {
+    /// The version to write, `a.b.c.d`.
+    pub version: Option<&'static str>,
+    /// The token to write over the row's own, as 16 hex digits.
+    pub token: Option<&'static str>,
+    /// Whether to clear the token to the empty blob.
+    pub drop_token: bool,
 }

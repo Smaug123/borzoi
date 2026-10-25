@@ -24,8 +24,8 @@
 //! avoids (`member-resolution-soundness`):
 //!
 //! - **Type identity.** Every type reference is bound with
-//!   [`AssemblyEnv::il_type_definition`] — by assembly simple name, through
-//!   forwarders — never by a first-wins name slot.
+//!   [`AssemblyEnv::il_type_definition`] — by assembly simple name and
+//!   public-key token, through forwarders — never by a first-wins name slot.
 //! - **Hiding.** A base level holding the name as another kind of member, a
 //!   dropped member of the name, or an internal member of another assembly
 //!   (accessible only through `InternalsVisibleTo`, which the env does not
@@ -179,7 +179,7 @@ impl Instantiation {
 ///
 /// A type no loaded assembly defines has no key. Roslyn compares such a
 /// missing type by where its reference lands — the loaded assembly of that
-/// simple name, whatever version the reference asked for, or else a missing
+/// simple name and token, whatever version the reference asked for, or else a missing
 /// assembly of the reference's full identity, culture included — and the
 /// model keeps neither the culture nor which loaded assembly Roslyn's
 /// unification picks. So equality and inequality alike are unproven, and
