@@ -45,7 +45,7 @@ opentelemetry-otlp = { workspace = true, optional = true, features = [
     "reqwest-blocking-client",
 ] }
 # Bridges `tracing` events into OpenTelemetry log records (→ Loki via the
-# collector). 0.32 tracks `opentelemetry` 0.32; it auto-attaches the active
+# collector). 0.33 tracks `opentelemetry` 0.33; it auto-attaches the active
 # span's trace context so log lines correlate to Tempo traces. See `telemetry.rs`.
 opentelemetry-appender-tracing = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
