@@ -6,6 +6,16 @@
 
 use super::*;
 
+/// A forward scan of a stray token's debris for brackets left open (see
+/// [`Parser::scan_debris_brackets`]).
+#[derive(Default)]
+struct DebrisBrackets {
+    /// The next raw token to scan.
+    next_raw: usize,
+    /// Brackets opened in the debris so far and not yet closed.
+    open: usize,
+}
+
 /// Which scope the shared [`Parser::parse_module_decls`] loop is running in.
 /// Determines how a body-level `OBLOCKEND` virtual is treated: at
 /// [`File`](BodyScope::File) scope the loop runs to EOF and stray
@@ -675,9 +685,10 @@ impl<'src> Parser<'src> {
         let mut depth_pos = self.pos;
         // The end of the line of the last token the generic error arm below
         // bumped as stray: an expression start before it is debris. The
-        // debris runs from `debris_start`, the first stray token on that line.
+        // debris runs from the first stray token on that line, and
+        // `debris_brackets` scans it for brackets left open.
         let mut debris_until = 0usize;
-        let mut debris_start = 0usize;
+        let mut debris_brackets = DebrisBrackets::default();
         while let Some((res, span)) = self.peek().cloned() {
             self.advance_block_depth(&mut depth, &mut depth_pos);
             // A verbose-syntax `module X = begin … end` body ends at the real
@@ -1236,7 +1247,7 @@ impl<'src> Parser<'src> {
                 // stray `|>`), whose contents are still the abandoned
                 // construct's.
                 if span.start < debris_until
-                    && !self.raw_leaves_bracket_open(debris_start..span.start)
+                    && self.scan_debris_brackets(&mut debris_brackets, span.start) == 0
                 {
                     debris_until = 0;
                 }
@@ -1375,7 +1386,12 @@ impl<'src> Parser<'src> {
             // token past it needs a fresh scan; rescanning for each stray on
             // one long line would be quadratic.
             if stray_end > debris_until {
-                debris_start = stray_start;
+                debris_brackets = DebrisBrackets {
+                    next_raw: self
+                        .raw_tokens
+                        .partition_point(|(_, s)| s.start < stray_start),
+                    open: 0,
+                };
                 debris_until = self.source[stray_end..]
                     .find('\n')
                     .map_or(self.source.len(), |nl| stray_end + nl);
@@ -1386,18 +1402,17 @@ impl<'src> Parser<'src> {
         (seen_decl, seen_non_hash_decl, header_parsed)
     }
 
-    /// Whether the raw tokens starting in `range` leave a bracket open: an
-    /// opener with no closer after it in the range. A closer with nothing open
-    /// in the range closes a bracket outside it, and is ignored.
-    fn raw_leaves_bracket_open(&self, range: Range<usize>) -> bool {
-        let first = self
-            .raw_tokens
-            .partition_point(|(_, s)| s.start < range.start);
-        let mut open = 0usize;
-        for (res, s) in &self.raw_tokens[first..] {
-            if s.start >= range.end {
+    /// Advance `scan` over the raw tokens starting before `end`, and return
+    /// how many brackets the debris has opened and not closed. A closer with
+    /// nothing open closes a bracket outside the debris, and is ignored. The
+    /// scan resumes where the last call stopped, so repeated `;;` on one
+    /// debris line cost one pass in total.
+    fn scan_debris_brackets(&self, scan: &mut DebrisBrackets, end: usize) -> usize {
+        while let Some((res, s)) = self.raw_tokens.get(scan.next_raw) {
+            if s.start >= end {
                 break;
             }
+            scan.next_raw += 1;
             let Ok(TriviaToken::Lexed(t)) = res else {
                 continue;
             };
@@ -1425,9 +1440,9 @@ impl<'src> Parser<'src> {
                 Token::RQuoteBarRBrace | Token::RQuoteRawBarRBrace => (2, 0),
                 _ => (0, 0),
             };
-            open = open.saturating_sub(closes) + opens;
+            scan.open = scan.open.saturating_sub(closes) + opens;
         }
-        open > 0
+        scan.open
     }
 
     /// Phase 8.2 — parse a `namespace Foo.Bar` / `namespace global` /
