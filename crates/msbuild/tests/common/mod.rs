@@ -22,6 +22,7 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
+pub mod case_axis;
 pub mod sdk_chain;
 
 use std::collections::HashMap;
@@ -731,6 +732,30 @@ pub const CONTROLLED_PROPERTY_NAMES: &[&str] = &[
     "P1",
 ];
 
+/// A fresh-seed soak's parameters, for the `#[ignore]`d soak twin of a
+/// fixed-seed sweep: the seed is the wall clock unless
+/// `BORZOI_MSBUILD_SOAK_SEED` fixes it, and `BORZOI_MSBUILD_SOAK_CASES` sets the
+/// volume. The seed is printed first, so a failure reproduces.
+pub fn soak_parameters(name: &str, default_cases: usize) -> (u64, usize) {
+    let env_u64 = |var: &str| {
+        std::env::var(var).ok().map(|value| {
+            value
+                .parse::<u64>()
+                .unwrap_or_else(|e| panic!("{var}={value:?} is not a u64: {e}"))
+        })
+    };
+    let seed = env_u64("BORZOI_MSBUILD_SOAK_SEED").unwrap_or_else(|| {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos() as u64
+    });
+    let cases = env_u64("BORZOI_MSBUILD_SOAK_CASES").map_or(default_cases, |n| n as usize);
+    println!("{name} soak: BORZOI_MSBUILD_SOAK_SEED={seed} BORZOI_MSBUILD_SOAK_CASES={cases}");
+    (seed, cases)
+}
+
 /// SplitMix64: tiny, deterministic mixing for reproducible input generation.
 /// Fixed seeds keep every differential run identical, so a failure reproduces
 /// exactly; the *random* exploration lives in the proptest file.
@@ -1094,6 +1119,16 @@ fn gen_expand_segment(rng: &mut SplitMix64) -> String {
         "%01",
         "a%5cb",
         "%00",
+        // Case variants of needles the receivers above contain. The string
+        // members are *ordinal and case-sensitive*, so these must come out
+        // differently from their lower-case twins — the mirror image of the
+        // condition `==`, which folds.
+        "ABC",
+        "Abc",
+        "NET",
+        "DEBUG",
+        "V",
+        "CAF\u{c9}",
     ];
     const TFMS: &[&str] = &[
         "net8.0",
@@ -1101,6 +1136,10 @@ fn gen_expand_segment(rng: &mut SplitMix64) -> String {
         "net472",
         "netcoreapp3.1",
         "$(TargetFramework)",
+        // TFM parsing is case-insensitive in NuGet's framework reader.
+        "NET8.0",
+        "NetStandard2.0",
+        "NETCOREAPP3.1",
     ];
     // Platform names for `IsOSPlatform`: real ones in assorted casings,
     // unknown names, the empty string (MSBuild errors), an escaped spelling,
