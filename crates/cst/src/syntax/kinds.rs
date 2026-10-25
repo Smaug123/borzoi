@@ -1245,6 +1245,17 @@ pub enum SyntaxKind {
     /// projects the segment texts.
     DOT_GET_EXPR,
 
+    /// `SynExpr.DiscardAfterMissingQualificationAfterDot(expr, dotRange,
+    /// range)` — a member access cut off after its dot, `(f x).` /
+    /// `foo.Bar(1).`: the shape a buffer is in while a member name is being
+    /// typed (FCS's `mkSynDotMissing`, the `atomicExprQualification` empty and
+    /// `recover` arms). Shape: `DOT_MISSING_EXPR > [<receiver-expr>, DOT_TOK]`,
+    /// with a "trailing dot" parse error at the dot. Only built for a receiver
+    /// that is *not* an identifier path: a path receiver (`foo.`, `A.B.`) stays
+    /// a [`SyntaxKind::LONG_IDENT_EXPR`] whose `LONG_IDENT` ends in the dot,
+    /// which is what the member-completion handler anchors on.
+    DOT_MISSING_EXPR,
+
     /// `SynExpr.Dynamic` — the dynamic-lookup operator `a?b` (FCS's
     /// `atomicExpr QMARK dynamicArg`, `pars.fsy:5284`). `?` is a *postfix*
     /// operator at the precedence of `.` (`%left DOT QMARK`, `pars.fsy:377`),

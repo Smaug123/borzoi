@@ -48,6 +48,22 @@ fn resolve(source: &str) -> ResolvedFile {
     )
 }
 
+/// [`resolve`] for a snippet that is broken on purpose: it must report the
+/// parse error `expected`, and nothing else.
+fn resolve_recovered(source: &str, expected: &str) -> ResolvedFile {
+    let parsed = parse(source);
+    let messages: Vec<&str> = parsed.errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages, [expected], "parse errors for {source:?}");
+    let recovery = SyntaxRecovery::of(&parsed);
+    let file = ImplFile::cast(parsed.root).expect("root is an impl file");
+    resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    )
+}
+
 /// Byte range of the `n`-th (0-based) *whole-word* occurrence of `needle` in
 /// `source` — i.e. not flanked by identifier characters, so a single-letter
 /// needle does not match inside a keyword like `and` / `with`.
@@ -270,6 +286,31 @@ fn dot_lambda_method_chain_arguments_resolve() {
     assert_resolves_to(&rf, nth(src, "x", 1), nth(src, "x", 0));
     // "y": 0 = parameter, 1 = the use in the second call argument.
     assert_resolves_to(&rf, nth(src, "y", 1), nth(src, "y", 0));
+}
+
+#[test]
+fn dot_lambda_cut_off_after_a_dot_resolves_its_arguments() {
+    // A shorthand being typed, cut off after a dot (`_.M(x).`, the member
+    // completion shape): the receiver is still the dot-lambda spine, so the
+    // call argument `x` resolves to the enclosing parameter.
+    let src = "let f x = _.M(x).\n";
+    let rf = resolve_recovered(src, "trailing dot in long identifier path");
+    // "x": 0 = parameter, 1 = the use in the call argument.
+    assert_resolves_to(&rf, nth(src, "x", 1), nth(src, "x", 0));
+}
+
+#[test]
+fn dot_lambda_cut_off_after_a_dot_keeps_members_off_locals() {
+    // The spine member of a cut-off `_.M(x).` is still accessed off the
+    // synthesised parameter, so a same-named local `M` must not capture it.
+    let src = "let M = 99\nlet f x = _.M(x).\n";
+    let rf = resolve_recovered(src, "trailing dot in long identifier path");
+    // "M": 0 = the `let M` binder, 1 = the member access in `_.M`.
+    assert!(
+        rf.resolution_at(nth(src, "M", 1)).is_none(),
+        "the `_.M` member must not resolve to the same-named local `let M`",
+    );
+    assert_resolves_to(&rf, nth(src, "x", 1), nth(src, "x", 0));
 }
 
 #[test]
