@@ -50,7 +50,7 @@ fn snapshot(p: &ProjectParses) -> Vec<(PathBuf, String, GreenNode)> {
             (
                 p.paths[i].clone(),
                 p.texts[i].to_string(),
-                p.files[i].file.syntax().green().into_owned(),
+                p.files[i].file.syntax().green().to_owned(),
             )
         })
         .collect()
