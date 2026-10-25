@@ -5,19 +5,19 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-borzoi-cst = { path = "../cst" }
-borzoi-assembly = { path = "../assembly" }
-rowan = "0.16"
+borzoi-cst.workspace = true
+borzoi-assembly.workspace = true
+rowan.workspace = true
 # Structured spans for the resolution fold, so the per-file cost of
 # `resolve_project` shows up in the LSP's OpenTelemetry traces. Optional and
 # gated behind the `otel` feature so the default, reusable core has no `tracing`
 # dependency at all; the LSP's own `otel` feature turns it on.
-tracing = { version = "0.1", optional = true }
+tracing = { workspace = true, optional = true }
 # Union-find / unification table (the crate `rustc` itself uses) — the
 # inference substrate for Phase 3 type inference (see `docs/type-checker-plan.md`
 # D8). Default features only (no `dogged`/`persistent`); its lone transitive dep
 # is `log`, already in the workspace lockfile.
-ena = "0.14"
+ena.workspace = true
 
 [features]
 # Emit per-file `resolve_file` spans from the resolution fold. Off by default so
@@ -33,15 +33,15 @@ otel = ["dep:tracing"]
 test-support = []
 
 [dev-dependencies]
-borzoi-oracle-harness = { path = "../oracle-harness" }
+borzoi-oracle-harness.workspace = true
 # Self-reference activates `test-support` when building this crate for its own
 # integration tests, so they exercise the shared comparator without a
 # `--features` flag on the test command.
 borzoi-sema = { path = ".", features = ["test-support"] }
-proptest = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 # The overload-coverage measurement identifies its corpus by digesting the
 # matrix it generates: that corpus is repo source rather than a pinned external
 # tree, so nothing else can say when two observations measured the same thing.
-sha1 = "0.10"
+sha1.workspace = true

@@ -6,11 +6,11 @@ license.workspace = true
 publish = false
 
 [dependencies]
-borzoi-spawn = { path = "../spawn" }
+borzoi-spawn.workspace = true
 # rustc's own lexer, used by `module_tree` to read `mod` declarations without
 # re-implementing Rust's string/comment/raw-literal lexing by hand.
-proc-macro2 = "1"
+proc-macro2.workspace = true
 
 [dev-dependencies]
-proptest = "1"
-tempfile = "3"
+proptest.workspace = true
+tempfile.workspace = true
