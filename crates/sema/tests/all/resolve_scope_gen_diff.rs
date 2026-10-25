@@ -7,7 +7,8 @@
 //!
 //! * **ours vs the generator** (FCS-free, so it runs at volume): every planted
 //!   use we commit is the binder the generator planted, and a use the
-//!   generator says FSharp.Core supplies is never committed in-file;
+//!   generator says FSharp.Core supplies is never committed in-file — only,
+//!   if at all, to that `Operators` function;
 //! * **the generator vs FCS**: every program type-checks cleanly, and FCS
 //!   reports every planted use at its range, declared where the generator
 //!   says. This is what licenses trusting the generator's model in the first
@@ -17,19 +18,17 @@
 //!   commit is FCS's declaration, and nothing FCS resolves outside the file is
 //!   committed in-file.
 //!
+//! We resolve against an env holding exactly FSharp.Core, the reference FCS
+//! type-checks every program with. An empty env is a configuration no F#
+//! compilation has, and it is not neutral: `[<AutoOpen>]` names a type
+//! FSharp.Core declares, so under an empty env no marker can be proved, and
+//! every fold would be graded as a decline against an oracle that folded.
+//!
 //! The census test pins that each construct the generator claims to cover is
 //! actually emitted and planted at, and prints how often each kind of use is
 //! committed — a property that holds because sema declines everything would
 //! pass the first and third checks, so the census and the must-commit kinds
 //! are what keep them from holding vacuously.
-//!
-//! One known wrong-answer class is classified rather than failed: sema does not
-//! fold a same-file `[<AutoOpen>]` module's values back into its parent, so a
-//! use FCS binds to the folded value binds an earlier same-named binder
-//! instead. Open PR #233 fixes it. The classifier is exact — a planted
-//! auto-opened use that hides a same-named binder — and its count over the
-//! default seeds is pinned two-sided, so the fix landing fails the test until
-//! the classifier is deleted.
 //!
 //! Default runtime is modest: a fixed handful of seeds against FCS and 256
 //! FCS-free cases. For the soak, set `BORZOI_SCOPE_GEN_SEEDS=<n>` (seeds
@@ -42,9 +41,7 @@ use std::path::PathBuf;
 use proptest::prelude::*;
 use rowan::TextRange;
 
-use crate::common::scope_gen::{
-    Expected, Form, Generated, PlantedRef, RefKind, generate, generate_seed,
-};
+use crate::common::scope_gen::{Expected, Form, Generated, RefKind, generate, generate_seed};
 use crate::common::{
     CensusDecl, census_resolve_uses, env_usize_or, invoke_fcs_dump_census, parse_census_jsonl,
     temp_fs_file,
@@ -52,7 +49,8 @@ use crate::common::{
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+    EntityHandle, MemberIndex, OpenFoldTarget, ProjectItems, Resolution, ResolvedFile,
+    SyntaxRecovery, resolve_file,
 };
 
 /// Seeds checked against FCS by default.
@@ -70,7 +68,7 @@ fn resolve(src: &str) -> ResolvedFile {
     resolve_file(
         &file,
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery,
     )
 }
@@ -80,15 +78,17 @@ fn resolve(src: &str) -> ResolvedFile {
 enum Grade {
     /// Committed to the planted binder.
     Agrees,
-    /// Declined (or, for an external use, correctly not committed in-file).
+    /// Declined.
     Declined,
 }
 
 /// The kinds of use sema resolves completely: every planted one must be
 /// committed, not merely never contradicted. Without this, a resolver that
 /// declined everything would pass both soundness properties. The rest —
-/// qualified values, static members, constructions — are census-only, and an
-/// external use must be declined.
+/// qualified values, static members, constructions, auto-opened values (which
+/// decline wherever the marker cannot be proved FSharp.Core's) — are
+/// census-only, and an external use may commit only to FSharp.Core's
+/// `Operators` function of its name.
 const MUST_COMMIT: &[RefKind] = &[
     RefKind::ModuleValue,
     RefKind::LetRecSibling,
@@ -110,24 +110,21 @@ const MUST_COMMIT: &[RefKind] = &[
     RefKind::UnionCase,
 ];
 
-/// How many uses of the known fold-back class (below) the default seeds
-/// produce. Two-sided: fewer means the defect is (partly) fixed — #233 has
-/// landed — and the classifier should go.
-const KNOWN_FOLD_BACK_AT_DEFAULT: usize = 9;
-
-/// Whether our answer at `r` is exactly the known defect that open PR #233
-/// fixes: sema does not fold an in-file `[<AutoOpen>]` module's values back
-/// into its parent, so a use that FCS binds to the folded value binds instead
-/// the earlier same-named binder the fold hides — that binder, and no other
-/// wrong answer.
-fn is_known_auto_open_fold_back(g: &Generated, rf: &ResolvedFile, r: &PlantedRef) -> bool {
-    let Some(fallback) = r.fold_back_fallback else {
-        return false;
-    };
-    rf.resolution_at(r.range)
-        .filter(|res| matches!(res, Resolution::Local(_) | Resolution::Item(_)))
-        .and_then(|res| rf.resolved_def(res))
-        .is_some_and(|def| def.range == g.binder_ranges[&fallback])
+/// The FSharp.Core member a [`Resolution::Member`] names, as `(declaring
+/// entity's full name, F# source name)`. The resolver's env is
+/// [`crate::common::fsharp_core_env`], so every assembly member it commits is
+/// one of FSharp.Core's. The source name is the one the module's fold surface
+/// lists for that member — `max`, where the IL name is the `[<CompiledName>]`
+/// `Max` — and `None` when no bare name folds to it.
+fn fsharp_core_member(parent: EntityHandle, idx: MemberIndex) -> (String, Option<String>) {
+    let env = crate::common::fsharp_core_env();
+    let source_name = env
+        .open_fold_surface(parent)
+        .entries
+        .into_iter()
+        .find(|e| e.target == OpenFoldTarget::Member { parent, idx })
+        .map(|e| e.name);
+    (env.entity_full_name(parent), source_name)
 }
 
 /// Grade one planted use, or describe the wrong answer.
@@ -157,6 +154,19 @@ fn grade(
                 "committed in-file to {def:?}, but FSharp.Core supplies it"
             ))
         }
+        (Some(Resolution::Member { parent, idx }), Expected::External) => {
+            // Every external the generator plants is an `Operators` function,
+            // so a commit must name exactly that member of FSharp.Core.
+            let (owner, name) = fsharp_core_member(parent, idx);
+            let used = &g.src[range];
+            if owner == "Microsoft.FSharp.Core.Operators" && name.as_deref() == Some(used) {
+                Ok(Grade::Agrees)
+            } else {
+                Err(format!(
+                    "committed to FSharp.Core's {owner}.{name:?}, planted Operators.{used}"
+                ))
+            }
+        }
         (Some(other), _) => Err(format!("committed to {other:?}")),
     }
 }
@@ -176,7 +186,6 @@ fn check_against_generator(g: &Generated) -> Result<Vec<(RefKind, Grade)>, Strin
                 ));
             }
             Ok(gr) => grades.push((r.kind, gr)),
-            Err(_) if is_known_auto_open_fold_back(g, &rf, r) => {}
             Err(why) => {
                 return Err(format!(
                     "{:?} use {:?} at {:?}: {why}\n{}",
@@ -237,7 +246,6 @@ fn generated_programs_agree_with_fcs() {
     let mut ours_wrong = Vec::new();
     let mut adjudicated: BTreeMap<RefKind, (usize, usize)> = BTreeMap::new();
     let mut fcs_uses_graded = 0usize;
-    let mut known_fold_back = 0usize;
     let mut undercommitted = Vec::new();
     for (seed, (g, file)) in programs.iter().zip(&census).enumerate() {
         if !file.ok || file.has_check_errors {
@@ -311,17 +319,28 @@ fn generated_programs_agree_with_fcs() {
                 {
                     Some(format!("{res:?}, FCS declares outside the file"))
                 }
+                // The env holds only FSharp.Core, so a committed member is
+                // one of its members. The census carries no full name, so the
+                // grade is FCS placing the symbol outside the file and naming
+                // it as we do; the planted externals are graded exactly, against
+                // the generator's `Operators` model, in `grade`.
+                (Resolution::Member { parent, idx }, CensusDecl::OtherFile)
+                    if !in_file_ranges.contains(&(u.start, u.end)) =>
+                {
+                    let (owner, name) = fsharp_core_member(parent, idx);
+                    (name.as_deref() != Some(&g.src[range])).then(|| {
+                        format!(
+                            "{owner}.{name:?}, FCS names {:?} outside the file",
+                            &g.src[range]
+                        )
+                    })
+                }
                 (Resolution::Unresolved | Resolution::Entity(_) | Resolution::Member { .. }, _) => {
                     Some(format!("{res:?}"))
                 }
                 _ => None,
             };
             fcs_uses_graded += 1;
-            let planted = g.refs.iter().find(|r| r.range == range);
-            if wrong.is_some() && planted.is_some_and(|r| is_known_auto_open_fold_back(g, &rf, r)) {
-                known_fold_back += 1;
-                continue;
-            }
             if let Some(w) = wrong {
                 ours_wrong.push(format!(
                     "seed {seed}: {:?} at {range:?}: we gave {w}",
@@ -332,12 +351,10 @@ fn generated_programs_agree_with_fcs() {
     }
 
     eprintln!(
-        "scope-gen: {} programs, {} rejected by FCS, {} FCS uses graded, {} wrong \
-         answers of the known [<AutoOpen>] fold-back class (#233)",
+        "scope-gen: {} programs, {} rejected by FCS, {} FCS uses graded",
         programs.len(),
         rejected.len(),
         fcs_uses_graded,
-        known_fold_back,
     );
     for (kind, (n, committed)) in &adjudicated {
         eprintln!("  {kind:?}: {n} adjudicated, {committed} committed");
@@ -359,14 +376,6 @@ fn generated_programs_agree_with_fcs() {
         undercommitted.len(),
         undercommitted.join("\n")
     );
-    if seeds == DEFAULT_SEEDS {
-        assert_eq!(
-            known_fold_back, KNOWN_FOLD_BACK_AT_DEFAULT,
-            "the known [<AutoOpen>] fold-back class moved: fewer means #233 (or \
-             another fix) landed, so delete `is_known_auto_open_fold_back`; more \
-             means the generator or the resolver changed"
-        );
-    }
     assert!(
         ours_wrong.is_empty(),
         "{} uses committed to something FCS does not name:\n{}",
