@@ -13,6 +13,7 @@
 //! without exposing row IDs.
 
 use crate::ImportError;
+use crate::doc_id::DocIdDialect;
 use crate::model::{AssemblyIdentity, AssemblyProjectionSkips, Entity, TypeForwarder};
 
 /// Implemented by [`crate::Ecma335Assembly`] (over the in-crate reader's owned
@@ -94,6 +95,16 @@ pub trait EcmaView {
     /// to return `Ok(vec![])` from its own body — the contract is "fail
     /// loud on unknown F# resources", not "must produce non-empty".
     fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError>;
+
+    /// Which compiler's documentation-comment IDs the assembly's doc file
+    /// carries. [`DocIdDialect::FSharp`] whenever any mark of the F# compiler
+    /// is present — not only a decodable signature pickle — since what matters
+    /// is who wrote the `.xml`, and a `--standalone` or interface-data-stripped
+    /// F# image is still keyed in the F# dialect.
+    ///
+    /// No default: a backend that answered [`DocIdDialect::Metadata`] without
+    /// looking would hand an F# member another member's documentation.
+    fn doc_id_dialect(&self) -> Result<DocIdDialect, ImportError>;
 }
 
 /// A managed resource carrying F# compiler data. Returned by

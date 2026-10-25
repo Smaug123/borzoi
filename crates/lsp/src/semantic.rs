@@ -17,6 +17,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use borzoi_assembly::doc_id::DocIdDialect;
 use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, ImportError, Version};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
@@ -38,6 +39,8 @@ use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::sidecar_manager::SidecarManager;
 use crate::workspace::{ServedTfm, Workspace};
+use crate::xml_doc::key::DocTarget;
+use crate::xml_doc::lookup::{DocFileCache, DocLookup, KeyCensusCache};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ReferencedAssemblyProjection {
@@ -93,6 +96,11 @@ struct ReferencedAssemblyProjection {
     /// (`netstandard`). `#[serde(default)]` for old cache entries.
     #[serde(default)]
     type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
+    /// The DLL's [`DocIdDialect`] (`EcmaView::doc_id_dialect`), or `None` when it
+    /// could not be read — which declines every member's documentation key.
+    /// Deliberately not `#[serde(default)]`: an entry that predates the field
+    /// must miss rather than read as unknown-but-cached.
+    doc_id_dialect: Option<DocIdDialect>,
 }
 
 /// Why one referenced DLL contributed nothing to the [`AssemblyEnv`]. The two
@@ -375,6 +383,15 @@ pub struct SemanticState {
     /// [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`] on a
     /// watched structural or referenced-assembly change.
     pdb_images: HashMap<PathBuf, Option<Arc<[u8]>>>,
+    /// The parsed sidecar `.xml` documentation files hover has read, keyed by
+    /// path. Each entry is validated against the file's `(size, mtime)` on
+    /// every use (see [`DocFileCache`]), so correctness does not depend on any
+    /// invalidation; [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`]
+    /// clear it only to bound memory, alongside the PDB images.
+    xml_docs: DocFileCache,
+    /// Per-assembly doc-ID collision censuses, one per env (see
+    /// [`KeyCensusCache`]); cleared alongside `xml_docs`, for memory.
+    xml_doc_keys: KeyCensusCache,
     /// On-disk cache of each referenced DLL's projected entities, so a warm
     /// server restart skips the parse+project that dominates a cold env build.
     /// **Disabled by default** (so tests and un-opted consumers stay off-disk);
@@ -482,6 +499,8 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
+        self.xml_docs.clear();
+        self.xml_doc_keys.clear();
         // A structural change can stale open buffers' tokens; owe a workspace
         // refresh (the next drain sends it, even with no following fold).
         self.wants_refresh = true;
@@ -504,6 +523,8 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
+        self.xml_docs.clear();
+        self.xml_doc_keys.clear();
         // A referenced-assembly change can stale open buffers' cross-assembly
         // tokens; owe a workspace refresh (sent on the next drain).
         self.wants_refresh = true;
@@ -526,6 +547,13 @@ impl SemanticState {
         let image = compute();
         self.pdb_images.insert(dll.to_path_buf(), image.clone());
         image
+    }
+
+    /// The XML documentation of a referenced-assembly symbol, read from the
+    /// `.xml` beside the DLL `env` read it from (cached per file; see
+    /// [`crate::xml_doc::lookup`]).
+    pub fn xml_doc(&mut self, env: &Arc<AssemblyEnv>, target: DocTarget) -> DocLookup {
+        crate::xml_doc::lookup::lookup(&mut self.xml_docs, &mut self.xml_doc_keys, env, target)
     }
 
     /// Drop the caches for **every** cached project that lists `file` in its
@@ -2802,6 +2830,7 @@ pub fn build_env_from_dll_paths<'a>(
                 auto_opens: projection.assembly_auto_opens,
                 manifest_identity: projection.manifest_identity,
                 type_forwarders: projection.type_forwarders,
+                doc_id_dialect: projection.doc_id_dialect,
             }
         })
         .collect();
@@ -2968,6 +2997,22 @@ fn enumerate_view_catching<V: EcmaView>(
                 }
             })
             .unwrap_or_default();
+            // Unreadable degrades to unknown, which declines member doc keys:
+            // a guessed dialect could attach another member's documentation.
+            let doc_id_dialect = catch_reader_panic(path, "doc_id_dialect", || {
+                view.doc_id_dialect()
+            })
+            .and_then(|r| match r {
+                Ok(dialect) => Some(dialect),
+                Err(err) => {
+                    tracing::warn!(
+                        dll = %path.display(),
+                        error = %err,
+                        "failed to read the doc-ID dialect; declining member documentation keys"
+                    );
+                    None
+                }
+            });
             Some(ReferencedAssemblyProjection {
                 entities: types,
                 fsharp_abbreviations_unknowable: skipped.fsharp_abbreviations_unknowable,
@@ -2980,6 +3025,7 @@ fn enumerate_view_catching<V: EcmaView>(
                 // still count this DLL's name for referenced-CCU uniqueness.
                 manifest_identity: Some(view.identity().clone()),
                 type_forwarders,
+                doc_id_dialect,
             })
         }
         Err(err) => {
@@ -5953,6 +5999,10 @@ mod tests {
         fn assembly_auto_opens(&self) -> Result<Vec<String>, ImportError> {
             Ok(vec![])
         }
+        fn doc_id_dialect(&self) -> Result<borzoi_assembly::doc_id::DocIdDialect, ImportError> {
+            Ok(borzoi_assembly::doc_id::DocIdDialect::Metadata)
+        }
+
         fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
             Ok(vec![])
         }

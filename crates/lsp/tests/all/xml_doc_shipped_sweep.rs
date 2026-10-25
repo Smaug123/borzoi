@@ -284,3 +284,97 @@ fn shipped_doc_files_index_and_render_with_no_fallback() {
         print(&format!("{}", Path::new(&root).display()), &wild);
     }
 }
+
+/// Hover's doc keys are injective over every target a real env exposes: an
+/// env over the whole NETCore reference pack plus FSharp.Core, every entity
+/// and every member keyed with its assembly's census, and no committed key
+/// (within one assembly — one doc file) names two targets. The census is
+/// what makes this hold by construction; the sweep checks it does, and
+/// reports how many targets real assemblies have it refuse. FSharp.Core is in
+/// the F# dialect, so its members are refused and only its types keyed; every
+/// reference-pack assembly is Roslyn's, so none of theirs is.
+#[test]
+#[ignore = "builds an env over the whole reference pack; run with --ignored"]
+fn doc_keys_are_injective_over_a_real_env() {
+    use borzoi::xml_doc::key::{DocTarget, KeyCensus, KeyError, doc_key};
+    use borzoi_assembly::doc_id::DocIdDialect;
+
+    let pack = ensure_system_runtime_dll()
+        .parent()
+        .expect("ref pack dir")
+        .to_path_buf();
+    let mut dlls: Vec<PathBuf> = std::fs::read_dir(&pack)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "dll"))
+        .collect();
+    dlls.push(sdk_fsharp_core_xml().with_extension("dll"));
+    dlls.sort();
+    let env = crate::common::doc_key_env(&dlls);
+    let read = env
+        .top_level_handles()
+        .iter()
+        .filter_map(|&h| env.assembly_path(h))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert!(read >= 100, "read {read} assemblies");
+
+    let mut censuses: BTreeMap<PathBuf, KeyCensus> = BTreeMap::new();
+    let mut keyed: BTreeMap<(PathBuf, String), DocTarget> = BTreeMap::new();
+    let (mut targets, mut shared, mut fsharp_members) = (0usize, 0usize, 0usize);
+    for handle in env.all_handles() {
+        let dll = env
+            .assembly_path(handle)
+            .expect("path-bearing env")
+            .to_path_buf();
+        let census = censuses
+            .entry(dll.clone())
+            .or_insert_with(|| KeyCensus::of_assembly(&env, &dll));
+        let members = env.member_indices(handle).map(|idx| DocTarget::Member {
+            parent: handle,
+            idx,
+        });
+        for target in std::iter::once(DocTarget::Entity(handle)).chain(members) {
+            targets += 1;
+            match doc_key(&env, census, target) {
+                Ok(key) => {
+                    if let Some(previous) = keyed.insert((dll.clone(), key.clone()), target) {
+                        panic!(
+                            "{key} in {} keys both {previous:?} and {target:?}",
+                            dll.display()
+                        );
+                    }
+                }
+                Err(KeyError::Shared) => shared += 1,
+                Err(KeyError::FSharpMember) => {
+                    // Only an F#-compiled assembly may refuse its members so;
+                    // the reference pack is Roslyn's throughout.
+                    assert_eq!(
+                        dll.file_name().and_then(|n| n.to_str()),
+                        Some("FSharp.Core.dll"),
+                        "{target:?}: a reference-pack member refused as F#"
+                    );
+                    fsharp_members += 1;
+                }
+                Err(e @ (KeyError::Unplaced | KeyError::DialectUnknown)) => {
+                    panic!("{target:?}: {e:?} in a real env")
+                }
+            }
+        }
+    }
+    eprintln!(
+        "{} assemblies, {targets} targets, {} keys committed, {shared} refused as sharing a key, \
+         {fsharp_members} F# members refused",
+        censuses.len(),
+        keyed.len()
+    );
+    let fsharp_core = env
+        .top_level_handles()
+        .iter()
+        .find(|&&h| env.entity(h).assembly.name == "FSharp.Core")
+        .expect("FSharp.Core is in the env");
+    assert_eq!(env.doc_id_dialect(*fsharp_core), Some(DocIdDialect::FSharp));
+    assert!(fsharp_members > 0, "FSharp.Core's members are refused");
+    assert!(keyed.len() >= 50_000, "keyed only {}", keyed.len());
+}

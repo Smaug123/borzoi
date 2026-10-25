@@ -37,14 +37,10 @@
 //! paste it into a fixture to turn any find into a pinned regression.
 
 use std::fmt::Write as _;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
 
-use borzoi_assembly::test_support::{normalise_entities, parse_fcs_dump};
-use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use proptest::prelude::*;
 
-use crate::common::{dotnet_build_captured, invoke_fcs_dump};
+use crate::common::{ArgGroupObligation, Lang, compile_generated, diff_dll};
 
 // ============================================================================
 // The declaration AST.
@@ -95,9 +91,8 @@ enum Binding {
         ret: Ty,
         is_private: bool,
     },
-    /// `[<Literal>] let L<i> = <int literal>` — both projectors filter
-    /// literals out of the member surface; generating them checks the
-    /// *agreement* on that filtering.
+    /// `[<Literal>] let L<i> = <int literal>` — a static literal field on
+    /// the module class, which both projectors surface.
     IntLiteral { value: i32 },
 }
 
@@ -415,101 +410,18 @@ fn render_source(decls: &[Decl]) -> String {
 // Compile + diff plumbing.
 // ============================================================================
 
-/// The project file every generated source compiles under. Mirrors the
-/// MiniLibFs fixture's shape (same TFM, deterministic, no docs/PDB) so a
-/// generated build behaves exactly like the pinned fixtures.
-const FSPROJ: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <AssemblyName>Generated</AssemblyName>
-    <RootNamespace>Generated</RootNamespace>
-    <Deterministic>true</Deterministic>
-    <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-  </PropertyGroup>
-  <ItemGroup>
-    <Compile Include="Library.fs" />
-  </ItemGroup>
-</Project>
-"#;
-
-/// Compile `source` to a DLL in a content-addressed directory under
-/// `CARGO_TARGET_TMPDIR`, returning the DLL path. Re-running the same
-/// source (e.g. across proptest shrink steps that revisit a candidate)
-/// hits the cache. The cache key is a hash of the source; on the
-/// (theoretical) collision the stored `Library.fs` differs from `source`
-/// and we rebuild over the top, so a collision costs time, not
-/// correctness.
-fn compile_generated(source: &str) -> Result<PathBuf, String> {
-    let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("generative-source-diff")
-        .join(format!("{:016x}-{}", hasher.finish(), source.len()));
-    let dll = dir
-        .join("bin")
-        .join("Release")
-        .join("net10.0")
-        .join("Generated.dll");
-    let lib = dir.join("Library.fs");
-    let cached = dll.is_file()
-        && std::fs::read_to_string(&lib)
-            .map(|prev| prev == source)
-            .unwrap_or(false);
-    if cached {
-        return Ok(dll);
-    }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    std::fs::write(dir.join("Generated.fsproj"), FSPROJ)
-        .map_err(|e| format!("write fsproj: {e}"))?;
-    std::fs::write(&lib, source).map_err(|e| format!("write Library.fs: {e}"))?;
-    dotnet_build_captured(&dir)?;
-    if !dll.is_file() {
-        return Err(format!(
-            "dotnet build succeeded but {} was not produced",
-            dll.display()
-        ));
-    }
-    Ok(dll)
-}
-
-/// Compile, project through both readers, and return
-/// `(rust_normalised, fcs_normalised, source)` — or a message describing
-/// a stage failure (generator escape or reader refusal), which the
-/// caller turns into a test failure carrying the source.
+/// Compile and diff through [`diff_dll`] — or a message describing a stage
+/// failure (generator escape, reader refusal, divergence), which the caller
+/// turns into a test failure carrying the source.
 fn diff_generated(decls: &[Decl]) -> Result<(), String> {
     let source = render_source(decls);
     let fail = |stage: &str, detail: String| {
         format!("{stage}: {detail}\n--- generated source ---\n{source}")
     };
-
-    let dll_path = compile_generated(&source).map_err(|e| fail("compile", e))?;
-    let dll_bytes =
-        std::fs::read(&dll_path).map_err(|e| fail("read dll", format!("{e} ({dll_path:?})")))?;
-
-    let view = Ecma335Assembly::parse(&dll_bytes)
-        .map_err(|e| fail("Ecma335Assembly::parse", format!("{e:?}")))?;
-    let rust_entities = view
-        .enumerate_type_defs()
-        .map_err(|e| fail("enumerate_type_defs", format!("{e:?}")))?;
-    let rust_norm = normalise_entities(&view.identity().name, &rust_entities);
-
-    let fcs_json = invoke_fcs_dump("entities", &dll_path);
-    let fcs_norm = parse_fcs_dump(&fcs_json);
-
-    if rust_norm == fcs_norm {
-        Ok(())
-    } else {
-        Err(fail(
-            "projection diff",
-            format!(
-                "normalised assemblies diverge.\nrust ({} entities): {rust_norm:#?}\nfcs  ({} entities): {fcs_norm:#?}",
-                rust_norm.entities.len(),
-                fcs_norm.entities.len(),
-            ),
-        ))
-    }
+    let dll_path = compile_generated(Lang::FSharp, &source).map_err(|e| fail("compile", e))?;
+    diff_dll(&dll_path, ArgGroupObligation::ModulesCommit)
+        .map(|_agreement| ())
+        .map_err(|e| fail("projection diff", e))
 }
 
 // ============================================================================
