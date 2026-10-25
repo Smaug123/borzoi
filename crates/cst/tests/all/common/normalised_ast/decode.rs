@@ -925,7 +925,7 @@ pub(super) fn decode_base64(s: &str) -> Vec<u8> {
         "base64 length must be a multiple of 4: {s:?}"
     );
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0 {
         let v0 = b64_val(chunk[0]);
         let v1 = b64_val(chunk[1]);
         let v2 = b64_val(chunk[2]);

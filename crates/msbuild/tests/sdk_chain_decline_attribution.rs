@@ -203,7 +203,7 @@ fn report_names(title: &str, counts: &BTreeMap<String, usize>) {
 /// is *supposed* to fail this test; update the numbers with the date and say
 /// which way they moved.
 ///
-/// Measured 2026-08-02 against the pinned SDK 10.0.301.
+/// Measured 2026-10-25 against the pinned SDK 10.0.401.
 #[test]
 #[ignore = "walks the whole pinned SDK chain; a measurement, run in CI's sweep lane"]
 fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions() {
@@ -343,7 +343,7 @@ fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions(
     // The finding, bounded on both sides. The delta is a **floor** (one seed
     // table, measured), the ceiling is **sound** (an item reading no reserved
     // name cannot be reached by any table), and both are small against
-    // populations of 396 and 2 758. The floor is itself an over-statement of
+    // populations of 398 and 2 758. The floor is itself an over-statement of
     // what real seeding would deliver: the table includes names a real walk
     // already supplies and one that cannot be known at all.
     //
@@ -353,7 +353,7 @@ fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions(
     // file reports would silently be against a smaller denominator.
     assert_eq!(
         (expressions.len(), conditions.len()),
-        (396, 2758),
+        (398, 2758),
         "the census population moved; every count below is a ratio against it, \
          so restate them together"
     );
@@ -395,13 +395,13 @@ fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions(
 /// `(census seeds, + what we already seed, + what seeding work would add)`.
 /// The **third minus the second** is the value of the work; the second minus
 /// the first is an artefact of the census not seeding reserved names at all.
-/// Measured 2026-08-02, pinned SDK 10.0.301.
-const EXPRESSION_STEPS: (usize, usize, usize) = (66, 76, 80);
+/// Measured 2026-10-25, pinned SDK 10.0.401.
+const EXPRESSION_STEPS: (usize, usize, usize) = (66, 77, 81);
 /// As [`EXPRESSION_STEPS`], for `Condition` attributes.
 const CONDITION_STEPS: (usize, usize, usize) = (139, 155, 185);
 /// Declined call expressions that read at least one reserved name — the most
 /// seeding could ever reach, whatever values it chose. Sound, unlike a measured
 /// delta, which is only ever a floor.
-const CEILING_EXPRESSIONS: usize = 52;
+const CEILING_EXPRESSIONS: usize = 54;
 /// As [`CEILING_EXPRESSIONS`], for `Condition` attributes.
-const CEILING_CONDITIONS: usize = 145;
+const CEILING_CONDITIONS: usize = 146;

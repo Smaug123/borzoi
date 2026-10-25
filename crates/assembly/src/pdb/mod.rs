@@ -285,7 +285,7 @@ fn find_embedded_pdb_payload<'a>(
         return Ok(None);
     };
 
-    for entry in dir.chunks_exact(DEBUG_ENTRY_SIZE) {
+    for entry in dir.as_chunks::<DEBUG_ENTRY_SIZE>().0 {
         let mut ec = Cursor::new(entry);
         // Characteristics(4) TimeDateStamp(4) MajorVersion(2) MinorVersion(2).
         ec.skip(12).ok_or(PdbError::MalformedDebugDirectory)?;
@@ -395,7 +395,7 @@ fn find_codeview_reference(
         return Ok(None);
     };
 
-    for entry in dir.chunks_exact(DEBUG_ENTRY_SIZE) {
+    for entry in dir.as_chunks::<DEBUG_ENTRY_SIZE>().0 {
         let mut ec = Cursor::new(entry);
         ec.skip(4).ok_or(PdbError::MalformedDebugDirectory)?; // Characteristics
         let stamp = ec.read_u32().ok_or(PdbError::MalformedDebugDirectory)?; // TimeDateStamp
