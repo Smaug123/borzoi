@@ -1219,6 +1219,55 @@ public class C : N.I
     }
 }
 
+/// Rename `N.I.P`'s getter to `Read`, by swapping names with a method of
+/// another type: no accessor-naming convention then points at `P`.
+fn rename_getter_to_read(dll: &std::path::Path) {
+    oracle()
+        .lock()
+        .unwrap()
+        .swap_method_names(dll, "get_P", "Read");
+}
+
+/// An explicit implementation takes precedence over a public member that
+/// would implement the interface member implicitly. Through an interface in
+/// another assembly the explicit row names a raw accessor *method*, so which
+/// interface member it implements is read off the interface's accessor
+/// ownership, never off the accessor's name: here `I.P`'s getter is named
+/// `Read`, and the explicit `I.P` — not the public `P` — implements `I.P`.
+#[test]
+fn an_external_explicit_implementation_outranks_a_public_member_whatever_its_accessors_are_called()
+{
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The implementer.</summary>
+public class C : N.I
+{
+    int N.I.P => 0;
+
+    /// <inheritdoc/>
+    public int P => 0;
+}
+"#,
+        &[Dep {
+            name: "Ifc",
+            source: "namespace N {\n/// <summary>I.</summary>\npublic interface I {\n/// <summary>I.P's own.</summary>\nint P { get; } }\n/// <summary>Other.</summary>\npublic class Other {\n/// <summary>Other.Read.</summary>\npublic int Read() => 0; } }",
+            alias: None,
+            referenced: true,
+            against: &[],
+            visible: true,
+            patch: Some(rename_getter_to_read),
+        }],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("explicit precedence through a renamed accessor");
+    census.assert_sound();
+}
+
 /// Assembly binding compares culture: a reference to `Dep, Culture=ja` does
 /// not bind to a loaded `Dep, Culture=fr`, so to Roslyn `D`'s base is missing
 /// and its `<inheritdoc/>` inherits nothing.

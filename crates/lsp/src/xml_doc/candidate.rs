@@ -993,18 +993,32 @@ fn explicit_target(
     }
 }
 
-/// Whether an implemented-member entry may name the interface member called
-/// `name`: by name, or — for an entry whose kind the projection could not
-/// read — as one of its accessors by the `get_`/`set_`/`add_`/`remove_`/
-/// `raise_` convention. Over-matching is safe where this is used: it only
-/// ever declines.
-fn may_name(implemented: &ImplementedMember, name: &str) -> bool {
+/// Whether an implemented-member entry may name the interface member `im`:
+/// by name, or — for an entry naming a raw method of an interface in another
+/// assembly — as one of `im`'s accessors, read off the interface's own
+/// projection ([`borzoi_assembly::AccessorSlot::name`]), since metadata need
+/// not spell accessors by the `get_`/`set_` convention. An accessor whose
+/// name was not recorded may be any; and the convention is matched too.
+/// Over-matching is safe where this is used: it only ever declines.
+fn may_name(implemented: &ImplementedMember, im: &Member) -> bool {
+    let name = member_name(im);
     match implemented {
         ImplementedMember::Method(n)
         | ImplementedMember::Property(n)
         | ImplementedMember::Event(n) => n == name,
         ImplementedMember::Unresolved(raw) => {
+            let (slots, accessors) = match im {
+                Member::Property(p) => (
+                    p.accessor_slots.as_slice(),
+                    usize::from(p.has_getter) + usize::from(p.has_setter),
+                ),
+                // An event has `add` and `remove`, and perhaps `fire`.
+                Member::Event(e) => (e.accessor_slots.as_slice(), 2),
+                Member::Method(_) | Member::Field(_) => (&[][..], 0),
+            };
             raw == name
+                || slots.len() < accessors
+                || slots.iter().any(|s| s.name.is_empty() || s.name == *raw)
                 || ["get_", "set_", "add_", "remove_", "raise_"]
                     .iter()
                     .any(|p| raw.strip_prefix(p) == Some(name))
@@ -1486,7 +1500,7 @@ fn interface_candidate(
                 };
                 // An entry whose interface does not bind may be this one.
                 implements.iter().any(|i| {
-                    may_name(&i.member, name)
+                    may_name(&i.member, im)
                         && bind(env, parent, inst, &i.interface)
                             .ok()
                             .is_none_or(|(def, inst)| Iface { def, inst }.key() == iface.key())
