@@ -748,6 +748,128 @@ pub(crate) fn apply_extension_member_index(
 /// recorded. Members are pickled under an accessor's own name, so a property `P`
 /// is vouched for by `get_P` or `set_P`.
 ///
+/// Settle the candidate properties `project_fsharp_members` keeps on every F#
+/// record and exception: a user-defined member property (`member p.Sum`) is a
+/// member FCS surfaces, while the rows fsc synthesises beside it are not, and
+/// metadata alone cannot tell them apart. The host pickle's published member
+/// list (`tcaug.adhoc`, as [`retain_published_union_properties`] reads it for a
+/// union) decides: each record or exception row the pickle describes keeps the
+/// properties it vouches for. Every other record or exception row — with no
+/// pickle (`pickled` is `None`, or not authoritative), or one the lossy key
+/// `(namespace, containers, name, arity)` cannot attribute (two pickled types,
+/// or two rows, at one key; a measure-parameterised type) — keeps none: a
+/// decline, exactly what the projection surfaced before these were candidates.
+/// A field-backed property is a [`Member::Field`] and is not touched.
+pub(crate) fn settle_record_properties(
+    entities: &mut [Entity],
+    pickled: Option<&PickledCcu>,
+) -> Result<(), ImportError> {
+    type Key = (Vec<String>, Vec<String>, String, usize);
+    // The published names per key; `None` once a second pickled type claims it.
+    let mut published: HashMap<Key, Option<Vec<String>>> = HashMap::new();
+    if let Some(pickled) = pickled {
+        let mut path = Vec::new();
+        walk_entity_tree(
+            pickled,
+            pickled.root_entity,
+            true,
+            &[],
+            &[],
+            &mut path,
+            &mut |_stamp, entity, is_root, namespace, type_chain| {
+                let is_record_or_exception = matches!(entity.repr, PickledTyconRepr::Record(_))
+                    || matches!(entity.exn_repr, PickledExnRepr::Fresh(_))
+                    || matches!(
+                        &entity.repr,
+                        PickledTyconRepr::FSharpObjectModel(m)
+                            if matches!(m.kind, crate::fsharp_pickle::model::PickledTyconObjModelKind::Record)
+                    );
+                if is_root || !is_record_or_exception || !is_measure_free(pickled, entity) {
+                    return Ok(());
+                }
+                let key = (
+                    namespace.to_vec(),
+                    type_chain.to_vec(),
+                    clr_name(entity),
+                    entity.typars.len(),
+                );
+                let names: Vec<String> = entity
+                    .tcaug
+                    .adhoc
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                published
+                    .entry(key)
+                    .and_modify(|e| *e = None)
+                    .or_insert(Some(names));
+                Ok(())
+            },
+        )?;
+    }
+    // Rows per key in the ECMA tree; a key two rows share settles neither.
+    fn count_rows(
+        entities: &[Entity],
+        namespace: &[String],
+        chain: &mut Vec<String>,
+        counts: &mut HashMap<Key, usize>,
+    ) {
+        for e in entities {
+            let ns = if chain.is_empty() {
+                e.namespace.clone()
+            } else {
+                namespace.to_vec()
+            };
+            *counts
+                .entry((
+                    ns.clone(),
+                    chain.clone(),
+                    e.name.clone(),
+                    e.generic_parameters.len(),
+                ))
+                .or_default() += 1;
+            chain.push(e.name.clone());
+            count_rows(&e.nested_types, &ns, chain, counts);
+            chain.pop();
+        }
+    }
+    fn settle(
+        entities: &mut [Entity],
+        namespace: &[String],
+        chain: &mut Vec<String>,
+        counts: &HashMap<Key, usize>,
+        published: &HashMap<Key, Option<Vec<String>>>,
+    ) {
+        for e in entities {
+            let ns = if chain.is_empty() {
+                e.namespace.clone()
+            } else {
+                namespace.to_vec()
+            };
+            if matches!(e.kind, EntityKind::Record | EntityKind::Exception) {
+                let key = (
+                    ns.clone(),
+                    chain.clone(),
+                    e.name.clone(),
+                    e.generic_parameters.len(),
+                );
+                let vouched = match (counts.get(&key), published.get(&key)) {
+                    (Some(1), Some(Some(names))) => names.as_slice(),
+                    _ => &[],
+                };
+                retain_published_union_properties(e, vouched);
+            }
+            chain.push(e.name.clone());
+            settle(&mut e.nested_types, &ns, chain, counts, published);
+            chain.pop();
+        }
+    }
+    let mut counts = HashMap::new();
+    count_rows(entities, &[], &mut Vec::new(), &mut counts);
+    settle(entities, &[], &mut Vec::new(), &counts, &published);
+    Ok(())
+}
+
 /// Only properties are filtered; a union's methods and fields are settled
 /// elsewhere. Passing an empty `published` drops every property, which is the
 /// honest reading whenever the pickle vouches for nothing.
