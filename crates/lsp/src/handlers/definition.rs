@@ -547,6 +547,8 @@ fn is_https(url: &str) -> bool {
 #[cfg(feature = "sourcelink-fetch")]
 impl SourceFetcher for MinreqFetcher {
     fn fetch(&self, url: &str) -> Result<Vec<u8>, String> {
+        use std::io::Read as _;
+
         // The URL comes from the referenced assembly's PDB (untrusted data), so
         // refuse anything but HTTPS — never issue a plaintext request even if the
         // SourceLink map asks for `http://`.
@@ -569,15 +571,17 @@ impl SourceFetcher for MinreqFetcher {
         if response.status_code != 200 {
             return Err(format!("fetch {url}: HTTP {}", response.status_code));
         }
+        // Read at most one byte past the cap: reaching it proves the body is
+        // oversized without buffering the rest.
         let mut body = Vec::new();
-        for piece in response {
-            let (byte, _) = piece.map_err(|e| format!("fetch {url}: {e}"))?;
-            if body.len() >= MAX_SOURCE_BYTES {
-                return Err(format!(
-                    "fetch {url}: source exceeds the {MAX_SOURCE_BYTES}-byte cap"
-                ));
-            }
-            body.push(byte);
+        response
+            .take(MAX_SOURCE_BYTES as u64 + 1)
+            .read_to_end(&mut body)
+            .map_err(|e| format!("fetch {url}: {e}"))?;
+        if body.len() > MAX_SOURCE_BYTES {
+            return Err(format!(
+                "fetch {url}: source exceeds the {MAX_SOURCE_BYTES}-byte cap"
+            ));
         }
         Ok(body)
     }
