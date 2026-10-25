@@ -1617,3 +1617,69 @@ fn accessor_ids_are_known_or_every_method_id_of_the_type_is_suspect() {
     assert!(unnamed.may_name_an_accessor("M:System.Exception.GetBaseException"));
     assert!(!unnamed.may_name_an_accessor("M:System.ArgumentException.GetBaseException"));
 }
+
+/// Substituting a base type's arguments copies the whole argument tree into
+/// each use of a type parameter, so along `C_i<T> : C_{i-1}<Pair<T, T>>` the
+/// instantiation doubles at every hop — exponential work and memory long
+/// before [`borzoi::xml_doc::inherit::MAX_HOPS`] or the node limits apply.
+/// Instantiations are bounded by
+/// [`borzoi::xml_doc::candidate::MAX_INSTANTIATION_NODES`]: the classes whose
+/// chains stay under it expand as Roslyn does, and the rest decline.
+#[test]
+fn an_instantiation_that_doubles_per_hop_is_bounded() {
+    use borzoi::xml_doc::candidate::MAX_INSTANTIATION_NODES;
+    const LEVELS: usize = 12;
+    let mut source = String::from(
+        r#"
+namespace F;
+
+/// <summary>A pair.</summary>
+public class Pair<A, B> { }
+
+/// <summary>C0's summary.</summary>
+public class C0<T>
+{
+    /// <summary>C0.M.</summary>
+    public virtual void M() { }
+}
+"#,
+    );
+    for i in 1..=LEVELS {
+        source.push_str(&format!(
+            r#"
+/// <inheritdoc/>
+public class C{i}<T> : C{prev}<Pair<T, T>>
+{{
+    /// <inheritdoc/>
+    public override void M() {{ }}
+}}
+"#,
+            prev = i - 1
+        ));
+    }
+    let fx = fixture(&source).unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("instantiations doubling per hop");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    // C_i's deepest hop instantiates C0 with an argument of 2^(i+1) - 1 nodes.
+    for i in 1..=LEVELS {
+        let largest = (1usize << (i + 1)) - 1;
+        for key in [format!("T:F.C{i}`1"), format!("M:F.C{i}`1.M")] {
+            let verdict = v.get(key.as_str());
+            if largest <= MAX_INSTANTIATION_NODES {
+                assert!(
+                    matches!(verdict, Some(Verdict::Agrees)),
+                    "{key}: {verdict:?}"
+                );
+            } else {
+                assert!(
+                    matches!(verdict, Some(Verdict::Declined { cause, .. }) if cause == "Undecidable(InstantiationTooLarge)"),
+                    "{key}: {verdict:?}"
+                );
+            }
+        }
+    }
+}

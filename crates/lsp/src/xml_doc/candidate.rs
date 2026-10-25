@@ -61,6 +61,13 @@ pub struct Instantiation {
     key: Vec<String>,
 }
 
+/// The most nodes an [`Instantiation`]'s arguments may hold, together. A
+/// substitution copies each argument into every use of its type parameter,
+/// so along a chain like `C_i<T> : C_{i-1}<Pair<T, T>>` the arguments double
+/// per hop; this bounds the work and memory of every hop, and an
+/// instantiation over it is [`Undecidable::InstantiationTooLarge`].
+pub const MAX_INSTANTIATION_NODES: usize = 256;
+
 impl Instantiation {
     /// `handle`'s own instantiation: each type parameter stands for itself.
     pub fn definition(env: &AssemblyEnv, handle: EntityHandle) -> Self {
@@ -153,6 +160,18 @@ impl Instantiation {
         let TypeRef::Named { type_args, .. } = reference else {
             return Err(Undecidable::MalformedInstantiation);
         };
+        // Sized before anything is built: the substitution's copies are the
+        // cost being bounded.
+        let arg_nodes: Vec<usize> = self.args.iter().map(node_count).collect();
+        let nodes = type_args
+            .iter()
+            .try_fold(0usize, |sum, a| {
+                Some(sum.saturating_add(applied_node_count(&arg_nodes, &a.ty)?))
+            })
+            .ok_or(Undecidable::MalformedInstantiation)?;
+        if nodes > MAX_INSTANTIATION_NODES {
+            return Err(Undecidable::InstantiationTooLarge);
+        }
         let args: Vec<TypeRef> = type_args
             .iter()
             .map(|a| self.apply(&a.ty))
@@ -292,6 +311,8 @@ pub enum Undecidable {
     ChainTooLong,
     /// An instantiation names a type parameter its type does not have.
     MalformedInstantiation,
+    /// An instantiation would hold more than [`MAX_INSTANTIATION_NODES`].
+    InstantiationTooLarge,
     /// A type in a compared signature or instantiation binds ambiguously or
     /// uncertainly, so which type it is cannot be settled.
     TypeIdentity,
@@ -338,6 +359,43 @@ pub fn candidate(env: &AssemblyEnv, at: &Reached) -> Candidate {
         DocTarget::Entity(handle) => type_candidate(env, handle, &at.inst),
         DocTarget::Member { parent, idx } => member_candidate(env, parent, idx, &at.inst),
     }
+}
+
+/// The number of type nodes in `ty`.
+fn node_count(ty: &TypeRef) -> usize {
+    1usize.saturating_add(match ty {
+        TypeRef::Primitive(_) | TypeRef::Var { .. } | TypeRef::Ptr(None) => 0,
+        TypeRef::Named { type_args, .. } => type_args
+            .iter()
+            .fold(0, |sum, a| sum.saturating_add(node_count(&a.ty))),
+        TypeRef::Array { element, .. } => node_count(&element.ty),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => node_count(inner),
+    })
+}
+
+/// The number of type nodes [`Instantiation::apply`] makes of `ty`, given
+/// each argument's [`node_count`]; `None` where `apply` would fail.
+fn applied_node_count(arg_nodes: &[usize], ty: &TypeRef) -> Option<usize> {
+    Some(match ty {
+        TypeRef::Var {
+            index,
+            is_method: false,
+        } => *arg_nodes.get(usize::from(*index))?,
+        TypeRef::Var {
+            is_method: true, ..
+        }
+        | TypeRef::Primitive(_)
+        | TypeRef::Ptr(None) => 1,
+        TypeRef::Named { type_args, .. } => type_args.iter().try_fold(1usize, |sum, a| {
+            Some(sum.saturating_add(applied_node_count(arg_nodes, &a.ty)?))
+        })?,
+        TypeRef::Array { element, .. } => {
+            1usize.saturating_add(applied_node_count(arg_nodes, &element.ty)?)
+        }
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
+            1usize.saturating_add(applied_node_count(arg_nodes, inner)?)
+        }
+    })
 }
 
 /// Bind `reference` (written in `from`'s metadata) and instantiate it.
