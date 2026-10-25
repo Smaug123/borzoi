@@ -5,10 +5,12 @@
 //! productions in [`super::decls_binding`].
 
 use super::*;
+use crate::lexer::InterpKind;
 
 /// How many brackets `t` closes and then opens, for
-/// [`Parser::consume_stray_debris`]'s bracket count. `begin`/`end` count, and
-/// the fused `@>|}` closes two.
+/// [`Parser::consume_stray_debris`]'s bracket count. `begin`/`end` count, an
+/// interpolated string's fill is a bracket (a `} … {` part closes one and
+/// opens the next), and the fused `@>|}` closes two.
 fn bracket_effect(t: &Token<'_>) -> (usize, usize) {
     match t {
         Token::LParen
@@ -32,6 +34,18 @@ fn bracket_effect(t: &Token<'_>) -> (usize, usize) {
         | Token::RQuoteRawDot
         | Token::End => (1, 0),
         Token::RQuoteBarRBrace | Token::RQuoteRawBarRBrace => (2, 0),
+        Token::InterpString(kind) => match kind {
+            InterpKind::Begin
+            | InterpKind::TripleBegin
+            | InterpKind::VerbatimBegin
+            | InterpKind::ExtendedBegin { .. } => (0, 1),
+            InterpKind::Part => (1, 1),
+            InterpKind::End { .. } => (1, 0),
+            InterpKind::BeginEnd { .. }
+            | InterpKind::TripleBeginEnd { .. }
+            | InterpKind::VerbatimBeginEnd { .. }
+            | InterpKind::ExtendedBeginEnd { .. } => (0, 0),
+        },
         _ => (0, 0),
     }
 }
@@ -48,6 +62,7 @@ fn begins_module_decl(t: &Token<'_>) -> bool {
             | Token::Open
             | Token::Exception
             | Token::Extern
+            | Token::Do
             | Token::Namespace
             | Token::LBrackLess
     )

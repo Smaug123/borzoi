@@ -228,6 +228,12 @@ fn recover_nothing_inside_a_debris_bracket_is_a_declaration() {
                 "same line",
                 format!("let x = 0\nmember foo ({inner}) 1\nlet after = x\n"),
             ),
+            (
+                "interpolation fill",
+                format!(
+                    "let x = 0\nmember foo $\"\"\"{{{inner}\n            1}}\"\"\"\nlet after = x\n"
+                ),
+            ),
         ] {
             let decls = top_level_decls(&src);
             if decls != ["let x = 0", "let after = x"] {
@@ -252,6 +258,7 @@ fn recover_a_declaration_keyword_ends_unbracketed_debris() {
         ("exception Inner", Some("exception Inner")),
         ("[<A>] let inner = 1", Some("[<A>] let inner = 1")),
         ("extern void f()", Some("extern void f()")),
+        ("do ()", Some("do ()")),
         ("inner", None),
         ("#nowarn \"40\"", None),
     ] {
@@ -327,5 +334,20 @@ fn recover_keyword_after_unseparated_debris_is_not_a_declaration() {
     crate::common::recovery::assert_recovered_trees_agree(
         "module M\nmodule ``a`` = let a = 1\n ``b`` = let a = 1\nmodule ``c`` = let a = 1\n",
         2,
+    );
+}
+
+/// A `do` after a stray access modifier is a declaration too, as in FCS.
+#[test]
+fn recover_stray_access_modifier_keeps_the_do_after_it() {
+    let verdict = crate::common::recovery::assert_recovered_trees_agree(
+        "module M =\n    private do foo x\n    let y = 1\n",
+        1,
+    );
+    assert_eq!(
+        verdict.relation,
+        crate::common::recovery::Relation::Exact,
+        "{}",
+        verdict.token()
     );
 }
