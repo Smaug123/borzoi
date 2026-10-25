@@ -13,6 +13,7 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
+use borzoi::uri::UriExt as _;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -182,10 +183,10 @@ pub fn minimal_assets_json(package_folder: &Path) -> String {
 /// A "restored" temp project whose `AssemblyEnv` carries a real
 /// `System.Runtime.dll` (so `System.String` and its members resolve), compiling
 /// `src` as its single file. Returns the wired-up [`State`](borzoi::server::State)
-/// and the file `Url`. The [`TempDir`](tempfile::TempDir) is leaked so the paths
+/// and the file `Uri`. The [`TempDir`](tempfile::TempDir) is leaked so the paths
 /// outlive the returned `State` (test-only). Shared by the Stage 3.3b member-name
 /// hover / go-to-definition / completion integration tests.
-pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Url) {
+pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Uri) {
     let (state, mut uris) = runtime_project_state_files(&[("Lib.fs", src)]);
     (state, uris.remove(0))
 }
@@ -197,7 +198,7 @@ pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Ur
 /// *early* file and assert the resolution slice folds only the prefix up to it.
 pub fn runtime_project_state_files(
     files: &[(&str, &str)],
-) -> (borzoi::server::State, Vec<lsp_types::Url>) {
+) -> (borzoi::server::State, Vec<lsp_types::Uri>) {
     use borzoi::sdk_discovery::SdkDiscoveryEnv;
     use borzoi::server::State;
     use borzoi::workspace::Workspace;
@@ -248,7 +249,7 @@ pub fn runtime_project_state_files(
         .map(|(name, src)| {
             let path = root.join(name);
             write(&path, src);
-            let uri = lsp_types::Url::from_file_path(&path).unwrap();
+            let uri = lsp_types::Uri::from_file_path(&path).unwrap();
             state.docs.insert(uri.clone(), src.to_string());
             uri
         })

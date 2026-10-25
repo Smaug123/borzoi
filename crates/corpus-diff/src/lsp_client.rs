@@ -17,9 +17,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use borzoi::server::{State, client_capabilities_from_initialize, run_with_fetcher};
+use borzoi::uri::UriExt as _;
 use borzoi::workspace::Workspace;
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
-use lsp_types::Url;
+use lsp_types::Uri;
 use serde_json::{Value, json};
 
 /// How long one request may take before the session is declared wedged. A
@@ -109,13 +110,10 @@ impl LspClient {
             match message {
                 Message::Response(Response {
                     id: rid,
-                    result,
-                    error,
+                    response_result,
                 }) if rid == id => {
-                    return match error {
-                        Some(error) => Err(format!("{}: {}", error.code, error.message)),
-                        None => Ok(result.unwrap_or(Value::Null)),
-                    };
+                    return response_result
+                        .map_err(|error| format!("{}: {}", error.code, error.message));
                 }
                 Message::Response(_) | Message::Notification(_) | Message::Request(_) => {}
             }
@@ -172,7 +170,8 @@ impl Drop for LspClient {
 
 /// The `file://` URI a client names `path` by.
 pub fn file_uri(path: &Path) -> String {
-    Url::from_file_path(path)
+    Uri::from_file_path(path)
         .unwrap_or_else(|()| panic!("{} has no file URI", path.display()))
+        .as_str()
         .to_string()
 }

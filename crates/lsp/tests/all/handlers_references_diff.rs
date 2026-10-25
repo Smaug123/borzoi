@@ -19,6 +19,7 @@
 //! A source declaration gives FCS and the handler a common stable identity
 //! without comparing sema's private `DefId` / project-local `ItemId` handles.
 
+use borzoi::uri::UriExt as _;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,7 +29,7 @@ use borzoi::position::{offset_to_position, position_to_offset};
 use borzoi::server::State;
 use lsp_types::{
     PartialResultParams, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
-    TextDocumentPositionParams, Url, WorkDoneProgressParams,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 use tempfile::TempDir;
 
@@ -68,7 +69,7 @@ struct Coverage {
     use_locations: usize,
 }
 
-fn params(uri: &Url, source: &str, byte: usize, include_declaration: bool) -> ReferenceParams {
+fn params(uri: &Uri, source: &str, byte: usize, include_declaration: bool) -> ReferenceParams {
     ReferenceParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -156,7 +157,7 @@ fn check_answer(
     coverage: &mut Coverage,
 ) -> BTreeSet<Span> {
     let cursor_source = source_for(sources, &target.cursor_file);
-    let cursor_uri = Url::from_file_path(&target.cursor_file).unwrap();
+    let cursor_uri = Uri::from_file_path(&target.cursor_file).unwrap();
     let locations = references::handle(
         state,
         params(
@@ -170,10 +171,12 @@ fn check_answer(
 
     let mut answered = BTreeSet::new();
     for location in &locations {
-        let path = location
-            .uri
-            .to_file_path()
-            .unwrap_or_else(|()| panic!("references returned a non-file URI: {}", location.uri));
+        let path = location.uri.to_file_path().unwrap_or_else(|()| {
+            panic!(
+                "references returned a non-file URI: {}",
+                location.uri.as_str()
+            )
+        });
         let source = source_for(sources, &path);
         let start = position_to_offset(source, location.range.start);
         let end = position_to_offset(source, location.range.end);
@@ -337,7 +340,7 @@ let classify c =
     for (path, source) in &sources {
         state
             .docs
-            .insert(Url::from_file_path(path).unwrap(), source.clone());
+            .insert(Uri::from_file_path(path).unwrap(), source.clone());
     }
 
     let mut coverage = Coverage {

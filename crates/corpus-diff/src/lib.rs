@@ -45,7 +45,7 @@ pub mod utf16;
 // crate's `resolve_real_project_diff`, which compares the same two sides on one
 // project; re-exported so this crate's own callers keep naming them here.
 pub use borzoi_sema::test_support::{DeclaringEntity, StructuralName};
-use lsp_types::Url;
+use lsp_types::Uri;
 use rowan::TextRange;
 use serde::{Deserialize, Serialize};
 
@@ -277,7 +277,7 @@ pub fn load_lsp_project_with_options(
 ) -> Result<LoadedProject, LoadSkip> {
     let mut workspace = workspace_with(options.build_properties.clone());
     let mut semantic = SemanticState::new();
-    let docs: HashMap<Url, String> = HashMap::new();
+    let docs: HashMap<Uri, String> = HashMap::new();
 
     let parsed = workspace
         .project(project)

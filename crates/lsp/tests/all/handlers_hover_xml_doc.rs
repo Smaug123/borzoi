@@ -10,6 +10,7 @@
 //! lookup found nothing" rather than "the symbol did not resolve": every
 //! negative case first checks the signature hover is still there.
 
+use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,7 +20,7 @@ use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::server::State;
 use borzoi::workspace::Workspace;
 use lsp_types::{
-    HoverContents, HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams, Url,
+    HoverContents, HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams, Uri,
     WorkDoneProgressParams,
 };
 use tempfile::TempDir;
@@ -96,7 +97,7 @@ fn stage(dll: &Shipped, into: &Path, xml: &Xml) {
 /// two `.xml` slots (whether or not a file was put there).
 struct Project {
     state: State,
-    uri: Url,
+    uri: Uri,
     runtime_xml: PathBuf,
     _tmp: TempDir,
 }
@@ -178,7 +179,7 @@ fn project_with(src: &str, runtime_xml: Xml, packages: Vec<Package>) -> Project 
         dotnet_root: Some(dotnet_root),
         ..SdkDiscoveryEnv::default()
     });
-    let uri = Url::from_file_path(&src_path).unwrap();
+    let uri = Uri::from_file_path(&src_path).unwrap();
     state.docs.insert(uri.clone(), src.to_string());
     Project {
         state,

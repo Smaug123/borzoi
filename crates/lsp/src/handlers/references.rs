@@ -22,6 +22,7 @@
 //! an error), so a stale "Find Usages" panel clears cleanly rather than
 //! sticking with the previous answer.
 
+use crate::uri::UriExt as _;
 use std::collections::{HashMap, HashSet};
 
 use borzoi_cst::syntax::{AppExpr, AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
@@ -29,7 +30,7 @@ use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, ResolvedProject, SyntaxRecovery,
     resolve_file,
 };
-use lsp_types::{Location, ReferenceParams, Url};
+use lsp_types::{Location, ReferenceParams, Uri};
 use rowan::TextRange;
 
 use crate::cst_panic_safe::parse_with_symbols;
@@ -129,7 +130,7 @@ fn resolution_kind(resolution: Resolution) -> &'static str {
 /// know the project layout; we just have nothing meaningful to report).
 fn project_references(
     state: &mut State,
-    uri: &Url,
+    uri: &Uri,
     byte: usize,
     include_declaration: bool,
 ) -> Option<ReferencesAnswer> {
@@ -217,11 +218,11 @@ fn declaration_anchor(
 fn collect_locations(
     parses: &ProjectParses,
     resolved: &ResolvedProject,
-    request_uri: &Url,
+    request_uri: &Uri,
     target_res: Resolution,
     decl_anchor: Option<(usize, TextRange)>,
     include_declaration: bool,
-    docs: &HashMap<Url, String>,
+    docs: &HashMap<Uri, String>,
 ) -> ReferenceScan {
     let file_range = match target_res {
         Resolution::Local(_) => {
@@ -312,7 +313,7 @@ fn collect_locations(
 
 /// Whether a `parses.paths` entry is the same file as `request_uri` under
 /// the platform's path-equality rule.
-fn same_path(path: &std::path::Path, request_uri: &Url) -> bool {
+fn same_path(path: &std::path::Path, request_uri: &Uri) -> bool {
     let Ok(req_path) = request_uri.to_file_path() else {
         return false;
     };
@@ -349,7 +350,7 @@ fn matching_in_file(file: &ResolvedFile, target: Resolution) -> Vec<(TextRange, 
 /// the project path succeeded.
 fn single_file_references(
     state: &mut State,
-    uri: &Url,
+    uri: &Uri,
     text: &str,
     byte: usize,
     include_declaration: bool,
@@ -578,7 +579,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn params(uri: Url, include_declaration: bool) -> ReferenceParams {
+    fn params(uri: Uri, include_declaration: bool) -> ReferenceParams {
         ReferenceParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri },
@@ -597,7 +598,7 @@ mod tests {
 
     #[test]
     fn telemetry_describes_the_single_file_scan_and_answer() {
-        let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+        let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
         let mut state = State::default();
         state
             .docs
@@ -633,7 +634,7 @@ mod tests {
 
     #[test]
     fn telemetry_uses_signed_zero_counts_for_a_missing_buffer() {
-        let uri = Url::parse("inmemory:///Missing.fs").unwrap();
+        let uri = Uri::parse("inmemory:///Missing.fs").unwrap();
         let mut state = State::default();
 
         let (locations, trace) = capture(|| handle(&mut state, params(uri, true)));
@@ -670,8 +671,8 @@ mod tests {
         let b_text = "module Other\nlet x = Shared.foo\nlet y = Shared.foo\n";
         fs::write(&a, a_text).unwrap();
         fs::write(&b, b_text).unwrap();
-        let a_uri = Url::from_file_path(a).unwrap();
-        let b_uri = Url::from_file_path(b).unwrap();
+        let a_uri = Uri::from_file_path(a).unwrap();
+        let b_uri = Uri::from_file_path(b).unwrap();
         let mut state = State::default();
         state.docs.insert(a_uri.clone(), a_text.to_string());
         state.docs.insert(b_uri, b_text.to_string());

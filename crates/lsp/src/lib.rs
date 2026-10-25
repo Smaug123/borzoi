@@ -21,6 +21,7 @@ pub mod sidecar_manager;
 pub mod spawn;
 pub mod telemetry;
 mod tfm_policy;
+pub mod uri;
 pub mod workspace;
 pub mod xml_doc;
 

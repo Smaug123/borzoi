@@ -12,6 +12,7 @@
 //! file pins the *wire contract*: every advertised capability answers,
 //! every nothing-to-show response is `Ok(null)` not an error envelope.
 
+use borzoi::uri::UriExt as _;
 use std::thread;
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ use lsp_types::{
     ReferenceContext, ReferenceParams, RegistrationParams, SemanticTokenType, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SymbolKind,
     TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
+    TextDocumentItem, TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
     WorkDoneProgressParams, WorkspaceClientCapabilities, WorkspaceDiagnosticParams,
     WorkspaceDiagnosticReportResult, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
@@ -104,13 +105,13 @@ impl Server {
     /// `State` isn't `Send` (rowan's red layer is per-thread), so the test
     /// hands the docs across by value and builds state *inside* the
     /// spawned closure.
-    fn start(initial_docs: Vec<(Url, String)>) -> Self {
+    fn start(initial_docs: Vec<(Uri, String)>) -> Self {
         Self::start_with_caps(initial_docs, hierarchical_caps())
     }
 
     /// Like [`Self::start`] but with explicit client capabilities — used to
     /// exercise capability-gated behaviour (e.g. file-watcher registration).
-    fn start_with_caps(initial_docs: Vec<(Url, String)>, caps: ClientCapabilities) -> Self {
+    fn start_with_caps(initial_docs: Vec<(Uri, String)>, caps: ClientCapabilities) -> Self {
         let (server, client) = Connection::memory();
         let thread = thread::spawn(move || {
             let mut state = State::default();
@@ -156,15 +157,11 @@ impl Server {
         match resp {
             Message::Response(Response {
                 id: rid,
-                result,
-                error,
+                response_result,
             }) => {
                 assert_eq!(rid, id, "response id mismatched the request");
-                assert!(
-                    error.is_none(),
-                    "expected Ok response, got error: {error:?}"
-                );
-                let value = result.expect("response must carry a result");
+                let value = response_result
+                    .unwrap_or_else(|error| panic!("expected Ok response, got error: {error:?}"));
                 serde_json::from_value(value).expect("deserialise result")
             }
             other => panic!("expected Response, got {other:?}"),
@@ -245,14 +242,14 @@ impl Drop for Server {
     }
 }
 
-fn doc_position_params(uri: &Url, line: u32, character: u32) -> TextDocumentPositionParams {
+fn doc_position_params(uri: &Uri, line: u32, character: u32) -> TextDocumentPositionParams {
     TextDocumentPositionParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         position: Position { line, character },
     }
 }
 
-fn diagnostic_params(uri: &Url) -> DocumentDiagnosticParams {
+fn diagnostic_params(uri: &Uri) -> DocumentDiagnosticParams {
     DocumentDiagnosticParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         identifier: None,
@@ -271,7 +268,7 @@ fn workspace_diagnostic_params() -> WorkspaceDiagnosticParams {
     }
 }
 
-fn did_open(uri: &Url, text: &str) -> DidOpenTextDocumentParams {
+fn did_open(uri: &Uri, text: &str) -> DidOpenTextDocumentParams {
     DidOpenTextDocumentParams {
         text_document: TextDocumentItem {
             uri: uri.clone(),
@@ -282,7 +279,7 @@ fn did_open(uri: &Url, text: &str) -> DidOpenTextDocumentParams {
     }
 }
 
-fn did_change(uri: &Url, version: i32, text: &str) -> DidChangeTextDocumentParams {
+fn did_change(uri: &Uri, version: i32, text: &str) -> DidChangeTextDocumentParams {
     DidChangeTextDocumentParams {
         text_document: VersionedTextDocumentIdentifier {
             uri: uri.clone(),
@@ -360,7 +357,7 @@ fn server_advertises_every_sema_backed_provider() {
 /// the semantic layer reaches the wire, not just the `handle` unit tests.
 #[test]
 fn semantic_tokens_full_classifies_identifiers_over_the_wire() {
-    let uri = Url::parse("inmemory:///Tokens.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Tokens.fs").unwrap();
     let mut server = Server::start(vec![(uri.clone(), "let f a = a\n".to_string())]);
     let result: Option<SemanticTokensResult> =
         server.request::<SemanticTokensFullRequest>(SemanticTokensParams {
@@ -452,7 +449,7 @@ fn registers_file_watchers_when_client_supports_it() {
 /// response to its own request, not an unsolicited `client/registerCapability`.
 #[test]
 fn no_file_watcher_registration_without_capability() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let mut server = Server::start(vec![(uri.clone(), "let x = 1\n".to_string())]);
     // A normal request round-trips cleanly; if a stray registration had been
     // sent first, `request` would observe a `Request` where it expects a
@@ -521,8 +518,7 @@ fn late_registration_response_does_not_break_shutdown() {
         .sender
         .send(Message::Response(Response {
             id: reg_id,
-            result: Some(serde_json::Value::Null),
-            error: None,
+            response_result: Ok(serde_json::Value::Null),
         }))
         .unwrap();
     // 4. ...then exit.
@@ -564,7 +560,7 @@ fn requests_after_shutdown_are_rejected() {
         .recv_timeout(Duration::from_secs(5))
         .expect("shutdown response")
     {
-        Message::Response(r) => assert!(r.error.is_none(), "{r:?}"),
+        Message::Response(r) => assert!(r.response_result.is_ok(), "{r:?}"),
         other => panic!("expected shutdown response, got {other:?}"),
     }
 
@@ -586,7 +582,7 @@ fn requests_after_shutdown_are_rejected() {
         Message::Response(r) => {
             assert_eq!(r.id, RequestId::from(2));
             assert!(
-                r.error.is_some(),
+                r.response_result.is_err(),
                 "a request after shutdown must be rejected: {r:?}"
             );
         }
@@ -607,7 +603,7 @@ fn requests_after_shutdown_are_rejected() {
 
 #[test]
 fn document_symbol_round_trip() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let src = "let foo = 1\nlet bar x = x\n";
     let mut server = Server::start(vec![(uri.clone(), src.to_string())]);
 
@@ -630,7 +626,7 @@ fn document_symbol_round_trip() {
 
 #[test]
 fn definition_round_trip() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let src = "let x = 1\nlet y = x\n";
     let mut server = Server::start(vec![(uri.clone(), src.to_string())]);
 
@@ -651,7 +647,7 @@ fn definition_round_trip() {
 
 #[test]
 fn references_round_trip() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let src = "let x = 1\nlet y = x + x\n";
     let mut server = Server::start(vec![(uri.clone(), src.to_string())]);
 
@@ -671,7 +667,7 @@ fn references_round_trip() {
 
 #[test]
 fn workspace_symbol_round_trip() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let src = "let foo = 1\nlet bar x = x\n";
     let mut server = Server::start(vec![(uri.clone(), src.to_string())]);
 
@@ -695,7 +691,7 @@ fn workspace_symbol_round_trip() {
 
 #[test]
 fn document_diagnostic_round_trip() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     // An orphan `#endif` is a structural directive error, reported regardless
     // of the active symbol set (so no `.fsproj` is needed).
     let mut server = Server::start(vec![(uri.clone(), "#endif\n".to_string())]);
@@ -750,7 +746,7 @@ fn document_diagnostic_round_trip() {
 /// the request helper would observe and reject any earlier unsolicited publish.
 #[test]
 fn pull_client_never_receives_publish_diagnostics() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let mut server = Server::start_with_caps(vec![], pull_diagnostic_caps());
 
     server.notify::<DidOpenTextDocument>(did_open(&uri, "#endif\n"));
@@ -774,7 +770,7 @@ fn pull_client_never_receives_publish_diagnostics() {
 
     server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
         changes: vec![FileEvent {
-            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
+            uri: Uri::parse("file:///workspace/App.fsproj").unwrap(),
             typ: FileChangeType::CHANGED,
         }],
     });
@@ -806,7 +802,7 @@ fn watched_diagnostic_inputs_request_diagnostic_refresh() {
 
         server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
             changes: vec![FileEvent {
-                uri: Url::parse(changed_uri).unwrap(),
+                uri: Uri::parse(changed_uri).unwrap(),
                 typ: FileChangeType::CHANGED,
             }],
         });
@@ -827,8 +823,7 @@ fn watched_diagnostic_inputs_request_diagnostic_refresh() {
             .sender
             .send(Message::Response(Response {
                 id: request.id,
-                result: Some(serde_json::Value::Null),
-                error: None,
+                response_result: Ok(serde_json::Value::Null),
             }))
             .unwrap();
     }
@@ -842,7 +837,7 @@ fn diagnostic_refresh_is_capability_gated() {
     let mut server = Server::start_with_caps(vec![], pull_diagnostic_caps());
     server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
         changes: vec![FileEvent {
-            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
+            uri: Uri::parse("file:///workspace/App.fsproj").unwrap(),
             typ: FileChangeType::CHANGED,
         }],
     });
@@ -855,7 +850,7 @@ fn diagnostic_refresh_is_capability_gated() {
 /// close. This is the compatibility half of the one-delivery-mode invariant.
 #[test]
 fn push_client_retains_publish_diagnostics_lifecycle() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let server = Server::start_with_caps(vec![], hierarchical_caps());
 
     server.notify::<DidOpenTextDocument>(did_open(&uri, "#endif\n"));
@@ -870,7 +865,7 @@ fn push_client_retains_publish_diagnostics_lifecycle() {
 
     server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
         changes: vec![FileEvent {
-            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
+            uri: Uri::parse("file:///workspace/App.fsproj").unwrap(),
             typ: FileChangeType::CHANGED,
         }],
     });
@@ -903,7 +898,7 @@ fn workspace_diagnostic_round_trip() {
 
 #[test]
 fn hover_round_trip() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let src = "let foo = 1\n";
     let mut server = Server::start(vec![(uri.clone(), src.to_string())]);
 
@@ -932,7 +927,7 @@ fn hover_round_trip() {
 /// (it doesn't claim what `nowhere` is), which is honest, not a guess.
 #[test]
 fn unresolvable_cursor_yields_null_for_navigating_handlers() {
-    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let uri = Uri::parse("inmemory:///A.fs").unwrap();
     let src = "let _ = nowhere\n";
     let mut server = Server::start(vec![(uri.clone(), src.to_string())]);
 

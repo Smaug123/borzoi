@@ -30,6 +30,7 @@
 //! resolution, no owning project, no resolvable URL — all map to `None`,
 //! never an LSP error envelope.
 
+use crate::uri::UriExt as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -41,7 +42,7 @@ use borzoi_sema::{
     AssemblyEnv, EntityHandle, MemberIndex, ProjectItems, Resolution, SyntaxRecovery, infer_file,
     resolve_file,
 };
-use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, Url};
+use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, Uri};
 
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::goto_source::{
@@ -201,7 +202,7 @@ fn locate_source(source: DefinitionSource) -> Option<Located> {
 /// failed to evaluate, the URI isn't a Compile item, or the cursor has no
 /// resolvable resolution. A referenced-assembly source not yet cached resolves
 /// to [`Located::Deferred`] for the shell to fetch.
-fn project_definition(state: &mut State, uri: &Url, byte: usize) -> Option<Located> {
+fn project_definition(state: &mut State, uri: &Uri, byte: usize) -> Option<Located> {
     let path = uri.to_file_path().ok()?;
     let project = state.workspace.owning_project(&path)?;
     let State {
@@ -592,9 +593,9 @@ impl SourceFetcher for MinreqFetcher {
 fn location_for_target(target: SourceTarget) -> Option<Location> {
     let (uri, line, column) = match target {
         SourceTarget::File { path, line, column } => {
-            (Url::from_file_path(&path).ok()?, line, column)
+            (Uri::from_file_path(&path).ok()?, line, column)
         }
-        SourceTarget::Url { url, line, column } => (Url::parse(&url).ok()?, line, column),
+        SourceTarget::Url { url, line, column } => (Uri::parse(&url).ok()?, line, column),
     };
     let pos = Position {
         line: line.saturating_sub(1),
@@ -631,8 +632,8 @@ fn location_for_resolution(
     file_idx: usize,
     resolved: &borzoi_sema::ResolvedProject,
     res: Resolution,
-    request_uri: &Url,
-    docs: &HashMap<Url, String>,
+    request_uri: &Uri,
+    docs: &HashMap<Uri, String>,
 ) -> Option<Location> {
     match res {
         Resolution::Local(id) => {
@@ -676,7 +677,7 @@ fn location_for_resolution(
 /// `AssemblyEnv`.
 fn single_file_definition(
     state: &mut State,
-    uri: &Url,
+    uri: &Uri,
     text: &str,
     byte: usize,
 ) -> Option<Location> {
@@ -800,7 +801,7 @@ mod tests {
             column: 7,
         };
         let loc = location_for_target(target).expect("file target → location");
-        assert_eq!(loc.uri.scheme(), "file");
+        assert_eq!(loc.uri.scheme().map(|s| s.as_str()), Some("file"));
         assert_eq!(loc.uri.to_file_path().unwrap(), path);
         // 1-based (42, 7) → 0-based (41, 6); zero-width range.
         let expected = Position {

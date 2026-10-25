@@ -12,12 +12,13 @@
 use crate::common::{runtime_project_state, runtime_project_state_files};
 use borzoi::handlers::completion;
 use borzoi::server::State;
+use borzoi::uri::UriExt as _;
 use lsp_types::{
     CompletionParams, CompletionResponse, PartialResultParams, Position, TextDocumentIdentifier,
-    TextDocumentPositionParams, Url, WorkDoneProgressParams,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 
-fn params(uri: &Url, line: u32, character: u32) -> CompletionParams {
+fn params(uri: &Uri, line: u32, character: u32) -> CompletionParams {
     CompletionParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -31,7 +32,7 @@ fn params(uri: &Url, line: u32, character: u32) -> CompletionParams {
 
 /// The completion labels at `(line, character)`, or `None` when the handler
 /// declined (not a completable position, or nothing to offer).
-fn labels(state: &mut State, uri: &Url, line: u32, character: u32) -> Option<Vec<String>> {
+fn labels(state: &mut State, uri: &Uri, line: u32, character: u32) -> Option<Vec<String>> {
     match completion::handle(state, params(uri, line, character)) {
         Some(CompletionResponse::Array(items)) => {
             Some(items.into_iter().map(|i| i.label).collect())

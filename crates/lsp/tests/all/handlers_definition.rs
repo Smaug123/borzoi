@@ -5,6 +5,7 @@
 //! handler's algorithm: cursor → `Resolution` → `Location`, with the
 //! single-file fallback for orphan / partial-project buffers.
 
+use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::Path;
 
@@ -14,7 +15,7 @@ use borzoi::handlers::definition::DefinitionOutcome;
 use borzoi::server::State;
 use lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Location, PartialResultParams, Position, Range,
-    TextDocumentIdentifier, TextDocumentPositionParams, Url, WorkDoneProgressParams,
+    TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 use tempfile::TempDir;
 
@@ -25,7 +26,7 @@ fn write(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-fn params(uri: &Url, line: u32, character: u32) -> GotoDefinitionParams {
+fn params(uri: &Uri, line: u32, character: u32) -> GotoDefinitionParams {
     GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -36,7 +37,7 @@ fn params(uri: &Url, line: u32, character: u32) -> GotoDefinitionParams {
     }
 }
 
-fn run(state: &mut State, uri: &Url, line: u32, character: u32) -> Option<Location> {
+fn run(state: &mut State, uri: &Uri, line: u32, character: u32) -> Option<Location> {
     // These tests never hit a referenced-assembly SourceLink source, so the
     // handler always resolves synchronously (`Ready`); a `Deferred` here is a bug.
     match definition::handle(state, params(uri, line, character)) {
@@ -73,9 +74,9 @@ fn cursor_inside(text: &str, needle: &str) -> (u32, u32) {
 
 /// Construct an in-memory state with an open buffer (no project on disk).
 /// Returns the URI of the opened buffer.
-fn orphan_state(text: &str) -> (State, Url) {
+fn orphan_state(text: &str) -> (State, Uri) {
     let mut state = State::default();
-    let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
     state.docs.insert(uri.clone(), text.to_string());
     (state, uri)
 }
@@ -108,8 +109,8 @@ fn project_definition_folds_only_the_prefix_up_to_the_cursor_file() {
     write(&b, b_src);
     write(&c, "module C\nlet baz = B.bar\n");
 
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(b_uri.clone(), b_src.to_string());
 
@@ -325,7 +326,7 @@ fn missing_buffer_returns_none() {
     // The handler defends against a stray request for a URI we have no
     // buffer for — `Ok(None)`, not an error envelope.
     let mut state = State::default();
-    let uri = Url::parse("inmemory:///Missing.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Missing.fs").unwrap();
     assert!(run(&mut state, &uri, 0, 0).is_none());
 }
 
@@ -350,8 +351,8 @@ fn cross_file_qualified_reference_jumps_to_other_file() {
     let b_src = "module Other\nlet bar = Shared.foo\n";
     write(&b, b_src);
 
-    let b_uri = Url::from_file_path(&b).unwrap();
-    let a_uri = Url::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
 
     let mut state = State::default();
     state.docs.insert(b_uri.clone(), b_src.to_string());
@@ -401,7 +402,7 @@ fn assembly_path_returns_none_pinned_for_metadata_uri_followup() {
     let src = "let _ = System.Console.WriteLine \"hi\"\n";
     write(&f, src);
 
-    let uri = Url::from_file_path(&f).unwrap();
+    let uri = Uri::from_file_path(&f).unwrap();
     let mut state = State::default();
     state.docs.insert(uri.clone(), src.to_string());
 
@@ -428,7 +429,7 @@ fn orphan_file_under_partial_project_falls_back_to_single_file() {
     let src = "let x = 1\nlet y = x\n";
     write(&f, src);
 
-    let uri = Url::from_file_path(&f).unwrap();
+    let uri = Uri::from_file_path(&f).unwrap();
     let mut state = State::default();
     state.docs.insert(uri.clone(), src.to_string());
 
@@ -464,7 +465,7 @@ fn a_cursor_on_a_qualifier_is_not_sent_to_the_leaf() {
     let b_src = "module Other\nlet bar = Shared.foo\n";
     write(&b, b_src);
 
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(b_uri.clone(), b_src.to_string());
 
@@ -486,7 +487,7 @@ fn a_cursor_on_a_qualifier_is_not_sent_to_the_leaf() {
     // The leaf follows the whole-path `Item` to file 0's `foo` binder.
     let (line, col) = cursor_inside(b_src, "foo");
     let loc = run(&mut state, &b_uri, line, col).expect("a definition for the leaf `foo`");
-    assert_eq!(loc.uri, Url::from_file_path(&a).unwrap());
+    assert_eq!(loc.uri, Uri::from_file_path(&a).unwrap());
     assert_eq!(loc.range.start.line, 1);
 }
 
@@ -512,7 +513,7 @@ fn local_definition_preserves_request_uri_casing() {
 
     // Open the file under a different casing than the project lists it.
     let opened = tmp.path().join("lib.fs");
-    let request_uri = Url::from_file_path(&opened).unwrap();
+    let request_uri = Uri::from_file_path(&opened).unwrap();
     let mut state = State::default();
     state.docs.insert(request_uri.clone(), src.to_string());
 
@@ -552,8 +553,8 @@ fn cross_file_definition_prefers_open_buffer_uri() {
     // The user has *both* files open: B with its normal casing, A under a
     // different casing than the project lists.
     let a_opened = tmp.path().join("a.fs");
-    let a_uri = Url::from_file_path(&a_opened).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a_opened).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state
         .docs
@@ -639,7 +640,7 @@ fn invalidate_owning_project_clears_every_project_containing_the_file() {
 
     // A `.fs` text-sync against the shared file: per codex finding 2, the
     // invalidation walks the cache and drops every project listing the file.
-    let shared_uri = Url::from_file_path(&shared).unwrap();
+    let shared_uri = Uri::from_file_path(&shared).unwrap();
     state.invalidate_owning_project(&shared_uri);
 
     // Surgical probe: simulate a new buffer overlay and ensure both
@@ -797,7 +798,7 @@ fn goto_def_on_sig_exposed_value_lands_in_the_fsi() {
     let b = tmp.path().join("B.fs");
     write(&b, b_src);
 
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(b_uri.clone(), b_src.to_string());
 
@@ -805,7 +806,7 @@ fn goto_def_on_sig_exposed_value_lands_in_the_fsi() {
     let loc = run(&mut state, &b_uri, l, c).expect("definition for the sig-exposed value");
     assert_eq!(
         loc.uri,
-        Url::from_file_path(tmp.path().join("A.fsi")).unwrap(),
+        Uri::from_file_path(tmp.path().join("A.fsi")).unwrap(),
         "the declaration is the signature (World A)"
     );
     // `val publicFoo : int` — the ident on line 1, columns 4..13.

@@ -25,6 +25,7 @@
 //! where inference has one (3.2b-1: literal-bound values and the chains they
 //! feed). Remaining richer hover is tracked in `docs/hover-signature-plan.md`.
 
+use crate::uri::UriExt as _;
 use std::sync::Arc;
 
 use borzoi_assembly::{
@@ -106,7 +107,7 @@ enum ProjectClassify {
 /// classification for an orphan / unevaluated-project buffer.
 fn definition_unavailable_hover(
     state: &mut State,
-    uri: &lsp_types::Url,
+    uri: &lsp_types::Uri,
     text: &str,
     byte: usize,
 ) -> Option<Hover> {
@@ -126,7 +127,7 @@ fn definition_unavailable_hover(
 /// evaluated project, so the caller falls back to single-file mode.
 fn project_unavailable(
     state: &mut State,
-    uri: &lsp_types::Url,
+    uri: &lsp_types::Uri,
     text: &str,
     byte: usize,
 ) -> ProjectClassify {
@@ -197,7 +198,7 @@ fn project_unavailable(
 /// are out of reach.
 fn single_file_unavailable(
     state: &mut State,
-    uri: &lsp_types::Url,
+    uri: &lsp_types::Uri,
     text: &str,
     byte: usize,
     analysis: Analysis,
@@ -237,7 +238,7 @@ fn unavailable_hover(
 /// so we can resolve cross-file `Item`s and assembly entities too.
 fn project_hover(
     state: &mut State,
-    uri: &lsp_types::Url,
+    uri: &lsp_types::Uri,
     text: &str,
     byte: usize,
 ) -> Option<Hover> {
@@ -331,7 +332,7 @@ fn project_hover(
 /// bindings yield a useful hover.
 fn single_file_hover(
     state: &mut State,
-    uri: &lsp_types::Url,
+    uri: &lsp_types::Uri,
     text: &str,
     byte: usize,
 ) -> Option<Hover> {

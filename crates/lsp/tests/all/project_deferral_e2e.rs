@@ -11,6 +11,7 @@
 //! loop, with pull-diagnostic capabilities so the only server-initiated
 //! notification in flight is the one under test.
 
+use borzoi::uri::UriExt as _;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -29,7 +30,7 @@ use lsp_types::{
     DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolParams, FileChangeType, FileEvent, GotoDefinitionParams, PartialResultParams,
     Position, ShowMessageParams, TextDocumentClientCapabilities, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Url,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
     VersionedTextDocumentIdentifier, WorkDoneProgressParams,
 };
 use tempfile::TempDir;
@@ -80,7 +81,7 @@ impl Server {
             .expect("send notification");
     }
 
-    fn open(&self, uri: &Url, text: &str, language_id: &str) {
+    fn open(&self, uri: &Uri, text: &str, language_id: &str) {
         self.notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: uri.clone(),
@@ -91,7 +92,7 @@ impl Server {
         });
     }
 
-    fn change(&self, uri: &Url, text: &str) {
+    fn change(&self, uri: &Uri, text: &str) {
         self.notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
                 uri: uri.clone(),
@@ -105,7 +106,7 @@ impl Server {
         });
     }
 
-    fn close(&self, uri: &Url) {
+    fn close(&self, uri: &Uri) {
         self.notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
         });
@@ -119,7 +120,7 @@ impl Server {
     /// response. That makes "no message was sent" a positive observation rather
     /// than a timeout — a sleep-and-hope would pass just as readily on a server
     /// that had simply not got round to sending it yet.
-    fn barrier(&mut self, uri: &Url) -> Vec<Notification> {
+    fn barrier(&mut self, uri: &Uri) -> Vec<Notification> {
         let id = RequestId::from(self.next_id);
         self.next_id += 1;
         self.client
@@ -154,7 +155,7 @@ impl Server {
     /// project (`textDocument/definition` resolves through the Compile order),
     /// so a refusal the fold alone can discover is observed before the response
     /// comes back. `documentSymbol` is single-file and would not provoke one.
-    fn fold_barrier(&mut self, uri: &Url) -> Vec<Notification> {
+    fn fold_barrier(&mut self, uri: &Uri) -> Vec<Notification> {
         let id = RequestId::from(self.next_id);
         self.next_id += 1;
         self.client
@@ -204,13 +205,13 @@ impl Server {
     }
 
     /// The deferral messages emitted after a request that folds the project.
-    fn deferral_messages_after_fold(&mut self, uri: &Url) -> Vec<String> {
+    fn deferral_messages_after_fold(&mut self, uri: &Uri) -> Vec<String> {
         let seen = self.fold_barrier(uri);
         Self::show_messages(seen)
     }
 
     /// The deferral messages emitted since the last barrier.
-    fn deferral_messages(&mut self, uri: &Url) -> Vec<String> {
+    fn deferral_messages(&mut self, uri: &Uri) -> Vec<String> {
         self.barrier(uri)
             .into_iter()
             .filter(|not| not.method == ShowMessage::METHOD)
@@ -287,18 +288,18 @@ fn real_path(tmp: &TempDir) -> PathBuf {
 }
 
 /// Lay out a project directory. Returns the temp dir plus the `.fsproj` URI.
-fn project_dir(fsproj: &str) -> (TempDir, Url) {
+fn project_dir(fsproj: &str) -> (TempDir, Uri) {
     let tmp = TempDir::new().unwrap();
     let proj = tmp.path().join("Demo.fsproj");
     std::fs::write(&proj, fsproj).unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
     std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
-    let uri = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
+    let uri = Uri::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     (tmp, uri)
 }
 
-fn source_uri(tmp: &TempDir, name: &str) -> Url {
-    Url::from_file_path(real_path(tmp).join(name)).unwrap()
+fn source_uri(tmp: &TempDir, name: &str) -> Uri {
+    Uri::from_file_path(real_path(tmp).join(name)).unwrap()
 }
 
 #[test]
@@ -671,7 +672,7 @@ fn a_recovered_fold_reports_again_when_it_breaks_the_same_way() {
     .unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
     std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
-    let proj = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
+    let proj = Uri::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     let a = source_uri(&tmp, "A.fs");
     let touch_project = |server: &Server| {
         server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
@@ -725,7 +726,7 @@ fn an_open_fsproj_does_not_suppress_its_project_s_fold_refusal() {
     let fsproj = r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="Gone.fs" /></ItemGroup></Project>"#;
     std::fs::write(tmp.path().join("Demo.fsproj"), fsproj).unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
-    let proj = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
+    let proj = Uri::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     let a = source_uri(&tmp, "A.fs");
 
     let mut server = Server::start();
@@ -759,7 +760,7 @@ fn a_fold_refusal_does_not_outlive_the_project_that_caused_it() {
     std::fs::write(&proj_path, sound).unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
     std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
-    let proj = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
+    let proj = Uri::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     let a = source_uri(&tmp, "A.fs");
     let touch_project = |server: &Server| {
         server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
@@ -855,7 +856,7 @@ fn an_evaluation_problem_reintroduced_without_a_fold_is_reported_again() {
     let proj_path = real_path(&tmp).join("Demo.fsproj");
     std::fs::write(&proj_path, UNCERTAIN_PROJECT).unwrap();
     std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
-    let proj = Url::from_file_path(&proj_path).unwrap();
+    let proj = Uri::from_file_path(&proj_path).unwrap();
     let a = source_uri(&tmp, "A.fs");
     let touch_project = |server: &Server| {
         server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
@@ -903,7 +904,7 @@ fn a_carried_fold_verdict_is_never_restated() {
     )
     .unwrap();
     std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
-    let proj = Url::from_file_path(&proj_path).unwrap();
+    let proj = Uri::from_file_path(&proj_path).unwrap();
     let a = source_uri(&tmp, "A.fs");
 
     let mut server = Server::start();
@@ -963,7 +964,7 @@ fn a_record_only_change_does_not_re_toast() {
 </Project>"#;
     std::fs::write(&proj_path, broken).unwrap();
     std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
-    let proj = Url::from_file_path(&proj_path).unwrap();
+    let proj = Uri::from_file_path(&proj_path).unwrap();
     let a = source_uri(&tmp, "A.fs");
 
     let mut server = Server::start();
@@ -1049,8 +1050,8 @@ fn aliased_spellings_of_one_project_are_one_project() {
     std::os::unix::fs::symlink(&real, &link).unwrap();
 
     let mut server = Server::start();
-    let direct = Url::from_file_path(real.join("A.fs")).unwrap();
-    let aliased = Url::from_file_path(link.join("B.fs")).unwrap();
+    let direct = Uri::from_file_path(real.join("A.fs")).unwrap();
+    let aliased = Uri::from_file_path(link.join("B.fs")).unwrap();
     server.open(&direct, "module A\nlet a = 1\n", "fsharp");
     assert_eq!(server.deferral_messages(&direct).len(), 1);
 
@@ -1084,7 +1085,7 @@ fn a_recovered_capability_is_forgotten_while_another_stays_unknown() {
     let tmp = TempDir::new().unwrap();
     let proj_path = real_path(&tmp).join("Demo.fsproj");
     std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
-    let proj = Url::from_file_path(&proj_path).unwrap();
+    let proj = Uri::from_file_path(&proj_path).unwrap();
     let a = source_uri(&tmp, "A.fs");
     let write_and_notify = |server: &Server, body: &str| {
         std::fs::write(&proj_path, body).unwrap();

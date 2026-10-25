@@ -40,12 +40,13 @@
 //! not. One cosmetic consequence is that the `if` in a `#if` directive line
 //! lexes as the `if` keyword and is coloured as such; harmless for eyeballing.
 
+use crate::uri::UriExt as _;
 use borzoi_cst::lexer::{Token, lex};
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, SyntaxRecovery, resolve_file};
 use lsp_types::{
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams,
-    SemanticTokensResult, Url,
+    SemanticTokensResult, Uri,
 };
 use rowan::TextRange;
 
@@ -417,7 +418,7 @@ fn sema_tokens(
 /// Classify a file resolved as part of its evaluated project — the authoritative
 /// path. `None` when the file isn't locatable in an evaluated project (an orphan
 /// buffer, or a project we couldn't evaluate), so [`handle`] falls back.
-fn project_tokens(state: &mut State, uri: &Url) -> Option<Vec<SemanticToken>> {
+fn project_tokens(state: &mut State, uri: &Uri) -> Option<Vec<SemanticToken>> {
     let path = uri.to_file_path().ok()?;
     let project = state.workspace.owning_project(&path)?;
     let State {
@@ -458,7 +459,7 @@ fn project_tokens(state: &mut State, uri: &Url) -> Option<Vec<SemanticToken>> {
 /// locals, parameters, and same-file bindings still get classified. Only
 /// implementation files (`.fs` / `.fsx`) — a signature file is not an
 /// [`ImplFile`] and falls through to the lexical layer.
-fn single_file_tokens(state: &mut State, uri: &Url) -> Option<Vec<SemanticToken>> {
+fn single_file_tokens(state: &mut State, uri: &Uri) -> Option<Vec<SemanticToken>> {
     if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsx")) {
         return None;
     }
@@ -515,7 +516,7 @@ pub fn handle(state: &mut State, params: SemanticTokensParams) -> Option<Semanti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_types::{Position, TextDocumentIdentifier, Url};
+    use lsp_types::{Position, TextDocumentIdentifier, Uri};
     use proptest::prelude::*;
 
     /// Decode the LSP wire format back to absolute `(line, start_char, length,
@@ -610,7 +611,7 @@ mod tests {
         }
     }
 
-    fn params_for(uri: Url) -> SemanticTokensParams {
+    fn params_for(uri: Uri) -> SemanticTokensParams {
         SemanticTokensParams {
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -621,7 +622,7 @@ mod tests {
     #[test]
     fn handle_returns_tokens_for_fs_buffer() {
         let mut state = State::new();
-        let uri = Url::parse("file:///tmp/A.fs").unwrap();
+        let uri = Uri::parse("file:///tmp/A.fs").unwrap();
         state.docs.insert(uri.clone(), "let x = 1\n".to_string());
         match handle(&mut state, params_for(uri)).expect("Some for an open .fs buffer") {
             SemanticTokensResult::Tokens(t) => assert!(!t.data.is_empty()),
@@ -632,13 +633,13 @@ mod tests {
     #[test]
     fn handle_skips_non_fsharp_and_missing_buffers() {
         let mut state = State::new();
-        let txt = Url::parse("file:///tmp/readme.txt").unwrap();
+        let txt = Uri::parse("file:///tmp/readme.txt").unwrap();
         state.docs.insert(txt.clone(), "let x = 1".to_string());
         assert!(
             handle(&mut state, params_for(txt)).is_none(),
             "a non-F# buffer must not be highlighted"
         );
-        let missing = Url::parse("file:///tmp/missing.fs").unwrap();
+        let missing = Uri::parse("file:///tmp/missing.fs").unwrap();
         assert!(
             handle(&mut state, params_for(missing)).is_none(),
             "an unopened buffer has no text to highlight"
@@ -683,7 +684,7 @@ mod tests {
     #[test]
     fn handle_classifies_identifiers_single_file() {
         let mut state = State::new();
-        let uri = Url::parse("file:///tmp/Classified.fs").unwrap();
+        let uri = Uri::parse("file:///tmp/Classified.fs").unwrap();
         let text = "let f a = a\n";
         state.docs.insert(uri.clone(), text.to_string());
         let SemanticTokensResult::Tokens(t) =
