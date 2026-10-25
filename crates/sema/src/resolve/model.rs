@@ -3216,11 +3216,9 @@ impl ResolvedFile {
             None => false,
             Some(Resolution::Deferred(_)) => true,
             Some(Resolution::Entity(h)) => env.is_abbreviation(*h) || is_target(*h),
-            Some(Resolution::Local(id)) => {
-                let name = &self.defs[id.index()].name;
-                self.own_abbrev_type_simple_names
-                    .contains(&*super::id_text(name))
-            }
+            Some(Resolution::Local(id)) => self
+                .own_abbrev_type_simple_names
+                .contains(&*self.defs[id.index()].key()),
             // No other variant is ever recorded for an attribute; if one
             // appears, defer rather than trust it.
             Some(_) => true,

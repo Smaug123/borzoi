@@ -120,7 +120,9 @@ fn is_operator_site(text: &str) -> bool {
         .strip_prefix("``")
         .and_then(|t| t.strip_suffix("``"))
         .unwrap_or(text);
-    text.starts_with("op_")
+    // A qualified path (`op_Addition.w`) is graded segment by segment by FCS,
+    // so only a single `op_*` identifier is a site here.
+    (text.starts_with("op_") && text.chars().all(|c| c.is_alphanumeric() || c == '_'))
         || (!text.is_empty() && text.chars().all(|c| "!$%&*+-./<=>?@^|~:".contains(c)))
 }
 
@@ -238,6 +240,12 @@ fn assert_agrees(c: &Checked, env: &AssemblyEnv, tally: &mut Tally) {
     for u in by_range.values() {
         let text = &c.src[u.start..u.end];
         if u.decl.is_none() || !is_operator_site(text) {
+            continue;
+        }
+        // A module qualifier (`` ``+``.v ``) is not modelled as a resolution
+        // of its own, operator or not: the head of a path records
+        // `QualifiedAccess`.
+        if u.kind.as_deref() == Some("module") {
             continue;
         }
         // `( * )` parses as a parenthesised index-range wildcard
@@ -377,4 +385,61 @@ fn a_prefix_operator_declines() {
     let mut tally = Tally::default();
     assert_agrees(&check("op_prefix", src), full_bcl_env(), &mut tally);
     assert_eq!(tally.prefix_declined, 7, "{tally:?}");
+}
+
+/// A quoted operator spelling stays the identifier it quotes in every
+/// namespace, beside a declaration under the compiled name: a type, a module,
+/// a union case and a value each named `` ``+`` `` are not `op_Addition`.
+/// Normalising a name that is already canonical a second time would compile
+/// `+` to `op_Addition` and bind the wrong one.
+#[test]
+fn a_quoted_operator_name_is_never_its_compiled_name() {
+    let names = compiled_names();
+    let mut src = String::from("module QuotedNames\n");
+    for (i, op) in all_ops().enumerate() {
+        let compiled = &names[op];
+        src.push_str(&format!(
+            "module T{i} =\n    type {compiled} = {{ a: int }}\n    type ``{op}`` = {{ b: int }}\n    \
+             let viaQuoted (x: ``{op}``) = x\n    let viaCompiled (x: {compiled}) = x\n\
+             module ``{op}`` =\n    let v{i} = {i}\n\
+             module {compiled} =\n    let w{i} = {i}\n\
+             module U{i} =\n    let viaQuoted = ``{op}``.v{i}\n    let viaCompiled = {compiled}.w{i}\n    \
+             let ``{op}`` = 1\n    let {compiled} = 2\n    let quotedValue = ``{op}``\n    \
+             let compiledValue = {compiled}\n"
+        ));
+    }
+    let c = check("op_quoted_names", src);
+    let mut tally = Tally::default();
+    assert_agrees(&c, full_bcl_env(), &mut tally);
+    // Every quoted and compiled use above binds in-file, FCS-checked; and none
+    // of ours points at the other spelling's declaration.
+    let mut graded = 0;
+    for u in c
+        .uses
+        .iter()
+        .filter(|u| !u.is_from_definition && u.decl.is_some())
+    {
+        let text = &c.src[u.start..u.end];
+        if !is_operator_site(text) {
+            continue;
+        }
+        let res = c.resolved.resolution_at(span(u.start, u.end));
+        if let Some(def) = res.and_then(|r| c.resolved.resolved_def(r)) {
+            assert_eq!(
+                Some(def.range),
+                u.decl.map(|(a, b)| span(a, b)),
+                "{text:?} at {}..{}: we bind {:?}, FCS {:?}\n{}",
+                u.start,
+                u.end,
+                def.name,
+                u.full_name,
+                c.src
+            );
+            graded += 1;
+        }
+    }
+    assert!(
+        graded >= 4 * all_ops().count(),
+        "graded {graded}: {tally:?}"
+    );
 }

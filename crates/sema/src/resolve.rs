@@ -47,7 +47,6 @@
 //! a coverage gap, never a wrong answer.
 
 use crate::recovery::SyntaxRecovery;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -60,9 +59,9 @@ use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::binders::{BinderRole, PatternName, pattern_names};
+pub(crate) use crate::def::id_text;
 use crate::def::{Def, DefId, DefKind};
 use crate::qnof::QualifiedNameOfFile;
-use borzoi_assembly::op_name::compile_op_name;
 
 mod assembly;
 mod bindings;
@@ -119,8 +118,7 @@ pub fn resolve_file(
     // which is sound: a spurious match only adds a defer.
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
-            r.own_type_simple_names
-                .insert(id_text(name.text()).to_string());
+            r.own_type_simple_names.insert(id_text(&name).to_string());
             // A generic declaration of the name disqualifies an in-file
             // attribute commit: FCS's attribute lookup is arity-0
             // (`DefiniteEmpty`), so it skips a generic local and binds an
@@ -129,7 +127,7 @@ pub fn resolve_file(
             // (codex round 7).
             if defn.typar_decls().is_some() {
                 r.own_generic_type_simple_names
-                    .insert(id_text(name.text()).to_string());
+                    .insert(id_text(&name).to_string());
             }
             // An in-file ABBREVIATION could alias `ExtensionAttribute` (the
             // resolver records the local without chasing its target), so the
@@ -139,7 +137,7 @@ pub fn resolve_file(
             // not (EX-3 §2(d) stage 5).
             if matches!(defn.repr(), Some(TypeDefnRepr::Abbrev(_))) {
                 r.own_abbrev_type_simple_names
-                    .insert(id_text(name.text()).to_string());
+                    .insert(id_text(&name).to_string());
             }
         }
     }
@@ -155,10 +153,9 @@ pub fn resolve_file(
         .filter_map(ExceptionDefnDecl::cast)
     {
         if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
-            r.own_type_simple_names
-                .insert(id_text(name.text()).to_string());
+            r.own_type_simple_names.insert(id_text(&name).to_string());
             r.own_exception_simple_names
-                .insert(id_text(name.text()).to_string());
+                .insert(id_text(&name).to_string());
         }
     }
     // Every *nested module definition*'s simple name in the file, for the
@@ -198,8 +195,7 @@ pub fn resolve_file(
         // malformed one, where the last segment is still the module the body
         // hangs off.
         if let Some(name) = nm.long_id().and_then(|li| li.idents().last()) {
-            r.own_module_simple_names
-                .insert(id_text(name.text()).to_string());
+            r.own_module_simple_names.insert(id_text(&name).to_string());
         }
     }
     // The type/exception names declared **directly inside an `[<AutoOpen>]`
@@ -224,14 +220,14 @@ pub fn resolve_file(
                     for defn in types.defns() {
                         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
                             r.own_auto_open_type_names
-                                .insert(id_text(name.text()).to_string());
+                                .insert(id_text(&name).to_string());
                         }
                     }
                 }
                 ModuleDecl::Exception(exn) => {
                     if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
                         r.own_auto_open_type_names
-                            .insert(id_text(name.text()).to_string());
+                            .insert(id_text(&name).to_string());
                     }
                 }
                 _ => {}
@@ -267,7 +263,7 @@ pub fn resolve_file(
             && decls::type_slot_class(&defn) != model::SlotClass::Keeps
         {
             r.own_value_slot_type_names
-                .insert(id_text(name.text()).to_string());
+                .insert(id_text(&name).to_string());
         }
     }
     // Every value-binder simple name in the file — the constructor fallback's
@@ -289,8 +285,7 @@ pub fn resolve_file(
     for pat in file.syntax().descendants().filter_map(Pat::cast) {
         for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
             if let PatternName::Binder(def) = name {
-                r.own_binder_simple_names
-                    .insert(id_text(&def.name).to_string());
+                r.own_binder_simple_names.insert(def.key().to_string());
             }
         }
     }
@@ -307,8 +302,7 @@ pub fn resolve_file(
     // defers, and a case name that never becomes bare-visible costs one deferral.
     for case in file.syntax().descendants().filter_map(UnionCase::cast) {
         if let Some(name) = case.ident() {
-            r.own_binder_simple_names
-                .insert(id_text(name.text()).to_string());
+            r.own_binder_simple_names.insert(id_text(&name).to_string());
         }
     }
     // A query `join`/`groupJoin` range variable (`join Thing in ys on …`) is a
@@ -331,10 +325,9 @@ pub fn resolve_file(
             .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
         {
             if prev_was_into {
-                r.own_binder_simple_names
-                    .insert(id_text(tok.text()).to_string());
+                r.own_binder_simple_names.insert(id_text(&tok).to_string());
             }
-            prev_was_into = id_text(tok.text()) == "into";
+            prev_was_into = id_text(&tok) == "into";
         }
     }
     for join in file.syntax().descendants().filter_map(JoinInExpr::cast) {
@@ -349,14 +342,12 @@ pub fn resolve_file(
             .filter_map(|t| t.into_token())
             .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
         {
-            r.own_binder_simple_names
-                .insert(id_text(tok.text()).to_string());
+            r.own_binder_simple_names.insert(id_text(&tok).to_string());
         }
     }
     for ext in file.syntax().descendants().filter_map(ExternDecl::cast) {
         if let Some(last) = ext.name().and_then(|n| n.idents().last()) {
-            r.own_binder_simple_names
-                .insert(id_text(last.text()).to_string());
+            r.own_binder_simple_names.insert(id_text(&last).to_string());
         }
     }
     // The top-level value scope is *per container*, not one shared base frame: F#
@@ -438,7 +429,7 @@ pub fn resolve_file(
         // `namespace global`). Unlike `module_path` it is set for namespaces.
         r.container_path = module
             .long_id()
-            .map(|li| li.idents().map(|t| id_text(t.text()).to_string()).collect())
+            .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
             .unwrap_or_default();
         // Record the project namespaces this header declares — so a later (or
         // same-project) file's `open <namespace>` resolves relatively
@@ -659,7 +650,7 @@ fn header_long_id_path(fragment: &ModuleOrNamespace) -> Option<Vec<String>> {
     let segments: Vec<String> = idents
         .iter()
         .skip(usize::from(strip_global))
-        .map(|t| id_text(t.text()).to_string())
+        .map(|t| id_text(t).to_string())
         .collect();
     (!segments.is_empty()).then_some(segments)
 }
@@ -869,7 +860,7 @@ fn collect_auto_open_type_containers(
             SigDecl::NestedModule(nm) => {
                 let Some(li) = nm.long_id() else { continue };
                 let mut nested = container.to_vec();
-                nested.extend(li.idents().map(|t| id_text(t.text()).to_string()));
+                nested.extend(li.idents().map(|t| id_text(&t).to_string()));
                 collect_auto_open_type_containers(
                     &nested,
                     &nm.sig_decls().collect::<Vec<_>>(),
@@ -907,7 +898,7 @@ fn collect_sig_container_exports(
                     case: Option<CaseKind>,
                     type_qualified: Option<Vec<String>>,
                     attributed: bool| {
-        let name = id_text(&def.name).to_string();
+        let name = def.key().to_string();
         let pos = def.range.start();
         let def_id = DefId::new(defs.len());
         defs.push(def);
@@ -962,7 +953,7 @@ fn collect_sig_container_exports(
                     let Some(type_ident) = defn.long_id().and_then(single_ident) else {
                         continue;
                     };
-                    let type_name = id_text(type_ident.text()).to_string();
+                    let type_name = id_text(&type_ident).to_string();
                     let rqa = attrs_require_qualified_access(defn.attributes());
                     let tq_path = |case: &str| {
                         let mut p = container.to_vec();
@@ -977,7 +968,7 @@ fn collect_sig_container_exports(
                                 // Stage 3.
                                 let Some(ident) = case.ident() else { continue };
                                 let def = Def::from_token(&ident, DefKind::UnionCase);
-                                let tq = tq_path(&id_text(&def.name));
+                                let tq = tq_path(&def.key());
                                 push(
                                     defs,
                                     def,
@@ -997,7 +988,7 @@ fn collect_sig_container_exports(
                             for case in e.cases() {
                                 let Some(ident) = case.ident() else { continue };
                                 let def = Def::from_token(&ident, DefKind::EnumCase);
-                                let tq = tq_path(&id_text(&def.name));
+                                let tq = tq_path(&def.key());
                                 push(
                                     defs,
                                     def,
@@ -1070,14 +1061,14 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
             ModuleOrNamespaceKind::DeclaredNamespace | ModuleOrNamespaceKind::GlobalNamespace => {
                 let ns: Vec<String> = fragment
                     .long_id()
-                    .map(|li| li.idents().map(|t| id_text(t.text()).to_string()).collect())
+                    .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
                     .unwrap_or_default();
                 for decl in fragment.sig_decls() {
                     match decl {
                         SigDecl::NestedModule(nm) => {
                             let Some(li) = nm.long_id() else { continue };
                             let mut path = ns.clone();
-                            path.extend(li.idents().map(|t| id_text(t.text()).to_string()));
+                            path.extend(li.idents().map(|t| id_text(&t).to_string()));
                             // A namespace-direct module is the module *root*
                             // (nesting deeper is Stage 3): collect its direct
                             // surface — `module internal` included (project-
@@ -1144,7 +1135,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 };
                                 for ident in case_idents {
                                     let mut path = ns.clone();
-                                    path.push(id_text(ident.text()).to_string());
+                                    path.push(id_text(&ident).to_string());
                                     value_paths.push(path);
                                 }
                             }
@@ -1152,7 +1143,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         SigDecl::Exception(exn) => {
                             if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
                                 let mut path = ns.clone();
-                                path.push(id_text(ident.text()).to_string());
+                                path.push(id_text(&ident).to_string());
                                 value_paths.push(path);
                             }
                         }
@@ -1240,7 +1231,7 @@ fn sig_token_names(sig: &SigFile) -> HashSet<String> {
         if token.kind().is_trivia() {
             continue;
         }
-        let text = &*id_text(token.text());
+        let text = &*id_text(&token);
         names.insert(text.to_string());
         for piece in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')) {
             if !piece.is_empty() && piece != text {
@@ -1836,7 +1827,7 @@ fn module_prefix(module: &ModuleOrNamespace) -> Option<Vec<String>> {
     match module.kind() {
         ModuleOrNamespaceKind::NamedModule => module
             .long_id()
-            .map(|li| li.idents().map(|t| id_text(t.text()).to_string()).collect()),
+            .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect()),
         ModuleOrNamespaceKind::Anon
         | ModuleOrNamespaceKind::DeclaredNamespace
         | ModuleOrNamespaceKind::GlobalNamespace => None,
@@ -2328,7 +2319,7 @@ fn type_long_ident_path(ty: &Type) -> Option<Vec<String>> {
     let segs: Vec<String> = t
         .long_ident()?
         .idents()
-        .map(|t| id_text(t.text()).to_string())
+        .map(|t| id_text(&t).to_string())
         .collect();
     (!segs.is_empty()).then_some(segs)
 }
@@ -2344,7 +2335,7 @@ fn attrs_require_qualified_access(attrs: impl Iterator<Item = AttributeList>) ->
         .filter_map(|li| li.idents().last())
         .any(|seg| {
             matches!(
-                &*id_text(seg.text()),
+                &*id_text(&seg),
                 "RequireQualifiedAccess" | "RequireQualifiedAccessAttribute"
             )
         })
@@ -2358,7 +2349,7 @@ fn attrs_mark_struct(attrs: impl Iterator<Item = AttributeList>) -> bool {
         .flat_map(|list| list.attributes().collect::<Vec<_>>())
         .filter_map(|attr| attr.type_name())
         .filter_map(|li| li.idents().last())
-        .any(|seg| matches!(&*id_text(seg.text()), "Struct" | "StructAttribute"))
+        .any(|seg| matches!(&*id_text(&seg), "Struct" | "StructAttribute"))
 }
 
 /// Every nested-module name declared anywhere under `decls` (all depths),
@@ -2378,7 +2369,7 @@ pub(crate) fn collect_nested_module_names(
         if let ModuleDecl::NestedModule(nm) = decl {
             if let Some(li) = nm.long_id() {
                 for seg in li.idents() {
-                    out.insert(id_text(seg.text()).to_string());
+                    out.insert(id_text(&seg).to_string());
                 }
             }
             collect_nested_module_names(nm.decls(), out);
@@ -2402,29 +2393,7 @@ fn attrs_auto_open(attrs: impl Iterator<Item = AttributeList>) -> bool {
         .flat_map(|list| list.attributes().collect::<Vec<_>>())
         .filter_map(|attr| attr.type_name())
         .filter_map(|li| li.idents().last())
-        .any(|seg| matches!(&*id_text(seg.text()), "AutoOpen" | "AutoOpenAttribute"))
-}
-
-/// FCS `idText` semantics: the name an identifier token denotes.
-///
-/// A double-backtick-quoted identifier (`` ``my name`` ``) denotes the same
-/// name as the bare form, so the delimiters are stripped. An unquoted operator
-/// spelling denotes its compiled name ([`compile_op_name`]: `+` is
-/// `op_Addition`), which is what FCS's parser stores in `Ident.idText` and so
-/// what its name environment is keyed by. A *quoted* operator spelling is not
-/// compiled — `` ``+`` `` is the identifier `+`, a different name from the
-/// operator. Every other spelling is returned unchanged.
-///
-/// Not the name of a **prefix** application's operator, which FCS names after
-/// the position (`-x` uses `~-`); the resolver does not route those here.
-/// `pub(crate)` so inference's annotation gate ([`crate::infer_file`], Stage
-/// R2-a) applies the same name identity when it looks an annotation head up in
-/// the primitive-alias table.
-pub(crate) fn id_text(raw: &str) -> Cow<'_, str> {
-    match raw.strip_prefix("``").and_then(|s| s.strip_suffix("``")) {
-        Some(quoted) => Cow::Borrowed(quoted),
-        None => compile_op_name(raw),
-    }
+        .any(|seg| matches!(&*id_text(&seg), "AutoOpen" | "AutoOpenAttribute"))
 }
 
 #[cfg(test)]

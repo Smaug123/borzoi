@@ -2322,7 +2322,6 @@ impl<'a> Resolver<'a> {
         name: &str,
         constant_shadow_defers: bool,
     ) -> Option<&ScopeEntry> {
-        let name = &*id_text(name);
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
@@ -2490,7 +2489,7 @@ impl<'a> Resolver<'a> {
         // and a case / member / assembly target reached past it would be a
         // wrong go-to-definition. The path falls through to the intra-file
         // fallback, whose head lookup skips the stale entry and defers.
-        let head_staled = self.head_entry_staled(&id_text(first.text()));
+        let head_staled = self.head_entry_staled(&id_text(first));
 
         // A qualified in-file enum case `Color.Red`. The qualifier `Color`
         // resolves **latest-wins across the value and type namespaces** (FCS): the
@@ -2519,8 +2518,8 @@ impl<'a> Resolver<'a> {
             && !self.opaque_dotted_open
             && !self.unmodelled_open_active
             && !head_staled
-            && !self.head_contested_by_project_module(first.text(), case_seg.text())
-            && let Some((type_id, case_res)) = self.type_case_path(first.text(), case_seg.text())
+            && !self.head_contested_by_project_module(first, case_seg)
+            && let Some((type_id, case_res)) = self.type_case_path(first, case_seg)
         {
             // The value-vs-type qualifier rule differs by case kind (FCS, expression
             // position): an *enum* case wins the qualifier unless a value of that
@@ -2540,7 +2539,7 @@ impl<'a> Resolver<'a> {
             // in-file `Def` range — so testing the classification, not
             // `value_def_range`, is what makes `open Demo.Auto (value Tag); type Tag =
             // Case | Other; Tag.Case` defer to the opened value (FCS), not the case.
-            let head = &*id_text(first.text());
+            let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
             let value_takes_qualifier = match self.case_resolution_kind(case_res) {
                 // An enum case loses the qualifier only to a *later* value; the
@@ -2576,11 +2575,11 @@ impl<'a> Resolver<'a> {
             && !self.opaque_dotted_open
             && !self.unmodelled_open_active
             && !head_staled
-            && !self.head_contested_by_project_module(first.text(), member_seg.text())
+            && !self.head_contested_by_project_module(first, member_seg)
             && let Some((type_id, member_def)) =
-                self.type_member_path(first.text(), member_seg.text(), first.text_range().start())
+                self.type_member_path(first, member_seg, first.text_range().start())
         {
-            let head = &*id_text(first.text());
+            let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
             if head_is_value {
                 match self.value_def_range(head) {
@@ -2636,7 +2635,7 @@ impl<'a> Resolver<'a> {
         // `opaque_dotted_open` is (an opened project module could provide the head
         // as one of its unmodelled submodules/types): resolving the path then risks
         // a wrong target.
-        let head = &*id_text(first.text());
+        let head = &*id_text(first);
 
         // A raw `global` head is F#'s namespace-root marker, never a value: it
         // must not count as a "definite value" even when a same-file `` ``global`` ``
@@ -2707,17 +2706,13 @@ impl<'a> Resolver<'a> {
             // they are skipped and the reference defers (the assembly tier
             // repeats the veto internally). See
             // [`Self::sig_screens_reading_of`].
-            let written_path: Vec<String> = segments
-                .iter()
-                .map(|t| id_text(t.text()).to_string())
-                .collect();
+            let written_path: Vec<String> =
+                segments.iter().map(|t| id_text(t).to_string()).collect();
             let sig_screened = self.sig_screens_reading_of(&written_path);
 
             if let Some((value_seg, prefix_segs)) = segments.split_last() {
-                let mut prefix: Vec<String> = prefix_segs
-                    .iter()
-                    .map(|t| id_text(t.text()).to_string())
-                    .collect();
+                let mut prefix: Vec<String> =
+                    prefix_segs.iter().map(|t| id_text(t).to_string()).collect();
                 let rooted = prefix_segs.first().is_some_and(|t| t.text() == "global");
                 if rooted {
                     prefix.remove(0);
@@ -2751,7 +2746,7 @@ impl<'a> Resolver<'a> {
                     && let head_len = module_path.len() - prefix.len() + 1
                     && !self.container_path.starts_with(&module_path[..head_len])
                     && let Some(id) =
-                        self.qualified_value_in(&module_path, &id_text(value_seg.text()))
+                        self.qualified_value_in(&module_path, &id_text(value_seg))
                 {
                     let whole =
                         TextRange::new(first.text_range().start(), value_seg.text_range().end());
@@ -3380,8 +3375,7 @@ impl<'a> Resolver<'a> {
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
     ) -> bool {
-        let Some((type_id, case_res)) = self.type_case_path(type_seg.text(), case_seg.text())
-        else {
+        let Some((type_id, case_res)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
         self.record_type_qualifier(type_seg, case_seg, type_id, case_res);
@@ -3435,9 +3429,9 @@ impl<'a> Resolver<'a> {
         let [head_seg, type_seg, case_seg] = segments else {
             return SameFileQualified::Miss;
         };
-        let head = &*id_text(head_seg.text());
-        let ty = &*id_text(type_seg.text());
-        let case = &*id_text(case_seg.text());
+        let head = &*id_text(head_seg);
+        let ty = &*id_text(type_seg);
+        let case = &*id_text(case_seg);
         let use_pos = head_seg.text_range().start();
 
         // Resolve the head to the innermost same-file container whose declaration of
@@ -4030,7 +4024,7 @@ impl<'a> Resolver<'a> {
         if segs.len() >= 2 {
             // A leading `global` was deferred above, so `segs` here is an ordinary
             // (unrooted) qualified path.
-            let written: Vec<String> = segs.iter().map(|t| id_text(t.text()).to_string()).collect();
+            let written: Vec<String> = segs.iter().map(|t| id_text(t).to_string()).collect();
             // Signature screen (project side), the pattern-position twin
             // of the expression gate: a possibly-signature-exposed reading
             // outranks the cross-file case candidate, so defer — with the
@@ -4080,8 +4074,7 @@ impl<'a> Resolver<'a> {
                 Some((CaseTier::Alias, id)) => Some(Ok(id)),
                 Some((_, id)) => match segs {
                     [type_seg, _]
-                        if self
-                            .assembly_case_head_contends_at_an_open(&id_text(type_seg.text())) =>
+                        if self.assembly_case_head_contends_at_an_open(&id_text(type_seg)) =>
                     {
                         // A ladder guard rejected the project reading: an
                         // explicit `open` puts an assembly entity of the head's
@@ -4101,9 +4094,7 @@ impl<'a> Resolver<'a> {
                     // A project type of the head's simple name shadows every
                     // assembly reading, so the walk is skipped — a deliberate
                     // pre-walk decline, and the census names it as one.
-                    [type_seg, _]
-                        if self.project_binds_type_simple_name(&id_text(type_seg.text())) =>
-                    {
+                    [type_seg, _] if self.project_binds_type_simple_name(&id_text(type_seg)) => {
                         pattern_decline =
                             Some(DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow));
                         None
@@ -4245,8 +4236,8 @@ impl<'a> Resolver<'a> {
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
     ) -> (Option<Vec<(TextRange, Resolution)>>, Option<DeclineSite>) {
-        let type_name = &*id_text(type_seg.text());
-        let case_name = &*id_text(case_seg.text());
+        let type_name = &*id_text(type_seg);
+        let case_name = &*id_text(case_seg);
         // The head is the whole source path this walk looks up — the `Case` is a
         // constructor tail under whatever `Type` binds, not a further segment of
         // it — so both the gate and the per-tier verdict take it as a
@@ -4411,8 +4402,8 @@ impl<'a> Resolver<'a> {
     /// `Color.Red` defer. Cross-file `A.Color.Red` is a later slice.
     pub(super) fn type_case_path(
         &self,
-        type_name: &str,
-        case_name: &str,
+        type_name: &SyntaxToken,
+        case_name: &SyntaxToken,
     ) -> Option<(DefId, Resolution)> {
         let tname = &*id_text(type_name);
         let cname = &*id_text(case_name);
@@ -4463,9 +4454,7 @@ impl<'a> Resolver<'a> {
     /// such case F# does keep searching outward and can bind a cross-file one
     /// (FCS-probed), so only a same-file type that positively owns the case
     /// blocks the fall-through.
-    fn same_file_type_owns_case(&self, type_name: &str, case_name: &str) -> bool {
-        let tname = &*id_text(type_name);
-        let cname = &*id_text(case_name);
+    fn same_file_type_owns_case(&self, tname: &str, cname: &str) -> bool {
         (0..=self.container_path.len()).rev().any(|k| {
             self.type_cases
                 .get(&self.container_path[..k])
@@ -4750,7 +4739,7 @@ impl<'a> Resolver<'a> {
     /// ([`Self::module_like_transparent_for`]), and the cross-file case index
     /// stands down in turn when a same-file type owns the case
     /// ([`Self::cross_file_case_shadowed_same_file`]).
-    fn head_contested_by_project_module(&self, head: &str, residual: &str) -> bool {
+    fn head_contested_by_project_module(&self, head: &SyntaxToken, residual: &SyntaxToken) -> bool {
         let head = &*id_text(head);
         let residual = &*id_text(residual);
         let relative = (self.namespace_depth.max(1)..=self.container_path.len()).rev();
@@ -4848,8 +4837,8 @@ impl<'a> Resolver<'a> {
     /// than trying an enclosing type.
     fn type_member_path(
         &self,
-        type_name: &str,
-        member_name: &str,
+        type_name: &SyntaxToken,
+        member_name: &SyntaxToken,
         use_pos: TextSize,
     ) -> Option<(DefId, DefId)> {
         let tname = &*id_text(type_name);

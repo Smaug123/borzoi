@@ -4,7 +4,6 @@
 use std::collections::HashSet;
 
 use crate::def::{Def, DefKind};
-use crate::resolve::id_text;
 use borzoi_cst::syntax::{LongIdentPat, Pat, SyntaxToken};
 use rowan::TextRange;
 
@@ -371,7 +370,7 @@ fn collect(
 /// is what makes `A b, B v | B v, A b` pair each name with its namesake rather
 /// than with whatever sits in the same slot; position only breaks the tie in
 /// code F# rejects, where one alternative binds a name twice. Names are compared
-/// after [`id_text`] normalisation, so ``A `v` | B v`` is one binding, exactly
+/// after [`id_text`](crate::def::id_text) normalisation, so ``A `v` | B v`` is one binding, exactly
 /// as F# reads it.
 ///
 /// **`argument_expressions` are not bindings** and take no part in the pairing.
@@ -407,9 +406,7 @@ fn canonicalise_alternatives(
     let left_binders: Vec<(String, TextRange)> = names[..left]
         .iter()
         .filter_map(|name| match name {
-            PatternName::Binder(def) if binds(def) => {
-                Some((id_text(&def.name).to_string(), def.range))
-            }
+            PatternName::Binder(def) if binds(def) => Some((def.key().to_string(), def.range)),
             _ => None,
         })
         .collect();
@@ -420,7 +417,7 @@ fn canonicalise_alternatives(
     for name in names[left..].iter_mut() {
         match name {
             PatternName::Binder(def) if binds(def) => {
-                let key = &*id_text(&def.name);
+                let key = &*def.key();
                 let index = match claimed.iter_mut().find(|(seen, _)| seen == key) {
                     Some((_, count)) => {
                         *count += 1;
@@ -1388,7 +1385,7 @@ mod tests {
                 if let PatternName::Binder(def) = occurrence
                     && !def.provisional
                 {
-                    let name = id_text(&def.name).into_owned();
+                    let name = def.key().into_owned();
                     prop_assert!(
                         !bound.contains(&name),
                         "{:?} binds {name:?} twice",
@@ -1412,7 +1409,8 @@ mod tests {
                         "{src:?}: alias at {range:?} names no earlier binder"
                     )));
                 };
-                prop_assert_eq!(id_text(&def.name), id_text(text(*range)));
+                let written = Def::from_range(text(*range), *range, def.kind);
+                prop_assert_eq!(def.key(), written.key());
             }
         }
     }

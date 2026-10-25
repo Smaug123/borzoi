@@ -47,7 +47,7 @@ impl<'a> Resolver<'a> {
             // alone.) Unrecorded — a sound deferral — when no header declares it.
             Expr::Typar(e) => {
                 if let Some(tok) = e.ident()
-                    && let Some(id) = self.lookup_typar(&id_text(tok.text()))
+                    && let Some(id) = self.lookup_typar(&id_text(&tok))
                     && let Some((range, _)) = super::types::typar_occurrence(e.syntax())
                 {
                     self.record(range, Resolution::Local(id));
@@ -621,7 +621,7 @@ impl<'a> Resolver<'a> {
                 let mut entries = Vec::new();
                 if let Some(ident) = e.ident() {
                     let def = Def::from_token(&ident, DefKind::PatternLocal);
-                    let name = id_text(&def.name).to_string();
+                    let name = def.key().to_string();
                     let range = def.range;
                     let id = self.intern(def);
                     let res = Resolution::Local(id);
@@ -801,12 +801,12 @@ impl<'a> Resolver<'a> {
                 // decline (drop). See the module-level "Provisional pattern
                 // heads" note.
                 if def.provisional {
-                    if let Some(res) = self.case_reference(&def.name) {
+                    if let Some(res) = self.case_reference(&def.key()) {
                         self.record(def.range, res);
                     }
                     continue;
                 }
-                let name = id_text(&def.name).to_string();
+                let name = def.key().to_string();
                 let range = def.range;
                 let id = self.intern(def);
                 let res = Resolution::Local(id);
@@ -838,7 +838,7 @@ impl<'a> Resolver<'a> {
         // commit an outer same-named value (the AP-body-shadow bug) or the case —
         // sound either way. Only *bare* single-ident uses reach here; a qualified
         // head (`A.X`) goes through [`Self::resolve_long_ident`], which ignores this.
-        if self.ap_body_case_names.contains(&*id_text(tok.text())) {
+        if self.ap_body_case_names.contains(&*id_text(tok)) {
             return;
         }
         // Every name an `open` brings into scope is an *opened* entry in the value
@@ -847,7 +847,7 @@ impl<'a> Resolver<'a> {
         // [`lookup`](Self::lookup) — innermost frame first, latest entry within a
         // frame — resolves opened statics, opened module values, locals, and cases
         // uniformly by source order, the latest in scope winning.
-        let name = &*id_text(tok.text());
+        let name = &*id_text(tok);
         let res = self
             .lookup(name)
             .or_else(|| self.opened_constructor_target(name, allow_opened_type))
@@ -1226,7 +1226,7 @@ fn label_name(lhs: &Expr) -> Option<String> {
         }),
         _ => None,
     }?;
-    Some(id_text(token.text()).to_string())
+    Some(id_text(&token).to_string())
 }
 
 /// Whether this bare ident is the **label** of a named argument (`M(Thing = 1)`)

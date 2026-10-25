@@ -11,7 +11,7 @@ use crate::diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
 use super::model::{ExportedItem, ItemId, Resolution};
 use super::state::{AliasTargets, Frame, Resolver, ScopeEntry};
 use super::types::head_typar_decls;
-use super::{active_pat_name_of, active_pattern_param_arity, id_text};
+use super::{active_pat_name_of, active_pattern_param_arity};
 
 /// The interned binders of one top-level binding, before they are made visible.
 pub(super) struct PreparedBinding {
@@ -194,12 +194,12 @@ impl<'a> Resolver<'a> {
                 // unrecorded (a coverage gap, never wrong). See the module-level
                 // "Provisional pattern heads" note.
                 if def.provisional {
-                    if let Some(res) = self.case_reference(&def.name) {
+                    if let Some(res) = self.case_reference(&def.key()) {
                         self.record(def.range, res);
                     }
                     continue;
                 }
-                let name = id_text(&def.name).to_string();
+                let name = def.key().to_string();
                 let range = def.range;
                 let is_value = matches!(def.kind, DefKind::Value { .. });
                 let id = self.intern(def);
@@ -412,12 +412,12 @@ impl<'a> Resolver<'a> {
                     // resolve a known union-case reference, else decline (drop),
                     // as in `prepare_binding`.
                     if def.provisional {
-                        if let Some(res) = self.case_reference(&def.name) {
+                        if let Some(res) = self.case_reference(&def.key()) {
                             self.record(def.range, res);
                         }
                         continue;
                     }
-                    let name = id_text(&def.name).to_string();
+                    let name = def.key().to_string();
                     let range = def.range;
                     let is_value = matches!(def.kind, DefKind::Value { .. });
                     let id = self.intern(def);
@@ -539,7 +539,7 @@ impl<'a> Resolver<'a> {
     fn enter_ap_body(&mut self, case_entries: &[ScopeEntry]) -> HashSet<String> {
         let restore = self.ap_body_case_names.clone();
         for e in case_entries {
-            self.ap_body_case_names.insert(id_text(&e.name).to_string());
+            self.ap_body_case_names.insert(e.name.clone());
         }
         restore
     }
