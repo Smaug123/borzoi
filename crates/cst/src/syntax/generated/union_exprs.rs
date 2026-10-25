@@ -770,6 +770,25 @@ impl AstNode for LibraryOnlyFieldGetExpr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DotMissingExpr(pub(crate) SyntaxNode);
+
+impl AstNode for DotMissingExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(kind, SyntaxKind::DOT_MISSING_EXPR)
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(Self(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ComputationExpr(pub(crate) SyntaxNode);
 
 impl AstNode for ComputationExpr {
@@ -1118,6 +1137,7 @@ pub enum Expr {
     TraitCall(TraitCallExpr),
     StaticOptimization(StaticOptimizationExpr),
     LibraryOnlyFieldGet(LibraryOnlyFieldGetExpr),
+    DotMissing(DotMissingExpr),
     Computation(ComputationExpr),
     Record(RecordExpr),
     AnonRecd(AnonRecdExpr),
@@ -1181,6 +1201,7 @@ impl AstNode for Expr {
                 | SyntaxKind::TRAIT_CALL_EXPR
                 | SyntaxKind::STATIC_OPTIMIZATION_EXPR
                 | SyntaxKind::LIBRARY_ONLY_FIELD_GET_EXPR
+                | SyntaxKind::DOT_MISSING_EXPR
                 | SyntaxKind::COMPUTATION_EXPR
                 | SyntaxKind::RECORD_EXPR
                 | SyntaxKind::ANON_RECD_EXPR
@@ -1253,6 +1274,7 @@ impl AstNode for Expr {
             SyntaxKind::LIBRARY_ONLY_FIELD_GET_EXPR => {
                 LibraryOnlyFieldGetExpr::cast(node).map(Expr::LibraryOnlyFieldGet)
             }
+            SyntaxKind::DOT_MISSING_EXPR => DotMissingExpr::cast(node).map(Expr::DotMissing),
             SyntaxKind::COMPUTATION_EXPR => ComputationExpr::cast(node).map(Expr::Computation),
             SyntaxKind::RECORD_EXPR => RecordExpr::cast(node).map(Expr::Record),
             SyntaxKind::ANON_RECD_EXPR => AnonRecdExpr::cast(node).map(Expr::AnonRecd),
@@ -1315,6 +1337,7 @@ impl AstNode for Expr {
             Expr::TraitCall(n) => n.syntax(),
             Expr::StaticOptimization(n) => n.syntax(),
             Expr::LibraryOnlyFieldGet(n) => n.syntax(),
+            Expr::DotMissing(n) => n.syntax(),
             Expr::Computation(n) => n.syntax(),
             Expr::Record(n) => n.syntax(),
             Expr::AnonRecd(n) => n.syntax(),

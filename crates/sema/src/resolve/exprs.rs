@@ -379,6 +379,14 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
             }
+            Expr::DotMissing(e) => {
+                // A member access cut off after its dot (`(f x).`). The
+                // receiver references enclosing bindings; the missing member
+                // names nothing.
+                if let Some(receiver) = e.receiver() {
+                    self.resolve_expr(&receiver);
+                }
+            }
             Expr::LibraryOnlyFieldGet(e) => {
                 // A library-only cons-cell field read `obj.( :: ).<int>`
                 // (FSharp.Core). The object references an enclosing binding, so
@@ -696,6 +704,13 @@ impl<'a> Resolver<'a> {
                 }
                 if let Some(index) = e.index() {
                     self.resolve_expr(&index);
+                }
+            }
+            // `_.M(x).`, cut off after its dot while being typed: the receiver
+            // is the spine; the missing member names nothing.
+            Expr::DotMissing(e) => {
+                if let Some(receiver) = e.receiver() {
+                    self.resolve_dot_lambda_body(&receiver);
                 }
             }
             // `_.M<T>(x)`: a generic member — the type-applied head is the spine,
