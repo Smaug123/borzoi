@@ -131,3 +131,42 @@ fn recover_semicolon_inside_abandoned_parens_stays_debris() {
         2,
     );
 }
+
+/// `;;` closes every offside context, so after a stray token with no bracket
+/// left open it ends the debris: `sentinel 42` is a declaration, as in FCS.
+#[test]
+fn recover_double_semicolon_after_balanced_debris_ends_it() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\n->;; sentinel 42\nlet z = 3\n",
+        2,
+    );
+}
+
+/// A `;;` inside a bracket the debris itself opened does not end it: `b <- y`
+/// is not a declaration, and `let z` after the line still is.
+#[test]
+fn recover_double_semicolon_inside_debris_parens_stays_debris() {
+    let verdict = crate::common::recovery::assert_recovered_trees_agree(
+        "let a = 0\nlet f = g (fun (x, y)  x)\n|> h (fun (x, y) -> a <- x;; b <- y)\nlet z = 3\n",
+        1,
+    );
+    assert!(
+        verdict.beyond_fcs >= 1,
+        "`let z` must survive past FCS's reach: {}",
+        verdict.token()
+    );
+}
+
+/// The same after a stray keyword, the bracket open straight after it.
+#[test]
+fn recover_double_semicolon_inside_stray_keyword_parens_stays_debris() {
+    let verdict = crate::common::recovery::assert_recovered_trees_agree(
+        "let a = 0\nmember (x;; b <- y)\nlet z = 3\n",
+        1,
+    );
+    assert!(
+        verdict.beyond_fcs >= 1,
+        "`let z` must survive past FCS's reach: {}",
+        verdict.token()
+    );
+}

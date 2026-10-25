@@ -674,8 +674,10 @@ impl<'src> Parser<'src> {
         let mut depth = 0i32;
         let mut depth_pos = self.pos;
         // The end of the line of the last token the generic error arm below
-        // bumped as stray: an expression start before it is debris.
+        // bumped as stray: an expression start before it is debris. The
+        // debris runs from `debris_start`, the first stray token on that line.
         let mut debris_until = 0usize;
+        let mut debris_start = 0usize;
         while let Some((res, span)) = self.peek().cloned() {
             self.advance_block_depth(&mut depth, &mut depth_pos);
             // A verbose-syntax `module X = begin … end` body ends at the real
@@ -1227,6 +1229,17 @@ impl<'src> Parser<'src> {
             // (`pars.fsy:1281`), and FCS rejects it ("Unexpected symbol ';;'")
             // — so it falls through to the generic error path below.
             if seen_decl && matches!(&res, Ok(FilteredToken::Raw(Token::SemiSemi))) {
+                // `;;` closes every offside context (FCS's `isSemiSemi`), so
+                // it ends a stray token's debris and what follows it on the
+                // line is a declaration of its own — unless the debris left a
+                // bracket open (`h (fun (x, y) -> a <- x;; b <- y)` after a
+                // stray `|>`), whose contents are still the abandoned
+                // construct's.
+                if span.start < debris_until
+                    && !self.raw_leaves_bracket_open(debris_start..span.start)
+                {
+                    debris_until = 0;
+                }
                 self.bump_into(SyntaxKind::SEMISEMI_TOK);
                 needs_sep = false;
                 continue;
@@ -1350,6 +1363,7 @@ impl<'src> Parser<'src> {
                 Err(e) => format!("lex error: {e:?}"),
                 _ => "unexpected token".to_string(),
             };
+            let stray_start = span.start;
             let stray_end = span.end;
             self.errors.push(ParseError { message, span });
             self.bump_into(SyntaxKind::ERROR);
@@ -1361,6 +1375,7 @@ impl<'src> Parser<'src> {
             // token past it needs a fresh scan; rescanning for each stray on
             // one long line would be quadratic.
             if stray_end > debris_until {
+                debris_start = stray_start;
                 debris_until = self.source[stray_end..]
                     .find('\n')
                     .map_or(self.source.len(), |nl| stray_end + nl);
@@ -1369,6 +1384,50 @@ impl<'src> Parser<'src> {
             seen_non_hash_decl = true;
         }
         (seen_decl, seen_non_hash_decl, header_parsed)
+    }
+
+    /// Whether the raw tokens starting in `range` leave a bracket open: an
+    /// opener with no closer after it in the range. A closer with nothing open
+    /// in the range closes a bracket outside it, and is ignored.
+    fn raw_leaves_bracket_open(&self, range: Range<usize>) -> bool {
+        let first = self
+            .raw_tokens
+            .partition_point(|(_, s)| s.start < range.start);
+        let mut open = 0usize;
+        for (res, s) in &self.raw_tokens[first..] {
+            if s.start >= range.end {
+                break;
+            }
+            let Ok(TriviaToken::Lexed(t)) = res else {
+                continue;
+            };
+            let (closes, opens) = match t {
+                Token::LParen
+                | Token::LBrack
+                | Token::LBrackBar
+                | Token::LBrackLess
+                | Token::LBrace
+                | Token::LBraceBar
+                | Token::LQuote
+                | Token::LQuoteRaw
+                | Token::Begin => (0, 1),
+                Token::RParen
+                | Token::RBrack
+                | Token::BarRBrack
+                | Token::GreaterRBrack
+                | Token::RBrace
+                | Token::BarRBrace
+                | Token::RQuote
+                | Token::RQuoteRaw
+                | Token::RQuoteDot
+                | Token::RQuoteRawDot
+                | Token::End => (1, 0),
+                Token::RQuoteBarRBrace | Token::RQuoteRawBarRBrace => (2, 0),
+                _ => (0, 0),
+            };
+            open = open.saturating_sub(closes) + opens;
+        }
+        open > 0
     }
 
     /// Phase 8.2 — parse a `namespace Foo.Bar` / `namespace global` /
