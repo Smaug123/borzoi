@@ -30,7 +30,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use borzoi_assembly::doc_id::{DocIdDialect, TypeDocName, member_doc_id, type_doc_name};
+use borzoi_assembly::Member;
+use borzoi_assembly::doc_id::{
+    DocIdDialect, TypeDocName, member_doc_id, method_id_head, type_doc_name,
+};
 use borzoi_sema::{AssemblyEnv, EntityHandle, MemberIndex};
 
 /// A referenced-assembly symbol whose documentation hover wants.
@@ -123,9 +126,19 @@ impl KeyCensus {
 /// cref="…">`, which names its target by ID alone. Keys are generated exactly
 /// as [`doc_key`] generates them; a key with several targets (in one assembly
 /// or across several) keeps them all, so a caller sees the ambiguity.
+///
+/// A property's or event's accessors are methods with IDs of their own
+/// (`M:N.T.get_P`), which the model folds into their owner and so has no
+/// target for; the index keeps their ID heads apart, so that an ID one could
+/// carry is never taken as naming only the other targets it matches.
 #[derive(Debug, Clone, Default)]
 pub struct DocIdIndex {
     by_key: HashMap<String, Vec<DocTarget>>,
+    /// [`method_id_head`] of every accessor.
+    accessor_heads: HashSet<String>,
+    /// The `T:` IDs of the types some accessor of which has no recorded
+    /// name, so that any method ID of the type may be an accessor's.
+    unnamed_accessor_types: HashSet<String>,
 }
 
 impl DocIdIndex {
@@ -141,38 +154,84 @@ impl DocIdIndex {
     }
 
     fn of_roots(env: &AssemblyEnv, include: impl Fn(EntityHandle) -> bool) -> DocIdIndex {
-        let mut by_key: HashMap<String, Vec<DocTarget>> = HashMap::new();
         fn walk(
             env: &AssemblyEnv,
             handle: EntityHandle,
             enclosing: Option<&TypeDocName>,
-            by_key: &mut HashMap<String, Vec<DocTarget>>,
+            index: &mut DocIdIndex,
         ) {
             let entity = env.entity(handle);
             let name = type_doc_name(entity, enclosing);
-            by_key
+            index
+                .by_key
                 .entry(name.type_id())
                 .or_default()
                 .push(DocTarget::Entity(handle));
             for idx in env.member_indices(handle) {
-                by_key
-                    .entry(member_doc_id(&name, env.member_at(handle, idx)))
+                let member = env.member_at(handle, idx);
+                index
+                    .by_key
+                    .entry(member_doc_id(&name, member))
                     .or_default()
                     .push(DocTarget::Member {
                         parent: handle,
                         idx,
                     });
+                let (slots, accessors) = match member {
+                    Member::Property(p) => (
+                        &p.accessor_slots,
+                        usize::from(p.has_getter) + usize::from(p.has_setter),
+                    ),
+                    // An event has `add` and `remove`, and perhaps `fire`.
+                    Member::Event(e) => (&e.accessor_slots, 2),
+                    Member::Method(_) | Member::Field(_) => continue,
+                };
+                if slots.len() < accessors || slots.iter().any(|s| s.name.is_empty()) {
+                    index.unnamed_accessor_types.insert(name.type_id());
+                }
+                for slot in slots.iter().filter(|s| !s.name.is_empty()) {
+                    index
+                        .accessor_heads
+                        .insert(method_id_head(&name, &slot.name));
+                }
             }
             for &child in env.children(handle) {
-                walk(env, child, Some(&name), by_key);
+                walk(env, child, Some(&name), index);
             }
         }
+        let mut index = DocIdIndex::default();
         for &root in env.top_level_handles() {
             if include(root) {
-                walk(env, root, None, &mut by_key);
+                walk(env, root, None, &mut index);
             }
         }
-        DocIdIndex { by_key }
+        index
+    }
+
+    /// Whether `key` may be the ID of some property's or event's accessor:
+    /// a method ID whose head an accessor carries, or any method ID of a type
+    /// with an accessor whose name was not recorded.
+    pub fn may_name_an_accessor(&self, key: &str) -> bool {
+        let Some(rest) = key.strip_prefix("M:") else {
+            return false;
+        };
+        // The declaring type is a generic definition, whose name may carry
+        // `` `n `` but never `(` or `~`; those start the parameters and a
+        // conversion's return type. A method's own arity is the `` ``n ``
+        // ending what remains.
+        let head = &key[..2 + rest.find(['(', '~']).unwrap_or(rest.len())];
+        let head = match head.rfind("``") {
+            Some(at) if head[at + 2..].bytes().all(|b| b.is_ascii_digit()) => &head[..at],
+            _ => head,
+        };
+        if self.accessor_heads.contains(head) {
+            return true;
+        }
+        // Member names escape `.` to `#`, so the last `.` ends the type.
+        head.rfind('.').is_some_and(|dot| {
+            self.unnamed_accessor_types
+                .contains(&format!("T:{}", &head[2..dot]))
+        })
     }
 
     /// Every target whose ID is `key`.

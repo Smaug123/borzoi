@@ -130,6 +130,9 @@ pub enum CrefMiss {
     /// The member's signature names a type no loaded assembly provides: to
     /// Roslyn it is an error type, which no documentation ID binds to.
     UnboundSignature,
+    /// The ID may be a property's or event's accessor's, which Roslyn binds
+    /// as a method of its own and the model has no target for.
+    MaybeAccessor,
 }
 
 /// Why a type argument's documentation ID cannot be settled.
@@ -432,6 +435,9 @@ impl Walk<'_> {
                 index
             }
         };
+        if index.may_name_an_accessor(cref) {
+            return Err(Decline::Cref(CrefMiss::MaybeAccessor));
+        }
         let all = index.targets(cref);
         let imported: Vec<DocTarget> = all
             .iter()

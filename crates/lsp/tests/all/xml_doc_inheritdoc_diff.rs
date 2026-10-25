@@ -1465,3 +1465,155 @@ public class D : F.T
         "the unchanged forwarder must expand both entries"
     );
 }
+
+/// A property's or event's accessor is a method with a documentation ID of
+/// its own (`M:F.Mod.get_x`), which the model folds into its owner. Roslyn
+/// binds a `cref` naming that ID to the accessor like any other method, so
+/// where another assembly's `F.Mod` declares an ordinary method of the
+/// accessor's name, the `cref` has two targets: which one Roslyn's "first
+/// symbol" picks depends on reference order, and inheriting the ordinary
+/// method's documentation is not provably its answer. Each row is one way an
+/// accessor's ID is spelled; in both orders the entry must agree with Roslyn,
+/// and the accessor guard must fire — so that a row whose order happens to
+/// make Roslyn pick the ordinary method still checks the ID was recognised.
+#[test]
+fn a_cref_naming_an_accessor_id_is_ambiguous_with_a_method_of_that_name() {
+    // (shape, the accessor-bearing type, the ordinary-method type, the cref)
+    let rows: &[(&str, &str, &str, &str)] = &[
+        (
+            "a getter",
+            "public class Mod { /// <summary>A's x.</summary>\n public int x => 0; }",
+            "public class Mod { /// <summary>B's get_x.</summary>\n public int get_x() => 0; }",
+            "M:F.Mod.get_x",
+        ),
+        (
+            "a getter of a generic type",
+            "public class Mod<T> { /// <summary>A's x.</summary>\n public int x => 0; }",
+            "public class Mod<T> { /// <summary>B's get_x.</summary>\n public int get_x() => 0; }",
+            "M:F.Mod`1.get_x",
+        ),
+        (
+            "a getter of a type nested in a generic one",
+            "public class Outer<T> { /// <summary>A's Mod.</summary>\n public class Mod { /// <summary>A's x.</summary>\n public int x => 0; } }",
+            "public class Outer<T> { /// <summary>B's Mod.</summary>\n public class Mod { /// <summary>B's get_x.</summary>\n public int get_x() => 0; } }",
+            "M:F.Outer`1.Mod.get_x",
+        ),
+        (
+            "an indexer's getter",
+            "public class Mod { /// <summary>A's indexer.</summary>\n public int this[int i] => 0; }",
+            "public class Mod { /// <summary>B's get_Item.</summary>\n public int get_Item(int i) => 0; }",
+            "M:F.Mod.get_Item(System.Int32)",
+        ),
+        (
+            "a setter",
+            "public class Mod { /// <summary>A's x.</summary>\n public int x { set { } } }",
+            "public class Mod { /// <summary>B's set_x.</summary>\n public void set_x(int value) { } }",
+            "M:F.Mod.set_x(System.Int32)",
+        ),
+        (
+            "an event's adder",
+            "public class Mod { /// <summary>A's E.</summary>\n public event System.EventHandler? E; }",
+            "public class Mod { /// <summary>B's add_E.</summary>\n public void add_E(System.EventHandler h) { } }",
+            "M:F.Mod.add_E(System.EventHandler)",
+        ),
+    ];
+    let mut censuses = Vec::new();
+    let mut guarded = Vec::new();
+    for (shape, accessor, method, cref) in rows {
+        let accessor = format!("namespace F;\n/// <summary>A's.</summary>\n{accessor}");
+        let method = format!("namespace F;\n/// <summary>B's.</summary>\n{method}");
+        let fx_source = format!(
+            "namespace G;\n/// <summary>C.</summary>\npublic class C\n{{\n    /// <inheritdoc cref=\"{cref}\"/>\n    public void Inherits() {{ }}\n}}\n"
+        );
+        let dep = |name, source| Dep {
+            name,
+            source,
+            alias: None,
+            referenced: true,
+            against: &[],
+            visible: false,
+            patch: None,
+        };
+        let orders = [
+            (
+                "accessor first",
+                [dep("DepA", &accessor), dep("DepB", &method)],
+            ),
+            (
+                "method first",
+                [dep("DepB", &method), dep("DepA", &accessor)],
+            ),
+        ];
+        for (order, deps) in orders {
+            let fx = fixture_with(&fx_source, &deps)
+                .unwrap_or_else(|e| panic!("{shape}: fixture does not compile: {e:#?}"));
+            let compared = compare(&fx);
+            let mut census = Census::default();
+            census.add(&compared);
+            census.print(&format!("{shape}, {order}"));
+            censuses.push(census);
+            let verdict = verdicts(&compared)
+                .get("M:G.C.Inherits")
+                .map(|v| (*v).clone());
+            guarded.push((
+                format!("{shape}, {order}"),
+                matches!(&verdict, Some(Verdict::Declined { cause, .. }) if cause == "Cref(MaybeAccessor)"),
+                verdict,
+            ));
+        }
+    }
+    for census in &censuses {
+        census.assert_sound();
+    }
+    for (row, fired, verdict) in &guarded {
+        assert!(fired, "{row}: the accessor guard did not fire: {verdict:?}");
+    }
+}
+
+/// [`DocIdIndex::may_name_an_accessor`] over System.Runtime's real
+/// `System.Exception`: an accessor's ID is one, an ordinary method's is not —
+/// until the projection loses the accessors' names, when no method ID of the
+/// type can be told apart from an accessor's.
+#[test]
+fn accessor_ids_are_known_or_every_method_id_of_the_type_is_suspect() {
+    use borzoi::xml_doc::key::DocIdIndex;
+    use borzoi_assembly::{EcmaView, Member};
+
+    let bytes = std::fs::read(ensure_system_runtime_dll()).unwrap();
+    let view = borzoi_assembly::Ecma335Assembly::parse(&bytes).unwrap();
+    let types = view.enumerate_type_defs().unwrap();
+    let system = |name: &str, arity: usize| {
+        types
+            .iter()
+            .find(|e| {
+                e.namespace == ["System"] && e.name == name && e.generic_parameters.len() == arity
+            })
+            .unwrap_or_else(|| panic!("System.{name}`{arity}"))
+            .clone()
+    };
+    let exception = system("Exception", 0);
+    // A generic declaring type spells its arity inside the method ID's head.
+    let nullable = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![system("Nullable", 1)]));
+    assert!(nullable.may_name_an_accessor("M:System.Nullable`1.get_Value"));
+    assert!(nullable.may_name_an_accessor("M:System.Nullable`1.get_HasValue"));
+    assert!(!nullable.may_name_an_accessor("M:System.Nullable`1.GetValueOrDefault"));
+    assert!(!nullable.may_name_an_accessor("M:System.Nullable`1.GetValueOrDefault(`0)"));
+    let named = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![exception.clone()]));
+    assert!(named.may_name_an_accessor("M:System.Exception.get_Message"));
+    assert!(named.may_name_an_accessor("M:System.Exception.add_SerializeObjectState(System.EventHandler{System.Runtime.Serialization.SafeSerializationEventArgs})"));
+    assert!(!named.may_name_an_accessor("M:System.Exception.GetBaseException"));
+    assert!(!named.may_name_an_accessor("T:System.Exception"));
+    assert!(!named.may_name_an_accessor("P:System.Exception.Message"));
+
+    let mut blanked = exception;
+    for member in &mut blanked.members {
+        if let Member::Property(p) = member {
+            for slot in &mut p.accessor_slots {
+                slot.name.clear();
+            }
+        }
+    }
+    let unnamed = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![blanked]));
+    assert!(unnamed.may_name_an_accessor("M:System.Exception.GetBaseException"));
+    assert!(!unnamed.may_name_an_accessor("M:System.ArgumentException.GetBaseException"));
+}
