@@ -992,6 +992,24 @@ fn undecided_imports_hide_no_property_writes() {
             "Gamma",
             "FromImport",
         ),
+        // A later write to a global hidden content may have opted out, in a
+        // group holding nothing else: every child writes a name the walk still
+        // protects, which must not let the group be skipped unexamined.
+        (
+            "a lone write to a global an undecided gate may have opted out",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n  <PropertyGroup>\n    <Configuration>local</Configuration>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Gamma>$(Configuration)</Gamma>\n  </PropertyGroup>\n",
+            &[("b.props", OPTS_OUT_CONFIGURATION)],
+            "Gamma",
+            "local",
+        ),
+        // …and one under a group gate the walk cannot decide either.
+        (
+            "an undecided group writing a global an undecided gate may have opted out",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n  <PropertyGroup Condition=\"'$(Alpha)' == 'x'\">\n    <Configuration>local</Configuration>\n    <Beta>b</Beta>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Gamma>$(Configuration)</Gamma>\n  </PropertyGroup>\n",
+            &[("b.props", OPTS_OUT_CONFIGURATION)],
+            "Gamma",
+            "local",
+        ),
         (
             "a write two imports deep",
             "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n",
@@ -1198,6 +1216,218 @@ fn undecided_imports_reach_only_what_they_can() {
         "scanning the hidden content took {:?}",
         started.elapsed()
     );
+}
+
+/// Whether a `Directory.Build.*` file is part of the build can rest on a value
+/// the walk does not know, and then none of what the file contributes — a
+/// property, a `#if` symbol, a `Compile` item — may be committed, whichever way
+/// the walk decided.
+///
+/// One route is the gate property itself, written under an undecided
+/// condition. The other is an undecided import's `TreatAsLocalProperty`:
+/// `Microsoft.Common.targets` default-fills `ImportDirectoryBuildTargets` and
+/// `DirectoryBuildTargetsPath` only when it can write them, so an *empty*
+/// global of either name skips the file unless something opted it out.
+///
+/// Through the real SDK chain, since that is where the default-fill lives; each
+/// case pins MSBuild's value so it demonstrates the direction it names.
+#[test]
+fn an_undecided_directory_build_import_commits_nothing_it_brings() {
+    const CONTENT: &str = "<Project>\n  <PropertyGroup>\n    <FromDirBuild>yes</FromDirBuild>\n    <DefineConstants>$(DefineConstants);FROM_DIR_BUILD</DefineConstants>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"FromDirBuild.fs\" />\n  </ItemGroup>\n</Project>\n";
+    let prelude = "  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <Alpha><![CDATA[x]]></Alpha>\n  </PropertyGroup>\n";
+    // An SDK project, with `body` after the prelude.
+    let sdk_project =
+        |body: &str| format!("<Project Sdk=\"Microsoft.NET.Sdk\">\n{prelude}{body}</Project>\n");
+    // An SDK-less project whose body reaches the SDK through an import, after
+    // `body`: MSBuild imports `Directory.Build.props` there, not before the body.
+    let nested_sdk_project = |body: &str| {
+        format!("<Project>\n{prelude}{body}  <Import Project=\"nested.props\" />\n</Project>\n")
+    };
+    let opt_out = |gate: &str| format!("  <Import Project=\"b.props\" Condition=\"{gate}\" />\n");
+    let write_under = |name: &str, gate: &str| {
+        format!(
+            "  <PropertyGroup Condition=\"{gate}\">\n    <{name}>false</{name}>\n  </PropertyGroup>\n"
+        )
+    };
+    // (the file, the empty global, if any, the project, MSBuild's `$(FromDirBuild)`)
+    let cases: Vec<(&str, Option<&str>, String, &str)> = vec![
+        // The walk follows the opt-out; MSBuild skips it, so the global stays
+        // read-only and empty, and the file is not imported.
+        (
+            "Directory.Build.targets",
+            Some("ImportDirectoryBuildTargets"),
+            sdk_project(&opt_out("'$(Alpha)' == ''")),
+            "",
+        ),
+        // The walk skips the opt-out; MSBuild runs it, so the default-fill
+        // writes through and the file is imported.
+        (
+            "Directory.Build.targets",
+            Some("ImportDirectoryBuildTargets"),
+            sdk_project(&opt_out("'$(Alpha)' == 'x'")),
+            "yes",
+        ),
+        (
+            "Directory.Build.targets",
+            Some("DirectoryBuildTargetsPath"),
+            sdk_project(&opt_out("'$(Alpha)' == ''")),
+            "",
+        ),
+        (
+            "Directory.Build.targets",
+            Some("DirectoryBuildTargetsPath"),
+            sdk_project(&opt_out("'$(Alpha)' == 'x'")),
+            "yes",
+        ),
+        // No global: the body turns the import off under a gate the walk
+        // cannot decide.
+        (
+            "Directory.Build.targets",
+            None,
+            sdk_project(&write_under(
+                "ImportDirectoryBuildTargets",
+                "'$(Alpha)' == 'x'",
+            )),
+            "",
+        ),
+        (
+            "Directory.Build.targets",
+            None,
+            sdk_project(&write_under(
+                "ImportDirectoryBuildTargets",
+                "'$(Alpha)' == ''",
+            )),
+            "yes",
+        ),
+        // The props side, where the body can reach the decision at all.
+        (
+            "Directory.Build.props",
+            None,
+            nested_sdk_project(&write_under(
+                "ImportDirectoryBuildProps",
+                "'$(Alpha)' == 'x'",
+            )),
+            "",
+        ),
+        (
+            "Directory.Build.props",
+            None,
+            nested_sdk_project(&write_under(
+                "ImportDirectoryBuildProps",
+                "'$(Alpha)' == ''",
+            )),
+            "yes",
+        ),
+    ];
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
+    let resolver = |name: &str| {
+        borzoi_msbuild::resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &borzoi_msbuild::workloads::WorkloadEnvironment {
+                user_dotnet_root: user_dotnet_root.as_deref(),
+                overrides_present,
+                // The fixture tempdir has no global.json above it.
+                global_json_pins_workload_set: false,
+            },
+        )
+    };
+    let mut oracle = Oracle::spawn();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    let mut failures = Vec::new();
+    for (index, (file, global, xml, expected)) in cases.iter().enumerate() {
+        let name = format!("case {index} ({file}, global {global:?} = '')");
+        let dir = root.join(format!("case{index}"));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join(file), CONTENT).expect("write the Directory.Build file");
+        std::fs::write(
+            dir.join("nested.props"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n",
+        )
+        .expect("write the nested SDK import");
+        if let Some(global) = global {
+            std::fs::write(
+                dir.join("b.props"),
+                format!("<Project TreatAsLocalProperty=\"{global}\">\n</Project>\n"),
+            )
+            .expect("write import");
+        }
+        let project_path = dir.join("Demo.fsproj");
+        std::fs::write(&project_path, xml).expect("write project");
+        let globals: Vec<(String, String)> = global
+            .iter()
+            .map(|g| ((*g).to_string(), String::new()))
+            .collect();
+        let parsed = parse_fsproj_with_imports(
+            xml,
+            &project_path,
+            &globals.iter().cloned().collect(),
+            &common::oracle_environment(),
+            Some(&resolver),
+            None,
+        )
+        .expect("well-formed");
+
+        let names = ["FromDirBuild".to_string(), "DefineConstants".to_string()];
+        let theirs = oracle
+            .project(xml, &names, Some(&project_path), &globals)
+            .expect("MSBuild evaluates every case");
+        assert_eq!(
+            theirs["FromDirBuild"], *expected,
+            "{name}: the pinned MSBuild value is wrong, so the case does not take \
+             its route"
+        );
+        let theirs_define = theirs["DefineConstants"]
+            .split(';')
+            .any(|d| d == "FROM_DIR_BUILD");
+        let theirs_item = oracle
+            .items(xml, &project_path, "Compile", &globals)
+            .expect("the items op accepts what the project op accepted")
+            .iter()
+            .any(|p| p.ends_with("FromDirBuild.fs"));
+
+        if let Some(ours) = parsed.properties.get("FromDirBuild")
+            && !parsed.property_provenance_untrusted("FromDirBuild")
+            && ours != &theirs["FromDirBuild"]
+        {
+            failures.push(format!(
+                "{name}: committed $(FromDirBuild) = {ours:?}, MSBuild {:?}",
+                theirs["FromDirBuild"]
+            ));
+        }
+        let ours_define = parsed
+            .define_constants
+            .iter()
+            .any(|d| d == "FROM_DIR_BUILD");
+        if !parsed.define_constants_uncertain && ours_define != theirs_define {
+            failures.push(format!(
+                "{name}: certain defines {:?}, but MSBuild {} FROM_DIR_BUILD",
+                parsed.define_constants,
+                if theirs_define {
+                    "defines"
+                } else {
+                    "does not define"
+                }
+            ));
+        }
+        let ours_item = parsed
+            .items
+            .iter()
+            .any(|i| i.kind == ItemKind::Compile && i.include.ends_with("FromDirBuild.fs"));
+        if !parsed.items_uncertain && ours_item != theirs_item {
+            failures.push(format!(
+                "{name}: a certain Compile list {} FromDirBuild.fs, MSBuild's {}",
+                if ours_item { "holds" } else { "lacks" },
+                if theirs_item { "holds it" } else { "does not" }
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// The grammar sweep at a fixed seed.
