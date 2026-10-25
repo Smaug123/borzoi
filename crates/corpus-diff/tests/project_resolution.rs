@@ -350,6 +350,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
             diagnostics: Vec::new(),
             uses: vec![ProjectUse {
                 name: "x".to_string(),
+                logical_name: None,
                 start: use_start,
                 end: use_end,
                 is_from_definition: false,
@@ -393,6 +394,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
     let src = "module A\nlet x = 1\n";
     let compared = ProjectUse {
         name: "x".to_string(),
+        logical_name: None,
         start: 13,
         end: 14,
         is_from_definition: false,
@@ -407,6 +409,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
     };
     let generated = ProjectUse {
         name: "_arg1".to_string(),
+        logical_name: None,
         is_compiler_generated: true,
         symbol_kind: None,
         ..compared.clone()
@@ -798,6 +801,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
             uses: vec![
                 ProjectUse {
                     name: "_n".to_string(),
+                    logical_name: None,
                     start: first,
                     end: first + 2,
                     is_from_definition: true,
@@ -816,6 +820,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                 },
                 ProjectUse {
                     name: "_n".to_string(),
+                    logical_name: None,
                     start: body,
                     end: body + 2,
                     is_from_definition: false,
@@ -893,6 +898,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                 // FCS's synthetic parameter, spanning the whole pattern.
                 ProjectUse {
                     name: "_arg1".to_string(),
+                    logical_name: None,
                     start: pattern_start,
                     end: pattern_end,
                     is_from_definition: false,
@@ -911,6 +917,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                 },
                 ProjectUse {
                     name: "_n".to_string(),
+                    logical_name: None,
                     start: first,
                     end: first + 2,
                     is_from_definition: true,
@@ -929,6 +936,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                 },
                 ProjectUse {
                     name: "_n".to_string(),
+                    logical_name: None,
                     start: body,
                     end: body + 2,
                     is_from_definition: false,
@@ -974,6 +982,7 @@ fn comparison_reports_skipped_oracle_categories() {
             uses: vec![
                 ProjectUse {
                     name: "x".to_string(),
+                    logical_name: None,
                     start: 0,
                     end: 1,
                     is_from_definition: true,
@@ -992,6 +1001,7 @@ fn comparison_reports_skipped_oracle_categories() {
                 },
                 ProjectUse {
                     name: "x".to_string(),
+                    logical_name: None,
                     start: 4,
                     end: 4,
                     is_from_definition: false,
@@ -1010,6 +1020,7 @@ fn comparison_reports_skipped_oracle_categories() {
                 },
                 ProjectUse {
                     name: "printfn".to_string(),
+                    logical_name: None,
                     start: 0,
                     end: 7,
                     is_from_definition: false,
@@ -1024,6 +1035,7 @@ fn comparison_reports_skipped_oracle_categories() {
                 },
                 ProjectUse {
                     name: "intrinsic".to_string(),
+                    logical_name: None,
                     start: 0,
                     end: 9,
                     is_from_definition: false,
@@ -1076,6 +1088,7 @@ fn comparison_matches_assembly_oracle_declarations() {
             diagnostics: Vec::new(),
             uses: vec![ProjectUse {
                 name: "Value".to_string(),
+                logical_name: None,
                 start,
                 end,
                 is_from_definition: false,
@@ -1137,6 +1150,7 @@ let value = 1
             uses: vec![ProjectUse {
                 // FCS names the suffixed type, as it resolves it.
                 name: "MarkAttribute".to_string(),
+                logical_name: None,
                 start: use_start,
                 end: use_end,
                 is_from_definition: false,
@@ -1184,6 +1198,7 @@ fn a_constructor_record_steps_aside_for_the_name_the_author_wrote() {
     let (use_start, use_end) = nth_text_range(src, "x", 1);
     let named = ProjectUse {
         name: "x".to_string(),
+        logical_name: None,
         start: use_start,
         end: use_end,
         is_from_definition: false,
@@ -1246,6 +1261,7 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
     let (use_start, use_end) = nth_text_range(src, "x", 1);
     let gradable = ProjectUse {
         name: "x".to_string(),
+        logical_name: None,
         start: use_start,
         end: use_end,
         is_from_definition: false,
@@ -1266,6 +1282,7 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
     // counts this one as `no_oracle_declaration`.
     let ungradable = ProjectUse {
         name: "x".to_string(),
+        logical_name: None,
         decl: UseDecl::Unlocated,
         ..gradable.clone()
     };
@@ -1306,6 +1323,7 @@ fn bcl_loaded_project(src: &str) -> LoadedProject {
 fn string_length_use(span: (usize, usize)) -> ProjectUse {
     ProjectUse {
         name: "Length".to_string(),
+        logical_name: None,
         start: span.0,
         end: span.1,
         is_from_definition: false,
@@ -1491,6 +1509,7 @@ fn comparison_reports_wrong_assembly_resolution() {
             diagnostics: Vec::new(),
             uses: vec![ProjectUse {
                 name: "Value".to_string(),
+                logical_name: None,
                 start,
                 end,
                 is_from_definition: false,
@@ -1521,6 +1540,7 @@ fn comparison_reports_wrong_assembly_resolution() {
 fn project_use(name: &str, at: (usize, usize), decl: DeclSite) -> ProjectUse {
     ProjectUse {
         name: name.to_string(),
+        logical_name: None,
         start: at.0,
         end: at.1,
         is_from_definition: false,
@@ -1867,6 +1887,7 @@ fn comparison_reports_reverse_only_project_resolution() {
             uses: vec![
                 ProjectUse {
                     name: "B".to_string(),
+                    logical_name: None,
                     start: module_start,
                     end: module_end,
                     is_from_definition: true,
@@ -1885,6 +1906,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                 },
                 ProjectUse {
                     name: "x".to_string(),
+                    logical_name: None,
                     start: x_def_start,
                     end: x_def_end,
                     is_from_definition: true,
@@ -1903,6 +1925,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                 },
                 ProjectUse {
                     name: "y".to_string(),
+                    logical_name: None,
                     start: y_def_start,
                     end: y_def_end,
                     is_from_definition: true,

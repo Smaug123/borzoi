@@ -250,6 +250,18 @@ pub fn format_fsharp_name(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Render a **value or member** name: an operator's compiled name in the
+/// parenthesised form F# writes it in (`op_Addition` is `(+)`, see
+/// [`operator_display_name`](crate::op_name::operator_display_name)), anything
+/// else as an identifier ([`format_fsharp_name`]). FCS's
+/// `ConvertValLogicalNameToDisplayName`, for the operator arm only.
+pub fn format_fsharp_value_name(name: &str) -> std::borrow::Cow<'_, str> {
+    match crate::op_name::operator_display_name(name) {
+        Some(shown) => std::borrow::Cow::Owned(shown),
+        None => format_fsharp_name(name),
+    }
+}
+
 /// Join dotted-name segments, each rendered as an F# identifier
 /// ([`format_fsharp_name`]): `["Ns", "Odd Type"]` → `` Ns.``Odd Type`` ``.
 ///
@@ -383,7 +395,7 @@ fn format_method(m: &MethodLike, owner: &Entity) -> String {
     }
 
     let keyword = method_keyword(m, owner);
-    let name = format_fsharp_name(m.source_name.as_deref().unwrap_or(&m.name));
+    let name = format_fsharp_value_name(m.source_name.as_deref().unwrap_or(&m.name));
     let typars = format_typar_list(&m.generic_parameters);
     let ret = format_return(
         &m.signature.return_type,
@@ -706,7 +718,7 @@ fn format_property(p: &Property, owner: &Entity) -> String {
     // it back as the `val` it was written as, not `member … with get`.
     if owner.kind == EntityKind::Module {
         let mutable = if p.has_setter { "mutable " } else { "" };
-        return format!("val {mutable}{}: {ty}", format_fsharp_name(&p.name));
+        return format!("val {mutable}{}: {ty}", format_fsharp_value_name(&p.name));
     }
 
     let keyword = if p.is_static {

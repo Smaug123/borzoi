@@ -47,6 +47,7 @@
 //! a coverage gap, never a wrong answer.
 
 use crate::recovery::SyntaxRecovery;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -61,6 +62,7 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 use crate::qnof::QualifiedNameOfFile;
+use borzoi_assembly::op_name::compile_op_name;
 
 mod assembly;
 mod bindings;
@@ -975,7 +977,7 @@ fn collect_sig_container_exports(
                                 // Stage 3.
                                 let Some(ident) = case.ident() else { continue };
                                 let def = Def::from_token(&ident, DefKind::UnionCase);
-                                let tq = tq_path(id_text(&def.name));
+                                let tq = tq_path(&id_text(&def.name));
                                 push(
                                     defs,
                                     def,
@@ -995,7 +997,7 @@ fn collect_sig_container_exports(
                             for case in e.cases() {
                                 let Some(ident) = case.ident() else { continue };
                                 let def = Def::from_token(&ident, DefKind::EnumCase);
-                                let tq = tq_path(id_text(&def.name));
+                                let tq = tq_path(&id_text(&def.name));
                                 push(
                                     defs,
                                     def,
@@ -1238,7 +1240,7 @@ fn sig_token_names(sig: &SigFile) -> HashSet<String> {
         if token.kind().is_trivia() {
             continue;
         }
-        let text = id_text(token.text());
+        let text = &*id_text(token.text());
         names.insert(text.to_string());
         for piece in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')) {
             if !piece.is_empty() && piece != text {
@@ -2342,7 +2344,7 @@ fn attrs_require_qualified_access(attrs: impl Iterator<Item = AttributeList>) ->
         .filter_map(|li| li.idents().last())
         .any(|seg| {
             matches!(
-                id_text(seg.text()),
+                &*id_text(seg.text()),
                 "RequireQualifiedAccess" | "RequireQualifiedAccessAttribute"
             )
         })
@@ -2356,7 +2358,7 @@ fn attrs_mark_struct(attrs: impl Iterator<Item = AttributeList>) -> bool {
         .flat_map(|list| list.attributes().collect::<Vec<_>>())
         .filter_map(|attr| attr.type_name())
         .filter_map(|li| li.idents().last())
-        .any(|seg| matches!(id_text(seg.text()), "Struct" | "StructAttribute"))
+        .any(|seg| matches!(&*id_text(seg.text()), "Struct" | "StructAttribute"))
 }
 
 /// Every nested-module name declared anywhere under `decls` (all depths),
@@ -2400,19 +2402,29 @@ fn attrs_auto_open(attrs: impl Iterator<Item = AttributeList>) -> bool {
         .flat_map(|list| list.attributes().collect::<Vec<_>>())
         .filter_map(|attr| attr.type_name())
         .filter_map(|li| li.idents().last())
-        .any(|seg| matches!(id_text(seg.text()), "AutoOpen" | "AutoOpenAttribute"))
+        .any(|seg| matches!(&*id_text(seg.text()), "AutoOpen" | "AutoOpenAttribute"))
 }
 
-/// FCS `idText` semantics: a double-backtick-quoted identifier
-/// (`` ``my name`` ``) denotes the same name as the bare form, so strip the
-/// surrounding delimiters for name *identity*. Non-quoted text is returned
-/// unchanged. `pub(crate)` so inference's annotation gate
-/// ([`crate::infer_file`], Stage R2-a) applies the same name identity when it
-/// looks an annotation head up in the primitive-alias table.
-pub(crate) fn id_text(raw: &str) -> &str {
-    raw.strip_prefix("``")
-        .and_then(|s| s.strip_suffix("``"))
-        .unwrap_or(raw)
+/// FCS `idText` semantics: the name an identifier token denotes.
+///
+/// A double-backtick-quoted identifier (`` ``my name`` ``) denotes the same
+/// name as the bare form, so the delimiters are stripped. An unquoted operator
+/// spelling denotes its compiled name ([`compile_op_name`]: `+` is
+/// `op_Addition`), which is what FCS's parser stores in `Ident.idText` and so
+/// what its name environment is keyed by. A *quoted* operator spelling is not
+/// compiled — `` ``+`` `` is the identifier `+`, a different name from the
+/// operator. Every other spelling is returned unchanged.
+///
+/// Not the name of a **prefix** application's operator, which FCS names after
+/// the position (`-x` uses `~-`); the resolver does not route those here.
+/// `pub(crate)` so inference's annotation gate ([`crate::infer_file`], Stage
+/// R2-a) applies the same name identity when it looks an annotation head up in
+/// the primitive-alias table.
+pub(crate) fn id_text(raw: &str) -> Cow<'_, str> {
+    match raw.strip_prefix("``").and_then(|s| s.strip_suffix("``")) {
+        Some(quoted) => Cow::Borrowed(quoted),
+        None => compile_op_name(raw),
+    }
 }
 
 #[cfg(test)]

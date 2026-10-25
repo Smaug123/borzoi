@@ -420,7 +420,7 @@ fn canonicalise_alternatives(
     for name in names[left..].iter_mut() {
         match name {
             PatternName::Binder(def) if binds(def) => {
-                let key = id_text(&def.name);
+                let key = &*id_text(&def.name);
                 let index = match claimed.iter_mut().find(|(seen, _)| seen == key) {
                     Some((_, count)) => {
                         *count += 1;
@@ -1383,12 +1383,12 @@ mod tests {
             //    constructor-shaped nullary name (`None`) is a *reference* when
             //    it names a case, so its repeats are two references, not one
             //    binding — FCS reports exactly that.
-            let mut bound: Vec<&str> = Vec::new();
+            let mut bound: Vec<String> = Vec::new();
             for occurrence in &occurrences {
                 if let PatternName::Binder(def) = occurrence
                     && !def.provisional
                 {
-                    let name = id_text(&def.name);
+                    let name = id_text(&def.name).into_owned();
                     prop_assert!(
                         !bound.contains(&name),
                         "{:?} binds {name:?} twice",

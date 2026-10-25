@@ -28,7 +28,7 @@ use borzoi_msbuild::{
     StructuralCompileItemUncertainty, VersionSpec,
 };
 use borzoi_sema::test_support::{
-    assembly_full_name_agrees, certified_expected as certified_structural,
+    assembly_full_name_agrees, certified_expected as certified_structural, logical_full_name,
 };
 use borzoi_sema::{
     AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, DeferredReason, InferredFile,
@@ -879,6 +879,10 @@ impl FileUses {
 #[derive(Debug, Clone)]
 pub struct ProjectUse {
     pub name: String,
+    /// For a value or member, the name FCS's name environment keys it by —
+    /// an operator's compiled name, `op_Addition`, where [`Self::name`] and
+    /// [`Self::full_name`] carry the rendering `(+)`.
+    pub logical_name: Option<String>,
     pub start: usize,
     pub end: usize,
     pub is_from_definition: bool,
@@ -1087,6 +1091,8 @@ struct RawDiagnostic {
 struct RawUse {
     #[serde(rename = "SymbolName")]
     symbol_name: String,
+    #[serde(rename = "LogicalName", default)]
+    logical_name: Option<String>,
     #[serde(rename = "Range")]
     range: FcsRange,
     #[serde(rename = "IsFromDefinition")]
@@ -1179,6 +1185,7 @@ pub fn parse_project_uses(
                     };
                     Ok(ProjectUse {
                         name: u.symbol_name,
+                        logical_name: u.logical_name,
                         start: idx.offset(u.range.start.line, u.range.start.col),
                         end: idx.offset(u.range.end.line, u.range.end.col),
                         is_from_definition: u.is_from_definition,
@@ -3798,7 +3805,9 @@ fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
     match (&use_.assembly, &use_.full_name) {
         (Some(assembly), Some(full_name)) => Some(AssemblyDecl {
             assembly: assembly.clone(),
-            full_name: full_name.clone(),
+            // Our names are logical (`op_Addition`), FCS's rendering is not
+            // (`Operators.(+)`): compare in our domain.
+            full_name: logical_full_name(full_name, &use_.name, use_.logical_name.as_deref()),
             structural: use_.declaring.as_ref().map(|declaring| StructuralName {
                 declaring: declaring.clone(),
                 leaf: use_.name.clone(),

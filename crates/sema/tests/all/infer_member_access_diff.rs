@@ -2763,10 +2763,11 @@ fn augmentation_defers_only_its_own_member_names() {
     );
 }
 
-/// An augmentation member whose name the walker cannot extract (an operator)
-/// keeps the wholesale defer — the unknowable bit, not a silent skip.
+/// An operator augmentation member joins its group under its compiled name
+/// (`(+.)` is `op_PlusDot`), as FCS keys it, so it defers that name only and
+/// `Substring` still types.
 #[test]
-fn augmentation_with_unnameable_member_defers_everything() {
+fn augmentation_operator_member_defers_only_its_compiled_name() {
     let src = "module M\ntype System.String with\n    static member (+.) (a: string, b: int) = a\nlet s = \"hi\"\nlet a = s.Substring(1)\n";
     let env = bcl_and_fsharp_core_env();
     let parsed = parse(src);
@@ -2784,10 +2785,12 @@ fn augmentation_with_unnameable_member_defers_everything() {
         .iter()
         .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
         .collect();
-    assert_ne!(
+    assert!(!resolved.augmentation_names_unknowable());
+    assert!(resolved.augmentation_static_names().contains("op_PlusDot"));
+    assert_eq!(
         def_types.get("a").map(String::as_str),
         Some("System.String"),
-        "an un-nameable augmentation member must defer every call"
+        "an operator augmentation member must not defer `Substring`"
     );
 }
 
@@ -2796,7 +2799,7 @@ fn augmentation_with_unnameable_member_defers_everything() {
 /// A preceding Compile-order file's augmentation defers only calls of the
 /// member names it declares: file 1 augmenting `Twice` no longer defers file
 /// 2's `s.Substring(1)`; file 1 augmenting `Substring` still does; an
-/// un-nameable member (an operator) in file 1 defers file 2 wholesale.
+/// operator member in file 1 is keyed by its compiled name, so it does not.
 #[test]
 fn preceding_augmentation_defers_only_its_member_names() {
     let env = bcl_and_fsharp_core_env();
@@ -2827,12 +2830,12 @@ fn preceding_augmentation_defers_only_its_member_names() {
         "a preceding augmentation OF `Substring` must defer it"
     );
 
-    let unnameable =
+    let operator =
         "module A\ntype System.String with\n    static member (+.) (a: string, b: int) = a\n";
     assert_eq!(
-        run(unnameable, caller),
-        None,
-        "a preceding un-nameable augmentation member must defer wholesale"
+        run(operator, caller).as_deref(),
+        Some("System.String"),
+        "a preceding operator augmentation member defers only `op_PlusDot`"
     );
 }
 

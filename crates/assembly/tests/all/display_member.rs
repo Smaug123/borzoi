@@ -518,9 +518,36 @@ fn function_valued_param_is_parenthesized() {
 }
 
 #[test]
+fn an_operator_method_shows_as_its_operator() {
+    // FCS's display: `(+)`, spaced `( ** )` for a name that starts or ends with
+    // `*`, and a name that does not decompile (`op_Implicit`) as itself.
+    let shown = |name: &str| {
+        let mut m = method(
+            name,
+            sig(
+                vec![param(Some("x"), prim(Primitive::I4))],
+                prim(Primitive::I4),
+            ),
+        );
+        m.is_static = true;
+        format_member(&Member::Method(m), &class("Num"))
+    };
+    assert_eq!(shown("op_Addition"), "static member (+): x: int -> int");
+    assert_eq!(
+        shown("op_Exponentiation"),
+        "static member ( ** ): x: int -> int"
+    );
+    assert_eq!(
+        shown("op_Implicit"),
+        "static member op_Implicit: x: int -> int"
+    );
+}
+
+#[test]
 fn static_abstract_method() {
     // A static abstract interface member (IWSAM / generic math) keeps both
-    // modifiers, not just `static`.
+    // modifiers, not just `static`. Its IL name is an operator's compiled
+    // name, which FCS shows as the operator (`IAdditionOperators.(+)`).
     let mut m = method(
         "op_Addition",
         sig(
@@ -535,7 +562,7 @@ fn static_abstract_method() {
             &Member::Method(m),
             &entity("IAdditionOperators", EntityKind::Interface, &["T"])
         ),
-        "static abstract member op_Addition: x: 'T * y: 'T -> 'T"
+        "static abstract member (+): x: 'T * y: 'T -> 'T"
     );
 }
 

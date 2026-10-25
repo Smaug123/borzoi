@@ -393,6 +393,7 @@ fn outcome_label(outcome: ItemOutcome) -> String {
                     DeferredReason::QualifiedAccess => "qualified-access",
                     DeferredReason::ShadowableType => "shadowable-type",
                     DeferredReason::IncompleteAssemblies => "incomplete-assemblies",
+                    DeferredReason::PrefixOperator => "prefix-operator",
                 },
             };
             let site = match site {

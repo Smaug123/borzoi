@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use borzoi_oracle_harness::{BatchChild, default_timeout};
-use borzoi_sema::test_support::{DeclaringEntity, StructuralName};
+use borzoi_sema::test_support::{DeclaringEntity, StructuralName, logical_full_name};
 use borzoi_spawn::BoundedCommand;
 use serde::Deserialize;
 
@@ -435,6 +435,8 @@ impl<'a> LineIndex<'a> {
 struct RawUse {
     #[serde(rename = "SymbolName")]
     symbol_name: String,
+    #[serde(rename = "LogicalName", default)]
+    logical_name: Option<String>,
     #[serde(rename = "Range")]
     range: FcsRange,
     #[serde(rename = "IsFromDefinition")]
@@ -688,6 +690,11 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         }),
                         Some(_) | None => None,
                     };
+                    // Our names are logical (`op_Addition`), FCS's rendering is
+                    // not (`Operators.(+)`): compare in our domain.
+                    let full_name = u.full_name.as_deref().map(|full| {
+                        logical_full_name(full, &u.symbol_name, u.logical_name.as_deref())
+                    });
                     NormalisedProjectUse {
                         name: u.symbol_name,
                         start: idx.offset(u.range.start.line, u.range.start.col),
@@ -695,7 +702,7 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         is_from_definition: u.is_from_definition,
                         decl,
                         assembly: u.assembly,
-                        full_name: u.full_name,
+                        full_name,
                         structural,
                     }
                 })

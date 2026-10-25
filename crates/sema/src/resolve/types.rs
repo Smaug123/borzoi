@@ -1194,7 +1194,7 @@ impl<'a> Resolver<'a> {
             // constraint-only variable), it stays unrecorded: a sound deferral.
             Type::Var(t) => {
                 if let Some(tok) = t.ident()
-                    && let Some(id) = self.lookup_typar(id_text(tok.text()))
+                    && let Some(id) = self.lookup_typar(&id_text(tok.text()))
                     && let Some((range, _)) = typar_occurrence(t.syntax())
                 {
                     self.record(range, Resolution::Local(id));
@@ -2370,7 +2370,7 @@ impl<'a> Resolver<'a> {
     /// type of the same name shadows the enclosing one. `None` if no in-file type
     /// of that name is in scope. (Cross-file / assembly types are a later slice.)
     pub(super) fn lookup_type_def(&self, name: &str) -> Option<DefId> {
-        let name = id_text(name);
+        let name = &*id_text(name);
         (0..=self.container_path.len()).rev().find_map(|k| {
             self.type_defs
                 .get(&self.container_path[..k])
@@ -2534,8 +2534,8 @@ impl<'a> Resolver<'a> {
                         // `lookup` keys on the *normalized* name (scope entries are
                         // `id_text`-stripped), so a quoted head `` `Scale` `` must be
                         // normalized too or the guard silently misses the shadow.
-                        let shadowed =
-                            opened_shape.is_some() && self.lookup(id_text(single.text())).is_some();
+                        let shadowed = opened_shape.is_some()
+                            && self.lookup(&id_text(single.text())).is_some();
                         if let Some(shape) =
                             opened_shape.or_else(|| self.resolution_active_pattern_shape(res))
                             && !shadowed
@@ -2984,7 +2984,7 @@ impl<'a> Resolver<'a> {
     /// *emission* index ([`Self::index_augmentation_members`], which needs the
     /// head to resolve), the names are walkable for **every** augmentation
     /// shape; only a member whose name itself cannot be extracted (an
-    /// operator/active-pattern head, an `inherit`) sets
+    /// active-pattern head, an `inherit`) sets
     /// [`Resolver::augmentation_names_unknowable`], keeping the wholesale
     /// defer. Deliberately over-approximate where classification is uncertain:
     /// an unknown staticness lands in both sets, an `override` counts as an
@@ -3010,24 +3010,10 @@ impl<'a> Resolver<'a> {
                                 return None;
                             }
                             let tok = l.head().and_then(|h| h.idents().last())?;
-                            let raw = tok.text();
-                            let name = id_text(raw).to_string();
                             // An operator member (`static member (+.) …`)
-                            // joins resolution under its COMPILED `op_*`
-                            // name, which we do not re-derive — unknowable.
-                            // A quoted identifier (`` ``odd name`` ``) is a
-                            // genuine group key and stays. The ident-shape
-                            // test is on the stripped text; the backtick
-                            // test on the raw.
-                            let quoted = raw.starts_with("``");
-                            if !quoted
-                                && !name
-                                    .chars()
-                                    .all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
-                            {
-                                return None;
-                            }
-                            Some(name)
+                            // joins its group under its compiled name
+                            // (`op_PlusDot`), which is what `id_text` gives.
+                            Some(id_text(tok.text()).to_string())
                         }
                         _ => None,
                     });

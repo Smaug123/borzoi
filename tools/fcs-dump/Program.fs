@@ -4989,7 +4989,18 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
         match u.Symbol with
         | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsConstructor with _ -> false)
         | _ -> false
+    // The name FCS's name environment keys a value by: an operator's
+    // *compiled* name (`op_Addition` for `(+)`, whose `DisplayName` is the
+    // rendering `(+)`). It is the domain a resolver's own keys live in, so a
+    // consumer can compare an operator without reversing the rendering.
+    // `null` for anything but a value/member, or when the accessor throws.
+    let logicalName : objnull =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m ->
+            (try box m.LogicalName with _ -> null)
+        | _ -> null
     {| SymbolName = u.Symbol.DisplayName
+       LogicalName = logicalName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
        DeclRange = declRange

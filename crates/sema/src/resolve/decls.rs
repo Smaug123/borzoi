@@ -544,7 +544,7 @@ impl<'a> Resolver<'a> {
                         } else {
                             slot
                         };
-                        self.export_type_path(id_text(name.text()), cases_enumerable, export_slot);
+                        self.export_type_path(&id_text(name.text()), cases_enumerable, export_slot);
                         // The export-decl-list twin: a genuine `Type` decl feeding
                         // `type_paths` (keyed by its own path), the nested-module
                         // shadow set, and — when `[<AutoOpen>]` — its container's
@@ -571,7 +571,7 @@ impl<'a> Resolver<'a> {
                         // same defn (only one matches the repr) and must not clobber
                         // the other's just-added cases.
                         if let Some(by_type) = self.type_cases.get_mut(&self.container_path) {
-                            by_type.remove(id_text(name.text()));
+                            by_type.remove(&*id_text(name.text()));
                         }
                         // A union's cases enter the container-scoped case index
                         // here, so the whole group's cases are visible before any
