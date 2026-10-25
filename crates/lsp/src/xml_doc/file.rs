@@ -48,8 +48,9 @@ pub struct DocFile {
     /// Keys whose entry Roslyn's `XmlDocumentationProvider` would read
     /// differently from this index: a key carried by a `<member>` nested
     /// inside another (Roslyn reads the outer one whole and never indexes the
-    /// inner), or by a `<member>` outside any `<members>` (Roslyn indexes every
-    /// `<member>`, last one wins). See [`Self::read_as_roslyn_reads`].
+    /// inner), or by a `<member>` outside the indexed `<doc>`'s `<members>`
+    /// (Roslyn indexes every `<member>` in the document, last one wins). See
+    /// [`Self::read_as_roslyn_reads`].
     roslyn_divergent: HashSet<String>,
 }
 
@@ -177,7 +178,8 @@ impl DocFile {
         // Roslyn's provider indexes every element whose *qualified* name is
         // `member`, under `<members>` or not, except one inside another, which
         // it reads as part of the outer. This index takes `<member>`s by local
-        // name under `<members>`, nested ones included — and re-parses each
+        // name under `<members>` in the one `<doc>` it selected, nested ones
+        // included — and re-parses each
         // entry on its own, losing a namespace declared outside it. Any
         // `member` element outside the overlap, or in a namespace, marks its
         // key as read differently.
@@ -195,9 +197,22 @@ impl DocFile {
         let any_namespaced = all_members
             .iter()
             .any(|m| m.tag_name().namespace().is_some());
+        // Entries are the `<member>` elements under a `<members>` element
+        // anywhere in the selected `<doc>` — including one nested inside
+        // another entry (seen in NuGet packages), which documents its own key.
+        // The outer entry's range still covers it; the renderer does not show
+        // a nested `<member>` as the outer symbol's documentation. A
+        // `<member>` anywhere else in the file — under a second `<doc>`, say —
+        // is outside the index but not outside Roslyn's reading.
+        let members: Vec<_> = doc_element
+            .descendants()
+            .filter(|n| n.has_tag_name("member"))
+            .filter(|m| m.ancestors().any(|a| a.has_tag_name("members")))
+            .collect();
+        let indexed: HashSet<roxmltree::NodeId> = members.iter().map(|m| m.id()).collect();
         for member in &all_members {
-            let indexed_here = member.tag_name().namespace().is_none()
-                && member.ancestors().any(|a| a.has_tag_name("members"));
+            let indexed_here =
+                member.tag_name().namespace().is_none() && indexed.contains(&member.id());
             let nested = member
                 .ancestors()
                 .skip(1)
@@ -210,15 +225,6 @@ impl DocFile {
                 roslyn_divergent.insert(key.to_string());
             }
         }
-        // Entries are the `<member>` elements under a `<members>` element
-        // anywhere in the `<doc>` — including one nested inside another entry
-        // (seen in NuGet packages), which documents its own key. The outer
-        // entry's range still covers it; the renderer does not show a nested
-        // `<member>` as the outer symbol's documentation.
-        let members = doc_element
-            .descendants()
-            .filter(|n| n.has_tag_name("member"))
-            .filter(|m| m.ancestors().any(|a| a.has_tag_name("members")));
         for member in members {
             // A `<member>` without a usable `name` (absent, or the `name=""`
             // FSharp.Core 4.0.0.1 ships hundreds of) cannot be looked up, so it
@@ -255,7 +261,7 @@ impl DocFile {
     /// no entry for, whether Roslyn also has none. It indexes every element
     /// named `member` (last one wins) and reads each outer one whole, so the
     /// two agree unless the key also sits on a nested `<member>`, one outside
-    /// `<members>`, or a namespaced one. `<inheritdoc>` expansion reproduces
+    /// the indexed `<doc>`'s `<members>`, or a namespaced one. `<inheritdoc>` expansion reproduces
     /// Roslyn, so it reads — and reads the absence of — only entries for which
     /// this holds. (A namespaced element *inside* an entry is the expansion's
     /// own concern: it declines on one.)

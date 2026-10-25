@@ -1103,6 +1103,50 @@ public class D : B { }
     );
 }
 
+/// The index reads the first `<doc>` of a `<span>`-wrapped file, but Roslyn's
+/// documentation provider indexes every `<member>` in the document, last one
+/// wins. With a second `<doc>` re-documenting `B`, Roslyn expands `D`'s
+/// `<inheritdoc/>` to the second summary; inheriting the first would be a
+/// different answer.
+#[test]
+fn an_entry_in_a_second_doc_section_is_read_differently() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>B.</summary>
+public class B { }
+
+/// <inheritdoc/>
+public class D : B { }
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let xml = fx.dll.with_extension("xml");
+    let compiled = std::fs::read_to_string(&xml).unwrap();
+    let body = compiled
+        .trim_start()
+        .strip_prefix("<?xml version=\"1.0\"?>")
+        .expect("the compiler writes an XML declaration");
+    let wrapped = format!(
+        "<span>{body}<doc><assembly><name>Fx</name></assembly><members>\
+         <member name=\"T:F.B\"><summary>The second B.</summary></member>\
+         </members></doc></span>"
+    );
+    std::fs::write(&xml, wrapped).unwrap();
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("a second <doc> section");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("T:F.D"), Some(Verdict::Declined { cause, .. }) if cause == "ReadDifferently"),
+        "{:?}",
+        v.get("T:F.D")
+    );
+}
+
 /// Swap the names of the two getters of `N.I`: `P`'s getter is `get_Q` and
 /// `Q`'s is `get_P` — legal metadata no C# compiler writes.
 fn swap_getter_names(dll: &std::path::Path) {
