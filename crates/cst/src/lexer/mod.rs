@@ -202,8 +202,8 @@ pub enum Token<'a> {
     /// compiler restricts shebangs to the first line of a file; we don't —
     /// out-of-position `#!` isn't valid F# code anyway, so accepting it as a
     /// comment is harmless and avoids a positional anchor Logos can't express.
-    #[regex(r"//[^\n\r]*")]
-    #[regex(r"#![^\n\r]*")]
+    #[regex(r"//[^\n\r]*", allow_greedy = true)]
+    #[regex(r"#![^\n\r]*", allow_greedy = true)]
     LineComment,
 
     #[token("(*", lex_block_comment)]
