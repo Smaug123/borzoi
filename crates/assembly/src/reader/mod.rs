@@ -39,6 +39,8 @@ mod typedefs_tests;
 // onto the `Entity`-level `model::AssemblyIdentity`.
 pub(crate) use image::{Image, parse};
 pub(crate) use manifest::AssemblyIdentity;
+#[cfg(test)]
+pub(crate) use manifest::ManifestResource;
 // The custom-attribute value model `Image::decode_attribute` produces, which the
 // projector classifies into `Entity`-level facts.
 pub(crate) use attributes::{DecodedAttribute, EnumWidths, FixedArg, IntegralParam, IntegralWidth};

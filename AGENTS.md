@@ -168,7 +168,12 @@ This is a Cargo workspace with nine members:
   projects through the same runtime path the LSP uses (`Workspace` +
   project-assets closure + the sema fold), asks FCS for symbol uses, and
   compares the two — without letting skipped or erroring projects masquerade as
-  agreement. Depends on `borzoi`, `borzoi-msbuild`,
+  agreement. Each comparable project is then put to the real request handlers
+  over the protocol (`handler_diff.rs`): definition, hover and references at
+  the first, middle and last character of FCS's records, positions converted by
+  an independent UTF-16 implementation, and again on a copy with non-ASCII text
+  substituted into comments and strings, which FCS checks too. Depends on
+  `borzoi`, `borzoi-cst`, `borzoi-msbuild`,
   `borzoi-sema`, and `borzoi-spawn` (the `fcs-dump` driver lives in
   its library, not its tests, so it is a regular dependency); driven by
   `docs/project-corpus-diff-runner.md`.
@@ -350,13 +355,14 @@ nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ign
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
-nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~20 s
-nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s
+nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
+nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s
 nix develop -c cargo test -p borzoi-msbuild --test sdk_chain_decline_attribution -- --ignored  # ~1 s
 ```
 
 The cst and sema sweeps, `borzoi-assembly`'s reference-pack sweep (an
-ordinary test rather than an ignored one), and the whole-project gate
+ordinary test rather than an ignored one), the MSBuild corpus differential, and
+the whole-project gate
 (`ci.yml`'s `corpus-diff` job) pin every graded *item*, not a count: each
 compares its run against a checked-in manifest (`crates/<crate>/tests/manifests/`,
 `crates/corpus-diff/manifests/`) and fails on any movement **in either

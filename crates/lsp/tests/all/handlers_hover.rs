@@ -7,6 +7,7 @@
 //! against a real `FSharp.Core.dll` env at the bottom of the file. The JSON-RPC
 //! end-to-end test lands with Stage 8.
 
+use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::Path;
 
@@ -22,7 +23,7 @@ use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_sema::{AssemblyEnv, SemanticClass};
 use lsp_types::{
     Hover, HoverContents, HoverParams, MarkupKind, Position, TextDocumentIdentifier,
-    TextDocumentPositionParams, Url, WorkDoneProgressParams,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 use tempfile::TempDir;
 
@@ -33,7 +34,7 @@ fn write(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-fn params(uri: &Url, line: u32, character: u32) -> HoverParams {
+fn params(uri: &Uri, line: u32, character: u32) -> HoverParams {
     HoverParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -43,7 +44,7 @@ fn params(uri: &Url, line: u32, character: u32) -> HoverParams {
     }
 }
 
-fn run(state: &mut State, uri: &Url, line: u32, character: u32) -> Option<Hover> {
+fn run(state: &mut State, uri: &Uri, line: u32, character: u32) -> Option<Hover> {
     hover::handle(state, params(uri, line, character))
 }
 
@@ -57,9 +58,9 @@ fn body(hover: &Hover) -> &str {
     }
 }
 
-fn orphan_state(text: &str) -> (State, Url) {
+fn orphan_state(text: &str) -> (State, Uri) {
     let mut state = State::default();
-    let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
     state.docs.insert(uri.clone(), text.to_string());
     (state, uri)
 }
@@ -241,6 +242,40 @@ fn deferred_resolution_explains_why_definition_is_unavailable() {
     assert_eq!((range.start.character, range.end.character), (8, 15));
 }
 
+/// A signature file of an evaluated project is analysed on its own, but the
+/// explanation must not blame the project: the `.fsproj` evaluated, and the
+/// file is one of its Compile items.
+#[test]
+fn a_signature_file_in_its_project_is_not_explained_as_an_orphan() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("P.fsproj"),
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fsi" />
+            <Compile Include="A.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    let sig = "module A\nval f : int -> 'a list\n";
+    let sig_path = tmp.path().join("A.fsi");
+    write(&sig_path, sig);
+    write(&tmp.path().join("A.fs"), "module A\nlet f (x : int) = x\n");
+    let mut state = State::default();
+    let uri = Uri::from_file_path(&sig_path).unwrap();
+    state.docs.insert(uri.clone(), sig.to_string());
+
+    let hover = run(&mut state, &uri, 1, 4).expect("an explanation for `f`");
+    let body = body(&hover);
+    assert!(body.starts_with("**No definition available**"), "{body}");
+    assert!(!body.contains("didn't evaluate"), "{body}");
+    assert!(
+        !body.contains("isn't one of the project's compile items"),
+        "{body}"
+    );
+    assert!(body.contains("signature file"), "{body}");
+}
+
 #[test]
 fn cursor_off_identifier_returns_none() {
     // Cursor on whitespace — no recorded resolution contains it.
@@ -252,7 +287,7 @@ fn cursor_off_identifier_returns_none() {
 #[test]
 fn missing_buffer_returns_none() {
     let mut state = State::default();
-    let uri = Url::parse("inmemory:///Missing.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Missing.fs").unwrap();
     assert!(run(&mut state, &uri, 0, 0).is_none());
 }
 
@@ -323,7 +358,7 @@ fn cross_file_qualified_reference_hovers_target_binder() {
     let b_src = "module Other\nlet bar = Shared.foo\n";
     write(&b, b_src);
 
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(b_uri.clone(), b_src.to_string());
 
@@ -362,7 +397,7 @@ fn project_hover_folds_only_the_prefix_up_to_the_cursor_file() {
     write(&b, b_src);
     write(&c, "module Third\nlet baz = Other.bar\n");
 
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(b_uri.clone(), b_src.to_string());
 
@@ -396,7 +431,7 @@ fn project_file_literal_hover_shows_inferred_type() {
     let a_src = "module Sample\nlet answer = 42\n";
     write(&a, a_src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), a_src.to_string());
 
@@ -870,7 +905,7 @@ fn member_access_hover_shows_int_via_project_assembly_env() {
     };
     let mut state = State::default();
     state.workspace = Workspace::with_env(env);
-    let uri = Url::from_file_path(&src_path).unwrap();
+    let uri = Uri::from_file_path(&src_path).unwrap();
     state.docs.insert(uri.clone(), src.to_string());
 
     // Hover on the binder `n` (line 2, `let n = …`, `n` at column 4).

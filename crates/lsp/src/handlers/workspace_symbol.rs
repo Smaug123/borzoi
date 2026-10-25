@@ -25,12 +25,13 @@
 //! slot is inert in Stage 1 of `docs/fsi-signature-restriction-plan.md`). The CST parser runs under `catch_unwind`, so a buffer that
 //! panics the parser contributes nothing rather than crashing the server.
 
+use crate::uri::UriExt as _;
 use borzoi_sema::SyntaxRecovery;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use lsp_types::{SymbolInformation, Url, WorkspaceSymbolParams, WorkspaceSymbolResponse};
+use lsp_types::{SymbolInformation, Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse};
 
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::handlers::{file_export_symbols, symbol_information};
@@ -41,7 +42,7 @@ use crate::server::State;
 /// buffers (unsaved `untitled:` / in-memory docs): they can't name an owning
 /// project, but their own symbols are still searchable via the single-file pass.
 struct OpenSource {
-    uri: Url,
+    uri: Uri,
     path: Option<PathBuf>,
     text: String,
 }
@@ -195,7 +196,7 @@ fn collect_matching(
     text: &str,
     file: &ImplFile,
     recovery: &SyntaxRecovery,
-    uri: &Url,
+    uri: &Uri,
 ) {
     for (name, kind, range) in file_export_symbols(text, file, recovery) {
         if !lower_query.is_empty() && !name.to_lowercase().contains(lower_query) {
@@ -218,8 +219,8 @@ fn collect_matching(
 /// Whether `uri`'s path names an F# source file (`.fs` / `.fsi` / `.fsx`),
 /// case-insensitively. Works on the URI path directly so non-`file:` buffers
 /// (in-memory / unsaved) are classified too — mirrors `server::path_extension`.
-fn is_source_uri(uri: &Url) -> bool {
-    let last = uri.path().rsplit('/').next().unwrap_or("");
+fn is_source_uri(uri: &Uri) -> bool {
+    let last = uri.path().as_str().rsplit('/').next().unwrap_or("");
     std::path::Path::new(last)
         .extension()
         .and_then(|e| e.to_str())

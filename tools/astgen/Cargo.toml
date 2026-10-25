@@ -10,4 +10,4 @@ description = "Code generator for the borzoi-cst typed-AST facade (plan Stage 4)
 # adds nothing to `borzoi-cst`'s dependency closure (it is a sibling tool,
 # never a dependency of the crate it generates).
 [dependencies]
-borzoi-spawn = { path = "../../crates/spawn" }
+borzoi-spawn.workspace = true

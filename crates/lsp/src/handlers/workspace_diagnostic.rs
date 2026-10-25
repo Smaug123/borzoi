@@ -235,7 +235,7 @@ mod tests {
             let WorkspaceDocumentDiagnosticReport::Full(full) = item else {
                 return None;
             };
-            (full.uri.path().rsplit('/').next() == Some(file_name))
+            (full.uri.path().as_str().rsplit('/').next() == Some(file_name))
                 .then_some(full.full_document_diagnostic_report.items.as_slice())
         })
     }
@@ -350,7 +350,7 @@ mod tests {
                 let WorkspaceDocumentDiagnosticReport::Full(full) = item else {
                     return false;
                 };
-                full.uri.path().rsplit('/').next() == Some("Shared.fs")
+                full.uri.path().as_str().rsplit('/').next() == Some("Shared.fs")
             })
             .count();
         assert_eq!(shared, 1, "a linked file is reported once: {result:?}");
@@ -524,6 +524,7 @@ mod tests {
                 };
                 full.uri
                     .path()
+                    .as_str()
                     .rsplit('/')
                     .next()
                     .is_some_and(|n| n.eq_ignore_ascii_case("foo.fs"))
@@ -571,6 +572,7 @@ mod tests {
                 };
                 full.uri
                     .path()
+                    .as_str()
                     .rsplit('/')
                     .next()
                     .is_some_and(|n| n.eq_ignore_ascii_case("lib.fs"))
@@ -628,7 +630,7 @@ mod tests {
                 WorkspaceDocumentDiagnosticReport::Full(f) => (&f.uri, "full"),
                 WorkspaceDocumentDiagnosticReport::Unchanged(u) => (&u.uri, "unchanged"),
             };
-            (uri.path().rsplit('/').next() == Some(file_name)).then_some(kind)
+            (uri.path().as_str().rsplit('/').next() == Some(file_name)).then_some(kind)
         })
     }
 
@@ -709,7 +711,7 @@ mod tests {
             let WorkspaceDocumentDiagnosticReport::Full(f) = item else {
                 return None;
             };
-            (f.uri.path().rsplit('/').next() == Some("App.fsproj"))
+            (f.uri.path().as_str().rsplit('/').next() == Some("App.fsproj"))
                 .then(|| f.full_document_diagnostic_report.result_id.clone())
         });
         assert_eq!(fsproj_id, Some(None), "fsproj must carry no result_id");

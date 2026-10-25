@@ -13,6 +13,7 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
+use borzoi::uri::UriExt as _;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -182,10 +183,10 @@ pub fn minimal_assets_json(package_folder: &Path) -> String {
 /// A "restored" temp project whose `AssemblyEnv` carries a real
 /// `System.Runtime.dll` (so `System.String` and its members resolve), compiling
 /// `src` as its single file. Returns the wired-up [`State`](borzoi::server::State)
-/// and the file `Url`. The [`TempDir`](tempfile::TempDir) is leaked so the paths
+/// and the file `Uri`. The [`TempDir`](tempfile::TempDir) is leaked so the paths
 /// outlive the returned `State` (test-only). Shared by the Stage 3.3b member-name
 /// hover / go-to-definition / completion integration tests.
-pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Url) {
+pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Uri) {
     let (state, mut uris) = runtime_project_state_files(&[("Lib.fs", src)]);
     (state, uris.remove(0))
 }
@@ -197,7 +198,7 @@ pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Ur
 /// *early* file and assert the resolution slice folds only the prefix up to it.
 pub fn runtime_project_state_files(
     files: &[(&str, &str)],
-) -> (borzoi::server::State, Vec<lsp_types::Url>) {
+) -> (borzoi::server::State, Vec<lsp_types::Uri>) {
     use borzoi::sdk_discovery::SdkDiscoveryEnv;
     use borzoi::server::State;
     use borzoi::workspace::Workspace;
@@ -248,7 +249,7 @@ pub fn runtime_project_state_files(
         .map(|(name, src)| {
             let path = root.join(name);
             write(&path, src);
-            let uri = lsp_types::Url::from_file_path(&path).unwrap();
+            let uri = lsp_types::Uri::from_file_path(&path).unwrap();
             state.docs.insert(uri.clone(), src.to_string());
             uri
         })
@@ -1018,4 +1019,51 @@ pub fn write_offline_nuget_config(dir: &Path) {
 pub fn write_boundary_global_json(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create project dir");
     std::fs::write(dir.join("global.json"), "{}\n").expect("write global.json");
+}
+
+/// An env over `dlls`, each carrying its source path and its
+/// [`borzoi_assembly::doc_id::DocIdDialect`] read from the DLL itself — what
+/// hover's doc lookup needs, and what [`borzoi_sema::AssemblyEnv::from_assemblies`]
+/// does not record. A DLL that does not read is left out.
+pub fn doc_key_env(dlls: &[PathBuf]) -> borzoi_sema::AssemblyEnv {
+    use borzoi_assembly::{Ecma335Assembly, EcmaView};
+    doc_key_env_of(
+        dlls.iter()
+            .filter_map(|dll| {
+                let bytes = std::fs::read(dll).ok()?;
+                let view = Ecma335Assembly::parse(&bytes).ok()?;
+                let roots = view.enumerate_type_defs().ok()?;
+                let dialect = view.doc_id_dialect().expect("doc-ID dialect");
+                Some((dll.clone(), roots, dialect))
+            })
+            .collect(),
+    )
+}
+
+/// [`doc_key_env`] over entity trees the caller supplies (possibly doctored),
+/// each with the dialect to record for it.
+pub fn doc_key_env_of(
+    assemblies: Vec<(
+        PathBuf,
+        Vec<borzoi_assembly::Entity>,
+        borzoi_assembly::doc_id::DocIdDialect,
+    )>,
+) -> borzoi_sema::AssemblyEnv {
+    let inputs = assemblies
+        .into_iter()
+        .map(
+            |(path, roots, dialect)| borzoi_sema::AssemblyProjectionInput {
+                path,
+                roots,
+                abbreviation_visibility: borzoi_sema::AbbreviationVisibility::Modelled,
+                extension_index_unknowable: false,
+                signature_non_authoritative: false,
+                auto_opens: Vec::new(),
+                manifest_identity: None,
+                type_forwarders: Vec::new(),
+                doc_id_dialect: Some(dialect),
+            },
+        )
+        .collect();
+    borzoi_sema::AssemblyEnv::from_assemblies_with_projection_knowability(inputs)
 }

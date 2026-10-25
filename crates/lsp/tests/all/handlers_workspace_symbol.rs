@@ -6,13 +6,14 @@
 //! top-level exports `textDocument/documentSymbol` surfaces, filtered by a
 //! case-insensitive substring `query`.
 
+use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::Path;
 
 use borzoi::handlers::workspace_symbol;
 use borzoi::server::State;
 use lsp_types::{
-    PartialResultParams, SymbolInformation, SymbolKind, Url, WorkDoneProgressParams,
+    PartialResultParams, SymbolInformation, SymbolKind, Uri, WorkDoneProgressParams,
     WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use tempfile::TempDir;
@@ -48,7 +49,7 @@ fn names(symbols: &[SymbolInformation]) -> Vec<&str> {
 }
 
 /// A two-file project with both files open in the editor.
-fn two_file_project() -> (TempDir, State, Url, Url) {
+fn two_file_project() -> (TempDir, State, Uri, Uri) {
     let tmp = TempDir::new().unwrap();
     let proj = tmp.path().join("P.fsproj");
     let a = tmp.path().join("A.fs");
@@ -67,8 +68,8 @@ fn two_file_project() -> (TempDir, State, Url, Url) {
     write(&a, a_src);
     write(&b, b_src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), a_src.to_string());
     state.docs.insert(b_uri.clone(), b_src.to_string());
@@ -129,7 +130,7 @@ fn distinguishes_function_and_value_kinds() {
     let src = "let value = 1\nlet func x = x\n";
     write(&a, src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), src.to_string());
 
@@ -153,7 +154,7 @@ fn parameters_are_not_workspace_symbols() {
     );
     let src = "let func x = x\n";
     write(&a, src);
-    let a_uri = Url::from_file_path(&a).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri, src.to_string());
 
@@ -170,7 +171,7 @@ fn orphan_buffer_falls_back_to_single_file_extraction() {
     let loose = tmp.path().join("Loose.fs");
     let src = "let orphanSym = 1\n";
     write(&loose, src);
-    let uri = Url::from_file_path(&loose).unwrap();
+    let uri = Uri::from_file_path(&loose).unwrap();
 
     let mut state = State::default();
     state.docs.insert(uri.clone(), src.to_string());
@@ -209,8 +210,8 @@ fn same_project_via_different_path_spellings_is_not_duplicated() {
 
     // Open A under the real (lowercase) dir and B under an upper-cased dir that
     // resolves to the same directory on a case-insensitive filesystem.
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(tmp.path().join("PROJ").join("B.fs")).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(tmp.path().join("PROJ").join("B.fs")).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri, "let aSym = 1\n".to_string());
     state.docs.insert(b_uri, "let bSym = 2\n".to_string());
@@ -257,8 +258,8 @@ fn shared_file_compiled_by_two_open_projects_is_listed_once() {
     write(&b_own, "let bOwnSym = 1\n");
 
     // Open one file from each project so both projects enter the search set.
-    let a_uri = Url::from_file_path(&a_own).unwrap();
-    let b_uri = Url::from_file_path(&b_own).unwrap();
+    let a_uri = Uri::from_file_path(&a_own).unwrap();
+    let b_uri = Uri::from_file_path(&b_own).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri, "let aOwnSym = 1\n".to_string());
     state.docs.insert(b_uri, "let bOwnSym = 1\n".to_string());
@@ -311,8 +312,8 @@ fn shared_file_exposes_each_projects_active_if_branch() {
     write(&a_own, "let aOwnSym = 1\n");
     write(&b_own, "let bOwnSym = 1\n");
 
-    let a_uri = Url::from_file_path(&a_own).unwrap();
-    let b_uri = Url::from_file_path(&b_own).unwrap();
+    let a_uri = Uri::from_file_path(&a_own).unwrap();
+    let b_uri = Uri::from_file_path(&b_own).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri, "let aOwnSym = 1\n".to_string());
     state.docs.insert(b_uri, "let bOwnSym = 1\n".to_string());
@@ -333,7 +334,7 @@ fn query_matches_non_ascii_identifiers_case_insensitively() {
     let loose = tmp.path().join("Loose.fs");
     let src = "let café = 1\n";
     write(&loose, src);
-    let uri = Url::from_file_path(&loose).unwrap();
+    let uri = Uri::from_file_path(&loose).unwrap();
 
     let mut state = State::default();
     state.docs.insert(uri, src.to_string());
@@ -369,8 +370,8 @@ fn open_linked_file_is_not_reparsed_under_wrong_defines() {
     write(&shared, lib_src);
 
     // Open App.fs (folds the App project) and the shared Lib.fs itself.
-    let app_uri = Url::from_file_path(&app_own).unwrap();
-    let lib_uri = Url::from_file_path(&shared).unwrap();
+    let app_uri = Uri::from_file_path(&app_own).unwrap();
+    let lib_uri = Uri::from_file_path(&shared).unwrap();
     let mut state = State::default();
     state.docs.insert(app_uri, "let appSym = 1\n".to_string());
     state.docs.insert(lib_uri, lib_src.to_string());
@@ -404,7 +405,7 @@ fn buffer_overlay_beats_disk_text() {
         r#"<Project><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
     );
     write(&a, "let diskSym = 1\n");
-    let a_uri = Url::from_file_path(&a).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
 
     let mut state = State::default();
     state
@@ -425,7 +426,7 @@ mod panic_safe {
         #[test]
         fn handler_never_panics(src in "(?s).{0,80}", query in ".{0,8}") {
             let mut state = State::default();
-            let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+            let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
             state.docs.insert(uri, src);
             let _ = workspace_symbol::handle(&mut state, params(&query));
         }
@@ -450,7 +451,7 @@ fn projects_are_searched_in_open_buffer_order() {
         write(&dir.join("A.fs"), &src);
         state
             .docs
-            .insert(Url::from_file_path(dir.join("A.fs")).unwrap(), src);
+            .insert(Uri::from_file_path(dir.join("A.fs")).unwrap(), src);
     }
     let uris: Vec<String> = run(&mut state, "")
         .iter()

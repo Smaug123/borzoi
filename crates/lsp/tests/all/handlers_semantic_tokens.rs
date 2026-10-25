@@ -5,6 +5,7 @@
 //! and `lsp_integration.rs`; this pins the open-buffer guard against the project
 //! path, where resolution would otherwise read the file from disk.
 
+use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::Path;
 
@@ -12,7 +13,7 @@ use borzoi::handlers::semantic_tokens;
 use borzoi::server::{State, server_capabilities};
 use lsp_types::{
     PartialResultParams, SemanticToken, SemanticTokenType, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, TextDocumentIdentifier, Url,
+    SemanticTokensResult, SemanticTokensServerCapabilities, TextDocumentIdentifier, Uri,
     WorkDoneProgressParams,
 };
 use tempfile::TempDir;
@@ -54,7 +55,7 @@ fn write(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-fn params(uri: &Url) -> SemanticTokensParams {
+fn params(uri: &Uri) -> SemanticTokensParams {
     SemanticTokensParams {
         work_done_progress_params: WorkDoneProgressParams::default(),
         partial_result_params: PartialResultParams::default(),
@@ -67,7 +68,7 @@ fn params(uri: &Url) -> SemanticTokensParams {
 struct Project {
     _tmp: TempDir,
     state: State,
-    b_uri: Url,
+    b_uri: Uri,
     b_src: String,
 }
 
@@ -92,8 +93,8 @@ fn two_file_project() -> Project {
     write(&a, a_src);
     write(&b, b_src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri, a_src.to_string());
     Project {

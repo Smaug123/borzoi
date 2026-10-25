@@ -14,10 +14,11 @@
 //! changed, we answer `Unchanged` **without** lexing or parsing the file (plan
 //! Stage 3).
 
+use crate::uri::UriExt as _;
 use lsp_types::{
     DocumentDiagnosticParams, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
     RelatedFullDocumentDiagnosticReport, RelatedUnchangedDocumentDiagnosticReport,
-    UnchangedDocumentDiagnosticReport, Url,
+    UnchangedDocumentDiagnosticReport, Uri,
 };
 
 use std::path::Path;
@@ -73,7 +74,7 @@ pub(crate) enum FileOutcome {
 /// [`Workspace::symbols_for_linked`]: crate::workspace::Workspace::symbols_for_linked
 pub(crate) fn diagnose_file(
     state: &mut State,
-    uri: &Url,
+    uri: &Uri,
     previous_result_id: Option<&str>,
     linking_project: Option<&Path>,
 ) -> FileOutcome {
@@ -155,7 +156,7 @@ fn full(report: RelatedFullDocumentDiagnosticReport) -> DocumentDiagnosticReport
 /// Whether `uri` names an F# source file (`.fs`/`.fsi`/`.fsx`) — the only kind
 /// whose diagnostics are fully captured by `(source, symbols, lang)`, and so
 /// eligible for `result_id` caching.
-fn is_cacheable(uri: &Url) -> bool {
+fn is_cacheable(uri: &Uri) -> bool {
     matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx"))
 }
 
@@ -165,7 +166,7 @@ fn is_cacheable(uri: &Url) -> bool {
 /// `didOpen`, and is what `workspace/diagnostic` will rely on for the (mostly
 /// unopened) files it enumerates. Returns `None` for a non-`file:` URI that
 /// isn't open, or an unreadable path.
-pub(crate) fn document_text(state: &State, uri: &Url) -> Option<String> {
+pub(crate) fn document_text(state: &State, uri: &Uri) -> Option<String> {
     if let Some(text) = state.docs.get(uri) {
         return Some(text.clone());
     }
@@ -183,7 +184,7 @@ mod tests {
 
     use crate::server::State;
 
-    fn params_with(uri: Url, previous_result_id: Option<String>) -> DocumentDiagnosticParams {
+    fn params_with(uri: Uri, previous_result_id: Option<String>) -> DocumentDiagnosticParams {
         DocumentDiagnosticParams {
             text_document: TextDocumentIdentifier { uri },
             identifier: None,
@@ -193,7 +194,7 @@ mod tests {
         }
     }
 
-    fn params(uri: Url) -> DocumentDiagnosticParams {
+    fn params(uri: Uri) -> DocumentDiagnosticParams {
         params_with(uri, None)
     }
 
@@ -234,7 +235,7 @@ mod tests {
     #[test]
     fn reports_open_buffer_diagnostic() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/Foo.fs").unwrap();
+        let uri = Uri::parse("file:///proj/Foo.fs").unwrap();
         state.docs.insert(uri.clone(), UNMATCHED_ENDIF.to_string());
 
         let result = handle(&mut state, params(uri));
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn clean_open_buffer_is_empty_report() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/Foo.fs").unwrap();
+        let uri = Uri::parse("file:///proj/Foo.fs").unwrap();
         state.docs.insert(uri.clone(), "let x = 1\n".to_string());
 
         let result = handle(&mut state, params(uri));
@@ -261,7 +262,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("OnDisk.fs");
         std::fs::write(&path, UNMATCHED_ENDIF).unwrap();
-        let uri = Url::from_file_path(&path).unwrap();
+        let uri = Uri::from_file_path(&path).unwrap();
 
         let mut state = State::default();
         // Deliberately *not* inserted into `state.docs`.
@@ -275,7 +276,7 @@ mod tests {
     #[test]
     fn missing_file_is_empty_report() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/DoesNotExist.fs").unwrap();
+        let uri = Uri::parse("file:///proj/DoesNotExist.fs").unwrap();
         let result = handle(&mut state, params(uri));
         assert!(items(&result).is_empty());
     }
@@ -285,7 +286,7 @@ mod tests {
     #[test]
     fn unchanged_when_result_id_is_echoed() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/Foo.fs").unwrap();
+        let uri = Uri::parse("file:///proj/Foo.fs").unwrap();
         state.docs.insert(uri.clone(), "let x = 1\n".to_string());
 
         let id = full_result_id(&handle(&mut state, params(uri.clone())));
@@ -299,7 +300,7 @@ mod tests {
     #[test]
     fn full_when_previous_result_id_is_stale() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/Foo.fs").unwrap();
+        let uri = Uri::parse("file:///proj/Foo.fs").unwrap();
         state.docs.insert(uri.clone(), "let x = 1\n".to_string());
 
         // A non-matching previous id forces a fresh `Full` (with the real id).
@@ -311,7 +312,7 @@ mod tests {
     #[test]
     fn result_id_changes_when_source_changes() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/Foo.fs").unwrap();
+        let uri = Uri::parse("file:///proj/Foo.fs").unwrap();
         state.docs.insert(uri.clone(), "let x = 1\n".to_string());
         let id1 = full_result_id(&handle(&mut state, params(uri.clone())));
 
@@ -343,7 +344,7 @@ mod tests {
         let file = tmp.path().join("A.fs");
         std::fs::write(&proj, fsproj_define("FOO")).unwrap();
         std::fs::write(&file, "let x = 1\n").unwrap();
-        let uri = Url::from_file_path(&file).unwrap();
+        let uri = Uri::from_file_path(&file).unwrap();
 
         let mut state = State::default();
         let id = full_result_id(&handle(&mut state, params(uri.clone())));
@@ -357,7 +358,7 @@ mod tests {
         // resolve re-evaluates the project and sees BAR instead of FOO.
         std::fs::write(&proj, fsproj_define("BAR")).unwrap();
         state.apply_watched_changes(&[FileEvent {
-            uri: Url::from_file_path(&proj).unwrap(),
+            uri: Uri::from_file_path(&proj).unwrap(),
             typ: FileChangeType::CHANGED,
         }]);
 
@@ -379,7 +380,7 @@ mod tests {
         let file = tmp.path().join("A.fs");
         // The active branch — and so the diagnostics — depend on FOO.
         std::fs::write(&file, "#if FOO\nlet x = 1\n#endif\n").unwrap();
-        let uri = Url::from_file_path(&file).unwrap();
+        let uri = Uri::from_file_path(&file).unwrap();
 
         let mut state = State::default();
         // First pull: no project on disk, so FOO is undefined.
@@ -404,7 +405,7 @@ mod tests {
     #[test]
     fn fsproj_is_never_cached() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/App.fsproj").unwrap();
+        let uri = Uri::parse("file:///proj/App.fsproj").unwrap();
         state
             .docs
             .insert(uri.clone(), "<Project this is broken".to_string());
@@ -431,7 +432,7 @@ mod tests {
     #[test]
     fn unreadable_fsproj_is_empty_not_malformed() {
         let mut state = State::default();
-        let uri = Url::parse("file:///proj/Missing.fsproj").unwrap();
+        let uri = Uri::parse("file:///proj/Missing.fsproj").unwrap();
         let result = handle(&mut state, params(uri));
         assert!(
             items(&result).is_empty(),

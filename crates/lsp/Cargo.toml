@@ -6,25 +6,28 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
-borzoi-spawn = { path = "../spawn" }
-borzoi-assembly = { path = "../assembly", features = ["serde"] }
-borzoi-cst = { path = "../cst" }
-borzoi-msbuild = { path = "../msbuild" }
-borzoi-sema = { path = "../sema" }
-lsp-server = "0.7"
-lsp-types = "0.95"
-rowan = "0.16"
+borzoi-spawn.workspace = true
+borzoi-assembly = { workspace = true, features = ["serde"] }
+borzoi-cst.workspace = true
+borzoi-msbuild.workspace = true
+borzoi-sema.workspace = true
+lsp-server.workspace = true
+lsp-types.workspace = true
+# lsp-types' `Uri` has no file-path conversion; `uri` delegates it (and URI
+# parsing) to `url`, so path <-> URI behaviour is the WHATWG one.
+url.workspace = true
+rowan.workspace = true
 # Compact binary serde format for the on-disk assembly-projection cache
 # (`assembly_cache`). Faster + smaller than JSON for the warm-restart deserialize
 # of every referenced DLL's projected `Entity` tree; 1.x drives serde directly.
-bincode = "1.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
+bincode.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
 # Sidecar `.xml` documentation files of referenced assemblies (`xml_doc`), read
 # for hover. Already the workspace's XML parser (`borzoi-msbuild`,
 # `borzoi-nuget`).
-roxmltree = "0.21"
+roxmltree.workspace = true
 
 # OpenTelemetry export, behind the `otel` feature so the default (and `nix
 # build`) binary stays free of the tokio/otel dependency tree. With the feature
@@ -33,20 +36,20 @@ roxmltree = "0.21"
 # hyper-util), and the batch span processor runs on its own thread, so the
 # stdio loop never blocks on the network. No TLS backend is pulled in — the
 # collector endpoint is plain HTTP. See `telemetry.rs`.
-opentelemetry = { version = "0.32", optional = true }
-opentelemetry_sdk = { version = "0.32", optional = true, features = ["logs"] }
-opentelemetry-otlp = { version = "0.32", optional = true, default-features = false, features = [
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true, features = ["logs"] }
+opentelemetry-otlp = { workspace = true, optional = true, features = [
     "trace",
     "logs",
     "http-proto",
     "reqwest-blocking-client",
 ] }
 # Bridges `tracing` events into OpenTelemetry log records (→ Loki via the
-# collector). 0.32 tracks `opentelemetry` 0.32; it auto-attaches the active
+# collector). 0.33 tracks `opentelemetry` 0.33; it auto-attaches the active
 # span's trace context so log lines correlate to Tempo traces. See `telemetry.rs`.
-opentelemetry-appender-tracing = { version = "0.32", optional = true }
-tracing-opentelemetry = { version = "0.33", optional = true }
-tracing-subscriber = { version = "0.3", optional = true, features = [
+opentelemetry-appender-tracing = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true, features = [
     "env-filter",
     "fmt",
 ] }
@@ -55,9 +58,9 @@ tracing-subscriber = { version = "0.3", optional = true, features = [
 # assembly's source isn't embedded in its PDB, go-to-definition fetches it from
 # the SourceLink URL. Behind a feature so the default binary stays offline and
 # dependency-light; isolated behind the `goto_source::SourceFetcher` trait so
-# it's swappable and never touches tests. `https-rustls` is a pure-Rust TLS
-# backend (no OpenSSL), matching the no-native-deps convention.
-minreq = { version = "2", optional = true, features = ["https-rustls"] }
+# it's swappable and never touches tests. Its TLS backend is pure-Rust (see
+# the workspace manifest).
+minreq = { workspace = true, optional = true }
 
 [features]
 # On by default: a bare `cargo build` / `cargo install` / `nix build` yields a
@@ -84,14 +87,14 @@ otel = [
 sourcelink-fetch = ["dep:minreq"]
 
 [dev-dependencies]
-borzoi-oracle-harness = { path = "../oracle-harness" }
-borzoi-assembly = { path = "../assembly", features = ["test-support"] }
+borzoi-oracle-harness.workspace = true
+borzoi-assembly = { workspace = true, features = ["test-support"] }
 # The FCS-differential comparator (`borzoi_sema::test_support`), shared with
 # `borzoi-corpus-diff`, used by `resolve_real_project_diff`.
-borzoi-sema = { path = "../sema", features = ["test-support"] }
-proptest = "1"
+borzoi-sema = { workspace = true, features = ["test-support"] }
+proptest.workspace = true
 # The Markdown oracle for the XML-doc renderer: the property tests parse what the
 # renderer prints and check that every piece of doc text comes back as text,
 # never as Markdown structure. Test-only; the server never parses Markdown.
-pulldown-cmark = { version = "0.13", default-features = false }
-tempfile = "3"
+pulldown-cmark.workspace = true
+tempfile.workspace = true

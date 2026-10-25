@@ -54,22 +54,20 @@
 ///   {"op":"selectDependencyGroup","project":tfm,"input":s}
 ///     (NuspecReader dependency groups + FrameworkReducer.GetNearest)
 ///     -> {"ok":true,"nearest":index-into-groups | -1} | {"ok":false}
-///   {"op":"resolve","framework":tfm,
+///   {"op":"restore","engine":"legacy"|"default","framework":tfm,
 ///      "packages":[{"id":..,"version":..,"nuspec":xml}, ..],
 ///      "direct":[{"id":..,"range":..}, ..]}
-///     The end-to-end offline resolver oracle: the *genuine* PackageReference
-///     restore engine (RemoteDependencyWalker + GraphOperations.Analyze — the
-///     legacy dependency resolver, which `dotnet restore` runs when
-///     `RestoreUseLegacyDependencyResolver` is set; the .NET 10 SDK's default
-///     resolver is a separate implementation, and the two are known to disagree
-///     on at least one graph, pinned in `resolver_diff.rs`), over a synthetic local
-///     folder feed built from the supplied nuspecs plus a synthetic root
-///     package depending on `direct`.
+///     The end-to-end offline resolver oracle: a real restore of a one-project
+///     PackageReference graph through `RestoreRunner`, the entry point
+///     `dotnet restore` reaches, over a local feed built from the supplied
+///     nuspecs. `engine` selects NuGet's dependency resolver: "legacy"
+///     (`RestoreUseLegacyDependencyResolver`: RemoteDependencyWalker +
+///     GraphOperations) or "default" (the .NET 10 SDK's
+///     `DependencyGraphResolver`).
 ///     -> {"ok":true,"resolved":true,"packages":[{"id":lower,"version":norm}, ..]}
-///          (sorted by lowercased id; the closure `dotnet restore` would write)
-///      | {"ok":true,"resolved":false,
-///         "reason":"missing"|"cycle"|"undecided"|"conflict"|"downgrade"}
-///          (the reason restore would fail — NU1101/NU1108/NU1106/NU1107/NU1605)
+///          (sorted by lowercased id; the packages the assets file lists)
+///      | {"ok":true,"resolved":false,"errors":["NU1107", ..]}
+///          (every error-level code restore logged)
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -389,31 +387,11 @@ let private writeNupkg (feedDir: string) (id: string) (version: string) (nuspec:
     use w = new StreamWriter(entry.Open())
     w.Write nuspec
 
-/// The synthetic project-as-package: its single dependency group for the
-/// target framework carries the direct requirements, so walking it reproduces
-/// what restoring a project with those `PackageReference`s would do. `rootId`
-/// is chosen to be absent from the supplied universe so it cannot collide.
-let private synthesizeRootNuspec (rootId: string) (framework: NuGetFramework) (direct: JsonElement) : string =
-    let deps =
-        direct.EnumerateArray()
-        |> Seq.map (fun d ->
-            sprintf
-                "<dependency id=\"%s\" version=\"%s\" />"
-                (d.GetProperty("id").GetString())
-                (d.GetProperty("range").GetString()))
-        |> String.concat ""
-
-    sprintf
-        "<?xml version=\"1.0\"?><package xmlns=\"http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd\"><metadata><id>%s</id><version>1.0.0</version><authors>a</authors><description>d</description><dependencies><group targetFramework=\"%s\">%s</group></dependencies></metadata></package>"
-        rootId
-        (framework.GetShortFolderName())
-        deps
-
-/// A synthetic-root package id guaranteed absent from every caller-supplied id:
-/// `__root__` is itself a legal package id, so a universe *or a direct
-/// requirement* naming it would otherwise overwrite the root nupkg (or make the
-/// root depend on itself and read as a cycle). Package ids are case-insensitive,
-/// so the exclusion set is `OrdinalIgnoreCase`.
+/// A project name guaranteed absent from every caller-supplied package id:
+/// `__oracle_root__` is itself a legal package id, so a universe *or a direct
+/// requirement* naming it would otherwise make the project depend on itself
+/// and read as a cycle. Package ids are case-insensitive, so the exclusion set
+/// is `OrdinalIgnoreCase`.
 let private freshRootId (packages: JsonElement) (direct: JsonElement) : string =
     let taken = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
@@ -430,31 +408,47 @@ let private freshRootId (packages: JsonElement) (direct: JsonElement) : string =
 
     rootId
 
-/// A cycle reported by `GraphOperations.Analyze` is only a real restore failure
-/// (NU1108) when it is reachable through *accepted* nodes; a cycle confined to a
-/// branch the conflict resolver rejected never reaches the output, so restore
-/// succeeds. The cycle node itself carries `Disposition = Cycle`, so liveness is
-/// read off its ancestor chain: dead iff any ancestor was rejected.
-let private cycleIsLive (cycleNode: GraphNode<RemoteResolveResult>) : bool =
-    let rec anyRejectedAncestor (n: GraphNode<RemoteResolveResult>) =
-        if isNull (box n) then false
-        elif string n.Disposition = "Rejected" then true
-        else anyRejectedAncestor n.OuterNode
+/// The restore errors a failed restore reports, by the codes the resolver's
+/// outcome classes are drawn from.
+let private restoreErrorCodes (lockFile: NuGet.ProjectModel.LockFile) : string array =
+    lockFile.LogMessages
+    |> Seq.filter (fun m -> m.Level = LogLevel.Error)
+    |> Seq.map (fun m -> m.Code.ToString())
+    |> Seq.distinct
+    |> Seq.sort
+    |> Seq.toArray
 
-    not (anyRejectedAncestor cycleNode.OuterNode)
-
-let private respondResolve (root: JsonElement) : string =
+/// A real `dotnet restore` of a one-project PackageReference graph, through
+/// `RestoreRunner` — the same entry point `dotnet restore` reaches, fed the
+/// same dependency-graph spec it builds — against a fresh local feed and a
+/// fresh global packages folder.
+///
+/// `engine` picks NuGet's dependency resolver: "legacy" sets
+/// `RestoreUseLegacyDependencyResolver` (RemoteDependencyWalker +
+/// GraphOperations), "default" leaves it unset, which selects the
+/// `DependencyGraphResolver` the .NET 10 SDK runs. The spec carries what the
+/// SDK's restore-graph generation puts there that bears on resolution:
+/// PackageReference style, the one target framework, and NU1605 promoted to an
+/// error (the SDK's default `WarningsAsErrors`). Audit is disabled; the SDK's
+/// framework references, fallback imports and pruning list are omitted, since
+/// none of them names a package in the synthetic universe.
+let private respondRestore (root: JsonElement) : string =
     let framework = NuGetFramework.Parse(root.GetProperty("framework").GetString())
+    let legacy =
+        match root.GetProperty("engine").GetString() with
+        | "legacy" -> true
+        | "default" -> false
+        | other -> failwithf "unknown engine %s" other
 
-    let feedDir =
-        Path.Combine(Path.GetTempPath(), "nuget-oracle-resolve-" + Guid.NewGuid().ToString("N"))
+    let workDir =
+        Path.Combine(Path.GetTempPath(), "nuget-oracle-restore-" + Guid.NewGuid().ToString("N"))
 
+    let feedDir = Path.Combine(workDir, "feed")
+    let packagesDir = Path.Combine(workDir, "gp")
+    let objDir = Path.Combine(workDir, "obj")
     Directory.CreateDirectory feedDir |> ignore
 
     try
-        let rootId = freshRootId (root.GetProperty("packages")) (root.GetProperty("direct"))
-        writeNupkg feedDir rootId "1.0.0" (synthesizeRootNuspec rootId framework (root.GetProperty("direct")))
-
         for pkg in root.GetProperty("packages").EnumerateArray() do
             writeNupkg
                 feedDir
@@ -462,103 +456,120 @@ let private respondResolve (root: JsonElement) : string =
                 (pkg.GetProperty("version").GetString())
                 (pkg.GetProperty("nuspec").GetString())
 
-        let source = Repository.Factory.GetCoreV3 feedDir
-        use cache = new SourceCacheContext()
-        let logger = NullLogger.Instance
-        let ctx = RemoteWalkContext(cache, PackageSourceMapping.GetPackageSourceMapping NullSettings.Instance, logger)
-        ctx.RemoteLibraryProviders.Add(SourceRepositoryDependencyProvider(source, logger, cache, true, true))
-        let walker = RemoteDependencyWalker ctx
+        let projectName = freshRootId (root.GetProperty("packages")) (root.GetProperty("direct"))
+        let projectPath = Path.Combine(workDir, projectName + ".csproj")
+        let tfm = framework.GetShortFolderName()
 
-        let rootRange =
-            LibraryRange(rootId, VersionRange.Parse "[1.0.0]", LibraryDependencyTarget.Package)
+        let dependencies = Text.Json.Nodes.JsonObject()
 
-        let node =
-            walker.WalkAsync(rootRange, framework, null, RuntimeGraph.Empty, true)
+        for d in root.GetProperty("direct").EnumerateArray() do
+            let dep = Text.Json.Nodes.JsonObject()
+            dep["target"] <- Text.Json.Nodes.JsonValue.Create "Package"
+            dep["version"] <- Text.Json.Nodes.JsonValue.Create(d.GetProperty("range").GetString())
+            dependencies[d.GetProperty("id").GetString()] <- dep
+
+        let restoreMetadata =
+            Text.Json.Nodes.JsonObject.Parse(
+                JsonSerializer.Serialize
+                    {| projectUniqueName = projectPath
+                       projectName = projectName
+                       projectPath = projectPath
+                       packagesPath = packagesDir
+                       outputPath = objDir + string Path.DirectorySeparatorChar
+                       projectStyle = "PackageReference"
+                       originalTargetFrameworks = [| tfm |]
+                       warningProperties = {| warnAsError = [| "NU1605" |] |}
+                       restoreAuditProperties = {| enableAudit = "false" |} |}
+            )
+            :?> Text.Json.Nodes.JsonObject
+
+        let sources = Text.Json.Nodes.JsonObject()
+        sources[feedDir] <- Text.Json.Nodes.JsonObject()
+        restoreMetadata["sources"] <- sources
+        let restoreFrameworks = Text.Json.Nodes.JsonObject()
+        let restoreFramework = Text.Json.Nodes.JsonObject()
+        restoreFramework["targetAlias"] <- Text.Json.Nodes.JsonValue.Create tfm
+        restoreFramework["projectReferences"] <- Text.Json.Nodes.JsonObject()
+        restoreFrameworks[tfm] <- restoreFramework
+        restoreMetadata["frameworks"] <- restoreFrameworks
+
+        if legacy then
+            restoreMetadata["restoreUseLegacyDependencyResolver"] <- Text.Json.Nodes.JsonValue.Create true
+
+        let frameworks = Text.Json.Nodes.JsonObject()
+        let projectFramework = Text.Json.Nodes.JsonObject()
+        projectFramework["targetAlias"] <- Text.Json.Nodes.JsonValue.Create tfm
+        projectFramework["dependencies"] <- dependencies
+        frameworks[tfm] <- projectFramework
+
+        let project = Text.Json.Nodes.JsonObject()
+        project["version"] <- Text.Json.Nodes.JsonValue.Create "1.0.0"
+        project["restore"] <- restoreMetadata
+        project["frameworks"] <- frameworks
+
+        let projects = Text.Json.Nodes.JsonObject()
+        projects[projectPath] <- project
+        let restoreSet = Text.Json.Nodes.JsonObject()
+        restoreSet[projectPath] <- Text.Json.Nodes.JsonObject()
+        let dg = Text.Json.Nodes.JsonObject()
+        dg["format"] <- Text.Json.Nodes.JsonValue.Create 1
+        dg["restore"] <- restoreSet
+        dg["projects"] <- projects
+
+        let dgPath = Path.Combine(workDir, "dg.json")
+        File.WriteAllText(dgPath, dg.ToJsonString())
+        let dgSpec = NuGet.ProjectModel.DependencyGraphSpec.Load dgPath
+
+        use cache = new SourceCacheContext(NoCache = true)
+
+        let args =
+            RestoreArgs(
+                CacheContext = cache,
+                Log = NullLogger.Instance,
+                GlobalPackagesFolder = packagesDir,
+                DisableParallel = true,
+                AllowNoOp = false
+            )
+
+        args.PreLoadedRequestProviders.Add(
+            DependencyGraphSpecRequestProvider(RestoreCommandProvidersCache(), dgSpec, NullSettings.Instance)
+        )
+
+        let requests =
+            RestoreRunner.GetRequests args |> Async.AwaitTask |> Async.RunSynchronously
+
+        let results =
+            RestoreRunner.RunWithoutCommit(requests, args)
             |> Async.AwaitTask
             |> Async.RunSynchronously
 
-        let analyze = GraphOperations.Analyze node
+        let result = (Seq.exactlyOne results).Result
+        let lockFile = result.LockFile
 
-        // Flatten only the *accepted* package nodes — the losers of a version
-        // conflict are marked Rejected and excluded, exactly as restore's
-        // Flattened set is built. An unresolved library matters only when it is
-        // itself accepted: an unresolved dependency dangling off a rejected
-        // branch never reaches the restore output, so restore still succeeds.
-        let resolved = SortedDictionary<string, string>(StringComparer.Ordinal)
-        let mutable anyUnresolved = false
-        // A node conflict resolution neither accepted nor rejected: cousin
-        // conflicts that each decide the other, which the resolver cannot
-        // settle. `RestoreTargetGraph.Create` reports every such node as an
-        // NU1106 error ("Unable to satisfy conflicting requests"); the
-        // accepted-only flatten above would silently drop it and report success
-        // with a closure missing those packages.
-        let mutable anyUndecided = false
-
-        let rec visit (n: GraphNode<RemoteResolveResult>) =
-            if
-                string n.Disposition = "Acceptable"
-                && not (isNull (box n.Key))
-                && n.Key.Name <> rootId
-            then
-                anyUndecided <- true
-
-            if
-                not (isNull (box n.Item))
-                && not (isNull (box n.Item.Key))
-                && string n.Disposition = "Accepted"
-            then
-                let key = n.Item.Key
-
-                if string key.Type = "unresolved" then
-                    if key.Name <> rootId then
-                        anyUnresolved <- true
-                elif key.Name <> rootId && not (isNull (box key.Version)) then
-                    resolved.[key.Name.ToLowerInvariant()] <- key.Version.ToNormalizedString()
-
-            for c in n.InnerNodes do
-                visit c
-
-        visit node
-
-        // Restore fails (produces no closure) on any of these, but only when the
-        // fault lies on the *accepted* graph — `GraphOperations.Analyze` also
-        // surfaces cycles/conflicts/downgrades confined to branches the conflict
-        // resolver rejected, which `dotnet restore` discards and still succeeds.
-        // The accepted-only filters mirror restore's own error reporting; each
-        // was cross-checked against a real `dotnet restore`. Priority
-        // missing > cycle > undecided > conflict > downgrade (all mean "no
-        // closure").
-        let liveCycle = analyze.Cycles |> Seq.exists cycleIsLive
-
-        let liveConflict =
-            analyze.VersionConflicts
-            |> Seq.exists (fun c -> string c.Selected.Disposition = "Accepted")
-
-        let liveDowngrade =
-            analyze.Downgrades
-            |> Seq.exists (fun d -> string d.DowngradedTo.Disposition = "Accepted")
-
-        let reason =
-            if anyUnresolved then Some "missing"
-            elif liveCycle then Some "cycle"
-            elif anyUndecided then Some "undecided"
-            elif liveConflict then Some "conflict"
-            elif liveDowngrade then Some "downgrade"
-            else None
-
-        match reason with
-        | Some r -> JsonSerializer.Serialize {| ok = true; resolved = false; reason = r |}
-        | None ->
+        if result.Success then
             let packages =
-                [| for kv in resolved -> {| id = kv.Key; version = kv.Value |} |]
+                lockFile.Targets
+                |> Seq.filter (fun t -> isNull t.RuntimeIdentifier)
+                |> Seq.collect (fun t -> t.Libraries)
+                |> Seq.filter (fun l -> l.Type = "package")
+                |> Seq.map (fun l -> l.Name.ToLowerInvariant(), l.Version.ToNormalizedString())
+                |> Seq.distinct
+                |> Seq.sort
+                |> Seq.map (fun (id, version) -> {| id = id; version = version |})
+                |> Seq.toArray
 
             JsonSerializer.Serialize
                 {| ok = true
                    resolved = true
                    packages = packages |}
+        else
+            JsonSerializer.Serialize
+                {| ok = true
+                   resolved = false
+                   errors = restoreErrorCodes lockFile |}
     finally
         try
-            Directory.Delete(feedDir, true)
+            Directory.Delete(workDir, true)
         with _ ->
             ()
 
@@ -585,7 +596,7 @@ let main _argv =
                     | "readNuspec" -> respondReadNuspec root
                     | "selectDependencyGroup" -> respondSelectDependencyGroup root
                     | "selectCompileAssets" -> respondSelectCompileAssets root
-                    | "resolve" -> respondResolve root
+                    | "restore" -> respondRestore root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}

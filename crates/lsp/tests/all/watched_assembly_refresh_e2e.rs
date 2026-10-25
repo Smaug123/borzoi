@@ -12,13 +12,14 @@
 //!
 //! Requires the .NET SDK on PATH — run under `nix develop`.
 
+use borzoi::uri::UriExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use borzoi::server::State;
 use borzoi_spawn::BoundedCommand;
-use lsp_types::{FileChangeType, FileEvent, Url};
+use lsp_types::{FileChangeType, FileEvent, Uri};
 
 #[test]
 fn sibling_rebuild_refreshes_the_assembly_env_after_watched_dll_change() {
@@ -66,7 +67,7 @@ fn sibling_rebuild_refreshes_the_assembly_env_after_watched_dll_change() {
 
     // The client reports the rewritten DLL.
     let republish = state.apply_watched_changes(&[FileEvent {
-        uri: Url::from_file_path(&lib_dll).expect("dll path to URI"),
+        uri: Uri::from_file_path(&lib_dll).expect("dll path to URI"),
         typ: FileChangeType::CHANGED,
     }]);
     assert!(

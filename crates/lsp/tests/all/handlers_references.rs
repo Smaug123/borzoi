@@ -5,6 +5,7 @@
 //! `Resolution` → every matching range in every file, with
 //! `include_declaration` honoured.
 
+use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::Path;
 
@@ -12,7 +13,7 @@ use borzoi::handlers::references;
 use borzoi::server::State;
 use lsp_types::{
     Location, PartialResultParams, Position, ReferenceContext, ReferenceParams,
-    TextDocumentIdentifier, TextDocumentPositionParams, Url, WorkDoneProgressParams,
+    TextDocumentIdentifier, TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 use tempfile::TempDir;
 
@@ -23,7 +24,7 @@ fn write(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-fn params(uri: &Url, line: u32, character: u32, include_declaration: bool) -> ReferenceParams {
+fn params(uri: &Uri, line: u32, character: u32, include_declaration: bool) -> ReferenceParams {
     ReferenceParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -39,7 +40,7 @@ fn params(uri: &Url, line: u32, character: u32, include_declaration: bool) -> Re
 
 fn run(
     state: &mut State,
-    uri: &Url,
+    uri: &Uri,
     line: u32,
     character: u32,
     include_declaration: bool,
@@ -48,9 +49,9 @@ fn run(
         .expect("handler returns Some, never an error envelope")
 }
 
-fn orphan_state(text: &str) -> (State, Url) {
+fn orphan_state(text: &str) -> (State, Uri) {
     let mut state = State::default();
-    let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
     state.docs.insert(uri.clone(), text.to_string());
     (state, uri)
 }
@@ -331,8 +332,8 @@ fn qualified_equality_operand_is_not_an_argument_label() {
     write(&a, a_src);
     write(&b, b_src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), a_src.to_string());
     state.docs.insert(b_uri.clone(), b_src.to_string());
@@ -371,7 +372,7 @@ fn missing_buffer_returns_none() {
     // No buffer for the URI → `None`; the JSON-RPC layer serialises this as
     // null, never an error envelope.
     let mut state = State::default();
-    let uri = Url::parse("inmemory:///Missing.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Missing.fs").unwrap();
     let resp = references::handle(&mut state, params(&uri, 0, 0, true));
     assert!(resp.is_none());
 }
@@ -395,8 +396,8 @@ fn cross_file_item_collects_uses_in_every_file() {
     let b_src = "module Other\nlet bar = Shared.foo\nlet baz = Shared.foo\n";
     write(&b, b_src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let a_src = "module Shared\nlet foo = 1\n";
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), a_src.to_string());
@@ -431,8 +432,8 @@ fn cross_file_item_omits_declaration() {
     let b_src = "module Other\nlet bar = Shared.foo\nlet baz = Shared.foo\n";
     write(&b, b_src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let a_src = "module Shared\nlet foo = 1\n";
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), a_src.to_string());
@@ -470,8 +471,8 @@ fn cross_file_active_pattern_case_includes_the_recognizer_declaration() {
     write(&a, a_src);
     write(&b, b_src);
 
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), a_src.to_string());
     state.docs.insert(b_uri.clone(), b_src.to_string());
@@ -520,7 +521,7 @@ fn local_resolution_short_circuits_to_cursor_file() {
     let c_src = "let common = 3\nlet x = common\nlet y = common\n";
     write(&tmp.path().join("C.fs"), c_src);
 
-    let c_uri = Url::from_file_path(tmp.path().join("C.fs")).unwrap();
+    let c_uri = Uri::from_file_path(tmp.path().join("C.fs")).unwrap();
     let mut state = State::default();
     state.docs.insert(c_uri.clone(), c_src.to_string());
 
@@ -550,7 +551,7 @@ fn orphan_file_falls_back_to_single_file_references() {
     let src = "let x = 1\nlet y = x\nlet z = x\n";
     write(&f, src);
 
-    let uri = Url::from_file_path(&f).unwrap();
+    let uri = Uri::from_file_path(&f).unwrap();
     let mut state = State::default();
     state.docs.insert(uri.clone(), src.to_string());
 
@@ -683,8 +684,8 @@ fn references_are_listed_in_source_order() {
     let b = tmp.path().join("B.fs");
     write(&a, &a_src);
     write(&b, &b_src);
-    let a_uri = Url::from_file_path(&a).unwrap();
-    let b_uri = Url::from_file_path(&b).unwrap();
+    let a_uri = Uri::from_file_path(&a).unwrap();
+    let b_uri = Uri::from_file_path(&b).unwrap();
     let mut state = State::default();
     state.docs.insert(a_uri.clone(), a_src);
     state.docs.insert(b_uri.clone(), b_src);

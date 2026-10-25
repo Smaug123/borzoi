@@ -6,6 +6,7 @@
 //! service).
 
 use crate::ImportError;
+use crate::doc_id::DocIdDialect;
 use crate::fsharp_pickle::model::PickledCcu;
 use crate::fsharp_resource::{
     b_stream_signature_resource_for_host, classify_fsharp_resource, decompress_deflate,
@@ -162,6 +163,36 @@ impl EcmaView for Ecma335Assembly {
                 assembly: f.assembly.clone(),
             })
             .collect())
+    }
+
+    fn doc_id_dialect(&self) -> Result<DocIdDialect, ImportError> {
+        // Three marks, any one sufficient: the assembly-level interface-data
+        // attribute, an F# compiler resource (one of the reserved signature or
+        // optimisation-data families — not merely a name starting `FSharp`,
+        // which an ordinary C# resource may), and the
+        // `CompilationMappingAttribute` fsc puts on every type it generates from
+        // F# source — module, record, union, class, exception. The last survives
+        // a build that strips the first two.
+        let mapped = |td: &TypeDef| {
+            self.find_attribute(
+                &td.attributes,
+                "Microsoft.FSharp.Core",
+                "CompilationMappingAttribute",
+            )
+            .is_some()
+        };
+        let fsharp = self.fsharp_interface_data_version()?.is_some()
+            || self
+                .image
+                .resources
+                .iter()
+                .any(|r| classify_fsharp_resource(&r.name).is_some())
+            || self.image.type_defs.iter().any(mapped);
+        Ok(if fsharp {
+            DocIdDialect::FSharp
+        } else {
+            DocIdDialect::Metadata
+        })
     }
 
     fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
@@ -388,6 +419,7 @@ impl Ecma335Assembly {
         // declaration-order overlays gate on.
         let fsharp_extension_index_unknowable = is_fsharp_assembly && !authoritative;
 
+        let mut records_settled = false;
         if let Some((resource_name, decoded)) = decoded {
             match decoded {
                 Ok(ccu) => {
@@ -401,7 +433,11 @@ impl Ecma335Assembly {
                     // borrow the CCU, so they run before the measure overlay.
                     if authoritative {
                         crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu)?;
-                        crate::fsharp_pickle_merge::apply_module_member_projection(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_module_member_projection(
+                            &mut out,
+                            &ccu,
+                            &self.physical_methods(),
+                        )?;
                     }
                     // F# measure overlay (7.8b): use the pickled
                     // `TyparKind::Measure` markers to upgrade matching
@@ -448,6 +484,22 @@ impl Ecma335Assembly {
                     // `fsharp_abbreviations_unknowable`).
                     crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
                     if authoritative {
+                        // Record and exception member properties, vouched for
+                        // by the pickle's published member list. Authoritative-
+                        // only: the row is located by a reconstructed name key.
+                        crate::fsharp_pickle_merge::settle_record_properties(&mut out, Some(&ccu))?;
+                        records_settled = true;
+                        // The doc-comment keys fsc pickled for each type's
+                        // members (module members get theirs from the member
+                        // list above). Authoritative-only, like the other
+                        // overlays that locate a row by a reconstructed name key.
+                        // After the record settle, so only the properties that
+                        // survive it are stamped.
+                        crate::fsharp_pickle_merge::apply_type_member_doc_sigs(
+                            &mut out,
+                            &ccu,
+                            &self.physical_methods(),
+                        )?;
                         // F#-only typar constraints (`when 'T : comparison` and
                         // friends), which have no IL encoding at all.
                         //
@@ -478,6 +530,11 @@ impl Ecma335Assembly {
         // only once every one of them is either vouched for by the pickle or
         // gone; this drops the ones no pickle claimed.
         drop_unvouched_union_properties(&mut out);
+        // Likewise the record and exception property candidates, where no
+        // authoritative pickle settled them above.
+        if !records_settled {
+            crate::fsharp_pickle_merge::settle_record_properties(&mut out, None)?;
+        }
         Ok((
             out,
             AssemblyProjectionSkips {
@@ -488,6 +545,37 @@ impl Ecma335Assembly {
                 fsharp_signature_non_authoritative: !authoritative,
             },
         ))
+    }
+
+    /// Every `MethodDef`'s IL slot, by token — the physical census the doc-key
+    /// overlays count, which sees the methods the member projection refuses or
+    /// elides.
+    fn physical_methods(&self) -> crate::fsharp_pickle_merge::PhysicalMethods {
+        let mut out = crate::fsharp_pickle_merge::PhysicalMethods::new();
+        for td in &self.image.type_defs {
+            // Which property each accessor method backs, by its index in
+            // `td.methods`.
+            let mut accessor_of: std::collections::HashMap<u32, &str> =
+                std::collections::HashMap::new();
+            for p in &td.properties {
+                for accessor in p.getter.iter().chain(p.setter.iter()) {
+                    accessor_of.insert(accessor.0, p.name.as_str());
+                }
+            }
+            for (i, m) in td.methods.iter().enumerate() {
+                out.insert(
+                    m.token,
+                    crate::fsharp_pickle_merge::PhysicalMethod {
+                        declaring_type: td.name.name.clone(),
+                        name: m.name.clone(),
+                        params: m.signature.as_ref().ok().map(|s| s.parameters.len()),
+                        is_static: m.is_static,
+                        accessor_of: accessor_of.get(&(i as u32)).map(|p| p.to_string()),
+                    },
+                );
+            }
+        }
+        out
     }
 
     /// The assembly-level `FSharpInterfaceDataVersionAttribute` version triple,
@@ -2479,6 +2567,7 @@ impl Ecma335Assembly {
             metadata_token: m.token,
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
         })
     }
 
@@ -2901,6 +2990,8 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
+            setter_xml_doc_sig: None,
         })
     }
 
@@ -3003,6 +3094,7 @@ impl Ecma335Assembly {
             custom_attrs: Vec::new(),
             implements,
             unclassified_impls,
+            xml_doc_sig: None,
         })
     }
 
@@ -3199,9 +3291,7 @@ impl Ecma335Assembly {
                 // an *invisible* bare name: a consumer could neither resolve it nor even
                 // know to be conservative about it (the hole the Slice-A review of
                 // `docs/assembly-module-open-plan.md` exposed). Keep the literal; the
-                // pickle-driven member list claims it (`rebuild_module_member_list`),
-                // and the differential normaliser elides it, mirroring what fcs-dump
-                // renders.
+                // pickle-driven member list claims it (`rebuild_module_member_list`).
                 //
                 // A *non-literal* module field is compiler scaffolding FCS does not
                 // surface (a mutable `let`'s backing store is reached through its
@@ -3316,15 +3406,50 @@ impl Ecma335Assembly {
                 // `Is<Case>` testers, the hidden `Tag`, and the testers of a
                 // pre-F#9 assembly that are `FS0039` to name, all under the same
                 // attributes.
-                if matches!(kind, EntityKind::Union) {
+                //
+                // A record's or exception's non-`Field` properties are
+                // candidates in the same way, settled by
+                // `settle_record_properties`: a user-defined member property
+                // (`member p.Sum`) is surfaced by FCS, a row fsc synthesises
+                // beside it is not, and their attributes do not say which.
+                if matches!(
+                    kind,
+                    EntityKind::Union | EntityKind::Record | EntityKind::Exception
+                ) {
+                    // The pickle vouches for a candidate by its accessor's name
+                    // (`get_P`), which is the member's F# name; a
+                    // `[<CompiledName>]` renames the IL *property* but not its
+                    // accessors. A property whose accessor names another one —
+                    // `member First` compiled as property `Second` beside
+                    // `member Second` compiled as `First` — would be vouched
+                    // for under the wrong name and type, and `Property`
+                    // carries no source name to say which, so it is refused
+                    // (recorded as a skip): visibly absent, never present and
+                    // wrong.
+                    let accessor_names_property =
+                        |accessor: Option<crate::reader::MethodId>, prefix: &str| {
+                            accessor.is_none_or(|m| {
+                                td.methods[m.0 as usize].name.strip_prefix(prefix)
+                                    == Some(p.name.as_str())
+                            })
+                        };
+                    if !accessor_names_property(p.getter, "get_")
+                        || !accessor_names_property(p.setter, "set_")
+                    {
+                        return Err(ImportError::UnsupportedEcmaLayout {
+                            detail: format!(
+                                "F# property `{}` is `[<CompiledName>]`-renamed: its accessors \
+                                 carry its F# name, which the projection cannot represent",
+                                p.name
+                            ),
+                        });
+                    }
                     return Ok(Some(Member::Property(self.project_property(
                         td,
                         p,
                         type_context,
                     )?)));
                 }
-                // A non-`Field` property on a Record or Exception is dropped:
-                // FCS surfaces none.
                 Ok(None)
             })();
             out.push_or_skip_opt(&p.name, projected);
@@ -4387,6 +4512,57 @@ mod tests {
     /// field's F# name is *not* its IL name" without saying what it is. Skip the field
     /// rather than surface `Values.RenamedLit`, a name F# never exposes. The plain
     /// literals beside it are unaffected.
+    /// An F# compiler resource marks the F# dialect; a resource that merely
+    /// begins `FSharp` — a C# root namespace, or the reserved stem used as one —
+    /// does not, or every member of such a C# assembly would lose its docs.
+    #[test]
+    fn only_a_reserved_fsharp_resource_marks_the_fsharp_dialect() {
+        use crate::doc_id::DocIdDialect;
+        use crate::reader::ManifestResource;
+        use crate::view::EcmaView;
+
+        let dll = |name: &str| {
+            let path = all_dlls()
+                .into_iter()
+                .find(|path| path.file_name().and_then(|n| n.to_str()) == Some(name))
+                .unwrap_or_else(|| panic!("{name} fixture"));
+            std::fs::read(&path).expect("fixture")
+        };
+        let fsharp = Ecma335Assembly::parse(&dll("MiniLibFs.dll")).expect("parse");
+        assert_eq!(fsharp.doc_id_dialect().unwrap(), DocIdDialect::FSharp);
+
+        let csharp = dll("MiniLib.dll");
+        let with_resource = |name: &str| {
+            let mut view = Ecma335Assembly::parse(&csharp).expect("parse");
+            view.image.resources.push(ManifestResource {
+                name: name.to_string(),
+                bytes: Vec::new(),
+            });
+            view.doc_id_dialect().unwrap()
+        };
+        assert_eq!(
+            Ecma335Assembly::parse(&csharp)
+                .unwrap()
+                .doc_id_dialect()
+                .unwrap(),
+            DocIdDialect::Metadata
+        );
+        for name in [
+            "FSharpInterop.Messages.txt",
+            "FSharpSignature.Notes.txt",
+            "FSharp.Core.resources",
+        ] {
+            assert_eq!(with_resource(name), DocIdDialect::Metadata, "{name}");
+        }
+        for name in [
+            "FSharpSignatureData.MiniLib",
+            "FSharpSignatureCompressedData.MiniLib",
+            "FSharpOptimizationData.MiniLib",
+        ] {
+            assert_eq!(with_resource(name), DocIdDialect::FSharp, "{name}");
+        }
+    }
+
     #[test]
     fn il_heuristic_path_skips_a_compiled_name_renamed_literal() {
         use crate::model::Member;

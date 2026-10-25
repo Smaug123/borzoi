@@ -20,6 +20,7 @@
 //! - and, so none of that passes by answering nothing anywhere, go-to-definition
 //!   on the leaf still lands on its binder.
 
+use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::Path;
 
@@ -30,7 +31,7 @@ use borzoi::server::State;
 use lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, HoverContents, HoverParams, Location,
     PartialResultParams, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
-    TextDocumentPositionParams, Url, WorkDoneProgressParams,
+    TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
 use tempfile::TempDir;
 
@@ -41,14 +42,14 @@ fn write(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-fn position_params(uri: &Url, src: &str, byte: usize) -> TextDocumentPositionParams {
+fn position_params(uri: &Uri, src: &str, byte: usize) -> TextDocumentPositionParams {
     TextDocumentPositionParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         position: offset_to_position(src, byte),
     }
 }
 
-fn definition_at(state: &mut State, uri: &Url, src: &str, byte: usize) -> Option<Location> {
+fn definition_at(state: &mut State, uri: &Uri, src: &str, byte: usize) -> Option<Location> {
     let params = GotoDefinitionParams {
         text_document_position_params: position_params(uri, src, byte),
         work_done_progress_params: WorkDoneProgressParams::default(),
@@ -73,7 +74,7 @@ fn matches_shape(outcome: &DefinitionOutcome) -> &'static str {
     }
 }
 
-fn hover_at(state: &mut State, uri: &Url, src: &str, byte: usize) -> Option<String> {
+fn hover_at(state: &mut State, uri: &Uri, src: &str, byte: usize) -> Option<String> {
     let params = HoverParams {
         text_document_position_params: position_params(uri, src, byte),
         work_done_progress_params: WorkDoneProgressParams::default(),
@@ -84,7 +85,7 @@ fn hover_at(state: &mut State, uri: &Url, src: &str, byte: usize) -> Option<Stri
     })
 }
 
-fn references_at(state: &mut State, uri: &Url, src: &str, byte: usize) -> Vec<Location> {
+fn references_at(state: &mut State, uri: &Uri, src: &str, byte: usize) -> Vec<Location> {
     let params = ReferenceParams {
         text_document_position: position_params(uri, src, byte),
         work_done_progress_params: WorkDoneProgressParams::default(),
@@ -227,7 +228,7 @@ fn leaf_token(src: &str, qualifiers: &[(usize, usize)]) -> (usize, usize) {
 
 /// Where `leaf` is declared: the identifier after `let ` / ` ` in whichever file
 /// declares it, as `(uri, byte range)`.
-fn leaf_binder(cell: &Cell, lib: &Url, using: &Url) -> (Url, (usize, usize)) {
+fn leaf_binder(cell: &Cell, lib: &Uri, using: &Uri) -> (Uri, (usize, usize)) {
     let decl = |src: &str| {
         [format!("let {} ", cell.leaf), format!("= {} ", cell.leaf)]
             .iter()
@@ -275,8 +276,8 @@ fn a_qualifier_cursor_is_never_served_the_leaf() {
         );
         write(&lib_path, &cell.lib);
         write(&use_path, &cell.using);
-        let lib_uri = Url::from_file_path(&lib_path).unwrap();
-        let use_uri = Url::from_file_path(&use_path).unwrap();
+        let lib_uri = Uri::from_file_path(&lib_path).unwrap();
+        let use_uri = Uri::from_file_path(&use_path).unwrap();
         let mut state = State::default();
         state.docs.insert(lib_uri.clone(), cell.lib.clone());
         state.docs.insert(use_uri.clone(), cell.using.clone());

@@ -29,6 +29,7 @@
 //! member-access node survives to anchor the receiver (a parser-side follow-up,
 //! not hacked here).
 
+use crate::uri::UriExt as _;
 use borzoi_cst::syntax::{
     AstNode, DotGetExpr, Expr, ImplFile, LongIdentExpr, SyntaxKind, SyntaxNode, SyntaxToken,
 };
@@ -71,7 +72,7 @@ pub fn handle(state: &mut State, params: CompletionParams) -> Option<CompletionR
 /// evaluated project.
 fn member_candidates(
     state: &mut State,
-    uri: &lsp_types::Url,
+    uri: &lsp_types::Uri,
     text: &str,
     pos: Position,
 ) -> Option<Vec<String>> {

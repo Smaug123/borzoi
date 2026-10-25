@@ -7,13 +7,14 @@
 
 use borzoi::handlers::document_symbol;
 use borzoi::server::State;
+use borzoi::uri::UriExt as _;
 use lsp_types::{
     ClientCapabilities, DocumentSymbol, DocumentSymbolClientCapabilities, DocumentSymbolParams,
     DocumentSymbolResponse, PartialResultParams, Position, Range, SymbolKind,
-    TextDocumentClientCapabilities, TextDocumentIdentifier, Url, WorkDoneProgressParams,
+    TextDocumentClientCapabilities, TextDocumentIdentifier, Uri, WorkDoneProgressParams,
 };
 
-fn params(uri: &Url) -> DocumentSymbolParams {
+fn params(uri: &Uri) -> DocumentSymbolParams {
     DocumentSymbolParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: WorkDoneProgressParams::default(),
@@ -52,7 +53,7 @@ fn state_with_hierarchical() -> State {
 /// these tests pin against.
 fn run(text: &str) -> Vec<DocumentSymbol> {
     let mut state = state_with_hierarchical();
-    let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
     state.docs.insert(uri.clone(), text.to_string());
     match document_symbol::handle(&mut state, params(&uri)) {
         Some(DocumentSymbolResponse::Nested(syms)) => syms,
@@ -140,7 +141,7 @@ fn missing_buffer_returns_none() {
     // No `didOpen` for this URI → no buffer → the handler returns `None`
     // (which the JSON-RPC layer serialises as null, never an error).
     let mut state = State::default();
-    let uri = Url::parse("inmemory:///Missing.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Missing.fs").unwrap();
     let resp = document_symbol::handle(&mut state, params(&uri));
     assert!(resp.is_none(), "{resp:?}");
 }
@@ -177,7 +178,7 @@ fn empty_buffer_returns_an_empty_list() {
 #[test]
 fn falls_back_to_flat_when_capability_absent() {
     let mut state = State::default(); // No `set_client_capabilities` call.
-    let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+    let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
     state.docs.insert(uri.clone(), "let x = 1\n".to_string());
 
     let resp = document_symbol::handle(&mut state, params(&uri)).expect("a response");
@@ -203,7 +204,7 @@ mod panic_safe {
 
     fn run_or_none(text: &str) -> Option<Vec<DocumentSymbol>> {
         let mut state = state_with_hierarchical();
-        let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+        let uri = Uri::parse("inmemory:///Sample.fs").unwrap();
         state.docs.insert(uri.clone(), text.to_string());
         match document_symbol::handle(&mut state, params(&uri)) {
             Some(DocumentSymbolResponse::Nested(syms)) => Some(syms),

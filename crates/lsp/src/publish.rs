@@ -26,10 +26,11 @@
 //! clearing on edit/close, cross-file relocation, and the case where a file
 //! is simultaneously a generator and another document's target.
 
+use crate::uri::UriExt as _;
 use std::collections::HashMap;
 use std::path::Path;
 
-use lsp_types::{Diagnostic, PublishDiagnosticsParams, Url};
+use lsp_types::{Diagnostic, PublishDiagnosticsParams, Uri};
 
 use crate::diagnostics::FileDiagnostics;
 use crate::paths::lexically_normalize;
@@ -45,7 +46,7 @@ pub struct PublishState {
     /// `generating URI -> (target URI -> that document's diagnostics for it)`.
     /// A document with no diagnostics at all holds no entry; a target a
     /// document contributes nothing to holds no key.
-    contributions: HashMap<Url, HashMap<Url, Vec<Diagnostic>>>,
+    contributions: HashMap<Uri, HashMap<Uri, Vec<Diagnostic>>>,
 }
 
 impl PublishState {
@@ -65,10 +66,10 @@ impl PublishState {
     /// against `changed`'s directory; unresolvable ⇒ dropped with a warning).
     pub fn plan(
         &mut self,
-        changed: &Url,
+        changed: &Uri,
         groups: Vec<FileDiagnostics>,
     ) -> Vec<PublishDiagnosticsParams> {
-        let mut new_contrib: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
+        let mut new_contrib: HashMap<Uri, Vec<Diagnostic>> = HashMap::new();
         for group in groups {
             match group.file {
                 None => {
@@ -91,7 +92,7 @@ impl PublishState {
                     None => crate::log_warn!(
                         "dropping cross-file #line diagnostics: cannot resolve target",
                         file = file,
-                        document = changed
+                        document = changed.as_str()
                     ),
                 },
             }
@@ -117,7 +118,7 @@ impl PublishState {
     /// contributor) and its own URI is cleared. Mirrors the LSP convention of
     /// clearing a closed document's diagnostics, extended across the files it
     /// had relocated diagnostics onto.
-    pub fn plan_close(&mut self, changed: &Url) -> Vec<PublishDiagnosticsParams> {
+    pub fn plan_close(&mut self, changed: &Uri) -> Vec<PublishDiagnosticsParams> {
         let old = self.contributions.remove(changed).unwrap_or_default();
         let targets = sorted_targets(old.keys(), changed);
         let mut out = Vec::with_capacity(targets.len() + 1);
@@ -128,7 +129,7 @@ impl PublishState {
 
     /// The notification for `target`: the union, over all documents, of their
     /// current contribution to it. An empty union clears the URI.
-    fn publish_for(&self, target: &Url) -> PublishDiagnosticsParams {
+    fn publish_for(&self, target: &Uri) -> PublishDiagnosticsParams {
         PublishDiagnosticsParams {
             uri: target.clone(),
             diagnostics: self.union_for(target),
@@ -138,8 +139,8 @@ impl PublishState {
 
     /// The union of every document's contribution to `target`, concatenated in
     /// a deterministic (sorted-by-URI) generator order.
-    fn union_for(&self, target: &Url) -> Vec<Diagnostic> {
-        let mut generators: Vec<&Url> = self.contributions.keys().collect();
+    fn union_for(&self, target: &Uri) -> Vec<Diagnostic> {
+        let mut generators: Vec<&Uri> = self.contributions.keys().collect();
         generators.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         let mut out = Vec::new();
         for g in generators {
@@ -153,8 +154,8 @@ impl PublishState {
 
 /// The affected targets other than `changed`, sorted by URI string and
 /// deduplicated, so the planned output is deterministic.
-fn sorted_targets<'a>(keys: impl Iterator<Item = &'a Url>, changed: &Url) -> Vec<Url> {
-    let mut targets: Vec<Url> = keys.filter(|k| *k != changed).cloned().collect();
+fn sorted_targets<'a>(keys: impl Iterator<Item = &'a Uri>, changed: &Uri) -> Vec<Uri> {
+    let mut targets: Vec<Uri> = keys.filter(|k| *k != changed).cloned().collect();
     targets.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     targets.dedup();
     targets
@@ -174,14 +175,14 @@ fn sorted_targets<'a>(keys: impl Iterator<Item = &'a Url>, changed: &Url) -> Vec
 /// `pub(crate)` so the pull-diagnostic path ([`crate::pull`]) resolves
 /// `#line` cross-file targets identically to the push path — one definition,
 /// no drift.
-pub(crate) fn resolve_target(generating: &Url, file: &str) -> Option<Url> {
+pub(crate) fn resolve_target(generating: &Uri, file: &str) -> Option<Uri> {
     let raw = Path::new(file);
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
         generating.to_file_path().ok()?.parent()?.join(raw)
     };
-    Url::from_file_path(lexically_normalize(&joined)).ok()
+    Uri::from_file_path(lexically_normalize(&joined)).ok()
 }
 
 #[cfg(test)]
@@ -189,8 +190,8 @@ mod tests {
     use super::*;
     use lsp_types::{DiagnosticSeverity, Range};
 
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
+    fn url(s: &str) -> Uri {
+        Uri::parse(s).unwrap()
     }
 
     fn diag(message: &str) -> Diagnostic {
@@ -222,13 +223,14 @@ mod tests {
     /// Find the single planned notification for `uri`.
     fn for_uri<'a>(
         params: &'a [PublishDiagnosticsParams],
-        uri: &Url,
+        uri: &Uri,
     ) -> &'a PublishDiagnosticsParams {
         let matches: Vec<_> = params.iter().filter(|p| p.uri == *uri).collect();
         assert_eq!(
             matches.len(),
             1,
-            "expected exactly one publish for {uri}: {params:#?}"
+            "expected exactly one publish for {}: {params:#?}",
+            uri.as_str()
         );
         matches[0]
     }
