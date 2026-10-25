@@ -36,7 +36,7 @@ ena = "0.14"
 # Pure-Rust deflate via miniz_oxide. `default-features = false` plus the
 # `rust_backend` feature avoids dragging in `libz-sys` / native zlib.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-logos = "0.14"
+logos = "0.16"
 lsp-server = "0.10"
 lsp-types = "0.97"
 # `https-rustls` is rustls with the bundled `webpki-roots` trust store (no
