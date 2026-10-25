@@ -180,3 +180,152 @@ fn recover_semicolon_after_balanced_debris_ends_it() {
         2,
     );
 }
+
+/// The module-level declarations of `src`, by text.
+fn top_level_decls(src: &str) -> Vec<String> {
+    use borzoi_cst::syntax::SyntaxKind;
+    let parse = borzoi_cst::parser::parse(src);
+    let module = parse
+        .root
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::MODULE_OR_NAMESPACE)
+        .expect("a module");
+    module
+        .children()
+        .map(|n| n.text().to_string().trim().to_string())
+        .collect()
+}
+
+/// Inside a bracket a stray token's debris leaves open, nothing becomes a
+/// declaration of the enclosing module, keyword-led or not: that would put
+/// the abandoned construct's bindings in module scope, and resolve a later
+/// use to them.
+#[test]
+fn recover_nothing_inside_a_debris_bracket_is_a_declaration() {
+    let inners = [
+        "let inner = 1",
+        "let rec inner = 1",
+        "use inner = 1",
+        "type Inner = int",
+        "open System",
+        "module Inner = List",
+        "exception Inner",
+        "do ()",
+        "[<A>] let inner = 1",
+        "[<A>] type Inner = int",
+        "#nowarn \"40\"",
+        "extern void f()",
+        "inner",
+    ];
+    let mut failures = Vec::new();
+    for inner in inners {
+        for (shape, src) in [
+            (
+                "multi-line",
+                format!("let x = 0\nmember foo ({inner}\n            1)\nlet after = x\n"),
+            ),
+            (
+                "same line",
+                format!("let x = 0\nmember foo ({inner}) 1\nlet after = x\n"),
+            ),
+        ] {
+            let decls = top_level_decls(&src);
+            if decls != ["let x = 0", "let after = x"] {
+                failures.push(format!("{shape} {inner:?}: {decls:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Outside any bracket, a declaration keyword on the stray token's line ends
+/// the debris and begins a declaration, as FCS does after a stray access
+/// modifier (`private let x1 = 42`). Anything else on the line is debris.
+#[test]
+fn recover_a_declaration_keyword_ends_unbracketed_debris() {
+    let mut failures = Vec::new();
+    for (inner, decl) in [
+        ("let inner = 1", Some("let inner = 1")),
+        ("type Inner = int", Some("type Inner = int")),
+        ("open System", Some("open System")),
+        ("module Inner = List", Some("module Inner = List")),
+        ("exception Inner", Some("exception Inner")),
+        ("[<A>] let inner = 1", Some("[<A>] let inner = 1")),
+        ("extern void f()", Some("extern void f()")),
+        ("inner", None),
+        ("#nowarn \"40\"", None),
+    ] {
+        let src = format!("let x = 0\nmember foo {inner}\nlet after = x\n");
+        let want: Vec<&str> = ["let x = 0"]
+            .into_iter()
+            .chain(decl)
+            .chain(["let after = x"])
+            .collect();
+        let decls = top_level_decls(&src);
+        if decls != want {
+            failures.push(format!("{inner:?}: {decls:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The access-modifier shape graded against FCS: each `let` after a stray
+/// `private`/`public` is a declaration of the nested module.
+#[test]
+fn recover_stray_access_modifier_keeps_the_declaration_after_it() {
+    let verdict = crate::common::recovery::assert_recovered_trees_agree(
+        "module M =\n    private let x1 = 42\n    public let x2 = 42\n",
+        1,
+    );
+    assert_eq!(
+        verdict.relation,
+        crate::common::recovery::Relation::Exact,
+        "{}",
+        verdict.token()
+    );
+}
+
+/// The scope leak in full, graded against FCS: the abandoned member's local
+/// `inner` stays out of the module.
+#[test]
+fn recover_stray_member_keeps_its_local_binding_local() {
+    let src = "let inner = 0\nmember foo (let inner = 1\n            inner)\nlet after = inner\n";
+    assert_eq!(top_level_decls(src), ["let inner = 0", "let after = inner"]);
+    crate::common::recovery::assert_recovered_trees_agree(src, 1);
+}
+
+/// Debris ending at a declaration keyword on the line of the previous
+/// declaration still lets that keyword begin one: the stray token, not the
+/// missing separator, is the error (`type B` here, which we do not parse on
+/// the same line as `type A`).
+#[test]
+fn recover_same_line_declaration_after_debris() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module Module\n\ntype A = A type B = A module C = type CC = int\n",
+        3,
+    );
+}
+
+/// Debris whose offside block closes on the next declaration's line, with no
+/// separator before it, still lets that line begin a declaration.
+#[test]
+fn recover_declaration_after_debris_block_end() {
+    let decls = top_level_decls("let f class = 5\n\nexit 1\n");
+    assert_eq!(
+        decls.last().map(String::as_str),
+        Some("exit 1"),
+        "{decls:?}"
+    );
+}
+
+/// Debris that absorbed no layout separator leaves the previous
+/// declaration's need for one standing: the `let` after the stray
+/// ``` ``b`` = ``` (a `module` head that lost its keyword) is not a
+/// module-level declaration, as in FCS.
+#[test]
+fn recover_keyword_after_unseparated_debris_is_not_a_declaration() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule ``a`` = let a = 1\n ``b`` = let a = 1\nmodule ``c`` = let a = 1\n",
+        2,
+    );
+}
