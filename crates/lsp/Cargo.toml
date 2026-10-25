@@ -19,8 +19,9 @@ url.workspace = true
 rowan.workspace = true
 # Compact binary serde format for the on-disk assembly-projection cache
 # (`assembly_cache`). Faster + smaller than JSON for the warm-restart deserialize
-# of every referenced DLL's projected `Entity` tree; 1.x drives serde directly.
-bincode.workspace = true
+# of every referenced DLL's projected `Entity` tree, and it decodes from a slice,
+# so a corrupt length prefix fails against the bytes left instead of allocating.
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

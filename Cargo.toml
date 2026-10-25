@@ -31,7 +31,6 @@ borzoi-sema = { path = "crates/sema" }
 borzoi-spawn = { path = "crates/spawn" }
 borzoi-stats = { path = "tools/stats" }
 
-bincode = "1.3"
 ena = "0.14"
 # Pure-Rust deflate via miniz_oxide. `default-features = false` plus the
 # `rust_backend` feature avoids dragging in `libz-sys` / native zlib.
@@ -51,6 +50,9 @@ opentelemetry-appender-tracing = "0.33"
 # transport explicitly.
 opentelemetry-otlp = { version = "0.33", default-features = false }
 opentelemetry_sdk = "0.33"
+# `use-std` without the default `heapless` support: the cache only needs
+# `Vec`-backed encode and slice decode.
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 proc-macro2 = "1"
 proptest = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
