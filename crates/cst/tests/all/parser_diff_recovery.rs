@@ -121,9 +121,9 @@ fn recover_function_body_after_a_local_module_is_debris() {
     );
 }
 
-/// A single `;` in a stray token's debris may belong to the abandoned
-/// construct (here, inside the parenthesis of a `fun` that lost its `->`), so
-/// it does not end the debris: `b <- y` is not a declaration of its own.
+/// A single `;` inside a bracket the debris opened (here, the parenthesis of
+/// a `fun` after a stray `|>`) belongs to the abandoned construct, so it does
+/// not end the debris: `b <- y` is not a declaration of its own.
 #[test]
 fn recover_semicolon_inside_abandoned_parens_stays_debris() {
     crate::common::recovery::assert_recovered_trees_agree(
@@ -168,5 +168,15 @@ fn recover_double_semicolon_inside_stray_keyword_parens_stays_debris() {
         verdict.beyond_fcs >= 1,
         "`let z` must survive past FCS's reach: {}",
         verdict.token()
+    );
+}
+
+/// A top-level `;` after a stray token with no bracket left open ends the
+/// debris too: `sentinel 42` is a declaration, as in FCS.
+#[test]
+fn recover_semicolon_after_balanced_debris_ends_it() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\n->; sentinel 42\nlet z = 3\n",
+        2,
     );
 }

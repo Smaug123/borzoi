@@ -1240,12 +1240,11 @@ impl<'src> Parser<'src> {
             // (`pars.fsy:1281`), and FCS rejects it ("Unexpected symbol ';;'")
             // — so it falls through to the generic error path below.
             if seen_decl && matches!(&res, Ok(FilteredToken::Raw(Token::SemiSemi))) {
-                // `;;` closes every offside context (FCS's `isSemiSemi`), so
-                // it ends a stray token's debris and what follows it on the
-                // line is a declaration of its own — unless the debris left a
-                // bracket open (`h (fun (x, y) -> a <- x;; b <- y)` after a
-                // stray `|>`), whose contents are still the abandoned
-                // construct's.
+                // A separator ends a stray token's debris, and what follows
+                // it on the line is a declaration of its own — unless the
+                // debris left a bracket open (`h (fun (x, y) -> a <- x;; b <-
+                // y)` after a stray `|>`), whose contents are still the
+                // abandoned construct's. The `;` arm below does the same.
                 if span.start < debris_until
                     && self.scan_debris_brackets(&mut debris_brackets, span.start) == 0
                 {
@@ -1278,6 +1277,11 @@ impl<'src> Parser<'src> {
             // already current (stepped at the top of the loop), so the order is
             // free.
             if seen_decl && matches!(&res, Ok(FilteredToken::Raw(Token::Semi))) && depth == 0 {
+                if span.start < debris_until
+                    && self.scan_debris_brackets(&mut debris_brackets, span.start) == 0
+                {
+                    debris_until = 0;
+                }
                 self.bump_into(SyntaxKind::SEMI_TOK);
                 needs_sep = false;
                 continue;
