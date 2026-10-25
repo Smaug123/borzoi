@@ -21,10 +21,10 @@
 //!   (`BORZOI_CORPUS`), the outcome of each facet — `match`, a
 //!   `decline(...)` with the class of its first cause, or a `skip(...)` where
 //!   the comparison would be unfair — and any project-level `error(...)` must
-//!   equal the checked-in [`MANIFEST`] line exactly. The corpus is
+//!   equal its checked-in [`manifest_path`] entry exactly. The corpus is
 //!   content-addressed and the evaluator deterministic, so there is no drift
 //!   for slack to absorb: any movement, in either direction, fails and must be
-//!   acknowledged by re-blessing the manifest. That is what makes a newly
+//!   acknowledged by regenerating the manifest ([`REGENERATE`]). That is what makes a newly
 //!   *declined* project as visible as a newly diverging one, and a newly
 //!   committed one as visible as either.
 //!
@@ -34,14 +34,16 @@
 //!
 //! ## Knobs
 //!
-//! - `BORZOI_MSBUILD_MANIFEST_BLESS=1` rewrites [`MANIFEST`] from this run
-//!   instead of asserting it. Only a whole-corpus run may bless, and only when
-//!   nothing diverged. Review the diff before committing it.
+//! - `BORZOI_UPDATE_MANIFESTS=1` rewrites the manifest from this run instead
+//!   of asserting it (see [`borzoi_oracle_harness::manifest`]). Only a
+//!   whole-corpus run may regenerate it, and only when nothing diverged: the
+//!   divergence assertion runs first. Review the diff before committing it.
 //! - `BORZOI_MSBUILD_PROJECT_LIST_FILE=/path/list.txt` runs a chosen subset:
 //!   one project per line, `#` comments and blank lines ignored, relative paths
 //!   resolved against `BORZOI_CORPUS` — so lines copied from the manifest work
 //!   as they are (anything after a tab is ignored). Listed projects under the
-//!   corpus are still checked against their manifest lines.
+//!   corpus are still checked against their manifest entries; unlisted ones
+//!   make no claim.
 //! - `BORZOI_MSBUILD_PROJECT_LIST` is the same, as a platform-separated list.
 //! - `BORZOI_MSBUILD_CORPUS=/other/tree` points the sweep at a different
 //!   corpus. Projects outside the pinned corpus have no manifest; for them an
@@ -57,7 +59,7 @@
 //! `TRACE`, and TFM/platform symbols) after every parser-reported symbol has
 //! been accounted for.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufWriter, Write as _};
@@ -66,6 +68,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use borzoi_oracle_harness::BoundedCommand;
+use borzoi_oracle_harness::corpus_key::corpus_relative;
+use borzoi_oracle_harness::manifest::{self, Manifest, ManifestDiff, UPDATE_ENV};
 
 mod common;
 
@@ -88,8 +92,16 @@ fn fsproj_msbuild_corpus_diff() {
     run.assert_success();
 }
 
-/// The checked-in outcome manifest, relative to this crate's directory.
-const MANIFEST: &str = "tests/fixtures/fsproj_msbuild_corpus_manifest.tsv";
+/// The checked-in outcome manifest: one `<project>\t<outcome>` entry per
+/// pinned-corpus project, the project spelled by [`corpus_relative`]. A tab
+/// separates the two because a path may contain a space.
+fn manifest_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/manifests/fsproj_msbuild_corpus_diff.txt")
+}
+
+/// The one command that regenerates [`manifest_path`].
+const REGENERATE: &str = "BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-msbuild \
+     --test fsproj_msbuild_corpus_diff -- --ignored";
 
 #[derive(Debug)]
 struct Config {
@@ -100,7 +112,6 @@ struct Config {
     /// Whether this run visits the whole pinned corpus, so the manifest must
     /// match as a *set* — no project missing, none extra.
     whole_pinned_corpus: bool,
-    bless: bool,
     max_errors: usize,
     report_jsonl: Option<PathBuf>,
 }
@@ -126,20 +137,17 @@ impl Config {
             _ => false,
         };
         let projects = projects_from_source(project_source, pinned_corpus.as_deref())?;
-        let bless = env_bool("BORZOI_MSBUILD_MANIFEST_BLESS");
-        if bless && !whole_pinned_corpus {
-            return Err(
-                "BORZOI_MSBUILD_MANIFEST_BLESS needs a whole-corpus run over BORZOI_CORPUS \
+        if manifest::update_requested() && !whole_pinned_corpus {
+            return Err(format!(
+                "{UPDATE_ENV} needs a whole-corpus run over BORZOI_CORPUS \
                  (no project list, no BORZOI_MSBUILD_CORPUS)"
-                    .to_string(),
-            );
+            ));
         }
 
         Ok(Self {
             projects,
             pinned_corpus,
             whole_pinned_corpus,
-            bless,
             max_errors: env_usize("BORZOI_MSBUILD_MAX_ERRORS")?.unwrap_or(0),
             report_jsonl: std::env::var_os("BORZOI_MSBUILD_REPORT_JSONL").map(PathBuf::from),
         })
@@ -280,12 +288,12 @@ impl Run {
         Ok(())
     }
 
-    /// The manifest key for `project`: its path relative to the pinned corpus,
-    /// `/`-separated. `None` for a project outside it.
+    /// The manifest key for `project`: its [`corpus_relative`] spelling under
+    /// the pinned corpus. `None` for a project outside it.
     fn manifest_key(&self, project: &str) -> Option<String> {
         let root = self.config.pinned_corpus.as_ref()?;
         let path = fs::canonicalize(project).unwrap_or_else(|_| PathBuf::from(project));
-        path.strip_prefix(root).ok().map(to_forward_slashes)
+        path.starts_with(root).then(|| corpus_relative(root, &path))
     }
 
     fn assert_success(&self) {
@@ -314,7 +322,10 @@ impl Run {
             }
             match self.manifest_key(&report.project) {
                 Some(key) => {
-                    actual.insert(key, report.manifest_outcome());
+                    let outcome = report.manifest_outcome();
+                    if let Some(other) = actual.insert(key.clone(), outcome) {
+                        panic!("two projects share the manifest key {key} (one was {other})");
+                    }
                 }
                 None if report.status == ProjectStatus::Error => unmanifested_errors += 1,
                 None => {}
@@ -343,93 +354,58 @@ impl Run {
             self.config.max_errors
         );
 
-        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(MANIFEST);
-        if self.config.bless {
-            fs::write(&manifest_path, render_manifest(&actual))
-                .unwrap_or_else(|e| panic!("write {}: {e}", manifest_path.display()));
-            eprintln!(
-                "blessed {} ({} projects); review the diff before committing it",
-                manifest_path.display(),
-                actual.len()
+        let actual = Manifest::from_entries(
+            actual
+                .into_iter()
+                .map(|(key, outcome)| format!("{key}\t{outcome}")),
+        )
+        .unwrap_or_else(|e| panic!("manifest entry: {e}"));
+        if self.config.whole_pinned_corpus {
+            manifest::check(&manifest_path(), &actual, REGENERATE);
+        } else if !actual.entries().is_empty() {
+            let path = manifest_path();
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let expected = Manifest::parse(&text).unwrap_or_else(|(line, e)| {
+                panic!(
+                    "manifest {} is malformed at line {line}: {e}",
+                    path.display()
+                )
+            });
+            let movement = visited_movement(&expected, &actual);
+            assert!(
+                movement.is_empty(),
+                "msbuild corpus diff outcomes of the listed projects moved against {}:\n{}\n\
+                 The corpus is pinned and the evaluator deterministic, so this is a change \
+                 in what we commit or decline. Establish which direction it moved and why; \
+                 if it is intended, regenerate the manifest with a whole-corpus run:\n  \
+                 {REGENERATE}",
+                path.display(),
+                movement.render(200),
             );
-            return;
         }
-        let text = fs::read_to_string(&manifest_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
-        let expected = parse_manifest(&text).unwrap_or_else(|e| panic!("{MANIFEST}: {e}"));
-        let movement = manifest_movement(&expected, &actual, self.config.whole_pinned_corpus);
-        assert!(
-            movement.is_empty(),
-            "msbuild corpus diff outcomes moved against {MANIFEST} ({} line(s)):\n{}\n\n\
-             The corpus is pinned and the evaluator deterministic, so this is a change in \
-             what we commit or decline. Establish which direction it moved and why; if it \
-             is intended, re-run with BORZOI_MSBUILD_MANIFEST_BLESS=1 and commit the \
-             manifest diff.",
-            movement.len(),
-            movement.join("\n")
-        );
     }
 }
 
-/// Render the manifest: a header, then one `key<TAB>outcome` line per
-/// project, sorted by key.
-fn render_manifest(outcomes: &BTreeMap<String, String>) -> String {
-    let mut out = String::from(
-        "# Per-project outcomes of `fsproj_msbuild_corpus_diff` over the pinned corpus\n\
-         # (BORZOI_CORPUS). Generated: re-bless with BORZOI_MSBUILD_MANIFEST_BLESS=1, never\n\
-         # by hand. Every line must match a run exactly; see the test's module docs.\n",
-    );
-    for (key, outcome) in outcomes {
-        out.push_str(key);
-        out.push('\t');
-        out.push_str(outcome);
-        out.push('\n');
-    }
-    out
+/// The project a manifest entry is about: everything before its tab.
+fn entry_key(entry: &str) -> &str {
+    entry.split_once('\t').map_or(entry, |(key, _)| key)
 }
 
-fn parse_manifest(text: &str) -> Result<BTreeMap<String, String>, String> {
-    let mut out = BTreeMap::new();
-    for (number, line) in text.lines().enumerate() {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (key, outcome) = line
-            .split_once('\t')
-            .ok_or_else(|| format!("line {}: no tab in {line:?}", number + 1))?;
-        if out.insert(key.to_string(), outcome.to_string()).is_some() {
-            return Err(format!("line {}: duplicate project {key}", number + 1));
-        }
-    }
-    Ok(out)
-}
-
-/// Every way `actual` differs from `expected`, one line each. A project the
-/// manifest lacks always counts; a manifest project this run did not visit
-/// counts only when the run was meant to visit them all.
-fn manifest_movement(
-    expected: &BTreeMap<String, String>,
-    actual: &BTreeMap<String, String>,
-    whole_corpus: bool,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    for (key, outcome) in actual {
-        match expected.get(key) {
-            Some(want) if want == outcome => {}
-            Some(want) => out.push(format!(
-                "  {key}\n    manifest: {want}\n    actual:   {outcome}"
-            )),
-            None => out.push(format!("  {key}: not in the manifest; actual: {outcome}")),
-        }
-    }
-    if whole_corpus {
-        for key in expected.keys().filter(|k| !actual.contains_key(*k)) {
-            out.push(format!(
-                "  {key}: in the manifest, but no longer in the corpus"
-            ));
-        }
-    }
-    out
+/// How a partial run's `actual` entries differ from `expected`, ignoring
+/// every manifest project the run did not visit. A visited project the
+/// manifest lacks still counts.
+fn visited_movement(expected: &Manifest, actual: &Manifest) -> ManifestDiff {
+    let visited: BTreeSet<&str> = actual.entries().iter().map(|e| entry_key(e)).collect();
+    let expected = Manifest::from_entries(
+        expected
+            .entries()
+            .iter()
+            .filter(|e| visited.contains(entry_key(e)))
+            .cloned(),
+    )
+    .expect("a subset of a valid manifest is valid");
+    expected.diff(actual)
 }
 
 fn compare_project(project: &Path) -> ProjectReport {
@@ -954,13 +930,6 @@ fn collect_fsprojs_into(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn should_skip_dir(name: &str) -> bool {
     matches!(name, ".git" | "target" | "artifacts" | "bin" | "obj")
-}
-
-fn env_bool(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|v| {
-        let v = v.to_string_lossy();
-        v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
-    })
 }
 
 fn env_usize(name: &str) -> Result<Option<usize>, String> {
@@ -1733,30 +1702,29 @@ mod tests {
     }
 
     #[test]
-    fn manifest_round_trips_and_reports_every_kind_of_movement() {
-        let actual: BTreeMap<String, String> = [
-            ("a.fsproj", "compile=match"),
-            ("b.fsproj", "compile=decline(items_uncertain: x)"),
-            ("new.fsproj", "compile=match"),
-        ]
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-        assert_eq!(parse_manifest(&render_manifest(&actual)).unwrap(), actual);
-
-        let expected: BTreeMap<String, String> = [
-            ("a.fsproj", "compile=match"),
-            ("b.fsproj", "compile=match"),
-            ("gone.fsproj", "compile=match"),
-        ]
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-        let whole = manifest_movement(&expected, &actual, true);
-        assert_eq!(whole.len(), 3, "{whole:#?}");
-        // A subset run does not miss the projects it never visited.
-        let subset = manifest_movement(&expected, &actual, false);
-        assert_eq!(subset.len(), 2, "{subset:#?}");
+    fn a_partial_run_ignores_only_the_projects_it_did_not_visit() {
+        let manifest = |entries: &[&str]| {
+            Manifest::from_entries(entries.iter().map(|e| e.to_string())).unwrap()
+        };
+        let expected = manifest(&[
+            "a.fsproj\tcompile=match",
+            "b.fsproj\tcompile=match",
+            "unvisited.fsproj\tcompile=match",
+        ]);
+        let actual = manifest(&[
+            "a.fsproj\tcompile=match",
+            "b.fsproj\tcompile=decline(items_uncertain: x)",
+            "new.fsproj\tcompile=match",
+        ]);
+        let movement = visited_movement(&expected, &actual);
+        assert_eq!(movement.removed, vec!["b.fsproj\tcompile=match"]);
+        assert_eq!(
+            movement.added,
+            vec![
+                "b.fsproj\tcompile=decline(items_uncertain: x)",
+                "new.fsproj\tcompile=match"
+            ]
+        );
     }
 
     #[test]

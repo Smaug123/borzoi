@@ -372,7 +372,7 @@ jobs:
         # It visits every project in the corpus and is two-sided: no facet may
         # diverge, and every project's outcome (match / decline-with-cause /
         # skip / error) must equal its line in
-        # `crates/msbuild/tests/fixtures/fsproj_msbuild_corpus_manifest.tsv`.
+        # `crates/msbuild/tests/manifests/fsproj_msbuild_corpus_diff.txt`.
         # A newly declined project fails as loudly as a newly wrong one.
         # Evaluation is pre-execution, so this needs no restore (~40 s).
         run: |

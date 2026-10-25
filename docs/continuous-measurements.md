@@ -75,10 +75,11 @@ Both halves exist for every axis, and the split is:
 and gates on two things. No facet may diverge — there is no knob for that. And
 every project's outcome — each facet's `match`, `decline(<first cause>)` or
 `skip(<reason>)`, or a project-level `error(<MSBuild code>)` — must equal its
-line in the checked-in `crates/msbuild/tests/fixtures/fsproj_msbuild_corpus_manifest.tsv`
-exactly. The corpus is content-addressed and the evaluator deterministic, so
-any movement in either direction is a change in what we commit, and fails until
-it is understood and re-blessed (`BORZOI_MSBUILD_MANIFEST_BLESS=1`). It rides
+entry in the checked-in `crates/msbuild/tests/manifests/fsproj_msbuild_corpus_diff.txt`
+exactly (one of the exact manifests below). The corpus is content-addressed and
+the evaluator deterministic, so any movement in either direction is a change in
+what we commit, and fails until it is understood and the manifest regenerated
+(`BORZOI_UPDATE_MANIFESTS=1`, whole-corpus runs only). It rides
 in `test-msbuild` under the same change filter as the crate.
 
 It used to visit a stride-13 sample of six projects with
@@ -186,7 +187,8 @@ measured, and both stayed green. A count also cannot see movement inside itself
 
 The corpus is content-addressed (the `fsharp-src` flake input) and both sides
 are deterministic, so a sweep's outcome for every item is a fixed fact. The sema
-and cst corpus sweeps, and assembly's reference-pack sweep, therefore pin that
+and cst corpus sweeps, assembly's reference-pack sweep, and the MSBuild corpus
+differential therefore pin that
 fact itself: each checks a run against a manifest checked in under
 `crates/<crate>/tests/manifests/`, one sorted line per item, and fails on
 **any** difference with a line diff of what moved. There is no slack,
@@ -204,7 +206,7 @@ A manifest records state, so it cannot say a state is wrong; the hard
 gates — zero resolution divergences, zero inference divergences, the attribute
 and overload certain-implies-exact checks, the parser's lossless round-trip and
 zero panics, an `fcs-dump` record that always says whether FCS's parse erred,
-zero reference-pack *type* drops — remain separate assertions that run first,
+zero reference-pack *type* drops, zero MSBuild facet divergences — remain separate assertions that run first,
 so regeneration cannot bless a wrong answer.
 
 Granularity is chosen per sweep, to keep each file reviewable:
@@ -219,6 +221,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
 | `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). |
 | `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
+| `fsproj_msbuild_corpus_diff` (msbuild) | one per pinned `.fsproj`, `<project>\t<outcomes>`: a project-level `error(...)`, or each facet's `match`, `decline(<first cause>)` or `skip(<reason>)`. A tab separates the two because a path may contain a space. A run over a project list checks just the listed projects' entries. |
 | `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
 
 The cst manifests count their dominant bucket for the same reason

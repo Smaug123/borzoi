@@ -356,7 +356,8 @@ nix develop -c cargo test -p borzoi-msbuild --test sdk_chain_decline_attribution
 ```
 
 The cst and sema sweeps, `borzoi-assembly`'s reference-pack sweep (an
-ordinary test rather than an ignored one), and the whole-project gate
+ordinary test rather than an ignored one), the MSBuild corpus differential, and
+the whole-project gate
 (`ci.yml`'s `corpus-diff` job) pin every graded *item*, not a count: each
 compares its run against a checked-in manifest (`crates/<crate>/tests/manifests/`,
 `crates/corpus-diff/manifests/`) and fails on any movement **in either

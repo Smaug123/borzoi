@@ -1,6 +1,6 @@
-# Per-project outcomes of `fsproj_msbuild_corpus_diff` over the pinned corpus
-# (BORZOI_CORPUS). Generated: re-bless with BORZOI_MSBUILD_MANIFEST_BLESS=1, never
-# by hand. Every line must match a run exactly; see the test's module docs.
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored
 .github/skills/fsharp-diagnostics/server/FSharpDiagServer.fsproj	compile=match | project_references=match | package_references=match | framework_references=match | target_frameworks=match | lang_version=skip(unset on both sides)
 buildtools/AssemblyCheck/AssemblyCheck.fsproj	compile=match | project_references=match | package_references=match | framework_references=match | target_frameworks=match | lang_version=match
 buildtools/checkpackages/FSharp.Compiler.Service_notshipped.fsproj	compile=match | project_references=match | package_references=decline(package_references_uncertain: Diagnostic(UnsupportedCondition)) | framework_references=decline(package_references_uncertain: Diagnostic(UnsupportedCondition)) | target_frameworks=match | lang_version=skip(unset on both sides)
