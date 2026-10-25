@@ -70,13 +70,23 @@ Both halves exist for every axis, and the split is:
 | overload engine | `overload_corpus_diff` | `overload-coverage` |
 | MSBuild on real projects | `fsproj_msbuild_corpus_diff` | — |
 
-`fsproj_msbuild_corpus_diff` gates at the strict defaults —
-`BORZOI_MSBUILD_MAX_DIVERGENCES=0`, `BORZOI_MSBUILD_MAX_ERRORS=0` — over a
-six-project sample of the pinned corpus, currently
-`compared_projects=6 matched_facets=31 skipped_facets=11 divergences=0
-error_projects=0`. Evaluation is pre-execution, so it needs no restore and
-costs seconds; it rides in `test-msbuild` under the same change filter as the
-crate.
+`fsproj_msbuild_corpus_diff` visits **every** `.fsproj` in the pinned corpus
+(72 projects, about 40 s; evaluation is pre-execution, so it needs no restore)
+and gates on two things. No facet may diverge — there is no knob for that. And
+every project's outcome — each facet's `match`, `decline(<first cause>)` or
+`skip(<reason>)`, or a project-level `error(<MSBuild code>)` — must equal its
+entry in the checked-in `crates/msbuild/tests/manifests/fsproj_msbuild_corpus_diff.txt`
+exactly (one of the exact manifests below). The corpus is content-addressed and
+the evaluator deterministic, so any movement in either direction is a change in
+what we commit, and fails until it is understood and the manifest regenerated
+(`BORZOI_UPDATE_MANIFESTS=1`, whole-corpus runs only). It rides
+in `test-msbuild` under the same change filter as the crate.
+
+It used to visit a stride-13 sample of six projects with
+`MIN_COMPARED_PROJECTS=1`, and passed while six projects outside the sample
+committed wrong Compile lists (the SDK's default `**/*.fs` glob running where
+the evaluator assumed SDK Compile items never matter). A floor of one cannot
+see a project go from compared to declined either; the manifest sees both.
 
 It was the last row to be wired, and the reason is worth keeping. A ceiling set
 to the divergence count you happen to have ratifies a known-wrong value as the
@@ -177,7 +187,8 @@ measured, and both stayed green. A count also cannot see movement inside itself
 
 The corpus is content-addressed (the `fsharp-src` flake input) and both sides
 are deterministic, so a sweep's outcome for every item is a fixed fact. The sema
-and cst corpus sweeps, and assembly's reference-pack sweep, therefore pin that
+and cst corpus sweeps, assembly's reference-pack sweep, and the MSBuild corpus
+differential therefore pin that
 fact itself: each checks a run against a manifest checked in under
 `crates/<crate>/tests/manifests/`, one sorted line per item, and fails on
 **any** difference with a line diff of what moved. There is no slack,
@@ -195,7 +206,7 @@ A manifest records state, so it cannot say a state is wrong; the hard
 gates — zero resolution divergences, zero inference divergences, the attribute
 and overload certain-implies-exact checks, the parser's lossless round-trip and
 zero panics, an `fcs-dump` record that always says whether FCS's parse erred,
-zero reference-pack *type* drops — remain separate assertions that run first,
+zero reference-pack *type* drops, zero MSBuild facet divergences — remain separate assertions that run first,
 so regeneration cannot bless a wrong answer.
 
 Granularity is chosen per sweep, to keep each file reviewable:
@@ -210,6 +221,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
 | `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). |
 | `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
+| `fsproj_msbuild_corpus_diff` (msbuild) | one per pinned `.fsproj`, `<project>\t<outcomes>`: a project-level `error(...)`, or each facet's `match`, `decline(<first cause>)` or `skip(<reason>)`. A tab separates the two because a path may contain a space. A run over a project list checks just the listed projects' entries. |
 | `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
 
 The cst manifests count their dominant bucket for the same reason
