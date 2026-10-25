@@ -2,8 +2,8 @@
 
 > **Status:** planned, and deliberately *not* started. The measurement below
 > prices the work at **+4 call expressions and +30 conditions** on the SDK-chain
-> census, against populations of 396 and 2 758, with a sound ceiling of 52 and
-> 145 on everything reserved-name seeding could ever reach. What follows is the
+> census, against populations of 398 and 2 758, with a sound ceiling of 54 and
+> 146 on everything reserved-name seeding could ever reach. What follows is the
 > case for doing a small, well-bounded slice of it and cutting the rest loose
 > from the plan it was blocking.
 
@@ -24,8 +24,8 @@ Two things were wrong with that.
    trigger condition could not fire — not because the measurement said wait,
    but because no work existed to move the measurement.
 2. **The attribution behind it was false.** The census's decline column was
-   described as "dominated by undefined *reserved* receivers". At most 52 of
-   330 expression declines and 145 of 2 619 condition withdrawals read a
+   described as "dominated by undefined *reserved* receivers". At most 54 of
+   332 expression declines and 146 of 2 619 condition withdrawals read a
    reserved name at all, and the work would deliver +4 and +30. The error was an
    artefact of reading a histogram bucketed by *function name* as though it were
    bucketed by *cause*.
@@ -33,16 +33,16 @@ Two things were wrong with that.
 ## The measurement
 
 `crates/msbuild/tests/sdk_chain_decline_attribution.rs`, against the pinned SDK
-**10.0.301**. It does not classify declines. It runs the census's own population
+**10.0.401** (measured 2026-10-25). It does not classify declines. It runs the census's own population
 under three property tables and reports the steps between them:
 
 | | census seeds | + what a real walk already seeds | + the names still left empty |
 | --- | ---: | ---: | ---: |
-| call expressions committed (of 396) | 66 | 76 | **80** |
+| call expressions committed (of 398) | 66 | 77 | **81** |
 | conditions committed (of 2 758) | 139 | 155 | **185** |
 
 **The seeding work is the last step: +4 call expressions and +30 conditions.**
-The middle step (+10 and +16) is not work at all — it is the census not seeding
+The middle step (+11 and +16) is not work at all — it is the census not seeding
 reserved names on its own side, since MSBuild rejects `-p:` for them.
 
 And that +4/+30 is an over-statement: the table it measures includes
@@ -56,11 +56,11 @@ small" is an *upper*-bound claim, and no finite experiment establishes one. The
 ceiling that does is structural: an item that reads no reserved name cannot be
 turned on by any choice of reserved values, whatever they are.
 
-**At most 52 of the 330 expression declines and 145 of the 2 619 condition
+**At most 54 of the 332 expression declines and 146 of the 2 619 condition
 withdrawals read any reserved name at all.** That is the most seeding could ever
 be worth, and it is checked rather than argued.
 
-So the lever is bounded: **+4/+30 measured, ≤52/≤145 possible.**
+So the lever is bounded: **+4/+30 measured, ≤54/≤146 possible.**
 
 ### Why this is a delta and not a classification
 
@@ -181,7 +181,7 @@ broadly will hit this, and will read it as five wrong commits.
 
 1. **P3's trigger is void and needs re-deriving.** It was "the committed
    fraction rises, via trusted seeding". The work moves it by +4 and +30, and
-   could not move it by more than +52 and +145, so the trigger would never fire
+   could not move it by more than +54 and +146, so the trigger would never fire
    on its own terms. P3 should be re-priced
    against what its durability is actually worth, or against the *modelling*
    lever (the 286 unmodelled shapes), which is the thing that would genuinely

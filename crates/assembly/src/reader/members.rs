@@ -1972,8 +1972,10 @@ pub(super) fn decode_constant(element_type: u8, blob: &[u8]) -> Option<Constant>
                 return None;
             }
             Constant::Str(
-                blob.chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                blob.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&c| u16::from_le_bytes(c))
                     .collect(),
             )
         }

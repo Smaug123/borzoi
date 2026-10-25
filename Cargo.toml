@@ -39,9 +39,12 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 logos = "0.14"
 lsp-server = "0.7"
 lsp-types = "0.95"
-# `https-rustls` is a pure-Rust TLS backend (no OpenSSL), matching the
-# no-native-deps convention.
-minreq = { version = "2", features = ["https-rustls"] }
+# `https-rustls` is rustls with the bundled `webpki-roots` trust store (no
+# OpenSSL, no system libraries). minreq requests rustls's default features, so
+# the crypto provider is `aws-lc-rs`, whose `aws-lc-sys` compiles vendored C
+# with `cc`. The root store is compiled in: a CA distrust only reaches the
+# binary through a `webpki-roots` bump.
+minreq = { version = "3", features = ["https-rustls"] }
 opentelemetry = "0.32"
 opentelemetry-appender-tracing = "0.32"
 # Default features off: no TLS backend or async client; the LSP picks its

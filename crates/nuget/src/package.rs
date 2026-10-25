@@ -685,11 +685,11 @@ fn detect_utf16(bytes: &[u8]) -> Option<Utf16Endian> {
     // ASCII declaration or opening markup.
     let mut little_score = 0;
     let mut big_score = 0;
-    for pair in bytes[..sample_len].chunks_exact(2) {
-        if pair[1] == 0 && is_xml_ascii_byte(pair[0]) {
+    for &[first, second] in bytes[..sample_len].as_chunks::<2>().0 {
+        if second == 0 && is_xml_ascii_byte(first) {
             little_score += 1;
         }
-        if pair[0] == 0 && is_xml_ascii_byte(pair[1]) {
+        if first == 0 && is_xml_ascii_byte(second) {
             big_score += 1;
         }
     }
@@ -719,10 +719,12 @@ fn decode_utf16(bytes: &[u8], endian: Utf16Endian) -> io::Result<String> {
     }
 
     let units = bytes
-        .chunks_exact(2)
-        .map(|pair| match endian {
-            Utf16Endian::Little => u16::from_le_bytes([pair[0], pair[1]]),
-            Utf16Endian::Big => u16::from_be_bytes([pair[0], pair[1]]),
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| match endian {
+            Utf16Endian::Little => u16::from_le_bytes(pair),
+            Utf16Endian::Big => u16::from_be_bytes(pair),
         })
         .collect::<Vec<_>>();
     String::from_utf16(&units).map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
