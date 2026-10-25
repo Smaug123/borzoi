@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 borzoi.workspace = true
+# The parse tree the handler differential's perturbation finds comments and
+# strings in.
+borzoi-cst.workspace = true
 borzoi-msbuild.workspace = true
 borzoi-sema = { workspace = true, features = ["test-support"] }
 # The bounded driver for the `fcs-dump` children this harness shells out to. A
@@ -18,17 +21,18 @@ borzoi-spawn.workspace = true
 # checks a run against. A regular dependency for the same reason as
 # `borzoi-spawn`: the gate lives in the runner binary, not only in its tests.
 borzoi-oracle-harness.workspace = true
+lsp-server.workspace = true
 lsp-types.workspace = true
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The directory the handler differential's perturbed copy is put to FCS from.
+tempfile.workspace = true
 
 [dev-dependencies]
 borzoi-assembly.workspace = true
-borzoi-cst.workspace = true
 # The recorder that publishes this crate's generator summary. A dev-dependency
 # so the contract is checked by the real validator rather than by a second copy
 # of its rules restated in an assertion.
 borzoi-stats.workspace = true
 proptest.workspace = true
-tempfile.workspace = true
