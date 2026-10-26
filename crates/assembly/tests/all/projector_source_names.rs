@@ -24,10 +24,15 @@
 //! Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 
 use borzoi_assembly::{
-    Ecma335Assembly, EcmaView, Entity, Member, MethodLike, ModuleValue, ParamDefault, format_member,
+    Ecma335Assembly, EcmaView, Entity, Member, MethodLike, ModuleValue, ParamDefault,
 };
 
 use crate::common::ensure_minilib_fs_built;
+
+/// [`borzoi_assembly::format_member`], for a member every case here can render.
+fn format_member(member: &Member, owner: &Entity) -> String {
+    borzoi_assembly::format_member(member, owner).expect("a renderable signature")
+}
 
 fn load() -> Vec<Entity> {
     let dll = ensure_minilib_fs_built();

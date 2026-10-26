@@ -7,8 +7,12 @@ use borzoi_assembly::{
     FSharpConstraints, Field, IndexParameter, Member, MethodLike, MethodSignature, ModuleValue,
     Nullability, NullableType, ParamDefault, Parameter, Primitive, Property, TypeParameter,
     TypeRef, UnionCases, Variance, Version, format_entity_header, format_fsharp_name,
-    format_member,
 };
+
+/// [`borzoi_assembly::format_member`], for a member every case here can render.
+fn format_member(member: &Member, owner: &Entity) -> String {
+    borzoi_assembly::format_member(member, owner).expect("a renderable signature")
+}
 
 // ---- construction helpers -------------------------------------------------
 
@@ -173,6 +177,7 @@ fn method(name: &str, signature: MethodSignature) -> MethodLike {
         access: Access::Public,
         signature,
         arg_group_count: Some(1),
+        arg_groups: borzoi_assembly::ArgGroups::NotFSharp,
         is_static: false,
         is_virtual: false,
         is_abstract: false,
@@ -423,6 +428,202 @@ fn module_function_renders_as_val() {
     assert_eq!(
         format_member(&Member::Method(m), &entity("Math", EntityKind::Module, &[])),
         "val add: a: int * b: int -> int"
+    );
+}
+
+/// The pickle's groups, each argument named or not.
+fn groups(leading_receiver: bool, groups: &[&[Option<&str>]]) -> borzoi_assembly::ArgGroups {
+    borzoi_assembly::ArgGroups::Read(Box::new(borzoi_assembly::CurriedArgs {
+        leading_receiver,
+        groups: groups
+            .iter()
+            .map(|g| borzoi_assembly::ArgGroup {
+                args: g
+                    .iter()
+                    .map(|name| borzoi_assembly::CurriedArg {
+                        name: name.map(str::to_string),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }))
+}
+
+fn unit_ty() -> TypeRef {
+    named0(&["Microsoft", "FSharp", "Core"], "Unit")
+}
+
+#[test]
+fn curried_module_function_renders_its_groups() {
+    // `let f (a: int) (b: string, c: float) = 0`: two groups, the second tupled.
+    let mut m = method(
+        "f",
+        sig(
+            vec![
+                param(Some("a"), prim(Primitive::I4)),
+                param(Some("b"), prim(Primitive::String)),
+                param(Some("c"), prim(Primitive::R8)),
+            ],
+            prim(Primitive::I4),
+        ),
+    );
+    m.arg_groups = groups(false, &[&[Some("a")], &[Some("b"), Some("c")]]);
+    assert_eq!(
+        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        "val f: a: int -> b: string * c: float -> int"
+    );
+}
+
+#[test]
+fn curried_arguments_are_named_as_the_pickle_names_them() {
+    // `let f (_: int) ()`: IL names the wildcard `_arg1` and the unit
+    // `unitVar1`, neither of which F# shows.
+    let mut m = method(
+        "f",
+        sig(
+            vec![
+                param(Some("_arg1"), prim(Primitive::I4)),
+                param(Some("unitVar1"), unit_ty()),
+            ],
+            prim(Primitive::I4),
+        ),
+    );
+    m.arg_groups = groups(false, &[&[None], &[None]]);
+    assert_eq!(
+        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        "val f: int -> unit -> int"
+    );
+}
+
+#[test]
+fn an_empty_group_is_unit() {
+    // `let f () = 0` compiles to no parameter at all.
+    let mut m = method("f", sig(vec![], prim(Primitive::I4)));
+    m.arg_groups = groups(false, &[&[]]);
+    assert_eq!(
+        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        "val f: unit -> int"
+    );
+}
+
+#[test]
+fn a_function_typed_result_is_parenthesised() {
+    // `let f (a: int) : int -> int = id`: one group, returning a function.
+    let mut m = method(
+        "f",
+        sig(
+            vec![param(Some("a"), prim(Primitive::I4))],
+            fsharp_func(prim(Primitive::I4), prim(Primitive::I4)),
+        ),
+    );
+    m.arg_groups = groups(false, &[&[Some("a")]]);
+    assert_eq!(
+        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        "val f: a: int -> (int -> int)"
+    );
+}
+
+#[test]
+fn a_function_typed_module_value_is_parenthesised() {
+    let mut m = method(
+        "v",
+        sig(
+            vec![],
+            fsharp_func(prim(Primitive::I4), prim(Primitive::I4)),
+        ),
+    );
+    m.module_value = Some(ModuleValue { is_mutable: false });
+    m.arg_groups = groups(false, &[]);
+    assert_eq!(
+        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        "val v: (int -> int)"
+    );
+}
+
+#[test]
+fn an_augmentation_renders_as_the_member_it_declares() {
+    // `type String with member x.Ext (a: int) (b: int)` compiles to a static
+    // of its module taking the receiver first.
+    let params = || {
+        vec![
+            param(Some("x"), prim(Primitive::String)),
+            param(Some("a"), prim(Primitive::I4)),
+            param(Some("b"), prim(Primitive::I4)),
+        ]
+    };
+    let mut instance = method("String.Ext", sig(params(), prim(Primitive::I4)));
+    instance.source_name = Some("Ext".to_string());
+    instance.is_static = true;
+    instance.is_extension_method = true;
+    instance.augmentation = Augmentation::Certain;
+    instance.arg_groups = groups(true, &[&[Some("a")], &[Some("b")]]);
+    let module = entity("Ext", EntityKind::Module, &[]);
+    assert_eq!(
+        format_member(&Member::Method(instance), &module),
+        "member Ext: a: int -> b: int -> int"
+    );
+    // `static member SExt (a: int) (b: int)`: no receiver.
+    let mut stat = method(
+        "String.SExt",
+        sig(params()[1..].to_vec(), prim(Primitive::I4)),
+    );
+    stat.source_name = Some("SExt".to_string());
+    stat.is_static = true;
+    stat.augmentation = Augmentation::Certain;
+    stat.arg_groups = groups(false, &[&[Some("a")], &[Some("b")]]);
+    assert_eq!(
+        format_member(&Member::Method(stat), &module),
+        "static member SExt: a: int -> b: int -> int"
+    );
+}
+
+#[test]
+fn unknown_groups_withhold_a_signature_they_could_change() {
+    use borzoi_assembly::{ArgGroups, SignatureUnknown};
+    let two = || {
+        sig(
+            vec![
+                param(Some("a"), prim(Primitive::I4)),
+                param(Some("b"), prim(Primitive::I4)),
+            ],
+            prim(Primitive::I4),
+        )
+    };
+    let mut m = method("M", two());
+    m.arg_groups = ArgGroups::Unknowable;
+    assert_eq!(
+        borzoi_assembly::format_member(&Member::Method(m), &class("C")),
+        Err(SignatureUnknown::ArgGroupsUnknown),
+        "`a: int * b: int` and `a: int -> b: int` are different types"
+    );
+    // One parameter is one group, however the pickle would have read it.
+    let mut one = method(
+        "M",
+        sig(
+            vec![param(Some("a"), prim(Primitive::I4))],
+            prim(Primitive::I4),
+        ),
+    );
+    one.arg_groups = ArgGroups::Unknowable;
+    assert_eq!(
+        format_member(&Member::Method(one), &class("C")),
+        "member M: a: int -> int"
+    );
+    // F# refuses a curried constructor, so a constructor is one group.
+    let mut ctor = method(".ctor", two());
+    ctor.is_constructor = true;
+    ctor.arg_groups = ArgGroups::Unknowable;
+    assert_eq!(
+        format_member(&Member::Method(ctor), &class("C")),
+        "new: a: int * b: int -> C"
+    );
+    // A recorded grouping that does not account for the parameters is no
+    // grouping of this method's.
+    let mut mismatched = method("M", two());
+    mismatched.arg_groups = groups(false, &[&[Some("a")]]);
+    assert_eq!(
+        borzoi_assembly::format_member(&Member::Method(mismatched), &class("C")),
+        Err(SignatureUnknown::ArgGroupsUnknown)
     );
 }
 
@@ -1473,8 +1674,11 @@ fn untyped_member_is_the_signature_with_its_types_cut_out() {
     const ACCESSORS: [&str; 3] = [" with get, set", " with get", " with set"];
     fn walk(entity: &Entity, checked: &mut usize, bad: &mut Vec<String>) {
         for member in &entity.members {
+            // A member with no typed rendering has only the untyped head.
+            let Ok(typed) = borzoi_assembly::format_member(member, entity) else {
+                continue;
+            };
             *checked += 1;
-            let typed = format_member(member, entity);
             let untyped = format_member_untyped(member, entity);
             let (stem, accessors) = ACCESSORS
                 .iter()

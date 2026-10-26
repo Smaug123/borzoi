@@ -1321,6 +1321,7 @@ fn interface_receiver_method_call_defers() {
                 return_nullability: Nullability::Oblivious,
             },
             arg_group_count: Some(1),
+            arg_groups: borzoi_assembly::ArgGroups::NotFSharp,
             is_static: false,
             is_virtual: true,
             is_abstract: true,
@@ -1455,6 +1456,11 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
             return_nullability: Nullability::Oblivious,
         },
         arg_group_count: agc,
+        arg_groups: if agc == Some(1) {
+            borzoi_assembly::ArgGroups::NotFSharp
+        } else {
+            borzoi_assembly::ArgGroups::Unknowable
+        },
         is_static: false,
         is_virtual: false,
         is_abstract: false,

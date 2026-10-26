@@ -13,11 +13,11 @@ use crate::fsharp_resource::{
     foreign_signature_data_present, is_compressed_kind, primary_signature_resource_for_host,
 };
 use crate::model::{
-    Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
-    CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
-    FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
-    Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
+    Access, ArgGroups, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
+    CompilerFeatureRequired, CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind,
+    Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember,
+    IndexParameter, InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature,
+    ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
     SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
     UnclassifiedMethodImpl, UnionCases, ValFacts, Variance, Version,
 };
@@ -368,6 +368,7 @@ impl Ecma335Assembly {
                     for member in &mut entity.members {
                         if let Member::Method(m) = member {
                             m.arg_group_count = None;
+                            m.arg_groups = ArgGroups::Unknowable;
                             // A method typar carries F# constraints too
                             // (`let f<'T when 'T : comparison>`), and its F# type
                             // may mention a unit of measure the IL erased. The
@@ -2546,6 +2547,7 @@ impl Ecma335Assembly {
             // of an assembly whose host F# signature pickle decodes, since a
             // curried F# member is indistinguishable here. See the OV-6.1 plan.
             arg_group_count: Some(1),
+            arg_groups: ArgGroups::NotFSharp,
             // The signature's `HASTHIS` bit is the canonical static-ness signal
             // (mirrors the reference's `!signature.instance`).
             is_static: !sig.has_this,

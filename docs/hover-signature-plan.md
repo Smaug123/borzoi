@@ -113,6 +113,22 @@ resolution layer (`borzoi-sema`), and the F# type pretty-printer
   enclosing chain (`in Microsoft.FSharp.Core.Choice.Choice1Of2<'T1, 'T2>`); a
   nested ECMA TypeDef declares no namespace of its own, so building from
   `Entity::namespace` had left a bare `Choice1Of2`.
+- **curried signatures** — a referenced F# function or member renders in its
+  F# argument groups (`val f: a: int -> b: string * c: float -> int`), not the
+  tupled IL parameter list. `MethodLike::arg_groups` (`ArgGroups`: `NotFSharp` /
+  `Read(CurriedArgs)` / `Unknowable`) carries each val's `ValReprInfo` groups as
+  a caller writes them, with each argument's pickled F# name (a wildcard, a
+  later `()` and a tuple-typed parameter's elements are unnamed, where IL says
+  `_arg1`, `unitVar1`, `p_0`). Module vals get it from the module member claim;
+  type members from the doc-slot stamp (`stamp_arg_groups`), whose overload
+  slots keep the agreed grouping with IL names. An instance augmentation's
+  receiver is its module method's first parameter, and it renders as the
+  `member` it declares. A function-typed result is parenthesised, as FCS lays it
+  out (`a: int -> (int -> int)`, `val v: (int -> int)`). An F# method of two or
+  more parameters whose groups are unknown has no rendering
+  (`SignatureUnknown::ArgGroupsUnknown`), and its hover withholds the types.
+  Graded against FCS's tooltips (`fcs-dump tooltips`) by
+  `crates/lsp/tests/all/hover_curried_signatures.rs`.
 
 All model/reader additions above are additive: the differential normaliser
 renders any optional as `= ?` and reads index/nullable positions through its own

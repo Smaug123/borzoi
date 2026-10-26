@@ -456,6 +456,11 @@ mod synthetic {
                 return_nullability: Nullability::Oblivious,
             },
             arg_group_count: agc,
+            arg_groups: if agc == Some(1) {
+                borzoi_assembly::ArgGroups::NotFSharp
+            } else {
+                borzoi_assembly::ArgGroups::Unknowable
+            },
             is_static: true,
             is_virtual: false,
             is_abstract: false,

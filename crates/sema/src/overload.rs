@@ -811,6 +811,7 @@ mod tests {
                 return_nullability: Nullability::Oblivious,
             },
             arg_group_count: Some(1),
+            arg_groups: borzoi_assembly::ArgGroups::NotFSharp,
             is_static: false,
             is_virtual: false,
             is_abstract: false,
