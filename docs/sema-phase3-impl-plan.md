@@ -107,20 +107,26 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-10-26, after unconstrained operators; 2 602 walked
-bindings, 38.2 % complete — 37.0 % before them, when infix operator application
-was the only observed reason of 477 and present in 606):
+corpus sample (2026-10-26, after assembly module values; 2 602 walked
+bindings, 37.9 % complete — 37.4 % before them, when a value not bound in the
+file was the only observed reason of 467 and present in 664):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| value not bound in this file (assembly / earlier file) | 487 | 666 |
-| method call on a receiver that is not an in-file value | 172 | 308 |
+| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 407 | 546 |
+| method call on a receiver that is not an in-file value | 161 | 270 |
 | `use`, `let rec` or `let!` inside an expression | 64 | 90 |
-| pattern annotation outside the modelled set | 51 | 331 |
-| `match` | 47 | 149 |
-| constrained FSharp.Core operator (`+`, `=`, …) | 33 | 58 |
+| pattern annotation outside the modelled set | 47 | 331 |
+| `match` | 47 | 148 |
+| use of an in-file binder F# may reject for its attributes | 45 | 123 |
+| constrained assembly operator (`+`, `=`, …) | 37 | 62 |
 | `new` | 32 | 37 |
-| list or array expression | 29 | 78 |
+| assembly value with a constrained type parameter | 17 | 33 |
+| assembly value over a type the bridge does not carry (`'T list`, …) | 9 | 60 |
+
+The sample checks each file in isolation against FSharp.Core and the BCL
+alone, so most of the first row is a preceding file's value, which no
+per-file sample can resolve.
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -128,9 +134,11 @@ checking its body), and neither is any declaration after a syntax error in its
 file (recovery can spill into declarations that look intact).
 
 Two corollaries shaped the order of work. Infix operators were the first lever
-by a wide margin; with the unconstrained ones modelled, the next is a value
+by a wide margin; with the unconstrained ones modelled, the next was a value
 from an assembly or an earlier file — mostly the operands operators used to
-hide (`xs |> List.map f`), which the walk now reaches. And a rule that only
+hide (`xs |> List.map f`), which the walk now reaches. The assembly half of
+that has landed (below); what is left of the row is earlier files' values and
+assembly values the reading declines. And a rule that only
 fires on complete bindings — the guarded argument read-off, prototyped on
 branch `infer-arg-readoff` — measured **zero** gain on the corpus while
 bindings are this incomplete, so it waits until the blockers above are lower.
@@ -169,8 +177,9 @@ opened-then-reopened `Operators`).
 `OP a b`, checked by FCS exactly as one, so inference types it as one
 (`Gen::infer_infix`): the operator's value comes from whatever the resolver
 says its token names. An in-file definition is an applied value like any other
-(`let (+.) (a: int) (b: int) = …` makes `x +. 1` an `int`); FSharp.Core's own
-operator — by its module's assembly name and public-key token — has its IL
+(`let (+.) (a: int) (b: int) = …` makes `x +. 1` an `int`); an assembly's
+operator — FSharp.Core's, or since assembly module values (below) any F#
+assembly's — has its IL
 signature read as its F# type (`function_ty::module_function_scheme`) and
 instantiated, each type parameter a fresh scheme-instantiation variable. That
 reading is sound only with three facts the IL cannot carry, all now read off
@@ -185,10 +194,9 @@ named head the type applies is cleared through the abbreviation chase, in
 whichever assembly declares it (`module_function_measures_diff`) — plus the
 val's own `[<CompilerMessage>]` and `[<RequiresExplicitTypeArguments>]`, which
 reject a use and live in the pickle alone (`MethodLike::val_facts`). The
-bridge carries only primitives, the function's type parameters, F# function
-types and `unit`, so `@` and `:=` (over `'T list` and `'T ref`, F# types under
-a compiled name) and `^` (obsolete as an error, which FCS types as `obj`)
-decline too. Every FSharp.Core `Operators` function the reading admits (14,
+bridge carries no generic named type, so `@` and `:=` (over `'T list` and
+`'T ref`, F# types under a compiled name) and `^` (obsolete as an error, which
+FCS types as `obj`) decline too. Every FSharp.Core `Operators` function the reading admits (14,
 `id` and `box` among them), bound as a value, has exactly the type FCS gives
 it. `infer_operators_diff` grades a generated grid — every operator ×
 operand kind (literal, annotated or open parameter, lambda, nested application,
@@ -280,6 +288,61 @@ Measured on the stride-13 corpus sample, nothing moves: 890 + 862 agreements,
 pipes run into assembly functions (`xs |> List.map f`), which are
 `NotInFileValue`, so the bindings they sit in are incomplete and fire no check;
 and the verification costs no agreement the old rule had on that sample.
+
+**Assembly module functions and values.** A use the resolver resolved to a
+referenced F# assembly's module member (`Resolution::Member` of a module: a
+bare `id` or an opened module's name at its token, a qualified `List.map` or
+`Microsoft.FSharp.Core.Operators.id` over the whole path, where the resolver
+keys a qualified member) is typed as FCS types a use of a value (`TcVal`):
+the member's IL signature read as its F# type, each type parameter
+instantiated afresh, and the value loosened at the use
+(`MakeApplicableExprWithFlex`) exactly as `Gen::value_use` loosens a
+generalised in-file binder (`Gen::scheme_use`, shared by both). That holds in
+every position — a bare value, applied, partially applied, piped, composed,
+passed as an argument, a parenthesised callee, a module-qualified callee (a
+value application, not a method call) — and for infix operators of any F#
+assembly. `module_function_scheme` now reads four group shapes off the pickled
+group count: a value (no group: `let x = …` and type functions such as
+`List.empty`), one parameter per group, the sole empty group (`unit -> …`),
+and one tupled group; several groups of which some are tupled decline until
+each group's size is read. It carries reference tuples, vectors (FSharp.Core's
+`[]`1` pickle head hides no measure) and non-generic named types the env
+resolves to one entity named as the IL names it; a generic named type
+(`'T list`, `'T option`, `seq<'T>`) declines, since FSharp.Core's are renamed
+and `Ty` carries one path. It also declines a val another assembly cannot
+access. A preceding file's value, an inaccessible val (the resolver records
+nothing) and a deferred name stay `NotInFileValue`; a member the reading
+declines records `AssemblyValue(gap)`. A first-class `reraise` is rejected
+only after inference (FS0417), which leaves its type standing, so it is typed.
+
+`infer_assembly_values_diff` grades it against both FCS oracles over a
+generated fixture assembly (`module_value_corpus`): 63 signature shapes
+(curried, generic, unit group, tupled group, tuple-typed parameter, function
+returned, function taken, `obj` taken, named types, arrays, values, type
+functions, inline, `[<CompiledName>]`, warning-level attributes, and the
+declines — constraints, measures, renamed and generic named types, mixed
+groups, `[<RequiresExplicitTypeArguments>]`, obsolete and compiler-message
+errors, an internal val, a literal) × 14 use forms × 6 positions × 3
+spellings, with a per-row obligation on every well-typed synth row whose FCS
+type is ground (over 3 000), a census check that each declined shape records
+its reason, and an ill-typed twin per shape; the pipe and use-order grids of
+`infer_operators_diff` with their functions relocated into the fixture, with
+the in-file grids' obligations unchanged; the argument-check generator
+relocated, with every commit the in-file program makes required of the
+relocated one; operators and active patterns outside FSharp.Core; and every
+FSharp.Core module member the reading admits (167), returned from a function.
+Each gate of the reading was checked by deleting it. Measured on the stride-13
+corpus sample: 890 + 862 → 897 + 868 agreements (13 added, none lost), 0
+divergences, 973 → 985 complete bindings; bridging every named type, unchecked,
+added nothing over that.
+
+Opening any F# assembly module stops the static method-call engine committing
+(`System.String.IsNullOrEmpty(h)` commits in a file with no `open` and not in
+one that opens a fixture module with no augmentation), the extension-absence
+gate's conservatism; the relocated generator compares against an in-file
+baseline that opens such a module for that reason. And `let applyTo g x = g x`
+does not generalise (an applied unannotated parameter's use is undecided), so a
+function passed to an in-file higher-order function owes no commit.
 
 ### Remaining 3.x hard piles (census-priority order)
 

@@ -41,14 +41,17 @@
 
 use std::collections::HashMap;
 
+use std::path::Path;
+
 use crate::common::{
-    full_bcl_env, invoke_fcs_dump, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
-    temp_fs_file, try_invoke_fcs_dump,
+    ensure_module_value_fixture_built, full_bcl_env, invoke_fcs_dump, invoke_fcs_dump_with_refs,
+    module_value_fixture_env, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
+    temp_fs_file, try_invoke_fcs_dump_with_refs,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
 use borzoi_sema::{
-    Incomplete, OperatorGap, ProjectItems, SyntaxRecovery, infer_file, resolve_file,
+    AssemblyEnv, Incomplete, OperatorGap, ProjectItems, SyntaxRecovery, infer_file, resolve_file,
 };
 
 /// The types an operand or a result can have.
@@ -344,9 +347,64 @@ fn params(body: &str) -> String {
 
 /// One generated row: the application's source range, and whether it sits in
 /// a synth position whose operands are all modelled.
-struct Row {
-    range: (usize, usize),
-    synth: bool,
+pub(crate) struct Row {
+    pub(crate) range: (usize, usize),
+    pub(crate) synth: bool,
+}
+
+/// Where a grid's functions are defined: in the file, by the grid's header,
+/// or in the module-value fixture assembly, as a module the file opens
+/// ([`module_value_corpus::RELOCATED`](crate::common::module_value_corpus::RELOCATED)).
+/// FCS checks the two programs alike, so a grid's rows grade both routes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Defs {
+    InFile,
+    Assembly,
+    /// In the file, which also opens a fixture module it uses nothing of:
+    /// the in-file baseline a relocated grid is compared with, since opening
+    /// an F# module is itself a perturbation (an opened module may declare
+    /// extension members, so the method-call engine declines a static call
+    /// under one).
+    InFileBesideOpen,
+}
+
+impl Defs {
+    /// The file's header: the grid's own, or an `open` of its relocated
+    /// module in its place.
+    pub(crate) fn header(self, in_file: &str) -> String {
+        match self {
+            Defs::InFile => in_file.to_string(),
+            Defs::InFileBesideOpen => {
+                let (module_line, rest) = in_file
+                    .split_once('\n')
+                    .expect("a grid header starts with its module line");
+                format!(
+                    "{module_line}\nopen {}.{}\n{rest}",
+                    crate::common::module_value_corpus::NS,
+                    crate::common::module_value_corpus::MODULE
+                )
+            }
+            Defs::Assembly => {
+                let module = in_file
+                    .lines()
+                    .next()
+                    .and_then(|l| l.strip_prefix("module "))
+                    .expect("a grid header starts with its module line");
+                crate::common::module_value_corpus::relocated_probe_header(module)
+            }
+        }
+    }
+
+    /// The env inference reads, and the references the oracle checks with.
+    fn references(self) -> (&'static AssemblyEnv, Vec<&'static Path>) {
+        match self {
+            Defs::InFile => (full_bcl_env(), Vec::new()),
+            Defs::Assembly | Defs::InFileBesideOpen => (
+                module_value_fixture_env(),
+                vec![ensure_module_value_fixture_built()],
+            ),
+        }
+    }
 }
 
 /// Append a function applying `op` to operands of `lk` and `rk` in `pos`,
@@ -392,24 +450,40 @@ fn push_row(
 
 /// What one checked file committed.
 #[derive(Debug, Default)]
-struct Checked {
-    exprs: usize,
-    binders: usize,
+pub(crate) struct Checked {
+    pub(crate) exprs: usize,
+    pub(crate) binders: usize,
     /// Committed expression types at a row's whole application, in synth
     /// position.
-    at_application: usize,
+    pub(crate) at_application: usize,
     /// The synth rows committed at their whole application.
-    committed_rows: std::collections::HashSet<(usize, usize)>,
+    pub(crate) committed_rows: std::collections::HashSet<(usize, usize)>,
     /// FCS errors on the file.
-    errors: usize,
+    pub(crate) errors: usize,
     /// Every incompleteness reason any binding recorded.
-    reasons: Vec<Incomplete>,
+    pub(crate) reasons: Vec<Incomplete>,
+    /// FCS's expression types, by range.
+    pub(crate) fcs_types: HashMap<(usize, usize), String>,
+    /// Every commit: an expression's or a binder's range, which of the two,
+    /// and the type.
+    pub(crate) commits: Vec<(usize, usize, &'static str, String)>,
 }
 
 /// Resolve, infer and diff `src` against both oracles. `None` when FCS cannot
 /// produce a typed tree for the file (it throws materialising some rejected
 /// operators), which the ill-typed family counts rather than grades.
 fn check(label: &str, src: &str, rows: &[Row], expect_clean: bool) -> Option<Checked> {
+    check_in(Defs::InFile, label, src, rows, expect_clean)
+}
+
+/// [`check`], with the grid's functions defined where `defs` says.
+pub(crate) fn check_in(
+    defs: Defs,
+    label: &str,
+    src: &str,
+    rows: &[Row],
+    expect_clean: bool,
+) -> Option<Checked> {
     let parsed = parse(src);
     assert!(
         parsed.errors.is_empty(),
@@ -418,16 +492,16 @@ fn check(label: &str, src: &str, rows: &[Row], expect_clean: bool) -> Option<Che
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let env = full_bcl_env();
+    let (env, refs) = defs.references();
     let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(&file, &resolved, env);
 
     let path = temp_fs_file(label, src);
     let oracle = |sub: &str| {
         if expect_clean {
-            Some(invoke_fcs_dump(sub, &path))
+            Some(invoke_fcs_dump_with_refs(sub, &path, &refs))
         } else {
-            try_invoke_fcs_dump(sub, &path).ok()
+            try_invoke_fcs_dump_with_refs(sub, &path, &refs).ok()
         }
     };
     let jsons = oracle("types").zip(oracle("binder-types"));
@@ -482,6 +556,7 @@ fn check(label: &str, src: &str, rows: &[Row], expect_clean: bool) -> Option<Che
             Some(_) => {}
         }
         c.exprs += 1;
+        c.commits.push((key.0, key.1, "expr", ours.clone()));
         if synth_rows.contains(&key) {
             c.at_application += 1;
             c.committed_rows.insert(key);
@@ -508,6 +583,7 @@ fn check(label: &str, src: &str, rows: &[Row], expect_clean: bool) -> Option<Che
             Some(_) => {}
         }
         c.binders += 1;
+        c.commits.push((key.0, key.1, "binder", ours));
     }
     assert!(
         wrong.is_empty(),
@@ -515,6 +591,7 @@ fn check(label: &str, src: &str, rows: &[Row], expect_clean: bool) -> Option<Che
         wrong.len(),
         wrong.join("\n")
     );
+    c.fcs_types = fcs_types;
     Some(c)
 }
 
@@ -724,6 +801,9 @@ fn every_read_fsharp_core_signature_is_the_type_fcs_gives_it() {
     let json = invoke_fcs_dump("binder-types", &path);
     let _ = std::fs::remove_file(&path);
     let (fcs, errors) = parse_fcs_binder_types_with_errors(&json, &src);
+    // FS0417 rejects a first-class `reraise` after inference
+    // (`PostInferenceChecks.CheckValRef`), which leaves its type standing.
+    let errors: Vec<_> = errors.into_iter().filter(|e| e.code != 417).collect();
     assert!(
         errors.is_empty(),
         "FCS rejects a binding: {errors:?}\n{src}"
@@ -829,7 +909,7 @@ fn an_in_file_operator_grounds_its_operands() {
 /// parameter of a type that is not sealed, which FCS loosens at each use of
 /// the function (`MakeApplicableExprWithFlex`): to a fresh type variable that
 /// is a subtype of it. `opn` is generic.
-const PIPE_HEADER: &str = "module Pipes\n\
+pub(crate) const PIPE_HEADER: &str = "module Pipes\n\
                            let idf x = x\n\
                            let inc (x: int) = 1\n\
                            let incs (t: string) = 2\n\
@@ -1074,8 +1154,8 @@ impl PipeRow {
 }
 
 /// The pipe grid's file for one function: every operand, shape and position.
-fn pipe_file(f: PipeFn) -> (String, Vec<PipeRow>) {
-    let mut src = String::from(PIPE_HEADER);
+fn pipe_file(defs: Defs, f: PipeFn) -> (String, Vec<PipeRow>) {
+    let mut src = defs.header(PIPE_HEADER);
     let mut rows = Vec::new();
     for x in PIPE_OPERANDS {
         for shape in PIPE_SHAPES {
@@ -1135,12 +1215,17 @@ fn pipe_file(f: PipeFn) -> (String, Vec<PipeRow>) {
 /// FCS, so the tuple's `p` beside it must not read back `obj`.
 #[test]
 fn pipes_and_composition_over_in_file_functions_agree_with_fcs() {
+    pipe_grid(Defs::InFile);
+}
+
+/// The pipe grid, with its functions defined where `defs` says.
+pub(crate) fn pipe_grid(defs: Defs) {
     let mut committed = 0;
     let mut obligations = 0;
     let mut ill_typed_files_errors = 0;
     let mut missed = Vec::new();
     for f in PIPE_FNS {
-        let (src, rows) = pipe_file(f);
+        let (src, rows) = pipe_file(defs, f);
         let grid_rows: Vec<Row> = rows
             .iter()
             .map(|r| Row {
@@ -1149,7 +1234,7 @@ fn pipes_and_composition_over_in_file_functions_agree_with_fcs() {
             })
             .collect();
         let expect_clean = rows.iter().all(PipeRow::well_typed);
-        let c = check("pipes", &src, &grid_rows, expect_clean)
+        let c = check_in(defs, "pipes", &src, &grid_rows, expect_clean)
             .unwrap_or_else(|| panic!("FCS checks the `{}` file\n{src}", f.spelling()));
         committed += c.exprs + c.binders;
         ill_typed_files_errors += c.errors;
@@ -1167,7 +1252,7 @@ fn pipes_and_composition_over_in_file_functions_agree_with_fcs() {
         }
     }
     eprintln!(
-        "pipe grid: {committed} commits, {obligations} obligations, \
+        "pipe grid ({defs:?}): {committed} commits, {obligations} obligations, \
          {ill_typed_files_errors} FCS errors in the files with rejected rows"
     );
     assert!(
@@ -1286,20 +1371,26 @@ const ORDER_COMBINERS: [&str; 4] = [
 /// own parameters do not fix it too: a per-row obligation.
 #[test]
 fn every_ordered_pair_of_uses_of_a_parameter_agrees_with_fcs() {
+    ordered_pair_grid(Defs::InFile);
+}
+
+/// The functions of the use-order grid.
+pub(crate) const ORDER_HEADER: &str = "module Order\n\
+                                       let idf x = x\n\
+                                       let fi (o: int) = 1\n\
+                                       let fs (o: string) = 1\n\
+                                       let fo (o: obj) = 1\n\
+                                       let two a b = 1\n\
+                                       let (+?) a b = 1\n\
+                                       let gib (a: int) (b: bool) = 1\n";
+
+/// The use-order grid, with its functions defined where `defs` says.
+pub(crate) fn ordered_pair_grid(defs: Defs) {
     let mut functions = 0;
     let mut errors = 0;
     let mut missed: Vec<String> = Vec::new();
     for combiner in ORDER_COMBINERS {
-        let mut src = String::from(
-            "module Order\n\
-             let idf x = x\n\
-             let fi (o: int) = 1\n\
-             let fs (o: string) = 1\n\
-             let fo (o: obj) = 1\n\
-             let two a b = 1\n\
-             let (+?) a b = 1\n\
-             let gib (a: int) (b: bool) = 1\n",
-        );
+        let mut src = defs.header(ORDER_HEADER);
         let mut must = Vec::new();
         for k1 in 0..ORDER_USES {
             for (f1, l1) in ORDER_FNS {
@@ -1335,7 +1426,7 @@ fn every_ordered_pair_of_uses_of_a_parameter_agrees_with_fcs() {
                 synth: true,
             })
             .collect();
-        let c = check("order", &src, &rows, false).expect("FCS checks the file");
+        let c = check_in(defs, "order", &src, &rows, false).expect("FCS checks the file");
         errors += c.errors;
         missed.extend(
             must.iter()
@@ -1343,7 +1434,7 @@ fn every_ordered_pair_of_uses_of_a_parameter_agrees_with_fcs() {
                 .map(|(_, what)| what.clone()),
         );
     }
-    eprintln!("use-order grid: {functions} functions, {errors} FCS errors");
+    eprintln!("use-order grid ({defs:?}): {functions} functions, {errors} FCS errors");
     assert!(
         missed.is_empty(),
         "{} pairs fixing `p` to a sealed type did not commit it:\n{missed:?}",
@@ -1449,7 +1540,7 @@ impl Rng {
 /// one taking a function, an earlier binder inference cannot type (`oldf`,
 /// `obj -> string` in FCS), and the generated function's own unannotated
 /// parameter `h`.
-const ARG_CHECK_HEADER: &str = "module Checks\n\
+pub(crate) const ARG_CHECK_HEADER: &str = "module Checks\n\
                                 let idf x = x\n\
                                 let inc (x: int) = 1\n\
                                 let incs (t: string) = 2\n\
@@ -1563,15 +1654,7 @@ fn generated_argument_checks_commit_only_what_fcs_kept() {
     let mut committed = 0;
     let mut errors = 0;
     for seed in 0..files as u64 {
-        let mut rng = Rng(seed ^ 0xa59c_4ec5);
-        let mut src = String::from(ARG_CHECK_HEADER);
-        for i in 0..12 {
-            let body = arg_check_expr(&mut rng, 3);
-            src.push_str(&format!(
-                "let g{i} (ai: int) (ss: string) (xs: System.Collections.Generic.List<int>) \
-                 (arr: int[]) p q h = {body}\n"
-            ));
-        }
+        let src = argument_check_file(Defs::InFile, seed);
         if let Some(c) = check("arg_checks", &src, &[], false) {
             graded += 1;
             committed += c.exprs + c.binders;
@@ -1593,6 +1676,21 @@ fn generated_argument_checks_commit_only_what_fcs_kept() {
         committed >= files * 10,
         "the generator committed too little to be evidence: {committed}"
     );
+}
+
+/// The argument-check generator's file for `seed`, with its functions defined
+/// where `defs` says. The functions after the header do not depend on `defs`.
+pub(crate) fn argument_check_file(defs: Defs, seed: u64) -> String {
+    let mut rng = Rng(seed ^ 0xa59c_4ec5);
+    let mut src = defs.header(ARG_CHECK_HEADER);
+    for i in 0..12 {
+        let body = arg_check_expr(&mut rng, 3);
+        src.push_str(&format!(
+            "let g{i} (ai: int) (ss: string) (xs: System.Collections.Generic.List<int>) \
+             (arr: int[]) p q h = {body}\n"
+        ));
+    }
+    src
 }
 
 /// A value-restricted binding over a loosened function, which FCS rejects

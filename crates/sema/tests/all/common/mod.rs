@@ -19,6 +19,7 @@ pub mod generator;
 pub mod measure_corpus;
 pub mod measure_fn_corpus;
 pub mod member_hiding_corpus;
+pub mod module_value_corpus;
 pub mod overload_corpus;
 pub mod scope_gen;
 pub mod tier_corpus;
@@ -134,6 +135,16 @@ pub fn invoke_fcs_dump_with_refs(subcommand: &str, source: &Path, refs: &[&Path]
 /// comes back as `Err(message)` instead of a panic — for a corpus sweep, where
 /// one file FCS cannot check is a count, not a failure of the sweep.
 pub fn try_invoke_fcs_dump(subcommand: &str, source: &Path) -> Result<String, String> {
+    try_invoke_fcs_dump_with_refs(subcommand, source, &[])
+}
+
+/// [`try_invoke_fcs_dump`], with `refs` resolvable to the snippet as
+/// [`invoke_fcs_dump_with_refs`] makes them.
+pub fn try_invoke_fcs_dump_with_refs(
+    subcommand: &str,
+    source: &Path,
+    refs: &[&Path],
+) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Probe {
         #[serde(rename = "BatchError")]
@@ -142,7 +153,7 @@ pub fn try_invoke_fcs_dump(subcommand: &str, source: &Path) -> Result<String, St
     let request = serde_json::json!({
         "kind": subcommand,
         "path": source.display().to_string(),
-        "refs": Vec::<String>::new(),
+        "refs": refs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
     })
     .to_string();
     let line = fcs_file_batch_pool().request(&request);
@@ -1417,6 +1428,58 @@ pub fn ensure_measure_fn_fixture_built() -> (&'static Path, &'static Path) {
         )
     });
     (fixture.as_path(), base.as_path())
+}
+
+/// Build the **module-value** fixture (`tests/fixtures/module_value_env`,
+/// generated from [`module_value_corpus`]) once per test binary and return its
+/// `.dll` path.
+pub fn ensure_module_value_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module_value_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(
+                project.join("Generated.fs"),
+                module_value_corpus::fixture_source(),
+            )
+            .expect("write module-value Generated.fs");
+            dotnet_build(&project, "dotnet build module-value fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join(format!("{}.dll", module_value_corpus::FIXTURE_ASM))
+        })
+        .as_path()
+}
+
+/// [`full_bcl_env`] plus the module-value fixture
+/// ([`ensure_module_value_fixture_built`]), the reference set its
+/// differential hands the oracle too.
+pub fn module_value_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
+    static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
+    ENV.get_or_init(|| {
+        use borzoi_assembly::Ecma335Assembly;
+        let core = std::fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll");
+        let sysrt_path = ensure_system_runtime_dll();
+        let netstd_path = sysrt_path
+            .parent()
+            .expect("ref dir")
+            .join("netstandard.dll");
+        let sysrt = std::fs::read(&sysrt_path).expect("read System.Runtime.dll");
+        let netstd = std::fs::read(&netstd_path).expect("read netstandard.dll");
+        let fixture = std::fs::read(ensure_module_value_fixture_built())
+            .expect("read the module-value fixture");
+        let views = vec![
+            Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
+            Ecma335Assembly::parse(&sysrt).expect("parse System.Runtime.dll"),
+            Ecma335Assembly::parse(&netstd).expect("parse netstandard.dll"),
+            Ecma335Assembly::parse(&fixture).expect("parse SemaModuleValueFixture.dll"),
+        ];
+        borzoi_sema::AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
+    })
 }
 
 /// Build the **constraint** fixture (`tests/fixtures/constrained_env`,

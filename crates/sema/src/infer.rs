@@ -441,15 +441,23 @@
 //! one and the inner one a callee — no node inside, as for any curried call.
 //! The operator's value is whatever the resolver says its token names
 //! ([`Gen::operator_value`]): an in-file definition is an applied value like
-//! any other, and FSharp.Core's own operator has its signature read as its F#
-//! type ([`crate::function_ty::module_function_scheme`]) and instantiated like
-//! a scheme of ours. Only a signature with no constraint on any type parameter
+//! any other, and an assembly's operator is a use of an assembly value (below).
+//! Only a signature with no constraint on any type parameter
 //! qualifies — `+` and `=` decline — since the instantiated variables are
 //! scheme-instantiation variables, against which an argument check discharges
 //! as an equality. Everything else declines with an [`Incomplete::Operator`]
 //! reason. A result fixed only through a function-typed domain (`|>`'s
 //! `'T1 -> 'U`) is fixed by the check against it, where the binding's checks
 //! are verified.
+//!
+//! **Assembly values.** A use the resolver resolved to a referenced F#
+//! assembly's module function or value — a bare name at its token, a
+//! qualified `List.map` over the whole path — is typed as FCS types a use of a
+//! value (`TcVal`): the member's IL signature read as its F# type
+//! ([`crate::function_ty::module_function_scheme`]), instantiated and loosened
+//! as a generalised in-file binder's is ([`Gen::assembly_value_use`]). A
+//! module-qualified callee is a value application, not a method call. What
+//! the reading declines records [`Incomplete::AssemblyValue`].
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
@@ -465,7 +473,7 @@ use rowan::{TextRange, TextSize};
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::DefId;
-use crate::function_ty::{FunctionTyGap, is_fsharp_core, module_function_scheme};
+use crate::function_ty::{FunctionTyGap, module_function_scheme};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -596,11 +604,16 @@ pub enum Incomplete {
     /// An expression form inference does not model at all, by its syntax kind:
     /// a `match`, a record, a bang or `use`/`rec` `let`, …
     Unmodelled(SyntaxKind),
-    /// A value reference that is not to an in-file binder: an assembly value,
-    /// a preceding file's value, or a name the resolver deferred.
+    /// A value reference the resolver resolved neither to an in-file binder nor
+    /// to a referenced assembly's member: a preceding file's value, or a name
+    /// it deferred.
     NotInFileValue,
-    /// A member access or call rooted at a qualified path rather than a value —
-    /// a module function (`List.map`) or a static member (`String.Join`).
+    /// A use of a referenced assembly's member (`List.map`, a bare `id`) whose
+    /// F# type is not read off its signature, and why.
+    AssemblyValue(FunctionTyGap),
+    /// A member access or call rooted at a qualified path rather than a value:
+    /// a static member (`String.Join`), or a member of a module value
+    /// (`M.v.Length`).
     QualifiedPath,
     /// A literal whose type is not fixed in isolation (`1I`, `__LINE__`).
     DeferredLiteral,
@@ -639,9 +652,9 @@ pub enum Incomplete {
     /// Any other pattern, by its syntax kind: a constructor, a record, a
     /// literal, …
     PatternShape(SyntaxKind),
-    /// A callee that is not an in-file value or a curried application, by its
-    /// syntax kind: an operator that is not a plain name, a qualified module function
-    /// (`List.map`), a lambda, …
+    /// A callee that is not a value or a curried application, by its syntax
+    /// kind: an operator that is not a plain name, a type application, a
+    /// lambda, …
     CalleeShape(SyntaxKind),
     /// A method call whose callee is not modelled, by the callee's syntax kind
     /// (a receiver that is not an in-file value, …).
@@ -667,16 +680,14 @@ pub enum OperatorGap {
     /// The resolver named no binder for the operator: a deferred lookup, or a
     /// definition in a preceding file.
     Unresolved,
-    /// A referenced assembly's operator that is not FSharp.Core's own.
-    NotFSharpCore,
-    /// An FSharp.Core operator with a constraint on a type parameter — an
-    /// F#-only one (`=` needs `equality`, `+` is statically resolved) or an IL
-    /// one — or whose constraints were not read.
+    /// A referenced assembly's operator with a constraint on a type parameter
+    /// — an F#-only one (`=` needs `equality`, `+` is statically resolved) or
+    /// an IL one — or whose constraints were not read.
     Constrained,
-    /// An FSharp.Core operator whose signature does not carry over as its F#
-    /// type: a tupled argument group (`||>`), a type the bridge does not carry
-    /// (`@` over `'T list`), a unit of measure, or an obsolete-as-error marker
-    /// (`^`).
+    /// A referenced assembly's operator whose signature does not carry over as
+    /// its F# type: several argument groups of which one is tupled, a type the
+    /// bridge does not carry (`@` over `'T list`), a unit of measure, or an
+    /// obsolete-as-error marker (`^`).
     Signature,
 }
 
@@ -2381,10 +2392,12 @@ impl<'a> Gen<'a> {
                     return None;
                 };
                 let Some(def) = self.def_at(tok.text_range()) else {
-                    // A use of a name we do not resolve to an in-file binder
-                    // (cross-file, assembly, deferred, unresolved) is unmodelled.
-                    self.mark_incomplete(Incomplete::NotInFileValue);
-                    return None;
+                    // A referenced assembly's value, read off its signature;
+                    // anything else that is not an in-file binder (a
+                    // preceding file's, a deferred name) is unmodelled.
+                    let uv = self.assembly_value_or_incomplete(tok.text_range())?;
+                    self.emit(tok.text_range(), uv, expected);
+                    return Some(uv);
                 };
                 if self.use_may_be_rejected(def) {
                     self.mark_incomplete(Incomplete::RejectedUse);
@@ -2876,7 +2889,13 @@ impl<'a> Gen<'a> {
         // member access (Stage 3.3d). `infer_callee` never modelled such a callee
         // (it always deferred), so routing it to method typing only adds coverage —
         // no value-application emission changes.
-        if is_member_access_callee(&func) {
+        // A module-qualified function (`List.map f`, `(List.map) f`) is a
+        // value, applied with value semantics, not a method call.
+        let module_value = matches!(
+            unparenthesize(func.clone()),
+            Some(Expr::LongIdent(li)) if self.module_value_path(&li).is_some()
+        );
+        if !module_value && is_member_access_callee(&func) {
             return self.infer_method_call(&func, &arg);
         }
         // Synthesize the function position (no node emitted).
@@ -2959,19 +2978,16 @@ impl<'a> Gen<'a> {
     ///
     /// - **An in-file binder** is an applied value like any other
     ///   ([`Self::value_use`]).
-    /// - **FSharp.Core's own operator** — a member of one of its modules, by
-    ///   the declaring assembly's name and public-key token — has its signature
-    ///   read as its F# type ([`module_function_scheme`]) and instantiated,
-    ///   each type parameter a fresh scheme-instantiation variable. Only a
+    /// - **An assembly's operator** — a member of one of its F# modules — is a
+    ///   use of an assembly value ([`Self::assembly_value_use`]). Only a
     ///   signature with no constraint on any type parameter qualifies:
     ///   instantiating a constrained one as a plain variable would claim a
     ///   constraint is modelled that is not, which is what walk-completeness
-    ///   rests on. The resolver's map holds no assembly reading under an
-    ///   incomplete projection, so this door is sealed as the others are.
+    ///   rests on.
     ///
-    /// Anything else — another assembly's operator, a deferred or cross-file
-    /// lookup, a signature that does not carry over — declines, marking the
-    /// binding incomplete with the reason.
+    /// Anything else — a deferred or cross-file lookup, a signature that does
+    /// not carry over — declines, marking the binding incomplete with the
+    /// reason.
     fn operator_value(&mut self, op: &Expr) -> Option<TyVid> {
         let tok = match op {
             Expr::LongIdent(li) => li.long_ident().and_then(|li| {
@@ -2994,41 +3010,86 @@ impl<'a> Gen<'a> {
             }
             return Some(self.value_use(def));
         }
-        let Some(Resolution::Member { parent, idx }) =
-            self.resolved.resolution_at(tok.text_range())
-        else {
-            self.mark_incomplete(Incomplete::Operator(OperatorGap::Unresolved));
-            return None;
-        };
-        let module = self.env.entity(parent);
-        if !is_fsharp_core(&module.assembly) {
-            self.mark_incomplete(Incomplete::Operator(OperatorGap::NotFSharpCore));
-            return None;
+        match self.assembly_value_use(tok.text_range()) {
+            Ok(v) => Some(v),
+            Err(why) => {
+                let why = match why {
+                    Incomplete::AssemblyValue(FunctionTyGap::Constrained) => {
+                        OperatorGap::Constrained
+                    }
+                    Incomplete::AssemblyValue(_) => OperatorGap::Signature,
+                    _ => OperatorGap::Unresolved,
+                };
+                self.mark_incomplete(Incomplete::Operator(why));
+                None
+            }
         }
+    }
+
+    /// The type variable of a use of the referenced assembly's value the
+    /// resolver says the use at `at` names — a function or value of an F#
+    /// module, by its IL signature read as its F# type
+    /// ([`module_function_scheme`]) — or why it is not typed. `at` is where the
+    /// resolver keys the use: a bare name's token, or a qualified path's whole
+    /// range ([`Self::module_value_path`]).
+    ///
+    /// FCS types such a use exactly as it types a use of a generalised in-file
+    /// binder (`TcVal`): each type parameter becomes a fresh inference
+    /// variable, and the value is loosened at the use
+    /// (`MakeApplicableExprWithFlex`). So it is [`Self::scheme_use`] over the
+    /// reading. Whatever the reading cannot vouch for — a constrained type
+    /// parameter, a unit of measure, an argument-group shape, a type the bridge
+    /// does not carry, an attribute that rejects the use — declines with its
+    /// reason. The resolver's map holds no assembly reading under an
+    /// incomplete projection, and a preceding file's value is not a
+    /// [`Resolution::Member`], so both decline as [`Incomplete::NotInFileValue`].
+    fn assembly_value_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
+        let Some(Resolution::Member { parent, idx }) = self.resolved.resolution_at(at) else {
+            return Err(Incomplete::NotInFileValue);
+        };
         let scheme = match self.env.member_at(parent, idx) {
             Member::Method(m) => module_function_scheme(self.env, parent, m),
             _ => Err(FunctionTyGap::NotAFunction),
-        };
-        let scheme = match scheme {
-            Ok(scheme) => scheme,
-            Err(gap) => {
-                let why = match gap {
-                    FunctionTyGap::Constrained => OperatorGap::Constrained,
-                    FunctionTyGap::NotAFunction
-                    | FunctionTyGap::Rejected
-                    | FunctionTyGap::Unread
-                    | FunctionTyGap::Measures
-                    | FunctionTyGap::Groups
-                    | FunctionTyGap::Type => OperatorGap::Signature,
-                };
-                self.mark_incomplete(Incomplete::Operator(why));
-                return None;
-            }
-        };
-        let body = self.instantiate(&scheme);
-        let v = self.table.fresh();
-        self.eq(Ty::Var(v), body);
-        Some(v)
+        }
+        .map_err(Incomplete::AssemblyValue)?;
+        Ok(self.scheme_use(&scheme))
+    }
+
+    /// The type variable of a use of a value whose type is `scheme`: the
+    /// scheme instantiated afresh and loosened as FCS loosens a value at a use
+    /// ([`Self::loosened`]).
+    fn scheme_use(&mut self, scheme: &Ty) -> TyVid {
+        let body = self.instantiate(scheme);
+        let ty = self.loosened(&body).unwrap_or(body);
+        let uv = self.table.fresh();
+        self.eq(Ty::Var(uv), ty);
+        uv
+    }
+
+    /// The range of a qualified path `M.f` that names a referenced F# module's
+    /// member: the shape of a module-qualified value (`List.map`,
+    /// `Microsoft.FSharp.Core.Operators.id`). The resolver records such a
+    /// member over the whole path, as FCS reports it, so that is the range
+    /// read. `None` for a path whose head is an in-file binder (a member access
+    /// on a value), for one with an active-pattern segment, and for every other
+    /// record — a path that only begins with a module value (`M.v.Length`)
+    /// among them.
+    fn module_value_path(&self, li: &LongIdentExpr) -> Option<TextRange> {
+        let long_ident = li.long_ident()?;
+        if long_ident.active_pat_names().next().is_some() {
+            return None;
+        }
+        let idents: Vec<SyntaxToken> = long_ident.idents().collect();
+        let (head, rest) = idents.split_first()?;
+        let last = rest.last()?;
+        if self.def_at(head.text_range()).is_some() {
+            return None;
+        }
+        let whole = TextRange::new(head.text_range().start(), last.text_range().end());
+        match self.resolved.resolution_at(whole)? {
+            Resolution::Member { parent, .. } if self.env.is_module(parent) => Some(whole),
+            _ => None,
+        }
     }
 
     /// Walk a modelled application's **argument** in check mode against the
@@ -3114,8 +3175,7 @@ impl<'a> Gen<'a> {
                     return None;
                 };
                 let Some(def) = self.def_at(tok.text_range()) else {
-                    self.mark_incomplete(Incomplete::NotInFileValue);
-                    return None;
+                    return self.assembly_value_or_incomplete(tok.text_range());
                 };
                 if self.use_may_be_rejected(def) {
                     self.mark_incomplete(Incomplete::RejectedUse);
@@ -3123,8 +3183,28 @@ impl<'a> Gen<'a> {
                 }
                 Some(self.value_use(def))
             }
+            // A module-qualified value (`List.map f`).
+            Expr::LongIdent(li) => match self.module_value_path(li) {
+                Some(whole) => self.assembly_value_or_incomplete(whole),
+                None => {
+                    self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
+                    None
+                }
+            },
             _ => {
                 self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
+                None
+            }
+        }
+    }
+
+    /// [`Self::assembly_value_use`], recording why the binding is incomplete
+    /// when it declines.
+    fn assembly_value_or_incomplete(&mut self, at: TextRange) -> Option<TyVid> {
+        match self.assembly_value_use(at) {
+            Ok(v) => Some(v),
+            Err(why) => {
+                self.mark_incomplete(why);
                 None
             }
         }
@@ -3157,11 +3237,7 @@ impl<'a> Gen<'a> {
     /// [`Self::verified`] checks once the binding is solved.
     fn value_use(&mut self, def: DefId) -> TyVid {
         if let Some(scheme) = self.def_schemes.get(&def).cloned() {
-            let body = self.instantiate(&scheme);
-            let ty = self.loosened(&body).unwrap_or(body);
-            let uv = self.table.fresh();
-            self.eq(Ty::Var(uv), ty);
-            return uv;
+            return self.scheme_use(&scheme);
         }
         let dv = self.def_var(def);
         let current_param = self.is_current_param(def);
@@ -3609,6 +3685,13 @@ impl<'a> Gen<'a> {
             self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
+        // A module-qualified value (`List.length`), whose node FCS keys at
+        // the whole path.
+        if let Some(whole) = self.module_value_path(li) {
+            let uv = self.assembly_value_or_incomplete(whole)?;
+            self.emit(whole, uv, expected);
+            return Some(uv);
+        }
         // An active-pattern name segment cannot be projected as a plain member
         // token, so a path carrying one is unmodelled here.
         if long_ident.active_pat_names().next().is_some() {
