@@ -1248,11 +1248,26 @@ fn order_use(kind: usize, f: &str, lit: &str) -> String {
         5 => format!("(if true then {lit} else p)"),
         // A method argument, whose relation to the parameter inference does
         // not model.
-        _ => "System.String.IsNullOrEmpty(p)".to_string(),
+        6 => "System.String.IsNullOrEmpty(p)".to_string(),
+        // The parameter itself, which a combiner's own parameter may fix.
+        _ => "p".to_string(),
     }
 }
 
-const ORDER_USES: usize = 7;
+const ORDER_USES: usize = 8;
+
+/// How the use-order grid combines its two uses of `p`, each followed by `p`
+/// itself in a synth position.
+const ORDER_COMBINERS: [&str; 4] = [
+    // Elements of a tuple.
+    "({u1}, {u2}, p)",
+    // The two arguments of one curried application, of a generic function
+    // and of an operator, which FCS checks left to right like a tuple's.
+    "(two ({u1}) ({u2}), p)",
+    "(({u1}) +? ({u2}), p)",
+    // The same, of a function whose own parameters fix each argument too.
+    "(gib ({u1}) ({u2}), p)",
+];
 
 /// FCS checks a function body in source order: the first use of a
 /// parameter that fixes its type wins, a later conflicting one is reported
@@ -1260,62 +1275,81 @@ const ORDER_USES: usize = 7;
 /// rejected (FS0072) even if a later use would fix it. Inference solves a
 /// binding's constraints together, so every ordered pair of uses of one
 /// parameter — through a pipe, a back pipe, a direct application, a
-/// composition, a member access, a dropped branch relation — over every
-/// function of the grid is a case, each followed by the parameter itself in
-/// a synth position, which reads back what the pair made of it.
+/// composition, a member access, a dropped branch relation, a method
+/// argument — over every function of the grid is a case, combined as a
+/// tuple's elements or as the arguments of one application
+/// ([`ORDER_COMBINERS`]), each followed by the parameter itself in a synth
+/// position, which reads back what the pair made of it.
 ///
 /// Every type committed must be FCS's. The pairs that both fix `p` to the
-/// same sealed type must commit that final `p`: a per-row obligation.
+/// same sealed type must commit that final `p`, through any combiner whose
+/// own parameters do not fix it too: a per-row obligation.
 #[test]
 fn every_ordered_pair_of_uses_of_a_parameter_agrees_with_fcs() {
-    let mut src = String::from(
-        "module Order\n\
-         let idf x = x\n\
-         let fi (o: int) = 1\n\
-         let fs (o: string) = 1\n\
-         let fo (o: obj) = 1\n",
-    );
-    let mut must = Vec::new();
-    let mut n = 0;
-    for k1 in 0..ORDER_USES {
-        for (f1, l1) in ORDER_FNS {
-            for k2 in 0..ORDER_USES {
-                for (f2, l2) in ORDER_FNS {
-                    let u1 = order_use(k1, f1, l1);
-                    let u2 = order_use(k2, f2, l2);
-                    let prefix = format!("let o{n} p = ({u1}, {u2}, ");
-                    let start = src.len() + prefix.len();
-                    src.push_str(&prefix);
-                    src.push_str("p)\n");
-                    n += 1;
-                    // Both uses applications of one sealed function.
-                    if k1 < 4 && k2 < 4 && f1 == f2 && (f1 == "fi" || f1 == "fs") {
-                        must.push(((start, start + 1), format!("{u1}, {u2}")));
+    let mut functions = 0;
+    let mut errors = 0;
+    let mut missed: Vec<String> = Vec::new();
+    for combiner in ORDER_COMBINERS {
+        let mut src = String::from(
+            "module Order\n\
+             let idf x = x\n\
+             let fi (o: int) = 1\n\
+             let fs (o: string) = 1\n\
+             let fo (o: obj) = 1\n\
+             let two a b = 1\n\
+             let (+?) a b = 1\n\
+             let gib (a: int) (b: bool) = 1\n",
+        );
+        let mut must = Vec::new();
+        for k1 in 0..ORDER_USES {
+            for (f1, l1) in ORDER_FNS {
+                for k2 in 0..ORDER_USES {
+                    for (f2, l2) in ORDER_FNS {
+                        let u1 = order_use(k1, f1, l1);
+                        let u2 = order_use(k2, f2, l2);
+                        let body = combiner.replace("{u1}", &u1).replace("{u2}", &u2);
+                        let prefix = format!("let o{functions} p = ");
+                        // The final `p`, before the closing parenthesis.
+                        let at = src.len() + prefix.len() + body.len() - 2;
+                        src.push_str(&prefix);
+                        src.push_str(&body);
+                        src.push('\n');
+                        functions += 1;
+                        // Both uses applications of one sealed function.
+                        if k1 < 4
+                            && k2 < 4
+                            && f1 == f2
+                            && (f1 == "fi" || f1 == "fs")
+                            && !combiner.starts_with("(gib")
+                        {
+                            must.push(((at, at + 1), body));
+                        }
                     }
                 }
             }
         }
+        let rows: Vec<Row> = must
+            .iter()
+            .map(|(range, _)| Row {
+                range: *range,
+                synth: true,
+            })
+            .collect();
+        let c = check("order", &src, &rows, false).expect("FCS checks the file");
+        errors += c.errors;
+        missed.extend(
+            must.iter()
+                .filter(|(range, _)| !c.committed_rows.contains(range))
+                .map(|(_, what)| what.clone()),
+        );
     }
-    let rows: Vec<Row> = must
-        .iter()
-        .map(|(range, _)| Row {
-            range: *range,
-            synth: true,
-        })
-        .collect();
-    let c = check("order", &src, &rows, false).expect("FCS checks the file");
-    eprintln!("use-order grid: {n} functions, {c:?}");
-    let missed: Vec<&String> = must
-        .iter()
-        .filter(|(range, _)| !c.committed_rows.contains(range))
-        .map(|(_, what)| what)
-        .collect();
+    eprintln!("use-order grid: {functions} functions, {errors} FCS errors");
     assert!(
         missed.is_empty(),
         "{} pairs fixing `p` to a sealed type did not commit it:\n{missed:?}",
         missed.len()
     );
-    assert!(c.errors >= 100, "the grid stopped rejecting: {c:?}");
+    assert!(errors >= 400, "the grid stopped rejecting: {errors}");
 }
 
 /// An earlier binder inference did not type has the type FCS gave it at its
@@ -1377,6 +1411,20 @@ fn a_check_never_fixes_an_unresolved_members_result() {
     eprintln!("members: {c:?}");
 }
 
+/// A branch relation fixes `p` in FCS before a later argument conflicts with
+/// it: `(if true then p else 1) +. p` makes `p` an `int`, and FCS rejects the
+/// second operand. Inference drops the branch relation and grounds `p` through
+/// the second operand's check, which must not stand. Infix and prefix forms.
+#[test]
+fn a_branch_relation_fixes_a_parameter_before_a_later_argument() {
+    let src = "module Branch\n\
+               let (+.) (a: int) (b: bool) = a\n\
+               let g (a: int) (b: bool) = a\n\
+               let f p = (if true then p else 1) +. p\n\
+               let h p = g (if true then p else 1) p\n";
+    check("branch", src, &[], false).expect("FCS checks the file");
+}
+
 /// SplitMix64: a deterministic stream, so a failing seed reproduces exactly.
 struct Rng(u64);
 
@@ -1411,7 +1459,11 @@ const ARG_CHECK_HEADER: &str = "module Checks\n\
                                 let add2 (x: int) (y: int) = 3\n\
                                 let addo (x: int) (y: obj) = 3\n\
                                 let ap (f: obj -> int) = 1\n\
-                                let oldf = fst ((fun (o: obj) -> \"s\"), 1)\n";
+                                let oldf = fst ((fun (o: obj) -> \"s\"), 1)\n\
+                                let two a b = 1\n\
+                                let (+?) a b = 1\n\
+                                let gib (a: int) (b: bool) = 1\n\
+                                let (+.) (a: int) (b: bool) = a\n";
 
 const ARG_CHECK_FNS: [&str; 14] = [
     "inc",
@@ -1457,7 +1509,7 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
     let f = rng.pick(&ARG_CHECK_FNS);
     let g = rng.pick(&ARG_CHECK_FNS);
     let x = arg_check_expr(rng, depth - 1);
-    match rng.below(14) {
+    match rng.below(16) {
         0 => format!("({f} {x})"),
         1 => format!("({x} |> {f})"),
         2 => format!("({f} <| {x})"),
@@ -1479,6 +1531,17 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
         10 => {
             let y = arg_check_expr(rng, depth - 1);
             format!("(let v = {x} in (v, {y}))")
+        }
+        // Two arguments of one application, which FCS checks left to right:
+        // generic, and with parameters of their own that fix each argument.
+        14 | 15 => {
+            let y = arg_check_expr(rng, depth - 1);
+            match rng.below(4) {
+                0 => format!("(two {x} {y})"),
+                1 => format!("({x} +? {y})"),
+                2 => format!("(gib {x} {y})"),
+                _ => format!("({x} +. {y})"),
+            }
         }
         12 => format!("System.String.IsNullOrEmpty({x})"),
         13 => format!("\"s\".StartsWith({x})"),

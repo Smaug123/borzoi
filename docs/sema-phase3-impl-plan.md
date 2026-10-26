@@ -234,7 +234,10 @@ against sealed primitives and scheme-instantiation variables:
   before a direct application (`((if true then 1 else p), fs p, p)` made `p` a
   `string`), a member access before the check that fixes its receiver
   (`(p.Length, fs p)`), and an unfired pipe before a direct application
-  (`(p |> fs, fi p, p)` made `p` an `int`).
+  (`(p |> fs, fi p, p)` made `p` an `int`). Combined as the arguments of one
+  application instead of a tuple's elements, the same pairs found the same
+  classes: `(if true then p else 1) +. p` with `(+.) : int -> bool -> int`
+  published `bool -> int` where FCS fixes `p` to `int` at the branch.
 
 So `Gen::solve` is speculative: it fires every check whose gate holds under a
 snapshot, and keeps the result only when `Gen::verified` — no equality and no
@@ -243,7 +246,8 @@ check-mode relations the walk dropped) unify with it, all together; no member
 was resolved through a check that ends after it in the source; none of them
 touches a variable FCS constrains through a relation inference does not hold
 (`Gen::opaque`: an earlier binder's, a method call's argument outside it, a
-member access's result until its wake binds it); and the loosening holds. Then every relation is consistent as an equality, so
+member access's result until its wake binds it); and the loosening holds.
+Then every relation is consistent as an equality, so
 FCS applies each one as an equality, in whatever order, and agrees. Otherwise
 the snapshot is rolled back and no check fires: each is undischarged and
 poisoned, which is silence. No check fires that would bind such a variable
@@ -258,9 +262,12 @@ generic, loosened to `obj` or to a bound, a lambda, partially applied,
 composed, ill-typed) × operand × shape (`|>`, `<|`, a chain, `>>`, `<<`, a
 composition as a value) × position, with a per-row obligation that the 185
 well-typed rows over a function inference must type commit their
-application; the ordered-pair grid; and a generator of programs mixing every
-way an argument is related to a parameter, mostly rejected by FCS (800 files,
-17 343 commits, 10 343 FCS errors, no disagreement). Each part of the
+application; the ordered-pair grid, every pair of eight uses of a parameter
+over four functions, combined four ways (a tuple, the two arguments of a
+generic function, of an operator, and of a function whose parameters fix
+them too: 4 096 functions); and a generator of programs mixing every way an
+argument is related to a parameter, mostly rejected by FCS (800 files,
+24 636 commits, 12 054 FCS errors, no disagreement). Each part of the
 verification was checked by deleting it, and some test fails without it,
 except two kept as defence in depth: the failed-equality condition (no
 generated or hand-made program reaches a failed equality that matters) and
@@ -269,7 +276,7 @@ structure carries a pending check on its domain, which the
 earlier-binder condition already rejects).
 
 Measured on the stride-13 corpus sample, nothing moves: 890 + 862 agreements,
-0 divergences, 995 / 2 602 complete bindings, the manifest unchanged. Real
+0 divergences, 973 / 2 602 complete bindings, the manifest unchanged. Real
 pipes run into assembly functions (`xs |> List.map f`), which are
 `NotInFileValue`, so the bindings they sit in are incomplete and fire no check;
 and the verification costs no agreement the old rule had on that sample.
