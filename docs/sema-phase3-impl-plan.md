@@ -197,25 +197,78 @@ ill-typed) × position (synth, under an annotation, as an argument, as a callee)
 agreements (all `&&` and `||` where the file opens `IntrinsicOperators`), 0
 divergences, 37.0 % → 38.2 % complete bindings.
 
-Two things limit what this commits, and neither is the operator rule:
+**`&&` and `||` resolve to nothing** unless `IntrinsicOperators` is opened
+explicitly: it is a module-shaped `[<AutoOpen>]` path, which the resolver does
+not fold (`AssemblyEnv::record_assembly_auto_opens`), so the token is
+`Deferred(UnboundName)` and the census records `Operator(Unresolved)`. Folding
+it is resolver work.
 
-- **`&&` and `||` resolve to nothing** unless `IntrinsicOperators` is opened
-  explicitly: it is a module-shaped `[<AutoOpen>]` path, which the resolver does
-  not fold (`AssemblyEnv::record_assembly_auto_opens`), so the token is
-  `Deferred(UnboundName)` and the census records `Operator(Unresolved)`.
-  Folding it is resolver work.
-- **`|>`, `<|`, `>>` and `<<` make their bindings complete but commit no
-  result.** Their results are fixed only through an argument whose domain is a
-  function type (`|>`'s `'T1 -> 'U`), and an argument check discharges against
-  a sealed primitive, a tuple of them, or a scheme-instantiation variable —
-  never a function type (`Gen::no_subsumption_domain`). Widening that is not a
-  matter of adding `Ty::Fun` to the set: FCS flexes an applied value's
-  non-sealed domains at its use (`MakeApplicableExprWithFlex`), so
-  `y |> fo` with `fo : obj -> int` leaves `y` generic where an equality would
-  make it `obj`, and an ill-typed operand recovers to `obj` in source order
-  (`"s" |> inc` types as `System.Object`). A sound rule needs at least a ground,
-  flex-free argument and every earlier argument check in the binding
-  discharged; it is the next slice.
+**Argument checks against a function type.** `|>`, `<|`, `>>` and `<<` fix
+their results only through an argument whose domain is a function type
+(`|>`'s `'T1 -> 'U`). FCS checks an argument against its parameter's type by
+an equality first and a coercion only if that fails (`UnifyOverallType`), and
+a function type admits no coercion but equality, so such a check discharges
+as `Eq(arg, dom)` (`Gen::function_domain`). Two things make that FCS's own
+relation, and both turned out to be holes in the checks that already fired,
+against sealed primitives and scheme-instantiation variables:
+
+- **The argument must have the type FCS gives it.** FCS loosens a value at
+  every use (`MakeApplicableExprWithFlex`): each parameter of a type that is
+  not sealed (`isSealedTy` — an interface, an unsealed class, `obj`) becomes a
+  fresh variable that is a subtype of it. So `y |> fo` with `fo : obj -> int`
+  leaves `y` generic, and `let g = fo` is `'a -> int` — which inference used to
+  publish as `obj -> int`. `Gen::value_use` now models the loosening wherever
+  the value's type is known at the use (a scheme, an earlier binder's ground
+  type, a settled local, a parameter's annotation); the fresh variables are
+  poisoned, and one bounded by anything but `obj` is a subtype constraint
+  nothing checks, so fixing it to a type undoes the binding's checks. Where
+  the type is not known at the use (an unannotated parameter), the use is
+  *undecided*, and must end up taking no unsealed parameter.
+- **The order FCS checks in must not matter.** FCS checks a body in source
+  order, keeps the first relation to fix a variable, and reports and recovers
+  a later conflicting one; it resolves a member on what it knows of the
+  receiver at the access (FS0072). The worklist keeps no order. A generated
+  grid of every ordered pair of uses of one parameter
+  (`infer_operators_diff::every_ordered_pair_of_uses_of_a_parameter_agrees_with_fcs`)
+  found 34 wrong commits on the existing rule: a dropped branch relation
+  before a direct application (`((if true then 1 else p), fs p, p)` made `p` a
+  `string`), a member access before the check that fixes its receiver
+  (`(p.Length, fs p)`), and an unfired pipe before a direct application
+  (`(p |> fs, fi p, p)` made `p` an `int`).
+
+So `Gen::solve` is speculative: it fires every check whose gate holds under a
+snapshot, and keeps the result only when `Gen::verified` — no equality and no
+fired check failed; the relations it did not apply (pending checks and the
+check-mode relations the walk dropped) unify with it, all together; no member
+was resolved through a check that ends after it in the source; none of them
+touches an earlier binder's variable, which FCS knows and inference does not;
+and the loosening holds. Then every relation is consistent as an equality, so
+FCS applies each one as an equality, in whatever order, and agrees. Otherwise
+the snapshot is rolled back and no check fires: each is undischarged and
+poisoned, which is silence. A check also may not bind a variable an
+application gave an earlier binder's open variable (`oldf x` makes it `d -> r`),
+which retypes the earlier binder (`Gen::arg_check_binds_only_current_vars`).
+
+`infer_operators_diff` grades it: a grid of every function kind (sealed,
+generic, loosened to `obj` or to a bound, a lambda, partially applied,
+composed, ill-typed) × operand × shape (`|>`, `<|`, a chain, `>>`, `<<`, a
+composition as a value) × position, with a per-row obligation that the 185
+well-typed rows over a function inference must type commit their
+application; the ordered-pair grid; and a generator of programs mixing every
+way an argument is related to a parameter, mostly rejected by FCS (800 files,
+21 554 commits, 9 050 FCS errors, no disagreement). Each part of the
+verification was checked by deleting it, and some test fails without it,
+except two kept as defence in depth: the failed-equality condition (no
+generated or hand-made program reaches a failed equality that matters) and
+the check on variables an application gave an earlier binder (every such
+structure carries a pending check on its domain, which the
+earlier-binder condition already rejects).
+
+Measured on the stride-13 corpus sample, nothing moves: 890 + 862 agreements,
+0 divergences, 995 / 2 602 complete bindings, the manifest unchanged. Real
+pipes run into assembly functions (`xs |> List.map f`), which are
+`NotInFileValue`, so the bindings they sit in are incomplete and fire no check;
+and the verification costs no agreement the old rule had on that sample.
 
 ### Remaining 3.x hard piles (census-priority order)
 
