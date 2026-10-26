@@ -750,6 +750,39 @@ fn a_use_f_sharp_rejects_for_its_attributes_commits_nothing_wrong() {
     assert!(c.errors >= 3, "the error-level attributes reject: {c:?}");
 }
 
+/// A module F# will not open — one carrying an error-level `[<Obsolete>]` or
+/// `[<CompilerMessage>]`, which FCS reports at the `open` and then leaves
+/// unopened — contributes nothing to the names after it: `&&` stays
+/// FSharp.Core's, typed `bool`, though the module defines a `&&` returning
+/// `string`. Each attribute × each use form (infix, applied, bound as a
+/// value, qualified); the warning-level twins open normally and are the
+/// control.
+#[test]
+fn a_definition_in_a_module_f_sharp_will_not_open_commits_nothing_wrong() {
+    let attributes = [
+        "[<System.Obsolete(\"no\", true)>]",
+        "[<CompilerMessage(\"no\", 9001, IsError = true)>]",
+        "[<System.Obsolete(\"no\")>]",
+        "[<CompilerMessage(\"no\", 9001)>]",
+    ];
+    for (i, attr) in attributes.iter().enumerate() {
+        let src = format!(
+            "module S\n\
+             {attr}\n\
+             module Deprecated =\n    \
+                 let (&&) (a: bool) (b: bool) = \"s\"\n    \
+                 let f (a: int) = \"s\"\n\
+             open Deprecated\n\
+             let infix = true && false\n\
+             let applied = f 1\n\
+             let value = f\n\
+             let qualified = Deprecated.f 1\n"
+        );
+        check(&format!("operators_module_rejected_{i}"), &src, &[], false)
+            .unwrap_or_else(|| panic!("FCS checks the file\n{src}"));
+    }
+}
+
 /// An in-file operator grounds its operands as any applied function does:
 /// `&&.` over `bool`s makes both parameters `bool`.
 #[test]

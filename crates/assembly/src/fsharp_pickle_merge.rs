@@ -61,7 +61,8 @@ use crate::fsharp_pickle::model::{
 };
 use crate::model::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, CompilerMessage, Entity,
-    EntityKind, FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete, ReadValFacts, SkippedMember, TypeParameter, UnionCases, ValMeasures,
+    EntityKind, FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead,
+    Obsolete, ReadValFacts, SkippedMember, TypeParameter, UnionCases, ValMeasures,
 };
 use std::collections::HashMap;
 

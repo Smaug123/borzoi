@@ -16,7 +16,10 @@ use crate::model::{
     Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
     CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
     FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, ValFacts, Variance, Version,
+    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
+    Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
+    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
+    UnclassifiedMethodImpl, UnionCases, ValFacts, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,

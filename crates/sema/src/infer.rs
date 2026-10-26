@@ -1360,6 +1360,13 @@ impl<'a> Gen<'a> {
     /// by the definition), or `[<RequiresExplicitTypeArguments>]`. Whether the
     /// level is an error is not read, so a warning-level one declines too.
     ///
+    /// A binding inside a nested module carrying such an attribute counts too,
+    /// at any depth: F# rejects an `open` of the module (FCS reports the
+    /// attribute at the `open` and leaves the module unopened, so a name after
+    /// it binds whatever it would have without the module — FSharp.Core's
+    /// `&&` rather than the module's), and a qualified use reports the
+    /// attribute at the use.
+    ///
     /// Every name the binding's head binds is collected, its parameters
     /// included: a parameter is used only inside the binding, where declining
     /// costs nothing a use outside would not.
@@ -1373,17 +1380,22 @@ impl<'a> Gen<'a> {
                     | "Microsoft.FSharp.Core.RequiresExplicitTypeArgumentsAttribute"
             )
         };
+        let in_rejected_module = |node: &SyntaxNode| {
+            node.ancestors().any(|a| {
+                a.kind() == SyntaxKind::NESTED_MODULE_DECL && self.attribute_may_be(&a, rejects)
+            })
+        };
         let mut out = HashSet::new();
         for node in file.syntax().descendants() {
             let (decl_attributed, bindings): (bool, Vec<Binding>) =
                 if let Some(decl) = LetDecl::cast(node.clone()) {
                     (
-                        self.attribute_may_be(&node, rejects),
+                        self.attribute_may_be(&node, rejects) || in_rejected_module(&node),
                         decl.bindings().collect(),
                     )
                 } else if let Some(e) = LetOrUseExpr::cast(node.clone()) {
                     (
-                        self.attribute_may_be(&node, rejects),
+                        self.attribute_may_be(&node, rejects) || in_rejected_module(&node),
                         e.bindings().collect(),
                     )
                 } else {
