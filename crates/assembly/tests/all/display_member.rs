@@ -80,6 +80,7 @@ fn entity(name: &str, kind: EntityKind, typars: &[&str]) -> Entity {
         custom_attrs: vec![],
         abbreviation_target: None,
         definition_range: None,
+        member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
     }
 }
 

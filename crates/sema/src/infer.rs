@@ -4145,6 +4145,19 @@ impl<'a> Gen<'a> {
                         if !arg_tys.iter().all(Ty::is_ground) {
                             return false;
                         }
+                        // The matcher reads each candidate's parameter types,
+                        // and an IL parameter type with an erased unit of
+                        // measure admits an argument FCS rejects: `O(float<m>)`
+                        // beside `O(string)` reads as `O(float64)`, so `O(1.0)`
+                        // would pick it where FCS finds no overload. Which
+                        // member is chosen is then not known either, so the
+                        // whole call defers.
+                        if !group
+                            .iter()
+                            .all(|(level, _, _)| self.env.member_types_keep_their_measures(*level))
+                        {
+                            return true;
+                        }
                         self.env.resolve_overload(&group, &arg_tys)
                     }
                 }
@@ -4198,6 +4211,14 @@ impl<'a> Gen<'a> {
         let Some(member_ty) = member_ty else {
             return true;
         };
+        // IL erases units of measure, so the signature read above is the
+        // member's F# type only when its declaring entity's pickle says no
+        // measure was erased: a `float<m>` field reads as `float64`, and FCS
+        // types the access `float<m>`. The member's identity is known either
+        // way, and stays recorded above.
+        if !self.env.member_types_keep_their_measures(decl_handle) {
+            return true;
+        }
         // **The seal, drawn at the door** (see [`Self::finish`]). Under an
         // incomplete projection the unread DLL could declare a colliding
         // receiver type whose member of this name returns something else, so
@@ -5128,6 +5149,7 @@ mod tests {
             custom_attrs: vec![],
             abbreviation_target: None,
             definition_range: None,
+            member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         }
     }
 

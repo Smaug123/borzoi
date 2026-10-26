@@ -275,6 +275,7 @@ fn synthetic_assembly_env() -> AssemblyEnv {
         custom_attrs: Vec::new(),
         abbreviation_target: None,
         definition_range: None,
+        member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
     }])
 }
 

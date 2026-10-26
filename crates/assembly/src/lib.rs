@@ -52,9 +52,10 @@ pub use model::{
     AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
     CompilerFeatureRequired, CompilerMessage, ConstantValue, CustomAttr, DefaultMember, Entity,
     EntityKind, Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind,
-    FsharpSourceRange, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member, MethodLike,
-    MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter,
-    Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeForwarder,
-    TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, Variance, Version,
+    FsharpSourceRange, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
+    MemberMeasures, MethodLike, MethodSignature, ModuleValue, NamedTypeHead, Nullability,
+    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
+    SkippedMember, SkippedProjectionItem, TypeForwarder, TypeParameter, TypeRef,
+    UnclassifiedMethodImpl, UnionCases, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};

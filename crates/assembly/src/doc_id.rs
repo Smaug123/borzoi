@@ -852,6 +852,7 @@ mod tests {
             custom_attrs: Vec::new(),
             abbreviation_target: None,
             definition_range: None,
+            member_measures: crate::model::MemberMeasures::NotFSharp,
         }
     }
 

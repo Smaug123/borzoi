@@ -16,10 +16,10 @@ use crate::model::{
     Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
     CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
     FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MethodLike, MethodSignature, ModuleValue, Nullability,
-    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
-    SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl,
-    UnionCases, Variance, Version,
+    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
+    Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
+    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
+    UnclassifiedMethodImpl, UnionCases, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -380,6 +380,9 @@ impl Ecma335Assembly {
                     for typar in &mut entity.generic_parameters {
                         typar.fsharp_constraints = FSharpConstraints::Unknowable;
                     }
+                    // An F# member's IL signature may have had a unit of measure
+                    // erased; only `apply_member_measures` can say it did not.
+                    entity.member_measures = MemberMeasures::Unknowable;
                     blank_fsharp_facts(&mut entity.nested_types);
                 }
             }
@@ -496,6 +499,15 @@ impl Ecma335Assembly {
                         // After the record settle, so only the properties that
                         // survive it are stamped.
                         crate::fsharp_pickle_merge::apply_type_member_doc_sigs(
+                            &mut out,
+                            &ccu,
+                            &self.physical_methods(),
+                        )?;
+                        // Whether a unit of measure was erased from any F#
+                        // type's member signatures. Authoritative-only for the
+                        // reason the doc keys are: it locates a row by a
+                        // reconstructed name key.
+                        crate::fsharp_pickle_merge::apply_member_measures(
                             &mut out,
                             &ccu,
                             &self.physical_methods(),
@@ -885,6 +897,10 @@ impl Ecma335Assembly {
             // Set later by the entity overlay from the host signature pickle's
             // `entity_range`; the ECMA projection has no source position.
             definition_range: None,
+            // The IL is the whole type unless the assembly is F#-authored, in
+            // which case `blank_fsharp_facts` makes this `Unknowable` and
+            // `apply_member_measures` reads it from the pickle.
+            member_measures: MemberMeasures::NotFSharp,
         })
     }
 
