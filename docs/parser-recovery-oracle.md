@@ -126,18 +126,40 @@ shape, because that shape is what the member-completion handler anchors on.
 
 ## What remains
 
-These were measured on 2026-10-29. Of the 731 files that one parser or both
-reject, 268 are `exact`, 334 are `outside-damage`, and 129 are `divergent`. Of
-the 584 deletion cases against FCS, 99 are `divergent`, all in the token
-family. Every member-name deletion is `exact`.
+These were measured on 2026-10-26, after the fixes in this change. Of the 731
+files that one parser or both reject, 280 are `exact`, 396 are
+`outside-damage`, and 55 are `divergent`. Of the 584 deletion cases against
+FCS, 48 are `divergent`, all in the token family. Every member-name deletion
+is `exact`.
 
-The largest class of divergence is the remains of a construct our parser
-abandoned, parsed as module-level declarations of their own. When a declaration
-parser gives up part-way through a type, the rest of the type's body sits in
-offside blocks that no declaration owns, and the module loop makes `Expr`
-declarations of the member bodies there. Likewise, after a token that cannot
-begin a declaration (`member this.P = 1` outside a type), the rest of the line
-becomes a fresh expression declaration. FCS makes a declaration of neither.
+The divergent files, by cause (each file counted once, by its first divergence):
+
+| count | class |
+|---|---|
+| 13 | **A `module` or `open` inside a type body.** These are the `Module After …`, `Module Between …` and `Module Inside …` fixtures under `tests/service/data/SyntaxTree/Type/`, plus `E_openInTypeDecl.fs`. FCS closes the type and recovers the nested module, with its body. Our parser ends the enclosing module there instead. |
+| 8 | **`we-reject-fcs-accepts` files.** Our parser rejects valid code (an acceptance gap, not a recovery defect), and the recovery from that rejection then drops or misplaces a later declaration. Most are the large `tests/fsharp/core/*/test.fsx` scripts. |
+| 7 | **A second module head with no `=`.** Examples are `module A` after the file's own `module` header, and a `module` head after `#indent "off"`. FCS recovers a `NestedModule`. Our parser drops the keyword as an error and makes an expression declaration of the name. |
+| 6 | **The file's module header normalises differently** (the first divergence the grader reports; later units may differ too). Not yet investigated. |
+| 4 | **FSharp.Core sources** (`Query.fs`, `prim-types.fs`, `array2.fs`, `nativeptr.fs`). Not yet investigated. |
+| 17 | A tail of single cases. |
+
+The recovery fixes in this change:
+
+- **Remains of an abandoned construct no longer become module-level
+  declarations.** When a declaration parser gives up part-way through a type,
+  the rest of the type's body sits in offside blocks that no declaration owns.
+  The module loop now treats an expression start inside such a block
+  (block depth > 0) as debris, and does not let an `OBLOCKEND` at that depth
+  close a nested module's body. Before the fix, this was the largest class of
+  divergence: member bodies spilled out as `Expr` declarations.
+- **A stray token's debris is one region.** `member this.P = 1` outside a
+  type no longer makes `this.P = 1` an expression declaration. The region runs
+  to the end of the stray's line, and on through any bracket it leaves open, so
+  a `let` inside it (`member f (let x = 1 in x)`) is never handed back to the
+  module loop as a module-level binding. Outside a bracket the region stops
+  early at a `;` or `;;` (FCS starts afresh after either), at a declaration
+  keyword (FCS keeps the `let` in `private let x = 1`), at a closer, and at an
+  `OBLOCKEND` closing a block the region did not open.
 
 Two live defects were found and not fixed. Both are outside recovery proper:
 
