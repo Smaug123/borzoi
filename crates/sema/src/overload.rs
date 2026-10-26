@@ -895,6 +895,7 @@ mod tests {
             custom_attrs: vec![],
             abbreviation_target: None,
             definition_range: None,
+            member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         }
     }
 

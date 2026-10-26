@@ -678,3 +678,33 @@ fn fsharp_core_source_names_key_by_arity() {
         "the non-generic `List` is a real type FCS binds, not a compiler artefact"
     );
 }
+
+/// FSharp.Core's **own** attribute classes, applied to its own entities, are
+/// read off the pickle. `CompilerMessageAttribute` is declared in FSharp.Core,
+/// so on an FSharp.Core abbreviation — which has no ECMA row, leaving the pickle
+/// the only record of its attributes — the reference to it is a same-CCU one.
+/// fsc pickles it as a *non-local* reference naming FSharp.Core (measured: every
+/// attribute reference in the shipped pickle is non-local), and that is the
+/// form the attribute reader names by path; a reference it could not name would
+/// leave the marker reporting no message at all.
+#[test]
+fn fsharp_core_reads_its_own_attribute_classes_off_its_abbreviations() {
+    let es = load();
+    let control = ["Microsoft", "FSharp", "Control"];
+    for name in ["TaskStateMachine", "TaskResumptionFunc", "TaskCode"] {
+        let marker = es
+            .iter()
+            .find(|e| {
+                e.name == name
+                    && e.kind == EntityKind::Abbreviation
+                    && e.namespace.iter().map(String::as_str).eq(control)
+            })
+            .unwrap_or_else(|| panic!("FSharp.Core projects the {name} abbreviation marker"));
+        let message = marker
+            .compiler_message
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} carries FSharp.Core's own [<CompilerMessage>]"));
+        assert_eq!(message.marker, Some(1204), "{name}'s message number");
+        assert!(!message.is_error, "{name}'s message is a warning");
+    }
+}

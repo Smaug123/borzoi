@@ -938,6 +938,7 @@ fn sort_tiebreaks_on_generic_arity() {
         custom_attrs: vec![],
         abbreviation_target: None,
         definition_range: None,
+        member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         members: vec![
             Member::Method(non_generic.clone()),
             Member::Method(generic.clone()),
@@ -995,6 +996,7 @@ fn entity_sort_tiebreaks_on_generic_arity() {
         custom_attrs: vec![],
         abbreviation_target: None,
         definition_range: None,
+        member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         members: vec![],
     };
     let generic = Entity {
@@ -1152,6 +1154,7 @@ fn fixture_system_object() -> Vec<Entity> {
         custom_attrs: vec![],
         abbreviation_target: None,
         definition_range: None,
+        member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         members: vec![
             Member::Method(MethodLike {
                 definition_range: None,
@@ -1363,6 +1366,7 @@ fn fixture_my_lib() -> Vec<Entity> {
         custom_attrs: vec![],
         abbreviation_target: None,
         definition_range: None,
+        member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         members: vec![
             Member::Field(Field {
                 name: "count".into(),

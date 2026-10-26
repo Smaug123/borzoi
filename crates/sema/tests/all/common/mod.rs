@@ -16,6 +16,7 @@ pub mod corpus_manifest;
 pub mod fold_matrix;
 pub mod fsharp_member_corpus;
 pub mod generator;
+pub mod measure_corpus;
 pub mod member_hiding_corpus;
 pub mod overload_corpus;
 pub mod scope_gen;
@@ -1358,6 +1359,33 @@ pub fn ensure_fsharp_member_corpus_built() -> &'static Path {
                 .join("Release")
                 .join("net10.0")
                 .join(format!("{}.dll", fsharp_member_corpus::FIXTURE_ASM))
+        })
+        .as_path()
+}
+
+/// Build the **unit-of-measure** fixture (`tests/fixtures/measure_env`,
+/// `SemaMeasureFixture.dll`) once per test binary and return its `.dll` path.
+///
+/// `Generated.fs` is emitted from [`measure_corpus`]'s tables before the build,
+/// so the fixture and the probe's site index cannot drift apart.
+pub fn ensure_measure_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/measure_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(
+                project.join("Generated.fs"),
+                measure_corpus::fixture_source(),
+            )
+            .expect("write measure Generated.fs");
+            dotnet_build(&project, "dotnet build measure fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join(format!("{}.dll", measure_corpus::FIXTURE_ASM))
         })
         .as_path()
 }

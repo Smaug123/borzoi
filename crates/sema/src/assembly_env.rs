@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use borzoi_assembly::doc_id::DocIdDialect;
 use borzoi_assembly::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, EcmaView, Entity, EntityKind,
-    ImportError, Member, MethodLike, TypeRef, UnionCases,
+    ImportError, Member, MemberMeasures, MethodLike, NamedTypeHead, TypeRef, UnionCases,
 };
 
 use crate::def::SemanticClass;
@@ -666,6 +666,11 @@ pub struct AssemblyEnv {
     /// this). Shared across clones via `Arc` (same data ⇒ same results);
     /// `RwLock` because the env is queried from multiple threads.
     abbreviation_chase_cache: AbbreviationChaseCache,
+    /// Memo for [`Self::member_types_keep_their_measures`], per entity. Each
+    /// verdict chases every named head the entity's members mention, and those
+    /// heads (`int`, `string`, …) recur across every F# type. Reset with the
+    /// chase cache, on whose results it depends.
+    measure_verdict_cache: MeasureVerdictCache,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -832,6 +837,33 @@ pub(crate) enum ManifestSurfacePosition {
 /// results); `RwLock` because the env is queried from multiple threads.
 type AbbreviationChaseCache =
     std::sync::Arc<std::sync::RwLock<HashMap<(EntityHandle, bool), Option<EntityHandle>>>>;
+
+type MeasureVerdictCache = std::sync::Arc<std::sync::RwLock<HashMap<EntityHandle, bool>>>;
+
+/// The logical names of FSharp.Core's **intrinsic** type constructors in
+/// `Microsoft.FSharp.Core`: the ones its pickle declares with an IL-assembly
+/// representation (`type 'T ``[]`` = (# "!0[]" #)`) rather than as a TypeDef or
+/// an abbreviation — the pointer and byref kinds, and an array tycon per rank
+/// up to the CLR's 32. A member type can apply one (an array, a `byref` in a
+/// struct's generated `Equals`), and no entity in any env answers for it, so
+/// [`AssemblyEnv::member_types_keep_their_measures`] would otherwise decline
+/// every such type. None of them is an abbreviation or takes a measure.
+///
+/// Pinned against the shipped FSharp.Core's pickle, in both directions, by
+/// `fsharp_core_intrinsic_tycons_are_exactly_its_asm_reprs` (the
+/// `infer_measure_erasure_diff` case group).
+pub fn fsharp_core_intrinsic_tycons() -> &'static HashSet<String> {
+    static NAMES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut names: HashSet<String> =
+            ["byref`1", "byref`2", "nativeptr`1", "voidptr", "ilsigptr`1"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        names.extend((0..32).map(|commas| format!("[{}]`1", ",".repeat(commas))));
+        names
+    })
+}
 
 /// One referenced assembly as
 /// [`AssemblyEnv::from_assemblies_with_projection_knowability`] takes it.
@@ -3760,6 +3792,7 @@ impl AssemblyEnv {
         // copy, so it correctly goes on serving pre-mark answers; this env
         // starts fresh under the new flag.
         self.abbreviation_chase_cache = Default::default();
+        self.measure_verdict_cache = Default::default();
     }
 
     /// Record that a referenced assembly **dropped an undecodable type** in
@@ -4361,6 +4394,114 @@ impl AssemblyEnv {
             // generic instantiation does not name a single member-bearing
             // entity for the value-path (nullary) contract — keep deferring.
             _ => None,
+        }
+    }
+
+    /// Whether the IL signatures of the members `handle` **declares** are those
+    /// members' F# types as far as units of measure go — no measure was erased
+    /// from any of them. Only then may a member's IL type be published as the
+    /// type of an access: `float<m>` compiles to `float64`, and FCS types the
+    /// access `float<m>`.
+    ///
+    /// `true` for an entity of a non-F# assembly ([`MemberMeasures::NotFSharp`]),
+    /// and for an F# type whose pickle found no measure directly
+    /// ([`MemberMeasures::NoDirectMeasure`]) when every named head it lists is
+    /// cleared — it resolves to a type that is not an abbreviation, or to an
+    /// abbreviation whose decoded target hides none in turn. Everything else is
+    /// `false`.
+    ///
+    /// The fact is per declaring entity, so a member inherited from a base is
+    /// asked about on the base, and an entity with one measure-typed member
+    /// declines for all of them.
+    pub fn member_types_keep_their_measures(&self, handle: EntityHandle) -> bool {
+        if let Some(&hit) = self
+            .measure_verdict_cache
+            .read()
+            .expect("measure verdict cache poisoned")
+            .get(&handle)
+        {
+            return hit;
+        }
+        let verdict = match &self.entity(handle).member_measures {
+            MemberMeasures::NotFSharp => true,
+            MemberMeasures::NoDirectMeasure { heads } => heads
+                .iter()
+                .all(|head| self.head_hides_no_measure(handle, head, ABBREV_CHASE_FUEL)),
+            MemberMeasures::Measured | MemberMeasures::Unknowable => false,
+        };
+        self.measure_verdict_cache
+            .write()
+            .expect("measure verdict cache poisoned")
+            .insert(handle, verdict);
+        verdict
+    }
+
+    /// Whether the named type `head`, mentioned by a member type of an entity
+    /// in `from`'s assembly, provably hides no unit of measure: it resolves to a
+    /// type that is not an abbreviation, or to an abbreviation whose target is
+    /// decoded and hides none itself — head and arguments alike. A target the
+    /// decoder declined (which it does on any measure) refutes, as does a head
+    /// that does not resolve to exactly one entity.
+    fn head_hides_no_measure(&self, from: EntityHandle, head: &NamedTypeHead, fuel: u32) -> bool {
+        let Some(fuel) = fuel.checked_sub(1) else {
+            return false;
+        };
+        if head.ccu.as_deref() == Some("FSharp.Core")
+            && let [ns @ .., name] = head.path.as_slice()
+            && ns == ["Microsoft", "FSharp", "Core"]
+            && fsharp_core_intrinsic_tycons().contains(name)
+        {
+            return true;
+        }
+        let target = match &head.ccu {
+            None => {
+                let key = self.assembly_key(from);
+                self.abbreviation_target_at_path(&head.path, |h| self.assembly_key(h) == key)
+            }
+            Some(name) => self.forwarded_target_at_path(name, &head.path, fuel),
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        if !self.is_abbreviation(target) {
+            return true;
+        }
+        match &self.entity(target).abbreviation_target {
+            Some(body) => self.target_hides_no_measure(target, body, fuel),
+            None => false,
+        }
+    }
+
+    /// [`Self::head_hides_no_measure`] over a decoded abbreviation target of
+    /// `marker`. A `Var` is the abbreviation's own parameter, whose argument the
+    /// use site's own scan covers.
+    fn target_hides_no_measure(
+        &self,
+        marker: EntityHandle,
+        target: &AbbreviationTarget,
+        fuel: u32,
+    ) -> bool {
+        match target {
+            AbbreviationTarget::Var(_) => true,
+            AbbreviationTarget::Named { ccu, path, args } => {
+                self.head_hides_no_measure(
+                    marker,
+                    &NamedTypeHead {
+                        ccu: ccu.clone(),
+                        path: path.clone(),
+                    },
+                    fuel,
+                ) && args
+                    .iter()
+                    .all(|arg| self.target_hides_no_measure(marker, arg, fuel))
+            }
+            AbbreviationTarget::Fun(domain, range) => {
+                self.target_hides_no_measure(marker, domain, fuel)
+                    && self.target_hides_no_measure(marker, range, fuel)
+            }
+            AbbreviationTarget::Tuple { elems, .. } => elems
+                .iter()
+                .all(|elem| self.target_hides_no_measure(marker, elem, fuel)),
         }
     }
 
@@ -6373,6 +6514,7 @@ mod from_views_tests {
             custom_attrs: vec![],
             abbreviation_target: None,
             definition_range: None,
+            member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         }
     }
 

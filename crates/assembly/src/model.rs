@@ -401,6 +401,63 @@ pub enum FSharpConstraints {
     Unknowable,
 }
 
+/// What is known about **units of measure** in the F# types an entity's members
+/// and fields are declared with — which IL erases outright.
+///
+/// A member declared `float<m>` compiles to a `float64` signature, and one of a
+/// measure-parameterised type `Vec<[<Measure>] 'u>` names the bare `Vec`: fsc
+/// emits no generic parameter for a measure. So an IL signature read from an
+/// F#-authored type is the member's F# type only when no measure was erased, and
+/// nothing in the IL can say whether one was. The signature pickle can.
+///
+/// A measure may also sit behind a **named type** the pickle mentions without
+/// expanding: `type Dist = float<m>` is an abbreviation, and a field declared
+/// `Dist` pickles the name only. The abbreviation may live in another
+/// assembly, which this crate cannot see, so a reading that found no measure
+/// directly lists every named head it passed instead of deciding about them;
+/// a consumer holding the referenced assemblies clears or refutes each.
+///
+/// The readings are kept apart for the reason [`FSharpConstraints`] keeps its
+/// own: "provably none" licenses reading the IL signature as the F# type,
+/// "there is one" and "we did not read it" license nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MemberMeasures {
+    /// The declaring assembly is not F#-authored — no
+    /// `FSharpInterfaceDataVersionAttribute`, so no signature pickle. Its IL is
+    /// the whole of its members' types, for us and for FCS alike: an F#
+    /// assembly compiled with `--nointerfacedata` is read by FCS through its IL
+    /// too, measures erased.
+    NotFSharp,
+    /// The host signature pickle described this entity, and no type among its
+    /// fields, its members' signatures and its own type parameters mentions a
+    /// unit of measure **directly**. Whether one hides behind a named type is
+    /// left to the consumer: `heads` is every named type those types apply,
+    /// deduplicated and sorted.
+    NoDirectMeasure { heads: Vec<NamedTypeHead> },
+    /// The host signature pickle described this entity and a unit of measure
+    /// appears in one of those types (or the entity itself is
+    /// measure-parameterised).
+    Measured,
+    /// Nothing may be concluded: an F#-authored entity the host pickle did not
+    /// describe or could not be read for — a decode failure, a foreign CCU
+    /// (`fsc --standalone`), an ECMA row the pickled entity cannot be located
+    /// at uniquely, a pickled type shape the reader does not model, or a
+    /// synthesised entity with no row of its own.
+    Unknowable,
+}
+
+/// A named type the signature pickle references, in the currency of
+/// [`AbbreviationTarget::Named`]: the CCU the reference names (`None` only for
+/// a pickle-`Local` reference, which proves same-assembly membership) and the
+/// unsplit dotted logical path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NamedTypeHead {
+    pub ccu: Option<String>,
+    pub path: Vec<String>,
+}
+
 /// One generic type parameter, declared either on a type or a method. The
 /// index of the parameter in its parent's `generic_parameters` list is its
 /// ECMA-335 typar number — i.e. the value that appears in `TypeRef::Var`.
@@ -1006,6 +1063,11 @@ pub struct Entity {
     /// project to the ECMA name `A`; the overlay declines rather than stamp the
     /// wrong twin — see the entity overlay in `fsharp_pickle_merge`).
     pub definition_range: Option<FsharpSourceRange>,
+    /// Whether the IL signatures of this entity's members may have had a unit
+    /// of measure erased — see [`MemberMeasures`]. The fact is the declaring
+    /// entity's, so a consumer typing an inherited member asks the base that
+    /// declares it.
+    pub member_measures: MemberMeasures,
 }
 
 /// How confidently a projected module member is known to be an **F#-native

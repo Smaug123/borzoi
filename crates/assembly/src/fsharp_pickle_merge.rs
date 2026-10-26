@@ -61,8 +61,8 @@ use crate::fsharp_pickle::model::{
 };
 use crate::model::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, CompilerMessage, Entity,
-    EntityKind, FSharpConstraints, FsharpSourceRange, Member, Obsolete, SkippedMember,
-    TypeParameter, UnionCases,
+    EntityKind, FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead,
+    Obsolete, SkippedMember, TypeParameter, UnionCases,
 };
 use std::collections::HashMap;
 
@@ -3008,6 +3008,9 @@ fn abbreviation_marker(
         // tokens, so this range is its only navigable source location. A
         // type-abbreviation marker carries it inertly (sema defers a hit on it).
         definition_range: target.definition_range.clone(),
+        // A marker has no members of its own; a consumer reaching one chases
+        // its target, which carries its own reading.
+        member_measures: MemberMeasures::Unknowable,
     }
 }
 
@@ -3761,6 +3764,360 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMetho
     }
 }
 
+// ---------------------------------------------------------------------------
+// Units of measure in member types
+// ---------------------------------------------------------------------------
+
+/// What one scan over the pickled types of an entity's members found. A
+/// measure, and an unreadable shape, are each final; the heads are what the
+/// consumer must clear when neither was found.
+#[derive(Debug, Default)]
+struct MeasureScan {
+    measured: bool,
+    unknowable: bool,
+    heads: std::collections::BTreeSet<NamedTypeHead>,
+}
+
+impl MeasureScan {
+    fn reading(self) -> MemberMeasures {
+        if self.measured {
+            MemberMeasures::Measured
+        } else if self.unknowable {
+            MemberMeasures::Unknowable
+        } else {
+            MemberMeasures::NoDirectMeasure {
+                heads: self.heads.into_iter().collect(),
+            }
+        }
+    }
+
+    /// Scan one pickled type. `collect_heads` is `false` for a member a
+    /// consumer in another assembly cannot reach: its type is still searched
+    /// for a measure, but a non-public type it names would not resolve for the
+    /// consumer, and a public member cannot mention one (FS0410).
+    fn scan(
+        &mut self,
+        pickled: &PickledCcu,
+        local_fqns: &HashMap<u32, Vec<String>>,
+        ty: &PickledType,
+        collect_heads: bool,
+    ) -> Result<(), ImportError> {
+        match ty {
+            PickledType::Measure(_) => self.measured = true,
+            PickledType::Var { typar_index, .. } => {
+                self.typar(pickled, *typar_index);
+            }
+            PickledType::Forall { typars, body } => {
+                for &ti in typars {
+                    self.typar(pickled, ti);
+                }
+                self.scan(pickled, local_fqns, body, collect_heads)?;
+            }
+            PickledType::AppSimple {
+                simpletyp_index, ..
+            } => {
+                let nle = *pickled
+                    .header
+                    .simpletys
+                    .get(*simpletyp_index as usize)
+                    .ok_or(ImportError::OsgnIndexOutOfRange {
+                        kind: "simplety (member measures)",
+                        index: *simpletyp_index,
+                        max: pickled.header.simpletys.len(),
+                    })?;
+                if collect_heads {
+                    self.nonlocal_head(pickled, nle)?;
+                }
+            }
+            PickledType::App { tcref, args, .. } => {
+                if collect_heads {
+                    match tcref {
+                        PickledTcRef::NonLocal(nle) => self.nonlocal_head(pickled, *nle)?,
+                        PickledTcRef::Local(stamp) => match local_fqns.get(stamp) {
+                            Some(path) => {
+                                self.heads.insert(NamedTypeHead {
+                                    ccu: None,
+                                    path: path.clone(),
+                                });
+                            }
+                            // In range but not a recorded module or type: a
+                            // shape no member type takes.
+                            None if (*stamp as usize) < pickled.tables.tycons.len() => {
+                                self.unknowable = true;
+                            }
+                            None => {
+                                return Err(ImportError::OsgnIndexOutOfRange {
+                                    kind: "local tycon (member measures)",
+                                    index: *stamp,
+                                    max: pickled.tables.tycons.len(),
+                                });
+                            }
+                        },
+                    }
+                }
+                for arg in args {
+                    self.scan(pickled, local_fqns, arg, collect_heads)?;
+                }
+            }
+            PickledType::Fun { domain, range, .. } => {
+                self.scan(pickled, local_fqns, domain, collect_heads)?;
+                self.scan(pickled, local_fqns, range, collect_heads)?;
+            }
+            PickledType::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.scan(pickled, local_fqns, elem, collect_heads)?;
+                }
+            }
+            // A union-case type occurs inside expressions, not in a member's
+            // declared type.
+            PickledType::UCase { .. } => self.unknowable = true,
+        }
+        Ok(())
+    }
+
+    /// A type parameter is a measure (or does not resolve, so might be one).
+    fn typar(&mut self, pickled: &PickledCcu, index: u32) {
+        match pickled.tables.typars.get(index as usize) {
+            Some(t) if is_measure_typar(t.flags) => self.measured = true,
+            Some(_) => {}
+            None => self.unknowable = true,
+        }
+    }
+
+    fn nonlocal_head(&mut self, pickled: &PickledCcu, nle: u32) -> Result<(), ImportError> {
+        match decode_nonlocal_named(pickled, nle, Vec::new())? {
+            AbbreviationTarget::Named { ccu, path, .. } => {
+                self.heads.insert(NamedTypeHead { ccu, path });
+            }
+            _ => unreachable!("`decode_nonlocal_named` builds a `Named` target"),
+        }
+        Ok(())
+    }
+
+    fn field(
+        &mut self,
+        pickled: &PickledCcu,
+        local_fqns: &HashMap<u32, Vec<String>>,
+        field: &crate::fsharp_pickle::model::PickledRecdField,
+    ) -> Result<(), ImportError> {
+        self.scan(pickled, local_fqns, &field.ty, field.access.is_empty())
+    }
+}
+
+/// Stamp each F# type's [`Entity::member_measures`] from the host signature
+/// pickle: whether any type its fields and members are declared with mentions a
+/// unit of measure, which the IL signatures the member projection reads have
+/// erased.
+///
+/// What is scanned for a type is everything a member access on it can be typed
+/// by: its own type parameters (a measure parameter is erased, so the type is
+/// measure-parameterised under a measure-free IL name), its record, class,
+/// union-case and exception fields, and every member val whose apparent parent
+/// it is — properties, methods, constructors, abstract slots and augmentations
+/// alike, all of which the type's enclosing module or namespace declares (an
+/// object model's `vslots` are references back to those same vals). Scanning a
+/// val that compiles elsewhere (an extension on this type, which lands on its
+/// module) only declines more.
+///
+/// The row is located the way [`apply_type_member_doc_sigs`] locates it, under
+/// the same guards: an unambiguous `(namespace, containers, name, arity)` key
+/// whose physical methods are declared on a TypeDef of the pickled IL name. A
+/// measure-parameterised type is never stamped — its pickled arity is not its
+/// CLR arity, so the key cannot name its row — and neither is a module.
+/// Anything not stamped keeps the `Unknowable` the projector blanked it to.
+pub(crate) fn apply_member_measures(
+    entities: &mut [Entity],
+    pickled: &PickledCcu,
+    physical: &PhysicalMethods,
+) -> Result<(), ImportError> {
+    struct Target {
+        namespace: Vec<String>,
+        type_chain: Vec<String>,
+        arity: usize,
+        il_name: String,
+        scan: MeasureScan,
+    }
+    let local_fqns = local_tycon_fqns(pickled)?;
+    let mut targets: HashMap<u32, Target> = HashMap::new();
+    let mut member_vals: Vec<(PickledTcRef, u32)> = Vec::new();
+    let mut parents: HashMap<u32, u32> = HashMap::new();
+    let mut logical_paths: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut path = Vec::new();
+    walk_entity_tree(
+        pickled,
+        pickled.root_entity,
+        true,
+        &[],
+        &[],
+        &mut path,
+        &mut |stamp, entity, is_root, namespace, type_chain| {
+            for &vi in &entity.module_type.vals {
+                let v = pickled.tables.vals.get(vi as usize).ok_or(
+                    ImportError::OsgnIndexOutOfRange {
+                        kind: "val (member measures)",
+                        index: vi,
+                        max: pickled.tables.vals.len(),
+                    },
+                )?;
+                if let Some(info) = &v.member_info {
+                    member_vals.push((info.apparent_parent.clone(), vi));
+                }
+            }
+            // The logical path a non-local reference back into this CCU names
+            // the entity by; a parent is visited before its children.
+            let path = match parents.get(&stamp) {
+                Some(parent) => {
+                    let mut p = logical_paths.get(parent).cloned().unwrap_or_default();
+                    p.push(entity.logical_name.clone());
+                    p
+                }
+                None => Vec::new(),
+            };
+            for &child in &entity.module_type.entities {
+                parents.insert(child, stamp);
+            }
+            logical_paths.insert(stamp, path);
+            if is_root
+                || entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE != 0
+                || entity.type_abbrev.is_some()
+                || !is_measure_free(pickled, entity)
+            {
+                return Ok(());
+            }
+            let mut scan = MeasureScan::default();
+            let mut fields: Vec<&crate::fsharp_pickle::model::PickledRecdField> = Vec::new();
+            match &entity.repr {
+                PickledTyconRepr::Record(rfields) => fields.extend(rfields),
+                PickledTyconRepr::Union(cases) => {
+                    fields.extend(cases.iter().flat_map(|c| &c.fields));
+                }
+                PickledTyconRepr::FSharpObjectModel(model) => {
+                    fields.extend(&model.rfields);
+                }
+                PickledTyconRepr::UnionWithStaticFields { cases, objmodel } => {
+                    fields.extend(cases.iter().flat_map(|c| &c.fields));
+                    fields.extend(&objmodel.rfields);
+                }
+                PickledTyconRepr::NoRepr => {}
+                // An IL-backed or measure representation is no F# member
+                // shape this reads.
+                PickledTyconRepr::AsmRepr(_) | PickledTyconRepr::Measureable(_) => {
+                    scan.unknowable = true;
+                }
+            }
+            match &entity.exn_repr {
+                PickledExnRepr::None => {}
+                PickledExnRepr::Fresh(exn_fields) => fields.extend(exn_fields),
+                PickledExnRepr::Abbrev(_) | PickledExnRepr::Asm(_) => scan.unknowable = true,
+            }
+            for field in fields {
+                scan.field(pickled, &local_fqns, field)?;
+            }
+            let mut chain = type_chain.to_vec();
+            chain.push(clr_name(entity));
+            targets.insert(
+                stamp,
+                Target {
+                    namespace: namespace.to_vec(),
+                    type_chain: chain,
+                    arity: entity.typars.len(),
+                    il_name: entity
+                        .compiled_name
+                        .clone()
+                        .unwrap_or_else(|| entity.logical_name.clone()),
+                    scan,
+                },
+            );
+            Ok(())
+        },
+    )?;
+    let host = pickled
+        .tables
+        .tycons
+        .get(pickled.root_entity as usize)
+        .map(|root| root.logical_name.as_str());
+    let by_path: HashMap<&[String], u32> = logical_paths
+        .iter()
+        .map(|(stamp, path)| (path.as_slice(), *stamp))
+        .collect();
+    for (parent, vi) in member_vals {
+        let stamp = match parent {
+            PickledTcRef::Local(stamp) => Some(stamp),
+            // An intrinsic member's apparent parent is pickled as a path into
+            // its own CCU.
+            PickledTcRef::NonLocal(index) => pickled
+                .header
+                .nlerefs
+                .get(index as usize)
+                .filter(|nle| {
+                    pickled
+                        .header
+                        .ccu_refs
+                        .get(nle.ccu as usize)
+                        .is_some_and(|ccu| Some(ccu.name.as_str()) == host)
+                })
+                .and_then(|nle| {
+                    nle.path
+                        .iter()
+                        .map(|&i| pickled.header.strings.get(i as usize).cloned())
+                        .collect::<Option<Vec<String>>>()
+                })
+                .and_then(|path| by_path.get(path.as_slice()).copied()),
+        };
+        // A parent the walk did not record as a type is a module, a type this
+        // overlay does not stamp, or an entity of another CCU.
+        let Some(target) = stamp.and_then(|s| targets.get_mut(&s)) else {
+            continue;
+        };
+        let v = &pickled.tables.vals[vi as usize];
+        target
+            .scan
+            .scan(pickled, &local_fqns, &v.ty, v.access.is_empty())?;
+    }
+    for target in targets.into_values() {
+        let (leaf, containers) = target
+            .type_chain
+            .split_last()
+            .expect("a target's chain ends in its own name");
+        let ecma = if containers.is_empty() {
+            find_entity_at_arity_mut(
+                entities,
+                &target.namespace,
+                &target.type_chain,
+                target.arity,
+            )
+        } else {
+            find_entity_unique_mut(entities, &target.namespace, containers).and_then(|container| {
+                find_entity_at_arity_mut(
+                    &mut container.nested_types,
+                    &[],
+                    std::slice::from_ref(leaf),
+                    target.arity,
+                )
+            })
+        };
+        let Some(ecma) = ecma else {
+            continue;
+        };
+        if ecma.kind == EntityKind::Module {
+            continue;
+        }
+        // The lossy-key guard of `apply_type_member_doc_sigs` (#145): the row
+        // the key found must physically be this type's.
+        let declared_here = !ecma.method_def_tokens.is_empty()
+            && ecma.method_def_tokens.iter().all(|t| {
+                physical
+                    .get(t)
+                    .is_some_and(|m| m.declaring_type == target.il_name)
+            });
+        if !declared_here {
+            continue;
+        }
+        ecma.member_measures = target.scan.reading();
+    }
+    Ok(())
+}
+
 // Silence the unused-import linter: `PickledEntity` and `PickledType`
 // appear only in doc comments today. We keep the explicit `use` so
 // future merge logic (constraints, abbreviations) doesn't need to
@@ -3926,6 +4283,7 @@ mod tests {
             custom_attrs: Vec::new(),
             abbreviation_target: None,
             definition_range: None,
+            member_measures: crate::model::MemberMeasures::NotFSharp,
         }
     }
 
