@@ -801,6 +801,7 @@ mod tests {
 
     fn method(name: &str, params: Vec<Parameter>, ret: TypeRef) -> MethodLike {
         MethodLike {
+            val_facts: borzoi_assembly::ValFacts::NotFSharp,
             definition_range: None,
             name: name.to_owned(),
             access: Access::Public,

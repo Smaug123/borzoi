@@ -671,6 +671,13 @@ pub struct AssemblyEnv {
     /// heads (`int`, `string`, …) recur across every F# type. Reset with the
     /// chase cache, on whose results it depends.
     measure_verdict_cache: MeasureVerdictCache,
+    /// Memo for [`Self::head_hides_no_measure`], keyed by the entity whose
+    /// assembly mentions the head and the head itself. Each verdict chases the
+    /// head through every abbreviation it names, each hop a scan of
+    /// `top_level_types`, and the heads (`int`, `string`, …) recur across
+    /// every function read. Reset with the chase cache, on whose inputs it
+    /// depends.
+    measure_head_cache: MeasureHeadCache,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -864,6 +871,11 @@ pub fn fsharp_core_intrinsic_tycons() -> &'static HashSet<String> {
         names
     })
 }
+
+/// The measure-head memo: `(mentioning entity, head) → verdict`. Shared and
+/// locked for the reasons [`AbbreviationChaseCache`] is.
+type MeasureHeadCache =
+    std::sync::Arc<std::sync::RwLock<HashMap<(EntityHandle, NamedTypeHead), bool>>>;
 
 /// One referenced assembly as
 /// [`AssemblyEnv::from_assemblies_with_projection_knowability`] takes it.
@@ -3793,6 +3805,7 @@ impl AssemblyEnv {
         // starts fresh under the new flag.
         self.abbreviation_chase_cache = Default::default();
         self.measure_verdict_cache = Default::default();
+        self.measure_head_cache = Default::default();
     }
 
     /// Record that a referenced assembly **dropped an undecodable type** in
@@ -4426,7 +4439,7 @@ impl AssemblyEnv {
             MemberMeasures::NotFSharp => true,
             MemberMeasures::NoDirectMeasure { heads } => heads
                 .iter()
-                .all(|head| self.head_hides_no_measure(handle, head, ABBREV_CHASE_FUEL)),
+                .all(|head| self.head_hides_no_measure(handle, head)),
             MemberMeasures::Measured | MemberMeasures::Unknowable => false,
         };
         self.measure_verdict_cache
@@ -4436,13 +4449,43 @@ impl AssemblyEnv {
         verdict
     }
 
-    /// Whether the named type `head`, mentioned by a member type of an entity
-    /// in `from`'s assembly, provably hides no unit of measure: it resolves to a
-    /// type that is not an abbreviation, or to an abbreviation whose target is
-    /// decoded and hides none itself — head and arguments alike. A target the
-    /// decoder declined (which it does on any measure) refutes, as does a head
-    /// that does not resolve to exactly one entity.
-    fn head_hides_no_measure(&self, from: EntityHandle, head: &NamedTypeHead, fuel: u32) -> bool {
+    /// Whether the named type `head`, mentioned by a signature in `from`'s
+    /// assembly, provably hides no unit of measure: it resolves to a type that
+    /// is not an abbreviation, or to an abbreviation whose target is decoded
+    /// and hides none itself — head and arguments alike. A target the decoder
+    /// declined (which it does on any measure) refutes, as does a head that
+    /// does not resolve to exactly one entity.
+    ///
+    /// A signature pickle names an abbreviation without expanding it, so a
+    /// `type Dist = float<m>` reaches an IL signature as a bare `float64` and
+    /// only the abbreviation's own pickle — possibly another assembly's — says
+    /// a measure was erased.
+    pub(crate) fn head_hides_no_measure(&self, from: EntityHandle, head: &NamedTypeHead) -> bool {
+        let key = (from, head.clone());
+        if let Some(&hit) = self
+            .measure_head_cache
+            .read()
+            .expect("measure head cache poisoned")
+            .get(&key)
+        {
+            return hit;
+        }
+        let verdict = self.head_hides_no_measure_within(from, head, ABBREV_CHASE_FUEL);
+        self.measure_head_cache
+            .write()
+            .expect("measure head cache poisoned")
+            .insert(key, verdict);
+        verdict
+    }
+
+    /// [`Self::head_hides_no_measure`], uncached, with the chase bounded by
+    /// `fuel`.
+    fn head_hides_no_measure_within(
+        &self,
+        from: EntityHandle,
+        head: &NamedTypeHead,
+        fuel: u32,
+    ) -> bool {
         let Some(fuel) = fuel.checked_sub(1) else {
             return false;
         };
@@ -4474,7 +4517,7 @@ impl AssemblyEnv {
 
     /// [`Self::head_hides_no_measure`] over a decoded abbreviation target of
     /// `marker`. A `Var` is the abbreviation's own parameter, whose argument the
-    /// use site's own scan covers.
+    /// mentioning signature's own scan covers.
     fn target_hides_no_measure(
         &self,
         marker: EntityHandle,
@@ -4484,7 +4527,7 @@ impl AssemblyEnv {
         match target {
             AbbreviationTarget::Var(_) => true,
             AbbreviationTarget::Named { ccu, path, args } => {
-                self.head_hides_no_measure(
+                self.head_hides_no_measure_within(
                     marker,
                     &NamedTypeHead {
                         ccu: ccu.clone(),

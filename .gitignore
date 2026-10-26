@@ -32,3 +32,4 @@ crates/sema/tests/fixtures/tier_decoy_env/Generated.fs
 crates/sema/tests/fixtures/companion_env/Generated.fs
 crates/sema/tests/fixtures/fsharp_member_env/Generated.fs
 crates/sema/tests/fixtures/measure_env/Generated.fs
+crates/sema/tests/fixtures/measure_fn_env/Generated.fs

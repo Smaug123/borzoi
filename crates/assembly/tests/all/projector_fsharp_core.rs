@@ -19,7 +19,7 @@
 use borzoi_assembly::pdb::{PortablePdb, embedded_portable_pdb};
 use borzoi_assembly::{
     Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, FSharpConstraints, Member,
-    MethodLike, ParamDefault,
+    MethodLike, NamedTypeHead, ParamDefault, ReadValFacts, ValFacts, ValMeasures,
 };
 
 use crate::common::ensure_fsharp_core_dll;
@@ -582,6 +582,187 @@ fn fsharp_core_typar_constraints_separate_map_from_option() {
     );
 }
 
+/// A module function's type parameters carry the F#-only constraints of the
+/// val's own type, and its [`ValFacts`] say whether that type mentions a unit
+/// of measure and which use-checked attributes the val carries — the facts the
+/// IL signature cannot carry, and the ones a consumer needs before reading the
+/// signature *as* the function's F# type.
+///
+/// The constraint readings are positional, so the pinned cases put a
+/// constrained parameter on each side of an unconstrained one: `dict`'s key
+/// (first) and `List.sortBy`'s key (second). A reading list applied in the
+/// wrong order fails one of them.
+#[test]
+fn a_module_functions_constraints_and_measures_come_from_its_val() {
+    let entities = load();
+    let core = ["Microsoft", "FSharp", "Core"];
+    let readings = |m: &MethodLike| -> Vec<FSharpConstraints> {
+        m.generic_parameters
+            .iter()
+            .map(|p| p.fsharp_constraints)
+            .collect()
+    };
+    let read = |m: &MethodLike| -> ReadValFacts {
+        match &m.val_facts {
+            ValFacts::Read(facts) => (**facts).clone(),
+            other => panic!("{}'s val is read, not {other:?}", m.name),
+        }
+    };
+    let only = |e: &Entity, name: &str| -> MethodLike {
+        let ms = methods_named(e, name);
+        assert_eq!(
+            ms.len(),
+            1,
+            "{} has {} methods named {name}",
+            e.name,
+            ms.len()
+        );
+        ms[0].clone()
+    };
+    let operators = entity(&entities, &core, "Operators");
+
+    let pipe = only(operators, "op_PipeRight");
+    assert_eq!(
+        readings(&pipe),
+        vec![FSharpConstraints::Free; 2],
+        "`|>` constrains nothing"
+    );
+    assert_eq!(
+        read(&pipe),
+        ReadValFacts {
+            measures: ValMeasures::NoDirectMeasure { heads: vec![] },
+            compiler_message: None,
+            requires_explicit_type_arguments: false,
+        }
+    );
+    // `not: bool -> bool` names FSharp.Core's own `bool` abbreviation, which a
+    // consumer must clear before trusting the IL; the reference back into
+    // FSharp.Core is a non-local one, naming its CCU.
+    assert_eq!(
+        read(&only(operators, "Not")).measures,
+        ValMeasures::NoDirectMeasure {
+            heads: vec![NamedTypeHead {
+                ccu: Some("FSharp.Core".to_owned()),
+                path: ["Microsoft", "FSharp", "Core", "bool"]
+                    .map(String::from)
+                    .to_vec(),
+            }],
+        },
+        "`not`'s one named head, listed once though both positions name it"
+    );
+
+    let equality = only(operators, "op_Equality");
+    assert_eq!(
+        readings(&equality),
+        vec![FSharpConstraints::Present],
+        "`=` requires `equality`, which has no IL encoding"
+    );
+    assert_eq!(
+        readings(&only(operators, "op_Addition")),
+        vec![FSharpConstraints::Present; 3],
+        "`+` is SRTP over all three of its parameters"
+    );
+
+    let pervasives = entity(&entities, &core, "ExtraTopLevelOperators");
+    assert_eq!(
+        readings(&only(pervasives, "CreateDictionary")),
+        vec![FSharpConstraints::Present, FSharpConstraints::Free],
+        "`dict`'s key requires `equality` and its value nothing"
+    );
+    let list_module = entity(
+        &entities,
+        &["Microsoft", "FSharp", "Collections"],
+        "ListModule",
+    );
+    assert_eq!(
+        readings(method_by_source(list_module, "sortBy")),
+        vec![FSharpConstraints::Free, FSharpConstraints::Present],
+        "`List.sortBy`'s element is free and its key requires `comparison`"
+    );
+
+    let primitives = entity(&entities, &core, "LanguagePrimitives");
+    let float_with_measure = only(primitives, "FloatWithMeasure");
+    assert!(
+        float_with_measure.generic_parameters.is_empty(),
+        "`FloatWithMeasure` is generic only over a measure, which IL erases"
+    );
+    assert!(
+        read(&float_with_measure).measures == ValMeasures::Measured,
+        "`float -> float<'Measure>` compiles to `double -> double`"
+    );
+
+    // FSharp.Core's attributes are its own, and its vals name them through
+    // non-local references back into FSharp.Core: `nameof`'s compiler message
+    // is read through one.
+    let name_of = read(&only(operators, "NameOf"));
+    let message = name_of
+        .compiler_message
+        .expect("`nameof` carries `[<CompilerMessage(_, 3501, IsError = true)>]`");
+    assert_eq!((message.marker, message.is_error), (Some(3501), true));
+    assert!(
+        read(&only(operators, "TypeDefOf")).requires_explicit_type_arguments,
+        "`typedefof` requires its type argument"
+    );
+}
+
+/// Over the whole of FSharp.Core: every method the module-member merge claimed
+/// as a plain module function carries both facts, and every instance method of
+/// this F# assembly carries neither — an instance member's type is not read
+/// from any val, so it must not look constraint-free.
+#[test]
+fn fsharp_core_reads_val_type_facts_exactly_for_module_functions() {
+    fn walk(es: &[Entity], claimed: &mut usize) {
+        for e in es {
+            for m in &e.members {
+                let Member::Method(m) = m else { continue };
+                let module_function = e.kind == EntityKind::Module
+                    && m.arg_group_count.is_some()
+                    && m.augmentation == Augmentation::No
+                    && !m.is_extension_method;
+                if module_function {
+                    *claimed += 1;
+                    let ValFacts::Read(facts) = &m.val_facts else {
+                        panic!(
+                            "{}.{}: a claimed module function's val is read",
+                            e.name, m.name
+                        );
+                    };
+                    if matches!(facts.measures, ValMeasures::NoDirectMeasure { .. }) {
+                        for p in &m.generic_parameters {
+                            assert_ne!(
+                                p.fsharp_constraints,
+                                FSharpConstraints::Unknowable,
+                                "{}.{}: a measure-free module function's `{}` is read",
+                                e.name,
+                                m.name,
+                                p.name
+                            );
+                        }
+                    }
+                } else if !m.is_static {
+                    assert_eq!(
+                        m.val_facts,
+                        ValFacts::Unknowable,
+                        "{}.{} is not a module function",
+                        e.name,
+                        m.name
+                    );
+                    for p in &m.generic_parameters {
+                        assert_eq!(p.fsharp_constraints, FSharpConstraints::Unknowable);
+                    }
+                }
+            }
+            walk(&e.nested_types, claimed);
+        }
+    }
+    let mut claimed = 0;
+    walk(&load(), &mut claimed);
+    assert!(
+        claimed > 1000,
+        "vacuous: only {claimed} module functions seen"
+    );
+}
+
 /// A **non**-F# assembly's type parameters read [`FSharpConstraints::Free`], and
 /// that is a proof rather than a default: an assembly with no
 /// `FSharpInterfaceDataVersionAttribute` has no F# signature data, so there is
@@ -615,6 +796,24 @@ fn a_non_fsharp_assembly_has_no_fsharp_constraints_to_miss() {
             );
         }
     }
+    // Nor has a method of one an F# type for a unit of measure to be erased
+    // from.
+    let mut methods = 0;
+    for e in &entities {
+        for m in &e.members {
+            if let Member::Method(m) = m {
+                methods += 1;
+                assert_eq!(
+                    m.val_facts,
+                    ValFacts::NotFSharp,
+                    "{}.{} is in a non-F# assembly",
+                    e.name,
+                    m.name
+                );
+            }
+        }
+    }
+    assert!(methods > 0, "vacuous: the C# fixture declares no method");
 }
 
 /// An entity's F# source name is keyed by **arity**, not by its arity-stripped

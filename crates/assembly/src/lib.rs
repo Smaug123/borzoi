@@ -54,8 +54,8 @@ pub use model::{
     EntityKind, Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind,
     FsharpSourceRange, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
     MemberMeasures, MethodLike, MethodSignature, ModuleValue, NamedTypeHead, Nullability,
-    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
-    SkippedMember, SkippedProjectionItem, TypeForwarder, TypeParameter, TypeRef,
-    UnclassifiedMethodImpl, UnionCases, Variance, Version,
+    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, ReadValFacts,
+    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeForwarder, TypeParameter,
+    TypeRef, UnclassifiedMethodImpl, UnionCases, ValFacts, ValMeasures, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};

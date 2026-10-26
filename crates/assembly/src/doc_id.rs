@@ -928,6 +928,7 @@ mod tests {
         return_type: TypeRef,
     ) -> Member {
         Member::Method(MethodLike {
+            val_facts: crate::model::ValFacts::NotFSharp,
             definition_range: None,
             name: name.into(),
             access: Access::Public,

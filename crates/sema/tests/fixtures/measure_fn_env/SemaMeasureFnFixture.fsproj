@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The fixture behind the module-function measure differential
+       (tests/all/module_function_measures_diff.rs): module functions whose F#
+       types carry units of measure that their IL signatures erase, directly or
+       behind an abbreviation declared here or in SemaMeasureFnBase.
+
+       `Generated.fs` is NOT checked in: it is emitted from the tables in
+       crates/sema/tests/all/common/measure_fn_corpus.rs before this project is
+       built, so the fixture and the probe's row index cannot drift apart. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaMeasureFnFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../measure_fn_base_env/SemaMeasureFnBase.fsproj" />
+  </ItemGroup>
+
+</Project>

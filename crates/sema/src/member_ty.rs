@@ -97,7 +97,7 @@ pub(crate) fn type_ref_to_ty(ty: &TypeRef) -> Option<Ty> {
 /// `(namespace, name)` mapping the assembly crate's display layer uses, kept in
 /// this crate so the bridge does not depend on a private helper there. `Void`
 /// maps to `System.Void` for totality; a real member type is never `Void`.
-fn primitive_to_ty(p: Primitive) -> Ty {
+pub(crate) fn primitive_to_ty(p: Primitive) -> Ty {
     let path = match p {
         Primitive::Void => "System.Void",
         Primitive::Bool => "System.Boolean",

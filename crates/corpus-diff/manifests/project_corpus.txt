@@ -16159,7 +16159,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj V
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:32-37 "State" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:32-37 "State" project-deferral unrecorded unattributed
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj comparable assets=resolved packages=5 frameworks=152 project-refs=0
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs compared match=89 assembly-match=56 attribute=1 member=0 definitions=32
+Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs compared match=89 assembly-match=57 attribute=1 member=1 definitions=32
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs handlers perturbed definition located=12 located-elsewhere=18
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs handlers perturbed hover described=30
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs handlers perturbed references referenced=30
@@ -16171,7 +16171,6 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:107:28-42 "Substring" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:110:17-26 "Append" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:113:13-22 "Append" assembly-deferral qualified-access unattributed
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:113:24-38 "Substring" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:114:13-24 "ToString" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:15:27-37 "PackedTrie" project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:15:62-67 "array" assembly-deferral shadowable-type alias_target_unchaseable@implicit_open

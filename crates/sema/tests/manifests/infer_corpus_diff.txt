@@ -36,16 +36,35 @@ src/Compiler/TypedTree/TcGlobals.fs fcs-failed
 src/Compiler/TypedTree/WellKnownAttribs.fs compared
 src/Compiler/Utilities/PathMap.fs compared
 src/Compiler/Utilities/sformat.fs compared
+src/Compiler/Utilities/sformat.fs:464:9-464:23 binder agree
+src/Compiler/Utilities/sformat.fs:465:9-470:43 expr agree
+src/Compiler/Utilities/sformat.fs:476:25-476:61 expr agree
+src/Compiler/Utilities/sformat.fs:478:25-478:55 expr agree
+src/Compiler/Utilities/sformat.fs:481:9-483:89 expr agree
 src/Compiler/Utilities/sformat.fs:631:18-631:21 expr agree
 src/Compiler/Utilities/sformat.fs:631:9-631:15 binder agree
 src/Compiler/Utilities/sformat.fs:758:22-758:23 expr agree
+src/Compiler/Utilities/sformat.fs:975:9-977:66 expr agree
 src/FSharp.Build/SubstituteText.fs compared
 src/FSharp.Core/Linq.fs compared
+src/FSharp.Core/Linq.fs:100:9-100:80 expr agree
+src/FSharp.Core/Linq.fs:106:9-116:21 expr agree
+src/FSharp.Core/Linq.fs:121:9-128:20 expr agree
+src/FSharp.Core/Linq.fs:134:9-145:21 expr agree
+src/FSharp.Core/Linq.fs:151:9-164:21 expr agree
+src/FSharp.Core/Linq.fs:169:9-169:93 expr agree
+src/FSharp.Core/Linq.fs:177:9-177:72 expr agree
+src/FSharp.Core/Linq.fs:205:9-241:45 expr agree
 src/FSharp.Core/Linq.fs:243:13-243:17 binder agree
 src/FSharp.Core/Linq.fs:243:20-243:25 expr agree
 src/FSharp.Core/Linq.fs:243:20-243:41 expr agree
+src/FSharp.Core/Linq.fs:50:9-50:23 binder agree
+src/FSharp.Core/Linq.fs:51:9-55:39 expr agree
+src/FSharp.Core/Linq.fs:57:30-57:67 expr agree
+src/FSharp.Core/Linq.fs:85:9-95:21 expr agree
 src/FSharp.Core/eventmodule.fs compared
 src/FSharp.Core/quotations.fs compared
+src/FSharp.Core/quotations.fs:1380:9-1380:73 expr agree
 src/FSharp.Core/quotations.fs:1686:13-1686:15 expr agree
 src/FSharp.Core/quotations.fs:1872:21-1872:24 binder agree
 src/FSharp.Core/quotations.fs:1872:27-1872:28 expr agree

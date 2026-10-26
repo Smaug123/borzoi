@@ -167,6 +167,7 @@ fn sig(params: Vec<Parameter>, ret: TypeRef) -> MethodSignature {
 
 fn method(name: &str, signature: MethodSignature) -> MethodLike {
     MethodLike {
+        val_facts: borzoi_assembly::ValFacts::NotFSharp,
         definition_range: None,
         name: name.to_string(),
         access: Access::Public,
