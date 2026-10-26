@@ -129,7 +129,7 @@ shape, because that shape is what the member-completion handler anchors on.
 These were measured on 2026-10-29, after the fixes in this change. Of the 731
 files that one parser or both reject, 280 are `exact`, 396 are
 `outside-damage`, and 55 are `divergent`. Of the 584 deletion cases against
-FCS, 43 are `divergent`, all in the token family. Every member-name deletion
+FCS, 42 are `divergent`, all in the token family. Every member-name deletion
 is `exact`.
 
 The divergent files, by cause (each file counted once, by its first divergence):
@@ -194,6 +194,42 @@ The recovery fixes in this change:
   declaration with it; and `private` or `->` before
   `foo type T = struct end` followed by `;` or a stray `end` and an indented
   expression.
+- **A type definition with no representation closes its nested module.** In
+  `type T = .Foo`, the `=` is followed by nothing that can begin a
+  representation. FCS's error there reaches the nested module's own
+  `recover`, which closes the module, so the declarations after it belong to
+  the enclosing module. So does a representation head cut short where FCS has
+  no recovery (`delegate` with no `of`, `#` with no type). Attributes in
+  representation position are transparent to the rule, except that nothing
+  after them is an error too (`type T = [<A>] .Foo` and `type T = [<A>]` both
+  close the module). Only a parse error closes a module: a representation that
+  parses cleanly never does, whatever its head. An error *inside* a representation
+  (`type T = int *`, a broken member body) is caught within the type, and the
+  module goes on, as does an empty representation (`type T =`, with or without
+  an attribute before `type`). The closed module's own body closer then ends
+  the enclosing module too, since FCS's layout contexts are one module deeper
+  than its parser.
+
+  The rule is FCS's LALR error recovery, which no table of hand-picked shapes
+  covers. `recover_nested_module_scope_after_a_broken_declaration_matches_fcs`
+  generates the space instead: a nested module's first declaration (a `type`
+  or a `let`) whose `=` is followed by each of 69 tokens and short
+  sequences, × an attribute before the declaration (on its line or its own),
+  before the representation, or nowhere, × single or double nesting. Each
+  following declaration FCS keeps must land in FCS's module. The cells where
+  it does not are pinned one per line in
+  `tests/manifests/nested_module_scope.txt`. Most of what remains there is
+  not the boundary rule:
+
+  - a same-line `[<A>] let w = …` anchors the `let`'s context at the `let`, so
+    FCS reports the following lines offside (FS0058) and nests them
+    differently; our parser reports no error there;
+  - a bare `member` or `override` representation, or a bracket left open
+    (`let w = (`, `type T = [`, `begin`, or `[<A>] class` or `struct` with no
+    `end`), swallows the declarations after it.
+
+  The rest is: after `type T = then`, `= else` or `= <-` in a doubly nested
+  module, FCS closes both modules, and we close at most one.
 
 Two live defects were found and not fixed. Both are outside recovery proper:
 

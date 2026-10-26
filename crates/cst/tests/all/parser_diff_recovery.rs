@@ -756,3 +756,214 @@ fn recovery_verdicts_follow_the_generated_layout() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The tokens a nested module's first declaration may continue with after its
+/// `=`: every class of token that can or cannot begin a type representation or
+/// an expression (closers, operators, declaration keywords, atoms, openers), a
+/// few short sequences, and nothing at all.
+const SCOPE_GRID_RHS: &[&str] = &[
+    "",
+    ".Foo",
+    ".",
+    ".Foo.Bar",
+    ")",
+    "]",
+    "}",
+    "|]",
+    "end",
+    "=",
+    "->",
+    "<-",
+    "|",
+    ",",
+    ";",
+    ";;",
+    ":",
+    ":>",
+    "*",
+    "+",
+    "-",
+    "_",
+    "#",
+    "1",
+    "\"s\"",
+    "x",
+    "Foo",
+    "int",
+    "int *",
+    "int .",
+    "A.",
+    "A.B",
+    "'a",
+    "(",
+    "[",
+    "{",
+    "[|",
+    "{ F : .Foo }",
+    "private .Foo",
+    "private",
+    "of",
+    "with",
+    "and",
+    "in",
+    "then",
+    "else",
+    "when",
+    "as",
+    "member",
+    "new",
+    "inherit",
+    "interface",
+    "class",
+    "struct",
+    "begin",
+    "delegate",
+    "exception",
+    "let",
+    "type",
+    "module",
+    "open",
+    "do",
+    "static",
+    "abstract",
+    "val",
+    "override",
+    "fun",
+    "match",
+    "null",
+];
+
+/// One cell of [`scope_grid`].
+struct ScopeCase {
+    /// The broken first declaration, with `⏎` for a line break.
+    decl: String,
+    /// Whether the nested module sits inside another one.
+    double: bool,
+    source: String,
+}
+
+/// The nested-module scope grid: a nested module's first declaration, a type
+/// definition or a `let` whose `=` is followed by each [`SCOPE_GRID_RHS`], ×
+/// an attribute on the line before the declaration, before it on its own line,
+/// before its representation (its right-hand side, for a `let`), or nowhere ×
+/// single or double nesting. `let x` follows in the nested module `A`; doubly
+/// nested, `let y` follows in the outer module `O` and `let z` at top level.
+///
+/// An attribute on a `let`'s own line anchors the `let`'s context at the
+/// `let`, so the lines after it are offside of it in FCS: that placement
+/// grades layout recovery as much as the module boundary.
+fn scope_grid() -> Vec<ScopeCase> {
+    let mut out = Vec::new();
+    for keyword in ["type T", "let w"] {
+        for rhs in SCOPE_GRID_RHS {
+            for (before_decl, before_rhs) in
+                [("", ""), ("[<A>]⏎", ""), ("[<A>] ", ""), ("", "[<A>] ")]
+            {
+                let decl = format!("{before_decl}{keyword} = {before_rhs}{rhs}")
+                    .trim_end()
+                    .to_string();
+                for double in [false, true] {
+                    let indent = if double { "        " } else { "    " };
+                    let body = decl.replace('⏎', &format!("\n{indent}"));
+                    let source = if double {
+                        format!(
+                            "module M\nmodule O =\n    module A =\n        {body}\n        let x = 1\n    let y = 2\nlet z = 3\n"
+                        )
+                    } else {
+                        format!("module M\nmodule A =\n    {body}\n    let x = 1\n")
+                    };
+                    out.push(ScopeCase {
+                        decl: decl.clone(),
+                        double,
+                        source,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Over [`scope_grid`], graded against FCS: whether a broken first declaration
+/// closes its nested module (moving what follows into the enclosing module)
+/// is decided by FCS's error recovery, so each declaration after it that FCS
+/// keeps must sit in the same module in our tree. The cells where it does not
+/// are pinned, one line each, in `tests/manifests/nested_module_scope.txt`, so
+/// a fix or a regression moves a line either way.
+#[test]
+fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
+    use crate::common::recovery::{Unit, fcs_units, our_units};
+    use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
+    let mut divergences = Vec::new();
+    for case in scope_grid() {
+        let src = &case.source;
+        let fcs = {
+            let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
+            std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
+            let json = crate::common::fcs_ast_batch(tmp.path());
+            fcs_units(&json, src).expect("FCS record is readable")
+        };
+        let ours = our_units(&borzoi_cst::parser::parse(src));
+        // Each module, by how many modules enclose its declarations.
+        let modules: &[&str] = if case.double {
+            &["M", "O", "A"]
+        } else {
+            &["M", "A"]
+        };
+        for name in ["let x", "let y", "let z"] {
+            let Some(at) = src.find(name) else { continue };
+            let module_of = |units: &[Unit]| {
+                units
+                    .iter()
+                    .find(|u| u.key.start == at && u.key.kind == "Let")
+                    .map_or("nowhere", |u| modules[u.key.scope.len() - 1])
+            };
+            let (want, got) = (module_of(&fcs), module_of(&ours));
+            if want != "nowhere" && got != want {
+                divergences.push(format!(
+                    "{} | {} | `{name}`: FCS in {want}, ours in {got}",
+                    case.decl,
+                    if case.double { "double" } else { "single" },
+                ));
+            }
+        }
+    }
+    let actual = Manifest::from_entries(divergences).expect("one line per cell and name");
+    crate::common::corpus_manifest::check_manifest(
+        "nested_module_scope",
+        &actual,
+        &format!(
+            "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_recovery::recover_nested_module_scope"
+        ),
+    );
+}
+
+/// A type definition with no representation closes its nested module, as in
+/// FCS: the declarations after it belong to the enclosing module.
+#[test]
+fn recover_missing_type_representation_closes_the_nested_module() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    type T = .Foo\n    let x = 1\n    let z = 2\n",
+        3,
+    );
+}
+
+/// The same when the broken type is not the module's first declaration.
+#[test]
+fn recover_missing_type_representation_after_a_declaration_closes_the_module() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    let w = 0\n    type T = .Foo\n    let x = 1\n    let z = 2\n",
+        4,
+    );
+}
+
+/// In a doubly nested module the closed module's own body closer ends the
+/// enclosing module, as in FCS: `x` stays in `O`, and `y`, indented in `O`,
+/// lands at top level.
+#[test]
+fn recover_missing_type_representation_in_a_doubly_nested_module() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule O =\n    module A =\n        type T = .Foo\n        let x = 1\n    let y = 2\nlet z = 3\n",
+        3,
+    );
+}

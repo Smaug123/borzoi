@@ -367,6 +367,25 @@ impl<'src> Parser<'src> {
         None
     }
 
+    /// The start of the first significant raw token at or after `byte` that
+    /// `counts` (a lex error always counts), or `None` at the end of input.
+    pub(super) fn next_significant_raw_start_after(
+        &self,
+        byte: usize,
+        counts: impl Fn(&Token<'src>) -> bool,
+    ) -> Option<usize> {
+        let start = self
+            .raw_tokens
+            .partition_point(|(_, span)| span.start < byte);
+        self.raw_tokens[start..]
+            .iter()
+            .find(|(res, _)| match res {
+                Ok(tt) => raw_significant(tt).is_some_and(&counts),
+                Err(_) => true,
+            })
+            .map(|(_, span)| span.start)
+    }
+
     /// `true` if the next significant raw token after byte `op_end` is a
     /// LexFilter-swallowed paren/brace closer (`)` / `}`) — i.e. an operator
     /// ending at `op_end` has its right operand stripped from the filtered

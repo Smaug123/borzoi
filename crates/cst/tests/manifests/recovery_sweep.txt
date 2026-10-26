@@ -480,7 +480,7 @@ tests/fsharp/regression/literal-value-bug-1/test.fs@18 token divergent 1/1/3
 tests/fsharp/typeProviders/helloWorld/providedNullAssemblyName.fsx@13 token outside-damage 1/1/3 beyond-fcs:1
 tests/fsharp/typeProviders/helloWorldCSharp/test.fsx@804 token exact 10/10/10
 tests/fsharp/typeProviders/negTests/EVIL_PROVIDER_GetTypes_Null.fsx@60 token exact 2/2/3
-tests/fsharp/typeProviders/negTests/EVIL_PROVIDER_ReturnsTypeWithIncorrectNameFromApplyStaticArguments.fsx@176 token divergent 3/3/5
+tests/fsharp/typeProviders/negTests/EVIL_PROVIDER_ReturnsTypeWithIncorrectNameFromApplyStaticArguments.fsx@176 token exact 3/3/5
 tests/fsharp/typeProviders/negTests/neg2.fsx@23 token outside-damage 2/2/3
 tests/fsharp/typeProviders/negTests/neg2.fsx@85 member exact 2/2/3
 tests/fsharp/typeProviders/negTests/neg6.fsx@251 token outside-damage 6/6/7

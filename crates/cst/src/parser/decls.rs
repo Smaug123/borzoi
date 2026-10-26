@@ -869,6 +869,11 @@ impl<'src> Parser<'src> {
         let mut depth = 0i32;
         let mut depth_pos = self.pos;
         let mut line_ends = LineEnd::default();
+        // Closers still owed by a nested module that a missing type
+        // representation closed early (see the type-definition arm): the
+        // blocks its broken declaration opened end later, inside this body,
+        // and are scaffolding of it.
+        let mut pending_ends = 0i32;
         while let Some((res, span)) = self.peek().cloned() {
             self.advance_block_depth(&mut depth, &mut depth_pos);
             // A verbose-syntax `module X = begin … end` body ends at the real
@@ -997,7 +1002,9 @@ impl<'src> Parser<'src> {
                     self.bump_into(SyntaxKind::ERROR);
                     continue;
                 }
+                let before = depth;
                 self.parse_nested_module_decl();
+                self.owe_pending_ends(&mut depth, &mut depth_pos, before, &mut pending_ends);
                 needs_sep = true;
                 seen_decl = true;
                 seen_non_hash_decl = true;
@@ -1027,10 +1034,19 @@ impl<'src> Parser<'src> {
                     self.bump_into(SyntaxKind::ERROR);
                     continue;
                 }
-                self.parse_type_defn();
+                let missing_repr = self.parse_type_defn();
                 needs_sep = true;
                 seen_decl = true;
                 seen_non_hash_decl = true;
+                // A type definition whose `=` has no representation after it
+                // (`type T = .Foo`) is an error FCS catches at the nested
+                // module's own `recover`, which closes the module: what follows
+                // belongs to the enclosing module. An error inside a
+                // representation (`type T = int *`, a broken member) is caught
+                // within the type, and the module goes on.
+                if missing_repr && scope == BodyScope::Nested {
+                    return (seen_decl, seen_non_hash_decl, header_parsed);
+                }
                 continue;
             }
             // A plain raw `exception` introduces an exception definition (phase
@@ -1187,10 +1203,14 @@ impl<'src> Parser<'src> {
                     ) {
                         self.bump_layout_virtual();
                     }
-                    self.parse_type_defn_at(Some(cp));
+                    let missing_repr = self.parse_type_defn_at(Some(cp));
                     needs_sep = true;
                     seen_decl = true;
                     seen_non_hash_decl = true;
+                    // See the unattributed type-definition arm.
+                    if missing_repr && scope == BodyScope::Nested {
+                        return (seen_decl, seen_non_hash_decl, header_parsed);
+                    }
                 } else if !matches!(
                     self.peek(),
                     None | Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
@@ -1282,7 +1302,9 @@ impl<'src> Parser<'src> {
                     ) {
                         self.bump_layout_virtual();
                     }
+                    let before = depth;
                     self.parse_nested_module_decl_at(Some(cp), false);
+                    self.owe_pending_ends(&mut depth, &mut depth_pos, before, &mut pending_ends);
                     needs_sep = true;
                     seen_decl = true;
                     seen_non_hash_decl = true;
@@ -1486,6 +1508,15 @@ impl<'src> Parser<'src> {
             // decl boundary, so the next expr-starter is allowed to begin a
             // fresh decl.
             if let Ok(FilteredToken::Virtual(v)) = &res {
+                // A closer owed by a nested module closed early is this body's
+                // scaffolding, never its close. Pre-compensate the depth step
+                // the loop head takes for it.
+                if *v == Virtual::BlockEnd && pending_ends > 0 {
+                    self.bump_layout_virtual();
+                    pending_ends -= 1;
+                    depth += 1;
+                    continue;
+                }
                 // In a nested-module body the body-closing `OBLOCKEND`
                 // terminates the loop, handed back to
                 // [`Self::parse_nested_module_decl`]. It is distinguished from
@@ -1548,6 +1579,30 @@ impl<'src> Parser<'src> {
             seen_non_hash_decl = true;
         }
         (seen_decl, seen_non_hash_decl, header_parsed)
+    }
+
+    /// After a nested-module declaration: bring `depth` up to date, and when
+    /// the module left blocks open (it was closed early by a missing type
+    /// representation), rebase `depth` to what it was before the module
+    /// (`before`) and owe this body the closers of the blocks its broken
+    /// declaration opened (`pending_ends`).
+    ///
+    /// The module's *own* body closer is not owed. FCS closed the module at
+    /// the error while its layout contexts were still one module deeper, so
+    /// it reads that closer as the end of the *enclosing* module, and this
+    /// body ends there too.
+    fn owe_pending_ends(
+        &self,
+        depth: &mut i32,
+        depth_pos: &mut usize,
+        before: i32,
+        pending_ends: &mut i32,
+    ) {
+        self.advance_block_depth(depth, depth_pos);
+        if *depth > before {
+            *pending_ends += *depth - before - 1;
+            *depth = before;
+        }
     }
 
     /// Bump the stray token at the cursor, and the debris it begins, as

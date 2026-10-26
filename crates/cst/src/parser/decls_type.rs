@@ -38,6 +38,29 @@ pub(super) struct TypeDefnReprOutcome {
     /// uses to flag a primary constructor on a non-class repr (FCS's "Only
     /// class types may take value arguments", phase 9.8a).
     pub(super) is_object_model: bool,
+    /// `true` iff the representation did not parse cleanly and its `=` was
+    /// followed by a token that cannot begin a representation
+    /// (`type T = .Foo`), by a representation head FCS has no recovery for once
+    /// it is cut short (`delegate` with no `of`, a `#` with no type), or by
+    /// attributes after which either holds, or nothing follows
+    /// (`type T = [<A>] .Foo`). FCS's error there is caught by an enclosing
+    /// nested module's recovery, which closes the module (see
+    /// [`Parser::parse_module_decls`]). An empty representation (no source
+    /// token between the `=` and the end of its block) is not one.
+    pub(super) missing_repr: bool,
+}
+
+/// What [`Parser::parse_type_defn_name_and_body`] reports about one type
+/// definition.
+struct TypeDefnBodyOutcome {
+    /// Whether the body's offside block closed (see
+    /// [`TypeDefnReprOutcome::closed_block`]).
+    closed_block: bool,
+    /// Whether the header drained an after-keyword attribute's trailing
+    /// offside `BlockSep` (see [`Parser::parse_type_defn_header`]).
+    offside_attr: bool,
+    /// See [`TypeDefnReprOutcome::missing_repr`].
+    missing_repr: bool,
 }
 
 impl<'src> Parser<'src> {
@@ -59,8 +82,11 @@ impl<'src> Parser<'src> {
     ///
     /// Only the type-abbreviation form is parsed; record / union / enum /
     /// object-model bodies are later phase-9 slices.
-    pub(super) fn parse_type_defn(&mut self) {
-        self.parse_type_defn_at(None);
+    ///
+    /// Returns whether a definition in the group had no representation (see
+    /// [`TypeDefnReprOutcome::missing_repr`]).
+    pub(super) fn parse_type_defn(&mut self) -> bool {
+        self.parse_type_defn_at(None)
     }
 
     /// Parse a `type … (and …)*` group. With `cp = None` this is the plain
@@ -71,7 +97,10 @@ impl<'src> Parser<'src> {
     /// (FCS attaches a type-header attribute to the first definition's
     /// `SynComponentInfo.attributes`; an `and`-chained definition carries its
     /// own, here always empty). Mirrors [`Self::parse_let_decl_at`].
-    pub(super) fn parse_type_defn_at(&mut self, cp: Option<rowan::Checkpoint>) {
+    ///
+    /// Returns whether a definition in the group had no representation (see
+    /// [`TypeDefnReprOutcome::missing_repr`]).
+    pub(super) fn parse_type_defn_at(&mut self, cp: Option<rowan::Checkpoint>) -> bool {
         let (kw, type_span) = self
             .next_non_trivia_raw_at_pos_with_span()
             .expect("caller verified a swallowed `type`");
@@ -108,7 +137,11 @@ impl<'src> Parser<'src> {
         }
         self.emit_text(SyntaxKind::TYPE_TOK, type_span.clone());
         self.raw_pos += 1;
-        let (mut prev_closed, offside_attr) = self.parse_type_defn_name_and_body();
+        let TypeDefnBodyOutcome {
+            closed_block: mut prev_closed,
+            offside_attr,
+            mut missing_repr,
+        } = self.parse_type_defn_name_and_body();
         self.builder.finish_node(); // TYPE_DEFN
 
         // Column-0 attributed regime: when a definition's header drains an
@@ -150,25 +183,27 @@ impl<'src> Parser<'src> {
             self.builder
                 .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFN));
             self.bump_into(SyntaxKind::AND_TOK);
-            let (closed, offside_attr) = self.parse_type_defn_name_and_body();
-            prev_closed = closed;
-            column0_regime |= offside_attr;
+            let body = self.parse_type_defn_name_and_body();
+            prev_closed = body.closed_block;
+            column0_regime |= body.offside_attr;
+            missing_repr |= body.missing_repr;
             self.builder.finish_node(); // TYPE_DEFN
         }
 
         self.builder.finish_node(); // TYPE_DEFNS
+        missing_repr
     }
 
     /// Parse one type definition's `SynComponentInfo` header (name + optional
     /// type parameters) and its `= <repr>` body, after the leading keyword
     /// (`TYPE_TOK` / `AND_TOK`) has been claimed. Shared by the head and
-    /// `and`-chained definitions in [`Self::parse_type_defn`]. Returns
-    /// `(closed_block, offside_attr)`: whether the body's offside block closed
-    /// (see [`Self::parse_type_defn_repr`]) and whether the header drained an
-    /// after-keyword attribute's trailing offside `BlockSep` (the column-0
-    /// offside-name form `type [<A>]⏎T`, which yields a blockless body — see
-    /// [`Self::parse_type_defn_header`]).
-    fn parse_type_defn_name_and_body(&mut self) -> (bool, bool) {
+    /// `and`-chained definitions in [`Self::parse_type_defn`]. Reports whether
+    /// the body's offside block closed (see [`Self::parse_type_defn_repr`]),
+    /// whether the header drained an after-keyword attribute's trailing offside
+    /// `BlockSep` (the column-0 offside-name form `type [<A>]⏎T`, which yields a
+    /// blockless body — see [`Self::parse_type_defn_header`]), and whether the
+    /// `=` had no representation after it.
+    fn parse_type_defn_name_and_body(&mut self) -> TypeDefnBodyOutcome {
         let offside_attr = self.parse_type_defn_header();
         // Optional *after-decls* `when …` constraint clause
         // (`tyconNameAndTyparDecls opt_typeConstraints`, `pars.fsy:1605`) — FCS's
@@ -195,7 +230,11 @@ impl<'src> Parser<'src> {
         // slice — the ctor still parses and the augment still recovers.
         if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::With)), _))) {
             let closed_block = self.parse_type_defn_augmentation();
-            return (closed_block, offside_attr);
+            return TypeDefnBodyOutcome {
+                closed_block,
+                offside_attr,
+                missing_repr: false,
+            };
         }
         // Bodyless type — `SynTypeDefnSimpleRepr.None`. With no `=` (and no
         // `with`), FCS reduces `tyconDefn` to its bare `typeNameInfo`
@@ -214,11 +253,16 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::Equals)), _))
         ) {
-            return (true, offside_attr);
+            return TypeDefnBodyOutcome {
+                closed_block: true,
+                offside_attr,
+                missing_repr: false,
+            };
         }
         let TypeDefnReprOutcome {
             closed_block,
             is_object_model,
+            missing_repr,
         } = self.parse_type_defn_repr();
         // A primary constructor is only valid on a class (object-model) repr.
         // FCS still fills the `implicitConstructor` slot for `type R(x) = {…}` /
@@ -233,7 +277,11 @@ impl<'src> Parser<'src> {
                 span,
             });
         }
-        (closed_block, offside_attr)
+        TypeDefnBodyOutcome {
+            closed_block,
+            offside_attr,
+            missing_repr,
+        }
     }
 
     /// Parse a type definition's `SynComponentInfo` name and optional type
@@ -1219,6 +1267,97 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Whether the representation head at the cursor is one FCS has no
+    /// recovery for once it is cut short: a `delegate` with no `of` after it,
+    /// or a flexible type's `#` with no type after it.
+    fn repr_head_is_cut_short(&self) -> bool {
+        match self.peek() {
+            Some((Ok(FilteredToken::Raw(Token::Delegate)), _)) => {
+                !matches!(self.nth_significant_raw_at_pos(1), Some(Token::Of))
+            }
+            Some((Ok(FilteredToken::Raw(Token::Hash)), _)) => !self
+                .nth_significant_raw_at_pos(1)
+                .is_some_and(raw_starts_atomic_type),
+            _ => false,
+        }
+    }
+
+    /// Whether some representation arm of [`Self::parse_type_defn_repr`]
+    /// claims the token at the cursor.
+    fn peek_starts_repr(&self) -> bool {
+        self.peek_is_record_repr_start()
+            || self.peek_is_union_or_enum_repr_start()
+            || self.peek_is_kind_marked_repr_start()
+            || self.peek_is_delegate_repr_start()
+            || self.peek_is_inline_il_repr_start()
+            || self.peek_is_object_model_start()
+            || self.peek_starts_type()
+    }
+
+    /// Whether the representation at the cursor opens with attributes after
+    /// which no representation begins (`type T = [<A>] .Foo`), or nothing does
+    /// (`type T = [<A>]` closing its block, or followed by a `type` or `module`
+    /// keyword LexFilter swallows). The attributes are transparent: what
+    /// follows them is classified as an unattributed representation head would
+    /// be. In FCS such an error is not recovered within the type: like a
+    /// missing representation, it closes an enclosing nested module (see
+    /// [`TypeDefnReprOutcome::missing_repr`]).
+    fn attributes_lead_no_representation(&mut self) -> bool {
+        let start = self.pos;
+        let raw = |i: usize| match self.filtered_tokens.get(start + i) {
+            Some((Ok(FilteredToken::Raw(t)), _)) => Some(t),
+            _ => None,
+        };
+        if !matches!(raw(0), Some(Token::LBrackLess)) {
+            return false;
+        }
+        // Past every attribute list, nested `[< … >]` included.
+        let mut i = 0;
+        while matches!(raw(i), Some(Token::LBrackLess)) {
+            let mut depth = 0usize;
+            loop {
+                match raw(i) {
+                    Some(Token::LBrackLess) => depth += 1,
+                    Some(Token::GreaterRBrack) => depth -= 1,
+                    _ if start + i >= self.filtered_tokens.len() => return true,
+                    _ => {}
+                }
+                i += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+        }
+        // An access modifier may sit between the attributes and the case.
+        while matches!(
+            raw(i),
+            Some(Token::Private | Token::Internal | Token::Public)
+        ) {
+            i += 1;
+        }
+        let at = match self.filtered_tokens.get(start + i) {
+            None
+            | Some((
+                Ok(FilteredToken::Virtual(
+                    Virtual::BlockEnd
+                    | Virtual::BlockSep
+                    | Virtual::DeclEnd
+                    | Virtual::RightBlockEnd,
+                )),
+                _,
+            )) => return true,
+            Some((_, span)) => span.start,
+        };
+        // Classify the head after the attributes with the cursor moved there,
+        // then put it back: the predicates only read it.
+        let saved = (self.pos, self.raw_pos, self.raw_consumed_end);
+        self.pos = start + i;
+        self.raw_pos = self.raw_tokens.partition_point(|(_, span)| span.start < at);
+        let missing = !self.peek_starts_repr() || self.repr_head_is_cut_short();
+        (self.pos, self.raw_pos, self.raw_consumed_end) = saved;
+        missing
+    }
+
     /// Parse `= OBLOCKBEGIN <repr> OBLOCKEND` after a type definition's name —
     /// the `SynTypeDefnSimpleRepr`. Dispatches on the body's first token:
     /// * `{` → a record (`SynTypeDefnSimpleRepr.Record`, phase 9.4), via
@@ -1262,6 +1401,7 @@ impl<'src> Parser<'src> {
             ),
             "parse_type_defn_repr requires a leading `=`",
         );
+        let equals_end = self.peek().map_or(self.source.len(), |(_, s)| s.end);
         self.bump_into(SyntaxKind::EQUALS_TOK);
 
         // Opening `OBLOCKBEGIN` — consume as a zero-width ERROR (mirror
@@ -1276,7 +1416,10 @@ impl<'src> Parser<'src> {
             false
         };
 
+        let errors_before = self.errors.len();
         let mut is_object_model = false;
+        let mut missing_repr =
+            self.attributes_lead_no_representation() || self.repr_head_is_cut_short();
         // Whether the repr was the explicit `class`/`struct`/`interface … end`
         // form (phase 9.12). Unlike the lightweight forms, it emits an extra
         // `OBLOCKSEP` inside the type-defn block before that block's closing
@@ -1371,7 +1514,34 @@ impl<'src> Parser<'src> {
                 message: "expected a type or `{ … }` record body after `=`".to_string(),
                 span,
             });
+            // Only a token that cannot begin a representation is FCS's
+            // module-closing error; a block that simply ends after the `=`
+            // (`type T =` with the next declaration at the same column), or
+            // the end of input, is recovered within the type. The token may be
+            // one LexFilter swallowed (`type T = )`), so the block is empty
+            // exactly when no source token lies between the `=` and its end,
+            // other than a `type` or `module` keyword (also swallowed), which
+            // FCS reads as a declaration of its own.
+            missing_repr |= match self.peek() {
+                Some((Ok(FilteredToken::Raw(_)), _)) => true,
+                Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), end)) => self
+                    .next_significant_raw_start_after(equals_end, |t| {
+                        !matches!(t, Token::Type | Token::Module)
+                    })
+                    .is_some_and(|start| start < end.start),
+                // A keyword LexFilter relabels (`fun`), which begins no
+                // representation either.
+                Some((Ok(FilteredToken::Virtual(v)), _)) => !matches!(
+                    v,
+                    Virtual::BlockSep | Virtual::DeclEnd | Virtual::RightBlockEnd
+                ),
+                _ => false,
+            };
         }
+
+        // FCS closes a module only on a parse error: a representation that
+        // parsed cleanly never does, whatever its head.
+        missing_repr &= self.errors.len() > errors_before;
 
         // Bare trailing members (phase 9.13b) — FCS's #light
         // `tyconDefnRhs opt_OBLOCKSEP classDefnMembers` (`pars.fsy:1731`):
@@ -1525,12 +1695,14 @@ impl<'src> Parser<'src> {
             return TypeDefnReprOutcome {
                 closed_block: aug_closed,
                 is_object_model,
+                missing_repr,
             };
         }
 
         TypeDefnReprOutcome {
             closed_block,
             is_object_model,
+            missing_repr,
         }
     }
 
