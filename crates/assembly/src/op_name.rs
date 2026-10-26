@@ -9,9 +9,9 @@
 //! calls, and `let op_Addition a b = a` is what `1 + 2` calls. A resolver that
 //! keys a value by its spelling sees two names where F# sees one.
 //!
-//! A *prefix* application is the exception, and is not handled here: FCS names
-//! the operator in `-x` `~-` (`op_UnaryNegation`), not `-`, so the name depends
-//! on the position, not on the token.
+//! A *prefix* application is the exception: FCS names the operator in `-x`
+//! `~-` (`op_UnaryNegation`), not `-`, so the name depends on the position, not
+//! only on the token. [`prefix_op_name`] is that position's name.
 //!
 //! Both directions are ports from `src/Compiler/SyntaxTree/PrettyNaming.fs`:
 //! [`compile_op_name`] of `CompileOpName`, restricted to operator spellings
@@ -150,6 +150,27 @@ pub fn compile_op_name(spelling: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// The name FCS's parser gives the operator of a *prefix* application whose
+/// token is spelled `spelling`.
+///
+/// The grammar decides it by token class (`pars.fsy`'s `minusExpr`, `argExpr`
+/// and `atomicExpr` rules). A `!` or `~` operator (`PREFIX_OP`, through
+/// `mkSynPrefixPrim`) keeps its spelling, so `!r` uses `!` and `~~~n` uses
+/// `~~~` — the same names their definitions `( ! )` and `( ~~~ )` have. Every
+/// other prefix operator (`-`, `+`, `-.`, `+.`, `%`, `%%`, `?-`, through
+/// `mkSynPrefix`) is renamed `~` + its spelling, so `-x` uses `~-`
+/// (`op_UnaryNegation`), not the binary `-`. The token class is read past the
+/// lexer's `ignored_op_char`s (`.`, `$`, `?`), as `lex.fsl` reads it.
+/// `&`/`&&` prefixes are address-of expressions, never operator uses.
+pub fn prefix_op_name(spelling: &str) -> Cow<'_, str> {
+    let class = spelling.chars().find(|c| !matches!(c, '.' | '$' | '?'));
+    if matches!(class, Some('!' | '~')) || !is_operator_spelling(spelling) {
+        compile_op_name(spelling)
+    } else {
+        Cow::Owned(compile_op_name(&format!("~{spelling}")).into_owned())
+    }
+}
+
 /// The operator spelling a compiled name stands for
 /// (`ConvertValLogicalNameToDisplayNameCore`): a table name's operator, or a
 /// custom `op_*` name spelled back character by character. `None` when the
@@ -229,6 +250,72 @@ mod tests {
             let shown = operator_display_name(&compiled).expect("an operator decompiles");
             let inner = shown.trim_start_matches('(').trim_end_matches(')').trim();
             proptest::prop_assert_eq!(inner, op.as_str());
+        }
+    }
+
+    #[test]
+    fn a_prefix_use_is_named_by_its_token_class() {
+        assert_eq!(prefix_op_name("-"), "op_UnaryNegation");
+        assert_eq!(prefix_op_name("+"), "op_UnaryPlus");
+        assert_eq!(prefix_op_name("-."), "op_TwiddleMinusDot");
+        assert_eq!(prefix_op_name("%"), "op_Splice");
+        assert_eq!(prefix_op_name("%%"), "op_SpliceUntyped");
+        assert_eq!(prefix_op_name("?-"), "op_TwiddleQmarkMinus");
+        assert_eq!(prefix_op_name("!"), "op_Dereference");
+        assert_eq!(prefix_op_name("~~~"), "op_LogicalNot");
+        assert_eq!(prefix_op_name("~~"), "op_TwiddleTwiddle");
+        assert_eq!(prefix_op_name("!!"), "op_BangBang");
+        assert_eq!(prefix_op_name("x"), "x");
+    }
+
+    /// `PrettyNaming.IsValidPrefixOperatorDefinitionName`: what `let ( op )`
+    /// may name for a prefix use to reach it.
+    fn is_valid_prefix_definition_name(s: &str) -> bool {
+        match s.chars().next() {
+            Some('~') => {
+                s.chars().all(|c| c == '~')
+                    || matches!(
+                        s,
+                        "~?+" | "~?-" | "~+" | "~-" | "~+." | "~-." | "~%" | "~%%" | "~&" | "~&&"
+                    )
+            }
+            Some('!') => s != "!=",
+            _ => false,
+        }
+    }
+
+    /// The spellings FCS accepts as a prefix operator use
+    /// (`PrettyNaming.IsValidPrefixOperatorUse`) that lex as an operator
+    /// token, less `&`/`&&`, which are address-of.
+    fn prefix_use() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::prelude::*;
+        prop_oneof![
+            proptest::sample::select(vec!["?+", "?-", "+", "-", "+.", "-.", "%", "%%"])
+                .prop_map(String::from),
+            "~{1,4}",
+            // `!=` lexes as a comparison, never a prefix.
+            "![!$%&*+./<>?@^|~:-][!$%&*+./<=>?@^|~:-]{0,2}",
+            Just("!".to_string()),
+        ]
+    }
+
+    proptest::proptest! {
+        /// A prefix use always names something a prefix definition can
+        /// define: `-x` reaches `let ( ~- ) x`, `!r` reaches `let ( ! ) r`.
+        #[test]
+        fn a_prefix_use_names_a_prefix_definition(op in prefix_use()) {
+            let name = prefix_op_name(&op);
+            let shown = operator_display_name(&name).expect("an operator decompiles");
+            let spelled = shown.trim_start_matches('(').trim_end_matches(')').trim();
+            proptest::prop_assert!(is_valid_prefix_definition_name(spelled), "{op} -> {spelled}");
+        }
+
+        /// Only a `!` or `~` spelling shares its name with the binary
+        /// operator of that spelling.
+        #[test]
+        fn only_bang_and_tilde_keep_their_spelling(op in prefix_use()) {
+            let keeps = op.starts_with('!') || op.starts_with('~');
+            proptest::prop_assert_eq!(prefix_op_name(&op) == compile_op_name(&op), keeps);
         }
     }
 

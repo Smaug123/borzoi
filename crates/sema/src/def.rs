@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use borzoi_assembly::op_name::compile_op_name;
+use borzoi_assembly::op_name::{compile_op_name, is_operator_spelling, prefix_op_name};
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::TextRange;
 
@@ -290,16 +290,49 @@ impl Def {
 /// compiled — `` ``+`` `` is the identifier `+`, a different name from the
 /// operator. Every other spelling is returned unchanged.
 ///
+/// The operator of a **prefix** application is named after its position
+/// ([`prefix_op_name`]): `-x` uses `~-` (`op_UnaryNegation`), not the binary
+/// `-` its token spells, so the token's place in the tree is part of its name.
+///
 /// It takes a **token**, not a string, because it is not idempotent: the
 /// name of `` ``+`` `` is `+`, whose own name would be `op_Addition`. A
 /// function handed a name that is already canonical must use it as it is, and
 /// the type keeps it from normalising twice. A binder's stored text goes
 /// through [`Def::key`], the one other entry point.
-///
-/// Not the name of a **prefix** application's operator, which FCS names after
-/// the position (`-x` uses `~-`); the resolver does not route those here.
 pub(crate) fn id_text(tok: &SyntaxToken) -> Cow<'_, str> {
-    ident_name(tok.text())
+    if is_prefix_operator(tok) {
+        prefix_op_name(tok.text())
+    } else {
+        ident_name(tok.text())
+    }
+}
+
+/// Whether `tok` is the operator of a prefix application (`-x`, `!r`).
+///
+/// The parser builds one, as FCS's `mkSynPrefix` does, as an `APP_EXPR` whose
+/// function is a bare single-operator `LONG_IDENT_EXPR`; nothing else puts a
+/// bare operator there. An infix operator sits in an `INFIX_APP_EXPR`, and an
+/// operator value (`(+) a b`) keeps its parentheses in the `LONG_IDENT`.
+fn is_prefix_operator(tok: &SyntaxToken) -> bool {
+    use borzoi_cst::syntax::SyntaxKind;
+    let Some(long_ident) = tok.parent() else {
+        return false;
+    };
+    let Some(expr) = long_ident.parent() else {
+        return false;
+    };
+    tok.kind() == SyntaxKind::IDENT_TOK
+        && long_ident.kind() == SyntaxKind::LONG_IDENT
+        && long_ident
+            .children_with_tokens()
+            .filter(|c| !c.kind().is_trivia())
+            .count()
+            == 1
+        && expr.kind() == SyntaxKind::LONG_IDENT_EXPR
+        && expr.parent().is_some_and(|app| {
+            app.kind() == SyntaxKind::APP_EXPR && app.first_child().as_ref() == Some(&expr)
+        })
+        && is_operator_spelling(tok.text())
 }
 
 /// [`id_text`] over a token's verbatim text. Private: a caller with a string

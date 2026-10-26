@@ -152,13 +152,15 @@ compiled name (`borzoi_assembly::op_name`, a port of `CompileOpName` and its
 inverse, which hover uses to show `op_Addition` as `(+)`). So
 `+`, `( + )` and `op_Addition` are one name, a quoted `` ``+`` `` is a
 different one, and with nothing in-file `+` resolves to FSharp.Core's
-`Operators.(+)` through the same lookup as `id`. A *prefix* application (`-x`)
-declines (`DeferredReason::PrefixOperator`): FCS names it `~-` after its
-position, which the path machinery has no way to be told. `operator_name_diff`
-grades the space against FCS (every operator × definition form × use form, plus
-an opened-then-reopened `Operators`). Still to do: the inference half (type an
-application whose callee resolves to FSharp.Core's operator), and resolving
-prefix operators.
+`Operators.(+)` through the same lookup as `id`. A *prefix* application is
+named after its position (`op_name::prefix_op_name`, applied by `id_text` to
+the operator heading a prefix `APP_EXPR`): `-x`, `+x`, `-.x`, `%x` use `~-`,
+`~+`, `~-.`, `~%`, never the binary operator their token spells, while a `!`
+or `~` operator keeps its spelling (`!r` uses `!`). `operator_name_diff`
+grades the space against FCS (every operator × definition form × use form,
+every prefix operator beside a decoy binary definition, plus an
+opened-then-reopened `Operators`). Still to do: the inference half (type an
+application whose callee resolves to FSharp.Core's operator).
 
 ### Remaining 3.x hard piles (census-priority order)
 

@@ -1892,11 +1892,6 @@ pub enum DeferredReason {
     /// declined, which is worth saying out loud rather than reporting as an
     /// ordinary unresolved qualified access.
     IncompleteAssemblies,
-    /// The operator of a **prefix** application (`-x`, `!r`). FCS names it
-    /// after the position — `-x` uses `~-` (`op_UnaryNegation`), a different
-    /// name from the binary `(-)` its token spells — which the resolver does
-    /// not model, so it declines rather than bind the binary operator.
-    PrefixOperator,
 }
 
 /// How a name use resolves. A closed, inspectable value (not a callback), per
