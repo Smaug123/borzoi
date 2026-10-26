@@ -35,6 +35,7 @@ mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
 mod manifest_autoopen_surface_diff;
 mod member_hiding_diff;
+mod module_function_measures_diff;
 mod module_open_matrix;
 mod namespace_fold_matrix;
 mod open_shortening_matrix;

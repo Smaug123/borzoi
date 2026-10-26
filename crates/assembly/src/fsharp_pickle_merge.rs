@@ -61,7 +61,7 @@ use crate::fsharp_pickle::model::{
 };
 use crate::model::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, CompilerMessage, Entity,
-    EntityKind, FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete, ReadValFacts, SkippedMember, TypeParameter, UnionCases,
+    EntityKind, FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete, ReadValFacts, SkippedMember, TypeParameter, UnionCases, ValMeasures,
 };
 use std::collections::HashMap;
 
@@ -1446,7 +1446,6 @@ impl ModuleMemberVal {
 pub fn collect_module_member_targets(
     pickled: &PickledCcu,
 ) -> Result<Vec<ModuleMemberTarget>, ImportError> {
-    let local_paths = local_entity_paths(pickled)?;
     let mut targets = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
@@ -1463,7 +1462,7 @@ pub fn collect_module_member_targets(
                     IsType::ModuleOrType | IsType::FSharpModuleWithSuffix
                 )
             {
-                let vals = module_member_vals(pickled, &local_paths, &entity.module_type.vals)?;
+                let vals = module_member_vals(pickled, &entity.module_type.vals)?;
                 let mut chain = type_chain.to_vec();
                 chain.push(clr_name(entity));
                 targets.push(ModuleMemberTarget {
@@ -1495,7 +1494,6 @@ pub fn collect_module_member_targets(
 /// module class and is kept.
 fn module_member_vals(
     pickled: &PickledCcu,
-    local_paths: &HashMap<u32, Vec<String>>,
     val_indices: &[u32],
 ) -> Result<Vec<ModuleMemberVal>, ImportError> {
     let mut out = Vec::new();
@@ -1513,19 +1511,15 @@ fn module_member_vals(
         if v.member_info.is_some() && !is_extension {
             continue;
         }
-        let (typar_constraints, mentions_measure) = val_type_facts(pickled, v);
-        let val_facts = match (
-            mentions_measure,
-            val_use_attributes(pickled, local_paths, v),
-        ) {
-            (
-                Some(mentions_measure),
-                Some((compiler_message, requires_explicit_type_arguments)),
-            ) => crate::model::ValFacts::Read(Box::new(ReadValFacts {
-                mentions_measure,
-                compiler_message,
-                requires_explicit_type_arguments,
-            })),
+        let (typar_constraints, measures) = val_type_facts(pickled, v)?;
+        let val_facts = match (measures, val_use_attributes(pickled, v)) {
+            (Some(measures), Some((compiler_message, requires_explicit_type_arguments))) => {
+                crate::model::ValFacts::Read(Box::new(ReadValFacts {
+                    measures,
+                    compiler_message,
+                    requires_explicit_type_arguments,
+                }))
+            }
             _ => crate::model::ValFacts::Unknowable,
         };
         out.push(ModuleMemberVal {
@@ -1559,19 +1553,18 @@ fn module_member_vals(
 }
 
 /// What a val's pickled F# type says that its IL signature cannot: each type
-/// parameter's [`FSharpConstraints`], and whether the type mentions a unit of
-/// measure. The two are read together because a measure decides both — a
-/// measure type parameter is erased from IL, so the constraint readings no
-/// longer line up with the IL generic parameters, and the IL signature is no
-/// longer the F# type.
+/// parameter's [`FSharpConstraints`], and what the type says about units of
+/// measure ([`ValMeasures`]). The two are read together because a measure
+/// decides both — a measure type parameter is erased from IL, so the
+/// constraint readings no longer line up with the IL generic parameters, and
+/// the IL signature is no longer the F# type.
 ///
-/// A type parameter whose index does not resolve leaves both unknown: a
-/// measure could hide behind it. The constraint list collapses to
-/// `Free`/`Present`, as for an entity's ([`pickled_typar_constraints`]).
-fn val_type_facts(
-    pickled: &PickledCcu,
-    v: &PickledVal,
-) -> (Option<Vec<FSharpConstraints>>, Option<bool>) {
+/// A type parameter whose index does not resolve, or a type shape the scan
+/// does not model, leaves both unknown: a measure could hide behind it. The
+/// constraint list collapses to `Free`/`Present`, as for an entity's
+/// ([`pickled_typar_constraints`]). A dangling table index elsewhere in the
+/// type is a malformed pickle — a loud `Err`.
+fn val_type_facts(pickled: &PickledCcu, v: &PickledVal) -> Result<ValTypeFacts, ImportError> {
     let (typars, body): (&[u32], &PickledType) = match &v.ty {
         PickledType::Forall { typars, body } => (typars, body),
         ty => (&[], ty),
@@ -1579,10 +1572,10 @@ fn val_type_facts(
     let mut readings = Vec::with_capacity(typars.len());
     for &ti in typars {
         let Some(typar) = pickled.tables.typars.get(ti as usize) else {
-            return (None, None);
+            return Ok((None, None));
         };
         if is_measure_typar(typar.flags) {
-            return (None, Some(true));
+            return Ok((None, Some(ValMeasures::Measured)));
         }
         readings.push(if typar.constraints.is_empty() {
             FSharpConstraints::Free
@@ -1590,9 +1583,122 @@ fn val_type_facts(
             FSharpConstraints::Present
         });
     }
-    match type_mentions_measure(pickled, body) {
-        Some(mentions) => (Some(readings), Some(mentions)),
+    // Heads are collected whatever the val's accessibility: a non-public
+    // function can mention a non-public type, whose head then resolves for no
+    // consumer and declines — the cheap sound reading.
+    let mut scan = ValMeasureScan::default();
+    scan.scan(pickled, body)?;
+    Ok(match scan.reading() {
+        Some(measures) => (Some(readings), Some(measures)),
         None => (None, None),
+    })
+}
+
+/// [`val_type_facts`]'s result: the constraint readings and the measure
+/// reading, each `None` when unknown.
+type ValTypeFacts = (Option<Vec<FSharpConstraints>>, Option<ValMeasures>);
+
+/// What one scan over pickled types found. A measure, and an unreadable
+/// shape, are each final; the heads are what the consumer must clear when
+/// neither was found.
+#[derive(Debug, Default)]
+struct ValMeasureScan {
+    measured: bool,
+    unknowable: bool,
+    heads: std::collections::BTreeSet<NamedTypeHead>,
+}
+
+impl ValMeasureScan {
+    /// The reading: `None` when a shape was unreadable and no measure was
+    /// found.
+    fn reading(self) -> Option<ValMeasures> {
+        if self.measured {
+            Some(ValMeasures::Measured)
+        } else if self.unknowable {
+            None
+        } else {
+            Some(ValMeasures::NoDirectMeasure {
+                heads: self.heads.into_iter().collect(),
+            })
+        }
+    }
+
+    /// Scan one pickled type.
+    fn scan(&mut self, pickled: &PickledCcu, ty: &PickledType) -> Result<(), ImportError> {
+        match ty {
+            PickledType::Measure(_) => self.measured = true,
+            PickledType::Var { typar_index, .. } => {
+                self.typar(pickled, *typar_index);
+            }
+            PickledType::Forall { typars, body } => {
+                for &ti in typars {
+                    self.typar(pickled, ti);
+                }
+                self.scan(pickled, body)?;
+            }
+            PickledType::AppSimple {
+                simpletyp_index, ..
+            } => {
+                let nle = *pickled
+                    .header
+                    .simpletys
+                    .get(*simpletyp_index as usize)
+                    .ok_or(ImportError::OsgnIndexOutOfRange {
+                        kind: "simplety (measures)",
+                        index: *simpletyp_index,
+                        max: pickled.header.simpletys.len(),
+                    })?;
+                self.nonlocal_head(pickled, nle)?;
+            }
+            PickledType::App { tcref, args, .. } => {
+                match tcref {
+                    PickledTcRef::NonLocal(nle) => self.nonlocal_head(pickled, *nle)?,
+                    // fsc names every type a signature mentions by a non-local
+                    // reference, a same-assembly one included: the 1,481
+                    // F#-authored assemblies of one NuGet cache carry no
+                    // `Local` reference among the 2,092,632 heads of their
+                    // module vals' types (nor among their member vals', record
+                    // fields' or abbreviations'). One would come from a pickle
+                    // this reader was not measured against.
+                    PickledTcRef::Local(_) => self.unknowable = true,
+                }
+                for arg in args {
+                    self.scan(pickled, arg)?;
+                }
+            }
+            PickledType::Fun { domain, range, .. } => {
+                self.scan(pickled, domain)?;
+                self.scan(pickled, range)?;
+            }
+            PickledType::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.scan(pickled, elem)?;
+                }
+            }
+            // A union-case type occurs inside expressions, not in a declared
+            // type.
+            PickledType::UCase { .. } => self.unknowable = true,
+        }
+        Ok(())
+    }
+
+    /// A type parameter is a measure (or does not resolve, so might be one).
+    fn typar(&mut self, pickled: &PickledCcu, index: u32) {
+        match pickled.tables.typars.get(index as usize) {
+            Some(t) if is_measure_typar(t.flags) => self.measured = true,
+            Some(_) => {}
+            None => self.unknowable = true,
+        }
+    }
+
+    fn nonlocal_head(&mut self, pickled: &PickledCcu, nle: u32) -> Result<(), ImportError> {
+        match decode_nonlocal_named(pickled, nle, Vec::new())? {
+            AbbreviationTarget::Named { ccu, path, .. } => {
+                self.heads.insert(NamedTypeHead { ccu, path });
+            }
+            _ => unreachable!("`decode_nonlocal_named` builds a `Named` target"),
+        }
+        Ok(())
     }
 }
 
@@ -1601,13 +1707,18 @@ fn val_type_facts(
 /// `[<RequiresExplicitTypeArguments>]`. `None` when an attribute's class
 /// cannot be named, since that attribute could be either.
 ///
-/// An attribute class is named through the CCU's own entity table when it is
-/// declared in the same assembly — FSharp.Core's vals carry FSharp.Core's
-/// attributes, all `Local` references there — and through the non-local
-/// reference table otherwise.
+/// fsc pickles every attribute class as a **non-local** reference naming its
+/// CCU and path, even a class declared in the same assembly: FSharp.Core's own
+/// `CompilerMessage` on `nameof` is a reference to `FSharp.Core`, and the 1,481
+/// F#-authored assemblies of one NuGet cache carry no `Local` attribute
+/// reference among the 753,007 on their vals. A `Local` one would come from a
+/// pickle this reader was not measured against, so it leaves the facts unknown.
+///
+/// The class is matched by path alone, not by CCU. Both facts only ever make a
+/// use decline, so an assembly declaring its own class at either path is read
+/// more cautiously than FCS reads it, never less.
 fn val_use_attributes(
     pickled: &PickledCcu,
-    local_paths: &HashMap<u32, Vec<String>>,
     v: &PickledVal,
 ) -> Option<(Option<CompilerMessage>, bool)> {
     const COMPILER_MESSAGE: [&str; 4] = ["Microsoft", "FSharp", "Core", "CompilerMessageAttribute"];
@@ -1620,99 +1731,22 @@ fn val_use_attributes(
     let mut compiler_message = None;
     let mut requires_explicit_type_arguments = false;
     for attr in &v.attribs {
-        let class = attribute_class_path(pickled, local_paths, &attr.tcref)?;
-        if class.iter().map(String::as_str).eq(COMPILER_MESSAGE) {
-            compiler_message = Some(decode_compiler_message(attr));
-        } else if class
+        let PickledTcRef::NonLocal(idx) = attr.tcref else {
+            return None;
+        };
+        let nle = pickled.header.nlerefs.get(idx as usize)?;
+        let class = nle
+            .path
             .iter()
-            .map(String::as_str)
-            .eq(REQUIRES_EXPLICIT_TYPE_ARGUMENTS)
-        {
+            .map(|&i| pickled.header.strings.get(i as usize).map(String::as_str))
+            .collect::<Option<Vec<&str>>>()?;
+        if class == COMPILER_MESSAGE {
+            compiler_message = Some(decode_compiler_message(attr));
+        } else if class == REQUIRES_EXPLICIT_TYPE_ARGUMENTS {
             requires_explicit_type_arguments = true;
         }
     }
     Some((compiler_message, requires_explicit_type_arguments))
-}
-
-/// The fully-qualified path of an attribute's class: through the CCU's entity
-/// table for a `Local` reference, the non-local reference table otherwise.
-/// `None` when the reference does not resolve.
-fn attribute_class_path(
-    pickled: &PickledCcu,
-    local_paths: &HashMap<u32, Vec<String>>,
-    tcref: &PickledTcRef,
-) -> Option<Vec<String>> {
-    match tcref {
-        PickledTcRef::Local(stamp) => local_paths.get(stamp).cloned(),
-        PickledTcRef::NonLocal(idx) => {
-            let nle = pickled.header.nlerefs.get(*idx as usize)?;
-            nle.path
-                .iter()
-                .map(|&i| pickled.header.strings.get(i as usize).cloned())
-                .collect()
-        }
-    }
-}
-
-/// Every type or module of the CCU by its stamp, with its fully-qualified
-/// path: what a `Local` type reference names.
-fn local_entity_paths(pickled: &PickledCcu) -> Result<HashMap<u32, Vec<String>>, ImportError> {
-    let mut paths = HashMap::new();
-    let mut path = Vec::new();
-    walk_entity_tree(
-        pickled,
-        pickled.root_entity,
-        true,
-        &[],
-        &[],
-        &mut path,
-        &mut |stamp, entity, is_root, namespace, type_chain| {
-            if !is_root && entity.module_type.is_type != IsType::Namespace {
-                let mut full = namespace.to_vec();
-                full.extend(type_chain.iter().cloned());
-                full.push(clr_name(entity));
-                paths.insert(stamp, full);
-            }
-            Ok(())
-        },
-    )?;
-    Ok(paths)
-}
-
-/// Whether a pickled type mentions a unit of measure: a measure expression
-/// (`float<m>` pickles its `m` as one), or a type variable that is a measure
-/// type parameter. `None` when a type variable's index does not resolve.
-fn type_mentions_measure(pickled: &PickledCcu, ty: &PickledType) -> Option<bool> {
-    let any = |tys: &[PickledType]| -> Option<bool> {
-        for t in tys {
-            if type_mentions_measure(pickled, t)? {
-                return Some(true);
-            }
-        }
-        Some(false)
-    };
-    match ty {
-        PickledType::Measure(_) => Some(true),
-        PickledType::Var { typar_index, .. } => pickled
-            .tables
-            .typars
-            .get(*typar_index as usize)
-            .map(|t| is_measure_typar(t.flags)),
-        PickledType::AppSimple { .. } => Some(false),
-        PickledType::Tuple { elems, .. } => any(elems),
-        PickledType::App { args, .. } | PickledType::UCase { args, .. } => any(args),
-        PickledType::Fun { domain, range, .. } => {
-            Some(type_mentions_measure(pickled, domain)? || type_mentions_measure(pickled, range)?)
-        }
-        PickledType::Forall { typars, body } => {
-            for &ti in typars {
-                if is_measure_typar(pickled.tables.typars.get(ti as usize)?.flags) {
-                    return Some(true);
-                }
-            }
-            type_mentions_measure(pickled, body)
-        }
-    }
 }
 
 /// The val's [`FsharpSourceRange`] from its pickled range pair — the
@@ -5814,7 +5848,7 @@ mod tests {
                     measure_typars: 0,
                     typar_constraints: Some(vec![]),
                     val_facts: crate::model::ValFacts::Read(Box::new(ReadValFacts {
-                        mentions_measure: false,
+                        measures: ValMeasures::NoDirectMeasure { heads: vec![] },
                         compiler_message: None,
                         requires_explicit_type_arguments: false,
                     })),
@@ -5837,7 +5871,7 @@ mod tests {
                     measure_typars: 0,
                     typar_constraints: Some(vec![]),
                     val_facts: crate::model::ValFacts::Read(Box::new(ReadValFacts {
-                        mentions_measure: false,
+                        measures: ValMeasures::NoDirectMeasure { heads: vec![] },
                         compiler_message: None,
                         requires_explicit_type_arguments: false,
                     })),
@@ -5859,7 +5893,7 @@ mod tests {
                     measure_typars: 0,
                     typar_constraints: Some(vec![]),
                     val_facts: crate::model::ValFacts::Read(Box::new(ReadValFacts {
-                        mentions_measure: false,
+                        measures: ValMeasures::NoDirectMeasure { heads: vec![] },
                         compiler_message: None,
                         requires_explicit_type_arguments: false,
                     })),
@@ -5881,7 +5915,7 @@ mod tests {
                     measure_typars: 0,
                     typar_constraints: Some(vec![]),
                     val_facts: crate::model::ValFacts::Read(Box::new(ReadValFacts {
-                        mentions_measure: false,
+                        measures: ValMeasures::NoDirectMeasure { heads: vec![] },
                         compiler_message: None,
                         requires_explicit_type_arguments: false,
                     })),
@@ -5903,7 +5937,7 @@ mod tests {
                     measure_typars: 0,
                     typar_constraints: Some(vec![]),
                     val_facts: crate::model::ValFacts::Read(Box::new(ReadValFacts {
-                        mentions_measure: false,
+                        measures: ValMeasures::NoDirectMeasure { heads: vec![] },
                         compiler_message: None,
                         requires_explicit_type_arguments: false,
                     })),

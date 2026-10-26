@@ -486,18 +486,13 @@ pub enum ValFacts {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReadValFacts {
-    /// Whether the val's F# type mentions a **unit of measure**, which IL
+    /// What the val's F# type says about **units of measure**, which IL
     /// erases: `val f: float<m> -> float<'u>` compiles to `double f(double)`,
     /// with no generic parameter and no trace of either measure. So the IL
-    /// signature is the F# type only when this is `false` — a question the IL
-    /// cannot answer, since a measure-generic method can be IL-non-generic.
-    ///
-    /// A measure reached only through a type abbreviation (`type Metres =
-    /// float<m>`) is not seen: the pickle names the abbreviation, not its
-    /// expansion. That is the same erasure every abbreviation undergoes on the
-    /// way to the canonical type FCS reports, which strips abbreviations and
-    /// measures alike.
-    pub mentions_measure: bool,
+    /// signature is the F# type only when no measure was erased — a question
+    /// the IL cannot answer, since a measure-generic method can be
+    /// IL-non-generic. See [`ValMeasures`].
+    pub measures: ValMeasures,
     /// The val's `[<CompilerMessage>]`, which lives in the pickle alone. F#
     /// checks it at every use of the val (`CheckFSharpAttributes`), and an
     /// error-level one fails the use outright, so FCS types the expression as
@@ -506,6 +501,28 @@ pub struct ReadValFacts {
     /// Whether the val carries `[<RequiresExplicitTypeArguments>]`: F# rejects
     /// a use that does not write its type arguments.
     pub requires_explicit_type_arguments: bool,
+}
+
+/// What a pickled val's F# type says about **units of measure**.
+///
+/// A measure may sit behind a **named type** the pickle mentions without
+/// expanding: `type Dist = float<m>` is an abbreviation, and a function over
+/// `Dist` pickles the name `Dist` only. FCS does not strip the measure with the
+/// abbreviation — it types such a function `float<m> -> …`. The abbreviation
+/// may live in another assembly, which this crate cannot see, so a reading that
+/// found no measure directly lists every named head it passed instead of
+/// deciding about them; a consumer holding the referenced assemblies clears or
+/// refutes each.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ValMeasures {
+    /// No unit of measure appears **directly** in the type: no measure
+    /// expression, no measure type parameter. Whether one hides behind a named
+    /// type is left to the consumer: `heads` is every named type the type
+    /// applies, deduplicated and sorted.
+    NoDirectMeasure { heads: Vec<NamedTypeHead> },
+    /// A unit of measure appears in the type, or the val is generic over one.
+    Measured,
 }
 
 /// One generic type parameter, declared either on a type or a method. The

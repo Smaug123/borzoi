@@ -211,13 +211,12 @@ fn chain_position(
 /// differential that grades the reading binds each name to a value and asks
 /// FCS for its type.
 pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(String, String)> {
-    let entity = env.entity(module);
     env.member_indices(module)
         .filter_map(|idx| {
             let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {
                 return None;
             };
-            let scheme = crate::function_ty::module_function_scheme(entity, m).ok()?;
+            let scheme = crate::function_ty::module_function_scheme(env, module, m).ok()?;
             let scheme = flexed(&scheme, m.generic_parameters.len() as u32);
             let mut order = Vec::new();
             first_appearance(&scheme, &mut order);
@@ -228,6 +227,39 @@ pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(St
             ))
         })
         .collect()
+}
+
+/// The type of an application of the function `name` of the F# module
+/// `module` to `args` arguments, as the signature reading
+/// (`function_ty::module_function_scheme`) gives it: the scheme with its first
+/// `args` curried domains peeled off, rendered as FCS renders a type. `None`
+/// when the reading declines, the function takes fewer arguments, or the
+/// result still mentions a type parameter (an application leaves it to be
+/// solved, so the reading alone commits no type for it).
+pub fn module_function_application_type(
+    env: &AssemblyEnv,
+    module: EntityHandle,
+    name: &str,
+    args: usize,
+) -> Option<String> {
+    let mut ty = env.member_indices(module).find_map(|idx| {
+        let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {
+            return None;
+        };
+        if env.member_display_name(module, idx) != name {
+            return None;
+        }
+        crate::function_ty::module_function_scheme(env, module, m).ok()
+    })?;
+    for _ in 0..args {
+        let crate::Ty::Fun { ret, .. } = ty else {
+            return None;
+        };
+        ty = *ret;
+    }
+    let mut params = Vec::new();
+    first_appearance(&ty, &mut params);
+    params.is_empty().then(|| ty.render())
 }
 
 /// The type a **value use** of a function of type `ty` has in FCS: each

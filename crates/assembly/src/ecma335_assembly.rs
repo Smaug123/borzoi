@@ -4978,7 +4978,9 @@ mod tests {
             "the val's reading is per position"
         );
         let measures = |name: &str| match &function_of(&shipped, name).val_facts {
-            crate::model::ValFacts::Read(facts) => facts.mentions_measure,
+            crate::model::ValFacts::Read(facts) => {
+                matches!(facts.measures, crate::model::ValMeasures::Measured)
+            }
             other => panic!("`{name}`'s val is read, not {other:?}"),
         };
         assert!(!measures("freeFn"));

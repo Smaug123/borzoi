@@ -11,6 +11,14 @@
 //! as a scheme over the method's type parameters; anything the facts cannot
 //! vouch for is a [`FunctionTyGap`], and the caller declines (D5).
 //!
+//! A measure need not appear in the val's pickled type to have been erased: a
+//! function over `type Dist = float<m>` pickles the name `Dist` only, compiles
+//! to a `float64` parameter, and FCS types it `float<m> -> …`. So the pickle
+//! lists every named type the val's type applies
+//! ([`ValMeasures::NoDirectMeasure`]), and each must be cleared through the
+//! env's abbreviation chase ([`AssemblyEnv::head_hides_no_measure`]) — in
+//! whichever assembly declares it — before the IL is trusted.
+//!
 //! A use F# rejects is a gap too, since FCS then types the use as its error
 //! type rather than by the signature: an `[<Obsolete(_, true)>]` (`^` types as
 //! `System.Object`), an error-level `[<CompilerMessage>]`, or a
@@ -25,10 +33,11 @@
 //! cannot carry F#'s `| null`.
 
 use borzoi_assembly::{
-    AssemblyIdentity, Augmentation, Entity, EntityKind, MethodLike, Nullability, ParamDefault,
-    Primitive, TypeRef, ValFacts,
+    AssemblyIdentity, Augmentation, EntityKind, MethodLike, Nullability, ParamDefault, Primitive,
+    TypeRef, ValFacts, ValMeasures,
 };
 
+use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::infer::constrained_parameter;
 use crate::member_ty::primitive_to_ty;
 use crate::ty::Ty;
@@ -60,7 +69,8 @@ pub(crate) enum FunctionTyGap {
     /// A type parameter is constrained — by IL, by an F#-only constraint, or by
     /// one the pickle was not read for.
     Constrained,
-    /// The F# type mentions a unit of measure the IL erased.
+    /// The F# type mentions a unit of measure the IL erased, or names a type
+    /// not proven free of one.
     Measures,
     /// The parameters do not map one-to-one onto curried argument groups: a
     /// tupled group, a group count the pickle did not supply, an optional or
@@ -70,8 +80,8 @@ pub(crate) enum FunctionTyGap {
     Type,
 }
 
-/// The F# type of `method`, a function of the F# module `module` — as a
-/// scheme: curried over its argument groups, with each of its type parameters
+/// The F# type of `method`, a function of the F# module `handle` in `env` — as
+/// a scheme: curried over its argument groups, with each of its type parameters
 /// as the [`Ty::Param`] of its index, ready for instantiation.
 ///
 /// The curried shape is read off the IL parameters only when there is exactly
@@ -84,9 +94,11 @@ pub(crate) enum FunctionTyGap {
 /// none holds two. A tupled group (`||>`'s `'T1 * 'T2`) fails the count and
 /// declines.
 pub(crate) fn module_function_scheme(
-    module: &Entity,
+    env: &AssemblyEnv,
+    handle: EntityHandle,
     method: &MethodLike,
 ) -> Result<Ty, FunctionTyGap> {
+    let module = env.entity(handle);
     if module.kind != EntityKind::Module
         || !method.is_static
         || method.is_constructor
@@ -111,8 +123,16 @@ pub(crate) fn module_function_scheme(
             {
                 return Err(FunctionTyGap::Rejected);
             }
-            if facts.mentions_measure {
-                return Err(FunctionTyGap::Measures);
+            match &facts.measures {
+                ValMeasures::Measured => return Err(FunctionTyGap::Measures),
+                ValMeasures::NoDirectMeasure { heads } => {
+                    if !heads
+                        .iter()
+                        .all(|head| env.head_hides_no_measure(handle, head))
+                    {
+                        return Err(FunctionTyGap::Measures);
+                    }
+                }
             }
         }
     }

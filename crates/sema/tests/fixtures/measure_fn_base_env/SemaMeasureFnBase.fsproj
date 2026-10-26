@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The other-assembly half of the module-function measure differential
+       (tests/all/module_function_measures_diff.rs): abbreviations that hide a
+       unit of measure, declared in an assembly *other* than the one whose
+       module functions mention them, so a function's pickle names the head
+       through a reference into this CCU and only the referenced assembly's
+       own pickle says what it abbreviates. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaMeasureFnBase</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Base.fs" />
+  </ItemGroup>
+
+</Project>

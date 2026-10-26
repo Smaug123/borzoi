@@ -2893,7 +2893,7 @@ impl<'a> Gen<'a> {
             return None;
         }
         let scheme = match self.env.member_at(parent, idx) {
-            Member::Method(m) => module_function_scheme(module, m),
+            Member::Method(m) => module_function_scheme(self.env, parent, m),
             _ => Err(FunctionTyGap::NotAFunction),
         };
         let scheme = match scheme {

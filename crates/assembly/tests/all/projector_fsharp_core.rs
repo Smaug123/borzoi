@@ -19,7 +19,7 @@
 use borzoi_assembly::pdb::{PortablePdb, embedded_portable_pdb};
 use borzoi_assembly::{
     Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, FSharpConstraints, Member,
-    MethodLike, ParamDefault, ReadValFacts, ValFacts,
+    MethodLike, NamedTypeHead, ParamDefault, ReadValFacts, ValFacts, ValMeasures,
 };
 
 use crate::common::ensure_fsharp_core_dll;
@@ -630,10 +630,25 @@ fn a_module_functions_constraints_and_measures_come_from_its_val() {
     assert_eq!(
         read(&pipe),
         ReadValFacts {
-            mentions_measure: false,
+            measures: ValMeasures::NoDirectMeasure { heads: vec![] },
             compiler_message: None,
             requires_explicit_type_arguments: false,
         }
+    );
+    // `not: bool -> bool` names FSharp.Core's own `bool` abbreviation, which a
+    // consumer must clear before trusting the IL; the reference back into
+    // FSharp.Core is a non-local one, naming its CCU.
+    assert_eq!(
+        read(&only(operators, "Not")).measures,
+        ValMeasures::NoDirectMeasure {
+            heads: vec![NamedTypeHead {
+                ccu: Some("FSharp.Core".to_owned()),
+                path: ["Microsoft", "FSharp", "Core", "bool"]
+                    .map(String::from)
+                    .to_vec(),
+            }],
+        },
+        "`not`'s one named head, listed once though both positions name it"
     );
 
     let equality = only(operators, "op_Equality");
@@ -672,12 +687,13 @@ fn a_module_functions_constraints_and_measures_come_from_its_val() {
         "`FloatWithMeasure` is generic only over a measure, which IL erases"
     );
     assert!(
-        read(&float_with_measure).mentions_measure,
+        read(&float_with_measure).measures == ValMeasures::Measured,
         "`float -> float<'Measure>` compiles to `double -> double`"
     );
 
-    // FSharp.Core's attributes are its own, so its vals name them through
-    // `Local` references: `nameof`'s compiler message is read through one.
+    // FSharp.Core's attributes are its own, and its vals name them through
+    // non-local references back into FSharp.Core: `nameof`'s compiler message
+    // is read through one.
     let name_of = read(&only(operators, "NameOf"));
     let message = name_of
         .compiler_message
@@ -711,7 +727,7 @@ fn fsharp_core_reads_val_type_facts_exactly_for_module_functions() {
                             e.name, m.name
                         );
                     };
-                    if !facts.mentions_measure {
+                    if matches!(facts.measures, ValMeasures::NoDirectMeasure { .. }) {
                         for p in &m.generic_parameters {
                             assert_ne!(
                                 p.fsharp_constraints,

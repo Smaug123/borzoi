@@ -179,7 +179,10 @@ argument groups (one IL parameter per group, else it declines — `||>`'s tupled
 group does), the F#-only constraints on its type parameters (any constraint
 declines: `+` is statically resolved, `=` needs `equality`, so instantiating
 either as a plain variable would claim a constraint is modelled that is not),
-and whether its type mentions a unit of measure (IL erases them) — plus the
+and whether its type mentions a unit of measure (IL erases them), directly or
+behind a named type — `type Dist = float<m>` pickles as the bare name, so every
+named head the type applies is cleared through the abbreviation chase, in
+whichever assembly declares it (`module_function_measures_diff`) — plus the
 val's own `[<CompilerMessage>]` and `[<RequiresExplicitTypeArguments>]`, which
 reject a use and live in the pickle alone (`MethodLike::val_facts`). The
 bridge carries only primitives, the function's type parameters, F# function
