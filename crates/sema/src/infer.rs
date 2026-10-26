@@ -772,9 +772,9 @@ struct ArgCheck {
     arg: TyVid,
     dom: TyVid,
     r: TyVid,
-    /// Where the argument ends in the source: by this point FCS, which checks
-    /// in source order, has applied the relation.
-    end: TextSize,
+    /// The argument's source span. FCS, which checks in source order, applies
+    /// the relation while it checks the argument, so by its end at the latest.
+    span: TextRange,
 }
 
 /// Which kind of member a suspended [`Constraint::HasMember`] resolves to — a
@@ -1158,7 +1158,7 @@ struct Gen<'a> {
     /// ([`Self::infer_expr`]). FCS applies each one, as an equality whenever
     /// that is consistent with what it knows — which is what
     /// [`Self::verified`] tests them for.
-    dropped: Vec<(TyVid, TyVid)>,
+    dropped: Vec<(TyVid, TyVid, TextRange)>,
     /// **Per binding**: how many equalities failed to unify. A failed one is a
     /// relation FCS rejects, in an order the solver does not keep.
     eq_failures: usize,
@@ -1173,10 +1173,19 @@ struct Gen<'a> {
     /// Each annotated parameter's annotation: what FCS knows of the parameter
     /// at every use in its body.
     param_annotations: HashMap<DefId, Ty>,
-    /// **Per binding**: the variable of each binder this binding refers to
-    /// that is not its own — an earlier binder, whose type FCS fixed at its own
-    /// binding ([`Self::arg_check_binds_only_current_vars`]).
-    env_uses: Vec<TyVid>,
+    /// **Per binding**: the variables FCS constrains through a relation
+    /// inference does not model, so that what FCS makes of them is unknown
+    /// here ([`Self::arg_check_binds_only_current_vars`], [`Self::verified`]):
+    /// each binder this binding refers to that is not its own — an earlier
+    /// binder, whose type FCS fixed at its own binding — and each argument of
+    /// a method call, which FCS relates to a parameter type it reads off the
+    /// method it resolves; and each member access's result, until its wake
+    /// binds it to the member's type.
+    ///
+    /// A method argument's entry carries the argument's span: a relation
+    /// inside the argument is one FCS checks before it relates the argument to
+    /// the parameter, so it may bind the argument's variables.
+    opaque: Vec<(TyVid, Option<TextRange>)>,
     /// The undo log of the speculative solve in progress ([`Self::solve`]).
     trial: Option<TrialLog>,
 }
@@ -1251,7 +1260,7 @@ impl<'a> Gen<'a> {
             bounded_flex: Vec::new(),
             undecided_uses: Vec::new(),
             param_annotations: HashMap::new(),
-            env_uses: Vec::new(),
+            opaque: Vec::new(),
             trial: None,
         }
     }
@@ -1317,7 +1326,7 @@ impl<'a> Gen<'a> {
         self.eq_failures = 0;
         self.bounded_flex.clear();
         self.undecided_uses.clear();
-        self.env_uses.clear();
+        self.opaque.clear();
         mark
     }
 
@@ -1366,6 +1375,9 @@ impl<'a> Gen<'a> {
         // ([`Self::gen_member_access`]) and the method call ([`Self::infer_method_call`]).
         self.poison.push(recv);
         self.poison.push(result);
+        // Until the wake binds it to the member's type, the result is one FCS
+        // knows and inference does not; once bound it has no variable left.
+        self.opaque.push((result, None));
     }
 
     /// Generate a **data-member** access chain over a receiver variable `recv`, one
@@ -1853,7 +1865,7 @@ impl<'a> Gen<'a> {
                     arg: bv,
                     dom: r,
                     r,
-                    end: node_span(rhs.syntax()).end(),
+                    span: node_span(rhs.syntax()),
                 }));
             }
         } else {
@@ -2292,7 +2304,7 @@ impl<'a> Gen<'a> {
             self.poison.push(exp);
             if let Some(r) = result {
                 self.poison.push(r);
-                self.dropped.push((r, exp));
+                self.dropped.push((r, exp, node_span(e.syntax())));
             }
         }
         result
@@ -2904,7 +2916,7 @@ impl<'a> Gen<'a> {
                     arg: arg_var,
                     dom: d,
                     r,
-                    end: node_span(arg.syntax()).end(),
+                    span: node_span(arg.syntax()),
                 }));
             }
             None => {
@@ -3155,7 +3167,7 @@ impl<'a> Gen<'a> {
         let current_param = self.is_current_param(def);
         if !current_param {
             self.poison.push(dv);
-            self.env_uses.push(dv);
+            self.opaque.push((dv, None));
         }
         let known = match self.param_annotations.get(&def) {
             Some(ann) => Some(ann.clone()),
@@ -3485,13 +3497,18 @@ impl<'a> Gen<'a> {
     /// [`Ty`] for [`AssemblyEnv::may_apply`] / [`AssemblyEnv::must_apply`].
     fn walk_arg_element(&mut self, el: &Expr) -> TyVid {
         let expected = self.table.fresh();
-        match self.infer_expr(el, Some(expected)) {
+        let v = match self.infer_expr(el, Some(expected)) {
             Some(v) => v,
             None => {
                 self.mark_incomplete_propagated();
                 self.table.fresh()
             }
-        }
+        };
+        // The relation to the parameter is not the stand-in's but unknown, so
+        // it is opaque rather than dropped.
+        self.dropped.retain(|&(_, e, _)| e != expected);
+        self.opaque.push((v, Some(node_span(el.syntax()))));
+        v
     }
 
     /// Resolve a **method-call callee** (a member access in function position) into
@@ -3680,7 +3697,7 @@ impl<'a> Gen<'a> {
         let dv = self.def_var(def);
         if !self.is_current_param(def) {
             self.poison.push(dv);
-            self.env_uses.push(dv);
+            self.opaque.push((dv, None));
         }
         Some(dv)
     }
@@ -4276,35 +4293,21 @@ impl<'a> Gen<'a> {
             return false;
         }
         let env = self.env;
-        let relations: Vec<(TyVid, TyVid)> = outcome
+        let relations: Vec<(TyVid, TyVid, TextRange)> = outcome
             .args
             .iter()
-            .map(|ac| (ac.arg, ac.dom))
+            .map(|ac| (ac.arg, ac.dom, ac.span))
             .chain(self.dropped.iter().copied())
             .collect();
-        // A relation touching an earlier binder's variable — one older than
-        // this binding, or in the structure an application here gave one —
-        // relates something FCS knows and inference does not, so its
-        // consistency here proves nothing.
-        let mut owned: HashSet<TyVid> = HashSet::new();
-        for u in self.env_uses.clone() {
-            let ty = self.table.resolve(&Ty::Var(u));
-            collect_var_roots(&ty, &mut owned);
-        }
-        for &(a, b) in &relations {
-            let mut roots = HashSet::new();
-            for v in [a, b] {
-                let ty = self.table.resolve(&Ty::Var(v));
-                collect_var_roots(&ty, &mut roots);
-            }
-            let unknown = roots.into_iter().any(|v| {
-                self.table.any_older_unioned(v, self.cur_mark)
-                    || owned.iter().any(|&o| self.table.unioned(o, v))
-            });
-            if unknown {
+        // A relation touching what FCS knows and inference does not proves
+        // nothing by being consistent here.
+        for &(a, b, span) in &relations {
+            if self.touches_opaque(a, b, span) {
                 return false;
             }
         }
+        let relations: Vec<(TyVid, TyVid)> =
+            relations.into_iter().map(|(a, b, _)| (a, b)).collect();
         let bounded = &self.bounded_flex;
         let undecided = &self.undecided_uses;
         let mut consistent = false;
@@ -4479,7 +4482,7 @@ impl<'a> Gen<'a> {
                         outcome.failed += 1;
                     } else {
                         outcome.discharged += 1;
-                        latest_discharge = latest_discharge.max(Some(ac.end));
+                        latest_discharge = latest_discharge.max(Some(ac.span.end()));
                     }
                     woke = true;
                 } else {
@@ -4532,21 +4535,36 @@ impl<'a> Gen<'a> {
     /// binder's, though created here, and grounding `r` retypes it as surely —
     /// `oldf x |> inc` would make `oldf` return `int` where FCS has it return
     /// whatever it does. So no variable the resolution of an environment use
-    /// in this binding mentions ([`Self::env_uses`]) may be bound either.
+    /// in this binding mentions may be bound either — nor one in a method
+    /// call's argument, which FCS fixes against the method's parameter
+    /// ([`Self::opaque`]).
     fn arg_check_binds_only_current_vars(&mut self, ac: ArgCheck) -> bool {
+        !self.touches_opaque(ac.arg, ac.dom, ac.span)
+    }
+
+    /// Whether relating `a` to `b`, at `span` in the source, could bind a
+    /// variable whose type FCS decides by something inference does not see:
+    /// one older than this binding, or one an [`Self::opaque`] entry's
+    /// resolution mentions — unless that entry is a method argument whose
+    /// span holds `span`, a relation FCS checks before it relates the argument
+    /// to the method's parameter.
+    fn touches_opaque(&mut self, a: TyVid, b: TyVid, span: TextRange) -> bool {
         let mut roots: HashSet<TyVid> = HashSet::new();
-        let arg = self.table.resolve(&Ty::Var(ac.arg));
-        collect_var_roots(&arg, &mut roots);
-        let dom = self.table.resolve(&Ty::Var(ac.dom));
-        collect_var_roots(&dom, &mut roots);
-        let mut owned: HashSet<TyVid> = HashSet::new();
-        for u in self.env_uses.clone() {
-            let ty = self.table.resolve(&Ty::Var(u));
-            collect_var_roots(&ty, &mut owned);
+        for v in [a, b] {
+            let ty = self.table.resolve(&Ty::Var(v));
+            collect_var_roots(&ty, &mut roots);
         }
-        roots.into_iter().all(|v| {
-            !self.table.any_older_unioned(v, self.cur_mark)
-                && !owned.iter().any(|&o| self.table.unioned(o, v))
+        let mut opaque: HashSet<TyVid> = HashSet::new();
+        for (u, within) in self.opaque.clone() {
+            if within.is_some_and(|arg| arg.contains_range(span)) {
+                continue;
+            }
+            let ty = self.table.resolve(&Ty::Var(u));
+            collect_var_roots(&ty, &mut opaque);
+        }
+        roots.into_iter().any(|v| {
+            self.table.any_older_unioned(v, self.cur_mark)
+                || opaque.iter().any(|&o| self.table.unioned(o, v))
         })
     }
 

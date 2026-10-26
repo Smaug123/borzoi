@@ -1245,11 +1245,14 @@ fn order_use(kind: usize, f: &str, lit: &str) -> String {
         // at this point in the source.
         4 => "p.Length".to_string(),
         // A branch relation inference drops, which fixes `p` in FCS.
-        _ => format!("(if true then {lit} else p)"),
+        5 => format!("(if true then {lit} else p)"),
+        // A method argument, whose relation to the parameter inference does
+        // not model.
+        _ => "System.String.IsNullOrEmpty(p)".to_string(),
     }
 }
 
-const ORDER_USES: usize = 6;
+const ORDER_USES: usize = 7;
 
 /// FCS checks a function body in source order: the first use of a
 /// parameter that fixes its type wins, a later conflicting one is reported
@@ -1357,6 +1360,23 @@ fn a_late_check_that_fails_undoes_the_binding_checks() {
     );
 }
 
+/// A member access inference does not resolve — on a generic receiver, or an
+/// array's intrinsic `Length` — has the member's type in FCS, a relation
+/// inference does not hold. An argument check that fixes its result instead
+/// fixes it to whatever the check says, which FCS rejects when the two differ.
+#[test]
+fn a_check_never_fixes_an_unresolved_members_result() {
+    let src = "module Members\n\
+               let incs (t: string) = 2\n\
+               let inc (t: int) = 2\n\
+               let a (xs: System.Collections.Generic.List<int>) = xs.Count |> incs\n\
+               let b (arr: int[]) = arr.Length |> incs\n\
+               let c (arr: int[]) = (arr.Length |> incs, arr.Length)\n\
+               let d (xs: System.Collections.Generic.List<int>) = (xs.Count |> inc, xs.Count)\n";
+    let c = check("members", src, &[], false).expect("FCS checks the file");
+    eprintln!("members: {c:?}");
+}
+
 /// SplitMix64: a deterministic stream, so a failing seed reproduces exactly.
 struct Rng(u64);
 
@@ -1410,21 +1430,34 @@ const ARG_CHECK_FNS: [&str; 14] = [
     "(idf << incs)",
 ];
 
-/// An expression over the parameters `ai: int`, `ss: string`, `p`, `q` and
-/// `h`, built to `depth`, of no particular type: the program it lands in may
+/// An expression over the parameters `ai: int`, `ss: string`, `xs: List<int>`,
+/// `arr: int[]`, `p`, `q` and `h`, built to `depth`, of no particular type: the program it lands in may
 /// well be one FCS rejects, which is the point.
 fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
     if depth == 0 || rng.below(5) == 0 {
         return rng
             .pick(&[
-                "p", "q", "ai", "ss", "1", "\"s\"", "true", "h", "(ai 1)", "(p q)",
+                "p",
+                "q",
+                "ai",
+                "ss",
+                "1",
+                "\"s\"",
+                "true",
+                "h",
+                "(ai 1)",
+                "(p q)",
+                // Members inference does not resolve: on a generic receiver,
+                // and an array's intrinsic one.
+                "xs.Count",
+                "arr.Length",
             ])
             .to_string();
     }
     let f = rng.pick(&ARG_CHECK_FNS);
     let g = rng.pick(&ARG_CHECK_FNS);
     let x = arg_check_expr(rng, depth - 1);
-    match rng.below(12) {
+    match rng.below(14) {
         0 => format!("({f} {x})"),
         1 => format!("({x} |> {f})"),
         2 => format!("({f} <| {x})"),
@@ -1447,6 +1480,8 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
             let y = arg_check_expr(rng, depth - 1);
             format!("(let v = {x} in (v, {y}))")
         }
+        12 => format!("System.String.IsNullOrEmpty({x})"),
+        13 => format!("\"s\".StartsWith({x})"),
         _ => format!("({f} >> {g})"),
     }
 }
@@ -1469,7 +1504,10 @@ fn generated_argument_checks_commit_only_what_fcs_kept() {
         let mut src = String::from(ARG_CHECK_HEADER);
         for i in 0..12 {
             let body = arg_check_expr(&mut rng, 3);
-            src.push_str(&format!("let g{i} (ai: int) (ss: string) p q h = {body}\n"));
+            src.push_str(&format!(
+                "let g{i} (ai: int) (ss: string) (xs: System.Collections.Generic.List<int>) \
+                 (arr: int[]) p q h = {body}\n"
+            ));
         }
         if let Some(c) = check("arg_checks", &src, &[], false) {
             graded += 1;

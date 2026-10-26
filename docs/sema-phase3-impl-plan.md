@@ -241,13 +241,17 @@ snapshot, and keeps the result only when `Gen::verified` — no equality and no
 fired check failed; the relations it did not apply (pending checks and the
 check-mode relations the walk dropped) unify with it, all together; no member
 was resolved through a check that ends after it in the source; none of them
-touches an earlier binder's variable, which FCS knows and inference does not;
-and the loosening holds. Then every relation is consistent as an equality, so
+touches a variable FCS constrains through a relation inference does not hold
+(`Gen::opaque`: an earlier binder's, a method call's argument outside it, a
+member access's result until its wake binds it); and the loosening holds. Then every relation is consistent as an equality, so
 FCS applies each one as an equality, in whatever order, and agrees. Otherwise
 the snapshot is rolled back and no check fires: each is undischarged and
-poisoned, which is silence. A check also may not bind a variable an
-application gave an earlier binder's open variable (`oldf x` makes it `d -> r`),
-which retypes the earlier binder (`Gen::arg_check_binds_only_current_vars`).
+poisoned, which is silence. No check fires that would bind such a variable
+either (`Gen::arg_check_binds_only_current_vars`): an application gives an
+earlier binder's open variable a structure (`oldf x` makes it `d -> r`) whose
+grounding retypes the earlier binder, and `(System.String.IsNullOrEmpty(p),
+p |> inc, p)` or `arr.Length |> incs` would fix `p` or the member's result to
+what the pipe says, where FCS has fixed it from the method or the member.
 
 `infer_operators_diff` grades it: a grid of every function kind (sealed,
 generic, loosened to `obj` or to a bound, a lambda, partially applied,
@@ -256,7 +260,7 @@ composition as a value) × position, with a per-row obligation that the 185
 well-typed rows over a function inference must type commit their
 application; the ordered-pair grid; and a generator of programs mixing every
 way an argument is related to a parameter, mostly rejected by FCS (800 files,
-21 554 commits, 9 050 FCS errors, no disagreement). Each part of the
+17 343 commits, 10 343 FCS errors, no disagreement). Each part of the
 verification was checked by deleting it, and some test fails without it,
 except two kept as defence in depth: the failed-equality condition (no
 generated or hand-made program reaches a failed equality that matters) and
