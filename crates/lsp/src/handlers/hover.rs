@@ -93,10 +93,6 @@ pub fn handle(state: &mut State, params: HoverParams) -> Option<Hover> {
 enum ProjectClassify {
     /// The file isn't in an evaluated project; try single-file classification.
     NotInProject,
-    /// The file is a signature Compile item of an evaluated project, which is
-    /// resolved on its own; classify it single-file, without blaming the
-    /// project.
-    Signature,
     /// The file is in an evaluated project; this is the authoritative answer
     /// (`Some` explanation, or `None` = nothing name-like here).
     InProject(Option<Hover>),
@@ -113,12 +109,7 @@ fn definition_unavailable_hover(
 ) -> Option<Hover> {
     match project_unavailable(state, uri, text, byte) {
         ProjectClassify::InProject(hover) => hover,
-        ProjectClassify::NotInProject => {
-            single_file_unavailable(state, uri, text, byte, Analysis::SingleFile)
-        }
-        ProjectClassify::Signature => {
-            single_file_unavailable(state, uri, text, byte, Analysis::Signature)
-        }
+        ProjectClassify::NotInProject => single_file_unavailable(state, uri, text, byte),
     }
 }
 
@@ -164,10 +155,18 @@ fn project_unavailable(
         return ProjectClassify::NotInProject;
     };
     let file = resolved.file(idx);
-    // A `.fsi` Compile slot is inert in Stage 1 (no resolutions, no impl
-    // tree); the caller classifies a signature buffer single-file.
+    // A `.fsi` Compile slot has no resolutions. Classify its names against
+    // the signature tree: the implementation grammar treats `val` declarations
+    // as debris and cannot preserve their identifiers for the explanation.
     let Some(impl_file) = parses.files[idx].file.as_impl() else {
-        return ProjectClassify::Signature;
+        return ProjectClassify::InProject(unavailable_hover(
+            file,
+            None,
+            parses.files[idx].file.syntax(),
+            text,
+            byte,
+            Analysis::Signature,
+        ));
     };
     // The explanation must be about the verdict the LSP would *act* on, and
     // go-to-definition acts on inference's member resolution where the resolver
@@ -192,16 +191,14 @@ fn project_unavailable(
     ))
 }
 
-/// Single-file classification, for an orphan / unevaluated-project buffer or
-/// a signature file — mirrors [`single_file_hover`]'s parse + resolve, then
-/// classifies under `analysis`, which says why cross-file and assembly symbols
-/// are out of reach.
+/// Single-file classification for an orphan / unevaluated-project buffer —
+/// mirrors [`single_file_hover`]'s parse + resolve, then classifies without
+/// project context.
 fn single_file_unavailable(
     state: &mut State,
     uri: &lsp_types::Uri,
     text: &str,
     byte: usize,
-    analysis: Analysis,
 ) -> Option<Hover> {
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
@@ -216,7 +213,14 @@ fn single_file_unavailable(
     );
     // No project, so no assembly env worth inferring against: the member
     // side-table would be empty anyway.
-    unavailable_hover(&resolved, None, file.syntax(), text, byte, analysis)
+    unavailable_hover(
+        &resolved,
+        None,
+        file.syntax(),
+        text,
+        byte,
+        Analysis::SingleFile,
+    )
 }
 
 /// Turn a [`classify`] verdict into an explanatory hover, anchored to the
