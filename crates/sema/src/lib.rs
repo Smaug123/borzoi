@@ -38,6 +38,7 @@ mod assembly_env;
 mod binders;
 mod def;
 mod diagnostics;
+mod function_ty;
 mod infer;
 mod member_ty;
 mod overload;
@@ -57,7 +58,7 @@ pub use assembly_env::{
 pub use binders::{BinderRole, PatternName, pattern_names};
 pub use def::{Def, DefId, DefKind, SemanticClass};
 pub use diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
-pub use infer::{Incomplete, InferredFile, infer_file};
+pub use infer::{Incomplete, InferredFile, OperatorGap, infer_file};
 pub use overload::{ArityWindow, arity_window};
 pub use qnof::{QualifiedNameOfFile, qualified_names};
 pub use recovery::SyntaxRecovery;

@@ -203,6 +203,109 @@ fn chain_position(
     (!env.is_module(chain[position])).then_some(position)
 }
 
+/// Every function of the F# module `module` that inference reads a type off
+/// (`function_ty::module_function_scheme`), by its F# source name, with that
+/// type rendered as FCS's canonical renderer renders the generalised type of a
+/// value use of it (`flexed`, with type parameters renumbered by first
+/// appearance). The
+/// differential that grades the reading binds each name to a value and asks
+/// FCS for its type.
+pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(String, String)> {
+    let entity = env.entity(module);
+    env.member_indices(module)
+        .filter_map(|idx| {
+            let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {
+                return None;
+            };
+            let scheme = crate::function_ty::module_function_scheme(entity, m).ok()?;
+            let scheme = flexed(&scheme, m.generic_parameters.len() as u32);
+            let mut order = Vec::new();
+            first_appearance(&scheme, &mut order);
+            let renamed = renumber(&scheme, &order);
+            Some((
+                env.member_display_name(module, idx).to_string(),
+                renamed.render(),
+            ))
+        })
+        .collect()
+}
+
+/// The type a **value use** of a function of type `ty` has in FCS: each
+/// curried domain that is not sealed becomes a fresh type parameter, which F#
+/// constrains to coerce to it (`MakeApplicableExprWithFlex`), so `unbox` bound
+/// as a value is `'a -> 'b`, not `obj -> 'b`. `System.Object` is the one
+/// unsealed type [`crate::function_ty::module_function_scheme`] carries; `next`
+/// is the first unused parameter index.
+fn flexed(ty: &crate::Ty, mut next: u32) -> crate::Ty {
+    use crate::Ty;
+    match ty {
+        Ty::Fun { arg, ret } => {
+            let arg = match &**arg {
+                Ty::Named { path, args } if args.is_empty() && path == &["System", "Object"] => {
+                    next += 1;
+                    Ty::Param(next - 1)
+                }
+                other => other.clone(),
+            };
+            Ty::Fun {
+                arg: Box::new(arg),
+                ret: Box::new(flexed(ret, next)),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+/// The [`Ty::Param`](crate::Ty::Param) indices of `ty` in first-appearance
+/// order, argument before return.
+fn first_appearance(ty: &crate::Ty, order: &mut Vec<u32>) {
+    use crate::Ty;
+    match ty {
+        Ty::Param(i) => {
+            if !order.contains(i) {
+                order.push(*i);
+            }
+        }
+        Ty::Var(_) => {}
+        Ty::Named { args, .. } => args.iter().for_each(|a| first_appearance(a, order)),
+        Ty::Array { elem, .. } => first_appearance(elem, order),
+        Ty::Tuple(elems) => elems.iter().for_each(|e| first_appearance(e, order)),
+        Ty::Fun { arg, ret } => {
+            first_appearance(arg, order);
+            first_appearance(ret, order);
+        }
+    }
+}
+
+/// `ty` with each [`Ty::Param`](crate::Ty::Param) renamed to its position in
+/// `order`.
+fn renumber(ty: &crate::Ty, order: &[u32]) -> crate::Ty {
+    use crate::Ty;
+    match ty {
+        Ty::Param(i) => Ty::Param(
+            order
+                .iter()
+                .position(|j| j == i)
+                .and_then(|p| u32::try_from(p).ok())
+                .unwrap_or(*i),
+        ),
+        Ty::Var(v) => Ty::Var(*v),
+        Ty::Named { path, args } => Ty::Named {
+            path: path.clone(),
+            args: args.iter().map(|a| renumber(a, order)).collect(),
+        },
+        Ty::Array { elem, rank } => Ty::Array {
+            elem: Box::new(renumber(elem, order)),
+            rank: *rank,
+        },
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| renumber(e, order)).collect()),
+        Ty::Fun { arg, ret } => Ty::Fun {
+            arg: Box::new(renumber(arg, order)),
+            ret: Box::new(renumber(ret, order)),
+        },
+    }
+}
+
 #[cfg(test)]
 mod logical_full_name_tests {
     use super::logical_full_name;

@@ -1125,6 +1125,16 @@ impl Gen<'_> {
                 let b = self.expr(T::Str, depth - 1);
                 format!("({a}, {b})")
             }
+            // FSharp.Core's pipes and composition, which inference types as
+            // applications of their signatures.
+            9 => {
+                let a = self.expr(t, depth - 1);
+                match self.rng.below(3) {
+                    0 => format!("({a} |> idf)"),
+                    1 => format!("(idf <| {a})"),
+                    _ => format!("((idf >> idf) {a})"),
+                }
+            }
             _ => self.expr(t, depth - 1),
         }
     }

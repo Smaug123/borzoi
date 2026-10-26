@@ -1302,6 +1302,7 @@ fn interface_receiver_method_call_defers() {
         .clone();
     let method = |name: &str, param: TypeRef, ret: TypeRef| {
         Member::Method(MethodLike {
+            val_facts: borzoi_assembly::ValFacts::NotFSharp,
             definition_range: None,
             name: name.to_string(),
             access: Access::Public,
@@ -1444,6 +1445,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         nullability: Nullability::Oblivious,
     };
     let m = Member::Method(MethodLike {
+        val_facts: borzoi_assembly::ValFacts::NotFSharp,
         definition_range: None,
         name: "M".to_string(),
         access: Access::Public,

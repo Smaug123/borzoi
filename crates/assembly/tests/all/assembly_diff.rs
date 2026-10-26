@@ -853,6 +853,7 @@ fn diff_assembly_minilib_fs_ext() {
 #[test]
 fn sort_tiebreaks_on_generic_arity() {
     let non_generic = MethodLike {
+        val_facts: borzoi_assembly::ValFacts::NotFSharp,
         definition_range: None,
         name: "M".into(),
         access: Access::Public,
@@ -1157,6 +1158,7 @@ fn fixture_system_object() -> Vec<Entity> {
         member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         members: vec![
             Member::Method(MethodLike {
+                val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: ".ctor".into(),
                 access: Access::Public,
@@ -1190,6 +1192,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 xml_doc_sig: None,
             }),
             Member::Method(MethodLike {
+                val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "Equals".into(),
                 access: Access::Public,
@@ -1223,6 +1226,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 xml_doc_sig: None,
             }),
             Member::Method(MethodLike {
+                val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "GetHashCode".into(),
                 access: Access::Public,
@@ -1256,6 +1260,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 xml_doc_sig: None,
             }),
             Member::Method(MethodLike {
+                val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "ReferenceEquals".into(),
                 access: Access::Public,
@@ -1395,6 +1400,7 @@ fn fixture_my_lib() -> Vec<Entity> {
                 custom_attrs: vec![],
             }),
             Member::Method(MethodLike {
+                val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "Increment".into(),
                 access: Access::Public,

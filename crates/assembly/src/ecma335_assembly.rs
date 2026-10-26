@@ -16,10 +16,7 @@ use crate::model::{
     Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
     CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
     FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
-    Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
-    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
-    UnclassifiedMethodImpl, UnionCases, Variance, Version,
+    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, ValFacts, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -369,12 +366,15 @@ impl Ecma335Assembly {
                         if let Member::Method(m) = member {
                             m.arg_group_count = None;
                             // A method typar carries F# constraints too
-                            // (`let f<'T when 'T : comparison>`), and no overlay
-                            // reads a val's constraint list, so this one is
-                            // blanked with nothing to restore it.
+                            // (`let f<'T when 'T : comparison>`), and its F# type
+                            // may mention a unit of measure the IL erased. The
+                            // module-member merge re-reads both for each module
+                            // function it claims; a member of a type keeps the
+                            // blank.
                             for typar in &mut m.generic_parameters {
                                 typar.fsharp_constraints = FSharpConstraints::Unknowable;
                             }
+                            m.val_facts = ValFacts::Unknowable;
                         }
                     }
                     for typar in &mut entity.generic_parameters {
@@ -2574,6 +2574,11 @@ impl Ecma335Assembly {
             // `project_fsharp_members` below.
             augmentation: Augmentation::No,
             generic_parameters,
+            // A non-F# assembly's method has no F# `val` behind its IL.
+            // `enumerate_with_skips_impl` blanks an F# assembly's methods to
+            // `Unknowable`, and the pickle merge reads each module function it
+            // claims.
+            val_facts: ValFacts::NotFSharp,
             obsolete,
             experimental: self.detect_experimental(&m.attributes)?,
             sets_required_members: self.has_sets_required_members(&m.attributes)?,
@@ -4935,35 +4940,67 @@ mod tests {
             "…and its unconstrained twin's"
         );
 
-        // A generic **method**'s typar has no overlay to restore it, so its
-        // blanked reading is visible even with the pickle readable. This is the
-        // only place the method half of the blanking is observable at all.
-        let module_entity = shipped
-            .iter()
-            .find(|e| e.name == "MiniLibFsTypars")
-            .expect("the fixture's module projects");
-        let method = module_entity
-            .members
-            .iter()
-            .find_map(|m| match m {
-                Member::Method(m) if m.name == "constrainedFn" => Some(m),
-                _ => None,
-            })
-            .expect("the fixture declares a generic function");
-        assert_eq!(
-            method
-                .generic_parameters
+        // A generic **module function**'s typars are read off its val, per
+        // position, beside an unconstrained twin with identical IL; and its
+        // type's units of measure, which IL erases outright.
+        fn function_of<'a>(entities: &'a [Entity], name: &str) -> &'a crate::model::MethodLike {
+            entities
+                .iter()
+                .find(|e| e.name == "MiniLibFsTypars")
+                .expect("the fixture's module projects")
+                .members
+                .iter()
+                .find_map(|m| match m {
+                    Member::Method(m) if m.name == name => Some(m),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the fixture declares `{name}`"))
+        }
+        fn readings(m: &crate::model::MethodLike) -> Vec<FSharpConstraints> {
+            m.generic_parameters
                 .iter()
                 .map(|p| p.fsharp_constraints)
-                .collect::<Vec<_>>(),
-            vec![FSharpConstraints::Unknowable],
-            "a val's constraint list is never read, so its typars claim nothing"
+                .collect()
+        }
+        assert_eq!(
+            readings(function_of(&shipped, "constrainedFn")),
+            vec![FSharpConstraints::Present],
+            "the val's type carries `comparison`"
+        );
+        assert_eq!(
+            readings(function_of(&shipped, "freeFn")),
+            vec![FSharpConstraints::Free],
+            "…and its twin's carries nothing"
+        );
+        assert_eq!(
+            readings(function_of(&shipped, "keyedFn")),
+            vec![FSharpConstraints::Present, FSharpConstraints::Free],
+            "the val's reading is per position"
+        );
+        let measures = |name: &str| match &function_of(&shipped, name).val_facts {
+            crate::model::ValFacts::Read(facts) => facts.mentions_measure,
+            other => panic!("`{name}`'s val is read, not {other:?}"),
+        };
+        assert!(!measures("freeFn"));
+        assert!(
+            measures("metres"),
+            "`float<m> -> float<m>` compiles to `double -> double`"
         );
 
         view.identity.name = "Renamed".to_string();
         let (renamed, _) = view
             .enumerate_with_skips_impl()
             .expect("a pickle-less F# assembly still projects its IL");
+        assert_eq!(
+            readings(function_of(&renamed, "freeFn")),
+            vec![FSharpConstraints::Unknowable],
+            "with the pickle unfindable a function's typars are unread"
+        );
+        assert_eq!(
+            function_of(&renamed, "freeFn").val_facts,
+            crate::model::ValFacts::Unknowable,
+            "…and so is the rest of its val"
+        );
         assert_eq!(
             typars_of(&renamed, "Constrained"),
             vec![FSharpConstraints::Unknowable],

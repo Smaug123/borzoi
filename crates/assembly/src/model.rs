@@ -458,6 +458,56 @@ pub struct NamedTypeHead {
     pub path: Vec<String>,
 }
 
+/// What an F# method's `val` in the signature pickle says about a **use** of
+/// it that its IL does not: the facts a consumer needs before reading the IL
+/// signature as the method's F# type, or before trusting that F# accepts a use.
+///
+/// Three readings, kept apart for the reason [`FSharpConstraints`] keeps its
+/// own: "there is nothing to read" and "the pickle was read" license
+/// conclusions, "we did not read it" licenses none.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ValFacts {
+    /// The declaring assembly is not F#: its IL is the whole of the method, and
+    /// F# consults nothing else at a use (`CheckILAttributes` reads only what
+    /// the IL row carries).
+    NotFSharp,
+    /// The host signature pickle described the method's val. Boxed: the facts
+    /// are consulted only when a consumer reads a signature as an F# type, and
+    /// inline they would tip [`Member`] over clippy's large-variant threshold.
+    Read(Box<ReadValFacts>),
+    /// Nothing may be concluded: an F#-authored method the pickle did not
+    /// describe (a member of a type, an augmentation, a val the merge could not
+    /// claim, an undecodable pickle), or a claim group whose vals disagree.
+    Unknowable,
+}
+
+/// The facts a pickled val carries for its method — see [`ValFacts`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ReadValFacts {
+    /// Whether the val's F# type mentions a **unit of measure**, which IL
+    /// erases: `val f: float<m> -> float<'u>` compiles to `double f(double)`,
+    /// with no generic parameter and no trace of either measure. So the IL
+    /// signature is the F# type only when this is `false` — a question the IL
+    /// cannot answer, since a measure-generic method can be IL-non-generic.
+    ///
+    /// A measure reached only through a type abbreviation (`type Metres =
+    /// float<m>`) is not seen: the pickle names the abbreviation, not its
+    /// expansion. That is the same erasure every abbreviation undergoes on the
+    /// way to the canonical type FCS reports, which strips abbreviations and
+    /// measures alike.
+    pub mentions_measure: bool,
+    /// The val's `[<CompilerMessage>]`, which lives in the pickle alone. F#
+    /// checks it at every use of the val (`CheckFSharpAttributes`), and an
+    /// error-level one fails the use outright, so FCS types the expression as
+    /// its error type rather than by the val's signature.
+    pub compiler_message: Option<CompilerMessage>,
+    /// Whether the val carries `[<RequiresExplicitTypeArguments>]`: F# rejects
+    /// a use that does not write its type arguments.
+    pub requires_explicit_type_arguments: bool,
+}
+
 /// One generic type parameter, declared either on a type or a method. The
 /// index of the parameter in its parent's `generic_parameters` list is its
 /// ECMA-335 typar number — i.e. the value that appears in `TypeRef::Var`.
@@ -1406,7 +1456,14 @@ pub struct MethodLike {
     /// from the signature via `TypeRef::Var { is_method: true, .. }`).
     /// Empty for non-generic methods. The ECMA-335 generic-arity number
     /// equals this list's length.
+    ///
+    /// For an F# module function the signature pickle merge reads each one's
+    /// [`FSharpConstraints`] off the val's own type; every other method of an
+    /// F# assembly leaves them [`FSharpConstraints::Unknowable`].
     pub generic_parameters: Vec<TypeParameter>,
+    /// What the method's F# `val`, if it has one, says about a use — see
+    /// [`ValFacts`].
+    pub val_facts: ValFacts,
     /// `Some` when the method carries `[System.ObsoleteAttribute]`; same
     /// shape and decoding rules as [`Entity::obsolete`].
     pub obsolete: Option<Obsolete>,

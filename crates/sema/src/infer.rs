@@ -202,9 +202,10 @@
 //! and that poison is the soundness story. The `App` node emits `r` in synth
 //! positions (D5-safe: `r` is fixed by the `Eq` against the function's *own* type,
 //! independent of how the argument coerces). Curried `f x y` falls out of nested
-//! `App`s; **infix** application, a **bracket indexer** (`arr[i]`, which the parser
-//! stores under `APP_EXPR` but F# lowers to a member lookup, not an application),
-//! `TypeApp`, and applied `DotGet` stay unmodelled ⇒ incomplete. The application
+//! `App`s, and so does an **infix** application (see *Infix operators* below); a
+//! **bracket indexer** (`arr[i]`, which the parser stores under `APP_EXPR` but F#
+//! lowers to a member lookup, not an application), `TypeApp`, and applied
+//! `DotGet` stay unmodelled ⇒ incomplete. The application
 //! result `r` is also **poisoned** unconditionally: a `ground` `r` is unaffected
 //! (poison bites only open vars, so every ground payoff still emits), but a
 //! still-*open* `r` — a polymorphic result, or a result whose shape `Eq` could not
@@ -417,11 +418,27 @@
 //!   its slot only when nothing could have come before it
 //!   ([`Gen::is_first_occurrence`]).
 //!
+//! **Infix operators.** `a OP b` parses as `App(App(OP, a), b)` with the inner
+//! application marked infix, and FCS checks it exactly as the application
+//! `OP a b`: the operator's value, then the left operand, then the right. So it
+//! is typed as one ([`Gen::infer_infix`]), the outer application an ordinary
+//! one and the inner one a callee — no node inside, as for any curried call.
+//! The operator's value is whatever the resolver says its token names
+//! ([`Gen::operator_value`]): an in-file definition is an applied value like
+//! any other, and FSharp.Core's own operator has its signature read as its F#
+//! type ([`crate::function_ty::module_function_scheme`]) and instantiated like
+//! a scheme of ours. Only a signature with no constraint on any type parameter
+//! qualifies — `+` and `=` decline — since the instantiated variables are
+//! scheme-instantiation variables, against which an argument check discharges
+//! as an equality. Everything else declines with an [`Incomplete::Operator`]
+//! reason. A result fixed only through a function-typed domain (`|>`'s
+//! `'T1 -> 'U`) stays open: an argument check does not discharge against one.
+//!
 //! [D8]: ../../../docs/type-checker-plan.md
 
 use std::collections::{HashMap, HashSet};
 
-use borzoi_assembly::{EntityKind, FSharpConstraints, Primitive, TypeRef};
+use borzoi_assembly::{EntityKind, FSharpConstraints, Member, Primitive, TypeRef};
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
     ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat,
@@ -431,6 +448,7 @@ use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::DefId;
+use crate::function_ty::{FunctionTyGap, is_fsharp_core, module_function_scheme};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -559,7 +577,7 @@ impl InferredFile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Incomplete {
     /// An expression form inference does not model at all, by its syntax kind:
-    /// an infix application, a `match`, a record, a bang or `use`/`rec` `let`, …
+    /// a `match`, a record, a bang or `use`/`rec` `let`, …
     Unmodelled(SyntaxKind),
     /// A value reference that is not to an in-file binder: an assembly value,
     /// a preceding file's value, or a name the resolver deferred.
@@ -605,7 +623,7 @@ pub enum Incomplete {
     /// literal, …
     PatternShape(SyntaxKind),
     /// A callee that is not an in-file value or a curried application, by its
-    /// syntax kind: an infix operator, a qualified module function
+    /// syntax kind: an operator that is not a plain name, a qualified module function
     /// (`List.map`), a lambda, …
     CalleeShape(SyntaxKind),
     /// A method call whose callee is not modelled, by the callee's syntax kind
@@ -617,6 +635,32 @@ pub enum Incomplete {
     MethodArgShape,
     /// A syntax-recovery hole: a missing sub-expression, an empty paren.
     Recovery,
+    /// A use of an in-file binder whose attributes may make F# reject it (an
+    /// `[<Obsolete>]`, a `[<CompilerMessage>]`), which FCS then types as its
+    /// error type rather than by the definition.
+    RejectedUse,
+    /// An infix application whose operator inference does not type, and why.
+    Operator(OperatorGap),
+}
+
+/// Why an infix operator was not typed: the census's split of
+/// [`Incomplete::Operator`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OperatorGap {
+    /// The resolver named no binder for the operator: a deferred lookup, or a
+    /// definition in a preceding file.
+    Unresolved,
+    /// A referenced assembly's operator that is not FSharp.Core's own.
+    NotFSharpCore,
+    /// An FSharp.Core operator with a constraint on a type parameter — an
+    /// F#-only one (`=` needs `equality`, `+` is statically resolved) or an IL
+    /// one — or whose constraints were not read.
+    Constrained,
+    /// An FSharp.Core operator whose signature does not carry over as its F#
+    /// type: a tupled argument group (`||>`), a type the bridge does not carry
+    /// (`@` over `'T list`), a unit of measure, or an obsolete-as-error marker
+    /// (`^`).
+    Signature,
 }
 
 /// Where a pattern's named binders are bound, which decides the variable each
@@ -786,6 +830,7 @@ struct SuspendedMember {
 pub fn infer_file(file: &ImplFile, resolved: &ResolvedFile, env: &AssemblyEnv) -> InferredFile {
     let ext_scope = ExtensionScope::of(resolved, env);
     let mut cx = Gen::new(resolved, env, ext_scope);
+    cx.rejected_defs = cx.rejected_use_defs(file);
     cx.walk(file);
     cx.solve();
     cx.finish()
@@ -1076,6 +1121,10 @@ struct Gen<'a> {
     /// extension-absence gate the method-call wake consults before committing an
     /// overload. Computed once in [`infer_file`] from the file and the env.
     ext_scope: ExtensionScope,
+    /// The defining ranges of the in-file binders a use of which F# may reject
+    /// for their attributes ([`Self::rejected_use_defs`]); computed once in
+    /// [`infer_file`].
+    rejected_defs: HashSet<TextRange>,
 }
 
 impl<'a> Gen<'a> {
@@ -1105,6 +1154,7 @@ impl<'a> Gen<'a> {
             member_resolutions: HashMap::new(),
             cur_mark: 0,
             scheme_inst_vars: HashSet::new(),
+            rejected_defs: HashSet::new(),
         }
     }
 
@@ -1275,6 +1325,18 @@ impl<'a> Gen<'a> {
     /// name to key it by counts as a possible `EntryPoint`.
     fn may_be_entry_point(&self, node: &SyntaxNode) -> bool {
         let env = self.env;
+        self.attribute_may_be(node, |h| env.is_entry_point_attribute(h))
+    }
+
+    /// Whether `node` carries an attribute of its own that may denote a type
+    /// `is_target` picks out, by the resolver's verdict on each attribute
+    /// ([`ResolvedFile::attribute_may_be`]); an attribute with no name to key
+    /// it by may be anything.
+    fn attribute_may_be(
+        &self,
+        node: &SyntaxNode,
+        is_target: impl Fn(EntityHandle) -> bool,
+    ) -> bool {
         node.children()
             .filter_map(AttributeList::cast)
             .flat_map(|list| list.attributes().collect::<Vec<_>>())
@@ -1287,9 +1349,68 @@ impl<'a> Gen<'a> {
                     return true;
                 };
                 let range = TextRange::new(first.text_range().start(), last.text_range().end());
-                self.resolved
-                    .attribute_may_be(range, env, |h| env.is_entry_point_attribute(h))
+                self.resolved.attribute_may_be(range, self.env, &is_target)
             })
+    }
+
+    /// The defining ranges of every binder in `file` whose binding carries an
+    /// attribute that may make F# **reject a use** of it: an `[<Obsolete>]` or
+    /// `[<CompilerMessage>]` (F# checks both at every use, and fails an
+    /// error-level one outright, typing the use as its error type rather than
+    /// by the definition), or `[<RequiresExplicitTypeArguments>]`. Whether the
+    /// level is an error is not read, so a warning-level one declines too.
+    ///
+    /// Every name the binding's head binds is collected, its parameters
+    /// included: a parameter is used only inside the binding, where declining
+    /// costs nothing a use outside would not.
+    fn rejected_use_defs(&self, file: &ImplFile) -> HashSet<TextRange> {
+        let env = self.env;
+        let rejects = |h: EntityHandle| {
+            matches!(
+                env.entity_full_name(h).as_str(),
+                "System.ObsoleteAttribute"
+                    | "Microsoft.FSharp.Core.CompilerMessageAttribute"
+                    | "Microsoft.FSharp.Core.RequiresExplicitTypeArgumentsAttribute"
+            )
+        };
+        let mut out = HashSet::new();
+        for node in file.syntax().descendants() {
+            let (decl_attributed, bindings): (bool, Vec<Binding>) =
+                if let Some(decl) = LetDecl::cast(node.clone()) {
+                    (
+                        self.attribute_may_be(&node, rejects),
+                        decl.bindings().collect(),
+                    )
+                } else if let Some(e) = LetOrUseExpr::cast(node.clone()) {
+                    (
+                        self.attribute_may_be(&node, rejects),
+                        e.bindings().collect(),
+                    )
+                } else {
+                    continue;
+                };
+            for binding in bindings {
+                if !decl_attributed && !self.attribute_may_be(binding.syntax(), rejects) {
+                    continue;
+                }
+                if let Some(pat) = binding.pat() {
+                    out.extend(
+                        pat.syntax()
+                            .descendants_with_tokens()
+                            .filter_map(|el| el.into_token())
+                            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                            .map(|t| t.text_range()),
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether a use of the in-file binder `def` may be one F# rejects for the
+    /// binder's attributes ([`Self::rejected_use_defs`]).
+    fn use_may_be_rejected(&self, def: DefId) -> bool {
+        self.rejected_defs.contains(&self.resolved.def(def).range)
     }
 
     /// Fold `file` into per-binding constraint batches, solving each before the
@@ -2130,6 +2251,10 @@ impl<'a> Gen<'a> {
                     self.mark_incomplete(Incomplete::NotInFileValue);
                     return None;
                 };
+                if self.use_may_be_rejected(def) {
+                    self.mark_incomplete(Incomplete::RejectedUse);
+                    return None;
+                }
                 if let Some(scheme) = self.def_schemes.get(&def).cloned() {
                     let body = self.instantiate(&scheme);
                     let uv = self.table.fresh();
@@ -2316,14 +2441,15 @@ impl<'a> Gen<'a> {
                 None
             }
             // Function application `f x` (Stage 3.2c-3). Both `APP_EXPR` and
-            // `INFIX_APP_EXPR` cast to `Expr::App`; only a genuine (non-infix,
-            // non-bracket-indexer) application is modelled. An **infix** application
-            // (`x + 1`) and a **bracket indexer** (`arr[i]`, which F# lowers to a
-            // `GetSlice`/`Item` member lookup, *not* a function application, but the
-            // parser still stores under `APP_EXPR`) both stay unmodelled ⇒
-            // incomplete, as do `TypeApp`, applied `DotGet`, and everything else (the
-            // catch-all below / other arms). Curried `f x y` falls out of the nested
-            // `App`s.
+            // `INFIX_APP_EXPR` cast to `Expr::App`. An infix `x + 1` is the outer
+            // (non-infix) `APP_EXPR` applying the inner `INFIX_APP_EXPR` `(+) x`,
+            // so it is matched here and its inner application is a callee
+            // ([`Self::infer_callee`]). A **bracket indexer** (`arr[i]`, which F#
+            // lowers to a `GetSlice`/`Item` member lookup, *not* a function
+            // application, but the parser still stores under `APP_EXPR`) stays
+            // unmodelled ⇒ incomplete, as do `TypeApp`, applied `DotGet`, and
+            // everything else (the catch-all below / other arms). Curried `f x y`
+            // falls out of the nested `App`s.
             Expr::App(app) if !app.is_infix() && !app.is_bracket_indexer() => {
                 let r = self.infer_app(app)?;
                 self.emit(node_span(app.syntax()), r, expected);
@@ -2355,9 +2481,10 @@ impl<'a> Gen<'a> {
             Expr::Sequential(seq) => self.infer_sequential(seq, expected),
             // Any other expression shape is unmodelled: defer and mark incomplete
             // (the FCS type on this subtree is one we did not reproduce, so an
-            // enclosing binding must not generalise). This catches an **infix** or
+            // enclosing binding must not generalise). This catches a
             // **bracket-indexer** `App` too, which the guarded arm above deliberately
-            // does not match.
+            // does not match, and an infix `App` outside a callee position, which
+            // only a recovered parse produces.
             _ => {
                 self.mark_incomplete(Incomplete::Unmodelled(e.syntax().kind()));
                 None
@@ -2642,6 +2769,13 @@ impl<'a> Gen<'a> {
         }
         // Synthesize the function position (no node emitted).
         let tf = self.infer_callee(&func)?;
+        Some(self.apply(tf, &arg))
+    }
+
+    /// Apply a synthesized function `tf` to `arg`: the half of
+    /// [`Self::infer_app`] after the callee, shared with the infix operator
+    /// application ([`Self::infer_infix`]). Returns the result variable.
+    fn apply(&mut self, tf: TyVid, arg: &Expr) -> TyVid {
         let d = self.table.fresh();
         let r = self.table.fresh();
         // Genuinely true: applying `func` forces it to a function shape.
@@ -2660,7 +2794,7 @@ impl<'a> Gen<'a> {
         // provably coercion-free (a walk-complete binding and a no-subsumption
         // domain), and only poisoned if it stays undischarged. The argument's var,
         // if we could synthesize one, is the `ArgCheck`'s `arg` endpoint.
-        let arg_var = self.infer_arg(&arg, d);
+        let arg_var = self.infer_arg(arg, d);
         match arg_var {
             Some(arg_var) => {
                 // Suspend the arg↔param relation. `solve` wakes it (a complete
@@ -2683,7 +2817,105 @@ impl<'a> Gen<'a> {
                 self.poison.push(r);
             }
         }
-        Some(r)
+        r
+    }
+
+    /// The partial application `OP lhs` inside an infix application
+    /// `lhs OP rhs` — the parser's `App(App(OP, lhs), rhs)`, whose inner
+    /// application `inner` is marked infix — returning its result variable,
+    /// which the outer application applies to `rhs`. FCS checks the two
+    /// exactly as it checks `OP lhs rhs`: an application of the operator's
+    /// value, the left operand first. So this is [`Self::apply`] over the
+    /// operator's value ([`Self::operator_value`]), and the outer application
+    /// is an ordinary one; neither records a node inside the application, as
+    /// for any curried call.
+    fn infer_infix(&mut self, inner: &AppExpr) -> Option<TyVid> {
+        let (Some(op), Some(lhs)) = (inner.func(), inner.arg()) else {
+            self.mark_incomplete(Incomplete::Recovery);
+            return None;
+        };
+        let tf = self.operator_value(&op)?;
+        Some(self.apply(tf, &lhs))
+    }
+
+    /// The type variable of an infix operator's value, as [`Self::infer_callee`]
+    /// gives an applied name's: the resolver decides which definition the
+    /// token names, so a shadowing one — in this file, in an opened module,
+    /// spelled as the compiled name (`op_PipeRight`) — is the operator, and
+    /// FSharp.Core's is reached only when nothing shadows it.
+    ///
+    /// - **An in-file binder** is an applied value like any other
+    ///   ([`Self::callee_def`]).
+    /// - **FSharp.Core's own operator** — a member of one of its modules, by
+    ///   the declaring assembly's name and public-key token — has its signature
+    ///   read as its F# type ([`module_function_scheme`]) and instantiated,
+    ///   each type parameter a fresh scheme-instantiation variable. Only a
+    ///   signature with no constraint on any type parameter qualifies:
+    ///   instantiating a constrained one as a plain variable would claim a
+    ///   constraint is modelled that is not, which is what walk-completeness
+    ///   rests on. The resolver's map holds no assembly reading under an
+    ///   incomplete projection, so this door is sealed as the others are.
+    ///
+    /// Anything else — another assembly's operator, a deferred or cross-file
+    /// lookup, a signature that does not carry over — declines, marking the
+    /// binding incomplete with the reason.
+    fn operator_value(&mut self, op: &Expr) -> Option<TyVid> {
+        let tok = match op {
+            Expr::LongIdent(li) => li.long_ident().and_then(|li| {
+                let mut idents = li.idents();
+                match (idents.next(), idents.next(), li.active_pat_names().next()) {
+                    (Some(tok), None, None) => Some(tok),
+                    _ => None,
+                }
+            }),
+            _ => None,
+        };
+        let Some(tok) = tok else {
+            self.mark_incomplete(Incomplete::CalleeShape(op.syntax().kind()));
+            return None;
+        };
+        if let Some(def) = self.def_at(tok.text_range()) {
+            if self.use_may_be_rejected(def) {
+                self.mark_incomplete(Incomplete::RejectedUse);
+                return None;
+            }
+            return Some(self.callee_def(def));
+        }
+        let Some(Resolution::Member { parent, idx }) =
+            self.resolved.resolution_at(tok.text_range())
+        else {
+            self.mark_incomplete(Incomplete::Operator(OperatorGap::Unresolved));
+            return None;
+        };
+        let module = self.env.entity(parent);
+        if !is_fsharp_core(&module.assembly) {
+            self.mark_incomplete(Incomplete::Operator(OperatorGap::NotFSharpCore));
+            return None;
+        }
+        let scheme = match self.env.member_at(parent, idx) {
+            Member::Method(m) => module_function_scheme(module, m),
+            _ => Err(FunctionTyGap::NotAFunction),
+        };
+        let scheme = match scheme {
+            Ok(scheme) => scheme,
+            Err(gap) => {
+                let why = match gap {
+                    FunctionTyGap::Constrained => OperatorGap::Constrained,
+                    FunctionTyGap::NotAFunction
+                    | FunctionTyGap::Rejected
+                    | FunctionTyGap::Unread
+                    | FunctionTyGap::Measures
+                    | FunctionTyGap::Groups
+                    | FunctionTyGap::Type => OperatorGap::Signature,
+                };
+                self.mark_incomplete(Incomplete::Operator(why));
+                return None;
+            }
+        };
+        let body = self.instantiate(&scheme);
+        let v = self.table.fresh();
+        self.eq(Ty::Var(v), body);
+        Some(v)
     }
 
     /// Walk a modelled application's **argument** in check mode against the
@@ -2753,12 +2985,14 @@ impl<'a> Gen<'a> {
             // application whose residual `r` is the callee type, recording **no**
             // node ([`Self::infer_app`] never emits — an inner curried application
             // carries no FCS node either). It still pushes its own
-            // `Eq(tf, Fun(d, r))` and checks its argument. An infix or
-            // bracket-indexer `App` in the callee spine is unmodelled (⇒ the
-            // catch-all below marks incomplete and the whole application defers).
+            // `Eq(tf, Fun(d, r))` and checks its argument. A bracket-indexer
+            // `App` in the callee spine is unmodelled (⇒ the catch-all below
+            // marks incomplete and the whole application defers).
             Expr::App(inner) if !inner.is_infix() && !inner.is_bracket_indexer() => {
                 self.infer_app(inner)
             }
+            // The operator applied to its left operand, inside `lhs OP rhs`.
+            Expr::App(inner) if inner.is_infix() => self.infer_infix(inner),
             // A value/function reference: mirror the ident arm's resolution, but
             // *do not* emit a node.
             Expr::Ident(ident) => {
@@ -2770,26 +3004,37 @@ impl<'a> Gen<'a> {
                     self.mark_incomplete(Incomplete::NotInFileValue);
                     return None;
                 };
-                if let Some(scheme) = self.def_schemes.get(&def).cloned() {
-                    let body = self.instantiate(&scheme);
-                    let uv = self.table.fresh();
-                    self.eq(Ty::Var(uv), body);
-                    return Some(uv);
+                if self.use_may_be_rejected(def) {
+                    self.mark_incomplete(Incomplete::RejectedUse);
+                    return None;
                 }
-                let dv = self.def_var(def);
-                // An environment reference (not a parameter of this binding) is
-                // poisoned exactly as in the ident arm — a still-open one blocks
-                // generalisation; a ground one is unaffected.
-                if !self.is_current_param(def) {
-                    self.poison.push(dv);
-                }
-                Some(dv)
+                Some(self.callee_def(def))
             }
             _ => {
                 self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
                 None
             }
         }
+    }
+
+    /// The type variable of an applied in-file binder, recording no node: a
+    /// generalised binder instantiates its scheme afresh, and any other
+    /// contributes its own variable, poisoned when it is an environment
+    /// reference (not a parameter of this binding) exactly as in
+    /// [`Self::infer_construct`]'s ident arm — a still-open one blocks
+    /// generalisation; a ground one is unaffected.
+    fn callee_def(&mut self, def: DefId) -> TyVid {
+        if let Some(scheme) = self.def_schemes.get(&def).cloned() {
+            let body = self.instantiate(&scheme);
+            let uv = self.table.fresh();
+            self.eq(Ty::Var(uv), body);
+            return uv;
+        }
+        let dv = self.def_var(def);
+        if !self.is_current_param(def) {
+            self.poison.push(dv);
+        }
+        dv
     }
 
     /// Type a **single-candidate instance method call** `recv.Method(args)` (Stage
@@ -4533,7 +4778,7 @@ fn application_syntax_is_complete(app: &borzoi_cst::syntax::AppType) -> bool {
 /// `allows_ref_struct` is deliberately absent: it *widens* what may be
 /// substituted rather than narrowing it, so it never makes an application
 /// illegal. `nullability` is an annotation, not a constraint.
-fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool {
+pub(crate) fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool {
     p.reference_type_constraint
         || p.value_type_constraint
         || p.default_constructor_constraint
@@ -5831,7 +6076,7 @@ mod tests {
     /// corpus sweep's blocker report reads.
     #[test]
     fn incompleteness_names_what_each_binding_did_not_model() {
-        use super::{Incomplete, SyntaxKind};
+        use super::{Incomplete, OperatorGap};
         let src = "module M\nlet a = 1\nlet f x = x + 1\nlet g () = 2\n\
                    let (x: int) = 1\nlet (p, q) = (1, 2)\nlet h y = let z = y + 1 in 0\n\
                    let i y = let z = (y + 1, 2) in 0\nlet j (y: int) = (y + 1).ToString()\n\
@@ -5846,19 +6091,19 @@ mod tests {
             inferred.incompleteness(),
             [
                 vec![],
-                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
+                vec![Incomplete::Operator(OperatorGap::Unresolved)],
                 vec![],
                 // `let (x: int) = 1` and `let (p, q) = …`: walked, complete.
                 vec![],
                 vec![],
                 // `h`: the local's RHS failed; that is its one reason.
-                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
+                vec![Incomplete::Operator(OperatorGap::Unresolved)],
                 // `i`, `j`, `k`: the local left open, the method callee and the
-                // statement left open are consequences of the infix operator,
-                // which is recorded once and alone.
-                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
-                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
-                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
+                // statement left open are consequences of the operator, which
+                // resolves to nothing here and is recorded once and alone.
+                vec![Incomplete::Operator(OperatorGap::Unresolved)],
+                vec![Incomplete::Operator(OperatorGap::Unresolved)],
+                vec![Incomplete::Operator(OperatorGap::Unresolved)],
             ]
         );
     }
@@ -5972,16 +6217,15 @@ mod tests {
     }
 
     #[test]
-    fn infix_application_stays_unmodelled() {
-        // Infix application (`x + 1`) is an `INFIX_APP_EXPR`, deliberately left
-        // unmodelled ⇒ incomplete, so `let f x = x + 1` still defers (it does not
-        // become an `App` payoff). This pins that 3.2c-3 did not widen scope to
-        // infix operators.
+    fn an_unresolved_operator_leaves_the_function_deferred() {
+        // An infix application is an application of its operator, and here (no
+        // FSharp.Core) `+` resolves to nothing, so `let f x = x + 1` defers
+        // rather than generalising over an operand nothing constrained.
         let types = def_types("module M\nlet f x = x + 1\n");
         assert_eq!(
             types.get("f"),
             None,
-            "infix application is unmodelled; the function defers"
+            "the operator is unresolved; the function defers"
         );
     }
 

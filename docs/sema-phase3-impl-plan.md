@@ -107,30 +107,34 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-09-23, after structural patterns and `unit`; 2 602 walked
-bindings, 37.0 % complete):
+corpus sample (2026-10-26, after unconstrained operators; 2 602 walked
+bindings, 38.2 % complete — 37.0 % before them, when infix operator application
+was the only observed reason of 477 and present in 606):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| infix operator application | 477 | 606 |
-| method call on a receiver that is not an in-file value | 168 | 264 |
-| value not bound in this file (assembly / earlier file) | 123 | 264 |
-| `use`, `let rec` or `let!` inside an expression | 64 | 89 |
+| value not bound in this file (assembly / earlier file) | 487 | 666 |
+| method call on a receiver that is not an in-file value | 172 | 308 |
+| `use`, `let rec` or `let!` inside an expression | 64 | 90 |
 | pattern annotation outside the modelled set | 51 | 331 |
-| `match` | 47 | 144 |
+| `match` | 47 | 149 |
+| constrained FSharp.Core operator (`+`, `=`, …) | 33 | 58 |
 | `new` | 32 | 37 |
-| list or array expression | 29 | 74 |
+| list or array expression | 29 | 78 |
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
 checking its body), and neither is any declaration after a syntax error in its
 file (recovery can spill into declarations that look intact).
 
-Two corollaries shaped the order of work. Infix operators are the first lever
-by a wide margin. And a rule that only fires on complete bindings — the guarded
-argument read-off, prototyped on branch `infer-arg-readoff` — measured **zero**
-gain on the corpus while bindings are this incomplete, so it waits until the
-blockers above are lower. Re-run the sweep and update this table when one lands.
+Two corollaries shaped the order of work. Infix operators were the first lever
+by a wide margin; with the unconstrained ones modelled, the next is a value
+from an assembly or an earlier file — mostly the operands operators used to
+hide (`xs |> List.map f`), which the walk now reaches. And a rule that only
+fires on complete bindings — the guarded argument read-off, prototyped on
+branch `infer-arg-readoff` — measured **zero** gain on the corpus while
+bindings are this incomplete, so it waits until the blockers above are lower.
+Re-run the sweep and update this table when one lands.
 
 **Infix operators, prototyped and shelved** (branch `infer-operators`). Typing
 FSharp.Core's arithmetic and comparisons over *ground* operands measured only
@@ -159,8 +163,56 @@ the operator heading a prefix `APP_EXPR`): `-x`, `+x`, `-.x`, `%x` use `~-`,
 or `~` operator keeps its spelling (`!r` uses `!`). `operator_name_diff`
 grades the space against FCS (every operator × definition form × use form,
 every prefix operator beside a decoy binary definition, plus an
-opened-then-reopened `Operators`). Still to do: the inference half (type an
-application whose callee resolves to FSharp.Core's operator).
+opened-then-reopened `Operators`).
+
+**The inference half: unconstrained operators.** `a OP b` is the application
+`OP a b`, checked by FCS exactly as one, so inference types it as one
+(`Gen::infer_infix`): the operator's value comes from whatever the resolver
+says its token names. An in-file definition is an applied value like any other
+(`let (+.) (a: int) (b: int) = …` makes `x +. 1` an `int`); FSharp.Core's own
+operator — by its module's assembly name and public-key token — has its IL
+signature read as its F# type (`function_ty::module_function_scheme`) and
+instantiated, each type parameter a fresh scheme-instantiation variable. That
+reading is sound only with three facts the IL cannot carry, all now read off
+each module function's pickled val (`rebuild_module_member_list`): its curried
+argument groups (one IL parameter per group, else it declines — `||>`'s tupled
+group does), the F#-only constraints on its type parameters (any constraint
+declines: `+` is statically resolved, `=` needs `equality`, so instantiating
+either as a plain variable would claim a constraint is modelled that is not),
+and whether its type mentions a unit of measure (IL erases them) — plus the
+val's own `[<CompilerMessage>]` and `[<RequiresExplicitTypeArguments>]`, which
+reject a use and live in the pickle alone (`MethodLike::val_facts`). The
+bridge carries only primitives, the function's type parameters, F# function
+types and `unit`, so `@` and `:=` (over `'T list` and `'T ref`, F# types under
+a compiled name) and `^` (obsolete as an error, which FCS types as `obj`)
+decline too. Every FSharp.Core `Operators` function the reading admits (14,
+`id` and `box` among them), bound as a value, has exactly the type FCS gives
+it. `infer_operators_diff` grades a generated grid — every operator ×
+operand kind (literal, annotated or open parameter, lambda, nested application,
+ill-typed) × position (synth, under an annotation, as an argument, as a callee)
+— plus the shadowing routes, against both FCS oracles. Measured: +19
+agreements (all `&&` and `||` where the file opens `IntrinsicOperators`), 0
+divergences, 37.0 % → 38.2 % complete bindings.
+
+Two things limit what this commits, and neither is the operator rule:
+
+- **`&&` and `||` resolve to nothing** unless `IntrinsicOperators` is opened
+  explicitly: it is a module-shaped `[<AutoOpen>]` path, which the resolver does
+  not fold (`AssemblyEnv::record_assembly_auto_opens`), so the token is
+  `Deferred(UnboundName)` and the census records `Operator(Unresolved)`.
+  Folding it is resolver work.
+- **`|>`, `<|`, `>>` and `<<` make their bindings complete but commit no
+  result.** Their results are fixed only through an argument whose domain is a
+  function type (`|>`'s `'T1 -> 'U`), and an argument check discharges against
+  a sealed primitive, a tuple of them, or a scheme-instantiation variable —
+  never a function type (`Gen::no_subsumption_domain`). Widening that is not a
+  matter of adding `Ty::Fun` to the set: FCS flexes an applied value's
+  non-sealed domains at its use (`MakeApplicableExprWithFlex`), so
+  `y |> fo` with `fo : obj -> int` leaves `y` generic where an equality would
+  make it `obj`, and an ill-typed operand recovers to `obj` in source order
+  (`"s" |> inc` types as `System.Object`). A sound rule needs at least a ground,
+  flex-free argument and every earlier argument check in the binding
+  discharged; it is the next slice.
 
 ### Remaining 3.x hard piles (census-priority order)
 

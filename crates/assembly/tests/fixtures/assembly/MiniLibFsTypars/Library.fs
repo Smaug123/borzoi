@@ -40,7 +40,19 @@ type ConstrainedAlias<'T when 'T : comparison> = 'T list
 /// [`ConstrainedAlias`]'s unconstrained twin.
 type FreeAlias<'T> = 'T list
 
-/// A generic **method** typar. No overlay reads a val's constraint list, so
-/// this one is blanked with nothing to restore it — the honest reading, and the
-/// only place the method half of the blanking is observable.
+/// A generic **module function**'s typar: the module-member merge reads its
+/// constraints off the val's own type.
 let constrainedFn<'T when 'T : comparison> (x: 'T) : 'T = x
+
+/// [`constrainedFn`]'s unconstrained twin: same shape, same IL.
+let freeFn<'T> (x: 'T) : 'T = x
+
+/// Two typars, only the first constrained — the val's reading is per position.
+let keyedFn<'K, 'V when 'K : comparison> (k: 'K) (v: 'V) : 'V = v
+
+[<Measure>]
+type m
+
+/// A unit of measure IL erases: this compiles to `double metres(double)`, with
+/// nothing in the IL to say its F# type is not `float -> float`.
+let metres (x: float<m>) : float<m> = x
