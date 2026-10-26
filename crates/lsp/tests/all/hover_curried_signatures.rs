@@ -106,6 +106,9 @@ enum Carrier {
     InstanceAug,
     /// `static member YN …` in `type Target with` in module `Aug`.
     StaticAug,
+    /// An `abstract` slot on class `V`, with or without a `default`: F#
+    /// pickles a slot and its default as two vals for one IL method.
+    Virtual,
 }
 
 const CARRIERS: [Carrier; 5] = [
@@ -290,6 +293,7 @@ fn universe() -> Universe {
                     format!("t.X{n}"),
                     format!("X{n}"),
                 ),
+                Carrier::Virtual => unreachable!("declared apart from the shape product"),
                 Carrier::StaticAug => (
                     format!("        static member Y{n} {params}{ret}\n"),
                     format!("Target.Y{n}"),
@@ -300,6 +304,7 @@ fn universe() -> Universe {
                 Carrier::Let => lets.push_str(&decl),
                 Carrier::Instance | Carrier::Static => class.push_str(&decl),
                 Carrier::InstanceAug | Carrier::StaticAug => aug.push_str(&decl),
+                Carrier::Virtual => unreachable!("declared apart from the shape product"),
             }
             // A member is used applied, every group given, since the resolver
             // reaches a member only through a call; a module function is
@@ -329,6 +334,33 @@ fn universe() -> Universe {
                 name,
             });
             n += 1;
+        }
+    }
+    // Abstract slots, curried, tupled and mixed, each with a default (two vals,
+    // one IL method) and without (an abstract IL method).
+    let mut virtuals = String::new();
+    for (i, (slot, params)) in [
+        ("a1: int -> a2: string -> int", "(a1: int) (a2: string)"),
+        ("a1: int * a2: string -> int", "(a1: int, a2: string)"),
+        (
+            "a1: int -> a2: string * a3: float -> int",
+            "(a1: int) (a2: string, a3: float)",
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        virtuals.push_str(&format!(
+            "    abstract D{i}: {slot}\n    default _.D{i} {params} = 0\n    abstract A{i}: {slot}\n"
+        ));
+        for name in [format!("D{i}"), format!("A{i}")] {
+            uses.push(Use {
+                label: format!("v.{name} : {slot}"),
+                carrier: Carrier::Virtual,
+                head: format!("v.{name}"),
+                args: String::new(),
+                name,
+            });
         }
     }
     // Module values, including function-typed ones: a value is no group at
@@ -366,6 +398,9 @@ fn universe() -> Universe {
          {lets}\n\
          type C() =\n\
          {class}\n\
+         [<AbstractClass>]\n\
+         type V() =\n\
+         {virtuals}\n\
          module Aug =\n\
          \x20   type Target with\n\
          {aug}"
@@ -378,6 +413,7 @@ fn universe() -> Universe {
          \n\
          let c : C = failwith \"fixture\"\n\
          let t : Target = failwith \"fixture\"\n\
+         let v : V = failwith \"fixture\"\n\
          \n"
     );
     let mut sites = Vec::new();
@@ -391,6 +427,7 @@ fn universe() -> Universe {
                 Carrier::Let => "CurriedFixture.Fns",
                 Carrier::Instance | Carrier::Static => "CurriedFixture.C",
                 Carrier::InstanceAug | Carrier::StaticAug => "CurriedFixture.Aug",
+                Carrier::Virtual => "CurriedFixture.V",
             },
             reached: matches!(u.carrier, Carrier::Let | Carrier::Static),
             line,
@@ -963,6 +1000,8 @@ fn parse_sig(text: &str) -> Result<Sig, String> {
 const KEYWORDS: &[&str] = &[
     "static abstract member ",
     "abstract member ",
+    "abstract ",
+    "override ",
     "static member ",
     "val mutable ",
     "property ",

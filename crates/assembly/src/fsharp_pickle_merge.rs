@@ -3742,6 +3742,21 @@ struct DocKey {
     /// For a method or constructor val, its argument groups as a caller writes
     /// them; `None` for any other val, and for one without a `ValReprInfo`.
     curried: Option<CurriedArgs>,
+    /// Whether the val is an abstract slot or an override, which F# pickles as
+    /// two vals for the one IL method a slot with its `default` compiles to.
+    role: SlotRole,
+}
+
+/// A member val's part in virtual dispatch, as its `MemberFlags` record it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotRole {
+    /// Neither an abstract slot nor an override.
+    Plain,
+    /// `abstract` (`IsDispatchSlot`).
+    DispatchSlot,
+    /// `default`, `override`, or an explicit interface implementation
+    /// (`IsOverrideOrExplicitImpl`).
+    Override,
 }
 
 /// Stamp each F# type's members with the doc-comment key fsc pickled for them
@@ -3819,6 +3834,13 @@ pub(crate) fn apply_type_member_doc_sigs(
                                 | PickledMemberKind::PropertySet
                                 | PickledMemberKind::ClassConstructor => None,
                             },
+                            role: if info.flags.is_dispatch_slot {
+                                SlotRole::DispatchSlot
+                            } else if info.flags.is_override_or_explicit_impl {
+                                SlotRole::Override
+                            } else {
+                                SlotRole::Plain
+                            },
                         });
                 }
             }
@@ -3852,6 +3874,7 @@ pub(crate) fn apply_type_member_doc_sigs(
                         key: pickled_xml_doc_sig(&field.xmldoc_sig),
                         erased_typars: 0,
                         curried: None,
+                        role: SlotRole::Plain,
                     });
                 }
             }
@@ -3979,6 +4002,12 @@ pub(crate) fn apply_type_member_doc_sigs(
 /// stamped with the agreed grouping and each method's own IL parameter names,
 /// which are its F# names but for a wildcard or a tuple-typed parameter's
 /// elements (F# shows those unnamed; IL names them `_arg1`, `p_0`).
+///
+/// The count of methods the vals account for is not the count of vals: an
+/// `abstract` slot and its `default` are two vals, and one IL method. Each
+/// abstract val that an override in the slot can pair with is counted once,
+/// which can only under-count the vals' methods — so an equal physical count
+/// still proves every method of the slot is one of theirs.
 fn stamp_arg_groups(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
     /// A grouping without its names: the receiver flag, and each group's size.
     fn shape(c: &CurriedArgs) -> (bool, Vec<usize>) {
@@ -3991,6 +4020,8 @@ fn stamp_arg_groups(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMet
     /// agree, and its shape if those agree.
     struct Slot<'a> {
         vals: usize,
+        dispatch_slots: usize,
+        overrides: usize,
         curried: Option<Option<&'a CurriedArgs>>,
         shape: Option<Option<(bool, Vec<usize>)>>,
     }
@@ -4003,10 +4034,17 @@ fn stamp_arg_groups(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMet
         let shaped = curried.map(shape);
         let entry = slots.entry(&k.slot).or_insert_with(|| Slot {
             vals: 0,
+            dispatch_slots: 0,
+            overrides: 0,
             curried: Some(curried),
             shape: Some(shaped.clone()),
         });
         entry.vals += 1;
+        match k.role {
+            SlotRole::Plain => {}
+            SlotRole::DispatchSlot => entry.dispatch_slots += 1,
+            SlotRole::Override => entry.overrides += 1,
+        }
         if entry.curried != Some(curried) {
             entry.curried = None;
         }
@@ -4023,8 +4061,11 @@ fn stamp_arg_groups(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMet
         if entity.skipped_members.iter().any(|s| s.name == *name) {
             continue;
         }
+        // At most the methods the vals compile to: an abstract slot and its
+        // default share one.
+        let methods = facts.vals - facts.dispatch_slots.min(facts.overrides);
         let occupants = entity.members.iter().filter(|m| occupies(m, slot)).count();
-        if occupants != facts.vals || physical_occupants(entity, slot, physical) != facts.vals {
+        if occupants != methods || physical_occupants(entity, slot, physical) != methods {
             continue;
         }
         for member in entity.members.iter_mut().filter(|m| occupies(m, slot)) {
@@ -7006,6 +7047,7 @@ mod tests {
                             key: key.clone(),
                             erased_typars: 0,
                             curried: None,
+                            role: SlotRole::Plain,
                         });
                         match member {
                             ValMember::Kept => {
@@ -7050,6 +7092,9 @@ mod tests {
         /// is their total.
         groups: Vec<Vec<Option<u8>>>,
         val: Option<ValMember>,
+        /// Whether the val is an `abstract` slot with its `default`: two vals,
+        /// one IL method.
+        paired: bool,
     }
 
     fn group_slot_item() -> impl Strategy<Value = GroupSlotItem> {
@@ -7066,12 +7111,14 @@ mod tests {
                 0..3,
             ),
             proptest::option::of(member),
+            any::<bool>(),
         )
-            .prop_map(|(name, is_static, groups, val)| GroupSlotItem {
+            .prop_map(|(name, is_static, groups, val, paired)| GroupSlotItem {
                 name,
                 is_static,
                 groups,
                 val,
+                paired,
             })
     }
 
@@ -7153,12 +7200,20 @@ mod tests {
             for (k, item) in items.iter().enumerate() {
                 match item.val {
                     Some(member) => {
-                        keys.push(DocKey {
-                            slot: slot_of(item),
-                            key: None,
-                            erased_typars: 0,
-                            curried: Some(curried_of(item)),
-                        });
+                        let roles: &[SlotRole] = if item.paired {
+                            &[SlotRole::DispatchSlot, SlotRole::Override]
+                        } else {
+                            &[SlotRole::Plain]
+                        };
+                        for &role in roles {
+                            keys.push(DocKey {
+                                slot: slot_of(item),
+                                key: None,
+                                erased_typars: 0,
+                                curried: Some(curried_of(item)),
+                                role,
+                            });
+                        }
                         match member {
                             ValMember::Kept => {
                                 entity.members.push(method_of(k, item));
