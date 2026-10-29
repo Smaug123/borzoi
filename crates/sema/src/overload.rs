@@ -811,6 +811,7 @@ mod tests {
                 return_nullability: Nullability::Oblivious,
             },
             arg_group_count: Some(1),
+            arg_groups: borzoi_assembly::ArgGroups::NotFSharp,
             is_static: false,
             is_virtual: false,
             is_abstract: false,
@@ -915,7 +916,7 @@ mod tests {
     fn op_implicit(from: TypeRef, to: TypeRef) -> Member {
         let mut m = method("op_Implicit", vec![param(from)], to);
         m.is_static = true;
-        Member::Method(m)
+        Member::Method(Box::new(m))
     }
 
     /// A mini-BCL: `Object`, `ValueType`, the sealed primitives the generators
@@ -1289,13 +1290,17 @@ mod tests {
             false,
             Some(named(&["System"], "Object")),
             vec![
-                Member::Method(method("M", vec![param(int_ty_ref())], str_ty_ref())),
-                Member::Method(method(
+                Member::Method(Box::new(method(
+                    "M",
+                    vec![param(int_ty_ref())],
+                    str_ty_ref(),
+                ))),
+                Member::Method(Box::new(method(
                     "M",
                     vec![param(int_ty_ref()), param(int_ty_ref())],
                     str_ty_ref(),
-                )),
-                Member::Method(method("Solo", vec![], int_ty_ref())),
+                ))),
+                Member::Method(Box::new(method("Solo", vec![], int_ty_ref()))),
             ],
         );
         let env = AssemblyEnv::from_entities(vec![object, c]);
@@ -1468,7 +1473,7 @@ mod tests {
             None,
             vec![method("Foo", vec![], int_ty_ref())]
                 .into_iter()
-                .map(Member::Method)
+                .map(|m| Member::Method(Box::new(m)))
                 .collect(),
         )]);
         assert!(

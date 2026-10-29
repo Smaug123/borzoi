@@ -157,7 +157,7 @@ fn run() -> Run {
                 return None;
             };
             let line = line_at(&line_starts, usize::from(range.start()));
-            Some((line, (*parent, m.clone())))
+            Some((line, (*parent, (**m).clone())))
         })
         .collect();
 

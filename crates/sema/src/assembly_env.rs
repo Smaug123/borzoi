@@ -5704,7 +5704,7 @@ impl AssemblyEnv {
                 Member::Method(mm)
                     if member_is_public(m) && !member_is_static(m) && member_name(m) == name =>
                 {
-                    Some((owner, MemberIndex::new(idx), mm))
+                    Some((owner, MemberIndex::new(idx), &**mm))
                 }
                 _ => None,
             })

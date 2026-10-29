@@ -39,7 +39,7 @@ fn methods(e: &Entity) -> Vec<&MethodLike> {
     e.members
         .iter()
         .filter_map(|m| match m {
-            Member::Method(m) => Some(m),
+            Member::Method(m) => Some(&**m),
             _ => None,
         })
         .collect()
