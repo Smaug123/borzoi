@@ -6,7 +6,10 @@
 //! `SynExpr.DiscardAfterMissingQualificationAfterDot(receiver)` and keeps
 //! parsing; every case here also requires the declaration after it to survive.
 
+use std::collections::BTreeMap;
+
 use crate::common::assert_asts_match_allow_errors;
+use crate::common::recovery::{Relation, layout_grid, our_units, recovered_verdict};
 
 /// `foo.` — a one-segment receiver. FCS keeps it as `Ident`, not a one-segment
 /// `LongIdent`.
@@ -78,4 +81,62 @@ fn recovery_oracle_does_not_anchor_the_offside_column_on_an_unconfirmed_unit() {
         "{}",
         verdict.token()
     );
+}
+
+/// A file-start BOM is not indentation: `this.Foo`, three columns into line 2,
+/// is off the anonymous module's offside line (column 0 of line 1, after the
+/// BOM), however wide the BOM is in bytes.
+#[test]
+fn recovery_oracle_does_not_count_a_bom_as_indentation() {
+    let verdict = recovered_verdict("\u{FEFF}member\n   this.Foo\n");
+    assert_eq!(verdict.relation, Relation::Divergent, "{}", verdict.token());
+}
+
+/// A backward line directive maps the error before it to two lines, one of
+/// them past the end of the file: only the one in the file is damage, so `let
+/// good` after the directive is still compared.
+#[test]
+fn recovery_oracle_maps_diagnostics_back_only_into_the_file() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nlet bad = (1 + )\n# 0 \"gen.fs\"\nlet good = 2\n",
+        2,
+    );
+}
+
+/// Over the layout grid ([`layout_grid`]), graded against FCS. FCS keeps
+/// nothing of a stray `member this.Foo`, and its `this.Foo` sits off the body's
+/// offside line, so the trees diverge exactly when our tree has a unit starting
+/// there, however the body is wrapped. And a doc comment or an attribute on the
+/// declaration after it moves nothing in the verdict, on whatever column the
+/// comment sits.
+#[test]
+fn recovery_verdicts_follow_the_generated_layout() {
+    let mut failures = Vec::new();
+    let mut families: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for case in layout_grid() {
+        let verdict = recovered_verdict(&case.source);
+        let token = verdict.token();
+        let debris = case.spill.is_some_and(|at| {
+            our_units(&borzoi_cst::parser::parse(&case.source))
+                .iter()
+                .any(|u| u.key.start == at)
+        });
+        if (verdict.relation == Relation::Divergent) != debris {
+            failures.push(format!(
+                "{:?}: {token} {}",
+                case.source,
+                verdict.first_divergence.as_deref().unwrap_or("")
+            ));
+        }
+        let (first, first_token) = families
+            .entry(case.family.clone())
+            .or_insert_with(|| (case.source.clone(), token.clone()));
+        if *first_token != token {
+            failures.push(format!(
+                "{:?}: {token}, but {first:?}: {first_token}",
+                case.source
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

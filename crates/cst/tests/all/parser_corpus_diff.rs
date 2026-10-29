@@ -198,8 +198,14 @@ impl Outcome {
         }
     }
 
-    fn recovered(bucket: Bucket, parse: &Parse, line: &str, src: &str) -> Self {
-        let recovery = match catch_unwind_silent(|| grade(parse, line, src)) {
+    fn recovered(
+        bucket: Bucket,
+        parse: &Parse,
+        symbols: &HashSet<String>,
+        line: &str,
+        src: &str,
+    ) -> Self {
+        let recovery = match catch_unwind_silent(|| grade(parse, symbols, line, src)) {
             Ok(Ok(v)) => Recovery {
                 token: v.token(),
                 divergence: v.first_divergence,
@@ -264,7 +270,7 @@ fn classify(
         } else {
             Bucket::BothReject
         };
-        return Outcome::recovered(bucket, &ours, line, src);
+        return Outcome::recovered(bucket, &ours, symbols, line, src);
     }
 
     // Normalise the FCS side *first*. Its internal full `Value` parse fails
@@ -283,7 +289,7 @@ fn classify(
         return Outcome::bucket(Bucket::OurParsePanicked);
     };
     if !ours.errors.is_empty() {
-        return Outcome::recovered(Bucket::WeRejectFcsAccepts, &ours, line, src);
+        return Outcome::recovered(Bucket::WeRejectFcsAccepts, &ours, symbols, line, src);
     }
     let Ok(ours_norm) = catch_unwind_silent(|| normalise_parse(&ours)) else {
         return Outcome::bucket(Bucket::OurNormaliserUnmodelled);

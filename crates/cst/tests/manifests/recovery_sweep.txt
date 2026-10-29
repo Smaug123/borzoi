@@ -328,7 +328,7 @@ tests/FSharp.Compiler.ComponentTests/ErrorMessages/InvalidLiteralTests.fs@360 to
 tests/FSharp.Compiler.ComponentTests/Globalization/GlobalizationTestCases.fs@965 token outside-damage 17/17/18
 tests/FSharp.Compiler.ComponentTests/Interop/StaticsInInterfaces.fs@19970 member exact 16/16/17
 tests/FSharp.Compiler.ComponentTests/Interop/StaticsInInterfaces.fs@3173 token exact 17/17/17
-tests/FSharp.Compiler.ComponentTests/Language/ExtensionMethodTests.fs@3 token outside-damage 1/1/2 beyond-fcs:28
+tests/FSharp.Compiler.ComponentTests/Language/ExtensionMethodTests.fs@3 token divergent 1/1/2
 tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinNakedStructDU.fs@43 token exact 2/2/4
 tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinTypeWithExtensionGetPinnableReferenceReturningByref.fs@269 token outside-damage 5/5/6
 tests/FSharp.Compiler.ComponentTests/Language/FixedBindings/PinTypeWithExtensionGetPinnableReferenceReturningByref.fs@284 member exact 5/5/6

@@ -46,7 +46,7 @@ use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia}
 use crate::language_version::LanguageVersion;
 use crate::lexer::{LexError, Token};
 use crate::lexfilter::{
-    FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
+    ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
 };
 use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode, kind_interval};
 
@@ -347,6 +347,30 @@ pub fn diagnostics_are_version_invariant(
     lo.errors == hi.errors && lo.warnings == hi.warnings
 }
 
+/// The active-branch real tokens of `raw`: the substream LexFilter and the
+/// productions consume. Directive and inactive-code trivia are not active code.
+fn active_tokens<'a>(
+    raw: &[RawTok<'a>],
+) -> impl Iterator<Item = (Result<Token<'a>, LexError>, Range<usize>)> {
+    raw.iter().filter_map(|(res, span)| match res {
+        Ok(TriviaToken::Lexed(t)) => Some((Ok(t.clone()), span.clone())),
+        Err(PreprocError::Lex(e)) => Some((Err(e.clone()), span.clone())),
+        _ => None,
+    })
+}
+
+/// Every context the lex filter pushes over the token stream a parse of
+/// `source` under `symbols` and `lang` consumes (see
+/// [`crate::lexfilter::context_pushes`]).
+pub fn context_pushes(
+    source: &str,
+    symbols: &HashSet<String>,
+    lang: LanguageVersion,
+) -> Vec<ContextPush> {
+    let raw: Vec<RawTok<'_>> = lex_with_symbols_full_trivia(source, symbols).collect();
+    crate::lexfilter::context_pushes(source, lang, active_tokens(&raw))
+}
+
 fn parse_inner(
     source: &str,
     symbols: &HashSet<String>,
@@ -390,14 +414,7 @@ fn parse_inner(
     // productions consume. Directive / inactive-code trivia are not active
     // code, so they are dropped here; the parser still emits them from
     // `raw_tokens` for losslessness.
-    let filter_run = {
-        let active = raw_tokens.iter().filter_map(|(res, span)| match res {
-            Ok(TriviaToken::Lexed(t)) => Some((Ok(t.clone()), span.clone())),
-            Err(PreprocError::Lex(e)) => Some((Err(e.clone()), span.clone())),
-            _ => None,
-        });
-        filter_collect(source, lang, active)
-    };
+    let filter_run = filter_collect(source, lang, active_tokens(&raw_tokens));
     let filtered_tokens: Vec<FilteredTok<'_>> = filter_run.tokens;
     let offside_diagnostics: Vec<OffsideDiagnostic> = filter_run.diagnostics;
     let shape_depends_on_language_version = filter_run.shape_depends_on_language_version;

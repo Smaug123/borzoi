@@ -561,7 +561,9 @@ fn recovered_trees_match_fcs_under_deletion() {
             std::io::Write::write_all(&mut tmp, damaged_src.as_bytes()).expect("write");
             let json = fcs_ast_batch(tmp.path());
             let damaged = parse_as(&file.path, &damaged_src).expect("damaged parse panicked");
-            let token = match catch_unwind_silent(|| grade(&damaged, &json, &damaged_src)) {
+            let token = match catch_unwind_silent(|| {
+                grade(&damaged, &symbols_for(&file.path), &json, &damaged_src)
+            }) {
                 Ok(Ok(v)) => {
                     if let Some(d) = &v.first_divergence {
                         divergences.push(format!(
@@ -624,7 +626,7 @@ fn explain_recovered_file() {
     let src = std::fs::read_to_string(&path).expect("read the file to explain");
     let parse = parse_as(&path, &src).expect("our parser panicked");
     let json = fcs_ast_batch(&path);
-    let fcs_errors = fcs_error_spans(&json, &src);
+    let fcs_errors = fcs_error_spans(&json, &src, &parse);
     for e in &parse.errors {
         eprintln!(
             "our error {:?}: {}",
@@ -659,5 +661,5 @@ fn explain_recovered_file() {
             );
         }
     }
-    eprintln!("{:#?}", grade(&parse, &json, &src));
+    eprintln!("{:#?}", grade(&parse, &symbols_for(&path), &json, &src));
 }

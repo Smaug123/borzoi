@@ -51,11 +51,29 @@ from. Past that point FCS's tree has nothing to compare against. One of our
 units that starts beyond FCS's reach is therefore not graded, but only if it
 sits on its module's offside column. The manifest counts these units as
 `beyond-fcs:<n>`. A misaligned unit is debris, and stays a divergence whether
-or not FCS kept anything there. The offside column is read off the source
-layout: the column of the first token after the module's header (a named
-module's name, a nested module's `=`). Anchoring on our own first declaration
-instead would let that declaration, when it is itself debris, align with
-itself.
+or not FCS kept anything there. The offside column is the one our lex filter
+gives the block that separates the module's declarations
+(`borzoi_cst::parser::context_pushes`): the `SeqBlock` it opens for the
+module's body, or, for a nested module wrapped in `begin … end`, the block
+inside the `begin`. The lex filter is differentially tested against FCS's, so
+the column does not depend on what either parser made of the body. Anchoring on
+our own first declaration instead would let that declaration, when it is
+itself debris, align with itself. A unit's own column is its first significant
+token's, not its XML doc comment's: a comment is trivia to the offside rule.
+Columns are on the lex filter's scale, where a file-start BOM is not
+indentation.
+
+FCS reports a diagnostic with the file's `#line` directives applied, but its
+tree without. Before a diagnostic becomes damage, its lines are mapped back to
+physical ones by inverting FCS's `range.ApplyLineDirectives`; a mapped line
+that more than one directive's segment produces in the file damages each.
+
+`layout_grid` (in `common/recovery.rs`) generates module bodies on a known
+column, under each host (anonymous, top level, `=`, `= begin … end`), after a
+BOM, a line directive or neither, with and without a doc comment, on and off
+the column, and an attribute. It checks the column and
+each unit's alignment against the generator (FCS-free), and, against FCS, that
+the trees diverge exactly when a stray `member` spills an expression.
 
 A unit that one normaliser does not model is not compared, but it is counted.
 Every verdict carries `<compared>/<undamaged>/<total>`, and the manifests pin
@@ -108,9 +126,9 @@ shape, because that shape is what the member-completion handler anchors on.
 
 ## What remains
 
-These were measured on 2026-10-25. Of the 731 files that one parser or both
+These were measured on 2026-10-29. Of the 731 files that one parser or both
 reject, 268 are `exact`, 334 are `outside-damage`, and 129 are `divergent`. Of
-the 584 deletion cases against FCS, 98 are `divergent`, all in the token
+the 584 deletion cases against FCS, 99 are `divergent`, all in the token
 family. Every member-name deletion is `exact`.
 
 The largest class of divergence is the remains of a construct our parser
