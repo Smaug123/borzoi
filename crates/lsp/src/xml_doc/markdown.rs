@@ -149,6 +149,21 @@ fn collapse(text: &str) -> String {
     out
 }
 
+/// What a link whose words are blank reads as: its destination in their
+/// place, and — when the words were whitespace rather than nothing — a word
+/// break on either side, so `a<a href="u"> </a>b` reads `a u b`, not `aub`.
+/// An empty destination leaves just the word break.
+pub(super) fn blank_label_text(label: &str, url: &str) -> String {
+    debug_assert!(label.trim().is_empty(), "{label:?} is not blank");
+    if label.is_empty() {
+        url.to_string()
+    } else if url.is_empty() {
+        " ".to_string()
+    } else {
+        format!(" {url} ")
+    }
+}
+
 /// Whether `url` can be a link destination as printed (`<url>` with `<`, `>`,
 /// `\` and `&` backslash-escaped): no whitespace or control characters.
 fn is_printable_url(url: &str) -> bool {
@@ -221,7 +236,7 @@ fn normalize_inlines(inlines: Vec<Inline>) -> Vec<Inline> {
                 let url = url.replace('\0', "\u{FFFD}");
                 if !is_printable_url(&url) {
                     let shown = if text.trim().is_empty() {
-                        url
+                        blank_label_text(&text, &url)
                     } else {
                         format!("{text} ({url})")
                     };
@@ -230,11 +245,13 @@ fn normalize_inlines(inlines: Vec<Inline>) -> Vec<Inline> {
                 }
                 let text = collapse(&text);
                 if text.trim_matches(' ').is_empty() {
-                    atoms.push(Inline::Text(text));
+                    let gap = text;
+                    atoms.push(Inline::Text(gap.clone()));
                     atoms.push(Inline::Link {
                         text: url.clone(),
                         url,
                     });
+                    atoms.push(Inline::Text(gap));
                 } else {
                     if text.starts_with(' ') {
                         atoms.push(Inline::Text(" ".to_string()));
