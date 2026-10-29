@@ -1704,6 +1704,10 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs:1:13-1:14 binder agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs:1:17-1:19 expr agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs compared
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:6:5-6:6 binder agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:6:9-6:25 expr agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:7:5-7:6 binder agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:7:9-7:25 expr agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/MethodImplAttribute/MethodImplAttribute.NoInlining_InlineKeyword.fs compared

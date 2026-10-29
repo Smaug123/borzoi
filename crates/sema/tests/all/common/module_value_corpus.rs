@@ -412,16 +412,30 @@ pub const SHAPES: &[Shape] = &[
         gap: None,
         rejected: Rejection::No,
     },
-    // Declined: what the IL cannot carry.
-    declined(
+    // Several groups, some tupled: the pickle's group sizes split the IL
+    // parameters.
+    admitted(
         "mixed",
-        "",
         "mixed (a: int, b: int) (c: int) = a + b + c",
         &["(1, 2)", "3"],
+        Some("1"),
         false,
-        FunctionTyGap::Groups,
-        Rejection::No,
     ),
+    admitted(
+        "mixedG",
+        "mixedG (a: 'a, b: string) (c: 'b) (d: int, e: bool) = (a, c)",
+        &["(1, \"s\")", "true", "(2, false)"],
+        Some("1"),
+        true,
+    ),
+    admitted(
+        "mixedTupleParam",
+        "mixedTupleParam (p: int * string) (c: int) = c",
+        &["(1, \"s\")", "3"],
+        Some("1"),
+        false,
+    ),
+    // Declined: what the IL cannot carry.
     declined(
         "eqC",
         "",

@@ -6,7 +6,7 @@
 //! four things its F# type has: how the parameters group into curried
 //! arguments, the F#-only constraints on its type parameters, any unit of
 //! measure, and (in the return position) `unit`. The signature pickle supplies
-//! the first three per method — [`MethodLike::arg_group_count`], each
+//! the first three per method — [`MethodLike::arg_groups`], each
 //! parameter's [`FSharpConstraints`](borzoi_assembly::FSharpConstraints), and
 //! [`MethodLike::val_facts`] — and the fourth is a fixed rule. With them the IL
 //! signature *is* the F# type, so [`module_function_scheme`] rebuilds that type
@@ -40,7 +40,7 @@
 //! nullable-reference annotation is a gap too: `Ty` cannot carry F#'s `| null`.
 
 use borzoi_assembly::{
-    Access, AssemblyIdentity, Augmentation, EntityKind, MethodLike, NamedTypeHead, Nullability,
+    Access, ArgGroups, AssemblyIdentity, Augmentation, EntityKind, MethodLike, Nullability,
     ParamDefault, Primitive, TypeRef, ValFacts, ValMeasures,
 };
 
@@ -81,8 +81,8 @@ pub enum FunctionTyGap {
     /// not proven free of one.
     Measures,
     /// The parameters do not map onto argument groups in a way that is read:
-    /// several groups of which some are tupled, a group count the pickle did
-    /// not supply, a byref, an optional or a `params` parameter.
+    /// groups the pickle did not supply or that do not account for the
+    /// parameters, a byref, an optional or a `params` parameter.
     Groups,
     /// A parameter or the return has a type this bridge does not carry.
     Type,
@@ -92,25 +92,15 @@ pub enum FunctionTyGap {
 /// `env` — as a scheme: curried over its argument groups, with each of its
 /// type parameters as the [`Ty::Param`] of its index, ready for instantiation.
 ///
-/// The argument groups are the val's pickled ones
-/// ([`MethodLike::arg_group_count`]), and they map onto the IL parameters in
-/// exactly four ways, which together are the shapes read:
-///
-/// - **No group**: a module *value* (`let x = …`, or a type function such as
-///   `List.empty`, which compiles to a generic method). It has no parameter,
-///   and its type is the return type.
-/// - **One parameter per group**: a curried function, one domain per
-///   parameter. F# pickles an empty argument group only as a function's
-///   *only* one, and any other `()` group is one unit-typed parameter
-///   (`SynInfo.AdjustArgsForUnitElimination` in the F# compiler), so with as
-///   many parameters as groups no group is empty and none holds two.
-/// - **One group and no parameter**: that sole empty group, so `let f () = …`
-///   is `unit -> …`.
-/// - **One group and several parameters**: a tupled group,
-///   `let f (a, b) = …`, whose one domain is the tuple of the parameters.
-///
-/// Any other count (several groups, some of them tupled) needs the size of
-/// each group, which is not read, and declines.
+/// The argument groups are the val's pickled ones ([`curried_domains`]): a
+/// module *value* (`let x = …`, or a type function such as `List.empty`,
+/// which compiles to a generic method) has none, and its type is the return
+/// type; a function has one domain per group, the tuple of a group's
+/// parameters where it has several (`let f (a, b) c = …` is
+/// `a * b -> c -> …`), and `unit` for the sole empty group (`let f () = …`).
+/// F# pickles an empty group only as a function's sole one, and any other
+/// `()` group is one unit-typed parameter
+/// (`SynInfo.AdjustArgsForUnitElimination` in the F# compiler).
 ///
 /// A function whose F# result is a function returns that function type in
 /// the IL, so `let f x = fun y -> …` (one group) reads as `'a -> 'b -> 'c`,
@@ -148,9 +138,10 @@ pub(crate) fn module_function_scheme(
             match &facts.measures {
                 ValMeasures::Measured => return Err(FunctionTyGap::Measures),
                 ValMeasures::NoDirectMeasure { heads } => {
-                    if !heads.iter().all(|head| {
-                        is_fsharp_core_array_head(head) || env.head_hides_no_measure(handle, head)
-                    }) {
+                    if !heads
+                        .iter()
+                        .all(|head| env.head_hides_no_measure(handle, head))
+                    {
                         return Err(FunctionTyGap::Measures);
                     }
                 }
@@ -188,7 +179,7 @@ pub(crate) fn module_function_scheme(
         .iter()
         .map(|p| bridge.ty(&p.ty))
         .collect::<Result<Vec<_>, _>>()?;
-    let domains = curried_domains(method, params)?;
+    let domains = curried_domains(method, &params)?;
     Ok(domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
         arg: Box::new(arg),
         ret: Box::new(ret),
@@ -196,33 +187,37 @@ pub(crate) fn module_function_scheme(
 }
 
 /// The curried domains of `method`'s F# type, from its bridged IL parameter
-/// types `params` and its pickled argument-group count, in the four shapes
-/// [`module_function_scheme`] lists; any other count is a
-/// [`FunctionTyGap::Groups`]. This is the one place the groups are mapped
-/// onto the parameters, so reading each group's own size, which would admit
-/// several groups of which some are tupled, changes only this function.
-fn curried_domains(method: &MethodLike, mut params: Vec<Ty>) -> Result<Vec<Ty>, FunctionTyGap> {
-    let value = method.is_module_value_binding;
-    Ok(match (method.arg_group_count, params.len()) {
-        (Some(0), 0) if value => Vec::new(),
-        (Some(1), 0) if !value => vec![Ty::named(UNIT)],
-        (Some(1), n) if n >= 2 && !value => vec![Ty::Tuple(std::mem::take(&mut params))],
-        (Some(groups), n) if groups == n && !value => params,
-        _ => return Err(FunctionTyGap::Groups),
-    })
-}
-
-/// Whether a pickled head is FSharp.Core's vector tycon (`'T[]`), which F#
-/// declares in the pickle alone, with no IL type to resolve: it carries no
-/// measure of its own, and its element is a type argument the pickle's scan
-/// has already covered.
-fn is_fsharp_core_array_head(head: &NamedTypeHead) -> bool {
-    head.ccu.as_deref() == Some("FSharp.Core")
-        && head
-            .path
-            .iter()
-            .map(String::as_str)
-            .eq(["Microsoft", "FSharp", "Core", "[]`1"])
+/// types `params` split by the val's pickled argument groups
+/// ([`MethodLike::arg_groups`], [`CurriedArgs::split`](borzoi_assembly::CurriedArgs::split)): a group of one
+/// argument is that argument's type, a group of several the tuple of theirs,
+/// and the empty group `unit`. Groups that are not read, a leading receiver
+/// (an augmentation, which is not a module function), groups that do not
+/// account for exactly the parameters there are, and an empty group beside
+/// others (F# pickles one only as a function's sole group) are all a
+/// [`FunctionTyGap::Groups`]. A value has no group, and a function at least
+/// one, which the pickle's value flag must agree with.
+fn curried_domains(method: &MethodLike, params: &[Ty]) -> Result<Vec<Ty>, FunctionTyGap> {
+    let ArgGroups::Read(curried) = &method.arg_groups else {
+        return Err(FunctionTyGap::Groups);
+    };
+    if curried.leading_receiver
+        || method.is_module_value_binding != curried.groups.is_empty()
+        || method.arg_group_count != Some(curried.groups.len())
+    {
+        return Err(FunctionTyGap::Groups);
+    }
+    let split = curried.split(params).ok_or(FunctionTyGap::Groups)?;
+    let sole = split.groups.len() == 1;
+    split
+        .groups
+        .iter()
+        .map(|group| match group {
+            [] if sole => Ok(Ty::named(UNIT)),
+            [] => Err(FunctionTyGap::Groups),
+            [one] => Ok(one.clone()),
+            many => Ok(Ty::Tuple(many.to_vec())),
+        })
+        .collect()
 }
 
 /// Whether a reference names one of the assemblies that hold, or forward to,

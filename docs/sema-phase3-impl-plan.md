@@ -184,8 +184,8 @@ signature read as its F# type (`function_ty::module_function_scheme`) and
 instantiated, each type parameter a fresh scheme-instantiation variable. That
 reading is sound only with three facts the IL cannot carry, all now read off
 each module function's pickled val (`rebuild_module_member_list`): its curried
-argument groups (one IL parameter per group, else it declines — `||>`'s tupled
-group does), the F#-only constraints on its type parameters (any constraint
+argument groups (each group's size, which splits the IL parameters, so
+`||>`'s tupled first group reads as `'T1 * 'T2`), the F#-only constraints on its type parameters (any constraint
 declines: `+` is statically resolved, `=` needs `equality`, so instantiating
 either as a plain variable would claim a constraint is modelled that is not),
 and whether its type mentions a unit of measure (IL erases them), directly or
@@ -301,11 +301,11 @@ generalised in-file binder (`Gen::scheme_use`, shared by both). That holds in
 every position — a bare value, applied, partially applied, piped, composed,
 passed as an argument, a parenthesised callee, a module-qualified callee (a
 value application, not a method call) — and for infix operators of any F#
-assembly. `module_function_scheme` now reads four group shapes off the pickled
-group count: a value (no group: `let x = …` and type functions such as
-`List.empty`), one parameter per group, the sole empty group (`unit -> …`),
-and one tupled group; several groups of which some are tupled decline until
-each group's size is read. It carries reference tuples, vectors (FSharp.Core's
+assembly. `module_function_scheme` splits the IL parameters by the pickled
+argument groups (`MethodLike::arg_groups`, `CurriedArgs::split`): a value has
+none (`let x = …`, and type functions such as `List.empty`), a group of one
+parameter is its type, a group of several their tuple
+(`let f (a, b) c = …`), and the sole empty group `unit`. It carries reference tuples, vectors (FSharp.Core's
 `[]`1` pickle head hides no measure) and non-generic named types: the type
 the reference's own scope resolves to (following forwarders), when it is the
 only type at its path and F# names it as the IL does — `Ty` keeps no
@@ -319,12 +319,12 @@ only after inference (FS0417), which leaves its type standing, so it is typed.
 
 `infer_assembly_values_diff` grades it against both FCS oracles over a
 generated fixture assembly (`module_value_corpus`): 63 signature shapes
-(curried, generic, unit group, tupled group, tuple-typed parameter, function
-returned, function taken, `obj` taken, named types, arrays, values, type
-functions, inline, `[<CompiledName>]`, warning-level attributes, and the
-declines — constraints, measures, renamed and generic named types, mixed
-groups, `[<RequiresExplicitTypeArguments>]`, obsolete and compiler-message
-errors, an internal val, a literal) × 14 use forms × 6 positions × 3
+(curried, generic, unit group, tupled group, tupled groups beside curried
+ones, tuple-typed parameter, function returned, function taken, `obj` taken,
+named types, arrays, values, type functions, inline, `[<CompiledName>]`,
+warning-level attributes, and the declines — constraints, measures, renamed
+and generic named types, `[<RequiresExplicitTypeArguments>]`, obsolete and
+compiler-message errors, an internal val, a literal) × 14 use forms × 6 positions × 3
 spellings, with a per-row obligation on every well-typed synth row whose FCS
 type is ground (over 3 000), a census check that each declined shape records
 its reason, and an ill-typed twin per shape; the pipe and use-order grids of
@@ -333,7 +333,14 @@ the in-file grids' obligations unchanged; the argument-check generator
 relocated, with every commit the in-file program makes required of the
 relocated one; operators and active patterns outside FSharp.Core; and every
 FSharp.Core module member the reading admits (167), returned from a function.
-Each gate of the reading was checked by deleting it. Measured on the stride-13
+Each gate of the reading was checked by deleting it; some test fails without
+each, except five guards no input reaches (a leading receiver, which an
+augmentation already declines before it; agreement between the val's value
+flag, group count and groups, which come from one val; an empty group beside
+others, which F# never pickles; a path whose head is an in-file binder, which
+the resolver never records as a module member; and a named type renamed by
+`[<CompiledName>]`, whose IL name the env's source-name index already misses).
+Measured on the stride-13
 corpus sample: 890 + 862 → 897 + 868 agreements (13 added, none lost), 0
 divergences, 973 → 985 complete bindings; bridging every named type, unchecked,
 added nothing over that.

@@ -685,9 +685,8 @@ pub enum OperatorGap {
     /// an IL one — or whose constraints were not read.
     Constrained,
     /// A referenced assembly's operator whose signature does not carry over as
-    /// its F# type: several argument groups of which one is tupled, a type the
-    /// bridge does not carry (`@` over `'T list`), a unit of measure, or an
-    /// obsolete-as-error marker (`^`).
+    /// its F# type: a type the bridge does not carry (`@` over `'T list`), a
+    /// unit of measure, or an obsolete-as-error marker (`^`).
     Signature,
 }
 

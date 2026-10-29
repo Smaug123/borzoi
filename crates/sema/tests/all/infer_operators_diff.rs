@@ -239,7 +239,7 @@ const OPS: &[Op] = &[
     op("+.", Sort::Int, Sort::Int, Sort::Int, Expect::Typed),
     op("&&.", Sort::Bool, Sort::Bool, Sort::Bool, Expect::Typed),
     // A signature over a type the bridge does not carry (`'T list` and `'T
-    // ref` are F# types under a compiled name), or a tupled argument group.
+    // ref` are F# types under a compiled name).
     op(
         "@",
         Sort::IntList,
@@ -254,20 +254,10 @@ const OPS: &[Op] = &[
         Sort::Unit,
         Expect::Declined(OperatorGap::Signature),
     ),
-    op(
-        "||>",
-        Sort::Pair,
-        Sort::Curried,
-        Sort::Int,
-        Expect::Declined(OperatorGap::Signature),
-    ),
-    op(
-        "<||",
-        Sort::Curried,
-        Sort::Pair,
-        Sort::Int,
-        Expect::Declined(OperatorGap::Signature),
-    ),
+    // A tupled argument group beside a curried one, split by the pickle's
+    // group sizes.
+    op("||>", Sort::Pair, Sort::Curried, Sort::Int, Expect::Typed),
+    op("<||", Sort::Curried, Sort::Pair, Sort::Int, Expect::Typed),
     Op {
         always_ill_typed: true,
         ..op(
