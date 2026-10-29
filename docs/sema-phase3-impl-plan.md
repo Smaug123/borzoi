@@ -306,8 +306,10 @@ group count: a value (no group: `let x = …` and type functions such as
 `List.empty`), one parameter per group, the sole empty group (`unit -> …`),
 and one tupled group; several groups of which some are tupled decline until
 each group's size is read. It carries reference tuples, vectors (FSharp.Core's
-`[]`1` pickle head hides no measure) and non-generic named types the env
-resolves to one entity named as the IL names it; a generic named type
+`[]`1` pickle head hides no measure) and non-generic named types: the type
+the reference's own scope resolves to (following forwarders), when it is the
+only type at its path and F# names it as the IL does — `Ty` keeps no
+assembly, so a type two assemblies declare declines on both sides; a generic named type
 (`'T list`, `'T option`, `seq<'T>`) declines, since FSharp.Core's are renamed
 and `Ty` carries one path. It also declines a val another assembly cannot
 access. A preceding file's value, an inaccessible val (the resolver records
@@ -335,6 +337,13 @@ Each gate of the reading was checked by deleting it. Measured on the stride-13
 corpus sample: 890 + 862 → 897 + 868 agreements (13 added, none lost), 0
 divergences, 973 → 985 complete bindings; bridging every named type, unchecked,
 added nothing over that.
+
+A member access on an F# record, union or exception type publishes no
+receiver node: FCS reads a record field as a field get, under which its typed
+tree keeps no node at the receiver. This was a wrong commit before assembly
+values, through an annotation (`let b (v: R) = v.Q` published `v`), which the
+member-access grid of BCL receivers could not reach; a grid over F#-authored
+receiver kinds (record, union, class, struct record) now does.
 
 Opening any F# assembly module stops the static method-call engine committing
 (`System.String.IsNullOrEmpty(h)` commits in a file with no `open` and not in

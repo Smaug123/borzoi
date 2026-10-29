@@ -299,6 +299,17 @@ pub const SHAPES: &[Shape] = &[
         FunctionTyGap::Type,
         Rejection::No,
     ),
+    // Values of a record and of a class, whose members a use reaches.
+    admitted("solo0", "solo0 : Solo = { Q = 1 }", &[], None, false),
+    admitted("soloUnion0", "soloUnion0 = SoloCase 1", &[], None, false),
+    admitted("soloClass0", "soloClass0 = SoloClass(1)", &[], None, false),
+    admitted(
+        "soloStruct0",
+        "soloStruct0 : SoloStruct = { Q = 1 }",
+        &[],
+        None,
+        false,
+    ),
     // Returns that need a rule of their own.
     admitted(
         "retObj",
@@ -573,7 +584,35 @@ type Dist = float<m>
 
 [<CompiledName(\"RenamedRecord\")>]
 type Renamed = { X: int }
+
+type Solo =
+    { Q: int }
+    member this.M = this.Q
+
+type SoloUnion =
+    | SoloCase of q: int
+    member this.Q = match this with SoloCase q -> q
+    member this.M = 1
+
+type SoloClass(q: int) =
+    member _.Q = q
+    member _.M = q
+
+[<Struct>]
+type SoloStruct =
+    { Q: int }
+    member this.M = this.Q
 ";
+
+/// The receiver types of the member-access grid, and a module value of each
+/// in [`MODULE`]: an F# record, union, class and struct record, each with a
+/// member `Q` (a field where the kind has fields) and a property `M`.
+pub const RECEIVERS: &[(&str, &str)] = &[
+    ("Solo", "solo0"),
+    ("SoloUnion", "soloUnion0"),
+    ("SoloClass", "soloClass0"),
+    ("SoloStruct", "soloStruct0"),
+];
 
 /// The module of operators, outside FSharp.Core: one sealed, one generic, one
 /// constrained, and one over a type the bridge does not carry.
@@ -589,8 +628,21 @@ module Ops =
     let (|Pos|_|) (x: int) = if x > 0 then Some x else None
 ";
 
-/// The fixture source: [`SHAPES`] as the module [`MODULE`], and each of
-/// [`RELOCATED`] as its own module, its `module X` line dropped.
+/// `Collision.Thing`, which the twin assembly (`module_value_twin_env`)
+/// declares too, with a member of another type.
+const COLLISION: &str = "
+namespace Collision
+
+type Thing = { P: string }
+
+module A =
+    let item: Thing = { P = \"s\" }
+    let take (t: Thing) = t.P
+";
+
+/// The fixture source: [`SHAPES`] as the module [`MODULE`], each of
+/// [`RELOCATED`] as its own module, its `module X` line dropped, and
+/// [`COLLISION`].
 pub fn fixture_source() -> String {
     let mut out = format!("namespace {NS}\n\n#nowarn \"44\"\n#nowarn \"9001\"\n\n{PREAMBLE}\n");
     out.push_str(&format!("module {MODULE} =\n"));
@@ -614,6 +666,7 @@ pub fn fixture_source() -> String {
             out.push_str(&format!("    {line}\n"));
         }
     }
+    out.push_str(COLLISION);
     out
 }
 

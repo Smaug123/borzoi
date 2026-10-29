@@ -44,8 +44,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::common::{
-    ensure_module_value_fixture_built, full_bcl_env, invoke_fcs_dump, invoke_fcs_dump_with_refs,
-    module_value_fixture_env, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
+    full_bcl_env, invoke_fcs_dump, invoke_fcs_dump_with_refs, module_value_fixture_env,
+    module_value_fixture_refs, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
     temp_fs_file, try_invoke_fcs_dump_with_refs,
 };
 use borzoi_cst::parser::parse;
@@ -399,10 +399,9 @@ impl Defs {
     fn references(self) -> (&'static AssemblyEnv, Vec<&'static Path>) {
         match self {
             Defs::InFile => (full_bcl_env(), Vec::new()),
-            Defs::Assembly | Defs::InFileBesideOpen => (
-                module_value_fixture_env(),
-                vec![ensure_module_value_fixture_built()],
-            ),
+            Defs::Assembly | Defs::InFileBesideOpen => {
+                (module_value_fixture_env(), module_value_fixture_refs())
+            }
         }
     }
 }

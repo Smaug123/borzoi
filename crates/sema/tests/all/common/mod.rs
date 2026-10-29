@@ -1455,9 +1455,39 @@ pub fn ensure_module_value_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the module-value fixture's **twin** (`tests/fixtures/module_value_twin_env`,
+/// `SemaModuleValueTwin.dll`), which declares a type of the same name as one
+/// the fixture declares, once per test binary and return its `.dll` path.
+pub fn ensure_module_value_twin_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/module_value_twin_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build module-value twin");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaModuleValueTwin.dll")
+        })
+        .as_path()
+}
+
+/// The references [`module_value_fixture_env`] adds to [`full_bcl_env`], for
+/// the oracle.
+pub fn module_value_fixture_refs() -> Vec<&'static Path> {
+    vec![
+        ensure_module_value_fixture_built(),
+        ensure_module_value_twin_built(),
+    ]
+}
+
 /// [`full_bcl_env`] plus the module-value fixture
-/// ([`ensure_module_value_fixture_built`]), the reference set its
-/// differential hands the oracle too.
+/// ([`ensure_module_value_fixture_built`]) and its twin
+/// ([`ensure_module_value_twin_built`]), the reference set its differential
+/// hands the oracle too.
 pub fn module_value_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
     static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
     ENV.get_or_init(|| {
@@ -1472,11 +1502,14 @@ pub fn module_value_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
         let netstd = std::fs::read(&netstd_path).expect("read netstandard.dll");
         let fixture = std::fs::read(ensure_module_value_fixture_built())
             .expect("read the module-value fixture");
+        let twin =
+            std::fs::read(ensure_module_value_twin_built()).expect("read the module-value twin");
         let views = vec![
             Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
             Ecma335Assembly::parse(&sysrt).expect("parse System.Runtime.dll"),
             Ecma335Assembly::parse(&netstd).expect("parse netstandard.dll"),
             Ecma335Assembly::parse(&fixture).expect("parse SemaModuleValueFixture.dll"),
+            Ecma335Assembly::parse(&twin).expect("parse SemaModuleValueTwin.dll"),
         ];
         borzoi_sema::AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
     })

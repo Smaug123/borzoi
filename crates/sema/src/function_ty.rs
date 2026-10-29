@@ -321,25 +321,28 @@ impl Bridge<'_> {
                 ))
             }
             // A non-generic, top-level named type, by the path FCS renders
-            // it under — which is the IL's only when the env holds exactly
-            // one such type and F# names it so too: not renamed by a
+            // it under — which is the IL's only when the type the reference's
+            // scope resolves to is the only one the env holds at that path
+            // (`Ty` keeps no assembly, so another's would be read in its
+            // place) and F# names it so too: not renamed by a
             // `[<CompiledName>]` (FCS renders the compiled name, hover the
             // source one, and `Ty` carries one path), and not a module, an
             // abbreviation or a measure, which no IL signature names. A
             // byref-like type is not one F# lets a function value take.
             TypeRef::Named {
+                assembly,
                 namespace,
                 name,
                 type_args,
                 segment_arities,
-                ..
             } if type_args.is_empty()
                 && segment_arities.as_slice() == [0]
                 && !name.contains('/') =>
             {
+                let scope = assembly.as_ref().unwrap_or(self.declaring);
                 let handle = self
                     .env
-                    .lookup_type_if_certain(namespace, name, 0)
+                    .sole_type_referenced(&scope.name, namespace, name)
                     .ok_or(FunctionTyGap::Type)?;
                 let entity = self.env.entity(handle);
                 let mut path = namespace.clone();

@@ -4925,7 +4925,17 @@ impl<'a> Gen<'a> {
         // Whether the receiver has nodes at all is then an assembly reading —
         // the member's existence — so under the seal below it is not confirmed:
         // an incomplete projection publishes only what an empty env would.
+        //
+        // Nor is it on an F# record, union or exception type: FCS reads such a
+        // type's field as a field get, under which the typed tree keeps no
+        // node at the receiver (`let f (v: R) = v.Q` has one at `v.Q` only).
+        // Its other members keep one, so this under-publishes there.
+        let fsharp_field_carrier = matches!(
+            self.env.entity(decl_handle).kind,
+            EntityKind::Record | EntityKind::Union | EntityKind::Exception
+        );
         if let Some(&g) = self.guard_on_member.get(&use_range)
+            && !fsharp_field_carrier
             && !self.env.identities_incomplete()
             && !self.guards[g].confirmed
         {

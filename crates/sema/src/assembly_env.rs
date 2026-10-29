@@ -4449,6 +4449,34 @@ impl AssemblyEnv {
         verdict
     }
 
+    /// The type a signature's reference to `namespace.name` denotes, read
+    /// through the reference's own resolution scope — the assembly called
+    /// `scope`, following its type forwarders — when it is also the **only**
+    /// type the env holds at that path. `Ty` names a type by its path alone,
+    /// so a type another assembly declares at the same path would have that
+    /// path's members resolved against whichever one a lookup finds; such a
+    /// path declines, as does a reference whose scope resolves nothing or a
+    /// path with a dropped type. A module of the same source name (a type's
+    /// companion) is not a type and does not count, nor does a generic type of
+    /// the same name (`IComparable<'T>` beside `IComparable`), which `Ty` tells
+    /// apart by its arguments.
+    pub(crate) fn sole_type_referenced(
+        &self,
+        scope: &str,
+        namespace: &[String],
+        name: &str,
+    ) -> Option<EntityHandle> {
+        let mut path = namespace.to_vec();
+        path.push(name.to_owned());
+        let target = self.forwarded_target_at_path(scope, &path, ABBREV_CHASE_FUEL)?;
+        let mut types = self
+            .types_named(namespace, name)
+            .iter()
+            .filter(|&&h| !self.is_module(h) && self.entity(h).generic_parameters.is_empty());
+        let sole = matches!((types.next(), types.next()), (Some(&h), None) if h == target);
+        (sole && self.lookup_type_if_certain(namespace, name, 0) == Some(target)).then_some(target)
+    }
+
     /// Whether the named type `head`, mentioned by a signature in `from`'s
     /// assembly, provably hides no unit of measure: it resolves to a type that
     /// is not an abbreviation, or to an abbreviation whose target is decoded

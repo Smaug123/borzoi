@@ -33,10 +33,10 @@
 
 use std::collections::HashMap;
 
-use crate::common::module_value_corpus::{MODULE, NS, OPS_MODULE, Rejection, SHAPES, Shape};
+use crate::common::module_value_corpus::{self, MODULE, NS, OPS_MODULE, Rejection, SHAPES, Shape};
 use crate::common::{
-    ensure_module_value_fixture_built, full_bcl_env, invoke_fcs_dump_with_refs,
-    module_value_fixture_env, parse_fcs_binder_types_with_errors, temp_fs_file,
+    full_bcl_env, invoke_fcs_dump_with_refs, module_value_fixture_env, module_value_fixture_refs,
+    parse_fcs_binder_types_with_errors, temp_fs_file,
 };
 use crate::infer_operators_diff::{
     Defs, Row, argument_check_file, check_in, ordered_pair_grid, pipe_grid,
@@ -547,11 +547,7 @@ fn every_admitted_shape_reads_as_the_type_fcs_gives_it() {
         src.push_str(&format!("{prefix}{MODULE}.{}\n", shape.name));
     }
     let path = temp_fs_file("module_value_readings", &src);
-    let json = invoke_fcs_dump_with_refs(
-        "binder-types",
-        &path,
-        &[ensure_module_value_fixture_built()],
-    );
+    let json = invoke_fcs_dump_with_refs("binder-types", &path, &module_value_fixture_refs());
     let _ = std::fs::remove_file(&path);
     let (fcs, errors) = parse_fcs_binder_types_with_errors(&json, &src);
     let erroring: Vec<u32> = errors.iter().map(|e| e.line).collect();
@@ -648,6 +644,88 @@ fn an_assembly_operator_outside_fsharp_core_is_an_application_of_its_signature()
     assert!(
         c.errors >= 4,
         "the ill-typed operator file stopped being rejected: {c:?}"
+    );
+}
+
+/// Two assemblies declare `Collision.Thing`, with `P` a `string` in one and
+/// an `int` in the other. `Ty` names a type by its path alone, so reading a
+/// value of either assembly's `Thing` as that path would resolve its members
+/// against whichever one a path lookup finds: neither may be read, and what
+/// is committed must be FCS's.
+#[test]
+fn a_named_type_two_assemblies_declare_is_not_read() {
+    let src = "module Collide\n\
+               let a () = let v = Collision.A.item in v.P\n\
+               let b () = let v = Collision.B.item in v.P\n\
+               let c () = Collision.B.item\n\
+               let d () = Collision.A.take Collision.A.item\n\
+               let e () = Collision.B.take Collision.B.item\n";
+    // Both sides decline, the one a path lookup happens to land on too: which
+    // one that is depends on reference order, which `Ty` does not carry.
+    let accesses: Vec<(usize, usize)> = ["Collision.A.item in v.P", "Collision.B.item in v.P"]
+        .iter()
+        .map(|body| {
+            let at = src.find(body).expect("the row") + body.len() - "v.P".len();
+            (at, at + "v.P".len())
+        })
+        .collect();
+    let rows: Vec<Row> = accesses
+        .iter()
+        .map(|&range| Row { range, synth: true })
+        .collect();
+    let c = check_in(Defs::Assembly, "collide", src, &rows, true).expect("FCS checks the file");
+    assert!(
+        c.committed_rows.is_empty() && c.binders == 0,
+        "a value of the ambiguous type is read: {c:?}"
+    );
+    assert!(
+        c.reasons
+            .contains(&Incomplete::AssemblyValue(FunctionTyGap::Type)),
+        "the ambiguous type is read: {c:?}"
+    );
+}
+
+/// A member access on an assembly value of a record or a class type, through a
+/// local, a parameter and the path itself: the receiver's and the access's
+/// nodes must be FCS's, and the accesses commit. FCS keeps no node at a
+/// record field get's receiver (`let b (v: Solo) = v.Q` has one at `v.Q`
+/// only), where a property's receiver has one.
+#[test]
+fn a_member_of_an_assembly_value_is_typed_as_fcs_types_it() {
+    let mut src = format!(
+        "module Members\n\
+         open {NS}\n\
+         open {NS}.{MODULE}\n"
+    );
+    // The accesses through a local bound to an assembly value, which must
+    // commit; the others are graded only.
+    let mut must = Vec::new();
+    for (ty, value) in module_value_corpus::RECEIVERS {
+        for member in ["Q", "M"] {
+            let n = must.len();
+            let local = format!("let a{n} () = let v = {value} in ");
+            let start = src.len() + local.len();
+            src.push_str(&format!("{local}v.{member}\n"));
+            must.push((start, start + 2 + member.len()));
+            src.push_str(&format!("let b{n} (v: {ty}) = v.{member}\n"));
+            src.push_str(&format!("let c{n} () = {value}.{member}\n"));
+            src.push_str(&format!("let d{n} () = {MODULE}.{value}.{member}\n"));
+            src.push_str(&format!("let e{n} () = ({value}.{member}, {value})\n"));
+        }
+    }
+    let rows: Vec<Row> = must
+        .iter()
+        .map(|&range| Row { range, synth: true })
+        .collect();
+    let c = check_in(Defs::Assembly, "members", &src, &rows, true).expect("FCS checks the file");
+    let missed: Vec<&str> = must
+        .iter()
+        .filter(|r| !c.committed_rows.contains(r))
+        .map(|&(s, e)| &src[s..e])
+        .collect();
+    assert!(
+        missed.len() * 4 <= must.len(),
+        "most member accesses on an assembly value do not commit: {missed:?}\n{src}"
     );
 }
 
