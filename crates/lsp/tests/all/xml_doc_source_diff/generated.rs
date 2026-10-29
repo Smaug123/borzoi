@@ -434,7 +434,7 @@ impl Item {
                 out.push_str(&format!("    let nv{n} = 1\nlet _ = N{n}.nv{n}"));
             }
             // Named and optional named arguments whose names are also
-            // documented locals (resolution reads them as the locals, #324).
+            // documented locals: each label is the parameter, the operand the local.
             Template::NamedArguments => {
                 out.push_str(&format!(
                     "type NA{n}(q{n}: int, ?o{n}: int) =\n    member _.X = q{n}\nlet call{n} () =\n"

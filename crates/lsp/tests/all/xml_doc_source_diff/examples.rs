@@ -170,55 +170,55 @@ fn an_assembly_namesake_of_another_arity_is_not_shown_the_source_doc() {
     assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
 }
 
+/// Asserts that a named argument's label in `src` is no hover site — FCS binds
+/// it to the callee's parameter, and resolution leaves it unresolved (#324) —
+/// while the `value` operand right of its `=` shows the local's doc, as FCS
+/// does.
+#[track_caller]
+fn assert_label_is_no_site(src: &str, name: &str, label: usize, value: usize) {
+    let sites = occurrences(src, name);
+    assert!(
+        sites.iter().all(|(at, _, _)| *at != label),
+        "the label is a hover site: {sites:?}"
+    );
+    let (verdict, fcs) = site(&sites, value);
+    assert_eq!(fcs, [" local"]);
+    assert_eq!(verdict, Verdict::Agree { attached: true });
+}
+
 #[test]
-fn a_named_argument_name_declines() {
-    // The left `areSimilar` is the constructor's parameter to FCS; resolution
-    // finds the local (#324).
+fn a_named_argument_name_is_no_doc_site() {
     let src = "module M\ntype A(areSimilar: int) =\n    member _.X = areSimilar\nlet h () =\n    /// local\n    let areSimilar = 1\n    A(areSimilar = areSimilar)\n";
-    let sites = occurrences(src, "areSimilar");
-    let lhs = src.rfind("A(areSimilar").unwrap() + 2;
-    let rhs = src.rfind("areSimilar").unwrap();
-    let at = |offset: usize| {
-        sites
-            .iter()
-            .find(|(at, _, _)| *at == offset)
-            .unwrap_or_else(|| panic!("no graded site at {offset}: {sites:?}"))
-    };
-    assert_eq!(at(lhs).2, Vec::<String>::new());
-    assert_eq!(
-        at(lhs).1,
-        Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
-    );
-    assert_eq!(at(rhs).2, [" local"]);
-    assert_eq!(at(rhs).1, Verdict::Agree { attached: true });
+    let label = src.rfind("A(areSimilar").unwrap() + 2;
+    assert_label_is_no_site(src, "areSimilar", label, src.rfind("areSimilar").unwrap());
 }
 
 #[test]
-fn an_optional_named_argument_name_declines() {
+fn an_optional_named_argument_name_is_no_doc_site() {
     let src = "module M\ntype A(?other: int) =\n    member _.X = other\nlet h () =\n    /// local\n    let other = 1\n    A(?other = Some other)\n";
-    let sites = occurrences(src, "other");
-    let lhs = src.find("?other =").unwrap() + 1;
-    let (_, verdict, fcs) = sites
-        .iter()
-        .find(|(at, _, _)| *at == lhs)
-        .unwrap_or_else(|| panic!("no graded site at {lhs}: {sites:?}"));
-    assert_eq!(fcs, &Vec::<String>::new());
-    assert_eq!(
-        verdict,
-        &Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
-    );
+    let label = src.find("?other =").unwrap() + 1;
+    assert_label_is_no_site(src, "other", label, src.rfind("other").unwrap());
 }
 
 #[test]
-fn a_named_argument_name_in_a_new_expression_declines() {
+fn a_named_argument_name_in_a_new_expression_is_no_doc_site() {
     let src = "module M\ntype A(arg: int) =\n    member _.X = arg\nlet h () =\n    /// local\n    let arg = 1\n    new A(arg = arg)\n";
-    let sites = occurrences(src, "arg");
-    let (verdict, fcs) = site(&sites, src.find("A(arg =").unwrap() + 2);
-    assert_eq!(fcs, Vec::<String>::new());
-    assert_eq!(
-        verdict,
-        Verdict::Declined(SourceDocDecline::NamedArgumentCandidate)
-    );
+    let label = src.find("A(arg =").unwrap() + 2;
+    assert_label_is_no_site(src, "arg", label, src.rfind("arg").unwrap());
+}
+
+/// The left of `=` in a function's parenthesised argument is an equality
+/// operand, not a label: FCS binds it to the local and shows its doc.
+#[test]
+fn an_equality_operand_in_a_function_argument_shows_its_doc() {
+    let src =
+        "module M\nlet f (b: bool) = b\nlet h () =\n    /// local\n    let x = 1\n    f (x = x)\n";
+    let sites = occurrences(src, "x");
+    for at in [src.find("(x =").unwrap() + 1, src.rfind('x').unwrap()] {
+        let (verdict, fcs) = site(&sites, at);
+        assert_eq!(fcs, [" local"], "FCS's doc at {at}");
+        assert_eq!(verdict, Verdict::Agree { attached: true }, "at {at}");
+    }
 }
 
 #[test]
