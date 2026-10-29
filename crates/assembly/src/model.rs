@@ -706,8 +706,9 @@ pub struct TypeForwarder {
     /// The metadata type name — backtick-mangled for generics
     /// (`IEnumerable`1`).
     pub name: String,
-    /// Simple name of the assembly the type forwards to.
-    pub assembly: String,
+    /// The assembly the type forwards to, as the forwarder's `AssemblyRef`
+    /// names it: a binder matches this whole identity, not only the name.
+    pub assembly: AssemblyIdentity,
 }
 
 /// Assembly-level projection degradations. Whole-type drops and F# overlay
@@ -919,6 +920,16 @@ pub struct Entity {
     /// `FSharp.Core` itself and consumed by name elsewhere in FCS), so
     /// the well-known-attribute sync test does not cover it.
     pub is_require_qualified_access: bool,
+    /// The backtick arity suffix of the `TypeDef` name this entity was read
+    /// from, as written (`C`2` → `Some(2)`, `Enumerator` → `Some(0)`):
+    /// [`Self::name`] has it stripped, and it need not equal the number of
+    /// type parameters the entity introduces (F#'s `[<CompiledName("C`2")>]`
+    /// on a one-parameter type). `None` for an entity no `TypeDef` row stands
+    /// behind: an F# abbreviation or exception-abbreviation marker from the
+    /// pickle. A consumer binding metadata names matches this, not the
+    /// parameter count.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub metadata_arity_suffix: Option<usize>,
     /// `true` when the entity carries
     /// `[Microsoft.FSharp.Core.NoEqualityAttribute]`. F# emits this to
     /// suppress the auto-derived `Equals` / `GetHashCode` (and the
@@ -1705,6 +1716,48 @@ pub struct MethodLike {
     /// MethodDef is then unprovable. Where it is `None`, [`crate::doc_id`]
     /// computes the ID from the signature.
     pub xml_doc_sig: Option<String>,
+    /// Whether some `MethodImpl` row names this method as its body without
+    /// contributing to [`Self::implements`] or [`Self::unclassified_impls`]: a
+    /// redirection to an ancestor *class* method — C# emits one for a
+    /// covariant-return override, which is `newslot` and so does not read as
+    /// an override from its flags alone — or a row whose declaration could
+    /// not be classified. A consumer deciding what this method overrides or
+    /// implements must treat that as unknown when this is set.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub has_other_method_impl: bool,
+    /// The projection ignored an optional custom modifier (`modopt`) somewhere
+    /// in this member's signature, as ECMA-335 II.7.1.1 permits. Roslyn's
+    /// runtime signature comparers do not ignore one, so a consumer
+    /// reproducing those comparisons cannot tell this signature from the same
+    /// one without it (#339).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub drops_optional_modifier: bool,
+}
+
+/// The vtable facts of one property or event accessor. C# reads a property
+/// (or event) as an override when any of its accessors is one, and the
+/// accessors need not agree, so a consumer deciding what a property
+/// overrides needs each accessor's flags rather than a summary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AccessorSlot {
+    /// The accessor method's metadata name, verbatim. Conventionally
+    /// `get_P`/`set_P`, `add_E`/`remove_E`, but metadata need not follow
+    /// the convention, and what implements an accessor implements *this*
+    /// method, whatever it is called. Empty in a projection that predates it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub name: String,
+    /// `virtual` (`MethodAttributes` 0x0040).
+    pub is_virtual: bool,
+    /// `newslot` (`MethodAttributes` 0x0100): a fresh vtable slot, not an
+    /// override of a base one.
+    pub is_newslot: bool,
+    /// `abstract` (`MethodAttributes` 0x0400).
+    pub is_abstract: bool,
+    /// `final` (`MethodAttributes` 0x0020).
+    pub is_final: bool,
+    /// As [`MethodLike::has_other_method_impl`], for this accessor.
+    pub has_other_method_impl: bool,
 }
 
 /// One in-assembly-undecidable `MethodImpl` row: the declaration's parent
@@ -2088,6 +2141,17 @@ pub struct Property {
     /// each accessor separately, the setter with its value argument
     /// (`P:N.Widget.Count(System.Int32)`), so a settable property has two keys.
     pub setter_xml_doc_sig: Option<String>,
+    /// The vtable facts of each distinct accessor, getter first then setter
+    /// (an absent one omitted).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub accessor_slots: Vec<AccessorSlot>,
+    /// The projection ignored an optional custom modifier (`modopt`) somewhere
+    /// in this member's signature, as ECMA-335 II.7.1.1 permits. Roslyn's
+    /// runtime signature comparers do not ignore one, so a consumer
+    /// reproducing those comparisons cannot tell this signature from the same
+    /// one without it (#339).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub drops_optional_modifier: bool,
 }
 
 /// An event, projected to the LSP-shaped surface rather than the raw
@@ -2144,6 +2208,10 @@ pub struct Event {
     /// (`P:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.Invalidate`).
     /// See [`MethodLike::xml_doc_sig`].
     pub xml_doc_sig: Option<String>,
+    /// The vtable facts of each distinct accessor: `add`, `remove`, then
+    /// `fire` when present.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub accessor_slots: Vec<AccessorSlot>,
 }
 
 /// A custom attribute the importer didn't classify into a typed field on

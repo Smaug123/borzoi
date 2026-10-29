@@ -834,6 +834,8 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
+            drops_optional_modifier: false,
+            has_other_method_impl: false,
         }
     }
 
@@ -879,6 +881,7 @@ mod tests {
             is_struct,
             is_auto_open: false,
             is_require_qualified_access: false,
+            metadata_arity_suffix: Some(0),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,

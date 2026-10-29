@@ -79,7 +79,8 @@ This is a Cargo workspace with nine members:
   `modifier_metamorphic` probe: ECMA-335 II.7.1.1's `modopt`/`modreq` rule
   checked as a *metamorphic property* over real assemblies (decorate every
   signature node with an unrecognised modifier and re-project — a `modopt`
-  must move nothing, a `modreq` must leave no member standing). Any guard in
+  must move nothing but the member's `drops_optional_modifier` record, a
+  `modreq` must leave no member standing). Any guard in
   the projector that inspects the *head* of a signature (`matches!(sig,
   TypeSig::ByRef(_))`) silently stops firing when a modifier sits in front of
   it, and the compiler cannot catch that; the probe can, so read it before

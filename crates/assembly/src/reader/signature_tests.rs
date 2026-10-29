@@ -13,7 +13,7 @@ use super::ids::{TypeDefId, TypeRefId};
 use super::signature::{
     CallConv, CustomMod, DecodedMethodSig, ImageTables, ModifiedType, NamedKind, Primitive,
     RetType, SigError, TypeScope, TypeSig, decode_field_sig, decode_method_sig,
-    decode_property_sig, decode_type,
+    decode_property_index_params, decode_property_sig, decode_type,
 };
 use proptest::prelude::*;
 
@@ -749,6 +749,23 @@ proptest! {
         prop_assert_eq!(decode_property_sig(&bytes, &tables()), Ok(t));
     }
 
+    /// `decode_property_index_params` reads back every index parameter, its
+    /// modifiers included, whatever the property's type and `HASTHIS` bit.
+    #[test]
+    fn property_index_params_roundtrip(
+        has_this in any::<bool>(),
+        t in arb_type_sig(),
+        params in prop::collection::vec(arb_type_sig(), 0..6),
+    ) {
+        let mut bytes = Vec::new();
+        encode_property_sig(has_this, u32::try_from(params.len()).unwrap(), &t, &mut bytes);
+        for p in &params {
+            encode(p, &mut bytes);
+        }
+        prop_assert_eq!(decode_property_sig(&bytes, &tables()), Ok(t));
+        prop_assert_eq!(decode_property_index_params(&bytes, &tables()), Ok(params));
+    }
+
     /// Arbitrary bytes never panic the three member-signature decoders.
     #[test]
     fn member_sigs_never_panic(
@@ -760,6 +777,7 @@ proptest! {
         let _ = decode_method_sig(&bytes, &ctx);
         let _ = decode_field_sig(&bytes, &ctx);
         let _ = decode_property_sig(&bytes, &ctx);
+        let _ = decode_property_index_params(&bytes, &ctx);
     }
 }
 

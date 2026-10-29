@@ -1344,6 +1344,8 @@ fn interface_receiver_method_call_defers() {
             implements: vec![],
             unclassified_impls: vec![],
             xml_doc_sig: None,
+            drops_optional_modifier: false,
+            has_other_method_impl: false,
         }))
     };
     let iface = |name: &str, members: Vec<Member>, ifaces: Vec<TypeRef>| Entity {
@@ -1483,6 +1485,8 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
+        drops_optional_modifier: false,
+        has_other_method_impl: false,
     }));
     let class = Entity {
         namespace: vec!["Demo".to_string()],
