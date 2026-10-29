@@ -5316,7 +5316,7 @@ const MAX_ARRAY_RANK: u32 = 32;
 /// entity came through F# signature data — costs only a decline on an IL type
 /// carrying an attribute F# would not consult there, which is not a shape a
 /// C# compiler emits.
-fn rejected_by_attributes(entity: &borzoi_assembly::Entity) -> bool {
+pub(crate) fn rejected_by_attributes(entity: &borzoi_assembly::Entity) -> bool {
     error_obsolete(entity) || error_compiler_message(entity)
 }
 

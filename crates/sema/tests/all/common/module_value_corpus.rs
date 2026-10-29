@@ -642,6 +642,38 @@ module Ops =
     let (|Pos|_|) (x: int) = if x > 0 then Some x else None
 ";
 
+/// Modules F# rejects a use through, by an error-level attribute on the
+/// module itself or on one enclosing it, each holding a function and a value
+/// whose own attributes are clean; and warning-level twins, which type
+/// normally.
+const REJECTED_MODULES: &str = "
+[<System.Obsolete(\"no\", true)>]
+module ObsMod =
+    let f (x: int) = x
+    let v = 1
+
+[<CompilerMessage(\"no\", 9001, IsError = true)>]
+module CmMod =
+    let f (x: int) = x
+    let v = 1
+
+[<System.Obsolete(\"no\", true)>]
+module ObsOuter =
+    module Inner =
+        let f (x: int) = x
+        let v = 1
+
+[<System.Obsolete(\"no\")>]
+module ObsWarnMod =
+    let f (x: int) = x
+    let v = 1
+
+[<CompilerMessage(\"no\", 9001)>]
+module CmWarnMod =
+    let f (x: int) = x
+    let v = 1
+";
+
 /// `Collision.Thing`, which the twin assembly (`module_value_twin_env`)
 /// declares too, with a member of another type.
 const COLLISION: &str = "
@@ -680,6 +712,7 @@ pub fn fixture_source() -> String {
             out.push_str(&format!("    {line}\n"));
         }
     }
+    out.push_str(REJECTED_MODULES);
     out.push_str(COLLISION);
     out
 }

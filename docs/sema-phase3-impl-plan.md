@@ -312,7 +312,9 @@ only type at its path and F# names it as the IL does — `Ty` keeps no
 assembly, so a type two assemblies declare declines on both sides; a generic named type
 (`'T list`, `'T option`, `seq<'T>`) declines, since FSharp.Core's are renamed
 and `Ty` carries one path. It also declines a val another assembly cannot
-access. A preceding file's value, an inaccessible val (the resolver records
+access, and one whose module, or a module enclosing it, carries an
+error-level `[<Obsolete>]` or `[<CompilerMessage>]`, which FCS checks on the
+way to the val. A preceding file's value, an inaccessible val (the resolver records
 nothing) and a deferred name stay `NotInFileValue`; a member the reading
 declines records `AssemblyValue(gap)`. A first-class `reraise` is rejected
 only after inference (FS0417), which leaves its type standing, so it is typed.

@@ -729,6 +729,70 @@ fn a_member_of_an_assembly_value_is_typed_as_fcs_types_it() {
     );
 }
 
+/// A function or value of a module F# rejects a use through — an error-level
+/// `[<Obsolete>]` or `[<CompilerMessage>]` on the module, or on one enclosing
+/// it — is not typed by its signature (FCS reports the attribute and types the
+/// use as its error type), qualified or opened; the warning-level twins are,
+/// and must commit.
+#[test]
+fn a_member_of_a_module_f_sharp_rejects_is_not_read() {
+    let rejected = ["ObsMod", "CmMod", "ObsOuter.Inner"];
+    let warned = ["ObsWarnMod", "CmWarnMod"];
+    let mut src = String::from("module Rejected\n#nowarn \"44\"\n#nowarn \"9001\"\n");
+    let mut must = Vec::new();
+    for (n, m) in rejected.iter().chain(&warned).enumerate() {
+        let applied = format!("{NS}.{m}.f 1");
+        let start = src.len() + format!("let a{n} () = ").len();
+        src.push_str(&format!("let a{n} () = {applied}\n"));
+        src.push_str(&format!("let b{n} () = ({NS}.{m}.v, {NS}.{m}.f)\n"));
+        if warned.contains(m) {
+            must.push((start, start + applied.len()));
+        }
+    }
+    let rows: Vec<Row> = must
+        .iter()
+        .map(|&range| Row { range, synth: true })
+        .collect();
+    let c = check_in(Defs::Assembly, "rejected_modules", &src, &rows, false)
+        .expect("FCS checks the file");
+    assert!(
+        c.errors >= rejected.len(),
+        "FCS accepts the rejected modules: {c:?}\n{src}"
+    );
+    assert_eq!(
+        c.committed_rows.len(),
+        must.len(),
+        "a warned module's function is not typed: {c:?}\n{src}"
+    );
+    assert!(
+        c.reasons
+            .contains(&Incomplete::AssemblyValue(FunctionTyGap::Rejected)),
+        "no use records the rejection: {:?}",
+        c.reasons
+    );
+}
+
+/// The in-file counterpart of [`a_member_of_a_module_f_sharp_rejects_is_not_read`]:
+/// a binder of an in-file module carrying a rejecting attribute.
+#[test]
+fn a_binder_of_an_in_file_module_f_sharp_rejects_commits_nothing_wrong() {
+    let src = "module InFileRejected\n\
+               #nowarn \"44\"\n\
+               [<System.Obsolete(\"no\", true)>]\n\
+               module ObsMod =\n    let f (x: int) = x\n    let v = 1\n\
+               [<CompilerMessage(\"no\", 9001, IsError = true)>]\n\
+               module CmMod =\n    let f (x: int) = x\n    let v = 1\n\
+               [<System.Obsolete(\"no\", true)>]\n\
+               module ObsOuter =\n    module Inner =\n        let f (x: int) = x\n\
+               let a0 () = ObsMod.f 1\n\
+               let a1 () = CmMod.f 1\n\
+               let a2 () = ObsOuter.Inner.f 1\n\
+               let b0 () = (ObsMod.v, CmMod.v)\n";
+    let c = check_in(Defs::InFile, "in_file_rejected_modules", src, &[], false)
+        .expect("FCS checks the file");
+    eprintln!("in-file rejected modules: {c:?}");
+}
+
 /// Every module function and value of FSharp.Core the reading admits, used as
 /// a value: the reading is FCS's type for `let v = M.f`, and inference's
 /// binder type for `let w () = M.f` — which generalises — is FCS's too, with a

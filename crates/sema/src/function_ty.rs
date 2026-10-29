@@ -45,7 +45,7 @@ use borzoi_assembly::{
 };
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
-use crate::infer::constrained_parameter;
+use crate::infer::{constrained_parameter, rejected_by_attributes};
 use crate::member_ty::primitive_to_ty;
 use crate::ty::Ty;
 
@@ -122,6 +122,16 @@ pub(crate) fn module_function_scheme(
     // Another assembly's non-public val is not accessible here (FS1094), and
     // an obsolete-as-error one is rejected at the use.
     if method.access != Access::Public || method.obsolete.as_ref().is_some_and(|o| o.is_error) {
+        return Err(FunctionTyGap::Rejected);
+    }
+    // So is any use through a module that carries an error-level
+    // `[<Obsolete>]` or `[<CompilerMessage>]`, on itself or on a module
+    // enclosing it: FCS checks each entity on the way to the val. A module
+    // the env cannot place has enclosing entities it cannot check.
+    let chain = env
+        .enclosing_chain_from_root(handle)
+        .ok_or(FunctionTyGap::Unread)?;
+    if chain.iter().any(|&h| rejected_by_attributes(env.entity(h))) {
         return Err(FunctionTyGap::Rejected);
     }
     match &method.val_facts {
