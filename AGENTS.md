@@ -177,7 +177,13 @@ This is a Cargo workspace with nine members:
   reflection, evaluates Roslyn's XPath selection, and compiles purpose-built
   C# fixtures (rewriting a method name or an `AssemblyRef` in one, for
   metadata no compiler writes). `xml_doc_inheritdoc_xpath_diff` holds the
-  XPath subset to certain-implies-exact against it.
+  XPath subset to certain-implies-exact against it; `xml_doc_inheritdoc_diff`
+  (handwritten fixtures), `xml_doc_inheritdoc_cref_diff` (generated reference
+  sets whose dimensions are the ways Roslyn's importer and declaration-ID
+  lookup see metadata differently from the env's index, every documented ID
+  cited by a `cref`) and the ignored `xml_doc_inheritdoc_sweep` (the
+  ASP.NET Core pack, plus a NuGet cache under `BORZOI_INHERITDOC_SWEEP_ROOT`)
+  hold every `<inheritdoc>` expansion to it.
 - `crates/corpus-diff/` — `borzoi-corpus-diff`. Test-only, unpublished: an
   empirical whole-project name-resolution differential. It loads real F#
   projects through the same runtime path the LSP uses (`Workspace` +
@@ -385,6 +391,7 @@ nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ign
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_source_diff::corpus:: -- --ignored  #  ~20 s
+nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_  #  ~2 min
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s

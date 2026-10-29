@@ -17,7 +17,7 @@ use std::time::SystemTime;
 use borzoi_sema::AssemblyEnv;
 
 use super::file::{DocEntry, DocFile, DocFileError, EntryError};
-use super::key::{DocTarget, KeyCensus, KeyError, doc_key};
+use super::key::{DocIdIndex, DocTarget, KeyCensus, KeyError, doc_key};
 use super::tree::DocElement;
 
 /// The outcome of looking up one symbol's documentation.
@@ -169,12 +169,44 @@ impl KeyCensusCache {
     }
 }
 
-/// Everything documentation lookup caches: parsed files and per-assembly key
-/// censuses.
+/// The env-wide [`DocIdIndex`] of each env asked about, validated by env
+/// identity exactly as [`KeyCensusCache`] is. Built only when an
+/// `<inheritdoc cref="…">` needs it; the few envs a session alternates between
+/// keep theirs, and an entry whose env is gone is dropped on the next build.
+#[derive(Debug, Default)]
+pub struct DocIdIndexCache {
+    indices: Vec<(Weak<AssemblyEnv>, Arc<DocIdIndex>)>,
+}
+
+impl DocIdIndexCache {
+    /// The index of `env`.
+    pub fn index(&mut self, env: &Arc<AssemblyEnv>) -> Arc<DocIdIndex> {
+        let me = Arc::downgrade(env);
+        if let Some((_, index)) = self.indices.iter().find(|(of, _)| Weak::ptr_eq(of, &me)) {
+            return index.clone();
+        }
+        self.indices.retain(|(of, _)| of.strong_count() > 0);
+        let index = {
+            let _span = tracing::info_span!("xml_doc_id_index").entered();
+            Arc::new(DocIdIndex::of_env(env))
+        };
+        self.indices.push((me, index.clone()));
+        index
+    }
+
+    /// Drop every index (memory only: correctness rests on env identity).
+    pub fn clear(&mut self) {
+        self.indices.clear();
+    }
+}
+
+/// Everything documentation lookup caches: parsed files, per-assembly key
+/// censuses, and env-wide ID indices.
 #[derive(Debug, Default)]
 pub struct DocSources {
     pub files: DocFileCache,
     pub censuses: KeyCensusCache,
+    pub indices: DocIdIndexCache,
 }
 
 impl DocSources {
@@ -182,6 +214,7 @@ impl DocSources {
     pub fn clear(&mut self) {
         self.files.clear();
         self.censuses.clear();
+        self.indices.clear();
     }
 
     /// [`lookup`] through these caches.

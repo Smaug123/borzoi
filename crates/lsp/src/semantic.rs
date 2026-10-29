@@ -40,6 +40,7 @@ use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::sidecar_manager::SidecarManager;
 use crate::workspace::{ServedTfm, Workspace};
+use crate::xml_doc::inherit::{Expansion, expand};
 use crate::xml_doc::key::DocTarget;
 use crate::xml_doc::lookup::{DocLookup, DocSources};
 
@@ -393,8 +394,9 @@ pub struct SemanticState {
     /// What XML-documentation lookup caches: the parsed sidecar `.xml` files
     /// hover has read, each validated against the file's `(size, mtime)` on
     /// every use (see [`DocFileCache`](crate::xml_doc::lookup::DocFileCache)),
-    /// and the per-assembly key censuses, each validated by env identity — so
-    /// correctness does not depend on any invalidation;
+    /// and the per-assembly key censuses and env-wide ID indices, each
+    /// validated by env identity — so correctness does not depend on any
+    /// invalidation;
     /// [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`] clear
     /// them only to bound memory, alongside the PDB images.
     xml_doc: DocSources,
@@ -555,9 +557,17 @@ impl SemanticState {
 
     /// The XML documentation of a referenced-assembly symbol, read from the
     /// `.xml` beside the DLL `env` read it from (cached per file; see
-    /// [`crate::xml_doc::lookup`]).
-    pub fn xml_doc(&mut self, env: &Arc<AssemblyEnv>, target: DocTarget) -> DocLookup {
-        self.xml_doc.lookup(env, target)
+    /// [`crate::xml_doc::lookup`]), with its `<inheritdoc>` elements expanded
+    /// as Roslyn's IDE expands them where that can be done exactly
+    /// ([`crate::xml_doc::inherit`]). `Err` is the lookup's reason for having
+    /// no entry at all.
+    pub fn xml_doc(
+        &mut self,
+        env: &Arc<AssemblyEnv>,
+        target: DocTarget,
+    ) -> Result<Expansion, DocLookup> {
+        let entry = self.xml_doc.locate(env, target)?;
+        Ok(expand(&mut self.xml_doc, env, target, entry))
     }
 
     /// Drop the caches for **every** cached project that lists `file` in its
@@ -6079,6 +6089,7 @@ mod tests {
             is_structural_equality: false,
             is_structural_comparison: false,
             is_allow_null_literal: false,
+            is_no_pia_local: false,
             obsolete: None,
             compiler_message: None,
             experimental: None,

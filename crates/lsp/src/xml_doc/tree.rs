@@ -115,6 +115,31 @@ impl DocElement {
         }
     }
 
+    /// The deepest element nesting below this element (0 for a leaf).
+    pub fn depth(&self) -> usize {
+        self.children
+            .iter()
+            .filter_map(|c| match c {
+                DocNode::Element(e) => Some(1 + e.depth()),
+                DocNode::Text(_) => None,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// How many nodes (elements and text runs) the tree holds, this element
+    /// included.
+    pub fn node_count(&self) -> usize {
+        1 + self
+            .children
+            .iter()
+            .map(|c| match c {
+                DocNode::Element(e) => e.node_count(),
+                DocNode::Text(_) => 1,
+            })
+            .sum::<usize>()
+    }
+
     /// The same tree with adjacent text runs merged and empty ones dropped,
     /// at every level: the form an XML parser hands back for the
     /// serialisation of this tree, so two trees that serialise identically

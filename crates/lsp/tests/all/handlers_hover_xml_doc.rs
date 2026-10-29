@@ -478,6 +478,62 @@ fn an_fsharp_member_never_shows_another_members_doc() {
 }
 
 // ---------------------------------------------------------------------------
+// `<inheritdoc>`
+// ---------------------------------------------------------------------------
+
+/// The shipped System.Runtime.xml with the entry for `key` replaced by
+/// `<member name="key">{body}</member>`.
+fn with_entry(key: &str, body: &str) -> String {
+    let shipped = fs::read_to_string(system_runtime().xml).unwrap();
+    let entry = format!("<member name=\"{key}\">");
+    let start = shipped.find(&entry).expect("shipped entry");
+    let end = start + shipped[start..].find("</member>").unwrap() + "</member>".len();
+    format!(
+        "{}<member name=\"{key}\">{body}</member>{}",
+        &shipped[..start],
+        &shipped[end..]
+    )
+}
+
+/// An `<inheritdoc cref>` shows the named symbol's documentation in place.
+#[test]
+fn a_cref_inheritdoc_shows_the_inherited_doc() {
+    let xml = with_entry(
+        "M:System.String.IsNullOrEmpty(System.String)",
+        r#"<inheritdoc cref="M:System.String.IsNullOrWhiteSpace(System.String)"/>"#,
+    );
+    let mut p = project(IS_NULL_OR_EMPTY, Xml::Text(xml), None);
+    let body = hover_at(&mut p, 1, "IsNullOrEmpty");
+    let doc = split(&body).1.unwrap_or_else(|| panic!("a doc:\n{body}"));
+    assert!(
+        doc.starts_with(
+            "Indicates whether a specified string is `null`, empty, or consists only of \
+             white-space characters."
+        ),
+        "{doc}"
+    );
+    assert!(!doc.contains("not shown"), "{doc}");
+}
+
+/// An `<inheritdoc>` that cannot be resolved exactly keeps its marker: the
+/// entry is never shown as if it were complete.
+#[test]
+fn an_unresolvable_inheritdoc_keeps_its_marker() {
+    let xml = with_entry(
+        "M:System.String.IsNullOrEmpty(System.String)",
+        r#"<summary>Own words.</summary><inheritdoc cref="M:System.String.NoSuchMethod"/>"#,
+    );
+    let mut p = project(IS_NULL_OR_EMPTY, Xml::Text(xml), None);
+    let body = hover_at(&mut p, 1, "IsNullOrEmpty");
+    let doc = split(&body).1.unwrap_or_else(|| panic!("a doc:\n{body}"));
+    assert!(doc.contains("Own words."), "{doc}");
+    assert!(
+        doc.contains("(Documentation inherited from `System.String.NoSuchMethod` is not shown.)"),
+        "{doc}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Keys from the env
 // ---------------------------------------------------------------------------
 

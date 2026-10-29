@@ -5478,6 +5478,7 @@ mod tests {
             is_structural_equality: false,
             is_structural_comparison: false,
             is_allow_null_literal: false,
+            is_no_pia_local: false,
             obsolete: None,
             compiler_message: None,
             experimental: None,

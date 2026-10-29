@@ -26,6 +26,7 @@ use borzoi_sema::test_support::{DeclaringEntity, StructuralName, logical_full_na
 use borzoi_spawn::BoundedCommand;
 use serde::Deserialize;
 
+pub mod inheritdoc_diff;
 pub mod inheritdoc_oracle;
 
 /// Budget for the `dotnet build` of `tools/fcs-dump`.
