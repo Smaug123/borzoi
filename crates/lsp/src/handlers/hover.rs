@@ -12,7 +12,11 @@
 //! signature (`static member WriteLine: value: string -> unit`,
 //! `val mutable x: int`) via [`borzoi_assembly::format_member`], with the
 //! declaring type as context (prefixed `extension member,` / `required member,`
-//! for the C#-isms the F# signature has no keyword for). Both then show the
+//! for the C#-isms the F# signature has no keyword for). That signature is the
+//! member's IL, which erases units of measure, so it is shown only where the
+//! declaring entity's F# signature proves no measure was erased; otherwise the
+//! head names the member without its types
+//! ([`borzoi_assembly::format_member_untyped`]) and says why. Both then show the
 //! declaring assembly's identity and any `[<Obsolete>]` / `[<Experimental>]`
 //! marker — all declared metadata, needing no inference — and, when the
 //! assembly's PDB records a source position, a `Defined in <file>, line N` line
@@ -30,7 +34,7 @@ use std::sync::Arc;
 
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
-    format_entity_header, format_fsharp_name, format_member, join_quoted,
+    format_entity_header, format_fsharp_name, format_member, format_member_untyped, join_quoted,
 };
 use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
@@ -708,14 +712,32 @@ fn entity_qualifier(entity: &Entity) -> Option<&'static str> {
 /// `required member,` (`member_qualifier`) for facts the F# signature has no
 /// keyword for. Provenance comes from the *parent* entity — members carry no
 /// assembly identity of their own.
+///
+/// Where [`AssemblyEnv::member_types_keep_their_measures`] does not hold for the
+/// parent, the head withholds every type (`member Distance with get`) and a
+/// paragraph after the context line says why: the IL types may have lost a unit
+/// of measure the F# types carry.
 pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIndex) -> String {
     let entity = env.entity(parent);
     let member = env.member_at(parent, idx);
-    let head = code_span(&format_member(member, entity));
-    let context = match member_qualifier(member) {
+    // The signature is read off the member's IL, which erases units of measure:
+    // a member declared `float<m>` reads as `float`. It is shown only where the
+    // declaring entity's F# signature proves no measure was erased; elsewhere
+    // the head names the member without claiming a type.
+    let typed = env.member_types_keep_their_measures(parent);
+    let head = code_span(&if typed {
+        format_member(member, entity)
+    } else {
+        format_member_untyped(member, entity)
+    });
+    let mut context = match member_qualifier(member) {
         Some(qualifier) => format!("{qualifier}, in {}", code_span(&entity_fqn(env, parent))),
         None => format!("in {}", code_span(&entity_fqn(env, parent))),
     };
+    if !typed {
+        context.push_str("\n\n");
+        context.push_str(TYPES_WITHHELD);
+    }
     assemble_body(
         head,
         Some(context),
@@ -724,6 +746,12 @@ pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIn
         member_experimental(member),
     )
 }
+
+/// The paragraph a member hover carries in place of its types, when
+/// [`AssemblyEnv::member_types_keep_their_measures`] cannot show that the
+/// compiled signature is the F# one.
+const TYPES_WITHHELD: &str = "Types not shown: they are read from the compiled \
+    signature, which drops units of measure, and this member's F# type may carry one.";
 
 /// Join the head line with an optional context line (`in <declaring type>` for
 /// members), the provenance line, and any obsolete/experimental banners into a

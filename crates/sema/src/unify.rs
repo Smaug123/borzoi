@@ -60,6 +60,10 @@ pub(crate) enum UnifyError {
     Occurs,
 }
 
+/// An open snapshot of an [`InferTable`] ([`InferTable::snapshot`]). Not
+/// `Clone`: it is closed exactly once, by a commit or a rollback.
+pub(crate) struct TableSnapshot(ena::unify::Snapshot<ena::unify::InPlace<TyVid>>);
+
 /// The union-find table over inference variables, plus the structural unifier.
 #[derive(Debug, Default)]
 pub(crate) struct InferTable {
@@ -205,6 +209,25 @@ impl InferTable {
                 Err(e)
             }
         }
+    }
+
+    /// Open a snapshot of the table, to be closed by exactly one of
+    /// [`Self::commit`] (keep everything since) or [`Self::rollback_to`]
+    /// (restore the table to exactly this point). Snapshots nest LIFO, as
+    /// [`Self::probe`]'s do: one opened later must be closed first.
+    pub(crate) fn snapshot(&mut self) -> TableSnapshot {
+        TableSnapshot(self.table.snapshot())
+    }
+
+    /// Keep every change since `snapshot` was opened.
+    pub(crate) fn commit(&mut self, snapshot: TableSnapshot) {
+        self.table.commit(snapshot.0);
+    }
+
+    /// Restore the table to exactly its state when `snapshot` was opened,
+    /// discarding every variable and binding made since.
+    pub(crate) fn rollback_to(&mut self, snapshot: TableSnapshot) {
+        self.table.rollback_to(snapshot.0);
     }
 
     /// Unify `a` and `b`, mutating the table so they become equal, or report
