@@ -1419,6 +1419,9 @@ pub struct ModuleMemberVal {
     /// bit FCS's unqualified-environment filter reads (`AddValRefsToItems`'s
     /// `not vref.IsMember`), *instance or static*.
     pub is_member: bool,
+    /// For an augmentation, how many type parameters its target type has —
+    /// see [`Augmentation::Certain`]. `None` for a plain module `let`.
+    pub target_typars: Option<usize>,
     /// The raw `ValFlags.IsExtensionMember` bit. The *surface* extension flag
     /// FCS reports is gated on `IsInstanceMember`
     /// ([`is_instance`](Self::is_instance) here): a static augmentation
@@ -1595,6 +1598,7 @@ fn module_member_vals(
                 .as_ref()
                 .is_some_and(|mi| mi.flags.is_instance),
             is_extension,
+            target_typars: augmentation_target_typars(pickled, v),
             // Only a `Type`-kinded typar makes the IL method generic;
             // measure typars are erased from IL.
             is_generic: v
@@ -1611,6 +1615,49 @@ fn module_member_vals(
         });
     }
     Ok(out)
+}
+
+/// How many type parameters a member val's apparent parent has: for an
+/// augmentation, the leading generic parameters of the module method it
+/// compiles to, which are its target type's ([`Augmentation::Certain`]).
+///
+/// A local parent's are its pickled typars. A non-local one is a path of
+/// logical names, which carry a generic type's arity as a `` `N `` suffix
+/// (`List`1`, and for a nested IL type each level its own:
+/// `Dictionary`2` / `KeyCollection` is two). `None` for a val with no member
+/// info, an index that does not resolve, or a val generic over a unit of
+/// measure: IL erases the measure, so the pickled count is not the IL one.
+fn augmentation_target_typars(pickled: &PickledCcu, v: &PickledVal) -> Option<usize> {
+    let info = v.member_info.as_ref()?;
+    if measure_typar_count(v) > 0 {
+        return None;
+    }
+    match info.apparent_parent {
+        PickledTcRef::Local(stamp) => pickled
+            .tables
+            .tycons
+            .get(stamp as usize)
+            .map(|parent| parent.typars.len()),
+        PickledTcRef::NonLocal(index) => {
+            let nle = pickled.header.nlerefs.get(index as usize)?;
+            nle.path
+                .iter()
+                .map(|&i| logical_name_arity(pickled.header.strings.get(i as usize)?))
+                .sum()
+        }
+    }
+}
+
+/// The generic arity a logical name's `` `N `` suffix records, 0 without one:
+/// FCS's `DemangleGenericTypeName`, which reads the digits after the last
+/// backtick. `None` for a count that does not fit.
+fn logical_name_arity(name: &str) -> Option<usize> {
+    match name.rsplit_once('`') {
+        Some((_, digits)) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            digits.parse().ok()
+        }
+        _ => Some(0),
+    }
 }
 
 /// What a val's pickled F# type says that its IL signature cannot: each type
@@ -1931,6 +1978,7 @@ fn val_facts(v: &ModuleMemberVal) -> ValFacts {
         source_name: source,
         instance_extension: v.is_extension && v.is_instance,
         fsharp_extension: v.is_extension && v.is_member,
+        target_typars: v.target_typars,
         definition_range: v.definition_range.clone(),
         arg_group_count: callable_arg_group_count(v),
         curried: v.curried.clone(),
@@ -1990,6 +2038,8 @@ struct ValFacts {
     source_name: Option<String>,
     instance_extension: bool,
     fsharp_extension: bool,
+    /// See [`ModuleMemberVal::target_typars`].
+    target_typars: Option<usize>,
     definition_range: Option<FsharpSourceRange>,
     /// See [`callable_arg_group_count`]. A *group* fact like the rest: which val
     /// claimed which MethodDef is unprovable inside a claim group, and a
@@ -2025,6 +2075,7 @@ struct GroupFacts {
     source_name: Option<Option<String>>,
     extension: Option<bool>,
     fsharp_extension: Option<bool>,
+    target_typars: Option<Option<usize>>,
     definition_range: Option<Option<FsharpSourceRange>>,
     arg_group_count: Option<Option<usize>>,
     curried: Option<Option<CurriedArgs>>,
@@ -2075,6 +2126,9 @@ fn rebuild_module_member_list(
                 if g.fsharp_extension != Some(facts.fsharp_extension) {
                     g.fsharp_extension = None;
                 }
+                if g.target_typars != Some(facts.target_typars) {
+                    g.target_typars = None;
+                }
                 if g.definition_range.as_ref() != Some(&facts.definition_range) {
                     g.definition_range = None;
                 }
@@ -2098,6 +2152,7 @@ fn rebuild_module_member_list(
                 source_name: Some(facts.source_name),
                 extension: Some(facts.instance_extension),
                 fsharp_extension: Some(facts.fsharp_extension),
+                target_typars: Some(facts.target_typars),
                 definition_range: Some(facts.definition_range),
                 arg_group_count: Some(facts.arg_group_count),
                 curried: Some(facts.curried),
@@ -2302,9 +2357,12 @@ fn rebuild_module_member_list(
                 }
                 // The augmentation fact (instance *or* static) name resolution
                 // hides on — authoritative here, since the val itself says so. A
-                // conflicted group under-sets it like the others.
+                // conflicted group under-sets it like the others, and so the
+                // target's arity.
                 if facts.fsharp_extension == Some(true) {
-                    m.augmentation = Augmentation::Certain;
+                    m.augmentation = Augmentation::Certain {
+                        target_typars: facts.target_typars.flatten(),
+                    };
                 }
                 members.push(Member::Method(m));
             }
@@ -6034,6 +6092,18 @@ mod tests {
         assert!(entity.skipped_members.is_empty(), "every val claimed");
     }
 
+    #[test]
+    fn a_logical_name_carries_its_arity_after_the_last_backtick() {
+        assert_eq!(logical_name_arity("List`1"), Some(1));
+        assert_eq!(logical_name_arity("Dictionary`2"), Some(2));
+        assert_eq!(logical_name_arity("KeyCollection"), Some(0));
+        assert_eq!(logical_name_arity("Odd`name`3"), Some(3));
+        // No digits after the backtick is no arity suffix.
+        assert_eq!(logical_name_arity("Odd`"), Some(0));
+        assert_eq!(logical_name_arity("Odd`x"), Some(0));
+        assert_eq!(logical_name_arity("Huge`99999999999999999999999"), None);
+    }
+
     /// Pins [`val_il_arity`]'s unit handling: fsc's `ValReprInfo` already
     /// encodes unit erasure, so summing argument-group lengths yields the true
     /// MethodDef arity with no unit special-casing. Empirically verified against
@@ -6127,6 +6197,7 @@ mod tests {
                     is_instance: false,
                     is_member: false,
                     is_extension: false,
+                    target_typars: None,
                     is_generic: false,
                     is_literal: false,
                     is_public: true,
@@ -6151,6 +6222,7 @@ mod tests {
                     is_instance: true,
                     is_member: true,
                     is_extension: true,
+                    target_typars: Some(0),
                     is_generic: false,
                     is_literal: false,
                     is_public: true,
@@ -6174,6 +6246,7 @@ mod tests {
                     is_instance: false,
                     is_member: true,
                     is_extension: true,
+                    target_typars: Some(0),
                     is_generic: false,
                     is_literal: false,
                     is_public: true,
@@ -6197,6 +6270,7 @@ mod tests {
                     is_instance: false,
                     is_member: false,
                     is_extension: false,
+                    target_typars: None,
                     is_generic: true,
                     is_literal: false,
                     is_public: true,
@@ -6220,6 +6294,7 @@ mod tests {
                     is_instance: false,
                     is_member: false,
                     is_extension: false,
+                    target_typars: None,
                     is_generic: false,
                     is_literal: false,
                     is_public: true,

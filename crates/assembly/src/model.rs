@@ -1160,7 +1160,16 @@ pub enum Augmentation {
     /// The host signature pickle says so — the claiming val carries
     /// `ValFlags.IsExtensionMember` together with `MemberInfo` (FCS's
     /// `vref.IsMember`), instance or static. Authoritative: hide it.
-    Certain,
+    Certain {
+        /// How many type parameters the augmented type has. The module method
+        /// an augmentation compiles to is generic over the type's parameters
+        /// first and its own after them (`type G<'t> with member x.M<'u>`
+        /// compiles to `M<t, u>`), and F# splits them at this count (FCS's
+        /// `PartitionValTypars`, at the apparent parent's arity). `None` when
+        /// the val's reference to the type does not give its arity, or when a
+        /// type parameter is a unit of measure, which IL erases.
+        target_typars: Option<usize>,
+    },
     /// Only the IL name mangling (`Type.Member`) says so, on an image whose pickle
     /// did not decode or is not authoritative — indistinguishable from a dotted
     /// `[<CompiledName>]`. Defer: keep the name in scope (so it still shadows by

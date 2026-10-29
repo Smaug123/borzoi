@@ -76,7 +76,7 @@ fn every_augmentation_carries_the_name_resolution_flag() {
         extensions.members.iter().any(|m| match m {
             Member::Method(mm) => {
                 mm.source_name.as_deref().unwrap_or(&mm.name) == name
-                    && mm.augmentation == Augmentation::Certain
+                    && matches!(mm.augmentation, Augmentation::Certain { .. })
             }
             _ => false,
         })
