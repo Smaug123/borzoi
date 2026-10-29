@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc 5572f24e7fc87dce988352c4b75f307a29bd119d5481481fabeff7be5dcd8d43 # shrinks to items = [DocSlotItem { name: 0, params: [false, false], is_static: true, val: Some((true, Elided)) }, DocSlotItem { name: 0, params: [false, true], is_static: true, val: None }]
 cc 7a84c6e49233e83f897c1b0b010ec1cd6997661b72e170997839296cc99e4fce # shrinks to items = [DocSlotItem { name: 1, params: [3], is_static: false, val: Some((true, Elided)) }, DocSlotItem { name: 1, params: [2], is_static: false, val: None }]
+cc 697f560efa79cb3c212f9282d6c845df83af98b4931626b07a365a2d6c595d59 # shrinks to items = [GroupSlotItem { name: 0, is_static: false, groups: [[None, None], [None]], val: Some(Kept) }, GroupSlotItem { name: 0, is_static: false, groups: [[None, None], [Some(0)]], val: Some(Kept) }]
+cc 4d22c3011f1618166efe612bbbb2d0804335aaf1d044064b5d842ed2ee9870ea # shrinks to items = [GroupSlotItem { name: 0, is_static: true, groups: [], val: None, paired: false }, GroupSlotItem { name: 0, is_static: true, groups: [], val: Some(Kept), paired: true }]

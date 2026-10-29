@@ -37,7 +37,7 @@ fn hello_method(entities: &[Entity], il_name: &str) -> MethodLike {
         .iter()
         .find(|e| e.name == "Hello")
         .expect("MiniLibFs has a Hello module");
-    hello
+    *hello
         .members
         .iter()
         .find_map(|m| match m {

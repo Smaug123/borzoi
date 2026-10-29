@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The fixture behind the curried-signature hover differential
+       (tests/all/hover_curried_signatures.rs): module functions, members and
+       augmentations across argument-group shapes, whose IL parameter lists
+       flatten the curried structure F# shows.
+
+       `Generated.fs` is NOT checked in: the test emits it from its own shape
+       tables before building this project, so the fixture and the probe's site
+       index cannot drift apart. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>CurriedFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>

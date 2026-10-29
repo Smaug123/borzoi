@@ -274,7 +274,7 @@ fn methods_named<'a>(e: &'a Entity, name: &str) -> Vec<&'a MethodLike> {
     e.members
         .iter()
         .filter_map(|m| match m {
-            Member::Method(m) if m.name == name => Some(m),
+            Member::Method(m) if m.name == name => Some(&**m),
             _ => None,
         })
         .collect()

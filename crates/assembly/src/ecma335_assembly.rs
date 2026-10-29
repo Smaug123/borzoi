@@ -13,11 +13,11 @@ use crate::fsharp_resource::{
     foreign_signature_data_present, is_compressed_kind, primary_signature_resource_for_host,
 };
 use crate::model::{
-    Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
-    CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
-    FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
-    Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
+    Access, ArgGroups, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
+    CompilerFeatureRequired, CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind,
+    Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember,
+    IndexParameter, InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature,
+    ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
     SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
     UnclassifiedMethodImpl, UnionCases, ValFacts, Variance, Version,
 };
@@ -368,6 +368,7 @@ impl Ecma335Assembly {
                     for member in &mut entity.members {
                         if let Member::Method(m) = member {
                             m.arg_group_count = None;
+                            m.arg_groups = ArgGroups::Unknowable;
                             // A method typar carries F# constraints too
                             // (`let f<'T when 'T : comparison>`), and its F# type
                             // may mention a unit of measure the IL erased. The
@@ -2421,7 +2422,7 @@ impl Ecma335Assembly {
             out.push_or_skip(
                 &m.name,
                 self.project_method(m, type_context, false)
-                    .map(Member::Method),
+                    .map(|m| Member::Method(Box::new(m))),
             );
         }
         for f in &td.fields {
@@ -2546,6 +2547,7 @@ impl Ecma335Assembly {
             // of an assembly whose host F# signature pickle decodes, since a
             // curried F# member is indistinguishable here. See the OV-6.1 plan.
             arg_group_count: Some(1),
+            arg_groups: ArgGroups::NotFSharp,
             // The signature's `HASTHIS` bit is the canonical static-ness signal
             // (mirrors the reference's `!signature.instance`).
             is_static: !sig.has_this,
@@ -3299,7 +3301,7 @@ impl Ecma335Assembly {
                 {
                     projected.is_module_value_binding = true;
                 }
-                Ok(Some(Member::Method(projected)))
+                Ok(Some(Member::Method(Box::new(projected))))
             })();
             out.push_or_skip_opt(&m.name, projected);
         }
@@ -3420,7 +3422,7 @@ impl Ecma335Assembly {
                     if !il_heuristic {
                         projected.source_name = None;
                     }
-                    return Ok(Some(Member::Method(projected)));
+                    return Ok(Some(Member::Method(Box::new(projected))));
                 }
                 // A union's properties are kept as *candidates*, to be settled
                 // against the host pickle's published member list once that is

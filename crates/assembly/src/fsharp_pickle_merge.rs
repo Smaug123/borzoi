@@ -60,9 +60,10 @@ use crate::fsharp_pickle::model::{
     PickledVal, TupleKind, TyparKind,
 };
 use crate::model::{
-    AbbreviationTarget, Access, AssemblyIdentity, Augmentation, CompilerMessage, Entity,
-    EntityKind, FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead,
-    Obsolete, ReadValFacts, SkippedMember, TypeParameter, UnionCases, ValMeasures,
+    AbbreviationTarget, Access, ArgGroup, ArgGroups, AssemblyIdentity, Augmentation,
+    CompilerMessage, CurriedArg, CurriedArgs, Entity, EntityKind, FSharpConstraints,
+    FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete, ReadValFacts,
+    SkippedMember, TypeParameter, UnionCases, ValMeasures,
 };
 use std::collections::HashMap;
 
@@ -1260,6 +1261,47 @@ fn val_il_arity(v: &PickledVal) -> Option<usize> {
         .map(|r| r.arg_repr.iter().map(Vec::len).sum())
 }
 
+/// Where a val's receiver sits in the IL method it compiles to, which decides
+/// how its `ValReprInfo`'s first group is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverAt {
+    /// No receiver: a module `let`, a static member, a static augmentation, or
+    /// a constructor.
+    None,
+    /// The IL `this` of an intrinsic instance member.
+    This,
+    /// The first IL parameter of an instance augmentation, which compiles to a
+    /// static of its module.
+    LeadingParam,
+}
+
+/// The val's argument groups as a caller writes them ([`CurriedArgs`]), with
+/// each argument's pickled F# name: `None` when it carries no `ValReprInfo`, or
+/// when an instance val's first group is not the single receiver the
+/// definition must have put there.
+fn curried_args(v: &PickledVal, receiver: ReceiverAt) -> Option<CurriedArgs> {
+    let repr = v.repr_info.as_ref()?;
+    let group = |args: &[crate::fsharp_pickle::model::PickledArgReprInfo]| ArgGroup {
+        args: args
+            .iter()
+            .map(|a| CurriedArg {
+                name: a.name.as_ref().map(|i| i.name.clone()),
+            })
+            .collect(),
+    };
+    let groups = match receiver {
+        ReceiverAt::None => &repr.arg_repr[..],
+        ReceiverAt::This | ReceiverAt::LeadingParam => match repr.arg_repr.split_first() {
+            Some((this, rest)) if this.len() == 1 => rest,
+            _ => return None,
+        },
+    };
+    Some(CurriedArgs {
+        leading_receiver: receiver == ReceiverAt::LeadingParam,
+        groups: groups.iter().map(|g| group(g)).collect(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Module member-val index (pickle member-projection Slice B)
 // ---------------------------------------------------------------------------
@@ -1360,6 +1402,13 @@ pub struct ModuleMemberVal {
     /// [`MethodLike::module_value`](crate::MethodLike::module_value)), so the
     /// cutover can reconcile the two.
     pub arg_group_count: Option<usize>,
+    /// The val's argument groups as a caller writes them, each argument with
+    /// its F# name (`None` when it carries no `ValReprInfo`). An instance
+    /// augmentation's receiver group is the
+    /// [`leading_receiver`](CurriedArgs::leading_receiver) parameter rather
+    /// than a group, so this has one group fewer than
+    /// [`arg_group_count`](Self::arg_group_count) counts there.
+    pub curried: Option<CurriedArgs>,
     /// `MemberInfo.MemberFlags.IsInstance` — `false` for a plain module `let`
     /// (no `member_info`) and for a `type T with static member …`
     /// augmentation.
@@ -1529,6 +1578,17 @@ fn module_member_vals(
             compiled_name: v.compiled_name.clone(),
             il_arity: val_il_arity(v),
             arg_group_count: v.repr_info.as_ref().map(|r| r.arg_repr.len()),
+            curried: curried_args(
+                v,
+                if v.member_info
+                    .as_ref()
+                    .is_some_and(|mi| mi.flags.is_instance)
+                {
+                    ReceiverAt::LeadingParam
+                } else {
+                    ReceiverAt::None
+                },
+            ),
             is_member: v.member_info.is_some(),
             is_instance: v
                 .member_info
@@ -1873,6 +1933,7 @@ fn val_facts(v: &ModuleMemberVal) -> ValFacts {
         fsharp_extension: v.is_extension && v.is_member,
         definition_range: v.definition_range.clone(),
         arg_group_count: callable_arg_group_count(v),
+        curried: v.curried.clone(),
         xml_doc_sig: v.xml_doc_sig.clone(),
         // Read for a plain module function only. An augmentation compiles to
         // a module static whose generic parameters also carry its target
@@ -1936,6 +1997,8 @@ struct ValFacts {
     /// tupled one, so a disagreeing group under-sets to "unknown" rather than
     /// handing one method the other's grouping.
     arg_group_count: Option<usize>,
+    /// [`ModuleMemberVal::curried`], a group fact for the same reason.
+    curried: Option<CurriedArgs>,
     /// The val's doc-comment key. A group fact too, and the one that most needs
     /// to be: two documented overloads in one claim group carry two different
     /// keys, and handing a method its sibling's key would show the sibling's
@@ -1964,6 +2027,7 @@ struct GroupFacts {
     fsharp_extension: Option<bool>,
     definition_range: Option<Option<FsharpSourceRange>>,
     arg_group_count: Option<Option<usize>>,
+    curried: Option<Option<CurriedArgs>>,
     xml_doc_sig: Option<Option<String>>,
     typar_constraints: Option<Option<Vec<FSharpConstraints>>>,
     use_facts: Option<crate::model::ValFacts>,
@@ -2017,6 +2081,9 @@ fn rebuild_module_member_list(
                 if g.arg_group_count.as_ref() != Some(&facts.arg_group_count) {
                     g.arg_group_count = None;
                 }
+                if g.curried.as_ref() != Some(&facts.curried) {
+                    g.curried = None;
+                }
                 if g.xml_doc_sig.as_ref() != Some(&facts.xml_doc_sig) {
                     g.xml_doc_sig = None;
                 }
@@ -2033,6 +2100,7 @@ fn rebuild_module_member_list(
                 fsharp_extension: Some(facts.fsharp_extension),
                 definition_range: Some(facts.definition_range),
                 arg_group_count: Some(facts.arg_group_count),
+                curried: Some(facts.curried),
                 xml_doc_sig: Some(facts.xml_doc_sig),
                 typar_constraints: Some(facts.typar_constraints),
                 use_facts: Some(facts.use_facts),
@@ -2183,6 +2251,15 @@ fn rebuild_module_member_list(
                         typar.fsharp_constraints = *reading;
                     }
                 }
+                // …and each group's arguments, by the same unanimity. A group
+                // that does not account for the claimed method's parameters is
+                // not this method's grouping, whatever claimed it.
+                m.arg_groups = match facts.curried.clone().flatten() {
+                    Some(c) if c.split(&m.signature.parameters).is_some() => {
+                        ArgGroups::Read(Box::new(c))
+                    }
+                    _ => ArgGroups::Unknowable,
+                };
                 // Unanimous rename → the val's logical name; a conflicted
                 // group under-sets. The CLR `[Extension]`-attribute flag
                 // `project_method` read is never *cleared* — the pickle bit
@@ -3662,6 +3739,24 @@ struct DocKey {
     /// The val's measure type parameters, which IL erases but its key's generic
     /// arity counts (see `doc_id::recorded_key_fits`).
     erased_typars: usize,
+    /// For a method or constructor val, its argument groups as a caller writes
+    /// them; `None` for any other val, and for one without a `ValReprInfo`.
+    curried: Option<CurriedArgs>,
+    /// Whether the val is an abstract slot or an override, which F# pickles as
+    /// two vals for the one IL method a slot with its `default` compiles to.
+    role: SlotRole,
+}
+
+/// A member val's part in virtual dispatch, as its `MemberFlags` record it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotRole {
+    /// Neither an abstract slot nor an override.
+    Plain,
+    /// `abstract` (`IsDispatchSlot`).
+    DispatchSlot,
+    /// `default`, `override`, or an explicit interface implementation
+    /// (`IsOverrideOrExplicitImpl`).
+    Override,
 }
 
 /// Stamp each F# type's members with the doc-comment key fsc pickled for them
@@ -3728,6 +3823,24 @@ pub(crate) fn apply_type_member_doc_sigs(
                             slot,
                             key: pickled_xml_doc_sig(&v.xmldoc_sig),
                             erased_typars: measure_typar_count(v),
+                            curried: match info.flags.kind {
+                                PickledMemberKind::Member if info.flags.is_instance => {
+                                    curried_args(v, ReceiverAt::This)
+                                }
+                                PickledMemberKind::Member | PickledMemberKind::Constructor => {
+                                    curried_args(v, ReceiverAt::None)
+                                }
+                                PickledMemberKind::PropertyGet
+                                | PickledMemberKind::PropertySet
+                                | PickledMemberKind::ClassConstructor => None,
+                            },
+                            role: if info.flags.is_dispatch_slot {
+                                SlotRole::DispatchSlot
+                            } else if info.flags.is_override_or_explicit_impl {
+                                SlotRole::Override
+                            } else {
+                                SlotRole::Plain
+                            },
                         });
                 }
             }
@@ -3760,6 +3873,8 @@ pub(crate) fn apply_type_member_doc_sigs(
                         slot: DocSlot::ValField(field.ident.name.clone()),
                         key: pickled_xml_doc_sig(&field.xmldoc_sig),
                         erased_typars: 0,
+                        curried: None,
+                        role: SlotRole::Plain,
                     });
                 }
             }
@@ -3866,8 +3981,125 @@ pub(crate) fn apply_type_member_doc_sigs(
             continue;
         }
         stamp_doc_sigs(ecma, &target.keys, physical);
+        stamp_arg_groups(ecma, &target.keys, physical);
     }
     Ok(())
+}
+
+/// Stamp `entity`'s methods with their vals' argument groups
+/// ([`crate::MethodLike::arg_groups`]), from one type's pickled member vals.
+///
+/// A method slot is stamped only when that is unambiguous, as for the doc keys
+/// ([`stamp_doc_sigs`]): every val in the slot groups its arguments alike, no
+/// member of the slot's name was refused, and exactly as many methods occupy
+/// the slot — projected and physical alike — as vals claim it. A member of a
+/// type this pass does not reach stays [`ArgGroups::Unknowable`].
+///
+/// Several vals share a slot only as overloads of one name and arity, and F#
+/// lets only a method of one tupled group be overloaded (FS0439), so their
+/// groupings agree; the argument names need not (`O(a, b)` beside `O(x, y)`),
+/// and which method is which val's the slot cannot tell. Such a slot is
+/// stamped with the agreed grouping and each method's own IL parameter names,
+/// which are its F# names but for a wildcard or a tuple-typed parameter's
+/// elements (F# shows those unnamed; IL names them `_arg1`, `p_0`).
+///
+/// The count of methods the vals account for is not the count of vals: an
+/// `abstract` slot and its `default` are two vals, and one IL method. Each
+/// abstract val that an override in the slot can pair with is counted once,
+/// which can only under-count the vals' methods — so an equal physical count
+/// still proves every method of the slot is one of theirs.
+fn stamp_arg_groups(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
+    /// A grouping without its names: the receiver flag, and each group's size.
+    fn shape(c: &CurriedArgs) -> (bool, Vec<usize>) {
+        (
+            c.leading_receiver,
+            c.groups.iter().map(|g| g.args.len()).collect(),
+        )
+    }
+    /// Per method slot: how many vals claim it, their grouping if they all
+    /// agree, and its shape if those agree.
+    struct Slot<'a> {
+        vals: usize,
+        dispatch_slots: usize,
+        overrides: usize,
+        curried: Option<Option<&'a CurriedArgs>>,
+        shape: Option<Option<(bool, Vec<usize>)>>,
+    }
+    let mut slots: HashMap<&DocSlot, Slot<'_>> = HashMap::new();
+    for k in keys {
+        if !matches!(k.slot, DocSlot::Method { .. }) {
+            continue;
+        }
+        let curried = k.curried.as_ref();
+        let shaped = curried.map(shape);
+        let entry = slots.entry(&k.slot).or_insert_with(|| Slot {
+            vals: 0,
+            dispatch_slots: 0,
+            overrides: 0,
+            curried: Some(curried),
+            shape: Some(shaped.clone()),
+        });
+        entry.vals += 1;
+        match k.role {
+            SlotRole::Plain => {}
+            SlotRole::DispatchSlot => entry.dispatch_slots += 1,
+            SlotRole::Override => entry.overrides += 1,
+        }
+        if entry.curried != Some(curried) {
+            entry.curried = None;
+        }
+        if entry.shape.as_ref() != Some(&shaped) {
+            entry.shape = None;
+        }
+    }
+    for (slot, facts) in slots {
+        let (Some(Some((leading_receiver, sizes))), DocSlot::Method { name, .. }) =
+            (facts.shape, slot)
+        else {
+            continue;
+        };
+        if entity.skipped_members.iter().any(|s| s.name == *name) {
+            continue;
+        }
+        // At most the methods the vals compile to: an abstract slot and its
+        // default share one.
+        let methods = facts.vals - facts.dispatch_slots.min(facts.overrides);
+        let occupants = entity.members.iter().filter(|m| occupies(m, slot)).count();
+        if occupants != methods || physical_occupants(entity, slot, physical) != methods {
+            continue;
+        }
+        for member in entity.members.iter_mut().filter(|m| occupies(m, slot)) {
+            let Member::Method(m) = member else {
+                continue;
+            };
+            let curried = match facts.curried {
+                Some(Some(curried)) => curried.clone(),
+                // The names disagree: each method's own, from its IL.
+                _ => {
+                    let mut names = m.signature.parameters.iter().map(|p| p.name.clone());
+                    if leading_receiver {
+                        names.next();
+                    }
+                    CurriedArgs {
+                        leading_receiver,
+                        groups: sizes
+                            .iter()
+                            .map(|&n| ArgGroup {
+                                args: names
+                                    .by_ref()
+                                    .take(n)
+                                    .map(|name| CurriedArg { name })
+                                    .collect(),
+                            })
+                            .collect(),
+                    }
+                }
+            };
+            if curried.split(&m.signature.parameters).is_some() {
+                m.arg_groups = ArgGroups::Read(Box::new(curried));
+            }
+        }
+    }
 }
 
 /// One physical `MethodDef`'s IL slot, keyed by its metadata token: what the
@@ -5583,6 +5815,20 @@ mod tests {
         }
     }
 
+    /// The [`CurriedArgs`] of groups of the given sizes, every argument unnamed
+    /// (as [`val_repr_info`] pickles them).
+    fn unnamed_groups(leading_receiver: bool, sizes: &[usize]) -> CurriedArgs {
+        CurriedArgs {
+            leading_receiver,
+            groups: sizes
+                .iter()
+                .map(|&n| ArgGroup {
+                    args: (0..n).map(|_| CurriedArg { name: None }).collect(),
+                })
+                .collect(),
+        }
+    }
+
     /// As [`ext_test_val`], but carrying a `ValReprInfo` with the given argument
     /// groups so [`val_il_arity`] returns `Some(sum-of-lengths)`.
     fn ext_test_val_arity(
@@ -5673,7 +5919,7 @@ mod tests {
     /// A minimal projected static method (zero parameters), unflagged as an
     /// extension.
     fn make_ecma_method(name: &str) -> Member {
-        Member::Method(MethodLike {
+        Member::Method(Box::new(MethodLike {
             val_facts: crate::model::ValFacts::NotFSharp,
             definition_range: None,
             name: name.to_string(),
@@ -5684,6 +5930,7 @@ mod tests {
                 return_nullability: Nullability::Oblivious,
             },
             arg_group_count: Some(1),
+            arg_groups: crate::model::ArgGroups::NotFSharp,
             is_static: true,
             is_virtual: false,
             is_abstract: false,
@@ -5706,7 +5953,7 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
-        })
+        }))
     }
 
     fn is_extension(entity: &Entity, method_name: &str) -> bool {
@@ -5876,6 +6123,7 @@ mod tests {
                     compiled_name: Some("Tripled".to_string()),
                     il_arity: Some(1),
                     arg_group_count: Some(1),
+                    curried: Some(unnamed_groups(false, &[1])),
                     is_instance: false,
                     is_member: false,
                     is_extension: false,
@@ -5899,6 +6147,7 @@ mod tests {
                     // Receiver group + erased-unit group.
                     il_arity: Some(1),
                     arg_group_count: Some(2),
+                    curried: Some(unnamed_groups(true, &[0])),
                     is_instance: true,
                     is_member: true,
                     is_extension: true,
@@ -5921,6 +6170,7 @@ mod tests {
                     compiled_name: Some("Counter.Make.Static".to_string()),
                     il_arity: None,
                     arg_group_count: None,
+                    curried: None,
                     is_instance: false,
                     is_member: true,
                     is_extension: true,
@@ -5943,6 +6193,7 @@ mod tests {
                     compiled_name: None,
                     il_arity: Some(1),
                     arg_group_count: Some(1),
+                    curried: Some(unnamed_groups(false, &[1])),
                     is_instance: false,
                     is_member: false,
                     is_extension: false,
@@ -5965,6 +6216,7 @@ mod tests {
                     compiled_name: None,
                     il_arity: None,
                     arg_group_count: None,
+                    curried: None,
                     is_instance: false,
                     is_member: false,
                     is_extension: false,
@@ -6790,7 +7042,13 @@ mod tests {
                 match item.val {
                     Some((documented, member)) => {
                         let key = documented.then(|| key_of(item));
-                        keys.push(DocKey { slot, key: key.clone(), erased_typars: 0 });
+                        keys.push(DocKey {
+                            slot,
+                            key: key.clone(),
+                            erased_typars: 0,
+                            curried: None,
+                            role: SlotRole::Plain,
+                        });
                         match member {
                             ValMember::Kept => {
                                 entity.members.push(method_of(item));
@@ -6816,6 +7074,205 @@ mod tests {
                 };
                 if let Some(stamped) = &m.xml_doc_sig {
                     prop_assert_eq!(Some(stamped), truth.as_ref(), "{:?}", items);
+                }
+            }
+        }
+    }
+
+    /// One generated type method for the argument-group stamp: its IL identity
+    /// (a name, staticness, and a parameter count fixed by the grouping), and
+    /// either the val it compiles from — its groups, each argument named or
+    /// not, and what the projection made of its member — or nothing, for a
+    /// member the signature file hides.
+    #[derive(Debug, Clone)]
+    struct GroupSlotItem {
+        name: u8,
+        is_static: bool,
+        /// Each group's argument names (`None`: unnamed). The parameter count
+        /// is their total.
+        groups: Vec<Vec<Option<u8>>>,
+        val: Option<ValMember>,
+        /// Whether the val is an `abstract` slot with its `default`: two vals,
+        /// one IL method.
+        paired: bool,
+    }
+
+    fn group_slot_item() -> impl Strategy<Value = GroupSlotItem> {
+        let member = prop_oneof![
+            4 => Just(ValMember::Kept),
+            1 => Just(ValMember::Refused),
+            1 => Just(ValMember::Elided),
+        ];
+        (
+            0u8..2,
+            any::<bool>(),
+            proptest::collection::vec(
+                proptest::collection::vec(proptest::option::of(0u8..3), 0..3),
+                0..3,
+            ),
+            proptest::option::of(member),
+            any::<bool>(),
+        )
+            .prop_map(|(name, is_static, groups, val, paired)| GroupSlotItem {
+                name,
+                is_static,
+                groups,
+                val,
+                paired,
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
+
+        /// Soundness of the argument-group stamp against a generated ground
+        /// truth: whatever mix of overloads (curried or not, named alike or
+        /// not), refused or silently elided members and signature-hidden IL
+        /// members a type holds, a method that receives a grouping is a val's,
+        /// grouped as that val groups its arguments, and named as it names them
+        /// — or, where several vals share its slot, as its own IL names its
+        /// parameters.
+        #[test]
+        fn type_member_arg_group_stamp_hands_each_method_its_own_vals_grouping(
+            items in proptest::collection::vec(group_slot_item(), 0..8)
+        ) {
+            // Items may share a slot: those are overloads, as many as drawn.
+            let arity = |i: &GroupSlotItem| i.groups.iter().map(Vec::len).sum::<usize>();
+            let curried_of = |i: &GroupSlotItem| CurriedArgs {
+                leading_receiver: false,
+                groups: i
+                    .groups
+                    .iter()
+                    .map(|g| ArgGroup {
+                        args: g
+                            .iter()
+                            .map(|n| CurriedArg { name: n.map(|n| format!("p{n}")) })
+                            .collect(),
+                    })
+                    .collect(),
+            };
+            let method_of = |k: usize, i: &GroupSlotItem| {
+                let mut m = make_ecma_method(&format!("M{}", i.name));
+                if let Member::Method(mm) = &mut m {
+                    mm.is_static = i.is_static;
+                    mm.arg_groups = ArgGroups::Unknowable;
+                    mm.signature.parameters = (0..arity(i))
+                        .map(|p| Parameter {
+                            name: Some(format!("il{k}_{p}")),
+                            ty: TypeRef::Primitive(Primitive::I4),
+                            is_byref: false,
+                            is_out: false,
+                            is_readonly_ref: false,
+                            default: crate::model::ParamDefault::None,
+                            is_param_array: false,
+                            nullability: Nullability::Oblivious,
+                        })
+                        .collect();
+                }
+                m
+            };
+            let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Class);
+            let physical: PhysicalMethods = items
+                .iter()
+                .enumerate()
+                .map(|(k, item)| {
+                    (
+                        k as u32,
+                        PhysicalMethod {
+                            declaring_type: "T".to_string(),
+                            name: format!("M{}", item.name),
+                            params: Some(arity(item)),
+                            is_static: item.is_static,
+                            accessor_of: None,
+                        },
+                    )
+                })
+                .collect();
+            entity.method_def_tokens = (0..items.len() as u32).collect();
+            let slot_of = |i: &GroupSlotItem| DocSlot::Method {
+                name: format!("M{}", i.name),
+                arity: arity(i),
+                is_static: i.is_static,
+            };
+            let mut keys = Vec::new();
+            // Per projected member: its own val's grouping, if it has a val.
+            let mut truth = Vec::new();
+            for (k, item) in items.iter().enumerate() {
+                match item.val {
+                    Some(member) => {
+                        let roles: &[SlotRole] = if item.paired {
+                            &[SlotRole::DispatchSlot, SlotRole::Override]
+                        } else {
+                            &[SlotRole::Plain]
+                        };
+                        for &role in roles {
+                            keys.push(DocKey {
+                                slot: slot_of(item),
+                                key: None,
+                                erased_typars: 0,
+                                curried: Some(curried_of(item)),
+                                role,
+                            });
+                        }
+                        match member {
+                            ValMember::Kept => {
+                                entity.members.push(method_of(k, item));
+                                truth.push(Some(curried_of(item)));
+                            }
+                            ValMember::Refused => entity.skipped_members.push(SkippedMember {
+                                name: format!("M{}", item.name),
+                                reason: "refused".to_string(),
+                            }),
+                            ValMember::Elided => {}
+                        }
+                    }
+                    None => {
+                        entity.members.push(method_of(k, item));
+                        truth.push(None);
+                    }
+                }
+            }
+            let shared: std::collections::HashMap<DocSlot, usize> =
+                keys.iter().fold(std::collections::HashMap::new(), |mut acc, k| {
+                    *acc.entry(k.slot.clone()).or_default() += 1;
+                    acc
+                });
+            stamp_arg_groups(&mut entity, &keys, &physical);
+            let kept: Vec<&GroupSlotItem> = items
+                .iter()
+                .filter(|i| matches!(i.val, None | Some(ValMember::Kept)))
+                .collect();
+            for ((member, truth), item) in entity.members.iter().zip(&truth).zip(&kept) {
+                let Member::Method(m) = member else {
+                    unreachable!("the generator builds methods only")
+                };
+                let ArgGroups::Read(stamped) = &m.arg_groups else {
+                    continue;
+                };
+                let Some(truth) = truth else {
+                    prop_assert!(false, "a hidden member got {:?}: {:?}", stamped, items);
+                    unreachable!();
+                };
+                let sizes = |c: &CurriedArgs| {
+                    c.groups.iter().map(|g| g.args.len()).collect::<Vec<_>>()
+                };
+                prop_assert_eq!(sizes(stamped), sizes(truth), "{:?}", items);
+                prop_assert!(stamped.split(&m.signature.parameters).is_some());
+                if **stamped != *truth {
+                    prop_assert!(
+                        shared.get(&slot_of(item)).copied().unwrap_or(0) > 1,
+                        "a lone val's method got another's names: {:?} for {:?}",
+                        stamped,
+                        truth
+                    );
+                    let il: Vec<Option<String>> =
+                        m.signature.parameters.iter().map(|p| p.name.clone()).collect();
+                    let names: Vec<Option<String>> = stamped
+                        .groups
+                        .iter()
+                        .flat_map(|g| g.args.iter().map(|a| a.name.clone()))
+                        .collect();
+                    prop_assert_eq!(names, il);
                 }
             }
         }

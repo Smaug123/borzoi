@@ -24,10 +24,15 @@
 //! Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 
 use borzoi_assembly::{
-    Ecma335Assembly, EcmaView, Entity, Member, MethodLike, ModuleValue, ParamDefault, format_member,
+    Ecma335Assembly, EcmaView, Entity, Member, MethodLike, ModuleValue, ParamDefault,
 };
 
 use crate::common::ensure_minilib_fs_built;
+
+/// [`borzoi_assembly::format_member`], for a member every case here can render.
+fn format_member(member: &Member, owner: &Entity) -> String {
+    borzoi_assembly::format_member(member, owner).expect("a renderable signature")
+}
 
 fn load() -> Vec<Entity> {
     let dll = ensure_minilib_fs_built();
@@ -118,7 +123,7 @@ fn generic_module_value_vs_unit_function_split() {
         "a generic value has zero argument groups"
     );
     assert_eq!(
-        format_member(&Member::Method(gen_empty.clone()), hello),
+        format_member(&Member::Method(Box::new(gen_empty.clone())), hello),
         "val genEmpty<'a>: 'a[]"
     );
 
@@ -129,7 +134,7 @@ fn generic_module_value_vs_unit_function_split() {
         "a generic 0-parameter unit-function has one (unit) argument group, not zero"
     );
     assert_eq!(
-        format_member(&Member::Method(gen_ping.clone()), hello),
+        format_member(&Member::Method(Box::new(gen_ping.clone())), hello),
         "val genPingUnit<'a>: unit -> int"
     );
 }

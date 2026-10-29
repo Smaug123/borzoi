@@ -473,8 +473,8 @@ pub enum ValFacts {
     /// the IL row carries).
     NotFSharp,
     /// The host signature pickle described the method's val. Boxed: the facts
-    /// are consulted only when a consumer reads a signature as an F# type, and
-    /// inline they would tip [`Member`] over clippy's large-variant threshold.
+    /// are consulted only when a consumer reads a signature as an F# type, so
+    /// they are kept out of every [`MethodLike`] that never needs them.
     Read(Box<ReadValFacts>),
     /// Nothing may be concluded: an F#-authored method the pickle did not
     /// describe (a member of a type, an augmentation, a val the merge could not
@@ -1312,7 +1312,8 @@ pub struct CompilerFeatureRequired {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Member {
-    Method(MethodLike),
+    /// Boxed: a [`MethodLike`] is well over the size of the other variants.
+    Method(Box<MethodLike>),
     Field(Field),
     Property(Property),
     Event(Event),
@@ -1364,6 +1365,108 @@ pub struct FsharpSourceRange {
     pub end_column: u32,
 }
 
+/// How a method's IL parameter list groups into F# curried arguments.
+///
+/// An F# `let f a b` and `let f (a, b)` both compile to a two-parameter
+/// method, and so do `member x.M a b` and `member x.M(a, b)`: the flattened IL
+/// signature cannot tell a curried function from a tupled one. The F# signature
+/// pickle can, through the val's `ValReprInfo`, which is what the F# compiler
+/// reads back when it shows or checks the member.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ArgGroups {
+    /// The declaring assembly is not F#-authored. C# and VB cannot curry, so
+    /// the IL parameter list is the one argument group, named as IL names it.
+    NotFSharp,
+    /// Read from the val's `ValReprInfo` in the host signature pickle.
+    Read(Box<CurriedArgs>),
+    /// An F#-authored method whose val the pickle merge did not read, or read
+    /// ambiguously: no host pickle, a decode failure, a foreign CCU, or a
+    /// member that cannot be told apart from a sibling of another shape. Any
+    /// split of two or more IL parameters into groups is a guess.
+    Unknowable,
+}
+
+impl ArgGroups {
+    /// The number of argument groups a caller writes, when known: one for a
+    /// non-F# method, the pickle's count for a read one.
+    pub fn count(&self) -> Option<usize> {
+        match self {
+            ArgGroups::NotFSharp => Some(1),
+            ArgGroups::Read(args) => Some(args.groups.len()),
+            ArgGroups::Unknowable => None,
+        }
+    }
+}
+
+/// An F# method's argument groups as its pickled `ValReprInfo` records them,
+/// as a **caller** writes them: an intrinsic instance member's `this` group,
+/// which the definition's `ValReprInfo` counts, is not one of them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CurriedArgs {
+    /// Whether the method's first IL parameter is the receiver rather than an
+    /// argument: an instance augmentation (`type T with member x.M a b`)
+    /// compiles to a static of its module that takes the `T` first.
+    pub leading_receiver: bool,
+    /// The argument groups, in order. An empty group is a `()` argument that
+    /// compiled to no parameter at all, which F# does only for a function's
+    /// sole group (`let f () = …`); a value binding has no groups.
+    pub groups: Vec<ArgGroup>,
+}
+
+/// One curried argument group: its arguments, tupled.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ArgGroup {
+    pub args: Vec<CurriedArg>,
+}
+
+/// One argument of a curried group, as the pickle names it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CurriedArg {
+    /// The F# source name, or `None` for an argument F# shows unnamed: a
+    /// wildcard (`_: int`), a `()` in a later group, or one element of a
+    /// tuple-typed parameter (`(p: int * string)` compiles to two unnamed
+    /// arguments). The IL names those `_arg1`, `unitVar1` and `p_0`, which F#
+    /// never shows.
+    pub name: Option<String>,
+}
+
+impl CurriedArgs {
+    /// Pair `params`, a method's IL parameters, with these groups: the
+    /// receiver, when [`Self::leading_receiver`] says the first one is, and
+    /// then one slice per group. `None` when the groups do not account for
+    /// exactly the parameters there are.
+    pub fn split<'a, T>(&self, params: &'a [T]) -> Option<SplitParams<'a, T>> {
+        let (receiver, mut rest) = if self.leading_receiver {
+            let (first, rest) = params.split_first()?;
+            (Some(first), rest)
+        } else {
+            (None, params)
+        };
+        let mut groups = Vec::with_capacity(self.groups.len());
+        for group in &self.groups {
+            if group.args.len() > rest.len() {
+                return None;
+            }
+            let (taken, left) = rest.split_at(group.args.len());
+            groups.push(taken);
+            rest = left;
+        }
+        rest.is_empty().then_some(SplitParams { receiver, groups })
+    }
+}
+
+/// A method's IL parameters split by [`CurriedArgs::split`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitParams<'a, T> {
+    pub receiver: Option<&'a T>,
+    /// One slice per argument group, each as long as its group.
+    pub groups: Vec<&'a [T]>,
+}
+
 /// A method, constructor, or operator. The `is_constructor` flag
 /// distinguishes the `.ctor` / `.cctor` cases from regular methods so
 /// callers don't have to string-compare names.
@@ -1385,7 +1488,19 @@ pub struct MethodLike {
     /// the group is a provably single argument group (or takes ≤ 1 parameter),
     /// otherwise FCS's FS0816 curried-overload rule may type the call `obj`.
     /// See `docs/completed/ov-6.1-curry-detection-plan.md`.
+    ///
+    /// [`Self::arg_groups`] is the finer fact (each group's arguments), and
+    /// this count never contradicts it: where both are known they agree.
+    /// Either can be known without the other. A type member's groups are read
+    /// for display while this stays `None`, so the overload engine's
+    /// curried-member gate is unchanged by them; and a module method whose
+    /// claimants agree on the count but name their arguments differently keeps
+    /// this count while its groups are unknown.
     pub arg_group_count: Option<usize>,
+    /// How the IL parameters group into F# curried arguments, with each
+    /// argument's F# name ([`ArgGroups`]). What a signature renderer needs to
+    /// show `val f: a: int -> b: int -> int` rather than the tupled IL view.
+    pub arg_groups: ArgGroups,
     pub is_static: bool,
     pub is_virtual: bool,
     pub is_abstract: bool,
@@ -1466,8 +1581,8 @@ pub struct MethodLike {
     /// lives in the module's `.cctor`), so the getter carries no sequence
     /// point and this pickled range is the only — and FCS's own — source
     /// location for the binding.
-    /// Boxed: the range is consulted only at navigation time, and inline it
-    /// would tip [`Member`] over clippy's large-variant threshold.
+    /// Boxed: the range is consulted only at navigation time, so it is kept
+    /// out of every [`MethodLike`] that is never navigated to.
     pub definition_range: Option<Box<FsharpSourceRange>>,
     /// Formal method type parameters (the `M0`/`M1`/... typars referenced
     /// from the signature via `TypeRef::Var { is_method: true, .. }`).
