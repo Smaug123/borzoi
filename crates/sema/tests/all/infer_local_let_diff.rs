@@ -1027,6 +1027,11 @@ struct Gen<'r> {
     /// rest, and whatever we commit must still agree with what FCS kept. It also
     /// gives `.Length` receivers of any type, so FCS rejects some accesses.
     open_anywhere: bool,
+    /// Generating under an expected type a coercion meets (an `obj`-annotated
+    /// pattern element). FCS propagates that type into a pipe's result as an
+    /// equality before it checks the pipe's arguments, so `(x |> mono)` there
+    /// is rejected; no pipe is generated in such a position.
+    under_coercion: bool,
 }
 
 impl Gen<'_> {
@@ -1076,7 +1081,7 @@ impl Gen<'_> {
                 self.literal(t)
             };
         }
-        match self.rng.below(10) {
+        match self.rng.below(12) {
             0 => self.literal(t),
             1 if !vars.is_empty() => vars[self.rng.below(vars.len())].clone(),
             2 => {
@@ -1127,12 +1132,31 @@ impl Gen<'_> {
             }
             // FSharp.Core's pipes and composition, which inference types as
             // applications of their signatures.
+            9..=11 if self.under_coercion => self.expr(t, depth - 1),
             9 => {
                 let a = self.expr(t, depth - 1);
                 match self.rng.below(3) {
                     0 => format!("({a} |> idf)"),
                     1 => format!("(idf <| {a})"),
                     _ => format!("((idf >> idf) {a})"),
+                }
+            }
+            // The same over the header's in-file functions, whose results
+            // their definitions fix: sealed parameters (`mono`, `monos`), and
+            // one FCS loosens at each use (`mo`, over `obj`).
+            10 | 11 if t == T::Int => {
+                let fun = ["mono", "monos", "mo"][self.rng.below(3)];
+                let arg_t = match fun {
+                    "mono" => T::Bool,
+                    "monos" => T::Str,
+                    _ => TYPES[self.rng.below(TYPES.len())],
+                };
+                let a = self.expr(arg_t, depth - 1);
+                match self.rng.below(4) {
+                    0 => format!("({a} |> {fun})"),
+                    1 => format!("({fun} <| {a})"),
+                    2 => format!("(({fun} >> idf) {a})"),
+                    _ => format!("({a} |> {fun} |> idf)"),
                 }
             }
             _ => self.expr(t, depth - 1),
@@ -1260,11 +1284,13 @@ impl Gen<'_> {
                         // becomes a tuple expression.
                         2 if parens => {
                             if !rhs.ends_with(", 3)") {
+                                let outer = std::mem::replace(&mut self.under_coercion, true);
                                 rhs = format!(
                                     "({}, {})",
                                     self.expr(T::Int, depth.saturating_sub(1)),
                                     self.expr(T::Str, depth.saturating_sub(1))
                                 );
+                                self.under_coercion = outer;
                             }
                             (format!("{name}: obj"), None)
                         }
@@ -1375,7 +1401,7 @@ impl Gen<'_> {
 /// the `pr` pair, `uu` (a pair FCS types but inference does not, so its
 /// variable is open in every later binding), and a module-level tuple
 /// pattern binding `hp` and `hq`.
-const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n\
+const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet mo (o: obj) = 3\n\
                       let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n";
 
 /// The names every generated function body may use besides its parameters.
@@ -1456,6 +1482,7 @@ fn generate(seed: u64, functions: usize) -> (String, usize) {
             generic_uses: Vec::new(),
             modelled_only,
             open_anywhere: false,
+            under_coercion: false,
         };
         if with_open {
             g.env.push(Var {
@@ -1568,6 +1595,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
                 generic_uses: Vec::new(),
                 modelled_only,
                 open_anywhere: true,
+                under_coercion: false,
             };
             let block = g.block(t, 3, wrap == 0 && i % 2 == 0);
             let body = match wrap {

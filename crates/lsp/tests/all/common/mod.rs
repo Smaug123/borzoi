@@ -269,7 +269,7 @@ pub fn runtime_project_state_files(
 /// A configured `fcs-dump` [`Command`] for `subcommand`, honouring
 /// `BORZOI_FCS_DUMP` (a pre-built binary) or the build-once `.dll` run via
 /// `dotnet`. The caller wires stdin/stdout/env as needed.
-fn fcs_dump_command(subcommand: &str) -> Command {
+pub fn fcs_dump_command(subcommand: &str) -> Command {
     if let Some(bin) = std::env::var_os("BORZOI_FCS_DUMP") {
         let mut c = Command::new(bin);
         c.arg(subcommand);

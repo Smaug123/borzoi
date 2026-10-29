@@ -57,6 +57,7 @@ Both halves exist for every axis, and the split is:
 | axis | gate (`ci.yml`) | measurement (`stats.yml`) |
 |---|---|---|
 | parser | `parser_corpus`, `parser_corpus_diff` | `parser-divergence` |
+| parser recovery | `parser_corpus_diff` (verdicts), `recovery_sweep` | — |
 | parser on adversarial input | `parser_panic_sweep` | — |
 | in-file resolution | `resolve_corpus_diff` | `resolution-divergence` |
 | attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
@@ -219,7 +220,8 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
 | `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside; and, per file, the request handlers' probe counts for the plain and the perturbed copy, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). |
 | `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
-| `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). |
+| `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). A file either parser rejects also carries its recovered-tree verdict ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
+| `recovery_sweep` (cst) | one per sampled single-token deletion graded against FCS: the relation and its compared/undamaged/total counts ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
 | `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
 | `fsproj_msbuild_corpus_diff` (msbuild) | one per pinned `.fsproj`, `<project>\t<outcomes>`: a project-level `error(...)`, or each facet's `match`, `decline(<first cause>)` or `skip(<reason>)`. A tab separates the two because a path may contain a space. A run over a project list checks just the listed projects' entries. |
 | `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |

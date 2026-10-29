@@ -932,7 +932,10 @@ pub enum NormalisedPat {
     /// survived a pattern that failed to parse (`patFromParseError`, e.g. a
     /// binding head with nothing after `let`). Our CST has no node that marks a
     /// failed pattern, so [`from_cst`](super::from_cst) never builds it, and a
-    /// tree holding one never matches ours.
+    /// tree holding one is never [`Exact`](crate::common::recovery::Relation)
+    /// against ours. The unit containing it is damaged on both sides (FCS
+    /// reports the error that made it), so the recovered-tree relation does not
+    /// compare it.
     FromParseError(Box<NormalisedPat>),
     /// `SynPat.Named(SynIdent(idText, _), isThisVal=false, accessibility, _)`.
     /// The single string is the FCS `idText` (backticks stripped). A binding

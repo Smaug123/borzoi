@@ -4192,14 +4192,17 @@ impl MeasureScan {
 /// alike, all of which the type's enclosing module or namespace declares (an
 /// object model's `vslots` are references back to those same vals). Scanning a
 /// val that compiles elsewhere (an extension on this type, which lands on its
-/// module) only declines more.
+/// module) only declines more. What is scanned for a module is every val it
+/// declares: its `let` values and functions, and any extension members, all of
+/// which compile onto its class.
 ///
 /// The row is located the way [`apply_type_member_doc_sigs`] locates it, under
 /// the same guards: an unambiguous `(namespace, containers, name, arity)` key
-/// whose physical methods are declared on a TypeDef of the pickled IL name. A
+/// whose physical methods are declared on a TypeDef of the pickled IL name, and
+/// which is a module exactly when the pickled entity is. A
 /// measure-parameterised type is never stamped — its pickled arity is not its
-/// CLR arity, so the key cannot name its row — and neither is a module.
-/// Anything not stamped keeps the `Unknowable` the projector blanked it to.
+/// CLR arity, so the key cannot name its row. Anything not stamped keeps the
+/// `Unknowable` the projector blanked it to.
 pub(crate) fn apply_member_measures(
     entities: &mut [Entity],
     pickled: &PickledCcu,
@@ -4210,6 +4213,7 @@ pub(crate) fn apply_member_measures(
         type_chain: Vec<String>,
         arity: usize,
         il_name: String,
+        is_module: bool,
         scan: MeasureScan,
     }
     let local_fqns = local_tycon_fqns(pickled)?;
@@ -4252,8 +4256,38 @@ pub(crate) fn apply_member_measures(
                 parents.insert(child, stamp);
             }
             logical_paths.insert(stamp, path);
+            let is_module_or_namespace = entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE != 0;
+            // A module's members are its own `let` bindings, compiled onto its
+            // class: every val it declares is scanned. That includes the
+            // intrinsic members of any type nested in it, which compile onto
+            // that type instead — scanning them here only declines more.
+            if !is_root && is_module_or_namespace && entity.module_type.is_type != IsType::Namespace
+            {
+                let mut scan = MeasureScan::default();
+                for &vi in &entity.module_type.vals {
+                    let v = &pickled.tables.vals[vi as usize];
+                    scan.scan(pickled, &local_fqns, &v.ty, v.access.is_empty())?;
+                }
+                let mut chain = type_chain.to_vec();
+                chain.push(clr_name(entity));
+                targets.insert(
+                    stamp,
+                    Target {
+                        namespace: namespace.to_vec(),
+                        type_chain: chain,
+                        arity: 0,
+                        il_name: entity
+                            .compiled_name
+                            .clone()
+                            .unwrap_or_else(|| entity.logical_name.clone()),
+                        is_module: true,
+                        scan,
+                    },
+                );
+                return Ok(());
+            }
             if is_root
-                || entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE != 0
+                || is_module_or_namespace
                 || entity.type_abbrev.is_some()
                 || !is_measure_free(pickled, entity)
             {
@@ -4300,6 +4334,7 @@ pub(crate) fn apply_member_measures(
                         .compiled_name
                         .clone()
                         .unwrap_or_else(|| entity.logical_name.clone()),
+                    is_module: false,
                     scan,
                 },
             );
@@ -4374,7 +4409,10 @@ pub(crate) fn apply_member_measures(
         let Some(ecma) = ecma else {
             continue;
         };
-        if ecma.kind == EntityKind::Module {
+        // A module and a type are told apart by their ECMA row too: a pickled
+        // module whose key reached a non-module row, or the reverse, is the
+        // wrong row.
+        if (ecma.kind == EntityKind::Module) != target.is_module {
             continue;
         }
         // The lossy-key guard of `apply_type_member_doc_sigs` (#145): the row

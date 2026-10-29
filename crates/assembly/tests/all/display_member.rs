@@ -1460,3 +1460,49 @@ fn quoted_names_survive_into_rendered_declarations() {
         "member Take: ``odd arg``: int -> unit"
     );
 }
+
+/// [`format_member_untyped`] is [`format_member`] with its types cut out, for
+/// every member of the shipped FSharp.Core (modules, records, unions, classes,
+/// events and properties alike): the
+/// typed signature starts with the untyped head (less any accessor suffix), the
+/// cut falls where a type or type-parameter list begins, the accessors agree,
+/// and the untyped head claims no type.
+#[test]
+fn untyped_member_is_the_signature_with_its_types_cut_out() {
+    use borzoi_assembly::{Ecma335Assembly, EcmaView, format_member_untyped};
+    const ACCESSORS: [&str; 3] = [" with get, set", " with get", " with set"];
+    fn walk(entity: &Entity, checked: &mut usize, bad: &mut Vec<String>) {
+        for member in &entity.members {
+            *checked += 1;
+            let typed = format_member(member, entity);
+            let untyped = format_member_untyped(member, entity);
+            let (stem, accessors) = ACCESSORS
+                .iter()
+                .find_map(|a| untyped.strip_suffix(a).map(|s| (s, *a)))
+                .unwrap_or((untyped.as_str(), ""));
+            let cut = typed
+                .strip_prefix(stem)
+                .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('<'));
+            if !cut || !typed.ends_with(accessors) || untyped.contains(": ") {
+                bad.push(format!("  `{typed}` → `{untyped}`"));
+            }
+        }
+        for nested in &entity.nested_types {
+            walk(nested, checked, bad);
+        }
+    }
+    let mut checked = 0;
+    let mut bad = Vec::new();
+    let bytes = std::fs::read(crate::common::ensure_fsharp_core_dll()).unwrap();
+    let view = Ecma335Assembly::parse(&bytes).unwrap();
+    for entity in view.enumerate_type_defs().unwrap() {
+        walk(&entity, &mut checked, &mut bad);
+    }
+    assert!(checked > 1_000, "only {checked} members checked");
+    assert!(
+        bad.is_empty(),
+        "{} of {checked} untyped heads are not their signature less its types:\n{}",
+        bad.len(),
+        bad.iter().take(40).cloned().collect::<Vec<_>>().join("\n")
+    );
+}

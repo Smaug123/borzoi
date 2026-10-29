@@ -4413,11 +4413,11 @@ impl AssemblyEnv {
     /// Whether the IL signatures of the members `handle` **declares** are those
     /// members' F# types as far as units of measure go — no measure was erased
     /// from any of them. Only then may a member's IL type be published as the
-    /// type of an access: `float<m>` compiles to `float64`, and FCS types the
-    /// access `float<m>`.
+    /// type of an access, or rendered as the member's signature: `float<m>`
+    /// compiles to `float64`, and FCS types the access `float<m>`.
     ///
     /// `true` for an entity of a non-F# assembly ([`MemberMeasures::NotFSharp`]),
-    /// and for an F# type whose pickle found no measure directly
+    /// and for an F# type or module whose pickle found no measure directly
     /// ([`MemberMeasures::NoDirectMeasure`]) when every named head it lists is
     /// cleared — it resolves to a type that is not an abbreviation, or to an
     /// abbreviation whose decoded target hides none in turn. Everything else is
