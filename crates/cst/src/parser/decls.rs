@@ -7,14 +7,30 @@
 use super::*;
 use crate::lexer::InterpKind;
 
-/// The end of the line holding an offset, remembered for the last line asked
-/// about, so that a long malformed line full of stray tokens costs one scan
-/// rather than one per stray (see [`Parser::consume_stray_debris`]).
+/// The end of the line holding an offset, and the head of that line,
+/// remembered for the last line asked about, so that a long malformed line
+/// full of stray tokens costs one scan rather than one per stray (see
+/// [`Parser::consume_stray_debris`]).
 #[derive(Default)]
 struct LineEnd {
     /// `(from, end)`: no newline lies in `from..end`, and `end` is the newline
     /// (or the end of the source) that ends that stretch.
     last: Option<(usize, usize)>,
+    /// The head of the last line [`LineEnd::head`] was asked about.
+    head: Option<LineHead>,
+}
+
+/// Where a line starts and what it begins with (see [`LineEnd::head`]).
+#[derive(Clone, Copy)]
+struct LineHead {
+    /// The line's first byte (past a file-start BOM on line 1).
+    start: usize,
+    /// The newline that ends it, or the end of the source.
+    end: usize,
+    /// The start of its first significant raw token.
+    first: usize,
+    /// Whether that token is a `type` or `module` keyword.
+    declares: bool,
 }
 
 impl LineEnd {
@@ -32,48 +48,138 @@ impl LineEnd {
             }
         }
     }
+
+    /// The head of the line holding `offset`, read on `raw` (the raw stream of
+    /// `source`). A line breaks at `\n` alone, as FCS's lexer counts lines,
+    /// and a line that starts inside a multi-line token (a string or comment)
+    /// is part of the line that token starts on.
+    fn head(&mut self, source: &str, raw: &[RawTok<'_>], offset: usize) -> LineHead {
+        if let Some(head) = self.head
+            && head.start <= offset
+            && offset <= head.end
+        {
+            return head;
+        }
+        let line_start = |at: usize| match source[..at].rfind('\n') {
+            Some(nl) => nl + 1,
+            None if source.starts_with('\u{FEFF}') => '\u{FEFF}'.len_utf8().min(at),
+            None => 0,
+        };
+        let mut start = line_start(offset);
+        while let Some((_, s)) = raw[..raw.partition_point(|(_, s)| s.start < start)].last()
+            && s.end > start
+            && s.start < start
+        {
+            start = line_start(s.start);
+        }
+        let end = source[offset..]
+            .find('\n')
+            .map_or(source.len(), |nl| offset + nl);
+        let first = raw[raw.partition_point(|(_, s)| s.start < start)..]
+            .iter()
+            .find_map(|(tok, s)| match tok {
+                Ok(TriviaToken::Lexed(t)) if trivia_kind(t).is_none() => Some((s.start, t)),
+                Err(_) => Some((s.start, &Token::Newline)),
+                _ => None,
+            })
+            .filter(|&(at, _)| at <= offset);
+        let head = LineHead {
+            start,
+            end,
+            first: first.map_or(offset, |(at, _)| at),
+            declares: first.is_some_and(|(_, t)| matches!(t, Token::Type | Token::Module)),
+        };
+        self.head = Some(head);
+        head
+    }
 }
 
-/// How many brackets `t` closes and then opens, for
-/// [`Parser::consume_stray_debris`]'s bracket count. `begin`/`end` count, an
-/// interpolated string's fill is a bracket (a `} … {` part closes one and
-/// opens the next), and the fused `@>|}` closes two.
-fn bracket_effect(t: &Token<'_>) -> (usize, usize) {
+/// The column of `offset` on the line starting at `line_start`, in UTF-16
+/// code units, as FCS measures columns.
+fn utf16_column(source: &str, line_start: usize, offset: usize) -> usize {
+    source[line_start..offset]
+        .chars()
+        .map(char::len_utf16)
+        .sum()
+}
+
+/// A bracket a stray token's debris can hold open (see
+/// [`Parser::consume_stray_debris`]): each kind closes only at its own closer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DebrisBracket {
+    Paren,
+    Brack,
+    BrackBar,
+    Attribute,
+    Brace,
+    BraceBar,
+    Quote,
+    QuoteRaw,
+    Begin,
+    /// An interpolated string's fill (`$"…{` to `}…"`).
+    Fill,
+    /// A `struct`, `class`, `sig` or `interface` keyword, which opens a block
+    /// that `end` closes only sometimes (`struct (1, 2)` opens none). It keeps
+    /// no debris open, but the `end` that does close it closes nothing else.
+    Keyword,
+}
+
+impl DebrisBracket {
+    /// Whether the bracket keeps the debris open (see [`DebrisBracket::Keyword`]).
+    fn holds_open(self) -> bool {
+        self != DebrisBracket::Keyword
+    }
+}
+
+/// The brackets `t` closes, innermost first, and the one it then opens, for
+/// [`Parser::consume_stray_debris`]. Each closing step lists the kinds it may
+/// close. An interpolated string's `} … {` part closes one fill and opens the
+/// next, and the fused `@>|}` closes two. `end` closes a `begin` or a block
+/// keyword ([`DebrisBracket::Keyword`]), whichever is innermost. As in FCS's
+/// LexFilter, `class` and `sig` always open a block, but `struct` and
+/// `interface` only straight after a type definition's `=` (`after_equals`):
+/// `struct (1, 2)` opens none.
+fn debris_brackets(
+    t: &Token<'_>,
+    after_equals: bool,
+) -> (&'static [&'static [DebrisBracket]], Option<DebrisBracket>) {
+    use DebrisBracket::*;
     match t {
-        Token::LParen
-        | Token::LBrack
-        | Token::LBrackBar
-        | Token::LBrackLess
-        | Token::LBrace
-        | Token::LBraceBar
-        | Token::LQuote
-        | Token::LQuoteRaw
-        | Token::Begin => (0, 1),
-        Token::RParen
-        | Token::RBrack
-        | Token::BarRBrack
-        | Token::GreaterRBrack
-        | Token::RBrace
-        | Token::BarRBrace
-        | Token::RQuote
-        | Token::RQuoteRaw
-        | Token::RQuoteDot
-        | Token::RQuoteRawDot
-        | Token::End => (1, 0),
-        Token::RQuoteBarRBrace | Token::RQuoteRawBarRBrace => (2, 0),
+        Token::LParen => (&[], Some(Paren)),
+        Token::LBrack => (&[], Some(Brack)),
+        Token::LBrackBar => (&[], Some(BrackBar)),
+        Token::LBrackLess => (&[], Some(Attribute)),
+        Token::LBrace => (&[], Some(Brace)),
+        Token::LBraceBar => (&[], Some(BraceBar)),
+        Token::LQuote => (&[], Some(Quote)),
+        Token::LQuoteRaw => (&[], Some(QuoteRaw)),
+        Token::Begin => (&[], Some(Begin)),
+        Token::Class | Token::Sig => (&[], Some(Keyword)),
+        Token::Struct | Token::Interface if after_equals => (&[], Some(Keyword)),
+        Token::RParen => (&[&[Paren]], None),
+        Token::RBrack => (&[&[Brack]], None),
+        Token::BarRBrack => (&[&[BrackBar]], None),
+        Token::GreaterRBrack => (&[&[Attribute]], None),
+        Token::RBrace => (&[&[Brace]], None),
+        Token::BarRBrace => (&[&[BraceBar]], None),
+        Token::RQuote | Token::RQuoteDot => (&[&[Quote]], None),
+        Token::RQuoteRaw | Token::RQuoteRawDot => (&[&[QuoteRaw]], None),
+        Token::RQuoteBarRBrace => (&[&[Quote], &[BraceBar]], None),
+        Token::RQuoteRawBarRBrace => (&[&[QuoteRaw], &[BraceBar]], None),
+        Token::End => (&[&[Begin, Keyword]], None),
         Token::InterpString(kind) => match kind {
             InterpKind::Begin
             | InterpKind::TripleBegin
             | InterpKind::VerbatimBegin
-            | InterpKind::ExtendedBegin { .. } => (0, 1),
-            InterpKind::Part => (1, 1),
-            InterpKind::End { .. } => (1, 0),
+            | InterpKind::ExtendedBegin { .. } => (&[], Some(Fill)),
+            InterpKind::Part => (&[&[Fill]], Some(Fill)),
+            InterpKind::End { .. } => (&[&[Fill]], None),
             InterpKind::BeginEnd { .. }
             | InterpKind::TripleBeginEnd { .. }
             | InterpKind::VerbatimBeginEnd { .. }
-            | InterpKind::ExtendedBeginEnd { .. } => (0, 0),
+            | InterpKind::ExtendedBeginEnd { .. } => (&[], None),
         },
-        _ => (0, 0),
+        _ => (&[], None),
     }
 }
 
@@ -1476,15 +1582,67 @@ impl<'src> Parser<'src> {
             _ => "unexpected token".to_string(),
         };
         let mut line_end = line_ends.after(self.source, span.end);
+        // A declaration keyword ends the debris only straight after a stray
+        // access modifier: FCS keeps the `let` in `private let x = 1`, but not
+        // in `private foo let y = 1` or `member foo let y = 1`.
+        let mut after_access = matches!(
+            res,
+            Ok(FilteredToken::Raw(
+                Token::Private | Token::Internal | Token::Public
+            ))
+        );
+        // FCS parses on from `_` (an expression, if a malformed one), from a
+        // member keyword (a member outside a type), and from an infix operator
+        // (which continues the expression before it); after any other stray it
+        // discards tokens to the next separator.
+        let discards = match &res {
+            Ok(FilteredToken::Raw(t)) => {
+                !matches!(
+                    t,
+                    Token::Underscore
+                        | Token::Member
+                        | Token::Override
+                        | Token::Default
+                        | Token::Abstract
+                        | Token::Static
+                        | Token::Val
+                        | Token::New
+                        | Token::Inherit
+                        | Token::Interface
+                ) && !crate::lexfilter::is_infix(t)
+            }
+            _ => false,
+        };
+        // Or anywhere on the line, when the line began with a `type` or
+        // `module` declaration (`type A = A type B = A module C = …`, which FCS
+        // accepts and this loop does not parse): the declarations after the
+        // stray are FCS's too. A line a stray began is not one.
+        let head = line_ends.head(self.source, &self.raw_tokens, span.start);
+        let in_a_declaration = head.declares && head.first < span.start;
         // The scan starts past the stray token itself, which may be the
         // keyword or closer that would otherwise end the debris at once.
         let mut next_raw = self.raw_tokens.partition_point(|(_, s)| s.start < span.end);
+        // A line indented past the stray's line continues what that line
+        // began (`_ x =⏎    let inner = 1`): FCS's offside rule reads it as
+        // part of the construct, so it is debris too. The column is that of
+        // the line's first token, which a stray later on the line shares.
+        let stray_column = utf16_column(self.source, head.start, head.first);
         self.errors.push(ParseError { message, span });
         self.bump_into(SyntaxKind::ERROR);
-        let mut open = 0usize;
+        // The debris brackets still open, innermost last. A closer pops back to
+        // the innermost bracket of its own kinds, and closes nothing if none
+        // is open. The debris is open while one that holds it open is.
+        let mut open: Vec<DebrisBracket> = Vec::new();
+        // The end of the last raw token the debris absorbed: LexFilter may
+        // have swallowed it (a `)`), so no filtered token carries it.
+        let mut absorbed_end = None;
         let mut blocks = 0usize;
         let mut rest: Option<Range<usize>> = None;
         let mut separated = false;
+        // Whether the last significant token was a type definition's `=`: a
+        // `type` keyword came after the previous `=`.
+        let mut after_equals = false;
+        let mut in_type_head = false;
         while let Some((res, span)) = self.peek().cloned() {
             // Raw tokens before this one: those of the tokens already bumped,
             // and any LexFilter swallowed in between (a `type` or `module`
@@ -1496,16 +1654,72 @@ impl<'src> Parser<'src> {
                 }
                 next_raw += 1;
                 if let Ok(TriviaToken::Lexed(t)) = raw {
-                    keyword |= open == 0 && begins_module_decl(t);
-                    let (closes, opens) = bracket_effect(t);
-                    let was_open = open > 0;
-                    open = open.saturating_sub(closes) + opens;
-                    if was_open && open == 0 {
+                    let significant = trivia_kind(t).is_none();
+                    let was_open = open.iter().any(|b| b.holds_open());
+                    keyword |=
+                        (after_access || in_a_declaration) && !was_open && begins_module_decl(t);
+                    if !keyword && (was_open || s.start < line_end) {
+                        absorbed_end = Some(s.end);
+                        // A comment or string the debris absorbs may run on
+                        // past its line; the debris then runs to the end of
+                        // the line it ends on.
+                        if s.start < line_end && s.end > line_end {
+                            line_end = line_ends.after(self.source, s.end);
+                        }
+                    }
+                    if !significant {
+                        continue;
+                    }
+                    let (closes, opens) = debris_brackets(t, after_equals);
+                    after_equals = in_type_head && matches!(t, Token::Equals);
+                    in_type_head = match t {
+                        Token::Type => true,
+                        Token::Equals => false,
+                        _ => in_type_head,
+                    };
+                    after_access = false;
+                    for kinds in closes {
+                        if let Some(i) = open.iter().rposition(|b| kinds.contains(b)) {
+                            open.truncate(i);
+                        }
+                    }
+                    open.extend(opens);
+                    if was_open && !open.iter().any(|b| b.holds_open()) {
                         line_end = line_ends.after(self.source, s.end);
                     }
                 }
             }
-            if open == 0 {
+            // The next line is a continuation when its first token, read on the
+            // raw stream (a `module` keyword LexFilter swallows counts), is
+            // indented past the stray's line.
+            if span.start >= line_end
+                && !keyword
+                && self.raw_tokens[self.raw_tokens.partition_point(|(_, s)| s.start < line_end)..]
+                    .iter()
+                    .find(|(raw, s)| {
+                        s.start >= line_end
+                            && matches!(raw, Ok(TriviaToken::Lexed(t)) if trivia_kind(t).is_none())
+                    })
+                    .is_some_and(|(_, s)| {
+                        // The first token of its line, so its line starts at the
+                        // newline just before it.
+                        let line = self.source[..s.start].rfind('\n').map_or(0, |nl| nl + 1);
+                        utf16_column(self.source, line, s.start) > stray_column
+                    })
+            {
+                line_end = line_ends.after(self.source, span.start);
+            }
+            // A separator ends the debris even inside a bracket it opened when
+            // FCS is discarding tokens after the stray, brackets uncounted,
+            // until the next `;` or `;;`.
+            if let Some((Ok(TriviaToken::Lexed(t)), s)) = self.raw_tokens.get(next_raw)
+                && s.start == span.start
+                && discards
+                && matches!(t, Token::Semi | Token::SemiSemi)
+            {
+                break;
+            }
+            if !open.iter().any(|b| b.holds_open()) {
                 if span.start >= line_end || keyword {
                     break;
                 }
@@ -1514,8 +1728,11 @@ impl<'src> Parser<'src> {
                 if let Some((Ok(TriviaToken::Lexed(t)), s)) = self.raw_tokens.get(next_raw)
                     && s.start == span.start
                     && (matches!(t, Token::Semi | Token::SemiSemi)
-                        || bracket_effect(t).0 > 0
-                        || begins_module_decl(t))
+                        || debris_brackets(t, false)
+                            .0
+                            .iter()
+                            .any(|kinds| !open.iter().any(|b| kinds.contains(b)))
+                        || ((after_access || in_a_declaration) && begins_module_decl(t)))
                 {
                     break;
                 }
@@ -1547,6 +1764,12 @@ impl<'src> Parser<'src> {
                 message: "unexpected token".to_string(),
                 span: rest,
             });
+        }
+        // What the debris absorbed past its last filtered token, so the raw
+        // cursor stands where the declaration loop resumes: a swallowed
+        // `module` keyword after it is then the next raw token.
+        if let Some(end) = absorbed_end {
+            self.drain_raw_up_to(end);
         }
         separated
     }

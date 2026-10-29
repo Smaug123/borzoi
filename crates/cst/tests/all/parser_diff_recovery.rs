@@ -247,9 +247,332 @@ fn recover_nothing_inside_a_debris_bracket_is_a_declaration() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// Outside any bracket, a declaration keyword on the stray token's line ends
-/// the debris and begins a declaration, as FCS does after a stray access
-/// modifier (`private let x1 = 42`). Anything else on the line is debris.
+/// Balanced constructs a debris bracket may hold: every bracket kind, the
+/// keyword blocks an `end` closes, and plain atoms. A bare `struct … end` or
+/// `interface … end` is not one: FCS's LexFilter opens those blocks only
+/// after a type definition's `=`, so elsewhere their `end` closes an
+/// enclosing `begin`.
+const BALANCED: &[&str] = &[
+    "",
+    "x",
+    "( )",
+    "[ ]",
+    "[| |]",
+    "{ }",
+    "{| |}",
+    "<@ x @>",
+    "<@@ x @@>",
+    "[<A>]",
+    "$\"{x}\"",
+    "begin end",
+    "class end",
+    "sig end",
+    "type T = struct end",
+    "type T = interface end",
+    "type T = class end",
+];
+
+/// Over pairs of [`BALANCED`] constructs inside each kind of debris bracket:
+/// the bracket stays open until its own closer, so the `let` on the line
+/// after the constructs is never a declaration of the enclosing module. A
+/// closer of another kind (`end` closing a `struct` the debris never counted)
+/// must not end the bracket early.
+#[test]
+fn recover_a_debris_bracket_closes_only_at_its_own_closer() {
+    let mut failures = Vec::new();
+    for (open, close) in [
+        ("(", ")"),
+        ("[", "]"),
+        ("[|", "|]"),
+        ("{", "}"),
+        ("begin", "end"),
+    ] {
+        for a in BALANCED {
+            for b in BALANCED {
+                let src = format!(
+                    "let x = 0\nmember foo {open} {a} {b}\n            let inner = 1\n            {close}\nlet after = x\n"
+                );
+                let decls = top_level_decls(&src);
+                if decls != ["let x = 0", "let after = x"] {
+                    failures.push(format!("{src:?}: {decls:?}"));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// A stray token's debris ends at its line, closers LexFilter swallows
+/// included, so the nested module after it keeps its header and its body:
+/// for every stray, a debris tail ending in each kind of [`BALANCED`]
+/// construct. (An attribute list at the end of the line belongs to the
+/// module after it, so it is not a tail.)
+#[test]
+fn recover_debris_leaves_the_next_module_its_header() {
+    let mut failures = Vec::new();
+    for stray in ["private", "internal", "member", "override"] {
+        for tail in BALANCED.iter().filter(|t| **t != "[<A>]") {
+            let src = format!("{stray} foo {tail}\nmodule A =\n    let x = 1\n");
+            let decls = top_level_decls(&src);
+            if decls.last().map(String::as_str) != Some("module A =\n    let x = 1") {
+                failures.push(format!("{src:?}: {decls:?}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// What a stray token's debris may hold: atoms, every bracket kind open,
+/// closed or balanced, the keyword blocks `end` closes and the `struct` tuple
+/// it does not, comments and strings on one line or across lines,
+/// separators, and a declaration keyword.
+const DEBRIS: &[&str] = &[
+    "",
+    "1",
+    "x",
+    "( )",
+    "(",
+    ")",
+    "[ ]",
+    "{ }",
+    "begin end",
+    "begin",
+    "end",
+    "struct (1, 2)",
+    "type T = struct end",
+    "(* c *)",
+    "(*\n c\n*)",
+    "\"s\"",
+    "\"\"\"\nmulti\n\"\"\"",
+    "$\"{x}\"",
+    "<@ x @>",
+    "[<A>]",
+    ";",
+    ";;",
+    "let y = 1",
+    "->",
+    "=",
+];
+
+/// The debris grid, graded against FCS: a stray token (`_`, an access
+/// modifier, a member keyword, an arrow) and two [`DEBRIS`] items after it,
+/// then optionally a line indented past the stray (a continuation of what it
+/// began), followed by two declarations, or (after one debris item) by a
+/// nested module. The trees must agree outside the damage: the debris neither
+/// swallows a declaration FCS keeps nor leaves one of its own that FCS does
+/// not have. And every unit FCS keeps after the stray's lines must be in our
+/// tree too, however wide the damage: an error span of ours that covers a
+/// declaration would otherwise hide that we lost it. The cells where either
+/// fails are pinned one per line in `tests/manifests/debris_grid.txt`.
+#[test]
+fn recover_debris_grid_matches_fcs() {
+    use crate::common::recovery::{fcs_units, grade};
+    use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
+    const FOLLOWING: [&str; 2] = ["let after = a\nlet z = 2\n", "module N =\n    let x = 1\n"];
+    // Distinct cells, keyed by the stray's lines and what follows them: `(`
+    // then `)` is `( )`.
+    let mut cells = std::collections::BTreeSet::new();
+    for stray in ["_", "private", "member", "override", "->"] {
+        for a in DEBRIS {
+            for b in DEBRIS {
+                let line = format!("{stray} foo {a} {b}").trim_end().to_string();
+                let following: &[&str] = if b.is_empty() {
+                    &FOLLOWING
+                } else {
+                    &FOLLOWING[..1]
+                };
+                for more in ["", "\n    let inner = 1", "\n    x"] {
+                    for f in following {
+                        cells.insert((format!("{line}{more}"), *f));
+                    }
+                }
+            }
+        }
+    }
+    let mut divergent = Vec::new();
+    for (line, following) in &cells {
+        let head = format!("module M\nlet a = 0\n{line}\n");
+        let src = format!("{head}{following}");
+        let json = {
+            let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
+            std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
+            crate::common::fcs_ast_batch(tmp.path())
+        };
+        let parse = borzoi_cst::parser::parse(&src);
+        let cell = match following.starts_with("module") {
+            true => format!("{} ⏎module N", line.replace('\n', "⏎")),
+            false => line.replace('\n', "⏎"),
+        };
+        let verdict =
+            grade(&parse, &Default::default(), &json, &src).expect("FCS record is readable");
+        if verdict.relation == Relation::Divergent {
+            divergent.push(format!("{cell} | divergent"));
+        }
+        let fcs = fcs_units(&json, &src).expect("FCS record is readable");
+        let ours = our_units(&parse);
+        for unit in fcs.iter().filter(|u| u.key.start >= head.len()) {
+            if !ours.iter().any(|o| o.key == unit.key) {
+                let name = src[unit.key.start..].lines().next().unwrap_or("");
+                divergent.push(format!("{cell} | loses `{name}`"));
+            }
+        }
+    }
+    let actual = Manifest::from_entries(divergent).expect("one line per cell");
+    crate::common::corpus_manifest::check_manifest(
+        "debris_grid",
+        &actual,
+        &format!(
+            "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_recovery::recover_debris_grid"
+        ),
+    );
+}
+
+/// A line indented past the stray's continues what it began, so the `let` on
+/// it is not a declaration of the module, as in FCS.
+#[test]
+fn recover_indented_continuation_of_debris() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nlet inner = 0\n_ x =\n    let inner = 1\nlet after = inner\n",
+        1,
+    );
+}
+
+/// Columns are FCS's UTF-16 units: after `(*é*)` the `let` is at column 7, the
+/// stray's own, so it begins a declaration rather than continuing the debris,
+/// as in FCS.
+#[test]
+fn recover_continuation_columns_count_utf16_units() {
+    use crate::common::recovery::{Unit, fcs_units};
+    let src = "module M =\n       ->\n(*é*)  let after = 1\n";
+    let at = src.find("let after").expect("the declaration");
+    let has_after = |units: &[Unit]| {
+        units
+            .iter()
+            .any(|u| u.key.start == at && u.key.kind == "Let")
+    };
+    let fcs = {
+        let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
+        std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
+        fcs_units(&crate::common::fcs_ast_batch(tmp.path()), src).expect("FCS record is readable")
+    };
+    assert!(has_after(&fcs), "FCS keeps `after`");
+    assert!(
+        has_after(&our_units(&borzoi_cst::parser::parse(src))),
+        "we drop `after`"
+    );
+}
+
+/// After a stray access modifier, FCS discards tokens to the next separator,
+/// brackets uncounted, so the declarations after `private foo (;;` are kept,
+/// as in FCS.
+#[test]
+fn recover_separator_inside_debris_after_an_access_modifier() {
+    let src = "module M\nprivate foo (;;\nlet after = 1\nlet final = after\n";
+    crate::common::recovery::assert_recovered_trees_agree(src, 2);
+    let decls = top_level_decls(src);
+    assert!(
+        decls.contains(&"let after = 1".to_string())
+            && decls.contains(&"let final = after".to_string()),
+        "{decls:?}"
+    );
+}
+
+/// A stray arrow begins nothing, so FCS discards tokens to the next separator,
+/// brackets uncounted, and keeps the declarations after `-> (;;`.
+#[test]
+fn recover_separator_inside_debris_after_a_stray_arrow() {
+    let src = "module M\n-> (;;\nlet after = 1\nlet z = 2\n";
+    crate::common::recovery::assert_recovered_trees_agree(src, 2);
+    let decls = top_level_decls(src);
+    assert!(
+        decls.contains(&"let after = 1".to_string()) && decls.contains(&"let z = 2".to_string()),
+        "{decls:?}"
+    );
+}
+
+/// The next line's indentation is measured at its first raw token, a swallowed
+/// `module` keyword included, so an unindented nested module after a stray is
+/// not a continuation of it, as in FCS.
+#[test]
+fn recover_module_after_debris_is_not_a_continuation() {
+    let src = "module M\n_ (*x*)\nmodule N =\n    let x = 1\n";
+    crate::common::recovery::assert_recovered_trees_agree(src, 1);
+    let decls = top_level_decls(src);
+    assert!(
+        decls.contains(&"module N =\n    let x = 1".to_string()),
+        "{decls:?}"
+    );
+}
+
+/// Only a type definition's `=` opens a `struct` block: after the equality in
+/// `x = struct (1, 2)` the `end` closes the `begin`, and the declarations after
+/// the line survive, as in FCS.
+#[test]
+fn recover_struct_tuple_after_an_expression_equals() {
+    let src = "module M\n_ begin x = struct (1, 2) end\nlet after = 1\nlet z = 2\n";
+    crate::common::recovery::assert_recovered_trees_agree(src, 1);
+    let decls = top_level_decls(src);
+    assert!(
+        decls.contains(&"let after = 1".to_string()) && decls.contains(&"let z = 2".to_string()),
+        "{decls:?}"
+    );
+}
+
+/// A `struct (1, 2)` tuple opens no block, so the `end` after it closes the
+/// `begin` and the declarations after the line survive, as in FCS.
+#[test]
+fn recover_struct_tuple_inside_debris() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nlet a = 0\n_ foo begin struct (1, 2) end\nlet after = a\nlet z = 2\n",
+        1,
+    );
+}
+
+/// A comment crossing the stray's line end takes the debris with it: the `1`
+/// after it is not a declaration, as in FCS.
+#[test]
+fn recover_multi_line_comment_inside_debris() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nlet a = 0\n_ foo (*\n comment\n*) 1\nlet after = a\n",
+        1,
+    );
+}
+
+/// The `)` LexFilter swallows at the end of a stray access modifier's line
+/// is the debris's, so the nested module after it keeps its header, as in
+/// FCS.
+#[test]
+fn recover_swallowed_closer_ending_debris_leaves_the_module_header() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nprivate foo ()\nmodule A =\n    let x = 1\n",
+        2,
+    );
+}
+
+/// The `end` of a `struct` block inside a debris bracket does not close the
+/// bracket, so the `let` after it stays inside the abandoned member, as in
+/// FCS.
+#[test]
+fn recover_keyword_block_end_inside_a_debris_bracket() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nlet inner = 0\nmember foo (type T = struct end\n            let inner = 1\n            )\nlet after = inner\n",
+        1,
+    );
+}
+
+/// Straight after a stray access modifier, a declaration keyword ends the
+/// debris and begins a declaration, as in FCS (`private let x1 = 42`).
+/// Anything else on the line is debris.
 #[test]
 fn recover_a_declaration_keyword_ends_unbracketed_debris() {
     let mut failures = Vec::new();
@@ -265,7 +588,7 @@ fn recover_a_declaration_keyword_ends_unbracketed_debris() {
         ("inner", None),
         ("#nowarn \"40\"", None),
     ] {
-        let src = format!("let x = 0\nmember foo {inner}\nlet after = x\n");
+        let src = format!("let x = 0\nprivate {inner}\nlet after = x\n");
         let want: Vec<&str> = ["let x = 0"]
             .into_iter()
             .chain(decl)
@@ -367,11 +690,22 @@ fn recover_stray_member_opening_a_nested_module_is_debris() {
 
 /// A file-start BOM is not indentation: `this.Foo`, three columns into line 2,
 /// is off the anonymous module's offside line (column 0 of line 1, after the
-/// BOM), however wide the BOM is in bytes.
+/// BOM), however wide the BOM is in bytes. FCS keeps nothing there, so the
+/// trees diverge exactly when our tree keeps a unit at `this`.
 #[test]
 fn recovery_oracle_does_not_count_a_bom_as_indentation() {
-    let verdict = recovered_verdict("\u{FEFF}member\n   this.Foo\n");
-    assert_eq!(verdict.relation, Relation::Divergent, "{}", verdict.token());
+    let source = "\u{FEFF}member\n   this.Foo\n";
+    let at = source.find("this").expect("the spill");
+    let kept = our_units(&borzoi_cst::parser::parse(source))
+        .iter()
+        .any(|u| u.key.start == at);
+    let verdict = recovered_verdict(source);
+    assert_eq!(
+        verdict.relation == Relation::Divergent,
+        kept,
+        "{}",
+        verdict.token()
+    );
 }
 
 /// A backward line directive maps the error before it to two lines, one of

@@ -126,10 +126,10 @@ shape, because that shape is what the member-completion handler anchors on.
 
 ## What remains
 
-These were measured on 2026-10-26, after the fixes in this change. Of the 731
+These were measured on 2026-10-29, after the fixes in this change. Of the 731
 files that one parser or both reject, 280 are `exact`, 396 are
 `outside-damage`, and 55 are `divergent`. Of the 584 deletion cases against
-FCS, 48 are `divergent`, all in the token family. Every member-name deletion
+FCS, 43 are `divergent`, all in the token family. Every member-name deletion
 is `exact`.
 
 The divergent files, by cause (each file counted once, by its first divergence):
@@ -154,12 +154,46 @@ The recovery fixes in this change:
   divergence: member bodies spilled out as `Expr` declarations.
 - **A stray token's debris is one region.** `member this.P = 1` outside a
   type no longer makes `this.P = 1` an expression declaration. The region runs
-  to the end of the stray's line, and on through any bracket it leaves open, so
-  a `let` inside it (`member f (let x = 1 in x)`) is never handed back to the
-  module loop as a module-level binding. Outside a bracket the region stops
-  early at a `;` or `;;` (FCS starts afresh after either), at a declaration
-  keyword (FCS keeps the `let` in `private let x = 1`), at a closer, and at an
-  `OBLOCKEND` closing a block the region did not open.
+  to the end of the stray's line (past the end of a comment or string that
+  crosses it), on over each following line indented past the stray's line (a
+  continuation of what it began: `_ x =⏎    let inner = 1`; columns in FCS's
+  UTF-16 units), and on through
+  any bracket it leaves open, so a `let` inside it
+  (`member f (let x = 1 in x)`) is never handed back to the module loop as a
+  module-level binding. Outside a bracket the region stops early at a `;` or
+  `;;` (FCS starts afresh after either), at a closer, and at an `OBLOCKEND`
+  closing a block the region did not open. After a stray that begins nothing
+  FCS can parse on from (an access modifier, `->`; not `_`, a member keyword,
+  or an infix operator, which continues the expression before it), a `;` or
+  `;;` stops it inside a bracket too: FCS is then discarding tokens, brackets
+  uncounted, to the next separator. A declaration keyword stops it only
+  straight after a stray access modifier (FCS keeps the `let` in
+  `private let x = 1`, but not in `private foo let y = 1` or
+  `member foo let y = 1`), or on a line that began with a `type` or `module`
+  declaration (`type A = A type B = A module C = …`, valid F# this parser does
+  not yet read). A closer closes only a bracket of its own kind. `end` closes a
+  `begin`, or a `class`, `sig`, or `struct`/`interface` block opened straight
+  after a type definition's `=`, as FCS's LexFilter opens them. The region
+  also takes the closers LexFilter swallows at its end (`)`), so the
+  declaration loop resumes at the next declaration's own keyword.
+
+  `recover_debris_grid_matches_fcs` grades every stray (`_`, `private`,
+  `member`, `override`, `->`) followed by two of 25 debris items (atoms, open,
+  closed and balanced brackets, keyword blocks, a `struct` tuple, comments and
+  strings on one line or across lines, separators, a declaration), then
+  nothing, an indented `let`, or an indented expression, then two
+  declarations or (after one item) a nested module, against FCS. It pins in
+  `tests/manifests/debris_grid.txt` each divergent cell, and each unit FCS
+  keeps after the stray's lines that our tree lacks (which an error span of
+  ours covering it would otherwise hide). Of its 9,720 cells, #356's parser
+  diverges on 6,282 and loses 57 units; this one diverges on 582 and loses 12,
+  all of which #356's also loses. Ten divergent cells are worse than #356's:
+  six after an unclosed `begin` (`_ foo begin )`, `;`, `=`, each with and
+  without an indented `let` after it), where the `begin` stays open, LexFilter
+  leaves the next line's `let` raw, and the module loop cannot begin a
+  declaration with it; and `private` or `->` before
+  `foo type T = struct end` followed by `;` or a stray `end` and an indented
+  expression.
 
 Two live defects were found and not fixed. Both are outside recovery proper:
 
