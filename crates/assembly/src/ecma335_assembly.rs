@@ -116,13 +116,13 @@ impl EcmaView for Ecma335Assembly {
         self.image.references.iter().map(project_identity).collect()
     }
 
-    fn culture_qualified_names(&self) -> Option<Vec<String>> {
+    fn qualified_names(&self) -> Option<Vec<String>> {
         Some(
             self.image
                 .assembly
                 .iter()
                 .chain(&self.image.references)
-                .filter(|a| !a.culture.is_empty())
+                .filter(|a| !a.culture.is_empty() || a.flagged)
                 .map(|a| a.name.clone())
                 .collect(),
         )
@@ -1910,7 +1910,21 @@ impl Ecma335Assembly {
                     })?;
                     let id = project_identity(aref);
                     // A degenerate self-reference is collapsed to same-assembly.
-                    let assembly = (id != self.identity).then_some(id);
+                    // Culture and flags are part of the identity a binder
+                    // matches, though not of the model's: only a plain
+                    // reference from a plain assembly is certainly to itself;
+                    // any other keeps its assembly, whose name
+                    // `qualified_names` then lists.
+                    let own_plain = self
+                        .image
+                        .assembly
+                        .as_ref()
+                        .is_some_and(|a| a.culture.is_empty() && !a.flagged);
+                    let assembly = (id != self.identity
+                        || !own_plain
+                        || !aref.culture.is_empty()
+                        || aref.flagged)
+                        .then_some(id);
                     (r.name.namespace.clone(), assembly)
                 }
                 // Module-self alias: a type defined in this image.
