@@ -335,6 +335,52 @@ pub fn format_member(member: &Member, owner: &Entity) -> String {
     }
 }
 
+/// [`format_member`] with **every type withheld**: the keyword, modifiers and
+/// name alone — `member Count with get`, `val mutable x`, `static member Parse`,
+/// `new`, `[<CLIEvent>] member Changed`.
+///
+/// For a member whose IL signature is not known to be its F# type. IL erases
+/// units of measure, so an F# member declared `float<m>` has a `float64`
+/// signature, and a measure type parameter (`member G<[<Measure>] 'u>`) has no
+/// generic parameter at all: the parameter types, the result type and the
+/// type-parameter list are all suspect, so none is rendered. What remains is
+/// read off the member's shape rather than its signature, and holds either way.
+pub fn format_member_untyped(member: &Member, owner: &Entity) -> String {
+    let module = owner.kind == EntityKind::Module;
+    match member {
+        Member::Method(m) => {
+            if m.is_constructor {
+                return "new".to_string();
+            }
+            let name = format_fsharp_value_name(m.source_name.as_deref().unwrap_or(&m.name));
+            match m.module_value {
+                Some(mv) if mv.is_mutable => format!("val mutable {name}"),
+                _ => format!("{} {name}", method_keyword(m, owner)),
+            }
+        }
+        Member::Field(f) => format!("{}{}", field_prefix(f), format_fsharp_name(&f.name)),
+        Member::Property(p) if module => {
+            let mutable = if p.has_setter { "mutable " } else { "" };
+            format!("val {mutable}{}", format_fsharp_value_name(&p.name))
+        }
+        Member::Property(p) => format!(
+            "{} {}{}",
+            property_keyword(p),
+            format_fsharp_name(&p.name),
+            property_accessors(p)
+        ),
+        Member::Event(e) => format!(
+            "[<CLIEvent>] {} {}",
+            if e.is_static {
+                "static member"
+            } else {
+                "member"
+            },
+            format_fsharp_name(&e.name)
+        ),
+    }
+}
+
 /// Render an entity's F# declaration head: `type List<'T>`, `module Operators`,
 /// `exception MyError`, `[<Measure>] type kg`, with F# attribute prefixes for
 /// the model's marker flags (`[<Struct>]`, `[<IsReadOnly>]`, `[<IsByRefLike>]`,
@@ -668,6 +714,23 @@ fn owner_name_with_typars(owner: &Entity) -> String {
 
 fn format_field(f: &Field, owner: &Entity) -> String {
     let scope = TyparScope::new(&owner.generic_parameters, &[]);
+    format!(
+        "{}{}: {}",
+        field_prefix(f),
+        format_fsharp_name(&f.name),
+        format_nullable_type(
+            &NullableType {
+                ty: f.ty.clone(),
+                nullability: f.nullability,
+            },
+            &scope
+        )
+    )
+}
+
+/// A field's attributes, modifiers and `val` keyword, up to its name:
+/// `[<Literal>] static val `, `val mutable `.
+fn field_prefix(f: &Field) -> String {
     // A `[<Literal>]` const (C# `const`, F# `[<Literal>]`, an enum case) is a
     // compile-time constant — marked, and never `mutable` even though
     // `is_init_only` is false (the CLR uses the `Literal` flag, not `initonly`).
@@ -691,17 +754,26 @@ fn format_field(f: &Field, owner: &Entity) -> String {
     } else {
         ""
     };
-    format!(
-        "{literal}{volatile}{static_}val {mutable}{}: {}",
-        format_fsharp_name(&f.name),
-        format_nullable_type(
-            &NullableType {
-                ty: f.ty.clone(),
-                nullability: f.nullability,
-            },
-            &scope
-        )
-    )
+    format!("{literal}{volatile}{static_}val {mutable}")
+}
+
+/// `static member` or `member`, for a non-module property.
+fn property_keyword(p: &Property) -> &'static str {
+    if p.is_static {
+        "static member"
+    } else {
+        "member"
+    }
+}
+
+/// The ` with get, set` suffix naming a property's accessors.
+fn property_accessors(p: &Property) -> &'static str {
+    match (p.has_getter, p.has_setter) {
+        (true, true) => " with get, set",
+        (true, false) => " with get",
+        (false, true) => " with set",
+        (false, false) => "",
+    }
 }
 
 fn format_property(p: &Property, owner: &Entity) -> String {
@@ -721,17 +793,8 @@ fn format_property(p: &Property, owner: &Entity) -> String {
         return format!("val {mutable}{}: {ty}", format_fsharp_value_name(&p.name));
     }
 
-    let keyword = if p.is_static {
-        "static member"
-    } else {
-        "member"
-    };
-    let accessors = match (p.has_getter, p.has_setter) {
-        (true, true) => " with get, set",
-        (true, false) => " with get",
-        (false, true) => " with set",
-        (false, false) => "",
-    };
+    let keyword = property_keyword(p);
+    let accessors = property_accessors(p);
     // An indexer (`this[i]`) carries its index dimension before the element
     // type, exactly like a method's parameters: `member Item: i: int -> 'T`.
     // Multiple indices tuple with `*` (`x: int * y: int -> 'T`). An ordinary

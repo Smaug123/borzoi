@@ -239,7 +239,7 @@ fn every_cell_is_what_it_claims_to_be() {
                 };
                 // A shape × carrier cell is graded against its own erasure; an
                 // extra cell against the presence of a measure in FCS's type.
-                let bearing = match site.erased {
+                let bearing = match &site.erased {
                     Some(erased) => fcs != erased,
                     None => mentions_a_measure(fcs),
                 };
@@ -261,13 +261,22 @@ fn every_cell_is_what_it_claims_to_be() {
     );
 }
 
-/// Property 3: every carrier's measure-free controls commit.
+/// Property 3: every carrier inference reaches commits its measure-free
+/// controls.
 #[test]
 fn every_carrier_commits_its_measure_free_controls() {
     let run = run();
     let mut missing: Vec<String> = Vec::new();
-    for site in run.corpus.sites.iter().filter(|s| s.is_control) {
-        let erased = site.erased.expect("a control is a shape × carrier cell");
+    for site in run
+        .corpus
+        .sites
+        .iter()
+        .filter(|s| s.is_control && s.inferred)
+    {
+        let erased = site
+            .erased
+            .as_deref()
+            .expect("a control is a shape × carrier cell");
         match run.our_type(site.access) {
             Some(ours) if ours == erased => {}
             other => missing.push(format!(
@@ -284,7 +293,7 @@ fn every_carrier_commits_its_measure_free_controls() {
         missing.join("\n")
     );
     // Every carrier has at least one control, or its column is untested.
-    for carrier in CARRIERS {
+    for carrier in CARRIERS.iter().filter(|c| c.inferred) {
         assert!(
             run.corpus
                 .sites
