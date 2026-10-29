@@ -32,8 +32,10 @@
 //! Strings are left alone where their content can matter to the compiler: a
 //! format string (any `%`), an escape (any `\`), a byte string, an
 //! interpolated string, and the argument of a `#` directive (`#line` names a
-//! file, `#nowarn` a warning).
+//! file, `#nowarn` a warning). A `///` doc comment is left alone because its
+//! content matters to the server: hover shows it.
 
+use borzoi::xml_doc::source::doc_line_text;
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
 
 /// One replacement of the original text: `len` bytes at `at` become `with`.
@@ -147,11 +149,14 @@ fn inert_string(token: &borzoi_cst::syntax::SyntaxToken) -> bool {
 }
 
 /// The letters of a token that may be substituted, as a byte range within it:
-/// a comment's body and a string's content, delimiters excluded.
+/// a comment's body and a string's content, delimiters excluded. A `///` doc
+/// comment is not inert — hover shows its text — so it is left alone, by the
+/// predicate hover reads it with.
 fn substitutable_body(token: &borzoi_cst::syntax::SyntaxToken) -> Option<(usize, usize)> {
     let text = token.text();
     let len = text.len();
     match token.kind() {
+        SyntaxKind::LINE_COMMENT if doc_line_text(text).is_some() => None,
         SyntaxKind::LINE_COMMENT => Some((2.min(len), len)),
         SyntaxKind::BLOCK_COMMENT if len >= 4 => Some((2, len - 2)),
         SyntaxKind::STRING_LIT if len >= 2 && inert_string(token) => Some((1, len - 1)),
@@ -253,6 +258,16 @@ mod tests {
         assert_eq!(&p.text[p.map(x_use)..p.map(x_use) + 1], "x");
         assert!(p.substituted_before_on_line(src, x_use));
         assert!(!p.substituted_before_on_line(src, src.find("let z").unwrap()));
+    }
+
+    #[test]
+    fn a_doc_comment_is_not_substituted() {
+        let src = "/// the doc\nlet a = 1 //// four\n// two\n";
+        let p = perturbed(src);
+        let lines: Vec<&str> = p.text.lines().collect();
+        assert_eq!(lines[0], "/// the doc");
+        assert!(!lines[1].contains("four"), "{}", lines[1]);
+        assert!(!lines[2].contains("two"), "{}", lines[2]);
     }
 
     #[test]
