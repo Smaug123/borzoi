@@ -942,12 +942,15 @@ fn sort_tiebreaks_on_generic_arity() {
         definition_range: None,
         member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         members: vec![
-            Member::Method(non_generic.clone()),
-            Member::Method(generic.clone()),
+            Member::Method(Box::new(non_generic.clone())),
+            Member::Method(Box::new(generic.clone())),
         ],
     };
     let mut host_b = host_a.clone();
-    host_b.members = vec![Member::Method(generic), Member::Method(non_generic)];
+    host_b.members = vec![
+        Member::Method(Box::new(generic)),
+        Member::Method(Box::new(non_generic)),
+    ];
 
     assert_eq!(
         normalise_entities("MyLib", &[host_a]),
@@ -1158,7 +1161,7 @@ fn fixture_system_object() -> Vec<Entity> {
         definition_range: None,
         member_measures: borzoi_assembly::MemberMeasures::NotFSharp,
         members: vec![
-            Member::Method(MethodLike {
+            Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: ".ctor".into(),
@@ -1192,8 +1195,8 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
-            }),
-            Member::Method(MethodLike {
+            })),
+            Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "Equals".into(),
@@ -1227,8 +1230,8 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
-            }),
-            Member::Method(MethodLike {
+            })),
+            Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "GetHashCode".into(),
@@ -1262,8 +1265,8 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
-            }),
-            Member::Method(MethodLike {
+            })),
+            Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "ReferenceEquals".into(),
@@ -1300,7 +1303,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
-            }),
+            })),
         ],
     }]
 }
@@ -1404,7 +1407,7 @@ fn fixture_my_lib() -> Vec<Entity> {
                 nullability: Nullability::Oblivious,
                 custom_attrs: vec![],
             }),
-            Member::Method(MethodLike {
+            Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
                 definition_range: None,
                 name: "Increment".into(),
@@ -1438,7 +1441,7 @@ fn fixture_my_lib() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
-            }),
+            })),
         ],
     }]
 }

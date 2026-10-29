@@ -2422,7 +2422,7 @@ impl Ecma335Assembly {
             out.push_or_skip(
                 &m.name,
                 self.project_method(m, type_context, false)
-                    .map(Member::Method),
+                    .map(|m| Member::Method(Box::new(m))),
             );
         }
         for f in &td.fields {
@@ -3301,7 +3301,7 @@ impl Ecma335Assembly {
                 {
                     projected.is_module_value_binding = true;
                 }
-                Ok(Some(Member::Method(projected)))
+                Ok(Some(Member::Method(Box::new(projected))))
             })();
             out.push_or_skip_opt(&m.name, projected);
         }
@@ -3422,7 +3422,7 @@ impl Ecma335Assembly {
                     if !il_heuristic {
                         projected.source_name = None;
                     }
-                    return Ok(Some(Member::Method(projected)));
+                    return Ok(Some(Member::Method(Box::new(projected))));
                 }
                 // A union's properties are kept as *candidates*, to be settled
                 // against the host pickle's published member list once that is

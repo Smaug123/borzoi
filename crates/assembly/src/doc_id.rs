@@ -927,7 +927,7 @@ mod tests {
         parameters: Vec<Parameter>,
         return_type: TypeRef,
     ) -> Member {
-        Member::Method(MethodLike {
+        Member::Method(Box::new(MethodLike {
             val_facts: crate::model::ValFacts::NotFSharp,
             definition_range: None,
             name: name.into(),
@@ -961,7 +961,7 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
-        })
+        }))
     }
 
     fn field(name: &str, ty: TypeRef) -> Member {

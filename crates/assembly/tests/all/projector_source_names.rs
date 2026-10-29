@@ -123,7 +123,7 @@ fn generic_module_value_vs_unit_function_split() {
         "a generic value has zero argument groups"
     );
     assert_eq!(
-        format_member(&Member::Method(gen_empty.clone()), hello),
+        format_member(&Member::Method(Box::new(gen_empty.clone())), hello),
         "val genEmpty<'a>: 'a[]"
     );
 
@@ -134,7 +134,7 @@ fn generic_module_value_vs_unit_function_split() {
         "a generic 0-parameter unit-function has one (unit) argument group, not zero"
     );
     assert_eq!(
-        format_member(&Member::Method(gen_ping.clone()), hello),
+        format_member(&Member::Method(Box::new(gen_ping.clone())), hello),
         "val genPingUnit<'a>: unit -> int"
     );
 }

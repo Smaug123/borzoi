@@ -1301,7 +1301,7 @@ fn interface_receiver_method_call_defers() {
         .expect("String template")
         .clone();
     let method = |name: &str, param: TypeRef, ret: TypeRef| {
-        Member::Method(MethodLike {
+        Member::Method(Box::new(MethodLike {
             val_facts: borzoi_assembly::ValFacts::NotFSharp,
             definition_range: None,
             name: name.to_string(),
@@ -1344,7 +1344,7 @@ fn interface_receiver_method_call_defers() {
             implements: vec![],
             unclassified_impls: vec![],
             xml_doc_sig: None,
-        })
+        }))
     };
     let iface = |name: &str, members: Vec<Member>, ifaces: Vec<TypeRef>| Entity {
         namespace: vec!["Demo".to_string()],
@@ -1445,7 +1445,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         is_param_array: false,
         nullability: Nullability::Oblivious,
     };
-    let m = Member::Method(MethodLike {
+    let m = Member::Method(Box::new(MethodLike {
         val_facts: borzoi_assembly::ValFacts::NotFSharp,
         definition_range: None,
         name: "M".to_string(),
@@ -1483,7 +1483,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
-    });
+    }));
     let class = Entity {
         namespace: vec!["Demo".to_string()],
         name: "C".to_string(),

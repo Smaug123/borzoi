@@ -473,8 +473,8 @@ pub enum ValFacts {
     /// the IL row carries).
     NotFSharp,
     /// The host signature pickle described the method's val. Boxed: the facts
-    /// are consulted only when a consumer reads a signature as an F# type, and
-    /// inline they would tip [`Member`] over clippy's large-variant threshold.
+    /// are consulted only when a consumer reads a signature as an F# type, so
+    /// they are kept out of every [`MethodLike`] that never needs them.
     Read(Box<ReadValFacts>),
     /// Nothing may be concluded: an F#-authored method the pickle did not
     /// describe (a member of a type, an augmentation, a val the merge could not
@@ -1312,7 +1312,8 @@ pub struct CompilerFeatureRequired {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Member {
-    Method(MethodLike),
+    /// Boxed: a [`MethodLike`] is well over the size of the other variants.
+    Method(Box<MethodLike>),
     Field(Field),
     Property(Property),
     Event(Event),
@@ -1580,8 +1581,8 @@ pub struct MethodLike {
     /// lives in the module's `.cctor`), so the getter carries no sequence
     /// point and this pickled range is the only — and FCS's own — source
     /// location for the binding.
-    /// Boxed: the range is consulted only at navigation time, and inline it
-    /// would tip [`Member`] over clippy's large-variant threshold.
+    /// Boxed: the range is consulted only at navigation time, so it is kept
+    /// out of every [`MethodLike`] that is never navigated to.
     pub definition_range: Option<Box<FsharpSourceRange>>,
     /// Formal method type parameters (the `M0`/`M1`/... typars referenced
     /// from the signature via `TypeRef::Var { is_method: true, .. }`).

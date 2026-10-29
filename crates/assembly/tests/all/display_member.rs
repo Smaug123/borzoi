@@ -268,7 +268,7 @@ fn static_method() {
     );
     m.is_static = true;
     assert_eq!(
-        format_member(&Member::Method(m), &class("Console")),
+        format_member(&Member::Method(Box::new(m)), &class("Console")),
         "static member WriteLine: value: string -> unit"
     );
 }
@@ -285,7 +285,7 @@ fn instance_method_uses_owner_typar() {
     );
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("List", EntityKind::Class, &["T"])
         ),
         "member Add: item: 'T -> unit"
@@ -296,7 +296,7 @@ fn instance_method_uses_owner_typar() {
 fn zero_arg_method_takes_unit() {
     let m = method("Hash", sig(vec![], prim(Primitive::I4)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Thing")),
+        format_member(&Member::Method(Box::new(m)), &class("Thing")),
         "member Hash: unit -> int"
     );
 }
@@ -314,7 +314,7 @@ fn multi_arg_method_tuples_params() {
         ),
     );
     assert_eq!(
-        format_member(&Member::Method(m), &class("Thing")),
+        format_member(&Member::Method(Box::new(m)), &class("Thing")),
         "member Bar: a: int * b: string -> bool"
     );
 }
@@ -329,7 +329,7 @@ fn unnamed_param_renders_type_only() {
         ),
     );
     assert_eq!(
-        format_member(&Member::Method(m), &class("Thing")),
+        format_member(&Member::Method(Box::new(m)), &class("Thing")),
         "member Foo: string -> unit"
     );
 }
@@ -343,7 +343,7 @@ fn generic_method_lists_method_typars() {
     );
     m.generic_parameters = vec![typar("a")];
     assert_eq!(
-        format_member(&Member::Method(m), &class("Thing")),
+        format_member(&Member::Method(Box::new(m)), &class("Thing")),
         "member Id<'a>: x: 'a -> 'a"
     );
 }
@@ -360,7 +360,7 @@ fn abstract_method() {
     m.is_abstract = true;
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("IComparable", EntityKind::Interface, &[])
         ),
         "abstract member Compare: other: int -> int"
@@ -379,7 +379,7 @@ fn compiled_name_uses_source_name() {
     );
     m.source_name = Some("printfn".to_string());
     assert_eq!(
-        format_member(&Member::Method(m), &class("Printf")),
+        format_member(&Member::Method(Box::new(m)), &class("Printf")),
         "member printfn: format: string -> unit"
     );
 }
@@ -395,7 +395,7 @@ fn constructor_returns_owner_type() {
     );
     m.is_constructor = true;
     assert_eq!(
-        format_member(&Member::Method(m), &class("Container")),
+        format_member(&Member::Method(Box::new(m)), &class("Container")),
         "new: value: string -> Container"
     );
 }
@@ -406,7 +406,7 @@ fn parameterless_constructor_takes_unit_and_generic_owner() {
     m.is_constructor = true;
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("Box", EntityKind::Class, &["T"])
         ),
         "new: unit -> Box<'T>"
@@ -426,7 +426,10 @@ fn module_function_renders_as_val() {
         ),
     );
     assert_eq!(
-        format_member(&Member::Method(m), &entity("Math", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("Math", EntityKind::Module, &[])
+        ),
         "val add: a: int * b: int -> int"
     );
 }
@@ -469,7 +472,10 @@ fn curried_module_function_renders_its_groups() {
     );
     m.arg_groups = groups(false, &[&[Some("a")], &[Some("b"), Some("c")]]);
     assert_eq!(
-        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("M", EntityKind::Module, &[])
+        ),
         "val f: a: int -> b: string * c: float -> int"
     );
 }
@@ -490,7 +496,10 @@ fn curried_arguments_are_named_as_the_pickle_names_them() {
     );
     m.arg_groups = groups(false, &[&[None], &[None]]);
     assert_eq!(
-        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("M", EntityKind::Module, &[])
+        ),
         "val f: int -> unit -> int"
     );
 }
@@ -501,7 +510,10 @@ fn an_empty_group_is_unit() {
     let mut m = method("f", sig(vec![], prim(Primitive::I4)));
     m.arg_groups = groups(false, &[&[]]);
     assert_eq!(
-        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("M", EntityKind::Module, &[])
+        ),
         "val f: unit -> int"
     );
 }
@@ -518,7 +530,10 @@ fn a_function_typed_result_is_parenthesised() {
     );
     m.arg_groups = groups(false, &[&[Some("a")]]);
     assert_eq!(
-        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("M", EntityKind::Module, &[])
+        ),
         "val f: a: int -> (int -> int)"
     );
 }
@@ -535,7 +550,10 @@ fn a_function_typed_module_value_is_parenthesised() {
     m.module_value = Some(ModuleValue { is_mutable: false });
     m.arg_groups = groups(false, &[]);
     assert_eq!(
-        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("M", EntityKind::Module, &[])
+        ),
         "val v: (int -> int)"
     );
 }
@@ -559,7 +577,7 @@ fn an_augmentation_renders_as_the_member_it_declares() {
     instance.arg_groups = groups(true, &[&[Some("a")], &[Some("b")]]);
     let module = entity("Ext", EntityKind::Module, &[]);
     assert_eq!(
-        format_member(&Member::Method(instance), &module),
+        format_member(&Member::Method(Box::new(instance)), &module),
         "member Ext: a: int -> b: int -> int"
     );
     // `static member SExt (a: int) (b: int)`: no receiver.
@@ -572,7 +590,7 @@ fn an_augmentation_renders_as_the_member_it_declares() {
     stat.augmentation = Augmentation::Certain;
     stat.arg_groups = groups(false, &[&[Some("a")], &[Some("b")]]);
     assert_eq!(
-        format_member(&Member::Method(stat), &module),
+        format_member(&Member::Method(Box::new(stat)), &module),
         "static member SExt: a: int -> b: int -> int"
     );
 }
@@ -592,7 +610,7 @@ fn unknown_groups_withhold_a_signature_they_could_change() {
     let mut m = method("M", two());
     m.arg_groups = ArgGroups::Unknowable;
     assert_eq!(
-        borzoi_assembly::format_member(&Member::Method(m), &class("C")),
+        borzoi_assembly::format_member(&Member::Method(Box::new(m)), &class("C")),
         Err(SignatureUnknown::ArgGroupsUnknown),
         "`a: int * b: int` and `a: int -> b: int` are different types"
     );
@@ -606,7 +624,7 @@ fn unknown_groups_withhold_a_signature_they_could_change() {
     );
     one.arg_groups = ArgGroups::Unknowable;
     assert_eq!(
-        format_member(&Member::Method(one), &class("C")),
+        format_member(&Member::Method(Box::new(one)), &class("C")),
         "member M: a: int -> int"
     );
     // F# refuses a curried constructor, so a constructor is one group.
@@ -614,7 +632,7 @@ fn unknown_groups_withhold_a_signature_they_could_change() {
     ctor.is_constructor = true;
     ctor.arg_groups = ArgGroups::Unknowable;
     assert_eq!(
-        format_member(&Member::Method(ctor), &class("C")),
+        format_member(&Member::Method(Box::new(ctor)), &class("C")),
         "new: a: int * b: int -> C"
     );
     // A recorded grouping that does not account for the parameters is no
@@ -622,7 +640,7 @@ fn unknown_groups_withhold_a_signature_they_could_change() {
     let mut mismatched = method("M", two());
     mismatched.arg_groups = groups(false, &[&[Some("a")]]);
     assert_eq!(
-        borzoi_assembly::format_member(&Member::Method(mismatched), &class("C")),
+        borzoi_assembly::format_member(&Member::Method(Box::new(mismatched)), &class("C")),
         Err(SignatureUnknown::ArgGroupsUnknown)
     );
 }
@@ -642,7 +660,7 @@ fn byref_param_renders_byref() {
     );
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("Dictionary", EntityKind::Class, &["TKey", "TValue"])
         ),
         "member TryGetValue: key: 'TKey * value: byref<'TValue> -> bool"
@@ -661,7 +679,10 @@ fn readonly_byref_param_renders_inref() {
     value.is_readonly_ref = true;
     let m = method("Sum", sig(vec![value], prim(Primitive::I4)));
     assert_eq!(
-        format_member(&Member::Method(m), &entity("Host", EntityKind::Class, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("Host", EntityKind::Class, &[])
+        ),
         "member Sum: value: inref<int> -> int"
     );
 }
@@ -682,7 +703,10 @@ fn readonly_byref_return_renders_inref() {
         ),
     );
     assert_eq!(
-        format_member(&Member::Method(m), &entity("Host", EntityKind::Class, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("Host", EntityKind::Class, &[])
+        ),
         "member Pick: unit -> inref<int>"
     );
 }
@@ -700,7 +724,7 @@ fn out_param_renders_outref() {
         ),
     );
     assert_eq!(
-        format_member(&Member::Method(m), &class("Int32")),
+        format_member(&Member::Method(Box::new(m)), &class("Int32")),
         "member TryParse: s: string * result: outref<int> -> bool"
     );
 }
@@ -715,7 +739,7 @@ fn function_valued_param_is_parenthesized() {
     );
     let m = method("Apply", sig(vec![mapping], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Thing")),
+        format_member(&Member::Method(Box::new(m)), &class("Thing")),
         "member Apply: mapping: (int -> string) -> unit"
     );
 }
@@ -733,7 +757,7 @@ fn an_operator_method_shows_as_its_operator() {
             ),
         );
         m.is_static = true;
-        format_member(&Member::Method(m), &class("Num"))
+        format_member(&Member::Method(Box::new(m)), &class("Num"))
     };
     assert_eq!(shown("op_Addition"), "static member (+): x: int -> int");
     assert_eq!(
@@ -762,7 +786,7 @@ fn static_abstract_method() {
     m.is_abstract = true;
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("IAdditionOperators", EntityKind::Interface, &["T"])
         ),
         "static abstract member (+): x: 'T * y: 'T -> 'T"
@@ -777,7 +801,10 @@ fn module_value_method_renders_as_val() {
     let mut m = method("pi", sig(vec![], prim(Primitive::R8)));
     m.module_value = Some(ModuleValue { is_mutable: false });
     assert_eq!(
-        format_member(&Member::Method(m), &entity("Math", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("Math", EntityKind::Module, &[])
+        ),
         "val pi: float"
     );
 }
@@ -789,7 +816,7 @@ fn mutable_module_value_method_renders_mutable() {
     m.module_value = Some(ModuleValue { is_mutable: true });
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("State", EntityKind::Module, &[])
         ),
         "val mutable counter: int"
@@ -804,7 +831,7 @@ fn module_unit_function_renders_with_arrow() {
     let m = method("ping", sig(vec![], prim(Primitive::I4)));
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("Hello", EntityKind::Module, &[])
         ),
         "val ping: unit -> int"
@@ -830,7 +857,7 @@ fn generic_module_value_renders_as_val() {
     m.is_module_value_binding = true;
     assert_eq!(
         format_member(
-            &Member::Method(m),
+            &Member::Method(Box::new(m)),
             &entity("Array", EntityKind::Module, &[])
         ),
         "val empty<'T>: 'T[]"
@@ -851,7 +878,10 @@ fn generic_module_unit_function_renders_with_arrow() {
     m.generic_parameters = vec![typar("T")];
     // is_module_value_binding defaults to false in `method` — the function case.
     assert_eq!(
-        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        format_member(
+            &Member::Method(Box::new(m)),
+            &entity("M", EntityKind::Module, &[])
+        ),
         "val f<'T>: unit -> int"
     );
 }
@@ -864,7 +894,7 @@ fn fsharp_optional_param() {
     count.default = ParamDefault::FSharpOptional;
     let m = method("Print", sig(vec![count], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Logger")),
+        format_member(&Member::Method(Box::new(m)), &class("Logger")),
         "member Print: ?count: int -> unit"
     );
 }
@@ -877,7 +907,7 @@ fn dotnet_optional_param_without_value() {
     x.default = ParamDefault::Optional(None);
     let m = method("Take", sig(vec![x], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Counter")),
+        format_member(&Member::Method(Box::new(m)), &class("Counter")),
         "member Take: [<Optional>] x: int -> unit"
     );
 }
@@ -892,7 +922,7 @@ fn dotnet_default_value_param_renders_value() {
     sep.default = ParamDefault::Optional(Some(ConstantValue::String(",".to_string())));
     let m = method("Join", sig(vec![count, sep], prim(Primitive::String)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Strings")),
+        format_member(&Member::Method(Box::new(m)), &class("Strings")),
         "member Join: count: int = 16 * sep: string = \",\" -> string"
     );
 }
@@ -909,7 +939,7 @@ fn decimal_default_renders_with_m_suffix() {
     }));
     let m = method("Scale", sig(vec![d], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Money")),
+        format_member(&Member::Method(Box::new(m)), &class("Money")),
         "member Scale: d: decimal = 1.5M -> unit"
     );
 }
@@ -958,7 +988,7 @@ fn decimal_default_renders_sign_padding_and_scale() {
         d.default = ParamDefault::Optional(Some(value));
         let m = method("M", sig(vec![d], prim(Primitive::Void)));
         assert_eq!(
-            format_member(&Member::Method(m), &class("Money")),
+            format_member(&Member::Method(Box::new(m)), &class("Money")),
             format!("member M: d: decimal = {expected} -> unit")
         );
     }
@@ -971,7 +1001,7 @@ fn datetime_default_renders_as_constructor_call() {
     t.default = ParamDefault::Optional(Some(ConstantValue::DateTime(630822816000000000)));
     let m = method("At", sig(vec![t], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Clock")),
+        format_member(&Member::Method(Box::new(m)), &class("Clock")),
         "member At: t: DateTime = System.DateTime(630822816000000000L) -> unit"
     );
 }
@@ -990,7 +1020,7 @@ fn nullable_return_renders_question_mark() {
     );
     m.signature.return_nullability = Nullability::Annotated;
     assert_eq!(
-        format_member(&Member::Method(m), &class("Cache")),
+        format_member(&Member::Method(Box::new(m)), &class("Cache")),
         "member Find: key: string -> string?"
     );
 }
@@ -1002,7 +1032,7 @@ fn nullable_parameter_renders_question_mark() {
     value.nullability = Nullability::Annotated;
     let m = method("Put", sig(vec![value], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Cache")),
+        format_member(&Member::Method(Box::new(m)), &class("Cache")),
         "member Put: value: string? -> unit"
     );
 }
@@ -1061,7 +1091,7 @@ fn nullable_byref_return_keeps_question_mark_inside() {
     );
     m.signature.return_nullability = Nullability::Annotated;
     assert_eq!(
-        format_member(&Member::Method(m), &class("Slot")),
+        format_member(&Member::Method(Box::new(m)), &class("Slot")),
         "member GetRef: unit -> byref<string?>"
     );
 }
@@ -1090,7 +1120,7 @@ fn fsharp_optional_param_keeps_inner_nullability() {
     name.default = ParamDefault::FSharpOptional;
     let m = method("Greet", sig(vec![name], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Greeter")),
+        format_member(&Member::Method(Box::new(m)), &class("Greeter")),
         "member Greet: ?name: string? -> unit"
     );
 }
@@ -1117,7 +1147,7 @@ fn param_array_renders_attribute_prefix() {
     values.is_param_array = true;
     let m = method("Sum", sig(vec![values], prim(Primitive::I4)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Counter")),
+        format_member(&Member::Method(Box::new(m)), &class("Counter")),
         "member Sum: [<ParamArray>] values: int[] -> int"
     );
 }
@@ -1136,7 +1166,7 @@ fn param_array_prefix_marks_only_the_trailing_param() {
         ),
     );
     assert_eq!(
-        format_member(&Member::Method(m), &class("Strings")),
+        format_member(&Member::Method(Box::new(m)), &class("Strings")),
         "member Format: fmt: string * [<ParamArray>] args: obj[] -> string"
     );
 }
@@ -1148,7 +1178,7 @@ fn nameless_param_array_renders_attribute_prefix() {
     values.is_param_array = true;
     let m = method("Sum", sig(vec![values], prim(Primitive::I4)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Counter")),
+        format_member(&Member::Method(Box::new(m)), &class("Counter")),
         "member Sum: [<ParamArray>] int[] -> int"
     );
 }
@@ -1171,7 +1201,7 @@ fn param_array_with_fsharp_optional_keeps_both_markers() {
     xs.is_param_array = true;
     let m = method("M", sig(vec![xs], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Host")),
+        format_member(&Member::Method(Box::new(m)), &class("Host")),
         "member M: [<ParamArray>] ?xs: obj[] -> unit"
     );
 }
@@ -1185,7 +1215,7 @@ fn param_array_with_dotnet_optional_keeps_both_markers() {
     xs.is_param_array = true;
     let m = method("M", sig(vec![xs], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Host")),
+        format_member(&Member::Method(Box::new(m)), &class("Host")),
         "member M: [<ParamArray>] [<Optional>] xs: obj[] -> unit"
     );
 }
@@ -1199,7 +1229,7 @@ fn param_array_with_default_value_keeps_marker() {
     xs.is_param_array = true;
     let m = method("M", sig(vec![xs], prim(Primitive::Void)));
     assert_eq!(
-        format_member(&Member::Method(m), &class("Host")),
+        format_member(&Member::Method(Box::new(m)), &class("Host")),
         "member M: [<ParamArray>] xs: obj[] = null -> unit"
     );
 }
@@ -1657,7 +1687,7 @@ fn quoted_names_survive_into_rendered_declarations() {
         ),
     );
     assert_eq!(
-        format_member(&Member::Method(m), &class("Holder")),
+        format_member(&Member::Method(Box::new(m)), &class("Holder")),
         "member Take: ``odd arg``: int -> unit"
     );
 }

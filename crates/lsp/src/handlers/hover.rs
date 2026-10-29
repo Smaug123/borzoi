@@ -1137,7 +1137,7 @@ mod tests {
     };
 
     fn method(is_extension_method: bool) -> Member {
-        Member::Method(MethodLike {
+        Member::Method(Box::new(MethodLike {
             val_facts: borzoi_assembly::ValFacts::NotFSharp,
             definition_range: None,
             name: "M".to_string(),
@@ -1171,7 +1171,7 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
-        })
+        }))
     }
 
     fn field(is_required: bool) -> Member {

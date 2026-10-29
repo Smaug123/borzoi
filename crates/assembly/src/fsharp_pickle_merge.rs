@@ -5919,7 +5919,7 @@ mod tests {
     /// A minimal projected static method (zero parameters), unflagged as an
     /// extension.
     fn make_ecma_method(name: &str) -> Member {
-        Member::Method(MethodLike {
+        Member::Method(Box::new(MethodLike {
             val_facts: crate::model::ValFacts::NotFSharp,
             definition_range: None,
             name: name.to_string(),
@@ -5953,7 +5953,7 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
-        })
+        }))
     }
 
     fn is_extension(entity: &Entity, method_name: &str) -> bool {
