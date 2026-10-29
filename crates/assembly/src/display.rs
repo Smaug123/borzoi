@@ -317,6 +317,11 @@ pub enum SignatureUnknown {
     /// read ([`ArgGroups::Unknowable`]): the IL parameter list could be one
     /// tupled group or several curried ones, and the two are different types.
     ArgGroupsUnknown,
+    /// An F# augmentation whose target type's arity was not read
+    /// ([`Augmentation::Certain`]'s `target_typars`): its method's generic
+    /// parameters begin with the target's, and which of them are the member's
+    /// own is unknown.
+    TargetTyparsUnknown,
 }
 
 /// Render a member as a one-line F# signature, e.g.
@@ -336,7 +341,9 @@ pub enum SignatureUnknown {
 /// groups (`val f: a: int -> (int -> int)`); so is a function-typed module
 /// value (`val v: (int -> int)`). An F# method whose groups are unknown and
 /// which has two or more parameters has no faithful rendering, and is
-/// [`SignatureUnknown::ArgGroupsUnknown`].
+/// [`SignatureUnknown::ArgGroupsUnknown`]. An augmentation's type-parameter
+/// list is its own, without its target type's
+/// ([`SignatureUnknown::TargetTyparsUnknown`] when they cannot be told apart).
 ///
 /// This is the F# *signature* view. Optional parameters are distinguished by
 /// dialect — F# `?name: T` vs a .NET `[<Optional>] name: T` (C# default), whose
@@ -466,7 +473,7 @@ fn format_method(m: &MethodLike, owner: &Entity) -> Result<String, SignatureUnkn
 
     let keyword = method_keyword(m, owner);
     let name = format_fsharp_value_name(m.source_name.as_deref().unwrap_or(&m.name));
-    let typars = format_typar_list(&m.generic_parameters);
+    let typars = format_typar_list(own_typars(m)?);
     let ret = format_return(
         &m.signature.return_type,
         m.signature.return_nullability,
@@ -501,6 +508,19 @@ fn format_method(m: &MethodLike, owner: &Entity) -> Result<String, SignatureUnkn
     // (`let f () = …`) is `val f: unit -> T`: its one group is empty, which
     // `format_arg_groups` renders `unit`.
     Ok(format!("{keyword} {name}{typars}: {params} -> {ret}"))
+}
+
+/// The type parameters a method declares itself. An augmentation's module
+/// method is generic over its target type's parameters first, and those are
+/// the type's, not the member's (`type G<'t> with member x.M<'u>` is
+/// `member M<'u>`).
+fn own_typars(m: &MethodLike) -> Result<&[TypeParameter], SignatureUnknown> {
+    match m.augmentation {
+        Augmentation::Certain { target_typars } => target_typars
+            .and_then(|n| m.generic_parameters.get(n..))
+            .ok_or(SignatureUnknown::TargetTyparsUnknown),
+        Augmentation::No | Augmentation::Possible => Ok(&m.generic_parameters),
+    }
 }
 
 /// One argument as a signature shows it: its IL parameter (type, optional and
@@ -588,7 +608,7 @@ fn format_arg_groups(groups: &[Vec<ShownArg<'_>>], scope: &TyparScope) -> String
 /// module but is declared, called and shown by F# as a member of `T`: an
 /// instance one as `member`, a static one as `static member`.
 fn method_keyword(m: &MethodLike, owner: &Entity) -> String {
-    if m.augmentation == Augmentation::Certain {
+    if matches!(m.augmentation, Augmentation::Certain { .. }) {
         return if m.is_extension_method {
             "member"
         } else {

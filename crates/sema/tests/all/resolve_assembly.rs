@@ -3800,7 +3800,15 @@ fn a_hidden_augmentation_does_not_own_a_qualified_path() {
     };
 
     let env = AssemblyEnv::from_entities(vec![
-        module("High", static_named("X", Augmentation::Certain)),
+        module(
+            "High",
+            static_named(
+                "X",
+                Augmentation::Certain {
+                    target_typars: Some(0),
+                },
+            ),
+        ),
         module("Low", static_named("X", Augmentation::No)),
     ]);
 

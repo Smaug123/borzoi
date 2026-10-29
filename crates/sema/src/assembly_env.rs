@@ -4788,7 +4788,7 @@ impl AssemblyEnv {
             return ExtensionKind::Ordinary;
         };
         match mm.augmentation {
-            Augmentation::Certain => return ExtensionKind::Augmentation(Certainty::Certain),
+            Augmentation::Certain { .. } => return ExtensionKind::Augmentation(Certainty::Certain),
             Augmentation::Possible => return ExtensionKind::Augmentation(Certainty::Possible),
             Augmentation::No => {}
         }
