@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c453d49d15a23656460f833751aca14b19916dd1faee2e2d055b9aae122b07b1 # shrinks to World { deps: [DepSpec { name: Alpha, types: [TypeSpec { ns: F, shape: Class, attr: None, members: [VtblGap] }] }], fsharp_core: Absent }
+cc ce908c7d26e6d2488472b007d4ca917481ada13271c00e9d7bf4e7a797fc5bf5 # shrinks to World { deps: [DepSpec { name: Alpha, types: [TypeSpec { ns: F, shape: TopInner, attr: TypeIdentifier, members: [Method(None)] }] }], fsharp_core: Absent }

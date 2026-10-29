@@ -154,15 +154,23 @@ the same assembly also generates (the doc-ID format is not injective: `T:A.B`
 names both a type `B` in namespace `A` and one nested in type `A`), and any
 member of an F#-compiled assembly (below), all show no documentation, and are distinguished in `xml_doc::lookup::DocLookup`. Remaining:
 
-- **`<inheritdoc>` is not resolved.** It renders an explicit "(Documentation
-  inherited from … is not shown.)" marker in place, so a partial entry never
-  reads as complete. Neither the NETCore reference pack nor FSharp.Core uses
-  it, but the ASP.NET Core pack has 2,312 (nearly all the entry's only
-  content) and ~2.7% of NuGet-cache entries carry one (a third with a `cref`;
-  C# 14 extension members point theirs at `<G>$…` skeleton keys, so they show
-  nothing at all until it is resolved). Resolving it means following the
-  `cref`, or the implicit base/interface member, through the env — its own
-  slice.
+- **`<inheritdoc>` is expanded through `cref` only.** `xml_doc::inherit`
+  reproduces Roslyn's IDE (`GetDocumentationComment(…, expandInheritdoc:
+  true)`) for an `<inheritdoc cref="…">`: the element is replaced in place by
+  the XPath-selected nodes of the named symbol's own expanded entry. Roslyn
+  merges nothing — an entry with its own summary and a top-level
+  `<inheritdoc/>` holds both summaries — and neither does this. A bare
+  `<inheritdoc/>` inherits from an implicit candidate (overridden member,
+  implemented interface member, base constructor, base type), which is not
+  modelled yet; it renders the explicit "(Documentation inherited from … is
+  not shown.)" marker in place, as does every other case that is not exactly
+  Roslyn's (a `cref` that binds to nothing or to several symbols, a `path`
+  outside the modelled XPath or selecting nothing, a cycle, a missing
+  inherited entry), with the typed `inherit::Decline` logged. Held to Roslyn
+  by `tools/inheritdoc-oracle`: 13 ASP.NET Core entries expand identically and
+  none differently (nearly all of the pack's 2,312 are bare); over the NuGet
+  cache (highest version of each package), 2,195 do, C# 14 extension
+  members' `cref`s into their `<G>$` skeletons included, and none differ.
 - **`<include>` is not resolved** (same marker; NuGet only, and there is
   nothing to resolve against: the included file is not shipped).
 - **Malformed files show nothing.** ~0.3% of NuGet-cache doc files are not

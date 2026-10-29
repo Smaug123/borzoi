@@ -884,6 +884,11 @@ impl Ecma335Assembly {
             is_structural_equality,
             is_structural_comparison,
             is_allow_null_literal: self.detect_allow_null_literal(&td.attributes)?,
+            is_no_pia_local: self.has_attribute(
+                &td.attributes,
+                "System.Runtime.InteropServices",
+                "TypeIdentifierAttribute",
+            )?,
             obsolete: self.detect_obsolete(&td.attributes)?,
             compiler_message: self.detect_compiler_message(&td.attributes)?,
             experimental: self.detect_experimental(&td.attributes)?,
