@@ -304,20 +304,35 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
 
 /// `path`, made absolute, if that is already its real path: no symlink in it,
 /// no `..`, and every component spelt as the file system spells it. `None`
-/// otherwise, or if it does not resolve.
+/// otherwise, or if it does not resolve. The result is in ordinary form (see
+/// [`without_verbatim_prefix`]).
 fn as_real_path(path: &Path) -> Option<PathBuf> {
-    let absolute = std::path::absolute(path).ok()?;
-    let real = std::fs::canonicalize(path).ok()?;
-    // Windows reports a real path in verbatim form (`\\?\C:\…`,
-    // `\\?\UNC\server\…`); compare it in the ordinary form.
-    let real = match real.to_str() {
-        Some(verbatim) if cfg!(windows) => match verbatim.strip_prefix(r"\\?\UNC\") {
-            Some(unc) => PathBuf::from(format!(r"\\{unc}")),
-            None => PathBuf::from(verbatim.strip_prefix(r"\\?\").unwrap_or(verbatim)),
-        },
-        _ => real,
-    };
+    let absolute = ordinary(std::path::absolute(path).ok()?);
+    let real = ordinary(std::fs::canonicalize(path).ok()?);
     (real == absolute).then_some(absolute)
+}
+
+/// `path` in ordinary form. On Windows a real path comes back verbatim
+/// (`\\?\C:\…`), and a caller's path may already be verbatim; both sides of a
+/// comparison go through here, and MSBuild is handed the ordinary form.
+fn ordinary(path: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return path;
+    }
+    match path.to_str() {
+        Some(text) => PathBuf::from(without_verbatim_prefix(text).into_owned()),
+        None => path,
+    }
+}
+
+/// `text` without a Windows verbatim prefix: `\\?\C:\x` is `C:\x`, and
+/// `\\?\UNC\server\share` is `\\server\share`. Anything else is unchanged.
+fn without_verbatim_prefix(text: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        std::borrow::Cow::Owned(format!(r"\\{unc}"))
+    } else {
+        std::borrow::Cow::Borrowed(text.strip_prefix(r"\\?\").unwrap_or(text))
+    }
 }
 
 /// What [`restore_graph`] produced.
@@ -638,5 +653,32 @@ fn apply_env(cmd: &mut Command, env: &SdkDiscoveryEnv) {
     }
     if let Some(cli_home) = &env.dotnet_cli_home {
         cmd.env("DOTNET_CLI_HOME", cli_home);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_verbatim_prefix;
+
+    #[test]
+    fn a_verbatim_prefix_is_removed_and_nothing_else_is() {
+        let cases = [
+            (r"\\?\C:\proj\App.fsproj", r"C:\proj\App.fsproj"),
+            (
+                r"\\?\UNC\server\share\App.fsproj",
+                r"\\server\share\App.fsproj",
+            ),
+            (r"C:\proj\App.fsproj", r"C:\proj\App.fsproj"),
+            (r"\\server\share\App.fsproj", r"\\server\share\App.fsproj"),
+            ("/home/u/App.fsproj", "/home/u/App.fsproj"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(without_verbatim_prefix(input), expected, "{input}");
+        }
+        // Idempotent, so normalising an already-ordinary side changes nothing.
+        for (input, _) in cases {
+            let once = without_verbatim_prefix(input).into_owned();
+            assert_eq!(without_verbatim_prefix(&once), once);
+        }
     }
 }
