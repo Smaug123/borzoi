@@ -633,6 +633,33 @@ three type parameters equated, no prefix `-` — measured +16, and admitting
 FSharp.Core's generic abbreviations in pattern annotations (`int list`,
 `int array`), the next candidate the census suggested, +3.
 
+**Parameter types.** A function parameter's own type is published where it is
+known for certain, and never from the parameter's binder variable (which on an
+incomplete binding is decoupled from the function type's slot, and can be
+grounded by a use the binding's unmodelled constraints contradict):
+
+- its **annotation**, exact in F# — subsumption applies at a call, never at the
+  binder — and kept on the binder even where FCS rejects the body;
+- otherwise its **slot** in a function type `Gen::finish` publishes, when the
+  slot is ground: the published function type's domains are the parameters'
+  types, a tuple parameter's elements its elements', so this claims nothing
+  the function type has not.
+
+A generic parameter stays silent: FCS's binder rendering renumbers a
+parameter's type on its own (`'a` for `y` in `let k x y = x`, whose type is
+`'a -> 'b -> 'a`), while hover names it as the function does (`'b`), and one
+published `Ty` cannot be both. `infer_parameter_types_diff` pins which
+parameters must commit, over annotated, argument-checked, condition-grounded,
+tuple, member-receiver and operator-operand parameters and their generic and
+open twins; every other grid grades the new commits against `binder-types` as
+it grades every binder. Deleting the annotation route or the published-owner
+check fails a test.
+
+Measured on the stride-13 corpus sample: agreements 994 + 953 → 994 + 1 068
+(115 parameters, none lost), 0 divergences, 3 more commits ungraded in
+unconverted declarations; completeness is unchanged, since nothing about a
+binding's walk moved.
+
 ### Remaining 3.x hard piles (census-priority order)
 
 Each stays `Deferred` (D5 silence) until the corpus demands it

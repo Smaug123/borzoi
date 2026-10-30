@@ -36,6 +36,7 @@ mod infer_local_let_diff;
 mod infer_measure_erasure_diff;
 mod infer_member_access_diff;
 mod infer_operators_diff;
+mod infer_parameter_types_diff;
 mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
 mod manifest_autoopen_surface_diff;
