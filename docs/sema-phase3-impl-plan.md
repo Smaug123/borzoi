@@ -113,16 +113,16 @@ file was the only observed reason of 467 and present in 664):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 407 | 546 |
-| method call on a receiver that is not an in-file value | 161 | 270 |
+| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 407 | 550 |
+| method call on a receiver that is not an in-file value | 161 | 271 |
 | `use`, `let rec` or `let!` inside an expression | 64 | 90 |
 | pattern annotation outside the modelled set | 47 | 331 |
-| `match` | 47 | 148 |
+| `match` | 47 | 149 |
 | use of an in-file binder F# may reject for its attributes | 45 | 123 |
-| constrained assembly operator (`+`, `=`, …) | 37 | 62 |
+| constrained assembly operator (`+`, `=`, …) | 37 | 65 |
 | `new` | 32 | 37 |
-| assembly value with a constrained type parameter | 17 | 33 |
-| assembly value over a type the bridge does not carry (`'T list`, …) | 9 | 60 |
+| assembly value with a constrained type parameter | 17 | 34 |
+| assembly value over a type the bridge does not carry (`'T list`, …) | 11 | 76 |
 
 The sample checks each file in isolation against FSharp.Core and the BCL
 alone, so most of the first row is a preceding file's value, which no
@@ -320,7 +320,7 @@ declines records `AssemblyValue(gap)`. A first-class `reraise` is rejected
 only after inference (FS0417), which leaves its type standing, so it is typed.
 
 `infer_assembly_values_diff` grades it against both FCS oracles over a
-generated fixture assembly (`module_value_corpus`): 63 signature shapes
+generated fixture assembly (`module_value_corpus`): 69 signature shapes
 (curried, generic, unit group, tupled group, tupled groups beside curried
 ones, tuple-typed parameter, function returned, function taken, `obj` taken,
 named types, arrays, values, type functions, inline, `[<CompiledName>]`,
@@ -328,13 +328,13 @@ warning-level attributes, and the declines — constraints, measures, renamed
 and generic named types, `[<RequiresExplicitTypeArguments>]`, obsolete and
 compiler-message errors, an internal val, a literal) × 14 use forms × 6 positions × 3
 spellings, with a per-row obligation on every well-typed synth row whose FCS
-type is ground (over 3 000), a census check that each declined shape records
+type is ground (3 753), a census check that each declined shape records
 its reason, and an ill-typed twin per shape; the pipe and use-order grids of
 `infer_operators_diff` with their functions relocated into the fixture, with
 the in-file grids' obligations unchanged; the argument-check generator
 relocated, with every commit the in-file program makes required of the
 relocated one; operators and active patterns outside FSharp.Core; and every
-FSharp.Core module member the reading admits (167), returned from a function.
+FSharp.Core module member the reading admits (279), returned from a function.
 Each gate of the reading was checked by deleting it; some test fails without
 each, except five guards no input reaches (a leading receiver, which an
 augmentation already declines before it; agreement between the val's value
@@ -343,8 +343,8 @@ others, which F# never pickles; a path whose head is an in-file binder, which
 the resolver never records as a module member; and a named type renamed by
 `[<CompiledName>]`, whose IL name the env's source-name index already misses).
 Measured on the stride-13
-corpus sample: 890 + 862 → 897 + 868 agreements (13 added, none lost), 0
-divergences, 973 → 985 complete bindings; bridging every named type, unchecked,
+corpus sample: 890 + 862 → 899 + 870 agreements (17 added, none lost), 0
+divergences, 973 → 987 complete bindings; bridging every named type, unchecked,
 added nothing over that.
 
 A member access on an F# record, union or exception type publishes no
