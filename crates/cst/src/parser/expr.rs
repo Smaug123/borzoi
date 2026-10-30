@@ -332,7 +332,8 @@ impl<'src> Parser<'src> {
     /// then while the next filtered token(s) are statement separators followed
     /// by an expression start, consume the separator(s) and parse the next
     /// statement. Two separator forms are accepted, mirroring FCS's `seps`
-    /// (`pars.fsy:6981`, `(OBLOCKSEP | SEMICOLON)+`):
+    /// (`pars.fsy`: one `OBLOCKSEP`, one `SEMICOLON`, or one of each in either
+    /// order):
     ///
     /// * a same-indent offside `Virtual::BlockSep` — emitted as a zero-width
     ///   ERROR (the raw newline stays in trivia, owned by the preceding
@@ -340,8 +341,8 @@ impl<'src> Parser<'src> {
     /// * an explicit `;` (raw [`Token::Semi`]) — emitted as a real
     ///   [`SyntaxKind::SEMI_TOK`].
     ///
-    /// A *maximal run* of separators is consumed before each statement, so the
-    /// `;`-then-newline combo (`a;⏎ b`) collapses to one boundary. `;;`
+    /// The `;`-then-newline combo (`a;⏎ b`) is therefore one boundary; a longer
+    /// run (`a; ; b`) is reported and consumed — see [`SepRun`]. `;;`
     /// ([`Token::SemiSemi`], the top-level terminator) is a distinct token and
     /// is **not** a separator — the gather stops at it.
     ///
@@ -361,7 +362,14 @@ impl<'src> Parser<'src> {
     /// context), so this helper stops at the first non-separator,
     /// non-expression token.
     pub(super) fn parse_seq_block_body(&mut self, missing_first: &str) -> u32 {
-        self.parse_seq_block_body_impl(missing_first, true)
+        self.parse_seq_block_body_impl(missing_first, true, SeqBody::Closed)
+    }
+
+    /// [`Self::parse_seq_block_body`] for a `let` body (`hardwhiteLetBindings`,
+    /// `let … in`, a `let!` binder), which is a bare `typedSequentialExpr`
+    /// sharing the enclosing sequence's block — see [`SeqBody::Bare`].
+    pub(super) fn parse_let_body(&mut self, missing_first: &str) -> u32 {
+        self.parse_seq_block_body_impl(missing_first, true, SeqBody::Bare)
     }
 
     /// `sequentialExpr` — like [`Self::parse_seq_block_body`] but **without** the
@@ -371,7 +379,7 @@ impl<'src> Parser<'src> {
     /// needs parens). Used only by the list/array element path; every other body
     /// position is a `typedSequentialExpr` and uses [`Self::parse_seq_block_body`].
     pub(super) fn parse_seq_block_elements(&mut self, missing_first: &str) -> u32 {
-        self.parse_seq_block_body_impl(missing_first, false)
+        self.parse_seq_block_body_impl(missing_first, false, SeqBody::Closed)
     }
 
     /// Shared implementation of [`Self::parse_seq_block_body`] (a
@@ -379,7 +387,12 @@ impl<'src> Parser<'src> {
     /// [`Self::parse_seq_block_elements`] (a `sequentialExpr`, `allow_typed =
     /// false`). The only difference is whether a trailing `: T` annotation is
     /// absorbed into a [`SyntaxKind::TYPED_EXPR`].
-    fn parse_seq_block_body_impl(&mut self, missing_first: &str, allow_typed: bool) -> u32 {
+    fn parse_seq_block_body_impl(
+        &mut self,
+        missing_first: &str,
+        allow_typed: bool,
+        body: SeqBody,
+    ) -> u32 {
         let cp = self.builder.checkpoint();
         let mut count: u32 = 0;
         if self.peek_is_expr_start() {
@@ -395,7 +408,7 @@ impl<'src> Parser<'src> {
                 span,
             });
         }
-        self.finish_seq_block(cp, count, allow_typed)
+        self.finish_seq_block(cp, count, allow_typed, body)
     }
 
     /// Continue a statement sequence whose first element (if any) has already
@@ -418,6 +431,7 @@ impl<'src> Parser<'src> {
         cp: rowan::Checkpoint,
         mut count: u32,
         allow_typed: bool,
+        body: SeqBody,
     ) -> u32 {
         // Count of `then` RHS offside blocks opened (see the `Virtual::Then`
         // separator arm); their matching `OBLOCKEND`s are drained after the loop.
@@ -433,20 +447,49 @@ impl<'src> Parser<'src> {
             // enclosing sequence, not this one. The closer is absent from the
             // filtered peek, so gate on the raw stream before each separator —
             // see [`Self::at_swallowed_seq_closer`].
-            let mut consumed_sep = false;
+            //
+            // FCS's boundary is one `seps` (`pars.fsy`: an `OBLOCKSEP`, a `;`,
+            // or one of each in either order) or one `then`, so the run is
+            // tracked as a [`SepRun`]. A separator past a complete boundary
+            // ends a [`SeqBody::Bare`] body, as trailing `seps`, and is left for
+            // the enclosing sequence; anywhere else it is reported, and still
+            // consumed so the statements on either side keep the tree a
+            // well-formed run would give them.
+            let mut run = SepRun::Empty;
             loop {
                 if self.at_swallowed_seq_closer() {
                     break;
                 }
-                match self.peek() {
-                    Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _)) => {
-                        self.bump_into(SyntaxKind::ERROR);
-                        consumed_sep = true;
+                let (sep, span) = match self.peek() {
+                    Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), span)) => {
+                        (Sep::Offside, span.clone())
                     }
-                    Some((Ok(FilteredToken::Raw(Token::Semi)), _)) => {
-                        self.bump_into(SyntaxKind::SEMI_TOK);
-                        consumed_sep = true;
+                    Some((Ok(FilteredToken::Raw(Token::Semi)), span)) => (Sep::Semi, span.clone()),
+                    Some((Ok(FilteredToken::Virtual(Virtual::Then)), span)) => {
+                        (Sep::Then, span.clone())
                     }
+                    _ => break,
+                };
+                match run.extend(sep, span.clone()) {
+                    Some(longer) => run = longer,
+                    // Inside a `then`'s right-hand side the body is that block,
+                    // which only its `OBLOCKEND` closes.
+                    None if body == SeqBody::Bare && then_blocks == 0 => break,
+                    None => {
+                        let what = match sep {
+                            Sep::Offside => "a new line",
+                            Sep::Semi => "`;`",
+                            Sep::Then => "`then`",
+                        };
+                        self.errors.push(ParseError {
+                            message: format!("unexpected {what} after a statement separator"),
+                            span: span.clone(),
+                        });
+                    }
+                }
+                match sep {
+                    Sep::Offside => self.bump_into(SyntaxKind::ERROR),
+                    Sep::Semi => self.bump_into(SyntaxKind::SEMI_TOK),
                     // `expr then expr` — FCS's `declExpr OTHEN OBLOCKBEGIN
                     // typedSequentialExpr oblockend` (`pars.fsy:4118`), a
                     // `SynExpr.Sequential(isTrueSeq = false, …)` used by secondary
@@ -459,10 +502,9 @@ impl<'src> Parser<'src> {
                     // `OBLOCKEND` is drained after the RHS statements — the RHS
                     // statements then join *this* flat sequence, matching the
                     // normaliser's flattening of FCS's right-leaning `Sequential`.
-                    Some((Ok(FilteredToken::Virtual(Virtual::Then)), then_span)) => {
-                        let then_span = then_span.clone();
-                        self.drain_raw_up_to(then_span.start);
-                        self.emit_text(SyntaxKind::THEN_TOK, then_span);
+                    Sep::Then => {
+                        self.drain_raw_up_to(span.start);
+                        self.emit_text(SyntaxKind::THEN_TOK, span);
                         self.raw_pos += 1;
                         self.pos += 1;
                         if matches!(
@@ -472,13 +514,22 @@ impl<'src> Parser<'src> {
                             self.bump_into(SyntaxKind::ERROR);
                             then_blocks += 1;
                         }
-                        consumed_sep = true;
                     }
-                    _ => break,
                 }
             }
-            if !consumed_sep {
+            if run == SepRun::Empty {
                 break;
+            }
+            // `then`'s right-hand side is a whole `typedSequentialExpr`, so
+            // unlike `seps` it cannot end the sequence. The error sits on the
+            // `then`: the token after it may already be the next declaration.
+            if let SepRun::Then(span) = &run
+                && (self.at_swallowed_seq_closer() || !self.peek_is_expr_start())
+            {
+                self.errors.push(ParseError {
+                    message: "expected an expression after `then`".to_string(),
+                    span: span.clone(),
+                });
             }
             // A *trailing* separator immediately before a swallowed closer
             // (`(a;) + b` → the `;`) must not continue: FCS's `declExpr seps`
@@ -1542,4 +1593,57 @@ impl<'src> Parser<'src> {
             _ => false,
         }
     }
+}
+
+/// One statement separator as [`Parser::finish_seq_block`] meets it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sep {
+    /// An offside `OBLOCKSEP`.
+    Offside,
+    Semi,
+    /// A `then` (LexFilter's `OTHEN`), whose right-hand side is a block.
+    Then,
+}
+
+/// The separators [`Parser::finish_seq_block`] has consumed since its last
+/// statement. FCS's `sequentialExpr` takes exactly one boundary between two
+/// statements: `seps` — [`Self::Offside`], [`Self::Semi`], or one of each in
+/// either order ([`Self::Both`]) — or a `then` ([`Self::Then`], at its span),
+/// which must be followed by a statement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SepRun {
+    Empty,
+    Offside,
+    Semi,
+    Both,
+    Then(Range<usize>),
+}
+
+impl SepRun {
+    /// The run with `sep` (at `span`) added, or `None` when the run is already
+    /// a complete boundary.
+    fn extend(&self, sep: Sep, span: Range<usize>) -> Option<SepRun> {
+        match (self, sep) {
+            (SepRun::Empty, Sep::Offside) => Some(SepRun::Offside),
+            (SepRun::Empty, Sep::Semi) => Some(SepRun::Semi),
+            (SepRun::Empty, Sep::Then) => Some(SepRun::Then(span)),
+            (SepRun::Offside, Sep::Semi) | (SepRun::Semi, Sep::Offside) => Some(SepRun::Both),
+            _ => None,
+        }
+    }
+}
+
+/// How the body [`Parser::finish_seq_block`] gathers is delimited, which
+/// decides what a separator past a complete boundary means. FCS's
+/// `typedSequentialExprBlock` is either `OBLOCKBEGIN typedSequentialExpr
+/// oblockend` or a bare `typedSequentialExpr`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SeqBody {
+    /// Closed by a token of its own (a bracket, an `OBLOCKEND`, `end`): the
+    /// separator is an error.
+    Closed,
+    /// A `let` body, which shares its offside block with the enclosing
+    /// sequence: the body ends as trailing `seps`, and the separator is the
+    /// enclosing sequence's (`let x = 1⏎a⏎;⏎b` is `Sequential(LetOrUse(x, a), b)`).
+    Bare,
 }
