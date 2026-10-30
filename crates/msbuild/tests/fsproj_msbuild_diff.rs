@@ -303,6 +303,99 @@ fn compile_update_compile_order_matches_fsharp_source_code_compile_order() {
     assert_eq!(ours, theirs);
 }
 
+/// The item pass replays every `<ItemGroup>` the property pass deferred, in
+/// encounter order, against the document that declared it. Here two imported
+/// files each declare many groups and their encounter order alternates between
+/// them (`a.props` imports `b.props` half-way through its own groups). The
+/// `<ItemDefinitionGroup>` in `b.props` replays before every item group, so the
+/// pass reads `b.props`'s document before `a.props`'s, then alternates between
+/// the two (it adds nothing to the Compile list). Every Include is spelled through `$(MSBuildThisFileDirectory)`, so a
+/// group replayed against the wrong file's document, or under the wrong file's
+/// binding, lands in the wrong directory; a dropped, duplicated or reordered
+/// group shifts the list. The order is pinned both against MSBuild and against
+/// the list the fixture was built to produce.
+#[test]
+fn many_deferred_groups_across_alternating_imports_replay_in_order() {
+    const GROUPS_PER_FILE: usize = 40;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(root.join(sub)).unwrap();
+    }
+    let groups = |prefix: &str, range: std::ops::Range<usize>| -> String {
+        range
+            .map(|i| {
+                format!(
+                    "  <ItemGroup><Compile Include=\"$(MSBuildThisFileDirectory){prefix}{i}.fs\" /></ItemGroup>\n"
+                )
+            })
+            .collect()
+    };
+    let half = GROUPS_PER_FILE / 2;
+    let a_props = format!(
+        "<Project>\n{}  <Import Project=\"../b/b.props\" />\n{}</Project>\n",
+        groups("A", 0..half),
+        groups("A", half..GROUPS_PER_FILE),
+    );
+    let b_props = format!(
+        "<Project>\n{}  <ItemDefinitionGroup><Helper><Flag>1</Flag></Helper></ItemDefinitionGroup>\n{}</Project>\n",
+        groups("B", 0..half),
+        groups("B", half..GROUPS_PER_FILE),
+    );
+    std::fs::write(root.join("a/a.props"), a_props).unwrap();
+    std::fs::write(root.join("b/b.props"), b_props).unwrap();
+    let source = r#"<Project>
+  <ItemGroup><Compile Include="First.fs" /></ItemGroup>
+  <Import Project="a/a.props" />
+  <ItemGroup><Compile Include="Last.fs" /></ItemGroup>
+</Project>"#;
+    let fsproj = root.join("Many.fsproj");
+    std::fs::write(&fsproj, source).unwrap();
+
+    let mut expected = vec!["First.fs".to_string()];
+    expected.extend((0..half).map(|i| format!("a/A{i}.fs")));
+    expected.extend((0..GROUPS_PER_FILE).map(|i| format!("b/B{i}.fs")));
+    expected.extend((half..GROUPS_PER_FILE).map(|i| format!("a/A{i}.fs")));
+    expected.push("Last.fs".to_string());
+    for file in &expected {
+        std::fs::write(root.join(file), "module M\n").unwrap();
+    }
+    // Canonicalised, so the macOS `/var` → `/private/var` symlink cannot make
+    // the two sides' spellings of one file differ.
+    let canonical_root = std::fs::canonicalize(root).unwrap();
+    let relative = |path: &Path| -> String {
+        std::fs::canonicalize(path)
+            .unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
+            .strip_prefix(&canonical_root)
+            .unwrap_or_else(|_| panic!("{} escapes the fixture", path.display()))
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    let project = parse_fsproj_with_imports(
+        source,
+        &fsproj,
+        &HashMap::new(),
+        &common::oracle_environment(),
+        None,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("parse {}: {e}", fsproj.display()));
+    let ours: Vec<String> = project
+        .items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Compile)
+        .map(|item| relative(&item.include))
+        .collect();
+    let theirs: Vec<String> = run_msbuild(&fsproj, &[])
+        .items_for(ItemKind::Compile)
+        .iter()
+        .map(|item| relative(Path::new(&item.full_path)))
+        .collect();
+    assert_eq!(theirs, expected, "MSBuild oracle changed");
+    assert_eq!(ours, theirs);
+}
+
 /// The fsproj-3.3c chosen-TFM oracle (`docs/completed/fsproj-tfm-selection-plan.md`,
 /// stage 3.3c-1): evaluating with `TargetFramework` seeded as a global — what
 /// the LSP's second pass does for a `<TargetFrameworks>` (plural) project —
