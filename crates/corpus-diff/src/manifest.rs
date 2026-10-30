@@ -44,6 +44,7 @@ use borzoi_oracle_harness::corpus_key::{Positions, corpus_relative};
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::DeferredReason;
 
+use crate::deferral_shape::DeferralCause;
 use crate::handler_diff::{HandlerReport, PerturbedSkip, Variant, consistent};
 use crate::{
     AnswerSurface, Graded, ItemOutcome, LoadSkip, ProjectAssetsStatus, ProjectRecord, ProjectSkip,
@@ -383,7 +384,7 @@ fn outcome_label(outcome: ItemOutcome) -> String {
         ItemOutcome::Deferral {
             graded,
             served,
-            site,
+            cause,
         } => {
             let served = match served {
                 ServedDecline::Unrecorded => "unrecorded",
@@ -395,11 +396,16 @@ fn outcome_label(outcome: ItemOutcome) -> String {
                     DeferredReason::IncompleteAssemblies => "incomplete-assemblies",
                 },
             };
-            let site = match site {
-                Some(site) => format!("{}@{}", site.cause.label(), site.tier.label()),
-                None => "unattributed".to_string(),
+            // A guard's label always carries its `@tier`, so neither a shape
+            // nor `unexplained` can be read as one.
+            let cause = match cause {
+                DeferralCause::Guard(site) => {
+                    format!("{}@{}", site.cause.label(), site.tier.label())
+                }
+                DeferralCause::Shape(shape) => shape.label().to_string(),
+                DeferralCause::Unexplained => "unexplained".to_string(),
             };
-            format!("{}-deferral {served} {site}", graded_label(graded))
+            format!("{}-deferral {served} {cause}", graded_label(graded))
         }
         ItemOutcome::Divergence(graded) => format!("{}-divergence", graded_label(graded)),
         ItemOutcome::SetAside(kind) => match kind {

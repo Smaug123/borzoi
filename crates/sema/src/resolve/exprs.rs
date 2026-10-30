@@ -6,7 +6,7 @@ use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
-use super::model::{DeferredReason, Resolution};
+use super::model::{DeclineSite, DeferredReason, Resolution};
 use super::state::{AliasTargets, Frame, Resolver, ScopeEntry};
 use super::types::TypePathResolution;
 
@@ -811,9 +811,7 @@ impl<'a> Resolver<'a> {
                 // decline (drop). See the module-level "Provisional pattern
                 // heads" note.
                 if def.provisional {
-                    if let Some(res) = self.case_reference(&def.key()) {
-                        self.record(def.range, res);
-                    }
+                    self.resolve_provisional_case_head(&def.key(), def.range);
                     continue;
                 }
                 let name = def.key().to_string();
@@ -829,7 +827,27 @@ impl<'a> Resolver<'a> {
         entries
     }
 
+    /// Resolve a **bare** name use, and where it declines, record which guard
+    /// declined it if one did ([`Self::bare_value_decline`]).
     pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) {
+        if self.record_name_use(tok, allow_opened_type)
+            && let Some(cause) = self.bare_value_decline(&id_text(tok))
+        {
+            self.record_decline(tok.text_range(), DeclineSite::pre_walk(cause));
+        }
+    }
+
+    /// Resolve the **head** of a dotted path through the value namespace. Not
+    /// attributed: a head that finds no value is a qualifier as often as not,
+    /// and whatever value entry its name meets says nothing about why the path
+    /// it heads declined.
+    pub(super) fn resolve_path_head_use(&mut self, tok: &SyntaxToken) {
+        self.record_name_use(tok, false);
+    }
+
+    /// The lookup behind [`Self::resolve_name_use`]; whether it recorded a
+    /// decline.
+    fn record_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) -> bool {
         // The `base` keyword reaches here as the receiver of a direct
         // `base.[i]` indexer (parsed as a bare `Ident("base")` head). Like the
         // `base`-headed long-ident path, it is the reserved base-class receiver,
@@ -837,7 +855,7 @@ impl<'a> Resolver<'a> {
         // even a back-ticked `` ``base`` `` binder (whose token text carries the
         // backticks, so the unquoted-`base` test distinguishes them). Defer it.
         if tok.text() == "base" {
-            return;
+            return false;
         }
         // A bare use of a name that is one of the *currently-being-resolved*
         // active-pattern recognizer's own cases (see [`Resolver::ap_body_case_names`]):
@@ -849,7 +867,7 @@ impl<'a> Resolver<'a> {
         // sound either way. Only *bare* single-ident uses reach here; a qualified
         // head (`A.X`) goes through [`Self::resolve_long_ident`], which ignores this.
         if self.ap_body_case_names.contains(&*id_text(tok)) {
-            return;
+            return false;
         }
         // Every name an `open` brings into scope is an *opened* entry in the value
         // frame alongside locals, parameters, and union/exception cases (see
@@ -865,6 +883,7 @@ impl<'a> Resolver<'a> {
             // to `Deferred`.
             .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
         self.record(tok.text_range(), res);
+        matches!(res, Resolution::Deferred(_))
     }
 
     /// The opened-type **constructor** fallback for a bare expression name that

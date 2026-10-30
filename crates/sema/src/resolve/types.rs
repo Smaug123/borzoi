@@ -2545,6 +2545,23 @@ impl<'a> Resolver<'a> {
                             split_applied = self.split_active_pattern_args(shape, &args);
                         }
                     }
+                    // An applied single-segment head that committed nothing:
+                    // name the guard that declined it, if one did.
+                    if applied
+                        && let [single] = segs.as_slice()
+                        && !matches!(
+                            self.resolutions.get(&single.text_range()),
+                            Some(
+                                Resolution::Local(_)
+                                    | Resolution::Item(_)
+                                    | Resolution::Entity(_)
+                                    | Resolution::Member { .. }
+                            )
+                        )
+                        && let Some(cause) = self.bare_case_decline(&id_text(single), false)
+                    {
+                        self.record_decline(single.text_range(), DeclineSite::pre_walk(cause));
+                    }
                 }
                 if !split_applied {
                     // A constructor / function-head application (`Some (x : T)`,

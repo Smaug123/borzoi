@@ -371,8 +371,11 @@ The pinned corpus is fixed by revision and both sides are deterministic, so
   were served from the attribute map or inference's member table), or
   `unreported` if FCS said nothing about it;
 - one line per graded record that is **not** a match: each deferral with what
-  the LSP served (`unrecorded`, `qualified-access`, …) and which guard declined
-  (`opaque_open@explicit_open`, or `unattributed`), each ambiguous range,
+  the LSP served (`unrecorded`, `qualified-access`, …) and what it is
+  attributed to — the guard that declined (`opaque_open@explicit_open`), else
+  the model the resolver lacks there (`member_access_on_value`, `qualifier`,
+  …; `borzoi_corpus_diff::deferral_shape`), else `unexplained` — each
+  ambiguous range,
   shadowed constructor record, zero-width or compiler-generated record, and each
   of our or-pattern aliases the oracle is silent about. FCS's own defining
   occurrences are counted per file instead: they are not uses;

@@ -2118,6 +2118,46 @@ pub enum DeclineCause {
     /// withdrawn (`Resolution::sealed_under_incomplete_projection`). The one
     /// cause that *replaces* a resolution the resolver had already made.
     IncompleteAssemblies,
+    /// A **bare** name's latest in-scope entry was staled by a later `open`'s
+    /// generation barrier: that open brings names we cannot list, any of which
+    /// may shadow this one, so the name defers. The bare-name twin of the
+    /// staled head [`Self::OpaqueValueHead`] names for a dotted path.
+    OpenBarrierStaled,
+    /// An `open` brought the name in as an **assembly union case or
+    /// active-pattern tag**, for which the fold names no target: no member
+    /// exists to point at, so the entry is in scope, shadows by position, and
+    /// commits nothing.
+    AssemblyCaseUntargeted,
+    /// An `open` brought the name in as a **type name** taking FCS's
+    /// unqualified constructor slot. The slot's shadowing is modelled; the
+    /// construction it names is not.
+    OpenedTypeName,
+    /// An `open` brought the name in as an **overload set** or a
+    /// metadata-ambiguous static — choosing among them is the type checker's
+    /// job, not name resolution's.
+    OpenedOverloadSet,
+    /// An opened **exception constructor** whose bare slot a same-surface value
+    /// or type may take — an eviction the bare-name lookup does not model.
+    OpenedExceptionShadowed,
+    /// The `open`'s fold group carries names it **cannot list** (a dropped
+    /// type, an unenumerable surface, a nested module behind a project
+    /// `[<AutoOpen>]`), so the fold order — and with it which entry FCS binds —
+    /// is not decidable, and every name the group brings in defers.
+    OpenFoldResidue,
+    /// **More than one surface** an `open` folds supplies the name, and which
+    /// one FCS binds depends on an order sema does not model (assembly
+    /// reference order, or a straddle across auto-open fragments).
+    OpenFoldCollision,
+    /// A type or `[<AutoOpen>]` container **declared in this block** may take
+    /// the opened name's unqualified slot, which folding the open at the top of
+    /// the block does not express.
+    BlockLocalShadow,
+    /// An assembly surface F# opens with **no source `open`** — an implicitly
+    /// opened namespace (`Some` and `None` in `Microsoft.FSharp.Core`), a
+    /// retained manifest `[<AutoOpen>]` module, the root namespace — supplies a
+    /// value of this bare name, and sema folds no scope entry for it, so the
+    /// name finds nothing to commit.
+    ImplicitSurfaceUnfolded,
 }
 
 impl DeclineCause {
@@ -2164,6 +2204,15 @@ impl DeclineCause {
         DeclineCause::SameFileCaseShadow,
         DeclineCause::AssemblyCaseHeadContends,
         DeclineCause::IncompleteAssemblies,
+        DeclineCause::OpenBarrierStaled,
+        DeclineCause::AssemblyCaseUntargeted,
+        DeclineCause::OpenedTypeName,
+        DeclineCause::OpenedOverloadSet,
+        DeclineCause::OpenedExceptionShadowed,
+        DeclineCause::OpenFoldResidue,
+        DeclineCause::OpenFoldCollision,
+        DeclineCause::BlockLocalShadow,
+        DeclineCause::ImplicitSurfaceUnfolded,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2208,6 +2257,15 @@ impl DeclineCause {
             DeclineCause::SameFileCaseShadow => "same_file_case_shadow",
             DeclineCause::AssemblyCaseHeadContends => "assembly_case_head_contends",
             DeclineCause::IncompleteAssemblies => "incomplete_assemblies",
+            DeclineCause::OpenBarrierStaled => "open_barrier_staled",
+            DeclineCause::AssemblyCaseUntargeted => "assembly_case_untargeted",
+            DeclineCause::OpenedTypeName => "opened_type_name",
+            DeclineCause::OpenedOverloadSet => "opened_overload_set",
+            DeclineCause::OpenedExceptionShadowed => "opened_exception_shadowed",
+            DeclineCause::OpenFoldResidue => "open_fold_residue",
+            DeclineCause::OpenFoldCollision => "open_fold_collision",
+            DeclineCause::BlockLocalShadow => "block_local_shadow",
+            DeclineCause::ImplicitSurfaceUnfolded => "implicit_surface_unfolded",
         }
     }
 }
@@ -3053,11 +3111,16 @@ impl ResolvedFile {
     /// price changes to the referenced-assembly precedence ladder, so it
     /// attributes what that ladder and its pre-walk gates do — every branch of
     /// `decide_type_path`, the value/member walk, the attribute candidates, the
-    /// `Type.Case` pattern walk, and the incomplete-projection seal. It does
-    /// **not** try to attribute a bare name that simply is not in scope: an
-    /// opaque `open` being live is not evidence that it is why *this* name
-    /// found nothing, and attributing it would inflate every count with
-    /// declines no ladder change can move.
+    /// `Type.Case` pattern walk, and the incomplete-projection seal — and the
+    /// guards a **bare** name meets in scope: an opened entry an opaque `open`
+    /// withdrew, one a later open's generation barrier staled, one an `open`
+    /// put in scope already declining (an assembly union case, an overload
+    /// set, an undecidable fold), and a name an implicitly opened assembly
+    /// surface supplies that sema folds no entry for. It does **not**
+    /// attribute a bare name nothing binds at all: an opaque `open` being live
+    /// is not evidence that it is why *this* name found nothing, and
+    /// attributing it would inflate every count with declines no ladder change
+    /// can move.
     ///
     /// A decline of a dotted path answers at **one** range: the whole written
     /// path, which is what FCS's `rangeOfLid` names it by. No individual
