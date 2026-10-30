@@ -307,6 +307,13 @@ const SHAPES: &[Shape] = &[
         imp: "type AO = Microsoft.FSharp.Core.AutoOpenAttribute\n\ntype V =\n    | Vcase\n\n[<AO>]\nmodule M =\n    let ref (x : int) = x\n",
         model: Model::Unmodelled,
     },
+    // The same, with the alias target parenthesised (Codex review).
+    Shape {
+        label: "aliased_auto_open_module_parenthesised",
+        sig: "type AO = (Microsoft.FSharp.Core.AutoOpenAttribute)\n\ntype V =\n    | Vcase\n\n[<AO>]\nmodule M =\n    val ref : int -> int\n",
+        imp: "type AO = (Microsoft.FSharp.Core.AutoOpenAttribute)\n\ntype V =\n    | Vcase\n\n[<AO>]\nmodule M =\n    let ref (x : int) = x\n",
+        model: Model::Unmodelled,
+    },
     Shape {
         label: "enum_lowercase",
         sig: "type U =\n    | ref = 0\n    | failwith = 1\n",
