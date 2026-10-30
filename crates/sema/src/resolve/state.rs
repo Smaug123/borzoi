@@ -1231,6 +1231,29 @@ pub(super) struct Resolver<'a> {
     /// arity-agnostic `lookup_type_def` would hand it back — an in-file
     /// attribute commit for such a name must defer (codex round 7).
     pub(super) own_generic_type_simple_names: HashSet<String>,
+    /// How many type or exception declarations this file makes under each
+    /// simple name, anywhere — later ones, nested modules and `rec` blocks
+    /// included. Inside a `rec` block a declaration the walk has not reached
+    /// yet is already in scope, so more here than
+    /// [`Self::type_decl_counts`] can see is a possible forward shadow.
+    pub(super) own_type_decl_counts: HashMap<String, usize>,
+    /// How many type declarations the walk has passed under each simple name,
+    /// per container — keyed like [`Self::type_defs`], which keeps only the
+    /// latest of them. Summed along the container chain, more than one means
+    /// the latest in-file hit may not be the one FCS binds: it picks between
+    /// same-named types by the written arity
+    /// ([`DeclineCause::InFileTypeNameReused`]).
+    pub(super) type_decl_counts: HashMap<Vec<String>, HashMap<String, usize>>,
+    /// Each in-file type definition's generic arity.
+    pub(super) type_def_arities: HashMap<DefId, usize>,
+    /// How many `open` declarations the walk has passed, anywhere in the
+    /// file — monotone, never reset at a module boundary.
+    pub(super) open_decls_seen: usize,
+    /// [`Self::open_decls_seen`] at each in-file type's definition. An `open`
+    /// after a type's definition can bring a same-named type that FCS binds
+    /// instead (latest wins), so an in-file hit with any `open` since is
+    /// declined ([`DeclineCause::InFileTypeOpenedOver`]).
+    pub(super) type_def_open_marks: HashMap<DefId, usize>,
     /// The subset of [`Self::own_type_simple_names`] declared by an
     /// `exception` anywhere in the file. Exceptions never enter `type_defs`,
     /// so an in-file *type* hit for such a name may be reaching past a closer

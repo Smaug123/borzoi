@@ -512,7 +512,8 @@ impl<'a> Resolver<'a> {
                         // case/member.
                         let type_access_root =
                             self.export_access_root_len(type_header_is_private(defn));
-                        self.define_type(&name, slot, type_access_root);
+                        let arity = defn.typar_decls().map_or(0, |d| d.typars().count());
+                        self.define_type(&name, slot, type_access_root, arity);
                         // The cross-file type index: any genuine non-abbreviation
                         // repr's cases are fully indexed below (a union/enum's by
                         // `define_union_cases` / `define_enum_cases`; other reprs
@@ -751,6 +752,7 @@ impl<'a> Resolver<'a> {
                 );
             }
             ModuleDecl::Open(open) => {
+                self.open_decls_seen += 1;
                 // Resolution-explain trace (see `ResolutionTrace`): snapshot the
                 // three opaque-open flags *before* this open, and capture its
                 // range / path / kind, so the record pushed at the end of this

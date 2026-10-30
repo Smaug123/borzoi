@@ -146,28 +146,34 @@ fn an_attribute_after_the_doc_keeps_it_and_one_before_loses_it() {
     assert_attached(after, "v", &[]);
 }
 
+/// Asserts that the occurrence at `at` is no graded site: resolution declined
+/// it, so no doc is looked up there.
+#[track_caller]
+fn assert_not_a_site(sites: &[(usize, Verdict, Vec<String>)], at: usize) {
+    assert!(
+        sites.iter().all(|(offset, _, _)| *offset != at),
+        "resolution committed the occurrence at {at}: {sites:?}"
+    );
+}
+
 #[test]
-fn a_use_whose_type_argument_count_differs_from_its_resolution_declines() {
-    // Resolution reads `CT<int>` as the non-generic `CT` (#323); FCS binds the
-    // generic one. The bare `CT` agrees with both, so it keeps its doc.
+fn a_type_name_declared_at_two_arities_is_no_doc_site() {
+    // FCS binds `CT<int>` to the generic `CT` and the bare `CT` to the plain
+    // one; resolution keeps one declaration per name, so it declines both
+    // rather than choose by arity.
     let src = "module M\n/// generic\ntype CT<'T> = int -> 'T\n/// plain\ntype CT = int -> unit\nlet f (x: CT<int>) = x\nlet g (x: CT) = x\n";
     let sites = occurrences(src, "CT");
-    let (verdict, fcs) = site(&sites, src.find("CT<int>").unwrap());
-    assert_eq!(fcs, [" generic"]);
-    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
-    let (verdict, fcs) = site(&sites, src.find("CT) =").unwrap());
-    assert_eq!(fcs, [" plain"]);
-    assert_eq!(verdict, Verdict::Agree { attached: true });
+    assert_not_a_site(&sites, src.find("CT<int>").unwrap());
+    assert_not_a_site(&sites, src.find("CT) =").unwrap());
 }
 
 #[test]
 fn an_assembly_namesake_of_another_arity_is_not_shown_the_source_doc() {
-    // `Action<int>` is `System.Action<'T>` to FCS, not the project's `Action`.
+    // `Action<int>` is `System.Action<'T>` to FCS, not the project's `Action`,
+    // and resolution declines an application of another arity.
     let src = "module M\nopen System\n/// mine\ntype Action = int\nlet f (x: Action<int>) = x\n";
     let sites = occurrences(src, "Action");
-    let (verdict, fcs) = site(&sites, src.find("Action<int>").unwrap());
-    assert_eq!(fcs, Vec::<String>::new());
-    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
+    assert_not_a_site(&sites, src.find("Action<int>").unwrap());
 }
 
 /// Asserts that a named argument's label in `src` is no hover site — FCS binds
@@ -225,9 +231,7 @@ fn an_equality_operand_in_a_function_argument_shows_its_doc() {
 fn arity_mismatch_declines_across_reopened_namespaces_and_files() {
     let src = "namespace N\n/// generic\ntype T<'a> = int -> 'a\nnamespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
     let sites = occurrences(src, "T");
-    let (verdict, fcs) = site(&sites, src.find("T<int>").unwrap());
-    assert_eq!(fcs, [" generic"]);
-    assert_eq!(verdict, Verdict::Declined(SourceDocDecline::ArityMismatch));
+    assert_not_a_site(&sites, src.find("T<int>").unwrap());
 
     let a = "namespace N\n/// generic\ntype T<'a> = int -> 'a\n";
     let b = "namespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
@@ -509,8 +513,8 @@ fn a_light_directive_inside_a_doc_block_declines() {
 #[test]
 fn a_parenthesised_tuple_postfix_argument_is_one_type_argument() {
     // `(int * string) T` applies `T` to one argument, so FCS binds `T<'a>`;
-    // `every` fails on any doc FCS does not attach (here `T<'a, 'b>`'s).
-    let src = "module M\n/// one\ntype T<'a> = 'a list\n/// two\ntype T<'a, 'b> = 'a * 'b\nlet x : (int * string) T = []\n";
+    // the source-doc arity guard must count it as one too.
+    let src = "module M\n/// one\ntype T<'a> = 'a list\nlet x : (int * string) T = []\n";
     let sites = every(src, "T");
     let use_site = src.rfind("T = []").unwrap();
     let (_, _, _, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
