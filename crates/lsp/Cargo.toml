@@ -89,6 +89,9 @@ sourcelink-fetch = ["dep:minreq"]
 
 [dev-dependencies]
 borzoi-oracle-harness.workspace = true
+# The dependency-graph spec reader the restore-graph oracle's specs are read
+# with (`tests/all/restore_graph.rs`). The server does not depend on it yet.
+borzoi-nuget.workspace = true
 borzoi-assembly = { workspace = true, features = ["test-support"] }
 # The FCS-differential comparator (`borzoi_sema::test_support`), shared with
 # `borzoi-corpus-diff`, used by `resolve_real_project_diff`.

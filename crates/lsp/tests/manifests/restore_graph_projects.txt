@@ -1,0 +1,9 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi --test all restore_graph::pinned_projects -- --ignored
+TypeEquality/TypeEquality/TypeEquality.fsproj committed projects=1 frameworks=1 dependencies=3 pruned=0
+WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj committed projects=1 frameworks=1 dependencies=6 pruned=0
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj committed projects=1 frameworks=1 dependencies=6 pruned=0
+WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj committed projects=1 frameworks=1 dependencies=3 pruned=0
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj committed projects=1 frameworks=1 dependencies=3 pruned=0
+WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj committed projects=1 frameworks=1 dependencies=3 pruned=0

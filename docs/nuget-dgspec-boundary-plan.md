@@ -1,7 +1,7 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stage 1 has landed, and so has the NuGet-identity half of
-> stage 3 (the oracle runs the SDK's own NuGet). Supersedes slice 8 of
+> **Status:** stages 1 and 2 have landed, and so has the NuGet-identity half
+> of stage 3 (the oracle runs the SDK's own NuGet). Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -238,21 +238,49 @@ reached through dgspec aliases:
   unsupported, and ours read it as `.NETPortable` 0.0. That is fixed and
   pinned in `framework_diff.rs`.
 
-### Stage 2: the half-A oracle and the reference globals
+### Stage 2: the half-A oracle and the reference globals — landed
 
-**Dependencies:** stage 1.
-**Implements:** *The reference configuration is `restore.rs`'s own.*
-- Extract `restore.rs`'s global-property list into one function. `restore.rs`
-  and a test-support A₀ driver (spawning
-  `-t:GenerateRestoreGraphFile` through `BoundedCommand`) both call it.
+`borzoi::restore::restore_graph` obtains a project's spec in one of two ways:
+generated (`GenerateRestoreGraphFile`, A₀), or the one `restore.rs`'s own
+restore writes beside its assets file, which is by definition what that restore
+read. NuGet writes it even when resolution then fails. Both, and the shipped
+restore, go through one command builder in `restore.rs`, so they share the SDK,
+working directory, environment and global properties by construction.
 
-**Correctness oracle:**
-- Structural: one function supplies both argument lists. A test asserts that the
-  property names A₀ sets are exactly the ones `restore.rs` sets.
-- Corpus census (exact manifest, `borzoi_oracle_harness::manifest`): for every
-  corpus project, A₀ either produces a dgspec that stage 1 parses, or produces
-  one that stage 1 declines, pinned with the decline path. Each line is one
-  project.
+That makes the plan's structural test (comparing two argument lists)
+tautological. In its place, `tests/all/restore_graph.rs` checks the stronger
+claim the reference needs: the generated spec *equals* the one restore read, up
+to the scratch directories each was written under. The checks run on:
+- fixtures (a single project, a project reference, a locked project, a
+  project named through a symlink, a project conditioned on restore's
+  injected global);
+- every corpus project, in CI's `corpus-diff` job (`restore_graph::pinned_projects`),
+  where the stage-1 reader's verdict on each spec is pinned in
+  `tests/manifests/restore_graph_projects.txt`. All six corpus projects agree
+  and commit; none of them prunes (they target `net8.0` and `netstandard2.0`),
+  so pruning's breadth comes from stage 1's local sweep, not this census.
+
+The routes check turned up two findings:
+- **Injected globals.** `dotnet restore` forwards one global property beyond its
+  target, `NuGetInteractive=false`, that `dotnet msbuild` does not, so a project
+  conditioned on it generated a different spec. The shared builder now passes it
+  for every verb, which for the shipped restore only repeats what the CLI adds.
+  A test diffs the MSBuild command lines the two verbs forward, so an SDK that
+  starts forwarding another global fails by name.
+- **Symlinked project paths: open, in the shipped restore.** Restore runs in the
+  project's directory, which the OS reports by its real path. A project named
+  through a symlink is therefore spelt two ways in one evaluation, and NuGet
+  drops its `ProjectReference`s: the shipped restore of such a spelling never
+  sees them. The oracle declines such a spelling, so it makes no claim there.
+  The shipped restore is unchanged, because no fix local to it is right:
+  - naming the project by its real path moves the directories MSBuild searches
+    for `Directory.Build.props` and the like away from the ones the LSP
+    evaluated;
+  - declining poisons the LSP's assembly-env cache, which is keyed by
+    canonical path, for the real spelling too.
+
+  The LSP keys a project by its canonical path but evaluates the spelling it
+  was handed, so the fix belongs at that boundary, as its own change.
 
 ### Stage 3: the decomposition is lossless
 
