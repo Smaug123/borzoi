@@ -689,7 +689,11 @@ fn parse_short(input: &str) -> Result<NuGetFramework, FrameworkParseError> {
             .unwrap_or(rest.len());
         let (ver_text, tail) = rest.split_at(digits_end);
         if let Some(list) = tail.strip_prefix('-') {
-            let version = parse_short_version(ver_text).unwrap_or([0; 4]);
+            // An absent version is 0.0; a present one that does not parse
+            // ("portable.-…", "portable4.-…") makes the framework unsupported.
+            let Some(version) = parse_short_version(ver_text) else {
+                return Ok(unsupported());
+            };
             let list_start = input.len() - list.len();
             return parse_portable(version, &input[list_start..]);
         }
