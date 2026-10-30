@@ -18,7 +18,7 @@
 //!                                          the same package set `S`.
 //!
 //! A decline is always permitted (we under-resolve, never mis-resolve). The
-//! only declines checked against the oracle are the three that name a legacy
+//! only declines checked against the oracle are the four that name a legacy
 //! engine error, which must be one the legacy engine reports. A second, narrower sweep
 //! (`completeness_on_consistent_acyclic_envelope`) additionally requires that
 //! we *do* resolve on the version-consistent, acyclic, fully-committed graphs
@@ -331,7 +331,7 @@ impl RestoreOutcome {
 
 /// What `resolve_offline` did with a graph, split by what it *claims*.
 ///
-/// A closure claims to be the closure both restore engines write. Three declines
+/// A closure claims to be the closure both restore engines write. Four declines
 /// claim more than "we cannot tell": that the *legacy* engine fails, and with
 /// which error. They claim nothing about the default engine, which may resolve
 /// the same graph or fail it differently. Every other decline claims nothing at
@@ -355,6 +355,9 @@ impl OurOutcome {
             }
             ResolveDecline::VersionConflict { .. } => {
                 OurOutcome::ClaimsLegacyFails(RestoreFailure::Conflict)
+            }
+            ResolveDecline::UndecidedConflict { .. } => {
+                OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided)
             }
             ResolveDecline::Downgrade { .. } => {
                 OurOutcome::ClaimsLegacyFails(RestoreFailure::Downgrade)
@@ -494,12 +497,7 @@ fn compare(
                 );
             }
             (OurOutcome::ClaimsLegacyFails(claim), theirs) if engine == "legacy" => {
-                // A version conflict is NU1107, or NU1106 when the legacy conflict
-                // pass leaves the conflicting package undecided rather than
-                // settling it and then finding the range unsatisfied.
-                let right = theirs.fails_with(*claim)
-                    || (*claim == RestoreFailure::Conflict
-                        && theirs.fails_with(RestoreFailure::Undecided));
+                let right = theirs.fails_with(*claim);
                 assert!(
                     right,
                     "resolve_offline declined claiming the legacy engine fails with {claim:?}, \
@@ -1253,14 +1251,9 @@ fn multi_version_graphs_resolve_identically() {
     // price of committing only to what both engines write; any other decline
     // here is a completeness bug. The rest of the corpus is graphs restore
     // itself fails, and there we must fail too, which `compare` has checked.
-    let envelope = [
-        "loser-not-a-leaf",
-        "transitive-potential-downgrade",
-        "floating-comparison",
-    ];
     let other: Vec<_> = restore_only
         .iter()
-        .filter(|(why, _)| !envelope.contains(why))
+        .filter(|(why, _)| !ENGINE_AGREEMENT_ENVELOPE.contains(why))
         .collect();
     assert!(
         other.is_empty(),
@@ -1615,12 +1608,15 @@ fn generate_wide(rng: &mut SplitMix64) -> Generated {
 
 impl Generated {
     fn compare(&self, oracle: &mut Oracle) -> Comparison {
-        let direct = self
-            .direct
+        compare(oracle, &self.tfm, &self.packages, &self.direct_refs())
+    }
+
+    /// The direct references, borrowed as [`compare`] takes them.
+    fn direct_refs(&self) -> Vec<(&str, &str)> {
+        self.direct
             .iter()
             .map(|(id_, range_)| (id_.as_str(), range_.as_str()))
-            .collect::<Vec<_>>();
-        compare(oracle, &self.tfm, &self.packages, &direct)
+            .collect()
     }
 
     /// Every range in the graph, direct and transitive, with the id it targets.
@@ -1879,6 +1875,158 @@ fn wide_graphs_resolve_identically() {
     census.assert_floors(10);
 }
 
+// ============================================================================
+// Cross disputes: cousin conflicts beneath one another
+// ============================================================================
+
+/// Cousin disputes whose losers sit beneath *other* disputes' winners: the
+/// shape on which the legacy conflict pass can fail to settle (NU1106) although
+/// every losing version is a leaf.
+///
+/// Each of a handful of packages `X{i}` has a low and a high version. The
+/// project reaches each high version through a chain of intermediates of its
+/// own, so no ancestor eclipses what lies below it, and a high version depends
+/// on the *low* version of some other `X`s. Every `X` with an incoming edge is
+/// then disputed, its low version loses, and that loser sits beneath another
+/// dispute's winner. The pass marks ambiguity by package name, so whether it
+/// settles turns on whether those "beneath" edges close a cycle; the
+/// generators above reach that only by accident (one graph in thousands).
+/// Mostly the low versions are leaves, which is the envelope where the
+/// resolver would otherwise commit; sometimes an edge asks for the high version
+/// instead, or a low version has a dependency of its own.
+fn generate_cross_disputes(rng: &mut SplitMix64) -> Generated {
+    let count = 2 + rng.below(3);
+    let mut packages = Vec::new();
+    let mut direct = Vec::new();
+    for i in 0..count {
+        // `I{i}_0 → … → I{i}_{depth-1} → X{i}[2.0]`.
+        let depth = 1 + rng.below(2);
+        for level in 0..depth {
+            let next = if level + 1 == depth {
+                Dep::new(&maybe_recase(rng, &format!("X{i}")), "[2.0.0, )")
+            } else {
+                Dep::new(&format!("I{i}_{}", level + 1), "[1.0.0, )")
+            };
+            packages.push(Pkg::simple(&format!("I{i}_{level}"), "1.0.0", vec![next]));
+        }
+        direct.push((
+            maybe_recase(rng, &format!("I{i}_0")),
+            "[1.0.0, )".to_owned(),
+        ));
+    }
+    for i in 0..count {
+        let others: Vec<usize> = (0..count).filter(|&j| j != i).collect();
+        let mut high = Vec::new();
+        for &j in &others {
+            if rng.below(3) != 0 {
+                let range = if rng.below(6) == 0 {
+                    "[2.0.0, )"
+                } else {
+                    "[1.0.0, )"
+                };
+                high.push(Dep::new(&maybe_recase(rng, &format!("X{j}")), range));
+            }
+        }
+        let mut low = Vec::new();
+        if rng.below(6) == 0 {
+            let j = *rng.pick(&others);
+            low.push(Dep::new(&format!("X{j}"), "[1.0.0, )"));
+        }
+        packages.push(Pkg::simple(&format!("X{i}"), "2.0.0", high));
+        packages.push(Pkg::simple(&format!("X{i}"), "1.0.0", low));
+    }
+    // The order of the direct references is the order the walk meets them.
+    let rotate = rng.below(direct.len());
+    direct.rotate_left(rotate);
+
+    Generated {
+        tfm: "net8.0".to_owned(),
+        packages,
+        direct,
+    }
+}
+
+/// The declines that are the engine-agreement envelope's deliberate price (see
+/// `engines_agree` in `resolver.rs`), rather than a gap in what we model.
+const ENGINE_AGREEMENT_ENVELOPE: [&str; 3] = [
+    "loser-not-a-leaf",
+    "transitive-potential-downgrade",
+    "floating-comparison",
+];
+
+/// What we owe on a [`generate_cross_disputes`] graph, beyond soundness. Where
+/// the legacy engine's only failure is an unsettled conflict pass we must say
+/// so, and where both engines write one closure we must write it, in each case
+/// unless the engine-agreement envelope declines. Without the first, a resolver
+/// that declined every disputed graph for some other reason would pass.
+fn assert_cross_dispute_obligations(generated: &Generated, comparison: &Comparison) {
+    let within_envelope = |ours: &OurOutcome| matches!(ours, OurOutcome::Declined(why) if ENGINE_AGREEMENT_ENVELOPE.contains(why));
+    let owed = if comparison.restore.legacy == failed_with(&[RestoreFailure::Undecided]) {
+        Some(OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided))
+    } else {
+        comparison
+            .restore
+            .agreed_closure()
+            .map(|closure| OurOutcome::Resolved(closure.clone()))
+    };
+    if let Some(owed) = owed {
+        assert!(
+            comparison.ours == owed || within_envelope(&comparison.ours),
+            "expected {} but got {}\n{}",
+            owed.class(),
+            comparison.ours.class(),
+            describe(
+                &generated.tfm,
+                &generated.packages,
+                &generated.direct_refs()
+            ),
+        );
+    }
+}
+
+#[test]
+fn cross_disputes_resolve_identically() {
+    let mut oracle = Oracle::spawn();
+    let mut census: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
+    for seed in [0xC805_u64, 0xD15C, 0x0A3B, 0x1106] {
+        let mut rng = SplitMix64(seed);
+        for _ in 0..50 {
+            let generated = generate_cross_disputes(&mut rng);
+            let comparison = generated.compare(&mut oracle);
+            assert_cross_dispute_obligations(&generated, &comparison);
+            let restore = format!(
+                "{}/{}",
+                comparison.restore.legacy.class(),
+                comparison.restore.default.class()
+            );
+            *census
+                .entry((comparison.ours.class(), restore))
+                .or_default() += 1;
+        }
+    }
+    for ((ours, restore), count) in &census {
+        eprintln!("  ours {ours:<34} restore (legacy/default) {restore:<24} {count}");
+    }
+
+    // The obligations hold vacuously on a generator that stopped reaching
+    // either side of the line the conflict pass draws.
+    let ours = |class: &str| -> usize {
+        census
+            .iter()
+            .filter(|((ours, _), _)| ours == class)
+            .map(|(_, count)| count)
+            .sum()
+    };
+    for class in ["claims-legacy-undecided", "resolved"] {
+        assert!(
+            ours(class) >= 20,
+            "generator degenerated: only {} of 200 graphs are {class}",
+            ours(class)
+        );
+    }
+}
+
 fn env_u64(name: &str) -> Option<u64> {
     std::env::var(name).ok().map(|value| {
         value
@@ -1911,14 +2059,20 @@ fn randomised_soundness_soak() {
     let mut census = Census::default();
     for _ in 0..graphs {
         // The single-version graphs, the multi-version ones whose conflicts
-        // slice 6b resolves, and the wide vocabulary. Only the last is counted:
+        // slice 6b resolves, the cross disputes the legacy conflict pass can
+        // fail to settle, and the wide vocabulary. Only the last is counted:
         // the floors below are about the shapes it exists to reach.
-        match rng.below(4) {
+        match rng.below(6) {
             0 => {
                 generate(&mut rng).compare(&mut oracle);
             }
             1 => {
                 generate_multi_version(&mut rng).compare(&mut oracle);
+            }
+            2 => {
+                let g = generate_cross_disputes(&mut rng);
+                let comparison = g.compare(&mut oracle);
+                assert_cross_dispute_obligations(&g, &comparison);
             }
             _ => {
                 let g = generate_wide(&mut rng);
@@ -2177,6 +2331,42 @@ fn mutually_dependent_cousin_conflicts_fail_restore() {
         ])
     );
     assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+}
+
+/// Two cousin conflicts that each hold a *leaf* loser of the other beneath
+/// their winner.
+///
+/// `A → X[2.0] → Y[1.0]` and `B → Y[2.0] → X[1.0]`: X 2.0 and Y 2.0 win, and
+/// the losers X 1.0 and Y 1.0 have no dependencies at all. But the legacy
+/// conflict pass marks ambiguity *by package name*: everything below a disputed
+/// node is ambiguous, so Y 1.0 under the disputed X 2.0 makes every Y
+/// ambiguous, and X 1.0 under the disputed Y 2.0 makes every X ambiguous.
+/// Neither winner can then be accepted, no round makes progress, and the legacy
+/// engine fails with NU1106. Every loser being a leaf does not rule this out.
+/// Shrunk from the soak's seed 1793381246070433581.
+#[test]
+fn cousin_conflicts_with_leaf_losers_beneath_each_other_fail_restore() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[2.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("Y", "[2.0.0, )")]),
+            Pkg::simple("X", "1.0.0", vec![]),
+            Pkg::simple("X", "2.0.0", vec![Dep::new("Y", "[1.0.0, )")]),
+            Pkg::simple("Y", "1.0.0", vec![]),
+            Pkg::simple("Y", "2.0.0", vec![Dep::new("X", "[1.0.0, )")]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.restore.legacy,
+        failed_with(&[RestoreFailure::Undecided])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided)
+    );
 }
 
 /// A potential downgrade of a transitive package, which the two engines
