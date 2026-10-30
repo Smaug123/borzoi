@@ -171,12 +171,11 @@ for. `tools/nuget-oracle` does: it loads the `NuGet.*` set from the directory
 of the SDK `dotnet` resolves, and its `restore` op reports the
 `NuGet.Commands` that ran (`oracle_identity.rs` pins it to the SDK's file). A
 package reference could not do this, because SDKs bundle unpublished release
-candidates: the devshell's SDK 10.0.401 ships
-`7.9.0-rc.42413+e34a38d2…`, while nuget.org's `7.9.0` is a different commit.
-Moving the oracle from the 7.6.0 packages to that build moved none of the
-321,768 distinct answers the `borzoi-nuget` suite and both soaks asked of it
-(9,572 of them restores), so `resolver_diff`'s verdicts stand under the
-identity CI grades.
+candidates: SDK 10.0.401 ships `7.9.0-rc.42413+e34a38d2…`, while nuget.org's
+`7.9.0` is a different commit. Moving the oracle from the 7.6.0 packages to
+that build (the devshell's SDK on 2026-10-30) moved none of the 321,768
+distinct answers the `borzoi-nuget` suite and both soaks asked of it (9,572 of
+them restores).
 
 ## Implementation plan
 
