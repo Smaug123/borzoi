@@ -154,6 +154,11 @@ pub(super) struct SigScreen {
     /// ([`ProjectItems::namespace_shadow_names`]) rather than hiding the whole
     /// namespace behind a generation barrier.
     pub(super) namespace_unexported_names: Vec<(Vec<String>, String)>,
+    /// Every attribute name the signature writes, with and without the
+    /// `Attribute` suffix — what decides whether a referenced assembly's
+    /// undecoded abbreviation could be one of its attributes
+    /// ([`ProjectItems::trusts_attribute_spellings_of`]).
+    pub(super) attribute_spellings: HashSet<String>,
 }
 
 /// One export the paired signature contributes **at the implementation's
@@ -324,6 +329,9 @@ pub struct ProjectItems {
     /// a target of its own. Known by name, so unlike a hidden-value marker it
     /// stales nothing else.
     pub(super) namespace_shadow_names: HashMap<Vec<String>, HashSet<String>>,
+    /// [`AssemblyEnv::core_attribute_aliases`](crate::AssemblyEnv::core_attribute_aliases)
+    /// for the env the fold resolves against, set when the fold starts.
+    pub(super) assembly_core_attribute_aliases: Arc<crate::assembly_env::CoreAttributeAliases>,
     /// The subset of [`Self::modules_with_hidden_values`] whose markers no
     /// signature bounds — so an `open` of a path marked here must stale its
     /// **own** assembly entries via the generation bump, not just earlier
@@ -966,6 +974,19 @@ impl ProjectItems {
             .any(|path| path.starts_with(mp))
     }
 
+    /// Whether every attribute `screen`'s signature writes is the attribute
+    /// it spells as far as `[<AutoOpen>]` and `[<RequireQualifiedAccess>]` go:
+    /// no file folded so far renames or impersonates either
+    /// ([`Self::core_attribute_alias_declared`]), no referenced assembly
+    /// certainly does, and none of the signature's spellings is an assembly
+    /// abbreviation whose target was not decoded.
+    pub(super) fn trusts_attribute_spellings_of(&self, screen: &SigScreen) -> bool {
+        let aliases = &self.assembly_core_attribute_aliases;
+        !self.core_attribute_alias_declared
+            && !aliases.certain
+            && screen.attribute_spellings.is_disjoint(&aliases.possible)
+    }
+
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
         self.screened_path(names, false)
     }
@@ -1154,9 +1175,17 @@ impl ProjectItems {
             self.sig_screens.push((Arc::clone(screen), impl_idx));
         }
 
+        // Written attribute names are trustworthy only while nothing so far
+        // (this file included) can rename or impersonate the two whose
+        // presence the signature derivation reads.
+        self.core_attribute_alias_declared |= file.declares_core_attribute_alias;
+        let trust_attribute_spellings =
+            paired_screen.is_some_and(|screen| self.trusts_attribute_spellings_of(screen));
         let idx = match paired_screen {
             None => FileExportIndices::from_decls(file),
-            Some(screen) => FileExportIndices::from_decls_screened(file, screen),
+            Some(screen) => {
+                FileExportIndices::from_decls_screened(file, screen, trust_attribute_spellings)
+            }
         };
         for module in idx.module_headers {
             self.module_headers.insert(module);
@@ -1193,9 +1222,6 @@ impl ProjectItems {
         // only while every file contributes both indices together.
         self.project_module_simple_names
             .extend(file.own_module_simple_names.iter().cloned());
-        // Written attribute names stay trustworthy only while nothing so far
-        // can rename or impersonate `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`.
-        self.core_attribute_alias_declared |= file.declares_core_attribute_alias;
         // What the file contributes through routes the walk does not model.
         self.root_contribution.merge(&file.contributions.root);
         self.custom_operations
@@ -1471,11 +1497,23 @@ impl FileExportIndices {
     ///   implementation header is bare, and signature-declared auto-open
     ///   nested modules join `auto_open_module_paths` (marked hidden, so the
     ///   fold's generation barrier fires for them).
-    fn from_decls_screened(file: &ResolvedFile, screen: &SigScreen) -> Self {
-        Self::derive(file, Some(screen))
+    ///
+    /// `trust_attribute_spellings` says whether a written attribute name is
+    /// the attribute it spells (see [`ProjectItems::core_attribute_alias_declared`]).
+    /// The signature's namespace-level names are enumerable only then; else
+    /// every dropped identity marks its container hidden, as it would with no
+    /// signature model at all.
+    fn from_decls_screened(
+        file: &ResolvedFile,
+        screen: &SigScreen,
+        trust_attribute_spellings: bool,
+    ) -> Self {
+        Self::derive(file, Some((screen, trust_attribute_spellings)))
     }
 
-    fn derive(file: &ResolvedFile, screen: Option<&SigScreen>) -> Self {
+    fn derive(file: &ResolvedFile, screened: Option<(&SigScreen, bool)>) -> Self {
+        let screen = screened.map(|(screen, _)| screen);
+        let trust_attribute_spellings = screened.is_some_and(|(_, trust)| trust);
         let mut fi = Self::default();
         for decl in &file.export_decls {
             let anon = decl.anonymous_root;
@@ -1499,10 +1537,10 @@ impl FileExportIndices {
                         // every bare value it exposes there, so the screen's
                         // own name list ([`SigScreen::namespace_unexported_names`],
                         // pushed below) replaces the per-item marker.
-                        let in_sig_namespace = decl
-                            .path
-                            .split_last()
-                            .is_some_and(|(_, container)| screen.namespaces.contains(container));
+                        let in_sig_namespace = trust_attribute_spellings
+                            && decl.path.split_last().is_some_and(|(_, container)| {
+                                screen.namespaces.contains(container)
+                            });
                         if !in_sig_namespace {
                             push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
                         }

@@ -453,14 +453,14 @@ with these mechanics settled in review/probing:
   `open Pn; Md.shown` reaches the export (FCS-probed, codex round 1) — the
   materialisation also publishes (nothing on the impl side does — its
   fragments are anonymous — yet FCS treats the implicit module as real and
-  openable). Visible union/enum cases declared **directly under a
-  `namespace`** export the same way, at `N.Case` / `N.Type.Case`. A type
-  or representation annotated `internal` (or `public`) exports like an
-  unannotated one — one project is one assembly, so it restricts nothing
-  sema can see. A case is exported *bare* only when its type carries no
-  attribute at all and no other declaration of the container puts the same
-  name in bare scope or in the constructor slot; otherwise it exports
-  type-qualified only. Val/module accessibility is the landed Stage-3 slice (see
+  openable). A type or representation annotated `internal` (or `public`)
+  exports like an unannotated one — one project is one assembly, so it
+  restricts nothing sema can see. A case is exported *bare* only when its
+  type carries no attribute at all (any written attribute may be an
+  abbreviation of `RequireQualifiedAccess`) and no other declaration of the
+  container puts the same name in bare scope or in the constructor slot;
+  otherwise it exports type-qualified only, and not even that when two
+  types of the container share a name at different arities. Val/module accessibility is the landed Stage-3 slice (see
   its notes below); `type private` / a private representation,
   active-pattern/operator `val`s, operator-named cases, exceptions,
   abbreviations, records, and nested-module recursion all stay
@@ -471,22 +471,33 @@ with these mechanics settled in review/probing:
   it cannot list must shadow everything folded before it (the generation
   barrier, which stales every earlier entry). Directly under a namespace the
   only such names are union/enum cases and exception constructors, and the
-  signature names every one it exposes — so the implementation's dropped
-  identities there mark nothing. A case of an attribute-free visible union
-  exports bare with signature identity; every other name the signature may
-  expose there (`SigScreen::namespace_unexported_names`: an attributed
-  union's cases, since no written attribute settles whether it is
-  `[<RequireQualifiedAccess>]` — an abbreviation can rename it either way —
-  a privately represented union's, an exception, a nullary case spelled as
-  an abbreviation, an enum case, a bare name two declarations or a
-  constructor-slot type share) enters the fold as a targetless entry after
-  everything else, shadowing that one name. Only an `[<AutoOpen>]` type,
-  whose statics the signature need not name, still marks the namespace
-  hidden. Marking the namespace per dropped implementation item instead
-  made one signatured namespace-direct union stale every FSharp.Core name
-  in every later file of the namespace (WoofWare.Incremental's
-  `OnUpdateHandler.fsi`); `tests/all/sig_namespace_fold_diff.rs` grades a
-  shape table and a pairwise grid of collisions against FCS.
+  signature names every one it may expose, so the implementation's dropped
+  identities there mark nothing. Each such name
+  (`SigScreen::namespace_unexported_names` — every case, enum case,
+  exception constructor and abbreviation-spelled nullary case the signature
+  declares directly under the namespace) instead enters the fold as a
+  targetless entry after everything else, shadowing that one name. None
+  gets an identity: a namespace-direct case's bare reach turns on
+  attributes, collisions across files and arities, none of which the
+  signature text settles. A namespace-direct `[<AutoOpen>]` type or module
+  still marks the namespace hidden, as does any attributed type with
+  statics to publish.
+
+  This trusts written attribute names for `[<AutoOpen>]` and
+  `[<RequireQualifiedAccess>]`, which holds only while nothing renames or
+  impersonates them: both are sealed classes, so only an abbreviation can.
+  `ProjectItems::trusts_attribute_spellings_of` withdraws the trust — and
+  the derivation falls back to marking every container of a dropped
+  identity hidden — when a project file declares a type spelled like
+  either or an abbreviation whose target is, when a referenced assembly
+  certainly does (`AssemblyEnv::core_attribute_aliases`), or when one of the
+  signature's attribute spellings is an assembly abbreviation whose target
+  was not decoded. Marking the namespace per dropped implementation item
+  unconditionally made one signatured namespace-direct union stale every
+  FSharp.Core name in every later file of the namespace
+  (WoofWare.Incremental's `OnUpdateHandler.fsi`);
+  `tests/all/sig_namespace_fold_diff.rs` grades a shape table and a pairwise
+  grid of collisions against FCS.
 - **Incremental fold:** the stash joins `same_export_contribution`, so a
   `.fsi` surface edit invalidates the suffix; the impl-slot append runs in
   both folds before the in-sync comparison.

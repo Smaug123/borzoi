@@ -923,18 +923,6 @@ fn sig_type_may_be_auto_open(defn: &TypeDefn) -> bool {
                 .any(|t| t.kind() == SyntaxKind::STATIC_TOK))
 }
 
-/// Append `decl` to `namespace`'s declarations, keeping first-seen order.
-fn push_namespace_decl(
-    namespace_decls: &mut Vec<(Vec<String>, Vec<SigDecl>)>,
-    namespace: &[String],
-    decl: SigDecl,
-) {
-    match namespace_decls.iter_mut().find(|(ns, _)| ns == namespace) {
-        Some((_, decls)) => decls.push(decl),
-        None => namespace_decls.push((namespace.to_vec(), vec![decl])),
-    }
-}
-
 /// Whether a signature type's cases are **certainly** in bare scope where
 /// its container is opened: it carries no attribute at all.
 ///
@@ -1218,9 +1206,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut value_paths = Vec::new();
     let mut bare_value_paths: Vec<Vec<String>> = Vec::new();
     let mut namespaces: HashSet<Vec<String>> = HashSet::new();
-    // Each namespace's own type and exception declarations, across all of
-    // its fragments in this file, in source order.
-    let mut namespace_decls: Vec<(Vec<String>, Vec<SigDecl>)> = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
     for fragment in sig.modules() {
@@ -1296,20 +1281,19 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         // their own exposed value paths (RQA-blind: an
                         // over-collected RQA case only defers more).
                         SigDecl::Types(types) => {
-                            // The exactly-modelled half (visible union/enum
-                            // cases at `ns.Case` and `ns.Type.Case`) is
-                            // collected once per namespace below, over all
-                            // of its type and exception declarations.
-                            push_namespace_decl(
-                                &mut namespace_decls,
+                            // No case here gets an identity: each bare name
+                            // the type may put in scope where `ns` is opened
+                            // shadows by name instead
+                            // ([`model::SigScreen::namespace_unexported_names`]).
+                            // A type directly under the namespace has no
+                            // container walker to report an `[<AutoOpen>]`
+                            // on it: the namespace itself is the container.
+                            collect_auto_open_type_containers(
                                 &ns,
-                                SigDecl::Types(types.clone()),
+                                &[SigDecl::Types(types.clone())],
+                                &mut auto_open_type_containers,
                             );
                             for defn in types.defns() {
-                                // The bare value-space names the type puts in
-                                // scope where `ns` is opened: an RQA union's
-                                // cases put none. Enum cases are counted
-                                // too, which only ever over-marks.
                                 for ident in sig_bare_value_idents(&defn) {
                                     let mut path = ns.clone();
                                     path.push(id_text(&ident).to_string());
@@ -1353,7 +1337,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 bare_value_paths.push(path.clone());
                                 value_paths.push(path);
                             }
-                            push_namespace_decl(&mut namespace_decls, &ns, SigDecl::Exception(exn));
                         }
                         _ => {}
                     }
@@ -1396,19 +1379,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
             }
         }
     }
-    // The namespace-direct surface, exactly as a module root's: the
-    // container walker also records an `[<AutoOpen>]` type with the
-    // namespace as its container.
-    for (ns, decls) in namespace_decls {
-        collect_sig_container_exports(
-            &ns,
-            decls.into_iter(),
-            None,
-            &mut defs,
-            &mut exports,
-            &mut auto_open_type_containers,
-        );
-    }
     // The screen's exemption sets: exactly the paths the collected surface
     // carries an identity for, split by namespace (the case half exempts
     // only the type-qualified case lookups — see
@@ -1429,6 +1399,21 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
             Some((container.to_vec(), name.clone()))
         })
         .collect();
+    // Every attribute spelling the signature writes, with and without the
+    // `Attribute` suffix FCS adds when it looks one up.
+    let attribute_spellings: HashSet<String> = sig
+        .syntax()
+        .descendants()
+        .filter_map(AttributeList::cast)
+        .flat_map(|list| list.attributes().collect::<Vec<_>>())
+        .filter_map(|attr| attr.type_name().and_then(|li| li.idents().last()))
+        .flat_map(|ident| {
+            let name = id_text(&ident).to_string();
+            let stripped = name.strip_suffix("Attribute").map(str::to_string);
+            [Some(format!("{name}Attribute")), stripped, Some(name)]
+        })
+        .flatten()
+        .collect();
     let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),
@@ -1439,6 +1424,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         exported_case_paths,
         namespaces,
         namespace_unexported_names,
+        attribute_spellings,
     });
     SignatureSurface {
         screen,
@@ -1551,7 +1537,10 @@ fn resolve_project_files_impl(
         files.len()
     );
     let partners = signature_partners(files);
-    let mut preceding = ProjectItems::default();
+    let mut preceding = ProjectItems {
+        assembly_core_attribute_aliases: Arc::new(assemblies.core_attribute_aliases().clone()),
+        ..ProjectItems::default()
+    };
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(files.len());
     // Accumulate the OV-6 cross-file **extension-source** signal in **Compile
     // order**: F# is order-sensitive, so a project extension source (a
@@ -1913,7 +1902,10 @@ fn resolve_project_files_incremental_impl(
     );
     let partners_prev = signature_partners(prev_files);
     let partners_new = signature_partners(new_files);
-    let mut preceding = ProjectItems::default();
+    let mut preceding = ProjectItems {
+        assembly_core_attribute_aliases: Arc::new(assemblies.core_attribute_aliases().clone()),
+        ..ProjectItems::default()
+    };
     let mut ext = ExtThreading::default();
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(horizon);
     let mut reused = Vec::with_capacity(horizon);

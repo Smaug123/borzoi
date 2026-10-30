@@ -69,8 +69,9 @@ fn span(start: usize, end: usize) -> TextRange {
 /// obligations. Every row is graded certain-implies-exact regardless.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Model {
-    /// The signature's bare names are exactly exported: the FSharp.Core
-    /// names stay committed, and `Ok`/`Some`/`Case1` commit to the `.fsi`.
+    /// The unsigned control: the namespace's cases are the implementation's
+    /// own exports, so the FSharp.Core names stay committed and
+    /// `Ok`/`Some`/`Case1` commit to the project.
     Exposed,
     /// Every bare name the signature exposes is known by name, exported or
     /// not: the FSharp.Core names it does not spell stay committed.
@@ -104,26 +105,26 @@ const SHAPES: &[Shape] = &[
         label: "exposed",
         sig: U,
         imp: U,
-        model: Model::Exposed,
+        model: Model::Precise,
     },
     Shape {
         label: "generic_exposed",
         sig: "type U<'a> =\n    | Case1 of 'a\n    | Ok\n    | Some of 'a * 'a\n",
         imp: "type U<'a> =\n    | Case1 of 'a\n    | Ok\n    | Some of 'a * 'a\n",
-        model: Model::Exposed,
+        model: Model::Precise,
     },
     // `internal` restricts nothing within one project.
     Shape {
         label: "internal_type",
         sig: "type internal U =\n    | Case1 of int\n    | Ok\n    | Some of string\n",
         imp: "type internal U =\n    | Case1 of int\n    | Ok\n    | Some of string\n",
-        model: Model::Exposed,
+        model: Model::Precise,
     },
     Shape {
         label: "internal_repr",
         sig: "type U =\n    internal\n    | Case1 of int\n    | Ok\n    | Some of string\n",
         imp: "type U =\n    internal\n    | Case1 of int\n    | Ok\n    | Some of string\n",
-        model: Model::Exposed,
+        model: Model::Precise,
     },
     Shape {
         label: "rqa",
@@ -237,12 +238,15 @@ const SHAPES: &[Shape] = &[
         model: Model::Precise,
     },
     // `[<RequireQualifiedAccess>]` under another name (Codex review): the
-    // cases are not in bare scope, which the written name cannot say.
+    // cases are not in bare scope, which the written name cannot say. Once a
+    // file renames either attribute, written names are not trusted and the
+    // namespace hides behind the barrier as it would with no signature
+    // model.
     Shape {
         label: "aliased_rqa",
         sig: "type Qual = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual>]\ntype U =\n    | Case1 of int\n    | Ok\n",
         imp: "type Qual = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual>]\ntype U =\n    | Case1 of int\n    | Ok\n",
-        model: Model::Precise,
+        model: Model::Unmodelled,
     },
     // WoofWare.Incremental's `Cutoff.fsi` shape: well-known attributes and
     // an `internal` representation.
@@ -295,6 +299,13 @@ const SHAPES: &[Shape] = &[
         sig: "type U =\n    | Case1\n\ntype U<'a> =\n    | Case1 of 'a\n",
         imp: "type U =\n    | Case1\n\ntype U<'a> =\n    | Case1 of 'a\n",
         model: Model::Precise,
+    },
+    // `[<AutoOpen>]` under another name on a module (Codex review).
+    Shape {
+        label: "aliased_auto_open_module",
+        sig: "type AO = Microsoft.FSharp.Core.AutoOpenAttribute\n\ntype V =\n    | Vcase\n\n[<AO>]\nmodule M =\n    val ref : int -> int\n",
+        imp: "type AO = Microsoft.FSharp.Core.AutoOpenAttribute\n\ntype V =\n    | Vcase\n\n[<AO>]\nmodule M =\n    let ref (x : int) = x\n",
+        model: Model::Unmodelled,
     },
     Shape {
         label: "enum_lowercase",
@@ -641,11 +652,15 @@ fn the_implicit_namespace_open_is_traced() {
 
 /// One namespace-level declaration that puts `Ok` somewhere — a pairwise
 /// grid's alphabet. Every one is known by name, so every pair must keep the
-/// FSharp.Core names it does not spell committed.
+/// FSharp.Core names it does not spell committed, unless it renames a core
+/// attribute.
 struct Fragment {
     label: &'static str,
     sig: &'static str,
     imp: &'static str,
+    /// Renames a core attribute, which withdraws trust in written attribute
+    /// names for the whole namespace.
+    renames_attribute: bool,
 }
 
 const FRAGMENTS: &[Fragment] = &[
@@ -653,56 +668,67 @@ const FRAGMENTS: &[Fragment] = &[
         label: "union",
         sig: "type A1 =\n    | Ok of int\n",
         imp: "type A1 =\n    | Ok of int\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "rqa",
         sig: "[<RequireQualifiedAccess>]\ntype A2 =\n    | Ok\n",
         imp: "[<RequireQualifiedAccess>]\ntype A2 =\n    | Ok\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "abbrev_case",
         sig: "type A3 = Ok\n",
         imp: "type A3 = Ok\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "exception",
         sig: "exception Ok of string\n",
         imp: "exception Ok of string\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "private_repr",
         sig: "type A5 =\n    private\n    | Ok\n",
         imp: "type A5 =\n    private\n    | Ok\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "enum",
         sig: "type A6 =\n    | Ok = 1\n",
         imp: "type A6 =\n    | Ok = 1\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "record",
         sig: "type A7 = { Ok : int }\n",
         imp: "type A7 = { Ok : int }\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "class",
         sig: "type Ok =\n    new : unit -> Ok\n",
         imp: "type Ok() = class end\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "aliased_rqa",
         sig: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
         imp: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
+        renames_attribute: true,
     },
     Fragment {
         label: "generic_same_name",
         sig: "type A1<'a> =\n    | Ok of 'a\n",
         imp: "type A1<'a> =\n    | Ok of 'a\n",
+        renames_attribute: false,
     },
     Fragment {
         label: "opaque",
         sig: "type A8\n",
         imp: "type A8 =\n    | Ok\n",
+        renames_attribute: false,
     },
 ];
 
@@ -732,6 +758,9 @@ fn pairwise_namespace_declarations_agree_with_fcs() {
             for reader in [Reader::SameNamespaceAfter, Reader::OpenAfter] {
                 let mut c = grade_cell(&shape, reader);
                 wrong.append(&mut c.wrong);
+                if a.renames_attribute || b.renames_attribute {
+                    continue;
+                }
                 for needle in ["ref", "failwith"] {
                     if !c.assembly.contains(&needle) {
                         missing.push(format!("[{label} / {reader:?}]: {needle:?}"));
