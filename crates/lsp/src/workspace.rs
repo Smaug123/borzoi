@@ -1502,7 +1502,7 @@ fn evaluate_project(
 ) -> Option<EvaluatedProject> {
     let _span =
         tracing::info_span!("evaluate_project", project = %project_path.display()).entered();
-    let source = std::fs::read_to_string(project_path).ok()?;
+    let source = crate::disk_text::read(project_path).ok()?;
     let disc = SdkDiscovery::for_project(project_path, env)
         .inspect_err(|err| {
             crate::log_warn!(
