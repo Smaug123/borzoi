@@ -1298,6 +1298,18 @@ pub(super) struct Resolver<'a> {
     /// declared *inside* an `[<AutoOpen>]` module — a type-namespace question.
     /// This one is the value namespace, and only the fold reads it.
     pub(super) own_auto_open_type_positions: Vec<rowan::TextSize>,
+    /// The containers of this file's non-`private` `[<AutoOpen>]` types and
+    /// exceptions that fold statics, recorded as the walk passes them
+    /// ([`Resolver::raise_barrier_for_auto_open_statics`](super::Resolver)). An
+    /// explicit `open` of one of them raises the barrier after its fold
+    /// ([`Resolver::decline_unenumerated_after_open`](super::Resolver)): the
+    /// statics come in with the container's contents, under names sema does
+    /// not list.
+    pub(super) own_auto_open_static_containers: Vec<Vec<String>>,
+    /// The case names a type group holding an `[<AutoOpen>]` type declines
+    /// once they are defined
+    /// ([`Resolver::decline_cases_beside_auto_open_statics`](super::Resolver)).
+    pub(super) pending_static_case_declines: Vec<String>,
     /// Whether this file declares an `[<AutoOpen>]` container whose
     /// bare-visible surface folds into the rest of its enclosing scope in a way
     /// source position does not express — an `[<AutoOpen>]` **type** (whose
@@ -1401,6 +1413,17 @@ pub(super) struct Resolver<'a> {
     /// [`type_path_descends_into_nested_module`](super::Resolver), which only
     /// sees modules already walked. Empty outside `rec` blocks.
     pub(super) rec_module_names: HashSet<String>,
+    /// The constructible types each enclosing `rec` block declares, with the
+    /// block's start: inside the block every declaration is visible to every
+    /// other, so its types enter FCS's unqualified slot at its start rather
+    /// than at their own positions. [`Resolver::head_value_slot`](super::Resolver)
+    /// reads them as evictors there. One entry per enclosing `rec` module,
+    /// innermost last; empty outside `rec` blocks.
+    pub(super) rec_block_types: Vec<(u32, Vec<(String, SlotClass)>)>,
+    /// The index in [`Self::scopes`] of the innermost **module** frame. Every
+    /// frame above it is lexical — a function body, a member, a lambda, a match
+    /// arm — and pushed and popped within one declaration's walk.
+    pub(super) module_frame_floor: usize,
     /// In-project **module abbreviations**: the alias's absolute path
     /// (`[scope…, Alias]`) → the *canonical* fully-qualified path of the module it
     /// abbreviates. The RHS is resolved with the same precedence as an `open` path
@@ -1575,16 +1598,6 @@ pub(super) struct Resolver<'a> {
     /// [`SyntaxRecovery::Unretained`] until then, which is the reading that
     /// claims nothing.
     pub(super) recovery: SyntaxRecovery,
-    /// Names an `[<AutoOpen>]` fold-back has pushed into the container that
-    /// declares the module, keyed by that container's path.
-    ///
-    /// A constructible type the container declares **after** the fold takes the
-    /// name from anything folded (fcs-dump-probed; a type *above* the module
-    /// does not). The scope frame is push-ordered rather than position-gated,
-    /// so the decline has to be pushed when the walk reaches the type — and
-    /// only for names a fold actually supplied, since the same contest through
-    /// an ordinary `open` is task #45 and is wrong on `main` too.
-    pub(super) fold_back_names: HashMap<Vec<String>, HashSet<String>>,
 }
 
 /// What the binders interned so far in **one** pattern walk resolved to, so an

@@ -857,9 +857,23 @@ impl<'a> Resolver<'a> {
         // [`lookup`](Self::lookup) — innermost frame first, latest entry within a
         // frame — resolves opened statics, opened module values, locals, and cases
         // uniformly by source order, the latest in scope winning.
+        //
+        // …except where a constructible type entered FCS's unqualified slot
+        // after the entry did: bare names and dotted heads share that one slot
+        // (`eUnqualifiedItems`), so the type's constructor takes the name, and
+        // sema names no project constructor. [`Self::head_value_slot`] is the
+        // dotted head's account of that contest, and asking it here keeps the
+        // two positions from disagreeing about who holds the slot.
         let name = &*id_text(tok);
         let res = self
             .lookup(name)
+            .map(|res| {
+                if self.type_holds_the_slot_over_the_entry(name) {
+                    Resolution::Deferred(DeferredReason::UnboundName)
+                } else {
+                    res
+                }
+            })
             .or_else(|| self.opened_constructor_target(name, allow_opened_type))
             // An unbound name (or one shadowed away by an opaque open) falls back
             // to `Deferred`.

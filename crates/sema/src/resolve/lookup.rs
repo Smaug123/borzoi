@@ -15,6 +15,7 @@ use super::model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ExportDef,
     ExportedItem, ItemId, Resolution, SlotClass,
 };
+use super::surface::BareNamespace;
 
 /// Where a member sits in the ladder by which a module's contents enter an
 /// enclosing scope. **Not source order**: FCS folds a module's exception
@@ -132,6 +133,13 @@ enum HeadSlot {
     /// value (an opened value has no in-file position) — defer, mirroring
     /// the member branch's positionless-contest arm.
     Unordered,
+    /// One `open` supplied both the value and a type of the name. Within one
+    /// reading FCS folds tycons before vals, so the value keeps the slot; but a
+    /// multi-reading open breaks the tie by reading priority (the higher
+    /// reading's type wins — probe M20x), which the slot ordering does not
+    /// model. A dotted head defers, as for [`Self::Unordered`]; a bare name
+    /// keeps the entry ([`Resolver::type_holds_the_slot_over_the_entry`]).
+    Tied,
 }
 
 /// The [`SlotClass`] of a **referenced-assembly** type, from FCS's
@@ -148,7 +156,7 @@ enum HeadSlot {
 /// [`EntityKind::Class`] (its signature pickle undecoded) therefore
 /// over-evicts safely (probes A1–A6/Aenum/Ageneric/Amodule of
 /// `docs/head-slot-assembly-eviction-plan.md`).
-fn assembly_slot_class(kind: EntityKind, is_struct: bool) -> SlotClass {
+pub(super) fn assembly_slot_class(kind: EntityKind, is_struct: bool) -> SlotClass {
     if is_struct {
         // Any IL value type: `Struct`, `Enum`, `[<Struct>]` record/union.
         return SlotClass::Evicts;
@@ -1482,13 +1490,6 @@ impl<'a> Resolver<'a> {
             }
             self.open_module_values(&frag, pos, Some(current_file), Some(frag_range));
             self.push_eviction_overrides(late_evictions, pos);
-            // Record what this fragment contributed, so a constructible type
-            // the enclosing container declares *below* can take the name back
-            // when the walk reaches it ([`Self::decline_folded_name_taken_by_type`]).
-            // Per fragment, not once for the module: a nested `[<AutoOpen>]`
-            // submodule's members reach the same container through a deeper
-            // path.
-            self.note_fold_back_names(&frag, frag_range);
             // …and the rest is declined **by name**, after the fold rather than
             // before it. `open_module_values` enumerates only what it can point
             // at, so a name it does push must still lose to a same-named member
@@ -1500,8 +1501,8 @@ impl<'a> Resolver<'a> {
                 let generation = self.open_generation;
                 let entries: Vec<ScopeEntry> = unnameable
                     .into_iter()
-                    .map(|(name, pattern_only)| {
-                        let mut entry = if pattern_only {
+                    .map(|(name, ns)| {
+                        let mut entry = if ns == BareNamespace::Pattern {
                             let mut e = ScopeEntry::opened_pattern_only(
                                 name,
                                 Resolution::Deferred(DeferredReason::UnboundName),
@@ -1518,12 +1519,16 @@ impl<'a> Resolver<'a> {
                             e.opened_case = true;
                             e
                         } else {
-                            ScopeEntry::opened(
+                            let mut e = ScopeEntry::opened(
                                 name,
                                 Resolution::Deferred(DeferredReason::UnboundName),
                                 generation,
                                 pos,
-                            )
+                            );
+                            // A bar-less case occupies the constructor
+                            // namespace too, for the same reason as above.
+                            e.opened_case = ns == BareNamespace::Both;
+                            e
                         };
                         entry.from_open = true;
                         entry
@@ -1632,67 +1637,6 @@ impl<'a> Resolver<'a> {
             entry.resolution = Resolution::Deferred(DeferredReason::UnboundName);
             entry.opened_case |= is_case;
         }
-    }
-
-    /// Record the names this fragment folds into the **enclosing container**, so
-    /// that a constructible type the container declares *after* the fold can take
-    /// them back — [`Self::decline_folded_name_taken_by_type`], called from the
-    /// type-declaration walk so the decline lands at the type's own position.
-    ///
-    /// The fold runs at the module's closing position and leaves ordinary
-    /// entries behind; nothing in the enclosing walk then evicts them, so a
-    /// `type Tag()` written below would be shadowed by the folded `Tag` where
-    /// FCS binds the type's constructor. fcs-dump-probed both ways round: a
-    /// type *before* the fold loses to the folded value, one *after* it wins,
-    /// so position is the whole rule.
-    ///
-    /// This is [`Resolver::fragment_type_contestants`]'s question one level
-    /// out, and it declines rather than commits for the same reason — sema
-    /// models no project type constructor. It closes the door the fold-back
-    /// opens onto task #45 (whose explicit-`open` arm resolves the same shape
-    /// the same wrong way, on `main` too); it does not fix #45.
-    fn note_fold_back_names(&mut self, module_path: &[String], range: TextRange) {
-        let container = self.container_path.clone();
-        let names: Vec<String> = self
-            .items
-            .iter()
-            .filter_map(|item| {
-                let q = item.qualified.as_ref()?;
-                let in_fragment = match item.def {
-                    ExportDef::Own(id) => range.contains_range(self.defs[id.index()].range),
-                    ExportDef::Sig { .. } => false,
-                };
-                (q.len() == module_path.len() + 1
-                    && q.starts_with(module_path)
-                    && in_fragment
-                    && super::model::accessible_from(item.access_root_len, q, &container))
-                .then(|| q.last().expect("non-empty qualified path").clone())
-            })
-            .collect();
-        self.fold_back_names
-            .entry(container)
-            .or_default()
-            .extend(names);
-    }
-
-    /// Decline a folded name a constructible type in the same container now
-    /// takes — called from the type-declaration walk, so it lands at the type's
-    /// own position and a use written *above* the type still binds the fold.
-    ///
-    /// It declines rather than commits for [`Self::fragment_type_contestants`]'s
-    /// reason: sema models no project type constructor. Scoped to names a fold
-    /// supplied, because the same contest against an ordinary `open`'s value is
-    /// task #45 — wrong on `main` too, and its fix belongs with the general
-    /// eviction machinery rather than here.
-    pub(super) fn decline_folded_name_taken_by_type(&mut self, name: &str, pos: u32) {
-        if !self
-            .fold_back_names
-            .get(&self.container_path)
-            .is_some_and(|names| names.contains(name))
-        {
-            return;
-        }
-        self.push_eviction_overrides(vec![name.to_string()], pos);
     }
 
     /// The constructible type names `container` declares **inside this
@@ -1929,12 +1873,12 @@ impl<'a> Resolver<'a> {
     /// This file only: an earlier Compile-order file's members are not in
     /// `export_decls`, which is why [`Self::fold_back_needs_barrier`] still
     /// raises the blanket barrier for a path one of them marked hidden.
-    fn unenumerated_member_names_in(
+    pub(super) fn unenumerated_member_names_in(
         &self,
         container: &[String],
         range: TextRange,
-    ) -> Vec<(String, bool)> {
-        let mut out: Vec<(String, bool)> = Vec::new();
+    ) -> Vec<(String, BareNamespace)> {
+        let mut out: Vec<(String, BareNamespace)> = Vec::new();
         for decl in self.export_decls.iter().filter(|d| range.contains(d.pos)) {
             match &decl.kind {
                 // `path` = container + case name.
@@ -1956,7 +1900,7 @@ impl<'a> Resolver<'a> {
                         )
                     });
                     if accessible {
-                        out.push((name.clone(), true));
+                        out.push((name.clone(), BareNamespace::Pattern));
                     }
                 }
                 // `path` = the container itself; `name` = the function segments.
@@ -1967,9 +1911,12 @@ impl<'a> Resolver<'a> {
                         && !private
                         && let Some(last) = name.last()
                     {
-                        out.push((last.clone(), false));
+                        out.push((last.clone(), BareNamespace::Value));
                     }
                 }
+                // Declined by name in the fold itself
+                // ([`Self::open_module_values`]).
+                ExportDeclKind::BarlessCase { .. } => {}
                 _ => {}
             }
         }
@@ -2768,10 +2715,62 @@ impl<'a> Resolver<'a> {
                 ));
             }
         }
+        // …and, last, the bar-less cases ([`Resolver::decline_barless_case`]),
+        // which sema interns no case for: each declines in both namespaces.
+        // Last is the sound side of the ordering inside the module — a value of
+        // the same name outranks the case in FCS, and declines here with it.
+        for name in self.barless_cases_in(module_path, fragment_file, fragment_range) {
+            let mut entry = ScopeEntry::opened(
+                name,
+                Resolution::Deferred(DeferredReason::UnboundName),
+                generation,
+                open_pos,
+            );
+            entry.opened_case = true;
+            entries.push(entry);
+        }
         let count = entries.len();
         self.module_frame().entries.extend(entries);
         self.pattern_suppressed_case_ids.extend(suppressed);
         count
+    }
+
+    /// The non-`private` bar-less cases `module_path` declares, restricted the
+    /// way [`Self::open_module_values`] restricts its members: to one
+    /// fragment's file, and within this file to the fragment's text range.
+    fn barless_cases_in(
+        &self,
+        module_path: &[String],
+        fragment_file: Option<usize>,
+        fragment_range: Option<TextRange>,
+    ) -> Vec<String> {
+        let current_file = self.preceding.num_files();
+        let mut out: Vec<String> = self
+            .preceding
+            .barless_cases
+            .iter()
+            .filter(|(container, _, file)| {
+                container.as_slice() == module_path && fragment_file.is_none_or(|f| f == *file)
+            })
+            .map(|(_, name, _)| name.clone())
+            .collect();
+        if fragment_file.is_none_or(|f| f == current_file) {
+            out.extend(
+                self.export_decls
+                    .iter()
+                    .filter_map(|decl| match &decl.kind {
+                        ExportDeclKind::BarlessCase { name, private }
+                            if !private
+                                && decl.path == module_path
+                                && fragment_range.is_none_or(|r| r.contains(decl.pos)) =>
+                        {
+                            Some(name.clone())
+                        }
+                        _ => None,
+                    }),
+            );
+        }
+        out
     }
 
     /// Bring a project **namespace**'s direct cases/exceptions into scope —
@@ -5518,6 +5517,31 @@ impl<'a> Resolver<'a> {
     /// opaque/unmodelled open might supply — the qualified block is barred
     /// while one is in scope, so a proven eviction could not resolve anything
     /// anyway.
+    /// Whether a constructible type may hold `name`'s unqualified slot over
+    /// the entry [`Self::lookup`] finds — the bare-name twin of the dotted
+    /// head's [`Self::head_value_slot`].
+    ///
+    /// A [`HeadSlot::Tied`] contest, where one `open` supplied both, holds for
+    /// the type only against a **case**: a union case and a class are one rank
+    /// in FCS's fold, kept in source order, which the `open` does not record. A
+    /// value outranks the type within one reading and keeps the slot.
+    ///
+    /// A lexical binder — a parameter, a local, a class `let` — is never in
+    /// that contest: FCS adds it to the environment when its scope is entered,
+    /// after every type in scope there, so it always wins. Its source offset
+    /// says nothing about that: an `and`-group type written *after* a member
+    /// whose parameter it names is already in scope for the member's body.
+    pub(super) fn type_holds_the_slot_over_the_entry(&self, name: &str) -> bool {
+        if self.latest_entry_is_lexical(name) {
+            return false;
+        }
+        match self.head_value_slot(name) {
+            HeadSlot::Evicted | HeadSlot::Unordered => true,
+            HeadSlot::Tied => self.head_case_classification(name) == Some(true),
+            HeadSlot::Held => false,
+        }
+    }
+
     fn head_value_slot(&self, head: &str) -> HeadSlot {
         // The latest in-scope type position per class: `Keeps` types are
         // ignored outright (they never occupy the slot).
@@ -5528,6 +5552,12 @@ impl<'a> Resolver<'a> {
             SlotClass::Unknown => unknown_pos = Some(unknown_pos.map_or(pos, |p| p.max(pos))),
             SlotClass::Keeps => {}
         };
+        // A `rec` block's types are in the slot from the block's start.
+        for (start, types) in &self.rec_block_types {
+            for (_, class) in types.iter().filter(|(name, _)| name == head) {
+                note(*start, *class);
+            }
+        }
         for k in 0..=self.container_path.len() {
             let prefix = &self.container_path[..k];
             if let Some(&id) = self.type_defs.get(prefix).and_then(|m| m.get(head)) {
@@ -5621,11 +5651,12 @@ impl<'a> Resolver<'a> {
                 let same_open_tie = |p: u32| value_from_open && p == value_pos;
                 if evictor_pos.is_some_and(|p| p > value_pos) {
                     HeadSlot::Evicted
-                } else if unknown_pos.is_some_and(|p| p > value_pos)
-                    || evictor_pos.is_some_and(same_open_tie)
+                } else if unknown_pos.is_some_and(|p| p > value_pos) {
+                    HeadSlot::Unordered
+                } else if evictor_pos.is_some_and(same_open_tie)
                     || unknown_pos.is_some_and(same_open_tie)
                 {
-                    HeadSlot::Unordered
+                    HeadSlot::Tied
                 } else {
                     HeadSlot::Held
                 }
@@ -5837,6 +5868,19 @@ impl<'a> Resolver<'a> {
     fn lookup_entry(&self, name: &str) -> Option<&ScopeEntry> {
         self.latest_entry(name)
             .filter(|e| e.generation == self.open_generation)
+    }
+
+    /// Whether the entry [`Self::lookup`] finds for `name` sits in a frame
+    /// above the innermost module's ([`Resolver::module_frame_floor`]) — a
+    /// lexical binder rather than a module's own.
+    fn latest_entry_is_lexical(&self, name: &str) -> bool {
+        let Some(found) = self.lookup_entry(name) else {
+            return false;
+        };
+        self.scopes
+            .iter()
+            .position(|frame| frame.entries.iter().any(|e| std::ptr::eq(e, found)))
+            .is_some_and(|depth| depth > self.module_frame_floor)
     }
 
     /// The latest in-scope value entry for `name` **regardless of generation

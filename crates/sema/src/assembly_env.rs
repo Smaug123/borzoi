@@ -2157,6 +2157,15 @@ impl AssemblyEnv {
             .copied()
     }
 
+    /// Whether a referenced assembly declares a public type **abbreviation**
+    /// named `name` directly in `namespace` — the only kind of type that can be
+    /// another type under a second name (an attribute alias, say).
+    pub fn declares_abbreviation(&self, namespace: &[String], name: &str) -> bool {
+        self.types_named(namespace, name)
+            .iter()
+            .any(|&handle| self.is_public(handle) && self.is_abbreviation(handle))
+    }
+
     /// Whether some referenced assembly declares a **public** top-level type
     /// named `name` in `namespace` at *any* generic arity.
     ///

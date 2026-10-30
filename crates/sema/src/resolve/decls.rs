@@ -463,6 +463,35 @@ impl<'a> Resolver<'a> {
                 // of their right-hand sides is resolved (step 3), so the group
                 // is mutually recursive (`type R1 = { x : R2 } and R2 = …`).
                 let defns: Vec<TypeDefn> = types.defns().collect();
+                // An `[<AutoOpen>]` type's statics are in scope for the whole
+                // group's member bodies and for the rest of the container, under
+                // names sema does not list: the barrier goes up before the group.
+                let folding: Vec<&TypeDefn> = defns
+                    .iter()
+                    .filter(|d| {
+                        !is_type_augmentation(d)
+                            && super::surface::folds_statics(d, &|attrs| {
+                                self.attrs_may_auto_open(attrs)
+                            })
+                    })
+                    .collect();
+                if !folding.is_empty() {
+                    if folding.iter().any(|d| !type_header_is_private(d)) {
+                        self.own_auto_open_static_containers
+                            .push(self.container_path.clone());
+                    }
+                    let case_names: Vec<String> = defns
+                        .iter()
+                        .filter(|d| !attrs_require_qualified_access(d.attributes()))
+                        .filter_map(|d| match d.repr() {
+                            Some(TypeDefnRepr::Union(u)) => Some(u),
+                            _ => None,
+                        })
+                        .flat_map(|u| u.cases().filter_map(|c| c.ident()).collect::<Vec<_>>())
+                        .map(|t| id_text(&t).to_string())
+                        .collect();
+                    self.raise_barrier_for_auto_open_statics(case_names);
+                }
                 for defn in &defns {
                     let augmentation = is_type_augmentation(defn);
                     // A genuine single-ident, non-augmentation definition carries a
@@ -526,7 +555,7 @@ impl<'a> Resolver<'a> {
                         // consulted, so a colliding assembly value correctly
                         // defers instead of committing (§7's `demote_module_half`
                         // wiring reads it via `project_ns_hidden` below).
-                        let type_auto_open = attrs_auto_open(defn.attributes());
+                        let type_auto_open = self.attrs_may_auto_open(defn.attributes().collect());
                         if type_auto_open {
                             // A GENERIC `[<AutoOpen>]` type auto-opens nothing
                             // (`CanAutoOpenTyconRef` ends `tcref.Typars(m) |>
@@ -543,17 +572,6 @@ impl<'a> Resolver<'a> {
                             );
                         }
                         let slot = type_slot_class(defn);
-                        // A constructible type takes the unqualified slot from
-                        // a same-named name an `[<AutoOpen>]` module folded in
-                        // above it (fcs-dump-probed both ways round). Pushed
-                        // here, at the type's own position, so a use written
-                        // between the module and the type still binds the fold.
-                        if slot != SlotClass::Keeps {
-                            self.decline_folded_name_taken_by_type(
-                                &id_text(&name),
-                                u32::from(defn.syntax().text_range().start()),
-                            );
-                        }
                         // The type's access-root (own `private` plus any enclosing
                         // `private` module) — a same-file module-qualified `A.Foo.Red`
                         // from an inaccessible site does not resolve the type's
@@ -637,6 +655,14 @@ impl<'a> Resolver<'a> {
                         self.define_type_members(defn, &name);
                     }
                 }
+                // A bar-less `type T = Nn` may declare a case `Nn`, in scope —
+                // like every other case of the group — before any member body.
+                for defn in &defns {
+                    self.decline_barless_case(defn);
+                }
+                if !folding.is_empty() {
+                    self.decline_cases_beside_auto_open_statics();
+                }
                 // 3. Now every name in the group is in scope, resolve the uses:
                 //    an augmentation's head (`type T with …`) is a *use* of an
                 //    existing type — resolve it against the table (a genuine
@@ -680,6 +706,7 @@ impl<'a> Resolver<'a> {
                     // nothing there.)
                     let pushed_typars = self.enter_typars(defn.typar_decls());
                     self.resolve_type_defn(defn);
+                    self.chase_abbreviation_slot(defn);
                     // Descend into the type's member bodies (self-id, params,
                     // ctor params, class fields) — the value-resolution slice
                     // that `resolve_type_defn` (type uses only) does not cover.
@@ -688,6 +715,22 @@ impl<'a> Resolver<'a> {
                 }
             }
             ModuleDecl::Exception(exn) => {
+                // An `[<AutoOpen>]` exception folds its augmentation's statics
+                // into the container, as an `[<AutoOpen>]` type does.
+                if self.attrs_may_auto_open(exn.attributes().collect()) {
+                    let private = header_is_private(exn.syntax());
+                    if !private {
+                        self.own_auto_open_static_containers
+                            .push(self.container_path.clone());
+                    }
+                    // …which hides names from an `open` of the container and
+                    // from a fold of it, exactly as an `[<AutoOpen>]` type does.
+                    self.note_hidden_value_module(
+                        self.container_path.clone(),
+                        (!private).then(|| exn.syntax().text_range().start()),
+                    );
+                    self.raise_barrier_for_auto_open_statics(Vec::new());
+                }
                 // An exception definition (parser phase 9.15) introduces a
                 // project-level name `E` — both an exception *type* and a
                 // value-namespace *constructor*. Two things happen:
@@ -1589,6 +1632,7 @@ impl<'a> Resolver<'a> {
                             // ([`ChildFolds::Declined`]): the names they bring
                             // shadow whatever was in scope, and none commits.
                             self.open_project_namespace_values(gp, pos, ChildFolds::Declined);
+                            self.decline_unenumerated_after_open(gp, pos);
                             self.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
@@ -1828,9 +1872,20 @@ impl<'a> Resolver<'a> {
         // into the enclosing module. The frame is the innermost, so
         // [`Self::module_frame`] targets it for this module's exports.
         self.scopes.push(Frame::default());
+        let saved_module_frame_floor = self.module_frame_floor;
+        self.module_frame_floor = self.scopes.len() - 1;
+        // Inside a `rec` block a use may bind a declaration written after it,
+        // so every name this module's declarations bind declines from its
+        // start; each declaration's own entry then takes over at its position.
+        let rec_block_types_len = self.rec_block_types.len();
+        if self.recursive_module_active {
+            self.decline_rec_block_surface(nm.decls(), nm.syntax().text_range().start());
+        }
         for decl in nm.decls() {
             self.module_decl(&decl);
         }
+        self.rec_block_types.truncate(rec_block_types_len);
+        self.module_frame_floor = saved_module_frame_floor;
         self.scopes.pop();
 
         self.module_path = saved_module_path;
@@ -1966,8 +2021,23 @@ impl<'a> Resolver<'a> {
         //
         // So: proof of the core identity folds, and everything else with the
         // spelling declines.
+        //
+        // Nor is the spelling the only route in: an abbreviation of the core
+        // attribute under another name (`type MyOpenAttribute =
+        // AutoOpenAttribute`, then `[<MyOpen>]`) auto-opens the module too
+        // (codex review, FCS-confirmed). So a module without the spelling is
+        // ordinary only when no abbreviation of its attributes' names is in
+        // reach ([`Resolver::attrs_may_auto_open`]) or every attribute
+        // resolved to something that is not one; otherwise it is unproven,
+        // and the fold declines exactly the names it may contribute.
         if !attrs_auto_open(nm.attributes()) {
-            return AutoOpenVerdict::NotAutoOpen;
+            return if !self.attrs_may_auto_open(nm.attributes().collect())
+                || self.no_attribute_may_abbreviate_auto_open(nm)
+            {
+                AutoOpenVerdict::NotAutoOpen
+            } else {
+                AutoOpenVerdict::Unproven
+            };
         }
         let proven = nm
             .attributes()
@@ -1995,6 +2065,37 @@ impl<'a> Resolver<'a> {
         } else {
             AutoOpenVerdict::Unproven
         }
+    }
+
+    /// Whether every attribute on `nm` resolved to a type that is provably not
+    /// an abbreviation — so none of them can be FSharp.Core's
+    /// `AutoOpenAttribute` under another name ([`Self::auto_open_verdict`]).
+    /// A referenced-assembly type is one unless it is an abbreviation marker,
+    /// and this file's type unless it is an abbreviation; anything else —
+    /// unresolved, deferred, an earlier file's type — may be one.
+    fn no_attribute_may_abbreviate_auto_open(&self, nm: &NestedModuleDecl) -> bool {
+        nm.attributes()
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .all(|attr| {
+                let Some(name) = attr.type_name() else {
+                    return false;
+                };
+                let toks: Vec<_> = name.idents().collect();
+                let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
+                    return false;
+                };
+                let range =
+                    rowan::TextRange::new(first.text_range().start(), last.text_range().end());
+                match self.attribute_resolutions.get(&range) {
+                    Some(Resolution::Entity(h)) => !self.assemblies.is_abbreviation(*h),
+                    // The attribute's *type*, which the written name may
+                    // shorten by its `Attribute` suffix.
+                    Some(Resolution::Local(id)) => !self
+                        .own_abbrev_type_simple_names
+                        .contains(self.defs[id.index()].name.as_str()),
+                    _ => false,
+                }
+            })
     }
 
     /// An `[<AutoOpen>]` nested module's *values* fold into the enclosing frame

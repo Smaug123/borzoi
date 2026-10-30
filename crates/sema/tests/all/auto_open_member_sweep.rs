@@ -45,8 +45,32 @@
 //! so the grid crosses every cell with every channel. The fold-back's gaps are
 //! [`KNOWN_GAPS`]; the other channels' are the exact manifest
 //! `tests/manifests/auto_open_member_sweep_channels.txt`, on the same terms.
-//! The namespace channel is not gated: it disagrees with FCS on `main` too (see
-//! `the_namespace_fold_agrees_with_fcs_over_every_member_pair`).
+//! Two channels that fold an *earlier file's* members are not gated in the
+//! pair grid: they disagree with FCS on `main` too (see
+//! `the_namespace_fold_agrees_with_fcs_over_every_member_pair`). Two more,
+//! [`Channel::Inline`] and [`Channel::OpenPlain`], are no-fold **controls**:
+//! the members written straight into the block, or `open`ed from a plain
+//! module, so a defect they share is the shape's own and not the fold's.
+//!
+//! ## What follows the fold
+//!
+//! The pair grid asks how a fold orders its own members. The follower grid
+//! ([`Follower`]) asks what happens *after* it: the block goes on to declare
+//! something that binds the same name, and FCS hands the name to the later
+//! declaration wherever its environment says so. A later declaration that
+//! sema pushes as a scope entry shadows the fold by position for free; the
+//! ones it does not — a constructible type, an `[<AutoOpen>]` type's statics,
+//! a bar-less union case, a `rec` block's forward visibility — are where a
+//! folded member used to stand after FCS had moved on. The grid is a product,
+//! [`Decl`] × [`Place`], crossed with every channel, so a route is a row
+//! rather than a reviewer's afterthought.
+//!
+//! ## Every cell is a program FCS accepts
+//!
+//! A cell FCS rejects would grade its error recovery, which is no
+//! specification of name resolution. The sweep reads FCS's diagnostics and
+//! fails on any error except a probe's own `FS0039` or `FS0800`, whose answer —
+//! nothing in value scope — is checked like any other.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -78,9 +102,11 @@ enum Member {
     Value,
     /// `type NnHolder = | Nn` — the constructor namespace, enumerable.
     UnionCase,
-    /// `exception Nn of int` — the constructor namespace via an exception.
+    /// `exception Nn` — the constructor namespace via an exception. Field-less,
+    /// so the pattern probe `| Nn ->` is well-typed against it.
     Exception,
-    /// `let (|Nn|_|) x = Some x` — a module-level active-pattern case. Not a
+    /// `let (|Nn|_|) (x: int) = …` — a module-level active-pattern case, with
+    /// no result to bind, so the pattern probe needs no argument. Not a
     /// value at all to FCS, and not interned as a binder by sema.
     ActivePattern,
     /// `extern int Nn()` — a value-namespace name sema does not intern.
@@ -97,6 +123,23 @@ enum Member {
     /// with the tycon tier, which is why it is ordered against a union case by
     /// source position but beats an exception from either side.
     AutoOpenStatic,
+    /// `type NnBar = Nn` — a bar-less single-case union, spelled exactly like
+    /// an abbreviation. FCS reads it as a union whose case is `Nn` exactly when
+    /// no type `Nn` is in scope there (`TyconCoreAbbrevThatIsReallyAUnion`), so
+    /// whether it contributes the name at all depends on its neighbours.
+    BarlessUnion,
+    /// `[<Literal>] let Nn = 1` — a value that is also a constant pattern, so
+    /// it contests the pattern namespace as a case does (FCS's `ePatItems`).
+    Literal,
+    /// `[<RequireQualifiedAccess>] type NnRqa = | Nn` — a case reached only as
+    /// `NnRqa.Nn`, so it contributes nothing bare.
+    RqaUnionCase,
+    /// `[<RequireQualifiedAccess>] type NnRqaBar = Nn` — the bar-less twin.
+    RqaBarlessUnion,
+    /// A submodule holding `let Nn`, marked by an abbreviation of
+    /// `AutoOpenAttribute` under another name — which FCS auto-opens as surely
+    /// as the spelling, since it chases the abbreviation.
+    AliasNestedAuto,
 }
 
 /// What a [`Member`] *declares* under [`NAME`], as opposed to what it
@@ -128,14 +171,25 @@ impl Member {
         Member::TypeCtor,
         Member::NestedAuto,
         Member::AutoOpenStatic,
+        Member::BarlessUnion,
+        Member::Literal,
+        Member::RqaUnionCase,
+        Member::RqaBarlessUnion,
+        Member::AliasNestedAuto,
     ];
 
     fn slot(self) -> Slot {
         match self {
-            Member::Value | Member::Extern => Slot::Value,
+            Member::Value | Member::Extern | Member::Literal => Slot::Value,
             Member::Exception | Member::TypeCtor => Slot::TypeName,
             Member::ActivePattern => Slot::Recognizer,
-            Member::UnionCase | Member::NestedAuto | Member::AutoOpenStatic => Slot::Indirect,
+            Member::UnionCase
+            | Member::NestedAuto
+            | Member::AutoOpenStatic
+            | Member::BarlessUnion
+            | Member::RqaUnionCase
+            | Member::RqaBarlessUnion
+            | Member::AliasNestedAuto => Slot::Indirect,
         }
     }
 
@@ -149,6 +203,11 @@ impl Member {
             Member::TypeCtor => "type",
             Member::NestedAuto => "nested-auto",
             Member::AutoOpenStatic => "auto-open-static",
+            Member::BarlessUnion => "barless-case",
+            Member::Literal => "literal",
+            Member::RqaUnionCase => "rqa-case",
+            Member::RqaBarlessUnion => "rqa-barless-case",
+            Member::AliasNestedAuto => "alias-nested-auto",
         }
     }
 
@@ -168,8 +227,10 @@ impl Member {
                 format!("type {acc}NnHolder{uniq} ="),
                 format!("    | {NAME}"),
             ],
-            Member::Exception => vec![format!("exception {acc}{NAME} of int")],
-            Member::ActivePattern => vec![format!("let {acc}(|{NAME}|_|) x = Some x")],
+            Member::Exception => vec![format!("exception {acc}{NAME}")],
+            Member::ActivePattern => vec![format!(
+                "let {acc}(|{NAME}|_|) (x: int) = if x > 0 then Some () else None"
+            )],
             Member::Extern => vec![format!("extern int {acc}{NAME}()")],
             Member::TypeCtor => vec![format!("type {acc}{NAME}() = class end")],
             Member::NestedAuto => vec![
@@ -182,8 +243,402 @@ impl Member {
                 format!("type {acc}NnHost{uniq} ="),
                 format!("    static member {NAME} = 3"),
             ],
+            Member::BarlessUnion => vec![format!("type {acc}NnBar{uniq} = {NAME}")],
+            Member::Literal => vec!["[<Literal>]".to_string(), format!("let {acc}{NAME} = 1")],
+            Member::RqaUnionCase => vec![
+                "[<RequireQualifiedAccess>]".to_string(),
+                format!("type {acc}NnRqa{uniq} ="),
+                format!("    | {NAME}"),
+            ],
+            Member::RqaBarlessUnion => vec![
+                "[<RequireQualifiedAccess>]".to_string(),
+                format!("type {acc}NnRqaBar{uniq} = {NAME}"),
+            ],
+            Member::AliasNestedAuto => vec![
+                format!("type NnOpen{uniq}Attribute = Microsoft.FSharp.Core.AutoOpenAttribute"),
+                format!("[<NnOpen{uniq}>]"),
+                format!("module {acc}NnAlias{uniq} ="),
+                format!("    let {NAME} = 2"),
+            ],
         }
     }
+}
+
+/// A declaration the enclosing block writes **after** the fold that binds
+/// [`NAME`] in the value or pattern namespace — one row per route by which
+/// FCS's name environment can re-bind such a name: `AddValRefsToNameEnv` (a
+/// `let`, an `extern`), the union-case and exception tiers of
+/// `AddTyconRefsToNameEnv` (a case, a bar-less case, an exception), an
+/// active-pattern tag, a constructible type's unqualified slot, and an
+/// `[<AutoOpen>]` type's statics.
+///
+/// The fold pushes its members as scope entries at its own position, so a
+/// later declaration that is pushed the same way shadows it by position for
+/// free. One that is not — a type's constructor slot, an auto-open type's
+/// statics, a case spelled like an abbreviation — is where a folded member
+/// can stand after FCS has moved on, and every such route needs a row here
+/// rather than a reviewer who thinks of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Decl {
+    /// `let Nn = 3`.
+    Let,
+    /// `let Nn (x: int) = x` — a function binding, whose parameter is not a
+    /// name of the module.
+    LetFunction,
+    /// `[<Literal>] let Nn = 3` — a constant pattern as well as a value.
+    Literal,
+    /// `type NnFU = | Nn`.
+    Case,
+    /// `type NnFB = Nn`.
+    Barless,
+    /// `[<RequireQualifiedAccess>] type NnFR = Nn` — a case that binds nothing
+    /// bare.
+    RqaBarless,
+    /// `exception Nn`.
+    Exception,
+    /// `let (|Nn|_|) …` — the pattern namespace only.
+    ActivePattern,
+    /// `extern int Nn()`.
+    Extern,
+    /// `type Nn() = class end` — the constructor slot.
+    TypeCtor,
+    /// `type Nn = NnClass` over a class — an abbreviation takes the slot when
+    /// its target does.
+    AbbrevOfClass,
+    /// `type Nn = NnUnion` over a union, which leaves the slot alone.
+    AbbrevOfUnion,
+    /// `[<AutoOpen>] type T = static member Nn`.
+    AutoOpenStatic,
+    /// `[<AutoOpen>] module NnAo = let Nn = 5` — a second fold, which inside a
+    /// `rec` block is forward-visible like any other declaration.
+    AutoOpenModule,
+    /// `[<AutoOpen>] type E = | Nn = 2` — an enum's fields fold like statics
+    /// (FCS warns FS0842 and folds them anyway).
+    AutoOpenEnum,
+    /// `[<AutoOpen>] exception NnEx with static member Nn = 2` — an
+    /// exception's augmentation folds like a type's statics.
+    AutoOpenException,
+    /// [`Self::AutoOpenStatic`] marked by an abbreviation of
+    /// `AutoOpenAttribute` under another name, which FCS chases.
+    AliasAutoOpenStatic,
+    /// [`Self::AutoOpenModule`] marked the same way.
+    AliasAutoOpenModule,
+    /// Nothing: the placement alone, which the fold must reach unchanged.
+    Nothing,
+}
+
+impl Decl {
+    const ALL: &'static [Decl] = &[
+        Decl::Let,
+        Decl::LetFunction,
+        Decl::Literal,
+        Decl::Case,
+        Decl::Barless,
+        Decl::RqaBarless,
+        Decl::Exception,
+        Decl::ActivePattern,
+        Decl::Extern,
+        Decl::TypeCtor,
+        Decl::AbbrevOfClass,
+        Decl::AbbrevOfUnion,
+        Decl::AutoOpenStatic,
+        Decl::AutoOpenModule,
+        Decl::AutoOpenEnum,
+        Decl::AutoOpenException,
+        Decl::AliasAutoOpenStatic,
+        Decl::AliasAutoOpenModule,
+        Decl::Nothing,
+    ];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Decl::Let => "let",
+            Decl::LetFunction => "let-fn",
+            Decl::Literal => "literal",
+            Decl::Case => "case",
+            Decl::Barless => "barless-case",
+            Decl::RqaBarless => "rqa-barless-case",
+            Decl::Exception => "exn",
+            Decl::ActivePattern => "ap",
+            Decl::Extern => "extern",
+            Decl::TypeCtor => "type",
+            Decl::AbbrevOfClass => "abbrev-of-class",
+            Decl::AbbrevOfUnion => "abbrev-of-union",
+            Decl::AutoOpenStatic => "auto-open-static",
+            Decl::AutoOpenModule => "auto-open-module",
+            Decl::AutoOpenEnum => "auto-open-enum",
+            Decl::AutoOpenException => "auto-open-exn",
+            Decl::AliasAutoOpenStatic => "alias-auto-open-static",
+            Decl::AliasAutoOpenModule => "alias-auto-open-module",
+            Decl::Nothing => "nothing",
+        }
+    }
+
+    /// What the declaration names [`NAME`] as at its own module's level, for
+    /// the same duplicate-definition screen [`Slot`] applies to the pair grid.
+    fn slot(self) -> Slot {
+        match self {
+            Decl::Let | Decl::LetFunction | Decl::Literal | Decl::Extern => Slot::Value,
+            Decl::Exception | Decl::TypeCtor | Decl::AbbrevOfClass | Decl::AbbrevOfUnion => {
+                Slot::TypeName
+            }
+            Decl::ActivePattern => Slot::Recognizer,
+            Decl::Case
+            | Decl::Barless
+            | Decl::RqaBarless
+            | Decl::AutoOpenStatic
+            | Decl::AutoOpenModule
+            | Decl::AutoOpenEnum
+            | Decl::AutoOpenException
+            | Decl::AliasAutoOpenStatic
+            | Decl::AliasAutoOpenModule
+            | Decl::Nothing => Slot::Indirect,
+        }
+    }
+
+    /// The declaration's lines at zero indent; `n` keeps helper names unique.
+    fn lines(self, n: usize) -> Vec<String> {
+        match self {
+            Decl::Let => vec![format!("let {NAME} = 3")],
+            Decl::LetFunction => vec![format!("let {NAME} (x: int) = x")],
+            Decl::Literal => vec!["[<Literal>]".to_string(), format!("let {NAME} = 3")],
+            Decl::Case => vec![format!("type NnFU{n} ="), format!("    | {NAME}")],
+            Decl::Barless => vec![format!("type NnFB{n} = {NAME}")],
+            Decl::RqaBarless => vec![
+                "[<RequireQualifiedAccess>]".to_string(),
+                format!("type NnFR{n} = {NAME}"),
+            ],
+            Decl::Exception => vec![format!("exception {NAME}")],
+            Decl::ActivePattern => vec![format!(
+                "let (|{NAME}|_|) (x: int) = if x > 0 then Some () else None"
+            )],
+            Decl::Extern => vec![format!("extern int {NAME}()")],
+            Decl::TypeCtor => vec![format!("type {NAME}() = class end")],
+            Decl::AbbrevOfClass => vec![
+                format!("type NnTc{n}() = class end"),
+                format!("type {NAME} = NnTc{n}"),
+            ],
+            Decl::AbbrevOfUnion => vec![
+                format!("type NnTu{n} = | NnTuc{n}"),
+                format!("type {NAME} = NnTu{n}"),
+            ],
+            Decl::AutoOpenStatic => vec![
+                "[<AutoOpen>]".to_string(),
+                format!("type NnFS{n} ="),
+                format!("    static member {NAME} = 4"),
+            ],
+            Decl::AutoOpenModule => vec![
+                "[<AutoOpen>]".to_string(),
+                format!("module NnAo{n} ="),
+                format!("    let {NAME} = 5"),
+            ],
+            Decl::AutoOpenEnum => vec![
+                "[<AutoOpen>]".to_string(),
+                format!("type NnEn{n} ="),
+                format!("    | {NAME} = 2"),
+            ],
+            Decl::AutoOpenException => vec![
+                "[<AutoOpen>]".to_string(),
+                format!("exception NnEx{n}"),
+                format!("    with static member {NAME} = 2"),
+            ],
+            Decl::AliasAutoOpenStatic => vec![
+                format!("type NnOpenS{n}Attribute = Microsoft.FSharp.Core.AutoOpenAttribute"),
+                format!("[<NnOpenS{n}>]"),
+                format!("type NnFSA{n} ="),
+                format!("    static member {NAME} = 4"),
+            ],
+            Decl::AliasAutoOpenModule => vec![
+                format!("type NnOpenM{n}Attribute = Microsoft.FSharp.Core.AutoOpenAttribute"),
+                format!("[<NnOpenM{n}>]"),
+                format!("module NnAoA{n} ="),
+                format!("    let {NAME} = 5"),
+            ],
+            Decl::Nothing => Vec::new(),
+        }
+    }
+}
+
+/// Where a [`Decl`] sits relative to the fold and the probes. Each is a
+/// different *scope route*: the decl's own block, a nested module that
+/// inherits the fold, a later container whose surface folds or is opened into
+/// the block, and a `rec` block, inside which every declaration is visible to
+/// every other and position orders nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Place {
+    /// The decl in the fold's own block, the probes below it.
+    Top,
+    /// `module After =` holding the decl, probed inside it.
+    Nested,
+    /// `[<AutoOpen>] module Later =` holding the decl, probed below it.
+    AutoOpenModule,
+    /// `module Other =` holding the decl, then `open Other`, probed below.
+    Opened,
+    /// `module rec AfterRec =` probed **before** its own decl.
+    RecForward,
+    /// `module rec AfterRec =` probed after its own decl.
+    RecBackward,
+    /// Probed inside the members of a type `Host` that an `and` joins to the
+    /// decl's own type — which is therefore in scope in `Host`'s members
+    /// although it is written after them. Types only.
+    AndGroup,
+}
+
+impl Place {
+    const ALL: &'static [Place] = &[
+        Place::Top,
+        Place::Nested,
+        Place::AutoOpenModule,
+        Place::Opened,
+        Place::RecForward,
+        Place::RecBackward,
+        Place::AndGroup,
+    ];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Place::Top => "top",
+            Place::Nested => "nested",
+            Place::AutoOpenModule => "auto-open-module",
+            Place::Opened => "opened",
+            Place::RecForward => "rec-forward",
+            Place::RecBackward => "rec-backward",
+            Place::AndGroup => "and-group",
+        }
+    }
+}
+
+/// What follows the fold in a follower cell: one [`Decl`] at one [`Place`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Follower {
+    decl: Decl,
+    place: Place,
+}
+
+impl Follower {
+    fn tag(self) -> String {
+        format!("{} {}", self.place.tag(), self.decl.tag())
+    }
+
+    /// Every follower worth a cell. [`Decl::Nothing`] needs a container to
+    /// mean anything, so it is skipped at [`Place::Top`], and an `and` group
+    /// joins types only.
+    fn all() -> Vec<Follower> {
+        Place::ALL
+            .iter()
+            .flat_map(|&place| Decl::ALL.iter().map(move |&decl| Follower { decl, place }))
+            .filter(|f| !(f.place == Place::Top && f.decl == Decl::Nothing))
+            // FCS checks a `rec` block's module attributes before the block's
+            // types exist, so an alias declared beside the module is FS0039.
+            .filter(|f| {
+                !(f.decl == Decl::AliasAutoOpenModule
+                    && matches!(f.place, Place::RecForward | Place::RecBackward))
+            })
+            .filter(|f| {
+                f.place != Place::AndGroup
+                    || matches!(
+                        f.decl,
+                        Decl::Case
+                            | Decl::Barless
+                            | Decl::RqaBarless
+                            | Decl::TypeCtor
+                            | Decl::AutoOpenStatic
+                            | Decl::AutoOpenEnum
+                    )
+            })
+            .collect()
+    }
+
+    /// Append the follower and its two probes at zero indent, returning the
+    /// probe spans.
+    fn push(self, n: usize, src: &mut String) -> Vec<(Probe, TextRange)> {
+        let decl = |src: &mut String, indent: &str| {
+            for line in self.decl.lines(n) {
+                src.push_str(indent);
+                src.push_str(&line);
+                src.push('\n');
+            }
+            src.push('\n');
+        };
+        match self.place {
+            Place::Top => {
+                decl(src, "");
+                push_probes(src, "")
+            }
+            Place::Nested => {
+                src.push_str(&format!("module After{n} =\n    let anchor{n} = 0\n\n"));
+                decl(src, "    ");
+                push_probes(src, "    ")
+            }
+            Place::AutoOpenModule => {
+                src.push_str(&format!(
+                    "[<AutoOpen>]\nmodule Later{n} =\n    let anchor{n} = 0\n\n"
+                ));
+                decl(src, "    ");
+                push_probes(src, "")
+            }
+            Place::Opened => {
+                src.push_str(&format!("module Other{n} =\n    let anchor{n} = 0\n\n"));
+                decl(src, "    ");
+                src.push_str(&format!("open Other{n}\n\n"));
+                push_probes(src, "")
+            }
+            Place::RecForward => {
+                src.push_str(&format!("module rec AfterRec{n} =\n"));
+                let probes = push_probes(src, "    ");
+                src.push('\n');
+                decl(src, "    ");
+                probes
+            }
+            Place::RecBackward => {
+                src.push_str(&format!(
+                    "module rec AfterRec{n} =\n    let anchor{n} = 0\n\n"
+                ));
+                decl(src, "    ");
+                push_probes(src, "    ")
+            }
+            Place::AndGroup => {
+                let mut out = Vec::new();
+                src.push_str(&format!("type Host{n}() =\n    member _.ProbeExpr = "));
+                out.push((Probe::Expr, push_probe(src)));
+                src.push_str("\n    member _.ProbePat x =\n        match x with\n        | ");
+                out.push((Probe::Pattern, push_probe(src)));
+                src.push_str(" -> 1\n");
+                // `[<A>] type T` joins a group as `and [<A>] T`.
+                let lines = self.decl.lines(n);
+                let (attrs, body): (Vec<&String>, Vec<&String>) =
+                    lines.iter().partition(|l| l.starts_with("[<"));
+                let (first, rest) = body.split_first().expect("a type decl has a line");
+                let attrs: String = attrs.iter().map(|a| format!("{a} ")).collect();
+                src.push_str(&format!(
+                    "and {attrs}{}\n",
+                    first
+                        .strip_prefix("type ")
+                        .expect("an `and`-group decl is a type")
+                ));
+                for line in rest {
+                    src.push_str(line);
+                    src.push('\n');
+                }
+                src.push('\n');
+                out
+            }
+        }
+    }
+}
+
+/// Append the expression and pattern probes at `indent`, returning their
+/// spans in [`Probe`] order.
+fn push_probes(src: &mut String, indent: &str) -> Vec<(Probe, TextRange)> {
+    let mut out = Vec::new();
+    src.push_str(&format!("{indent}let probeExpr = "));
+    out.push((Probe::Expr, push_probe(src)));
+    src.push_str(&format!(
+        "\n\n{indent}let probePat x =\n{indent}    match x with\n{indent}    | "
+    ));
+    out.push((Probe::Pattern, push_probe(src)));
+    src.push_str(" -> 1\n");
+    out
 }
 
 /// One shape a fragment member can take.
@@ -247,6 +702,22 @@ enum Channel {
     /// The fragment sits directly in a namespace an earlier file declares, and
     /// the block `open`s the namespace.
     NamespaceCrossFile,
+    /// The fragment sits directly in a namespace an earlier file declares, and
+    /// the block is a module *in* that namespace, which folds it implicitly at
+    /// position 0.
+    NamespaceImplicit,
+    /// **No fold** — a control. The fragment's members are written straight
+    /// into the block, so a follower cell asks whether the follower takes the
+    /// name back from an ordinary binder. A defect here is the follower's own,
+    /// not the fold's.
+    Inline,
+    /// **No fold** — a control. The fragment is a plain (not `[<AutoOpen>]`)
+    /// module the block `open`s explicitly.
+    OpenPlain,
+    /// As [`Self::OpenPlain`], with the module in an earlier file — whose
+    /// members reach the `open` through the cross-file indices rather than
+    /// this file's own.
+    OpenPlainCrossFile,
 }
 
 impl Channel {
@@ -256,6 +727,20 @@ impl Channel {
         Channel::FoldBack,
         Channel::OpenSameFile,
         Channel::OpenCrossFile,
+        Channel::OpenPlain,
+    ];
+
+    /// The channels the follower grid crosses: every way a member reaches the
+    /// block, the no-fold controls included — except the two that `open` a
+    /// module holding the fragment, which fold its members only as declines
+    /// (`ChildFolds::Declined`), so no follower can make them commit anything.
+    /// The pair grid keeps them.
+    const FOLLOWED: &'static [Channel] = &[
+        Channel::FoldBack,
+        Channel::NamespaceImplicit,
+        Channel::Inline,
+        Channel::OpenPlain,
+        Channel::OpenPlainCrossFile,
     ];
 
     fn tag(self) -> &'static str {
@@ -264,6 +749,10 @@ impl Channel {
             Channel::OpenSameFile => "open-same-file",
             Channel::OpenCrossFile => "open-cross-file",
             Channel::NamespaceCrossFile => "namespace-cross-file",
+            Channel::NamespaceImplicit => "namespace-implicit",
+            Channel::Inline => "inline",
+            Channel::OpenPlain => "open-plain",
+            Channel::OpenPlainCrossFile => "open-plain-cross-file",
         }
     }
 }
@@ -272,6 +761,10 @@ impl Channel {
 /// times. The probes sit in the **last** file of `files`.
 struct Cell {
     channel: Channel,
+    /// What the block declares after the fold, for a follower cell.
+    follower: Option<Follower>,
+    /// The fragment's members, in order.
+    members: Vec<Shape>,
     label: String,
     /// The cell's files, in Compile order.
     files: Vec<String>,
@@ -288,12 +781,41 @@ impl Cell {
         self.files.last().expect("a cell has a file")
     }
 
+    /// Whether a gap in this cell is a [`KNOWN_GAPS`] entry rather than a
+    /// manifest one: the fold-back pair grid's, whose classes predate the
+    /// manifest. A bar-less case and a literal are one class each wherever
+    /// they appear — sema interns no case for the first and declines the name,
+    /// and a maybe-literal value defers the constant pattern it may be — so
+    /// their cells are pinned in the manifest with every other channel's, as
+    /// are the `[<RequireQualifiedAccess>]` rows added with them.
+    fn gaps_are_known_gaps(&self) -> bool {
+        self.channel == Channel::FoldBack
+            && self.follower.is_none()
+            && !self.members.iter().any(|m| {
+                matches!(
+                    m.kind,
+                    Member::BarlessUnion
+                        | Member::Literal
+                        | Member::RqaUnionCase
+                        | Member::RqaBarlessUnion
+                        | Member::AliasNestedAuto
+                )
+            })
+    }
+
     /// The key a gap is recorded under: `label/probe`, prefixed by the channel
     /// for every channel but the fold-back, whose keys predate the dimension.
     fn key(&self, probe: Probe) -> String {
-        match self.channel {
-            Channel::FoldBack => format!("{}/{}", self.label, probe.tag()),
-            other => format!("{}: {}/{}", other.tag(), self.label, probe.tag()),
+        match (self.follower, self.channel) {
+            (Some(f), channel) => format!(
+                "{}: {} then {}/{}",
+                channel.tag(),
+                self.label,
+                f.tag(),
+                probe.tag()
+            ),
+            (None, Channel::FoldBack) => format!("{}/{}", self.label, probe.tag()),
+            (None, other) => format!("{}: {}/{}", other.tag(), self.label, probe.tag()),
         }
     }
 }
@@ -308,6 +830,7 @@ const INVISIBLE: &[&str] = &[
     "extern int private Nn()",
     "type private Nn() = class end",
     "type private NnHolderX =\n        | Nn",
+    "type private NnBarX = Nn",
 ];
 
 /// Build the whole grid over `channels`: each shape alone, then every ordered
@@ -338,26 +861,69 @@ fn cells(channels: &[Channel]) -> Vec<Cell> {
     for &channel in channels {
         for members in &sequences {
             let n = out.len();
-            out.push(build_cell(channel, n, members));
+            out.push(build_cell(channel, n, members, None));
         }
     }
     out
 }
 
-fn build_cell(channel: Channel, n: usize, members: &[Shape]) -> Cell {
+/// The follower grid over `channels`, numbered from `first`: each public
+/// [`Member`] alone in the fragment, and a `private` type — an inaccessible
+/// type of the probed name, which must not make a later `type T = Nn` an
+/// abbreviation — then each [`Follower`] after it.
+fn follower_cells(channels: &[Channel], first: usize) -> Vec<Cell> {
+    let shapes: Vec<Shape> = Member::ALL
+        .iter()
+        .map(|&kind| Shape {
+            kind,
+            private: false,
+        })
+        .chain([Shape {
+            kind: Member::TypeCtor,
+            private: true,
+        }])
+        .collect();
+    let mut out = Vec::new();
+    for &channel in channels {
+        for &shape in &shapes {
+            // Written straight into the probe's own block, a `private` member
+            // is in reach after all, and a public probe exposing it is FS0410.
+            if shape.private && channel == Channel::Inline {
+                continue;
+            }
+            let kind = shape.kind;
+            for follower in Follower::all() {
+                // The control that writes the member straight into the block
+                // would otherwise declare the name twice in one module: see
+                // [`Slot`].
+                if channel == Channel::Inline
+                    && matches!(follower.place, Place::Top | Place::AndGroup)
+                    && kind.slot() != Slot::Indirect
+                    && kind.slot() == follower.decl.slot()
+                {
+                    continue;
+                }
+                let n = first + out.len();
+                out.push(build_cell(channel, n, &[shape], Some(follower)));
+            }
+        }
+    }
+    out
+}
+
+fn build_cell(channel: Channel, n: usize, members: &[Shape], follower: Option<Follower>) -> Cell {
     let label = members
         .iter()
         .map(|s| s.tag())
         .collect::<Vec<_>>()
         .join(" ; ");
 
-    // The fragment itself, at `indent`.
-    let fragment = |indent: &str| {
-        let mut out = format!("{indent}[<AutoOpen>]\n{indent}module Fold{n} =\n");
+    // The fragment's members at `indent`, and the fragment itself.
+    let member_lines = |indent: &str| {
+        let mut out = String::new();
         for (i, shape) in members.iter().enumerate() {
             for line in shape.kind.lines(shape.private, i) {
                 out.push_str(indent);
-                out.push_str("    ");
                 out.push_str(&line);
                 out.push('\n');
             }
@@ -365,12 +931,26 @@ fn build_cell(channel: Channel, n: usize, members: &[Shape]) -> Cell {
         out.push('\n');
         out
     };
+    let fragment = |indent: &str| {
+        format!(
+            "{indent}[<AutoOpen>]\n{indent}module Fold{n} =\n{}",
+            member_lines(&format!("{indent}    "))
+        )
+    };
     // Every cell's paths are distinct: every probe file joins ONE batched FCS
     // project, so two cells sharing a module path would be a duplicate
     // definition poisoning both, and a fragment at a *shared* namespace would
     // reach every cell. Each block writes the enclosing binding the fold must
     // take the name back from before the fragment reaches it.
-    let enclosing = format!("let {NAME} = 99\n\n");
+    //
+    // A follower cell writes none: the contest it asks about is between the
+    // fold and what follows it, so what the follower takes the name from is the
+    // fold's member alone.
+    let enclosing = if follower.is_some() {
+        String::new()
+    } else {
+        format!("let {NAME} = 99\n\n")
+    };
     let (mut files, mut src) = match channel {
         Channel::FoldBack => (
             Vec::new(),
@@ -391,14 +971,48 @@ fn build_cell(channel: Channel, n: usize, members: &[Shape]) -> Cell {
             vec![format!("namespace Demo.FbSweepNs.N{n}\n\n{}", fragment(""))],
             format!("module Demo.FbSweep.C{n}\n\n{enclosing}open Demo.FbSweepNs.N{n}\n\n"),
         ),
+        Channel::NamespaceImplicit => (
+            vec![format!("namespace Demo.FbSweepIm.N{n}\n\n{}", fragment(""))],
+            format!("module Demo.FbSweepIm.N{n}.Use{n}\n\n{enclosing}"),
+        ),
+        Channel::Inline => (
+            Vec::new(),
+            format!(
+                "module Demo.FbSweep.C{n}\n\n{enclosing}{}",
+                member_lines("")
+            ),
+        ),
+        Channel::OpenPlain => (
+            Vec::new(),
+            format!(
+                "module Demo.FbSweep.C{n}\n\n{enclosing}module Plain{n} =\n{}open Plain{n}\n\n",
+                member_lines("    ")
+            ),
+        ),
+        Channel::OpenPlainCrossFile => (
+            vec![format!(
+                "module Demo.FbSweepPlain.P{n}\n\n{}",
+                member_lines("")
+            )],
+            format!("module Demo.FbSweep.C{n}\n\n{enclosing}open Demo.FbSweepPlain.P{n}\n\n"),
+        ),
     };
 
-    let mut probes = Vec::new();
-    src.push_str("let probeExpr = ");
-    probes.push((Probe::Expr, push_probe(&mut src)));
-    src.push_str("\n\nlet probePat x =\n    match x with\n    | ");
-    probes.push((Probe::Pattern, push_probe(&mut src)));
-    src.push_str(" -> 1\n");
+    if let Some(follower) = follower {
+        let probes = follower.push(n, &mut src);
+        files.push(src);
+        return Cell {
+            channel,
+            follower: Some(follower),
+            members: members.to_vec(),
+            label,
+            files,
+            probes,
+            enclosing_type: TextRange::default(),
+        };
+    }
+
+    let mut probes = push_probes(&mut src, "");
 
     // The enclosing block's own constructible type, *after* the fragment, and a
     // probe below it. Both probes above sit before this declaration, so they
@@ -413,6 +1027,8 @@ fn build_cell(channel: Channel, n: usize, members: &[Shape]) -> Cell {
 
     Cell {
         channel,
+        follower: None,
+        members: members.to_vec(),
         label,
         files,
         probes,
@@ -911,9 +1527,9 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
 /// What one run of the grid over some channels found.
 struct SweepOutcome {
     cells: usize,
+    probes: usize,
     mismatches: Vec<String>,
     adjudicated: usize,
-    local_eviction_gaps: usize,
     seen_gaps: BTreeSet<String>,
     channel_entries: Vec<String>,
 }
@@ -922,12 +1538,12 @@ struct SweepOutcome {
 fn the_fold_agrees_with_fcs_over_every_member_pair() {
     let SweepOutcome {
         cells,
+        probes,
         mismatches,
         adjudicated,
-        local_eviction_gaps,
         seen_gaps,
         channel_entries,
-    } = sweep(Channel::GATED);
+    } = sweep(cells(Channel::GATED));
 
     let stale: Vec<&str> = KNOWN_GAPS
         .iter()
@@ -941,15 +1557,9 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
 
     assert!(
         mismatches.is_empty(),
-        "{} of {} probes across {cells} cells disagree with FCS ({adjudicated} adjudicated):\n{}",
+        "{} of {probes} probes across {cells} cells disagree with FCS ({adjudicated} adjudicated):\n{}",
         mismatches.len(),
-        cells * 3,
         mismatches.join("\n")
-    );
-
-    assert_eq!(
-        local_eviction_gaps, 78,
-        "the count of #52 cells moved; down is a fix (update this number), up is a new defect"
     );
 
     let manifest =
@@ -969,34 +1579,87 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
     );
 }
 
-/// The grid through an earlier file's **namespace**, opened by a later one —
-/// the implicit namespace fold `main` already performs for a fragment another
-/// file declares.
+/// The grid through two folds of an **earlier file's** members: its namespace,
+/// opened by a later file — the implicit namespace fold `main` already
+/// performs for a fragment another file declares — and an explicit `open` of
+/// a plain module it declares.
 ///
-/// Ignored because it fails, on `main` and here alike, with the same 116
-/// disagreements (none of them the fold-back's): a constructible type the
-/// opening block declares after the `open` does not take the name back from
-/// the opened members, and an earlier file's same-named members are not
-/// ranked by kind (`ProjectItems::fragment_value_children` keeps the last
-/// declaration). Both are defects of that fold, not of the fold-back.
+/// Ignored because it fails with 27 disagreements (14 and 13), every one of
+/// which `main` shares — `main` gives 516 on this grid. All are one defect of
+/// those folds, not of the fold-back: an earlier file's same-named members
+/// are not ranked by kind (`ProjectItems::fragment_value_children` and
+/// `direct_value_children` keep the last declaration), so of a module's `let`
+/// and union case, or case and exception, or case and `extern`, the wrong one
+/// stands. The follower grid crosses the explicit-`open` channel with one
+/// member at a time, where that ranking never arises, and is gated
+/// (`what_follows_the_fold_agrees_with_fcs`).
 #[test]
-#[ignore = "116 disagreements, identical on main: see the doc comment"]
+#[ignore = "27 disagreements, all shared by main: see the doc comment"]
 fn the_namespace_fold_agrees_with_fcs_over_every_member_pair() {
-    let outcome = sweep(&[Channel::NamespaceCrossFile]);
+    let outcome = sweep(cells(&[
+        Channel::NamespaceCrossFile,
+        Channel::OpenPlainCrossFile,
+    ]));
     assert!(
         outcome.mismatches.is_empty(),
         "{} of {} probes across {} cells disagree with FCS:\n{}",
         outcome.mismatches.len(),
-        outcome.cells * 3,
+        outcome.probes,
         outcome.cells,
         outcome.mismatches.join("\n")
     );
 }
 
-/// Run the grid over `channels` against FCS and grade every probe.
-fn sweep(channels: &[Channel]) -> SweepOutcome {
-    let cells = cells(channels);
+/// **What follows the fold** — the follower grid ([`Follower`]) over every
+/// [`Channel::FOLLOWED`] channel, graded like the pair grid.
+///
+/// Each cell's fragment holds one public member, and the block then writes one
+/// [`Decl`] at one [`Place`]. Every probe must agree with FCS or be a decline
+/// pinned in `tests/manifests/auto_open_member_sweep_followers.txt`. The two
+/// no-fold channels ([`Channel::Inline`], [`Channel::OpenPlain`]) are the
+/// controls: they tell a follower that mis-shadows the fold apart from one that
+/// mis-shadows any binder.
+#[test]
+fn what_follows_the_fold_agrees_with_fcs() {
+    let SweepOutcome {
+        cells,
+        probes,
+        mismatches,
+        adjudicated,
+        channel_entries,
+        ..
+    } = sweep(follower_cells(Channel::FOLLOWED, 0));
 
+    assert!(
+        mismatches.is_empty(),
+        "{} of {probes} probes across {cells} cells disagree with FCS ({adjudicated} adjudicated):\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
+
+    let manifest =
+        Manifest::from_entries(channel_entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    borzoi_oracle_harness::manifest::check(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/manifests/auto_open_member_sweep_followers.txt"),
+        &manifest,
+        "BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all \
+         auto_open_member_sweep::what_follows_the_fold_agrees_with_fcs",
+    );
+
+    assert!(
+        adjudicated > cells,
+        "FCS adjudicated only {adjudicated} probes across {cells} cells"
+    );
+}
+
+/// How many projects a sweep splits its cells into, so the resident oracle
+/// pool checks them in parallel. Cells are independent (every path is
+/// distinct), so the split changes no answer.
+const FCS_CHUNKS: usize = 3;
+
+/// Run `cells` against FCS and grade every probe.
+fn sweep(cells: Vec<Cell>) -> SweepOutcome {
     // Parse-check every cell up front and report *all* failures at once: a
     // panic on the first would hide the rest behind a costly FCS round-trip.
     let mut parse_failures: Vec<String> = Vec::new();
@@ -1030,24 +1693,94 @@ fn sweep(channels: &[Channel]) -> SweepOutcome {
         parse_failures.join("\n")
     );
 
-    let paths: Vec<&std::path::Path> = files.iter().map(|(p, _)| p.as_path()).collect();
-    let json = invoke_fcs_dump_project(&paths);
-    let fcs_files = parse_fcs_uses_project(&json, &files);
+    // One project per chunk of whole cells, checked concurrently.
+    let per_chunk = cell_paths.len().div_ceil(FCS_CHUNKS).max(1);
+    let file_chunks: Vec<&[(PathBuf, String)]> = {
+        let mut out = Vec::new();
+        let mut at = 0;
+        for chunk in cell_paths.chunks(per_chunk) {
+            let len: usize = chunk.iter().map(Vec::len).sum();
+            out.push(&files[at..at + len]);
+            at += len;
+        }
+        out
+    };
+    let replies: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = file_chunks
+            .iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let paths: Vec<&std::path::Path> =
+                        chunk.iter().map(|(p, _)| p.as_path()).collect();
+                    invoke_fcs_dump_project(&paths)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("an FCS chunk"))
+            .collect()
+    });
+    let mut fcs_files = Vec::new();
+    let mut fcs_errors = std::collections::HashMap::new();
+    for (json, chunk) in replies.iter().zip(&file_chunks) {
+        fcs_files.extend(parse_fcs_uses_project(json, chunk));
+        fcs_errors.extend(fcs_errors_by_file(json));
+    }
     for (p, _) in &files {
         let _ = std::fs::remove_file(p);
     }
 
+    // **FCS binding a name is not FCS accepting the program.** A cell FCS
+    // rejects is graded on its error recovery, which is no specification of
+    // name resolution. The one rejection the grid tolerates is a probe's own
+    // `FS0039` or `FS0800` — `let probeExpr = Nn` with only an active-pattern
+    // case, or only a type, of the name in scope — whose answer, "nothing",
+    // is checkable: each such probe is recorded here and graded as a probe
+    // FCS resolves to nothing.
+    let mut rejected_probes: std::collections::HashSet<(usize, TextRange)> =
+        std::collections::HashSet::new();
+    let mut ill_formed: Vec<String> = Vec::new();
+    for (ci, (cell, paths)) in cells.iter().zip(cell_paths.iter()).enumerate() {
+        for (fi, path) in paths.iter().enumerate() {
+            let name = path.file_name().expect("a temp file has a name");
+            for (line, col, number, message) in fcs_errors.get(name).into_iter().flatten() {
+                let on_probe = (fi == paths.len() - 1)
+                    .then(|| {
+                        cell.probes
+                            .iter()
+                            .find(|(_, span)| line_col(cell.src(), span.start()) == (*line, *col))
+                    })
+                    .flatten();
+                match on_probe {
+                    // FS0039 (not defined) or FS0800 (a type name in
+                    // expression position): nothing of the name in scope.
+                    Some((_, span)) if matches!(*number, 39 | 800) => {
+                        rejected_probes.insert((ci, *span));
+                    }
+                    _ => ill_formed.push(format!(
+                        "  {} (file {fi}, line {line}, col {col}): FS{number:04} {message}\n{}",
+                        cell.key(Probe::Expr),
+                        cell.files.join("\n----\n")
+                    )),
+                }
+            }
+        }
+    }
+    assert!(
+        ill_formed.is_empty(),
+        "{} FCS errors in sweep cells, which would grade error recovery:\n{}",
+        ill_formed.len(),
+        ill_formed.join("\n")
+    );
+
     let mut mismatches: Vec<String> = Vec::new();
     let mut adjudicated = 0usize;
-    // Cells whose `after-enclosing-type` probe names the enclosing *local*
-    // binding — task #52, a defect no fold is involved in. Pinned by shape
-    // above and by count below; down is a fix, up is a new defect.
-    let mut local_eviction_gaps = 0usize;
     let mut seen_gaps: BTreeSet<String> = BTreeSet::new();
-    // The other channels' gaps and #52 cells, as exact manifest entries.
+    // The other channels' gaps, as exact manifest entries.
     let mut channel_entries: Vec<String> = Vec::new();
 
-    for (cell, paths) in cells.iter().zip(cell_paths.iter()) {
+    for (ci, (cell, paths)) in cells.iter().zip(cell_paths.iter()).enumerate() {
         let probe_path = paths.last().expect("a cell has a file");
         let fu = fcs_files
             .iter()
@@ -1080,6 +1813,21 @@ fn sweep(channels: &[Channel]) -> SweepOutcome {
             let fcs_decl = fcs_use
                 .and_then(|u| u.decl.as_ref())
                 .and_then(|d| file_of(&d.file).map(|f| (f, d.start, d.end)));
+
+            // FCS rejects the probe itself: nothing is in scope under the name
+            // in that namespace, so naming anything is a wrong answer.
+            if rejected_probes.contains(&(ci, *span)) {
+                if our_def.is_some() {
+                    mismatches.push(format!(
+                        "  {key}\n    FCS rejects the probe (FS0039/FS0800), we pick {} (resolution \
+                         {ours:?})\n{}",
+                        render(our_def),
+                        cell.files.join("\n----\n")
+                    ));
+                }
+                adjudicated += 1;
+                continue;
+            }
 
             // A pattern occurrence FCS calls a *definition* is a fresh binder:
             // the name reached nothing in the pattern namespace. Sema records a
@@ -1118,30 +1866,12 @@ fn sweep(channels: &[Channel]) -> SweepOutcome {
                         cell.files.join("\n----\n")
                     ));
                 } else if our_def.is_some() {
-                    // Naming the enclosing `let Nn = 99` is task #52 — the same
-                    // eviction against a plain local binding, which no fold
-                    // touches (`let Nn = 99; type Nn(); Nn` reproduces it with
-                    // no `[<AutoOpen>]` in the source at all). Ratcheted by
-                    // shape, so a *folded* member standing here — the door this
-                    // branch opens and closes — still fails.
-                    let enclosing_binding = cell.src().find(&format!("let {NAME} = 99")).map(|i| {
-                        let at = i + "let ".len();
-                        (last, at, at + NAME.len())
-                    });
-                    if our_def == enclosing_binding {
-                        if cell.channel == Channel::FoldBack {
-                            local_eviction_gaps += 1;
-                        } else {
-                            channel_entries.push(format!("{key} #52"));
-                        }
-                    } else {
-                        mismatches.push(format!(
-                            "  {key}\n    FCS picks the enclosing type, we pick {} (resolution \
-                             {ours:?})\n{}",
-                            render(our_def),
-                            cell.files.join("\n----\n")
-                        ));
-                    }
+                    mismatches.push(format!(
+                        "  {key}\n    FCS picks the enclosing type, we pick {} (resolution \
+                         {ours:?})\n{}",
+                        render(our_def),
+                        cell.files.join("\n----\n")
+                    ));
                 }
                 adjudicated += 1;
                 continue;
@@ -1154,7 +1884,7 @@ fn sweep(channels: &[Channel]) -> SweepOutcome {
                 adjudicated += 1;
             }
 
-            if cell.channel == Channel::FoldBack
+            if cell.gaps_are_known_gaps()
                 && let Some((_, reason)) = KNOWN_GAPS.iter().find(|(k, _)| *k == key)
             {
                 seen_gaps.insert(key.clone());
@@ -1176,7 +1906,7 @@ fn sweep(channels: &[Channel]) -> SweepOutcome {
                 // The other channels' gaps are manifest entries, on the
                 // ratchet's terms: FCS resolved the probe in-file and we named
                 // nothing.
-                (Some(_), None) if cell.channel != Channel::FoldBack => {
+                (Some(_), None) if !cell.gaps_are_known_gaps() => {
                     channel_entries.push(format!("{key} gap"));
                 }
                 (Some(_), _) => {
@@ -1202,12 +1932,49 @@ fn sweep(channels: &[Channel]) -> SweepOutcome {
 
     SweepOutcome {
         cells: cells.len(),
+        probes: cells.iter().map(|c| c.probes.len()).sum(),
         mismatches,
         adjudicated,
-        local_eviction_gaps,
         seen_gaps,
         channel_entries,
     }
+}
+
+/// Every FCS **error** in a `uses-project` reply, keyed by file name, as
+/// `(line, column, number, message)` — 1-based line, 0-based column, the
+/// convention [`line_col`] reproduces.
+fn fcs_errors_by_file(
+    json: &str,
+) -> std::collections::HashMap<std::ffi::OsString, Vec<(u64, u64, u64, String)>> {
+    let dump: serde_json::Value = serde_json::from_str(json).expect("uses-project JSON");
+    let mut out = std::collections::HashMap::new();
+    for file in dump["Files"].as_array().expect("a Files array") {
+        let path = PathBuf::from(file["Path"].as_str().expect("a Path"));
+        let errors: Vec<(u64, u64, u64, String)> = file["Diagnostics"]
+            .as_array()
+            .expect("a Diagnostics array")
+            .iter()
+            .filter(|d| d["Severity"] == "Error")
+            .map(|d| {
+                (
+                    d["Range"]["Start"]["Line"].as_u64().expect("a line"),
+                    d["Range"]["Start"]["Col"].as_u64().expect("a column"),
+                    d["ErrorNumber"].as_u64().expect("an error number"),
+                    d["Message"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        out.insert(path.file_name().expect("a file name").to_owned(), errors);
+    }
+    out
+}
+
+/// FCS's `(line, column)` for byte `at` of an ASCII `src`.
+fn line_col(src: &str, at: TextSize) -> (u64, u64) {
+    let at = usize::from(at);
+    let line = src[..at].matches('\n').count() + 1;
+    let col = at - src[..at].rfind('\n').map_or(0, |i| i + 1);
+    (line as u64, col as u64)
 }
 
 /// Our side of one cell: its probe file resolved, alone or after the cell's
@@ -1378,7 +2145,7 @@ fn an_inaccessible_member_does_not_change_any_cell() {
     );
     assert_eq!(
         losses.len(),
-        62,
+        126,
         "the count of #51 availability losses moved; down is a fix (update this \
          number), up is a new defect:\n  {}",
         losses.join("\n  ")

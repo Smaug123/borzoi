@@ -70,6 +70,7 @@ mod exprs;
 mod lookup;
 mod model;
 mod state;
+mod surface;
 mod types;
 
 pub use model::{
@@ -285,6 +286,21 @@ pub fn resolve_file(
         {
             r.own_value_slot_type_names
                 .insert(id_text(&name).to_string());
+        }
+    }
+    // An `[<AutoOpen>]` **exception** folds its augmentation's statics the same
+    // way, so it is one of these containers too, and contributes at its
+    // position like a type.
+    for exn in file
+        .syntax()
+        .descendants()
+        .filter_map(ExceptionDefnDecl::cast)
+        .filter(|e| attrs_auto_open(e.attributes()))
+    {
+        r.own_auto_open_container = true;
+        if !decls::header_is_private(exn.syntax()) {
+            r.own_auto_open_type_positions
+                .push(exn.syntax().text_range().start());
         }
     }
     // Every value-binder simple name in the file — the constructor fallback's
@@ -523,6 +539,7 @@ pub fn resolve_file(
             .unwrap_or_default();
         let frame = r.top_level.remove(&r.container_path).unwrap_or_default();
         r.scopes.push(frame);
+        r.module_frame_floor = r.scopes.len() - 1;
         // The block frame is now active: seed the implicit auto-opens'
         // `[<AutoOpen>]` modules (FSharp.Core's `Operators` /
         // `ExtraTopLevelOperators`) as source-ordered `opened` entries so bare
@@ -544,6 +561,10 @@ pub fn resolve_file(
         // Test`) resolve in the block's opening scope — the implicit auto-opens
         // just seeded, no explicit `open` yet — which is FCS's env for them.
         r.resolve_attribute_lists(module.attributes());
+        r.rec_block_types.clear();
+        if module.is_rec() {
+            r.decline_rec_block_surface(module.decls(), module.syntax().text_range().start());
+        }
         for decl in module.decls() {
             r.module_decl(&decl);
         }
@@ -1939,6 +1960,8 @@ impl<'a> Resolver<'a> {
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
             own_auto_open_type_positions: Vec::new(),
+            own_auto_open_static_containers: Vec::new(),
+            pending_static_case_declines: Vec::new(),
             own_auto_open_container: false,
             own_value_slot_type_names: HashSet::new(),
             attribute_shape_unknowable: false,
@@ -1952,6 +1975,8 @@ impl<'a> Resolver<'a> {
             opaque_dotted_open: false,
             recursive_module_active: false,
             rec_module_names: HashSet::new(),
+            rec_block_types: Vec::new(),
+            module_frame_floor: 0,
             auto_open_type_shadow_names: HashMap::new(),
             anonymous_root: false,
             access_floor: None,
@@ -1965,7 +1990,6 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
-            fold_back_names: HashMap::new(),
         }
     }
 

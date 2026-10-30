@@ -328,6 +328,12 @@ pub struct ProjectItems {
     /// qualified access through the container, a plain `open` reading) keeps
     /// the blunter [`Self::modules_with_hidden_values`].
     pub(super) fold_hidden_value_modules: HashSet<Vec<String>>,
+    /// Every earlier-file non-`private` bar-less case
+    /// ([`ExportDeclKind::BarlessCase`]) as `(container, name, file)`: a bare
+    /// name of the container that sema interns no case for, which every fold
+    /// of the container declines by name
+    /// ([`Resolver::open_module_values`](super::Resolver)).
+    pub(super) barless_cases: Vec<(Vec<String>, String, usize)>,
     /// Every earlier-file non-`private` module *fragment* spelled
     /// `[<AutoOpen>]`, in declaration order, with its declaring file and
     /// whether its marker is proven ([`AutoOpenVerdict::Proven`]) — the **only**
@@ -1177,6 +1183,9 @@ impl ProjectItems {
             self.auto_open_fragment_verdicts
                 .push((path, file_idx, proven));
         }
+        for (container, name) in idx.barless_cases {
+            self.barless_cases.push((container, name, file_idx));
+        }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
@@ -1353,6 +1362,7 @@ struct FileExportIndices {
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_fragment_verdicts: Vec<(Vec<String>, bool)>,
+    barless_cases: Vec<(Vec<String>, String)>,
 }
 
 /// Where the names a hidden-value marker fears come from — the one question
@@ -1634,6 +1644,23 @@ impl FileExportIndices {
                     // The name is the file's own: a signature must declare it as
                     // a `val` for the `extern` to be reachable cross-file.
                     push_hidden(&mut fi, decl.path.clone(), HiddenNames::SigDeclared);
+                }
+                // As for an `Extern`: the case is a bare name of the container
+                // nothing else records, so a qualified path through it must not
+                // fall through to an assembly, and an `open` of the container
+                // must not trust its enumeration.
+                // A bare name of the container nothing else records: a
+                // qualified path through it must not fall through to an
+                // assembly, and a fold of the container declines it by name.
+                ExportDeclKind::BarlessCase { name, private } => {
+                    if !anon {
+                        let mut shadow = decl.path.clone();
+                        shadow.push(name.clone());
+                        fi.nested_module_paths.push(shadow);
+                        if !private {
+                            fi.barless_cases.push((decl.path.clone(), name.clone()));
+                        }
+                    }
                 }
                 ExportDeclKind::Namespace => {
                     fi.namespace_paths.push(decl.path.clone());
@@ -1924,6 +1951,12 @@ pub(super) enum ExportDeclKind {
     /// auto-open fold-back must not decline its name in the enclosing scope
     /// ([`unenumerated_member_names_in`](super::Resolver::unenumerated_member_names_in)).
     Extern { name: Vec<String>, private: bool },
+    /// A bar-less `type T = Nn` that may be a single-case union
+    /// ([`Resolver::decline_barless_case`](super::Resolver::decline_barless_case)).
+    /// `path` = the *container*, as for [`Self::Extern`], and for the same
+    /// reason: the case is a bare name of the container that sema does not
+    /// intern. `private` is the type's own accessibility, which its case shares.
+    BarlessCase { name: String, private: bool },
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
     /// A module-level active-pattern case (Stage 3a). `path` = container + case

@@ -91,6 +91,7 @@ mod resolve_type_members;
 mod resolve_type_parameters;
 mod resolve_type_qualified_cases;
 mod resolve_types;
+mod resolve_unentered_routes;
 mod resolve_union_cases;
 mod tier_order_diff;
 mod types_census;
