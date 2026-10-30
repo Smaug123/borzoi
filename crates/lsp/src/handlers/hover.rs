@@ -721,7 +721,9 @@ fn entity_qualifier(entity: &Entity) -> Option<&'static str> {
 /// of measure the F# types carry. Likewise where the member is an F# method
 /// whose curried argument groups were not read
 /// ([`SignatureUnknown::ArgGroupsUnknown`]): its IL parameter list could be
-/// one tupled group or several curried ones.
+/// one tupled group or several curried ones; or an F# augmentation whose
+/// type parameters cannot be told from its target type's
+/// ([`SignatureUnknown::TargetTyparsUnknown`]).
 pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIndex) -> String {
     let entity = env.entity(parent);
     let member = env.member_at(parent, idx);
@@ -731,7 +733,7 @@ pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIn
     // the member's argument groups are known; elsewhere the head names the
     // member without claiming a type.
     let signature = if env.member_types_keep_their_measures(parent) {
-        format_member(member, entity).map_err(Withheld::Groups)
+        format_member(member, entity).map_err(Withheld::Signature)
     } else {
         Err(Withheld::Measures)
     };
@@ -747,7 +749,8 @@ pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIn
         context.push_str("\n\n");
         context.push_str(match why {
             Withheld::Measures => TYPES_WITHHELD,
-            Withheld::Groups(SignatureUnknown::ArgGroupsUnknown) => GROUPS_WITHHELD,
+            Withheld::Signature(SignatureUnknown::ArgGroupsUnknown) => GROUPS_WITHHELD,
+            Withheld::Signature(SignatureUnknown::TargetTyparsUnknown) => TYPARS_WITHHELD,
         });
     }
     assemble_body(
@@ -764,7 +767,7 @@ enum Withheld {
     /// [`AssemblyEnv::member_types_keep_their_measures`] does not hold.
     Measures,
     /// [`format_member`] has no faithful rendering.
-    Groups(SignatureUnknown),
+    Signature(SignatureUnknown),
 }
 
 /// The paragraph a member hover carries in place of its types, when
@@ -777,6 +780,11 @@ const TYPES_WITHHELD: &str = "Types not shown: they are read from the compiled \
 /// member's curried argument groups are unknown.
 const GROUPS_WITHHELD: &str = "Types not shown: the compiled signature does not \
     say how this F# member's parameters group into curried arguments.";
+
+/// The paragraph for [`SignatureUnknown::TargetTyparsUnknown`].
+const TYPARS_WITHHELD: &str = "Types not shown: the compiled signature does not \
+    say which of this extension member's type parameters are its own and which \
+    are those of the type it extends.";
 
 /// Join the head line with an optional context line (`in <declaring type>` for
 /// members), the provenance line, and any obsolete/experimental banners into a
@@ -882,7 +890,9 @@ fn member_qualifier(member: &Member) -> Option<&'static str> {
         // Either extension channel: the CLR `[Extension]` / F#-native *instance*
         // surface flag, or the F#-native augmentation flag (which alone carries a
         // `type T with static member …`).
-        Member::Method(m) if m.is_extension_method || m.augmentation == Augmentation::Certain => {
+        Member::Method(m)
+            if m.is_extension_method || matches!(m.augmentation, Augmentation::Certain { .. }) =>
+        {
             Some("extension member")
         }
         Member::Field(f) if f.is_required => Some("required member"),

@@ -14,8 +14,8 @@
 //! function-typed return so the IL arity is not the type's, generic
 //! parameters, optional and `[<ParamArray>]` arguments where F# allows them) ×
 //! every carrier a referenced F# function sits on (a module `let`, an instance
-//! and a static member, an instance and a static augmentation), plus module
-//! values. Each is used unapplied in a probe, hovered on its name through the
+//! and a static member, an instance and a static augmentation of a plain type
+//! and of a generic one), plus module values. Each is used unapplied in a probe, hovered on its name through the
 //! real hover handler against a "restored" project referencing the built
 //! fixture, and graded against FCS's tooltip at the same use
 //! (`fcs-dump tooltips`).
@@ -40,8 +40,14 @@
 //! 2. **Identity survives.** Every site hovers as its member.
 //! 3. **Non-vacuity.** Every site shows a signature: each fixture member's val
 //!    is in the pickle, so none has a grouping to withhold.
+//! 4. **Own type parameters.** A label's type-parameter list names exactly
+//!    the type variables of its signature that are not its declaring type's.
+//!    An augmentation of `GTarget<'t>` compiles to a module method generic
+//!    over `'t` as well as its own, so a list read off the IL names `'t` too;
+//!    FCS shows no list for an implicitly generic member, so property 1 cannot
+//!    see it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -106,18 +112,35 @@ enum Carrier {
     InstanceAug,
     /// `static member YN …` in `type Target with` in module `Aug`.
     StaticAug,
+    /// `member _.GXN …` in `type GTarget<'t> with` in module `Aug`.
+    GenericInstanceAug,
+    /// `static member GYN …` in `type GTarget<'t> with` in module `Aug`.
+    GenericStaticAug,
     /// An `abstract` slot on class `V`, with or without a `default`: F#
     /// pickles a slot and its default as two vals for one IL method.
     Virtual,
 }
 
-const CARRIERS: [Carrier; 5] = [
+const CARRIERS: [Carrier; 7] = [
     Carrier::Let,
     Carrier::Instance,
     Carrier::Static,
     Carrier::InstanceAug,
     Carrier::StaticAug,
+    Carrier::GenericInstanceAug,
+    Carrier::GenericStaticAug,
 ];
+
+impl Carrier {
+    /// Whether the declaring type is `GTarget<'t>`, whose `'t` a member's
+    /// parameters may use without it being the member's own.
+    fn on_generic_target(self) -> bool {
+        matches!(
+            self,
+            Carrier::GenericInstanceAug | Carrier::GenericStaticAug
+        )
+    }
+}
 
 /// The parameter types the fixture cycles through: primitives, generic
 /// parameters, a postfix application, and the two types that need
@@ -203,6 +226,9 @@ struct Site {
     /// defers on every F# member of two or more parameters (the curried-member
     /// gate). Those are graded through the label the handler would render.
     reached: bool,
+    /// The declaring type's type parameters, which the member's signature
+    /// may use but its type-parameter list must not name.
+    target_typars: &'static [&'static str],
     /// 1-based line of the use in the probe.
     line: usize,
     /// Byte range of the member name in the probe.
@@ -229,6 +255,7 @@ fn universe() -> Universe {
     let mut lets = String::new();
     let mut class = String::new();
     let mut aug = String::new();
+    let mut gaug = String::new();
     let mut uses: Vec<Use> = Vec::new();
     let mut ty_cursor = 0usize;
     let mut next_ty = || {
@@ -244,6 +271,11 @@ fn universe() -> Universe {
                 continue;
             }
             let mut arg_no = 0usize;
+            // On `GTarget<'t>`, `'b` is the target's `'t`.
+            let ty = |t: &'static str| match t {
+                "'b" if carrier.on_generic_target() => "'t",
+                t => t,
+            };
             let groups: Vec<String> = shape
                 .groups
                 .iter()
@@ -253,8 +285,8 @@ fn universe() -> Universe {
                         .map(|p| {
                             arg_no += 1;
                             match p {
-                                Param::Named => format!("a{arg_no}: {}", next_ty()),
-                                Param::Wild => format!("_: {}", next_ty()),
+                                Param::Named => format!("a{arg_no}: {}", ty(next_ty())),
+                                Param::Wild => format!("_: {}", ty(next_ty())),
                                 Param::Unit => String::new(),
                                 Param::Optional => format!("?o{arg_no}: int"),
                                 Param::Variadic => {
@@ -299,11 +331,22 @@ fn universe() -> Universe {
                     format!("Target.Y{n}"),
                     format!("Y{n}"),
                 ),
+                Carrier::GenericInstanceAug => (
+                    format!("        member _.GX{n} {params}{ret}\n"),
+                    format!("g.GX{n}"),
+                    format!("GX{n}"),
+                ),
+                Carrier::GenericStaticAug => (
+                    format!("        static member GY{n} {params}{ret}\n"),
+                    format!("GTarget<'x>.GY{n}"),
+                    format!("GY{n}"),
+                ),
             };
             match carrier {
                 Carrier::Let => lets.push_str(&decl),
                 Carrier::Instance | Carrier::Static => class.push_str(&decl),
                 Carrier::InstanceAug | Carrier::StaticAug => aug.push_str(&decl),
+                Carrier::GenericInstanceAug | Carrier::GenericStaticAug => gaug.push_str(&decl),
                 Carrier::Virtual => unreachable!("declared apart from the shape product"),
             }
             // A member is used applied, every group given, since the resolver
@@ -394,6 +437,9 @@ fn universe() -> Universe {
          type Target() =\n\
          \x20   member _.Self = 0\n\
          \n\
+         type GTarget<'t>() =\n\
+         \x20   member _.Self = 0\n\
+         \n\
          module Fns =\n\
          {lets}\n\
          type C() =\n\
@@ -403,7 +449,9 @@ fn universe() -> Universe {
          {virtuals}\n\
          module Aug =\n\
          \x20   type Target with\n\
-         {aug}"
+         {aug}\
+         \x20   type GTarget<'t> with\n\
+         {gaug}"
     );
 
     let mut probe = format!(
@@ -418,7 +466,13 @@ fn universe() -> Universe {
     );
     let mut sites = Vec::new();
     for (i, u) in uses.into_iter().enumerate() {
-        let prefix = format!("let r{i} = ");
+        // A use on `GTarget` sits in a function generic over the target's
+        // argument, so FCS's tooltip there keeps the target's type parameter.
+        let prefix = if u.carrier.on_generic_target() {
+            format!("let r{i} (g: GTarget<'x>) = ")
+        } else {
+            format!("let r{i} = ")
+        };
         let line = probe.lines().count() + 1;
         let start = probe.len() + prefix.len() + u.head.len() - u.name.len();
         sites.push(Site {
@@ -426,8 +480,16 @@ fn universe() -> Universe {
             owner: match u.carrier {
                 Carrier::Let => "CurriedFixture.Fns",
                 Carrier::Instance | Carrier::Static => "CurriedFixture.C",
-                Carrier::InstanceAug | Carrier::StaticAug => "CurriedFixture.Aug",
+                Carrier::InstanceAug
+                | Carrier::StaticAug
+                | Carrier::GenericInstanceAug
+                | Carrier::GenericStaticAug => "CurriedFixture.Aug",
                 Carrier::Virtual => "CurriedFixture.V",
+            },
+            target_typars: if u.carrier.on_generic_target() {
+                &["'t"]
+            } else {
+                &[]
             },
             reached: matches!(u.carrier, Carrier::Let | Carrier::Static),
             line,
@@ -1205,6 +1267,81 @@ fn every_site_shows_a_signature() {
          showing one:\n{}",
         untyped.len(),
         untyped.join("\n")
+    );
+}
+
+/// A label head's explicit type-parameter list (`member M<'a, 'b>: …`), empty
+/// when it shows none.
+fn label_typars(head: &str) -> Vec<&str> {
+    let Some(rest) = KEYWORDS.iter().find_map(|k| head.strip_prefix(k)) else {
+        return Vec::new();
+    };
+    let name_end = rest.find([':', '<', ' ']).unwrap_or(rest.len());
+    let Some(list) = rest[name_end..].strip_prefix('<') else {
+        return Vec::new();
+    };
+    let close = list.find('>').expect("a type-parameter list closes");
+    list[..close].split(',').map(str::trim).collect()
+}
+
+/// The type variables a signature text mentions, each once.
+fn sig_type_vars(sig: &str) -> BTreeSet<String> {
+    lex(sig)
+        .expect("a label's signature lexes")
+        .into_iter()
+        .filter_map(|t| match t {
+            Tok::Ident(name) if name.starts_with('\'') => Some(name),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Property 4: a label's type-parameter list names exactly the type variables
+/// of its signature that are not its declaring type's.
+#[test]
+fn a_type_parameter_list_names_only_the_members_own() {
+    let run = run();
+    let mut wrong = Vec::new();
+    let mut graded_on_generic_target = 0usize;
+    for (i, site) in run.universe.sites.iter().enumerate() {
+        for source in [Source::Handler, Source::Label] {
+            let body = match source {
+                Source::Handler => run.hovers[i].as_deref(),
+                Source::Label => Some(run.labels[i].as_str()),
+            };
+            let Some(head) = body.and_then(label_head) else {
+                continue;
+            };
+            let Some((_, Some(sig))) = split_label(head) else {
+                continue;
+            };
+            let vars = sig_type_vars(sig);
+            let expected: BTreeSet<&str> = vars
+                .iter()
+                .map(String::as_str)
+                .filter(|v| !site.target_typars.contains(v))
+                .collect();
+            let shown: BTreeSet<&str> = label_typars(head).into_iter().collect();
+            if site.target_typars.iter().any(|t| vars.contains(*t)) {
+                graded_on_generic_target += 1;
+            }
+            if shown != expected {
+                wrong.push(format!(
+                    "  {} ({source:?}): `{head}` lists {shown:?}, its own are {expected:?}",
+                    site.label
+                ));
+            }
+        }
+    }
+    assert!(
+        graded_on_generic_target > 10,
+        "too few labels use the generic target's type parameter to grade the list"
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} label(s) list type parameters that are not the member's own:\n{}",
+        wrong.len(),
+        wrong.join("\n")
     );
 }
 

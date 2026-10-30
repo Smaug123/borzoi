@@ -579,7 +579,9 @@ fn an_augmentation_renders_as_the_member_it_declares() {
     instance.source_name = Some("Ext".to_string());
     instance.is_static = true;
     instance.is_extension_method = true;
-    instance.augmentation = Augmentation::Certain;
+    instance.augmentation = Augmentation::Certain {
+        target_typars: Some(0),
+    };
     instance.arg_groups = groups(true, &[&[Some("a")], &[Some("b")]]);
     let module = entity("Ext", EntityKind::Module, &[]);
     assert_eq!(
@@ -593,12 +595,59 @@ fn an_augmentation_renders_as_the_member_it_declares() {
     );
     stat.source_name = Some("SExt".to_string());
     stat.is_static = true;
-    stat.augmentation = Augmentation::Certain;
+    stat.augmentation = Augmentation::Certain {
+        target_typars: Some(0),
+    };
     stat.arg_groups = groups(false, &[&[Some("a")], &[Some("b")]]);
     assert_eq!(
         format_member(&Member::Method(Box::new(stat)), &module),
         "static member SExt: a: int -> b: int -> int"
     );
+}
+
+#[test]
+fn an_augmentation_lists_only_its_own_type_parameters() {
+    use borzoi_assembly::SignatureUnknown;
+    // `type G<'t> with member x.MapX<'u> (f: 't -> 'u) : 'u list` compiles to
+    // `G`1.MapX<t, u>(G<t> x, FSharpFunc<t, u> f)` on its module: `t` is the
+    // target's, `u` the member's own.
+    let mapx = |target_typars| {
+        let mut m = method(
+            "G`1.MapX",
+            sig(
+                vec![
+                    param(Some("x"), method_var(0)),
+                    param(Some("f"), fsharp_func(method_var(0), method_var(1))),
+                ],
+                method_var(1),
+            ),
+        );
+        m.source_name = Some("MapX".to_string());
+        m.is_static = true;
+        m.is_extension_method = true;
+        m.generic_parameters = vec![typar("t"), typar("u")];
+        m.augmentation = Augmentation::Certain { target_typars };
+        m.arg_groups = groups(true, &[&[Some("f")]]);
+        Member::Method(Box::new(m))
+    };
+    let module = entity("Aug", EntityKind::Module, &[]);
+    assert_eq!(
+        format_member(&mapx(Some(1)), &module),
+        "member MapX<'u>: f: ('t -> 'u) -> 'u"
+    );
+    // A target as generic as the method: none is the member's own.
+    assert_eq!(
+        format_member(&mapx(Some(2)), &module),
+        "member MapX: f: ('t -> 'u) -> 'u"
+    );
+    // Unknown, or more than the method has: which are the member's is unknown.
+    for target_typars in [None, Some(3)] {
+        assert_eq!(
+            borzoi_assembly::format_member(&mapx(target_typars), &module),
+            Err(SignatureUnknown::TargetTyparsUnknown),
+            "target_typars {target_typars:?}"
+        );
+    }
 }
 
 #[test]

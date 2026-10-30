@@ -373,8 +373,11 @@ fn fsharp_core_augmentation_flags_split_surface_from_name_resolution() {
     for m in methods_named(lazy_ext, "Force") {
         assert!(m.is_extension_method, "Force is an instance augmentation");
         assert!(
-            m.augmentation == Augmentation::Certain,
-            "…and an F#-native augmentation"
+            m.augmentation
+                == Augmentation::Certain {
+                    target_typars: Some(1)
+                },
+            "…and an F#-native augmentation of the one-parameter `Lazy<'T>`"
         );
     }
     for name in ["Create", "CreateFromValue"] {
@@ -384,9 +387,12 @@ fn fsharp_core_augmentation_flags_split_surface_from_name_resolution() {
                 "{name} is a *static* augmentation: never surface-flagged"
             );
             assert!(
-                m.augmentation == Augmentation::Certain,
-                "{name} is still an F#-native augmentation: hidden from bare and \
-                 module-qualified lookups alike"
+                m.augmentation
+                    == Augmentation::Certain {
+                        target_typars: Some(1)
+                    },
+                "{name} is still an F#-native augmentation of `Lazy<'T>`: hidden \
+                 from bare and module-qualified lookups alike"
             );
         }
     }
