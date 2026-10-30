@@ -323,7 +323,7 @@ fn a_statement_on_an_open_parameter_blocks_the_argument_wake() {
         false,
     );
     // Only `mono : bool -> int` is committed.
-    assert_eq!(c.binders, 1, "{c:?}");
+    assert_eq!(c.binders, 2, "{c:?}");
 }
 
 /// A sequence types as its last statement; a non-unit statement is not
@@ -372,7 +372,7 @@ fn a_condition_before_the_statement_still_grounds_the_parameter() {
         "module M\nlet h x =\n    let r = if x then 1 else 2\n    x\n    r\n",
         true,
     );
-    assert_eq!(c.binders, 2, "`r` and `h`: {c:?}");
+    assert_eq!(c.binders, 3, "`r` and `h`: {c:?}");
 }
 
 /// FCS unifies in source order: an earlier use fixes a parameter, and a later
@@ -392,7 +392,7 @@ fn an_earlier_use_fixes_a_parameter_before_a_condition() {
         );
         // Of the declarations, only `mono : string -> int`; `f` stays silent. (A
         // local `y : int` is right, and is not what this case is about.)
-        assert_eq!(c.binders - c.local_binders, 1, "{body}: {c:?}");
+        assert_eq!(c.binders - c.local_binders, 2, "{body}: {c:?}");
     }
 }
 
@@ -440,16 +440,16 @@ fn a_ground_statement_keeps_the_function_generalisable() {
 #[test]
 fn tupled_and_wildcard_parameters_type_the_function() {
     for (src, binders) in [
-        // `f : bool * 'a -> int`.
-        ("let f (a, b) = if a then 1 else 2\n", 1),
+        // `f : bool * 'a -> int`, and `a : bool`.
+        ("let f (a, b) = if a then 1 else 2\n", 2),
         // `k : 'a * 'b -> 'a * int`.
         ("let k (x, _) = (x, 1)\n", 1),
         // `g : 'a -> int`.
         ("let g _ = 1\n", 1),
-        // `n : int * 'a -> int * 'a`.
-        ("let n (a: int, b) = (a, b)\n", 1),
-        // Nested: `d : ('a * bool) * 'b -> 'b * 'a * int`.
-        ("let d ((a, c), b) = (b, a, if c then 1 else 2)\n", 1),
+        // `n : int * 'a -> int * 'a`, and `a : int`.
+        ("let n (a: int, b) = (a, b)\n", 2),
+        // Nested: `d : ('a * bool) * 'b -> 'b * 'a * int`, and `c : bool`.
+        ("let d ((a, c), b) = (b, a, if c then 1 else 2)\n", 2),
         // Curried tuples: `e : 'a * 'b -> 'c -> 'c * 'a`.
         ("let e (a, _) c = (c, a)\n", 1),
     ] {
@@ -467,7 +467,7 @@ fn a_tupled_function_applied_to_a_tuple_grounds_the_result() {
         true,
     );
     // `f` and `t`.
-    assert_eq!(c.binders, 2, "{c:?}");
+    assert_eq!(c.binders, 3, "{c:?}");
 }
 
 /// A local tuple pattern binds each element from the RHS's tuple type.
@@ -479,7 +479,7 @@ fn a_local_tuple_pattern_types_each_element() {
     );
     assert_eq!(c.local_binders, 2, "{c:?}");
     // `u`, `v`, and `m : string -> string * int`.
-    assert_eq!(c.binders, 3, "{c:?}");
+    assert_eq!(c.binders, 4, "{c:?}");
 }
 
 /// A local tuple pattern with a wildcard and without parentheses.
@@ -898,12 +898,12 @@ fn unit_types_its_literal_parameter_and_pattern() {
         ("let g () () = 1\n", 1),
         // `k : 'a * unit -> 'a`.
         ("let k (a, ()) = a\n", 1),
-        // `u : unit`, and `w` through a `unit` pattern.
-        ("let u = ()\nlet w (s: string) = let () = u in s\n", 2),
+        // `u : unit`, `w` through a `unit` pattern, and `s : string`.
+        ("let u = ()\nlet w (s: string) = let () = u in s\n", 3),
         // `id` applied to `()`: `r : unit`.
         ("let idf x = x\nlet r = idf ()\n", 2),
-        // An annotation: `f : unit -> unit`.
-        ("let f (x: unit) = x\n", 1),
+        // An annotation: `f : unit -> unit`, and `x : unit`.
+        ("let f (x: unit) = x\n", 2),
         // `u : unit` through its annotation.
         ("let u : unit = ()\n", 1),
     ] {
@@ -1127,12 +1127,29 @@ impl Gen<'_> {
                     format!("({s}).Length")
                 }
             }
-            7 if t == T::Int => {
-                if self.rng.chance(50) {
-                    format!("(mono {})", self.expr(T::Bool, depth - 1))
-                } else {
-                    format!("(monos {})", self.expr(T::Str, depth - 1))
+            7 if t == T::Int => match self.rng.below(5) {
+                0 | 1 => format!("(mono {})", self.expr(T::Bool, depth - 1)),
+                2 | 3 => format!("(monos {})", self.expr(T::Str, depth - 1)),
+                // Statically resolved, typed where FCS knows the operands'
+                // types: an operator, and a conversion from a string. Not
+                // under a coercion: FCS unifies the result's type variable
+                // with the type expected there before it solves the
+                // constraint, so `let (x: obj) = s + s` is rejected.
+                _ if self.under_coercion => self.literal(t),
+                _ => {
+                    if self.rng.chance(50) {
+                        let a = self.expr(T::Int, depth - 1);
+                        let b = self.expr(T::Int, depth - 1);
+                        format!("({a} + {b})")
+                    } else {
+                        format!("(int {})", self.expr(T::Str, depth - 1))
+                    }
                 }
+            },
+            7 if t == T::Str && !self.under_coercion => {
+                let a = self.expr(T::Str, depth - 1);
+                let b = self.expr(T::Str, depth - 1);
+                format!("({a} + {b})")
             }
             8 if t == T::Pair => {
                 let a = self.expr(T::Int, depth - 1);

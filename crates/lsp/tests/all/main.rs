@@ -49,6 +49,7 @@ mod sdk_resolution_exactness_diff;
 mod sdk_resolution_oracle;
 mod sdk_resolution_override_classification;
 mod watched_assembly_refresh_e2e;
+mod workspace_diagnostic_sweep;
 mod xml_doc_shipped_sweep;
 mod xml_doc_source_diff;
 

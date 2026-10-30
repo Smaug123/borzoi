@@ -3677,7 +3677,7 @@ fn served_answer_agrees(
         }
         (Resolution::Entity(_) | Resolution::Member { .. }, Err(expected)) => {
             let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-            canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly)
+            assembly_names_agree(&loaded.assembly_env, res, &actual, expected)
                 && assembly_full_name_agrees_for(
                     &loaded.assembly_env,
                     res,
@@ -4016,6 +4016,37 @@ fn canonical_assembly(name: &str) -> &str {
     }
 }
 
+/// Whether the oracle's assembly `expected` names the entity our answer `res`
+/// lives in (`actual`): the same name, up to [`canonical_assembly`], or a
+/// facade whose type forwarders send the answer's declaring type to it
+/// ([`assembly_names_type`](borzoi_sema::test_support::assembly_names_type)).
+///
+/// FCS names a type by the assembly it reached it through. A corelib type
+/// FSharp.Core's references introduce — `string`, and `System.String` in an
+/// annotation — is named through the `netstandard` facade FSharp.Core
+/// compiles against, so `name.Length` is `netstandard`'s, while the same
+/// member on a `String` reached by `open System` is `System.Runtime`'s. One
+/// entity, two names; the forwarder table is what proves it the same entity,
+/// and the full name must still agree.
+fn assembly_names_agree(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &AssemblyDecl,
+    expected: &AssemblyDecl,
+) -> bool {
+    if canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly) {
+        return true;
+    }
+    let declaring = match res {
+        Resolution::Entity(handle) | Resolution::Member { parent: handle, .. } => handle,
+        Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => return false,
+    };
+    borzoi_sema::test_support::assembly_names_type(env, &expected.assembly, declaring)
+}
+
 /// [`assembly_full_name_agrees`] against the oracle's rendered name **or** the
 /// structural one our own resolution certifies — see [`certified_expected`].
 ///
@@ -4053,7 +4084,7 @@ fn assembly_resolution_confirms_decl(
     expected: &AssemblyDecl,
 ) -> bool {
     let actual = assembly_resolution_decl(env, res);
-    if canonical_assembly(&actual.assembly) != canonical_assembly(&expected.assembly) {
+    if !assembly_names_agree(env, res, &actual, expected) {
         return false;
     }
     // The oracle's rendered name and the structural one it certifies are both

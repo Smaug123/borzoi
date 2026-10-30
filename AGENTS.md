@@ -117,8 +117,10 @@ This is a Cargo workspace with nine members:
   warm-cache restore (`docs/nuget-restore-plan.md`): the `NuGetVersion` /
   `VersionRange` / `NuGetFramework` models, global-packages-folder and
   `.nuspec` reading, the conservative offline resolver, and compile-asset
-  selection (NuGet's content model). Everything either resolves *identically*
-  to `dotnet restore` or declines. Self-contained: depends only on `roxmltree`.
+  selection (NuGet's content model), and the dependency-graph spec reader
+  (`dgspec`, `docs/nuget-dgspec-boundary-plan.md`). Everything either resolves
+  *identically* to `dotnet restore` or declines. Self-contained: depends only
+  on `roxmltree` and `serde`/`serde_json`.
   Differentially tested against the real NuGet client libraries via
   `tools/nuget-oracle` — a test-only JSONL batch oracle in the same mould as
   `tools/fcs-dump`; it is never a runtime dependency of the LSP. The oracle
@@ -370,6 +372,8 @@ nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ign
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_source_diff::corpus:: -- --ignored  #  ~20 s
+# Over the pinned *project* corpus (restored, as `tools/ci/project-corpus.sh` does):
+BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi --test all xml_doc_source_diff::project::pinned -- --ignored  # ~20 s
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s
