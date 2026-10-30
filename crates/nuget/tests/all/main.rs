@@ -21,6 +21,7 @@ mod framework_diff;
 mod framework_exhaustive;
 mod framework_properties;
 mod nuspec_diff;
+mod oracle_identity;
 mod package_cache;
 mod range_diff;
 mod range_properties;

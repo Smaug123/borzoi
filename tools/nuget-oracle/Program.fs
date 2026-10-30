@@ -1,6 +1,35 @@
 /// Differential-test oracle over the real NuGet client libraries
 /// (test-only; never shipped in the LSP — see docs/nuget-restore-plan.md).
 ///
+/// Usage: `nuget-oracle --nuget-from <sdk-dir>`, where `<sdk-dir>` is one .NET
+/// SDK's directory (`<dotnet-root>/sdk/<version>/`).
+///
+/// Which NuGet answers: the one in `<sdk-dir>`, loaded from there at runtime.
+/// The project references the NuGet packages for compilation only; none of
+/// their assemblies is copied beside the oracle (see nuget-oracle.fsproj), so
+/// the default load context cannot find them, and the `Resolving` handler
+/// installed at startup serves every such name from `<sdk-dir>`. An SDK
+/// directory has no other NuGet to fall back to, and every response that runs
+/// restore reports the identity of the `NuGet.Commands` that executed, after
+/// checking that each loaded `NuGet.*` assembly came from `<sdk-dir>`.
+///
+/// The alternative — reference a package version proved identical to the SDK's
+/// — is not available. An SDK bundles a NuGet release-candidate build that is
+/// not published: SDK 10.0.401 ships `NuGet.Commands`
+/// `7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab`, nuget.org has no
+/// `7.9.0-rc.*` package, and its `7.9.0` is
+/// `7.9.0+977537e19c6be57fead1411e6cf05f936bf1baf4`: a different commit, and
+/// different bytes. (Likewise SDK 10.0.112's `7.0.3-rc.42308+95017c71…`
+/// against the published `7.0.3+64bdb478…`.) A NuGet release can change
+/// resolution while emitting the same dependency-graph spec
+/// (docs/nuget-dgspec-boundary-plan.md, *Per-SDK drift*), so an oracle that
+/// vouches for what `dotnet restore` does must run the SDK's own build, not
+/// the nearest published one.
+///
+/// The packages' version is a compile-time floor: the runtime refuses an
+/// assembly older than the one referenced, so an SDK whose NuGet predates it
+/// fails loudly at the first load rather than answering.
+///
 /// Protocol: JSONL request/response over stdin/stdout, one response line per
 /// request line, in order (the same long-lived-batch-child pattern as
 /// tools/fcs-dump). Ops:
@@ -64,10 +93,15 @@
 ///     (`RestoreUseLegacyDependencyResolver`: RemoteDependencyWalker +
 ///     GraphOperations) or "default" (the .NET 10 SDK's
 ///     `DependencyGraphResolver`).
-///     -> {"ok":true,"resolved":true,"packages":[{"id":lower,"version":norm}, ..]}
+///     -> {"ok":true,"resolved":true,"packages":[{"id":lower,"version":norm}, ..],
+///         "nugetCommands":identity}
 ///          (sorted by lowercased id; the packages the assets file lists)
-///      | {"ok":true,"resolved":false,"errors":["NU1107", ..]}
+///      | {"ok":true,"resolved":false,"errors":["NU1107", ..],
+///         "nugetCommands":identity}
 ///          (every error-level code restore logged)
+///     where identity = {"informationalVersion":s,"path":s}: the
+///     `AssemblyInformationalVersion` and load path of the `NuGet.Commands`
+///     assembly that ran the restore.
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -75,6 +109,9 @@ module NuGetOracle.Program
 
 open System
 open System.IO
+open System.Reflection
+open System.Runtime.CompilerServices
+open System.Runtime.Loader
 open System.IO.Compression
 open System.Collections.Generic
 open System.Text.Json
@@ -418,6 +455,27 @@ let private restoreErrorCodes (lockFile: NuGet.ProjectModel.LockFile) : string a
     |> Seq.sort
     |> Seq.toArray
 
+/// The `NuGet.Commands` that is executing, as `{informationalVersion; path}`.
+///
+/// Fails if any loaded `NuGet.*` assembly came from anywhere but `sdkDir`: the
+/// identity names one SDK's build, so it is only true of a run that used that
+/// build throughout.
+let private nugetCommandsIdentity (sdkDir: string) =
+    for asm in AppDomain.CurrentDomain.GetAssemblies() do
+        let name = asm.GetName().Name
+
+        if name.StartsWith("NuGet.", StringComparison.Ordinal) then
+            let dir = Path.GetDirectoryName asm.Location
+
+            if not (String.Equals(dir, sdkDir, StringComparison.Ordinal)) then
+                failwithf "%s was loaded from %s, not the SDK directory %s" name asm.Location sdkDir
+
+    let commands = typeof<RestoreRunner>.Assembly
+
+    {| informationalVersion =
+        commands.GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion
+       path = commands.Location |}
+
 /// A real `dotnet restore` of a one-project PackageReference graph, through
 /// `RestoreRunner` — the same entry point `dotnet restore` reaches, fed the
 /// same dependency-graph spec it builds — against a fresh local feed and a
@@ -432,7 +490,7 @@ let private restoreErrorCodes (lockFile: NuGet.ProjectModel.LockFile) : string a
 /// error (the SDK's default `WarningsAsErrors`). Audit is disabled; the SDK's
 /// framework references, fallback imports and pruning list are omitted, since
 /// none of them names a package in the synthetic universe.
-let private respondRestore (root: JsonElement) : string =
+let private respondRestore (sdkDir: string) (root: JsonElement) : string =
     let framework = NuGetFramework.Parse(root.GetProperty("framework").GetString())
     let legacy =
         match root.GetProperty("engine").GetString() with
@@ -561,20 +619,24 @@ let private respondRestore (root: JsonElement) : string =
             JsonSerializer.Serialize
                 {| ok = true
                    resolved = true
-                   packages = packages |}
+                   packages = packages
+                   nugetCommands = nugetCommandsIdentity sdkDir |}
         else
             JsonSerializer.Serialize
                 {| ok = true
                    resolved = false
-                   errors = restoreErrorCodes lockFile |}
+                   errors = restoreErrorCodes lockFile
+                   nugetCommands = nugetCommandsIdentity sdkDir |}
     finally
         try
             Directory.Delete(workDir, true)
         with _ ->
             ()
 
-[<EntryPoint>]
-let main _argv =
+/// The request loop. Kept out of `main` so that compiling `main` never needs a
+/// NuGet type, which would load NuGet before the `Resolving` handler exists.
+[<MethodImpl(MethodImplOptions.NoInlining)>]
+let private serve (sdkDir: string) =
     let mutable line = Console.In.ReadLine()
 
     while not (isNull line) do
@@ -596,7 +658,7 @@ let main _argv =
                     | "readNuspec" -> respondReadNuspec root
                     | "selectDependencyGroup" -> respondSelectDependencyGroup root
                     | "selectCompileAssets" -> respondSelectCompileAssets root
-                    | "restore" -> respondRestore root
+                    | "restore" -> respondRestore sdkDir root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}
@@ -606,4 +668,31 @@ let main _argv =
 
         line <- Console.In.ReadLine()
 
-    0
+[<EntryPoint>]
+let main argv =
+    match argv with
+    | [| "--nuget-from"; dir |] ->
+        let sdkDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath dir)
+
+        if not (File.Exists(Path.Combine(sdkDir, "NuGet.Commands.dll"))) then
+            eprintfn "nuget-oracle: %s has no NuGet.Commands.dll; expected an SDK directory" sdkDir
+            2
+        else
+            // Only names the default context cannot place reach this handler:
+            // the NuGet set and its dependencies, all excluded from the build
+            // output. Each is served from the SDK, as the SDK itself does.
+            AssemblyLoadContext.Default.add_Resolving (
+                Func<AssemblyLoadContext, AssemblyName, Assembly>(fun context name ->
+                    let candidate = Path.Combine(sdkDir, name.Name + ".dll")
+
+                    if File.Exists candidate then
+                        context.LoadFromAssemblyPath candidate
+                    else
+                        null)
+            )
+
+            serve sdkDir
+            0
+    | _ ->
+        eprintfn "usage: nuget-oracle --nuget-from <sdk-dir>"
+        2
