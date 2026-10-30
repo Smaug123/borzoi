@@ -21,13 +21,19 @@
     # (see the shellHook), so the tests need no on-disk checkout of the F#
     # compiler — bump the rev here to move the corpus.
     #
-    # The rev tracks the compiler shipped in the devshell's default SDK
-    # (`dotnet-sdk_10`, currently 10.0.301). To rederive it for a new SDK:
-    # dotnet/sdk tag `v<sdk-version>` → `eng/Version.Details.xml`'s
-    # `Microsoft.FSharp.Compiler` entry names a dotnet/dotnet (VMR) sha →
-    # that VMR rev's `src/source-manifest.json` maps it to the dotnet/fsharp
-    # commit. The corpus's own `global.json` then dictates which extra SDK
-    # feature band the devshell must combine in (see `dotnet-sdk` below).
+    # This rev is the dotnet/fsharp source of SDK 10.0.301's F# compiler
+    # (built in dotnet/dotnet at e30a7bd5). Nothing checks it against the
+    # SDK the devshell provides, which moves with `nixpkgs`. To find the
+    # rev for the devshell's SDK, read it off the shipped compiler: the
+    # informational version of `<sdk>/FSharp/FSharp.Compiler.Service.dll`
+    # ends `+<sha>`, the dotnet/dotnet (VMR) commit the SDK was built
+    # from, and that commit's `src/source-manifest.json` gives the
+    # `fsharp` commit. (The `Microsoft.FSharp.Compiler` entry in a
+    # dotnet/sdk tag's `eng/Version.Details.xml` can name an older VMR
+    # commit than the one the release was built from, so it is not a
+    # substitute.) The corpus's own `global.json` then dictates which
+    # extra SDK feature band the devshell must combine in (see
+    # `dotnet-sdk` below).
     fsharp-src = {
       url = "github:dotnet/fsharp/c3c01c991d17643700d343cee5c5a1e20c06ce03";
       flake = false;
@@ -183,12 +189,13 @@
 
         # The .NET SDK every dotnet-driven test shells out to. Pinned once
         # here and reused for the devShell, the fetch-deps app, and any future
-        # build-sandbox use. The default SDK must match what `nix/deps.json`
-        # was generated against — Roslyn 5.3.0 (referenced by the C# sidecar)
-        # ships with this SDK — while the 10.0.1xx SDK is present so the
-        # pinned F# compiler corpus can satisfy its `global.json` (the
-        # corpus rev matching SDK 10.0.301's compiler pins 10.0.105, which
-        # `latestPatch` roll-forward resolves within the 1xx band).
+        # build-sandbox use. `nix/deps.json` must cover every package a restore
+        # under the default SDK pulls in, so regenerate it (`nix run
+        # .#fetch-deps`) when that SDK moves; an incomplete closure fails the
+        # offline restore loudly. The second SDK is there for the F# compiler
+        # corpus (`fsharp-src`): it must lie in the feature band its
+        # `global.json` names, because that file's default `latestPatch`
+        # roll-forward never leaves the band.
         dotnet-sdk = pkgs.dotnetCorePackages.combinePackages [
           pkgs.dotnet-sdk_10
           pkgs.dotnetCorePackages.sdk_10_0_1xx
@@ -239,9 +246,9 @@
           # symlinks the SDK's bundled runtime packs into its offline nuget
           # fallback, and two SDKs contribute the same pack
           # (`microsoft.dotnet.ilcompiler`, …) twice, colliding in
-          # `configureNuget`. `dotnet-sdk_10` is the one `nix/deps.json` was
-          # generated against and that ships the Roslyn (5.3.0) the sidecar pins,
-          # so it's both sufficient and correct. Run under the matching runtime.
+          # `configureNuget`. `dotnet-sdk_10` is the devshell's default SDK, the
+          # one `nix/deps.json` covers, so it is sufficient. Run under the
+          # matching runtime.
           dotnet-sdk = pkgs.dotnet-sdk_10;
           dotnet-runtime = pkgs.dotnetCorePackages.runtime_10_0;
           executables = [ "csharp-sidecar" ];

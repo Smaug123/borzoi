@@ -15,6 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use borzoi_oracle_harness::fcs_position::LineIndex;
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
 use borzoi::handlers::{served_resolution_with_range, smallest_resolution_with_range};
@@ -4390,52 +4391,6 @@ fn range_pair(range: TextRange) -> (usize, usize) {
     )
 }
 
-struct LineIndex<'a> {
-    source: &'a str,
-    starts: Vec<usize>,
-}
-
-impl<'a> LineIndex<'a> {
-    fn new(source: &'a str) -> Self {
-        let mut starts = vec![0, 0];
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push(i + 1);
-            }
-        }
-        Self { source, starts }
-    }
-
-    fn offset(&self, line: u32, col: u32) -> usize {
-        let line = line as usize;
-        let col = col as usize;
-        if line >= self.starts.len() {
-            return self.source.len();
-        }
-        let base = self.starts[line];
-        let line_end = self
-            .starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-
-        let mut units = 0usize;
-        let mut byte_pos = base;
-        for ch in self.source[base..line_end].chars() {
-            if units >= col {
-                break;
-            }
-            let next_units = units + ch.len_utf16();
-            if next_units > col {
-                break;
-            }
-            units = next_units;
-            byte_pos += ch.len_utf8();
-        }
-        byte_pos.min(self.source.len())
-    }
-}
-
 /// Recursively collect `.fsproj` candidates for the ignored corpus runner.
 pub fn collect_fsprojs(root: &Path) -> Vec<PathBuf> {
     collect_fsprojs_with_diagnostics(root).projects
@@ -5971,6 +5926,50 @@ mod tests {
         assert_eq!(
             parsed[0].uses[0].decl,
             UseDecl::OutsideProject(PathBuf::from(foreign))
+        );
+    }
+
+    /// FCS reads a source with its byte-order mark stripped, so a line-1
+    /// column counts from the byte after it; our text keeps the mark. A use
+    /// and a declaration on line 1 must land on the bytes of the name, not one
+    /// character early.
+    #[test]
+    fn a_line_one_range_counts_from_after_a_byte_order_mark() {
+        let path = PathBuf::from("/tmp/corpus_diff_parse_bom/Program.fs");
+        let src: Arc<str> = Arc::from("\u{feff}module A\nlet x = 1\n");
+        let json = format!(
+            r#"{{
+  "Files": [
+    {{
+      "Path": "{0}",
+      "Diagnostics": [],
+      "Uses": [
+        {{
+          "SymbolName": "A",
+          "Range": {{ "File": "{0}", "Start": {{ "Line": 1, "Col": 7 }}, "End": {{ "Line": 1, "Col": 8 }} }},
+          "IsFromDefinition": true,
+          "DeclRange": {{ "File": "{0}", "Start": {{ "Line": 1, "Col": 7 }}, "End": {{ "Line": 1, "Col": 8 }} }},
+          "Assembly": null,
+          "FullName": null
+        }}
+      ]
+    }}
+  ]
+}}"#,
+            path.display(),
+        );
+        let parsed =
+            parse_project_uses(&json, &[(path.clone(), src.clone())]).expect("parse project uses");
+        let a = src.find('A').expect("the module name");
+        let u = &parsed[0].uses[0];
+        assert_eq!((u.start, u.end), (a, a + 1));
+        assert_eq!(
+            u.decl,
+            UseDecl::InProject(DeclSite {
+                file: path,
+                start: a,
+                end: a + 1,
+            })
         );
     }
 

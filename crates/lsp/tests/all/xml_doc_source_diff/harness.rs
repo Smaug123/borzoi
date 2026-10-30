@@ -270,10 +270,7 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
     for (i, oracle_file) in fcs.iter().enumerate() {
         let text = &ours.texts[i];
         let lines = LineIndex::new(text);
-        // FCS reads the text with a byte-order mark stripped, so its line-1
-        // columns start after it.
-        let bom = if text.starts_with('\u{feff}') { 3 } else { 0 };
-        let offset = |p: FcsPos| lines.offset(p.line, p.col) + if p.line == 1 { bom } else { 0 };
+        let offset = |p: FcsPos| lines.offset(p.line, p.col);
         let mut by_range: HashMap<(usize, usize), Vec<&OracleUse>> = HashMap::new();
         let mut by_end: HashMap<usize, Vec<&OracleUse>> = HashMap::new();
         for u in &oracle_file.uses {
