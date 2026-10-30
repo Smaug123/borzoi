@@ -199,6 +199,15 @@ pub fn member_doc_id(decl: &TypeDocName, member: &Member) -> String {
     }
 }
 
+/// The start of the documentation comment ID of a method named `method_name`
+/// declared on `decl` — `M:` and its escaped name, without the generic arity
+/// or parameter list that follow. Every ID such a method can have begins with
+/// it; a property's or event's accessor methods, which the model folds into
+/// their owner, are named by it.
+pub fn method_id_head(decl: &TypeDocName, method_name: &str) -> String {
+    format!("M:{}.{}", decl.full, escape_member_name(method_name))
+}
+
 /// Every documentation comment ID `member` is keyed by, [`member_doc_id`]'s
 /// first. A member has one, except a settable F# property: fsc keys its getter
 /// and its setter separately (`P:N.T.Count` and `P:N.T.Count(System.Int32)`),
@@ -838,6 +847,7 @@ mod tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
+            metadata_arity_suffix: Some(0),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -961,6 +971,8 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
+            drops_optional_modifier: false,
+            has_other_method_impl: false,
         }))
     }
 
@@ -1005,6 +1017,8 @@ mod tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            drops_optional_modifier: false,
+            accessor_slots: Vec::new(),
         })
     }
 
@@ -1020,6 +1034,7 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
+            accessor_slots: Vec::new(),
         })
     }
 

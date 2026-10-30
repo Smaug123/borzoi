@@ -70,6 +70,7 @@ fn entity(name: &str, kind: EntityKind, typars: &[&str]) -> Entity {
         is_struct: false,
         is_auto_open: false,
         is_require_qualified_access: false,
+        metadata_arity_suffix: Some(0),
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,
@@ -200,6 +201,8 @@ fn method(name: &str, signature: MethodSignature) -> MethodLike {
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
+        drops_optional_modifier: false,
+        has_other_method_impl: false,
     }
 }
 
@@ -237,6 +240,8 @@ fn property(name: &str, ty: TypeRef, has_getter: bool, has_setter: bool) -> Prop
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
         setter_xml_doc_sig: None,
+        drops_optional_modifier: false,
+        accessor_slots: Vec::new(),
     }
 }
 
@@ -252,6 +257,7 @@ fn event(name: &str, delegate_type: TypeRef) -> Event {
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
+        accessor_slots: Vec::new(),
     }
 }
 

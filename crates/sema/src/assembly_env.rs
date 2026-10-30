@@ -1158,7 +1158,7 @@ impl AssemblyEnv {
             env.assembly_forwarders.push(
                 type_forwarders
                     .into_iter()
-                    .map(|f| ((f.namespace, f.name), f.assembly))
+                    .map(|f| ((f.namespace, f.name), f.assembly.name))
                     .collect(),
             );
             // Register the DLL's identity so a referenced-CCU name is counted per
@@ -1469,7 +1469,7 @@ impl AssemblyEnv {
             env.assembly_forwarders.push(
                 view.type_forwarders()?
                     .into_iter()
-                    .map(|f| ((f.namespace, f.name), f.assembly))
+                    .map(|f| ((f.namespace, f.name), f.assembly.name))
                     .collect(),
             );
             tagged.extend(roots.into_iter().map(move |r| {
@@ -6567,6 +6567,7 @@ mod from_views_tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
+            metadata_arity_suffix: Some(0),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -6957,6 +6958,8 @@ mod from_views_tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            drops_optional_modifier: false,
+            accessor_slots: Vec::new(),
         })
     }
 
@@ -7564,7 +7567,7 @@ mod from_views_tests {
         borzoi_assembly::TypeForwarder {
             namespace: ns.to_string(),
             name: name.to_string(),
-            assembly: to.to_string(),
+            assembly: ident(to),
         }
     }
 

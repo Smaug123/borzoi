@@ -886,6 +886,8 @@ fn sort_tiebreaks_on_generic_arity() {
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
+        drops_optional_modifier: false,
+        has_other_method_impl: false,
     };
     let generic = MethodLike {
         definition_range: None,
@@ -926,6 +928,7 @@ fn sort_tiebreaks_on_generic_arity() {
         is_struct: false,
         is_auto_open: false,
         is_require_qualified_access: false,
+        metadata_arity_suffix: Some(0),
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,
@@ -987,6 +990,7 @@ fn entity_sort_tiebreaks_on_generic_arity() {
         is_struct: false,
         is_auto_open: false,
         is_require_qualified_access: false,
+        metadata_arity_suffix: Some(0),
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,
@@ -1145,6 +1149,7 @@ fn fixture_system_object() -> Vec<Entity> {
         is_struct: false,
         is_auto_open: false,
         is_require_qualified_access: false,
+        metadata_arity_suffix: Some(0),
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,
@@ -1195,6 +1200,8 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
+                drops_optional_modifier: false,
+                has_other_method_impl: false,
             })),
             Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
@@ -1230,6 +1237,8 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
+                drops_optional_modifier: false,
+                has_other_method_impl: false,
             })),
             Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
@@ -1265,6 +1274,8 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
+                drops_optional_modifier: false,
+                has_other_method_impl: false,
             })),
             Member::Method(Box::new(MethodLike {
                 val_facts: borzoi_assembly::ValFacts::NotFSharp,
@@ -1303,6 +1314,8 @@ fn fixture_system_object() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
+                drops_optional_modifier: false,
+                has_other_method_impl: false,
             })),
         ],
     }]
@@ -1365,6 +1378,7 @@ fn fixture_my_lib() -> Vec<Entity> {
         is_struct: false,
         is_auto_open: false,
         is_require_qualified_access: false,
+        metadata_arity_suffix: Some(0),
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,
@@ -1441,6 +1455,8 @@ fn fixture_my_lib() -> Vec<Entity> {
                 implements: Vec::new(),
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
+                drops_optional_modifier: false,
+                has_other_method_impl: false,
             })),
         ],
     }]

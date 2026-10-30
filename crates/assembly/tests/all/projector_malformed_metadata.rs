@@ -147,6 +147,10 @@ fn parameter_optional_modifier_projects() {
             _ => None,
         })
         .expect("the method survives the ignored modopt");
+    assert!(
+        take.drops_optional_modifier,
+        "the projection records that it dropped a modifier Roslyn's comparers see"
+    );
     let param = take.signature.parameters.first().expect("one parameter");
     assert_eq!(
         param.ty,
@@ -532,6 +536,35 @@ fn method_modopt_void_projects() {
         TypeRef::Primitive(Primitive::Void),
         "the ignorable modifier is dropped, leaving a plain `void` return"
     );
+    assert!(
+        m.drops_optional_modifier,
+        "the projection records that it dropped the return's modifier"
+    );
+}
+
+#[test]
+fn property_index_parameter_modopt_is_recorded() {
+    // `int this[modopt(IsConst) int] { get; }` in the `PropertySig`, the
+    // getter's own parameter bare. The projection takes the indexer's
+    // parameters from the getter, so the modifier is dropped — and Roslyn,
+    // which reads the property signature, keeps it.
+    assert_projects_cleanly("property_index_modopt");
+
+    let bytes = common::emit_metadata_fixture("property_index_modopt");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse");
+    let entities = view.enumerate_type_defs().expect("enumerate");
+    let item = entities
+        .iter()
+        .flat_map(|e| &e.members)
+        .find_map(|m| match m {
+            Member::Property(p) if p.name == "Item" => Some(p),
+            _ => None,
+        })
+        .expect("the indexer survives the ignored modopt");
+    assert!(
+        item.drops_optional_modifier,
+        "the projection records the index parameter's dropped modifier"
+    );
 }
 
 #[test]
@@ -829,4 +862,32 @@ fn undecodable_type_shape_is_dropped_as_a_whole_type_not_fatal() {
         !entities.iter().any(|e| e.name == "Host"),
         "the undecodable type is not among the kept entities"
     );
+}
+
+#[test]
+fn a_type_names_arity_suffix_is_kept_as_written() {
+    // `C`2` declaring one type parameter: the projected name drops the
+    // suffix, and the suffix — not the parameter count — is what a
+    // reference to the type spells.
+    assert_projects_cleanly("type_name_arity_mismatch");
+
+    let bytes = common::emit_metadata_fixture("type_name_arity_mismatch");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse");
+    let entities = view.enumerate_type_defs().expect("enumerate");
+    let c = entities
+        .iter()
+        .find(|e| e.name == "C")
+        .expect("the type projects");
+    assert_eq!(c.generic_parameters.len(), 1);
+    assert_eq!(c.metadata_arity_suffix, Some(2));
+    // A non-canonical suffix projects as the bare name, which another
+    // `TypeDef` may spell (`Foo`0` is not `Foo`): no suffix is recorded, so
+    // nothing binds to it by metadata name.
+    for name in ["Foo", "Bar"] {
+        let e = entities
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("{name} projects"));
+        assert_eq!(e.metadata_arity_suffix, None, "{name}");
+    }
 }
