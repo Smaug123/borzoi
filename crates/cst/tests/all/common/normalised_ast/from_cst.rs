@@ -1364,18 +1364,24 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
                 }
             };
             // `name()` is the head's `LONG_IDENT`, which sema reads; the
-            // projected path is the whole head, which may add a trailing
-            // active-pattern segment after it.
-            if let Some(path) = gsm.name() {
-                let path: Vec<String> = path
-                    .idents()
+            // projected path is the whole head, which compares with FCS. They
+            // are equal except that the path ends with the active-pattern
+            // segment when the head has one, and `name()` is `None` exactly
+            // when nothing precedes that segment (`member (|A|_|) with …`).
+            let has_active = gsm
+                .head_pat()
+                .is_some_and(|p| p.active_pat_name().is_some());
+            let expected = &name[..name.len() - usize::from(has_active)];
+            let path: Option<Vec<String>> = gsm.name().map(|path| {
+                path.idents()
                     .map(|t| strip_backticks(t.text()).to_string())
-                    .collect();
-                assert!(
-                    name.starts_with(&path),
-                    "GetSetMember::name {path:?} is not the head of the property path {name:?}"
-                );
-            }
+                    .collect()
+            });
+            assert_eq!(
+                path.as_deref(),
+                (!expected.is_empty()).then_some(expected),
+                "GetSetMember::name disagrees with the property path {name:?}"
+            );
             NormalisedMember::GetSetMember {
                 name,
                 is_static: gsm.is_static(),
