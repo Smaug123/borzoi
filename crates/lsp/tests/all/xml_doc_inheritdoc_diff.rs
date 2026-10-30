@@ -1343,6 +1343,68 @@ public class C : N.I
     }
 }
 
+/// Swap the names of `N.I.E`'s adder and remover.
+fn swap_adder_and_remover(dll: &std::path::Path) {
+    oracle()
+        .lock()
+        .unwrap()
+        .swap_method_names(dll, "add_E", "remove_E");
+}
+
+/// An adder's and a remover's signatures coincide, so a row naming the
+/// other one still binds by name and signature. `C` was compiled against an
+/// `N.I` whose event accessors are `add_E` and `remove_E`, and is loaded
+/// beside one where the two names are swapped: each row binds the other
+/// accessor of the same event, and Roslyn inherits `I.E`'s documentation.
+#[test]
+fn an_external_event_row_may_name_the_other_accessor() {
+    const IFC: &str = "namespace N {\n/// <summary>I.</summary>\npublic interface I {\n/// <summary>I.E's own.</summary>\nevent System.EventHandler E; } }";
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The implementer.</summary>
+public class C : N.I
+{
+    /// <inheritdoc/>
+    event System.EventHandler N.I.E { add { } remove { } }
+}
+"#,
+        &[
+            Dep {
+                name: "Ifc",
+                source: IFC,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "Ifc",
+                source: IFC,
+                alias: None,
+                referenced: true,
+                against: &[],
+                visible: false,
+                patch: Some(&swap_adder_and_remover),
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("event rows naming each other's accessor");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("E:F.C.N#I#E"), Some(Verdict::Agrees)),
+        "{:?}",
+        v.get("E:F.C.N#I#E")
+    );
+}
+
 /// Assembly binding compares culture: a reference to `Dep, Culture=ja` does
 /// not bind to a loaded `Dep, Culture=fr`, so to Roslyn `D`'s base is missing
 /// and its `<inheritdoc/>` inherits nothing.

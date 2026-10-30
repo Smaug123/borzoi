@@ -860,8 +860,10 @@ fn explicit_candidate(
 /// ([`borzoi_assembly::AccessorSlot::name`]), never off the accessors'
 /// names, which metadata need not spell by the `get_`/`set_` convention. Each
 /// row is matched to the interface accessor of the role its own accessor
-/// plays ([`borzoi_assembly::AccessorSlot::implements`]): Roslyn binds a row
-/// by name and signature, and a getter's row naming a setter binds nothing.
+/// plays ([`borzoi_assembly::AccessorSlot::implements`]), up to the roles
+/// whose signatures coincide: Roslyn binds a row by name and signature, so a
+/// getter's row naming a setter binds nothing, an adder's naming a remover
+/// binds it.
 /// A method's row naming an accessor, or rows that no single member owns
 /// exactly, role for role, are undecidable.
 fn unresolved_explicit_candidate(
@@ -921,12 +923,12 @@ fn unresolved_explicit_candidate(
             _ => return Undecidable::ExplicitImplementation.into(),
         },
         Member::Property(_) | Member::Event(_) => {
-            // Each accessor's one row names the interface accessor of its
-            // own role: Roslyn binds a row by name *and* signature, and a
-            // getter's signature is never a setter's (nor an adder's a
-            // remover's), so a row naming another role's accessor binds
-            // nothing. Together the rows name exactly one member's
-            // accessors, role for role.
+            // Each accessor's one row names an interface accessor whose
+            // signature its own role shares: Roslyn binds a row by name
+            // *and* signature, and a getter's signature is never a setter's,
+            // so a getter's row naming a setter binds nothing — while an
+            // adder's and a remover's coincide, so either binds the other.
+            // Together the rows name exactly one member's accessors.
             let Some(mine) = slot_roles(member) else {
                 return Undecidable::ExplicitImplementation.into();
             };
@@ -938,7 +940,7 @@ fn unresolved_explicit_candidate(
                             member: ImplementedMember::Unresolved(raw),
                             ..
                         },
-                    ] => have.push((*role, raw.as_str())),
+                    ] => have.push((role.signature_class(), raw.as_str())),
                     _ => return Undecidable::ExplicitImplementation.into(),
                 }
             }
@@ -953,7 +955,7 @@ fn unresolved_explicit_candidate(
                     slot_roles(m).is_some_and(|roles| {
                         let mut named: Vec<(AccessorRole, &str)> = roles
                             .iter()
-                            .map(|(role, slot)| (*role, slot.name.as_str()))
+                            .map(|(role, slot)| (role.signature_class(), slot.name.as_str()))
                             .collect();
                         named.sort_unstable();
                         named == have
@@ -986,6 +988,18 @@ enum AccessorRole {
     Add,
     Remove,
     Fire,
+}
+
+impl AccessorRole {
+    /// The roles whose accessors' signatures are this one's: an adder's and
+    /// a remover's both take the event's delegate and return nothing, while
+    /// a getter returns the property's type and a setter nothing.
+    fn signature_class(self) -> AccessorRole {
+        match self {
+            AccessorRole::Remove => AccessorRole::Add,
+            role => role,
+        }
+    }
 }
 
 /// Each accessor slot of a property or event with the role it plays, read
