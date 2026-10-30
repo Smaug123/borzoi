@@ -6646,8 +6646,35 @@ let private dumpTypes (absolute: string) =
     Console.Out.Write(json)
     Console.Out.WriteLine()
 
+/// The kinds of constraint the type parameters of `t` carry, deduplicated and
+/// sorted: `equality`, `comparison`, or `other` for any other kind; `unknown`
+/// when the walk could not finish. `TypeCanon` renders a type parameter by name
+/// alone, so `'a -> 'a -> System.Boolean` reads the same with and without
+/// `when 'a : equality`; this is what tells the two apart.
+let private typarConstraints (t: FSharpType) : string[] =
+    try
+        let seen = System.Collections.Generic.HashSet<string>()
+        let kinds = System.Collections.Generic.SortedSet<string>()
+        let rec walk (t: FSharpType) =
+            if t.IsGenericParameter then
+                let tp = t.GenericParameter
+                if seen.Add tp.Name then
+                    for c in tp.Constraints do
+                        kinds.Add(
+                            if c.IsEqualityConstraint then "equality"
+                            elif c.IsComparisonConstraint then "comparison"
+                            else "other")
+                        |> ignore
+            else
+                for a in t.GenericArguments do
+                    walk a
+        walk t
+        Array.ofSeq kinds
+    with _ ->
+        [| "unknown" |]
+
 /// Walk one implementation file's typed tree, emitting `{ Range, Name,
-/// TypeCanon }` for every **binder** — a value / function / member declaration,
+/// TypeCanon, TyparConstraints }` for every **binder** — a value / function / member declaration,
 /// each of its curried parameters, and each source-written expression-level
 /// `let` local in its body — carrying a real source location in this file. The
 /// oracle for Phase-3 *binder-type* inference
@@ -6668,7 +6695,8 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
                 Some
                     {| Range = r
                        Name = mfv.LogicalName
-                       TypeCanon = canon |}
+                       TypeCanon = canon
+                       TyparConstraints = typarConstraints mfv.FullType |}
             else
                 None
         with _ -> None

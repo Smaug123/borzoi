@@ -50,6 +50,21 @@ let freeFn<'T> (x: 'T) : 'T = x
 /// Two typars, only the first constrained — the val's reading is per position.
 let keyedFn<'K, 'V when 'K : comparison> (k: 'K) (v: 'V) : 'V = v
 
+/// The constraints a reading records by name: `equality` alone, and both of
+/// `equality` and `comparison` written together.
+let equatableFn<'T when 'T : equality> (x: 'T) : 'T = x
+
+/// See [`equatableFn`]. F# pickles this one's typar as `comparison` alone,
+/// dropping the `equality` it entails.
+let bothFn<'T when 'T : equality and 'T : comparison> (x: 'T) : 'T = x
+
+/// A constraint the reading records only as present: `null`, alone and
+/// beside `comparison`, which must not make the pair read as `comparison`.
+let nullFn<'T when 'T : null> (x: 'T) : 'T = x
+
+/// See [`nullFn`].
+let mixedFn<'T when 'T : comparison and 'T : null> (x: 'T) : 'T = x
+
 [<Measure>]
 type m
 

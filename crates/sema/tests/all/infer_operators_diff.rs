@@ -262,7 +262,7 @@ const OPS: &[Op] = &[
             Expect::Declined(OperatorGap::Signature),
         )
     },
-    // Statically resolved, or `equality`-constrained.
+    // Statically resolved: declined.
     op(
         "+",
         Sort::Int,
@@ -270,13 +270,10 @@ const OPS: &[Op] = &[
         Sort::Int,
         Expect::Declined(OperatorGap::Constrained),
     ),
-    op(
-        "=",
-        Sort::Int,
-        Sort::Int,
-        Sort::Bool,
-        Expect::Declined(OperatorGap::Constrained),
-    ),
+    // `equality`- and `comparison`-constrained: typed, each instantiation
+    // checked once the binding is solved.
+    op("=", Sort::Int, Sort::Int, Sort::Bool, Expect::Typed),
+    op("<", Sort::Int, Sort::Int, Sort::Bool, Expect::Typed),
 ];
 
 /// Where the application sits.
@@ -443,6 +440,8 @@ pub(crate) struct Checked {
     pub(crate) committed_rows: std::collections::HashSet<(usize, usize)>,
     /// FCS errors on the file.
     pub(crate) errors: usize,
+    /// Their `FS####` codes.
+    pub(crate) fcs_error_codes: Vec<u32>,
     /// Commits inside a declaration FCS could not convert: not graded.
     pub(crate) ungraded: usize,
     /// Every incompleteness reason any binding recorded.
@@ -507,6 +506,7 @@ pub(crate) fn check_in(
         rows.iter().filter(|r| r.synth).map(|r| r.range).collect();
     let mut c = Checked {
         errors: errors.len(),
+        fcs_error_codes: errors.iter().map(|e| e.code).collect(),
         reasons: inferred
             .incompleteness()
             .iter()
@@ -573,6 +573,12 @@ pub(crate) fn check_in(
             Some(theirs) if *theirs != ours => wrong.push(format!(
                 "binder `{}` typed `{ours}`, FCS `{theirs}`: {}",
                 def.name,
+                line_of(key.0)
+            )),
+            Some(_) if dumps.hides_constraint(key, &ours) => wrong.push(format!(
+                "binder `{}` typed `{ours}`, which FCS constrains ({:?}): {}",
+                def.name,
+                dumps.binder_constraints[&key],
                 line_of(key.0)
             )),
             Some(_) => {}
@@ -695,8 +701,9 @@ fn ill_typed_operator_grid_commits_only_what_fcs_kept() {
         errors >= 100,
         "the ill-typed grid stopped producing ill-typed programs: {errors}"
     );
-    // The constrained operators' ill-typed rows violate their constraints,
-    // which the oracle cannot materialise; every other file must be graded.
+    // The statically resolved operators' ill-typed rows violate their
+    // constraints in a way the oracle cannot place; every other file must be
+    // graded.
     for spelling in &ungradable {
         assert!(
             OPS.iter().any(|o| o.spelling == *spelling
@@ -1330,12 +1337,17 @@ fn order_use(kind: usize, f: &str, lit: &str) -> String {
         // A method argument, whose relation to the parameter inference does
         // not model.
         6 => "System.String.IsNullOrEmpty(p)".to_string(),
+        // An `equality`- and a `comparison`-constrained use, which fixes `p`
+        // to the literal's type and checks that type only once the binding
+        // is solved.
+        7 => format!("(p = {lit})"),
+        8 => format!("(compare p {lit})"),
         // The parameter itself, which a combiner's own parameter may fix.
         _ => "p".to_string(),
     }
 }
 
-const ORDER_USES: usize = 8;
+const ORDER_USES: usize = 10;
 
 /// How the use-order grid combines its two uses of `p`, each followed by `p`
 /// itself in a synth position.
@@ -1623,10 +1635,14 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
         // generic, and with parameters of their own that fix each argument.
         14 | 15 => {
             let y = arg_check_expr(rng, depth - 1);
-            match rng.below(4) {
+            match rng.below(6) {
                 0 => format!("(two {x} {y})"),
                 1 => format!("({x} +? {y})"),
                 2 => format!("(gib {x} {y})"),
+                // Constrained, so each instantiation is checked only once the
+                // binding is solved, and a violation refuses its speculation.
+                3 => format!("({x} = {y})"),
+                4 => format!("(compare {x} {y})"),
                 _ => format!("({x} +. {y})"),
             }
         }

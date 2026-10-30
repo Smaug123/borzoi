@@ -216,7 +216,9 @@ pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(St
             let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {
                 return None;
             };
-            let scheme = crate::function_ty::module_function_scheme(env, module, m).ok()?;
+            let scheme = crate::function_ty::module_function_scheme(env, module, m)
+                .ok()?
+                .ty;
             let scheme = flexed(&scheme, m.generic_parameters.len() as u32);
             let mut order = Vec::new();
             first_appearance(&scheme, &mut order);
@@ -243,7 +245,31 @@ pub fn module_function_schemes(
                 return None;
             };
             let scheme = crate::function_ty::module_function_scheme(env, module, m).ok()?;
-            Some((env.member_display_name(module, idx).to_string(), scheme))
+            Some((env.member_display_name(module, idx).to_string(), scheme.ty))
+        })
+        .collect()
+}
+
+/// The functions and values of the F# module `module` whose reading
+/// (`function_ty::module_function_scheme`) carries an `equality` or
+/// `comparison` constraint on a type parameter, by F# source name. Inference
+/// never generalises over such a parameter left open, since no scheme it
+/// stores can say `when`.
+pub fn module_function_constrained(
+    env: &AssemblyEnv,
+    module: EntityHandle,
+) -> std::collections::HashSet<String> {
+    env.member_indices(module)
+        .filter_map(|idx| {
+            let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {
+                return None;
+            };
+            let scheme = crate::function_ty::module_function_scheme(env, module, m).ok()?;
+            scheme
+                .requirements
+                .iter()
+                .any(Option::is_some)
+                .then(|| env.member_display_name(module, idx).to_string())
         })
         .collect()
 }
@@ -276,7 +302,9 @@ pub fn module_function_application_type(
         if env.member_display_name(module, idx) != name {
             return None;
         }
-        crate::function_ty::module_function_scheme(env, module, m).ok()
+        crate::function_ty::module_function_scheme(env, module, m)
+            .ok()
+            .map(|s| s.ty)
     })?;
     for _ in 0..args {
         let crate::Ty::Fun { ret, .. } = ty else {
