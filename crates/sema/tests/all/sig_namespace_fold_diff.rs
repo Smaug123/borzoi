@@ -279,6 +279,23 @@ const SHAPES: &[Shape] = &[
         imp: "[<AutoOpen>]\ntype T =\n    static member Ok = 1\n",
         model: Model::Unmodelled,
     },
+    // `[<AutoOpen>]` under another name (Codex review): the statics it
+    // publishes include one spelled like an FSharp.Core function.
+    Shape {
+        label: "aliased_auto_open_type",
+        sig: "type V =\n    | Vcase\n\ntype AO = Microsoft.FSharp.Core.AutoOpenAttribute\n\n[<Class ; AO>]\ntype T =\n    static member ref : int -> int\n",
+        imp: "type V =\n    | Vcase\n\ntype AO = Microsoft.FSharp.Core.AutoOpenAttribute\n\n[<Class ; AO>]\ntype T =\n    static member ref (x : int) = x\n",
+        model: Model::Unmodelled,
+    },
+    // One type name at two arities keys both types' cases at one
+    // type-qualified path (Codex review): FCS reads `U.Case1` as the
+    // non-generic one.
+    Shape {
+        label: "same_name_two_arities",
+        sig: "type U =\n    | Case1\n\ntype U<'a> =\n    | Case1 of 'a\n",
+        imp: "type U =\n    | Case1\n\ntype U<'a> =\n    | Case1 of 'a\n",
+        model: Model::Precise,
+    },
     Shape {
         label: "enum_lowercase",
         sig: "type U =\n    | ref = 0\n    | failwith = 1\n",
@@ -676,6 +693,11 @@ const FRAGMENTS: &[Fragment] = &[
         label: "aliased_rqa",
         sig: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
         imp: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
+    },
+    Fragment {
+        label: "generic_same_name",
+        sig: "type A1<'a> =\n    | Ok of 'a\n",
+        imp: "type A1<'a> =\n    | Ok of 'a\n",
     },
     Fragment {
         label: "opaque",

@@ -884,7 +884,7 @@ fn collect_auto_open_type_containers(
                 // Before any of the export walker's `continue`s: a type it
                 // skips (an accessibility modifier, a dotted name) still
                 // publishes members if it is auto-open.
-                if types.defns().any(|defn| attrs_auto_open(defn.attributes())) {
+                if types.defns().any(|defn| sig_type_may_be_auto_open(&defn)) {
                     out.push(container.to_vec());
                 }
             }
@@ -901,6 +901,26 @@ fn collect_auto_open_type_containers(
             _ => {}
         }
     }
+}
+
+/// Whether a signature type may be `[<AutoOpen>]` and publish static members
+/// where its container is opened: spelled so, or carrying any attribute at all
+/// (an abbreviation can rename `AutoOpenAttribute`) while having statics to
+/// publish — a `static` member in its signature, or an abbreviation's
+/// borrowed ones. A type whose signature declares no static member publishes
+/// none, auto-open or not.
+fn sig_type_may_be_auto_open(defn: &TypeDefn) -> bool {
+    use borzoi_cst::syntax::SyntaxKind;
+    if attrs_auto_open(defn.attributes()) {
+        return true;
+    }
+    defn.attributes().next().is_some()
+        && (matches!(defn.repr(), Some(TypeDefnRepr::Abbrev(_)))
+            || defn
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|t| t.kind() == SyntaxKind::STATIC_TOK))
 }
 
 /// Append `decl` to `namespace`'s declarations, keeping first-seen order.
@@ -1031,6 +1051,23 @@ fn collect_sig_container_exports(
     // represented union, an exception). Its type-qualified paths are
     // unaffected — `A.Ok` and `B.Ok` are distinct.
     let contested = contested_bare_value_names(&decls);
+    // A type name two definitions share (`type U` beside `type U<'a>`) keys
+    // both types' cases at one type-qualified path, which FCS tells apart by
+    // arity: neither type's cases export type-qualified.
+    let contested_types: HashSet<String> = {
+        let mut seen = HashSet::new();
+        decls
+            .iter()
+            .filter_map(|decl| match decl {
+                SigDecl::Types(types) => Some(types.defns()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|defn| defn.long_id().and_then(single_ident))
+            .map(|ident| id_text(&ident).to_string())
+            .filter(|name| !seen.insert(name.clone()))
+            .collect()
+    };
     let decls = decls.into_iter();
     debug_assert!(
         access_floor.is_none_or(|f| f < container.len()),
@@ -1105,11 +1142,12 @@ fn collect_sig_container_exports(
                     // certainly not `[<RequireQualifiedAccess>]`; otherwise
                     // it exports type-qualified only.
                     let rqa = !sig_cases_certainly_bare(&defn);
+                    let type_contested = contested_types.contains(&type_name);
                     let tq_path = |case: &str| {
                         let mut p = container.to_vec();
                         p.push(type_name.clone());
                         p.push(case.to_string());
-                        p
+                        (!type_contested).then_some(p)
                     };
                     match defn.repr() {
                         Some(TypeDefnRepr::Union(u)) => {
@@ -1129,7 +1167,7 @@ fn collect_sig_container_exports(
                                     Some(CaseKind::Union {
                                         require_qualified: rqa,
                                     }),
-                                    Some(tq),
+                                    tq,
                                     false,
                                 );
                             }
@@ -1145,7 +1183,7 @@ fn collect_sig_container_exports(
                                     false,
                                     access_floor,
                                     Some(CaseKind::Enum),
-                                    Some(tq),
+                                    tq,
                                     false,
                                 );
                             }
