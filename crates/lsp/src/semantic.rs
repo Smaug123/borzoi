@@ -102,6 +102,12 @@ struct ReferencedAssemblyProjection {
     /// Deliberately not `#[serde(default)]`: an entry that predates the field
     /// must miss rather than read as unknown-but-cached.
     doc_id_dialect: Option<DocIdDialect>,
+    /// Whether the manifest references other assemblies
+    /// (`EcmaView::assembly_refs`), which decides the core library Roslyn's
+    /// special types bind into. `None` when unread (a reader panic).
+    has_assembly_references: Option<bool>,
+    /// `EcmaView::qualified_names`; `None` when unread.
+    qualified_names: Option<Vec<String>>,
 }
 
 /// Why one referenced DLL contributed nothing to the [`AssemblyEnv`]. The two
@@ -2832,6 +2838,8 @@ pub fn build_env_from_dll_paths<'a>(
                 manifest_identity: projection.manifest_identity,
                 type_forwarders: projection.type_forwarders,
                 doc_id_dialect: projection.doc_id_dialect,
+                has_assembly_references: projection.has_assembly_references,
+                qualified_names: projection.qualified_names,
             }
         })
         .collect();
@@ -3014,6 +3022,10 @@ fn enumerate_view_catching<V: EcmaView>(
                     None
                 }
             });
+            let has_assembly_references =
+                catch_reader_panic(path, "assembly_refs", || !view.assembly_refs().is_empty());
+            let qualified_names =
+                catch_reader_panic(path, "qualified_names", || view.qualified_names()).flatten();
             Some(ReferencedAssemblyProjection {
                 entities: types,
                 fsharp_abbreviations_unknowable: skipped.fsharp_abbreviations_unknowable,
@@ -3027,6 +3039,8 @@ fn enumerate_view_catching<V: EcmaView>(
                 manifest_identity: Some(view.identity().clone()),
                 type_forwarders,
                 doc_id_dialect,
+                has_assembly_references,
+                qualified_names,
             })
         }
         Err(err) => {
