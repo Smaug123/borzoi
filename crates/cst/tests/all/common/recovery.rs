@@ -1235,3 +1235,40 @@ fn body_columns_and_alignment_follow_the_generated_layout() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Line endings are layout-neutral: `source` with every `\n` spelled `\r\n`
+/// must give our parser the same units, offsets mapped back. FCS counts lines
+/// at `\n` either way, so a unit that moves is a defect whatever FCS does.
+/// Returns what differs.
+pub fn crlf_units_differ(source: &str) -> Option<String> {
+    let crlf = source.replace('\n', "\r\n");
+    // The LF offset of a CRLF offset: one byte less for each `\r` before it.
+    let lf = |o: usize| o - crlf[..o].matches("\r\n").count();
+    let map = |k: &UnitKey| UnitKey {
+        scope: k
+            .scope
+            .iter()
+            .map(|s| match s {
+                Scope::Module(i) => Scope::Module(*i),
+                Scope::Nested(o) => Scope::Nested(lf(*o)),
+            })
+            .collect(),
+        start: lf(k.start),
+        kind: k.kind.clone(),
+    };
+    let keys = |units: Vec<Unit>| units.into_iter().map(|u| u.key).collect::<Vec<_>>();
+    let want = keys(our_units(&borzoi_cst::parser::parse(source)));
+    let got: Vec<UnitKey> = keys(our_units(&borzoi_cst::parser::parse(&crlf)))
+        .iter()
+        .map(map)
+        .collect();
+    (want != got).then(|| {
+        let show = |ks: &[UnitKey]| {
+            ks.iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!("LF: [{}]\nCRLF: [{}]", show(&want), show(&got))
+    })
+}

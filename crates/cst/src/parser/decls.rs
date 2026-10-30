@@ -34,8 +34,9 @@ struct LineHead {
 }
 
 impl LineEnd {
-    /// The offset of the newline ending the line that holds `offset`, or the
-    /// end of `source`.
+    /// The offset of the line terminator ending the line that holds `offset`
+    /// (the `\r` of a `\r\n`, where the newline token starts), or the end of
+    /// `source`.
     fn after(&mut self, source: &str, offset: usize) -> usize {
         match self.last {
             Some((from, end)) if from <= offset && offset <= end => end,
@@ -43,6 +44,10 @@ impl LineEnd {
                 let end = source[offset..]
                     .find('\n')
                     .map_or(source.len(), |nl| offset + nl);
+                let end = match end.checked_sub(1) {
+                    Some(cr) if cr >= offset && source.as_bytes()[cr] == b'\r' => cr,
+                    _ => end,
+                };
                 self.last = Some((offset, end));
                 end
             }

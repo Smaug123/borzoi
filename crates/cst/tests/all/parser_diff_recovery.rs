@@ -395,7 +395,8 @@ const DEBRIS_GRID_ACCEPTED: &[&str] = &[
 /// declaration would otherwise hide that we lost it. The cells where either
 /// fails are pinned one per line in `tests/manifests/debris_grid.txt`, and
 /// each must be one where `main`'s parser fails too
-/// (`tests/manifests/debris_grid.base.txt`).
+/// (`tests/manifests/debris_grid.base.txt`). Every cell must also parse the
+/// same with CRLF line endings.
 #[test]
 fn recover_debris_grid_matches_fcs() {
     use crate::common::recovery::{fcs_units, grade};
@@ -423,7 +424,7 @@ fn recover_debris_grid_matches_fcs() {
         // What follows the stray's lines: two declarations in its module (and
         // one in each enclosing module), or a nested module.
         let after_decls = match depth {
-            0 => format!("let after = a\nlet z = 2\n"),
+            0 => "let after = a\nlet z = 2\n".to_string(),
             1 => format!("{indent}let after = a\nlet z = 2\n"),
             _ => format!("{indent}let after = a\n    let y = 2\nlet z = 3\n"),
         };
@@ -450,8 +451,12 @@ fn recover_debris_grid_matches_fcs() {
         }
     }
     let mut divergent = Vec::new();
+    let mut line_endings = Vec::new();
     for (cell, src, head) in &cells {
         let (src, head) = (src.as_str(), *head);
+        if let Some(d) = crate::common::recovery::crlf_units_differ(src) {
+            line_endings.push(format!("{cell}:\n{d}"));
+        }
         let json = {
             let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
             std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
@@ -485,6 +490,12 @@ fn recover_debris_grid_matches_fcs() {
         "debris_grid",
         &keys,
         DEBRIS_GRID_ACCEPTED,
+    );
+    assert!(
+        line_endings.is_empty(),
+        "{} debris-grid cells parse differently with CRLF line endings:\n{}",
+        line_endings.len(),
+        line_endings.join("\n")
     );
 }
 
@@ -987,8 +998,12 @@ fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
     // Each divergence, keyed without our side's module, which differs between
     // parsers that diverge alike.
     let mut keys = Vec::new();
+    let mut line_endings = Vec::new();
     for case in scope_grid() {
         let src = &case.source;
+        if let Some(d) = crate::common::recovery::crlf_units_differ(src) {
+            line_endings.push(format!("{src:?}:\n{d}"));
+        }
         let fcs = {
             let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
             std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
@@ -1037,4 +1052,23 @@ fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
         ),
     );
     crate::common::corpus_manifest::check_no_worse_than_base("nested_module_scope", &keys, &[]);
+    assert!(
+        line_endings.is_empty(),
+        "{} scope-grid cells parse differently with CRLF line endings:\n{}",
+        line_endings.len(),
+        line_endings.join("\n")
+    );
+}
+
+/// A stray's debris ends at its line's terminator, a `\r\n` included: the
+/// declarations on the following lines survive, as in FCS.
+#[test]
+fn recover_debris_ends_at_a_crlf_line_end() {
+    let src = "module M\r\n->\r\nlet after = 1\r\nlet z = 2\r\n";
+    crate::common::recovery::assert_recovered_trees_agree(src, 1);
+    let decls = top_level_decls(src);
+    assert!(
+        decls.contains(&"let after = 1".to_string()) && decls.contains(&"let z = 2".to_string()),
+        "{decls:?}"
+    );
 }
