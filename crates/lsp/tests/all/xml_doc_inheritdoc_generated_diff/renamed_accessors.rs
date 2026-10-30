@@ -122,6 +122,10 @@ struct Case {
     /// Name swaps, applied in turn: indices into [`Case::names`] (modulo
     /// their number), each naming the method that currently has that name.
     swaps: Vec<(usize, usize)>,
+    /// Whether the event's adder and remover exchange names first: the
+    /// renaming under which a row names the other accessor and still binds,
+    /// their signatures being one.
+    cross_event: bool,
     /// Which interface the class is compiled against, and which it is
     /// loaded beside.
     order: Order,
@@ -193,7 +197,11 @@ impl Case {
         // `current[r]` is the name of the row first called `names[r]`.
         let mut current = names.clone();
         let mut swaps = Vec::new();
-        for &(a, b) in &self.swaps {
+        let crossing = (self.cross_event && self.slots[3].is_some()).then(|| {
+            let at = |n: &str| names.iter().position(|m| m == n).unwrap();
+            (at("add_E"), at("remove_E"))
+        });
+        for &(a, b) in crossing.iter().chain(&self.swaps) {
             let (a, b) = (a % names.len(), b % names.len());
             if a == b {
                 continue;
@@ -317,9 +325,18 @@ impl Case {
                 }
                 writeln!(out, "    {decl}\n").unwrap();
             };
+            // An explicit event whose rows name each other's accessors,
+            // which still binds it.
+            let crossed = *m == Member::Event
+                && self.order != Order::Renamed
+                && final_names.get("add_E").map(String::as_str) == Some("remove_E")
+                && final_names.get("remove_E").map(String::as_str) == Some("add_E");
             let mut dims = |key: String, d: Dim| {
                 let slot = keys.entry(key).or_default();
                 slot.extend([d, Dim::Member(*m), order]);
+                if crossed && d != Dim::Implicit && d != Dim::PublicBesideExplicit {
+                    slot.insert(Dim::EventRowsCrossed);
+                }
                 slot.extend(renamed.iter().copied());
                 if !renamed.is_empty() {
                     slot.insert(match d {
@@ -404,15 +421,17 @@ fn strategy() -> impl Strategy<Value = Case> {
             slot(false),
         ),
         prop::collection::vec((0..16usize, 0..16usize), 0..4),
+        prop::bool::weighted(0.3),
         prop_oneof![
             Just(Order::Renamed),
             Just(Order::OriginalThenRenamed),
             Just(Order::RenamedThenOriginal),
         ],
     )
-        .prop_map(|((p, q, i, e, m), swaps, order)| Case {
+        .prop_map(|((p, q, i, e, m), swaps, cross_event, order)| Case {
             slots: [p, q, i, e, m],
             swaps,
+            cross_event,
             order,
         })
 }
@@ -436,6 +455,8 @@ enum Dim {
     RenamedExplicit,
     RenamedImplicit,
     RenamedBeside,
+    /// An explicit event whose rows name each other's accessors.
+    EventRowsCrossed,
     Order(Order),
 }
 
@@ -454,6 +475,7 @@ fn expanding() -> Vec<Dim> {
         Dim::RenamedExplicit,
         Dim::RenamedImplicit,
         Dim::RenamedBeside,
+        Dim::EventRowsCrossed,
         Dim::Order(Order::Renamed),
         Dim::Order(Order::OriginalThenRenamed),
         Dim::Order(Order::RenamedThenOriginal),
