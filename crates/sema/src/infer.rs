@@ -170,9 +170,10 @@
 //! [`Gen::slot_binder_reunify`] emits `Eq(slot, binder_var)` per simple parameter
 //! (F# has one variable for the parameter — the decoupling only exists to fence
 //! off *unmodelled* constraints, and every unmodelled shape already sets
-//! incomplete). A parameter's binder var can then be ground (or a `Param`), so the
-//! "params are never published standalone" invariant becomes **explicit**:
-//! [`Gen::finish`] skips [`Gen::param_defs`] in `def_types`. Parameter uses in
+//! incomplete). A parameter's binder var can then be ground (or a `Param`), but
+//! [`Gen::finish`] never publishes a parameter from it: it publishes the
+//! parameter's annotation, or its ground slot in a published function type, and
+//! nothing for a generic one. Parameter uses in
 //! synth positions may now emit (`let f x = if x then (1, x) else (2, x)` types the
 //! tuple's `x` as `bool`), sound on a complete binding.
 //!
@@ -1136,14 +1137,16 @@ struct Gen<'a> {
     /// that parameter finds its slot. On a *complete* binding the slot is
     /// reunified with the binder var ([`Self::slot_binder_reunify`]).
     param_slots: HashMap<DefId, TyVid>,
+    /// Each parameter of a function whose type [`Self::function_type`] built,
+    /// with that function: a parameter's type is published only where its
+    /// function's is ([`Self::finish`]).
+    param_owner: HashMap<DefId, DefId>,
     /// **Per-binding**: the body of the function binding being walked, for
     /// [`Self::is_first_occurrence`]. `None` outside a function binding.
     cur_body: Option<SyntaxNode>,
-    /// Every parameter `DefId` collected during [`Self::param_var`]. A parameter's
-    /// type is never published standalone (D5): [`Self::finish`] skips these in
-    /// `def_types`. Before 3.2c-2c this was *emergent* (a parameter's binder var
-    /// was never ground); the slot=binder reunification on complete bindings can
-    /// now ground it, so the exclusion is made **explicit**.
+    /// Every parameter `DefId` collected during [`Self::param_var`].
+    /// [`Self::finish`] publishes each from its annotation or its slot in a
+    /// published function type, never from its binder variable.
     param_defs: HashSet<DefId>,
     /// Generalised binders' schemes, keyed by `DefId` (Stage 3.2c-2c). The scheme
     /// body has open variables replaced by [`Ty::Param`]s (numbered by first
@@ -1304,6 +1307,7 @@ impl<'a> Gen<'a> {
             guard_stack: Vec::new(),
             guard_on_member: HashMap::new(),
             param_slots: HashMap::new(),
+            param_owner: HashMap::new(),
             param_defs: HashSet::new(),
             def_schemes: HashMap::new(),
             complete: true,
@@ -4193,6 +4197,11 @@ impl<'a> Gen<'a> {
         }
         let fv = self.def_var(f_def);
         self.eq(Ty::Var(fv), fun_ty);
+        // This binding's parameters are this head's: `begin_binding` cleared
+        // the list, and a local function is not walked.
+        for &(param, _) in &self.cur_params {
+            self.param_owner.insert(param, f_def);
+        }
         Some(f_def)
     }
 
@@ -4382,7 +4391,7 @@ impl<'a> Gen<'a> {
     /// The variable a named binder's type is read from at `site`, registering
     /// the binder as that site requires. A parameter gets a fresh private slot,
     /// recorded for condition typing and the slot=binder reunification, and is
-    /// never published standalone. A local is published only if no emission
+    /// published from that slot ([`Self::finish`]). A local is published only if no emission
     /// barrier discards it ([`Self::local_emits`]).
     fn register_binder(&mut self, def: DefId, site: BinderSite) -> TyVid {
         match site {
@@ -5408,11 +5417,10 @@ impl<'a> Gen<'a> {
         }
         let mut def_types = HashMap::new();
         for (def, var) in def_vars {
-            // A **parameter** is never published standalone (D5). Before 3.2c-2c
-            // this held emergently (a parameter's binder var was never ground);
-            // the slot=binder reunification on a complete binding can now ground it
-            // (or make it a `Param`), so the exclusion is made **explicit** — the
-            // parameter's type lives solely *inside* the function's `Ty::Fun`.
+            // A **parameter** is published below, from what fixes it, never
+            // from its binder variable: on an incomplete binding that variable
+            // is decoupled from the function type's slot, and can be grounded
+            // by a use the binding's unmodelled constraints contradict.
             if self.param_defs.contains(&def) {
                 continue;
             }
@@ -5432,6 +5440,36 @@ impl<'a> Gen<'a> {
             // (3.2b-1 values via their RHS, 3.2c-2b monomorphic functions via
             // `Ty::Fun`); an open variable stays silent (D5).
             let ty = self.table.resolve(&Ty::Var(var));
+            if ty.is_ground() {
+                def_types.insert(def, ty);
+            }
+        }
+        // A parameter's type, where it is known for certain:
+        //
+        // - its annotation, exact in F# — subsumption applies at a call, never
+        //   at the binder — and kept on the binder even where FCS rejects the
+        //   body (`let f (c: int) = if c then …` leaves `c : int`);
+        // - otherwise its slot in a function type published above, whose
+        //   domains are the parameters' types, when the slot is ground. A
+        //   slot is the type itself, or an element of a tuple parameter's.
+        //
+        // A generic parameter is not published: FCS renders a parameter's type
+        // renumbered on its own (`'a` for the second of `'a -> 'b -> 'a`),
+        // where hover would name it as its function does.
+        for &def in &self.param_defs {
+            if let Some(ann) = self.param_annotations.get(&def) {
+                def_types.insert(def, ann.clone());
+                continue;
+            }
+            let (Some(owner), Some(&slot)) =
+                (self.param_owner.get(&def), self.param_slots.get(&def))
+            else {
+                continue;
+            };
+            if !def_types.contains_key(owner) {
+                continue;
+            }
+            let ty = self.table.resolve(&Ty::Var(slot));
             if ty.is_ground() {
                 def_types.insert(def, ty);
             }
@@ -6564,17 +6602,17 @@ mod tests {
     #[test]
     fn monomorphic_function_types_via_condition() {
         // `c` is grounded to bool by the condition; the body returns int; so the
-        // function is `bool -> int`, published on `f`. The parameter `c` is *not*
-        // published on its own — its type lives inside the function type.
+        // function is `bool -> int`, published on `f`, and `c` publishes its
+        // slot in that type.
         let types = def_types("module M\nlet f c = if c then 1 else 2\n");
         assert_eq!(
             types.get("f").map(String::as_str),
             Some("System.Boolean -> System.Int32")
         );
         assert_eq!(
-            types.get("c"),
-            None,
-            "parameter types are not published standalone"
+            types.get("c").map(String::as_str),
+            Some("System.Boolean"),
+            "a parameter publishes its slot in the published function type"
         );
     }
 
@@ -6618,18 +6656,17 @@ mod tests {
         // Stage R2-b: a table-annotated parameter `(c: bool)` grounds its slot
         // *and* binder from the annotation (a parameter annotation is exact in
         // F# — subsumption applies at call sites, not the binder), so the
-        // function types `bool -> int`. The parameter is still never published
-        // standalone. (Flipped from the pre-R2-b
-        // `annotated_parameter_defers_function_and_param`.)
+        // function types `bool -> int`, and the parameter publishes its
+        // annotation.
         let types = def_types("module M\nlet f (c: bool) = if c then 1 else 2\n");
         assert_eq!(
             types.get("f").map(String::as_str),
             Some("System.Boolean -> System.Int32")
         );
         assert_eq!(
-            types.get("c"),
-            None,
-            "parameters are never published standalone"
+            types.get("c").map(String::as_str),
+            Some("System.Boolean"),
+            "an annotated parameter publishes its annotation"
         );
     }
 
@@ -6716,7 +6753,11 @@ mod tests {
             types.get("h").map(String::as_str),
             Some("System.Int32 -> System.Int32")
         );
-        assert_eq!(types.get("x"), None, "parameters stay unpublished");
+        assert_eq!(
+            types.get("x").map(String::as_str),
+            Some("System.Int32"),
+            "the parameter publishes its slot"
+        );
     }
 
     #[test]
@@ -6937,8 +6978,7 @@ mod tests {
         /// else <b>` is `bool -> <that primitive>`: the condition grounds the
         /// parameter to `bool` (inside the function type) and the then-branch's
         /// literal is the return, for every suffix/value — the curried function
-        /// type is built consistently. The parameter `c` is not published on its
-        /// own.
+        /// type is built consistently. The parameter `c` publishes `bool`.
         #[test]
         fn condition_grounded_function_is_bool_to_literal(
             // Bounded to the byte range so every suffix (incl. `uy`) is in range.
@@ -6955,7 +6995,7 @@ mod tests {
                 Some(want.as_str()),
                 "src={:?}", src
             );
-            proptest::prop_assert_eq!(types.get("c"), None);
+            proptest::prop_assert_eq!(types.get("c").map(String::as_str), Some("System.Boolean"));
         }
     }
 
@@ -7446,7 +7486,8 @@ mod tests {
         // is never retyped to `int` through the annotation-vs-application
         // conflict, and its synth-mode tuple use reads off `string` (FCS
         // agrees). `h` still emits (`string -> string * int` — the result is
-        // fixed by `f`'s own shape), and the params are never published.
+        // fixed by `f`'s own shape), and each parameter publishes its
+        // annotation, which FCS keeps on the binder.
         let src = "module M\nlet f (x: int) = x\nlet h (y: string) = (y, f y)\n";
         let types = def_types(src);
         assert_eq!(
@@ -7458,11 +7499,11 @@ mod tests {
             Some("System.String -> System.String * System.Int32")
         );
         assert_eq!(
-            types.get("y"),
-            None,
-            "the annotated param is never published standalone"
+            types.get("y").map(String::as_str),
+            Some("System.String"),
+            "the annotated param publishes its annotation"
         );
-        assert_eq!(types.get("x"), None);
+        assert_eq!(types.get("x").map(String::as_str), Some("System.Int32"));
         // The precise leak check: the tuple's `y` element must read off the
         // annotation's `string`, not the wake's `int`. (An `Int32` render does
         // legitimately appear elsewhere — `f`'s body use of `x` — so the

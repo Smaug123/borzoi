@@ -896,8 +896,8 @@ fn an_in_file_operator_grounds_its_operands() {
     let src = "module S\nlet (&&.) (a: bool) (b: bool) = a\nlet both p q = p &&. q\n";
     let c = check("operators_ground", src, &[], true).expect("a clean file checks");
     assert_eq!(
-        c.binders, 2,
-        "`(&&.)` and `both` are `bool -> bool -> bool`\n{src}"
+        c.binders, 6,
+        "`(&&.)` and `both` are `bool -> bool -> bool`, and each parameter `bool`\n{src}"
     );
 }
 

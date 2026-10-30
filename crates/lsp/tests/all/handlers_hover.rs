@@ -195,11 +195,11 @@ fn hovers_a_monomorphic_function() {
     let hover = run(&mut state, &uri, 0, 4).expect("hover for `f`");
     assert_eq!(body(&hover), "`f : bool -> int` — function");
 
-    // The parameter `c` is grounded to bool only *inside* the function type; it is
-    // not published on its own (a standalone parameter type is unsound on
-    // ill-typed mid-edit code), so its hover stays the bare form.
+    // The parameter `c` takes its type from its slot in that published function
+    // type, never from its own binder variable, which a use the binding does not
+    // model could have grounded on ill-typed mid-edit code.
     let c_hover = run(&mut state, &uri, 0, 6).expect("hover for `c`");
-    assert_eq!(body(&c_hover), "`c` — parameter");
+    assert_eq!(body(&c_hover), "`c : bool` — parameter");
 }
 
 #[test]
