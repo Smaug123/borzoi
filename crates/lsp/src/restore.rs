@@ -46,6 +46,10 @@
 //! - **Project-rooted.** The command's working directory is the project
 //!   directory, so `dotnet` resolves the SDK from the project's `global.json`
 //!   (rather than the LSP process's cwd) — the same SDK the evaluator saw.
+//! - **By real path.** The project is named by its real path, symlinks
+//!   resolved. The working directory is reported by its real path anyway, and a
+//!   project spelt two ways in one evaluation loses its `ProjectReference`s from
+//!   NuGet's graph.
 //! - **Bounded.** It runs under [`BoundedCommand`] with a deadline as a backstop.
 //!
 //! These isolation guarantees are enforced through MSBuild global properties, so
@@ -172,38 +176,7 @@ pub fn restore_to_scratch_assemblies(
         return RestoreOutcome::Declined;
     };
 
-    // A project with a `packages.lock.json` expects restore to resolve its
-    // *pinned* graph; a fresh resolve here could pick different versions, so
-    // decline rather than risk over-resolving. (`RestorePackagesWithLockFile`
-    // without an existing lock file is fine — the fresh resolve is what the first
-    // real restore would lock, and the redirect below keeps us from writing it.)
-    //
-    // Residual: a project that relocates its lock file with `NuGetLockFilePath`
-    // is not detected here (that needs the evaluated property, which this layer
-    // does not have); such a project gets a fresh resolve. Exotic — the default
-    // sibling path is the overwhelmingly common lock-file location.
-    if project
-        .parent()
-        .is_some_and(|dir| dir.join("packages.lock.json").is_file())
-    {
-        tracing::info!(
-            project = %project.display(),
-            "on-demand restore declined: a packages.lock.json pins the graph"
-        );
-        return RestoreOutcome::Declined;
-    }
-
-    // The (absolute) warm cache to pin package extraction/read to. A project's
-    // `RestorePackagesPath` or a config `globalPackagesFolder` would otherwise
-    // point NuGet's *package* folder at a repo-local directory, extracting
-    // package files into the source tree (the redirects above only cover the
-    // *generated* restore output). Forcing it to the resolved cache keeps
-    // extraction out of the tree and reads from the warm cache the LSP knows.
-    let Some(cache_root) = cache_root(env) else {
-        tracing::info!(
-            project = %project.display(),
-            "on-demand restore declined: no global-packages cache root known"
-        );
+    let Some(inputs) = restore_inputs(project, env) else {
         return RestoreOutcome::Declined;
     };
 
@@ -211,7 +184,13 @@ pub fn restore_to_scratch_assemblies(
         return RestoreOutcome::TransientFailure;
     };
 
-    match run_offline_restore(project, &scratch.path, dotnet_root, &cache_root, env) {
+    match run_offline_restore(
+        &inputs.project,
+        &scratch.path,
+        dotnet_root,
+        &inputs.cache_root,
+        env,
+    ) {
         RunResult::Succeeded => {}
         RunResult::Declined => {
             tracing::info!(
@@ -261,6 +240,163 @@ pub fn restore_to_scratch_assemblies(
     }
 }
 
+/// What an offline restore of a project is run with.
+struct RestoreInputs {
+    /// The project, by its real path. Restore runs in the project's directory,
+    /// which the OS reports by its real path, so a project named through a
+    /// symlink would otherwise be spelt two ways in one evaluation, and NuGet
+    /// then drops its `ProjectReference`s from the graph.
+    project: PathBuf,
+    /// The warm cache the restore reads.
+    cache_root: PathBuf,
+}
+
+/// The inputs of an offline restore of `project`, or `None` if the project
+/// must not be restored here.
+fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs> {
+    // A project with a `packages.lock.json` expects restore to resolve its
+    // *pinned* graph; a fresh resolve here could pick different versions, so
+    // decline rather than risk over-resolving. (`RestorePackagesWithLockFile`
+    // without an existing lock file is fine — the fresh resolve is what the first
+    // real restore would lock, and the redirect below keeps us from writing it.)
+    //
+    // Residual: a project that relocates its lock file with `NuGetLockFilePath`
+    // is not detected here (that needs the evaluated property, which this layer
+    // does not have); such a project gets a fresh resolve. Exotic — the default
+    // sibling path is the overwhelmingly common lock-file location.
+    if project
+        .parent()
+        .is_some_and(|dir| dir.join("packages.lock.json").is_file())
+    {
+        tracing::info!(
+            project = %project.display(),
+            "on-demand restore declined: a packages.lock.json pins the graph"
+        );
+        return None;
+    }
+
+    // The (absolute) warm cache to pin package extraction/read to. A project's
+    // `RestorePackagesPath` or a config `globalPackagesFolder` would otherwise
+    // point NuGet's *package* folder at a repo-local directory, extracting
+    // package files into the source tree (the output redirects only cover the
+    // *generated* restore output). Forcing it to the resolved cache keeps
+    // extraction out of the tree and reads from the warm cache the LSP knows.
+    let Some(cache_root) = cache_root(env) else {
+        tracing::info!(
+            project = %project.display(),
+            "on-demand restore declined: no global-packages cache root known"
+        );
+        return None;
+    };
+    let Some(project) = real_path(project) else {
+        tracing::info!(
+            project = %project.display(),
+            "on-demand restore declined: the project path does not resolve"
+        );
+        return None;
+    };
+    Some(RestoreInputs {
+        project,
+        cache_root,
+    })
+}
+
+/// `path` with every symlink resolved. On Windows, where that yields a
+/// verbatim (`\\?\`) path MSBuild does not take, it is only made absolute.
+fn real_path(path: &Path) -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::path::absolute(path).ok()
+    } else {
+        std::fs::canonicalize(path).ok()
+    }
+}
+
+/// What [`restore_graph`] produced.
+pub enum RestoreGraph {
+    /// The dependency-graph spec's text. Its paths into the scratch directory
+    /// it was written under (since removed) are the one part that differs from
+    /// run to run, so `scratch` is returned for a comparison to normalise.
+    Written { text: String, scratch: PathBuf },
+    /// The project must not be restored here (as for
+    /// [`restore_to_scratch_assemblies`]), or MSBuild wrote no spec.
+    Declined,
+    /// The invocation did not complete (spawn failure, timeout, wedge).
+    TransientFailure,
+}
+
+/// Which dependency-graph spec [`restore_graph`] obtains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreGraphSource {
+    /// MSBuild's `GenerateRestoreGraphFile` target: the spec computed without
+    /// restoring (docs/nuget-dgspec-boundary-plan.md, A₀).
+    Generated,
+    /// The spec the restore of [`restore_to_scratch_assemblies`] itself
+    /// writes beside its assets file: by definition what that restore read. It
+    /// is written even when resolution then fails.
+    Restored,
+}
+
+/// The dependency-graph spec of an offline restore of `project`, obtained the
+/// way `source` says, under exactly the SDK, environment and global properties
+/// [`restore_to_scratch_assemblies`] restores with. This is the half-A oracle
+/// of `docs/nuget-dgspec-boundary-plan.md`; the LSP itself never calls it.
+pub fn restore_graph(
+    project: &Path,
+    dotnet_root: &Path,
+    env: &SdkDiscoveryEnv,
+    source: RestoreGraphSource,
+) -> RestoreGraph {
+    let Some(inputs) = restore_inputs(project, env) else {
+        return RestoreGraph::Declined;
+    };
+    let project = inputs.project.as_path();
+    let Some(scratch) = ScratchDir::new() else {
+        return RestoreGraph::TransientFailure;
+    };
+    let (verb, written) = match source {
+        RestoreGraphSource::Generated => {
+            let output = scratch.path.join("restore-graph.dg.json");
+            (
+                Verb::GenerateRestoreGraph {
+                    output: output.clone(),
+                },
+                output,
+            )
+        }
+        RestoreGraphSource::Restored => {
+            let Some(file) = project.file_name() else {
+                return RestoreGraph::Declined;
+            };
+            let mut name = file.to_os_string();
+            name.push(".nuget.dgspec.json");
+            (Verb::Restore, scratch.path.join(name))
+        }
+    };
+    let Some(cmd) = offline_restore_command(
+        verb,
+        project,
+        &scratch.path,
+        dotnet_root,
+        &inputs.cache_root,
+        env,
+    ) else {
+        return RestoreGraph::TransientFailure;
+    };
+    match (run_bounded(project, cmd), source) {
+        (RunResult::Transient, _) => return RestoreGraph::TransientFailure,
+        (RunResult::Declined, RestoreGraphSource::Generated) => return RestoreGraph::Declined,
+        // A restore that fails to resolve has still written the spec it read.
+        (RunResult::Declined | RunResult::Succeeded, _) => {}
+    }
+    match std::fs::read_to_string(&written) {
+        Ok(text) => RestoreGraph::Written {
+            text,
+            scratch: scratch.path.clone(),
+        },
+        Err(_) => RestoreGraph::Declined,
+    }
+}
+
 /// Outcome of the restore subprocess itself.
 enum RunResult {
     /// Exit 0 — the assets file should be present.
@@ -279,14 +415,60 @@ fn run_offline_restore(
     cache_root: &Path,
     env: &SdkDiscoveryEnv,
 ) -> RunResult {
+    let Some(cmd) = offline_restore_command(
+        Verb::Restore,
+        project,
+        scratch,
+        dotnet_root,
+        cache_root,
+        env,
+    ) else {
+        return RunResult::Transient;
+    };
+    run_bounded(project, cmd)
+}
+
+fn run_bounded(project: &Path, cmd: Command) -> RunResult {
+    match BoundedCommand::new(cmd).timeout(RESTORE_DEADLINE).run() {
+        Ok(output) if output.status.success() => RunResult::Succeeded,
+        Ok(_) => RunResult::Declined,
+        Err(failure) => {
+            tracing::info!(project = %project.display(), %failure, "on-demand restore did not complete");
+            RunResult::Transient
+        }
+    }
+}
+
+/// What a restore-shaped invocation asks MSBuild to do.
+enum Verb {
+    /// `dotnet restore`.
+    Restore,
+    /// `dotnet msbuild -t:GenerateRestoreGraphFile`: compute the
+    /// dependency-graph spec restore would read, write it to `output`, and stop.
+    GenerateRestoreGraph { output: PathBuf },
+}
+
+/// The one way this module invokes `dotnet` against a project, whatever the
+/// verb, so every invocation runs under the same SDK, working directory,
+/// environment and global properties: an offline, entry-only restore whose
+/// output lands in `scratch`. The dependency-graph oracle ([`restore_graph`])
+/// relies on that sameness, since what it generates is only restore's input if
+/// MSBuild evaluated the project identically. `None` if the scratch layout
+/// could not be created.
+fn offline_restore_command(
+    verb: Verb,
+    project: &Path,
+    scratch: &Path,
+    dotnet_root: &Path,
+    cache_root: &Path,
+    env: &SdkDiscoveryEnv,
+) -> Option<Command> {
     // An empty local folder used as the *only* restore source. As an MSBuild
     // property this overrides the project's `<RestoreSources>` and the ambient
     // config's feeds alike (the property takes precedence over config sources),
     // so restore reads only the global-packages cache — offline.
     let empty_source = scratch.join("empty-source");
-    if std::fs::create_dir_all(&empty_source).is_err() {
-        return RunResult::Transient;
-    }
+    std::fs::create_dir_all(&empty_source).ok()?;
 
     // `MSBuildProjectExtensionsPath` (trailing slash required — it's an MSBuild
     // directory property) redirects the whole restore output tree into scratch.
@@ -307,56 +489,57 @@ fn run_offline_restore(
     } else {
         Command::new(dotnet_exe_name)
     };
+    match verb {
+        Verb::Restore => {
+            cmd.arg("restore").arg(project).arg("-nologo");
+        }
+        Verb::GenerateRestoreGraph { output } => {
+            cmd.arg("msbuild")
+                .arg(project)
+                .arg("-nologo")
+                .arg("-t:GenerateRestoreGraphFile")
+                .arg(property_arg("RestoreGraphOutputPath", output.as_os_str()));
+        }
+    }
     // Residual: a workspace's caller-supplied global properties
     // (`Workspace::with_env_and_extra_build_properties`) are not forwarded as
     // `-p:` here, so a package/TFM conditioned on such a global could restore
     // differently. The real server supplies none (empty extras) and its default
     // `Configuration`/`Platform` match restore's own defaults, so this bites only
     // a caller that sets graph-affecting globals — the test harnesses.
-    cmd.arg("restore")
-        .arg(project)
-        .arg("-nologo")
-        .arg(property_arg(
-            "MSBuildProjectExtensionsPath",
-            ext_path.as_os_str(),
-        ))
-        // `RestoreOutputPath` defaults from `MSBuildProjectExtensionsPath`, but a
-        // project/import can override it (e.g. `custom/`), which would write the
-        // assets into the source tree and leave scratch empty. Pin it to scratch
-        // too so the whole output stays there regardless.
-        .arg(property_arg("RestoreOutputPath", ext_path.as_os_str()))
-        // Pin the *package* folder (extraction + read) to the resolved warm
-        // cache, overriding a project `RestorePackagesPath` or config
-        // `globalPackagesFolder` that would otherwise extract packages into a
-        // repo-local directory (a source-tree write the output redirects miss).
-        .arg(property_arg("RestorePackagesPath", cache_root.as_os_str()))
-        .arg("-p:RestoreRecursive=false")
-        .arg(property_arg("RestoreSources", empty_source.as_os_str()))
-        .arg("-p:RestoreAdditionalProjectSources=")
-        .arg("-p:RestorePackagesWithLockFile=false")
-        .arg(property_arg(
-            "NuGetLockFilePath",
-            scratch.join("packages.lock.json").as_os_str(),
-        ))
-        // NuGet's package audit contacts its `auditSources` even when
-        // `RestoreSources` points at the empty folder, so an unreachable audit
-        // endpoint would block until the deadline. Disable it to stay offline.
-        .arg("-p:NuGetAudit=false");
+    cmd.arg(property_arg(
+        "MSBuildProjectExtensionsPath",
+        ext_path.as_os_str(),
+    ))
+    // `RestoreOutputPath` defaults from `MSBuildProjectExtensionsPath`, but a
+    // project/import can override it (e.g. `custom/`), which would write the
+    // assets into the source tree and leave scratch empty. Pin it to scratch
+    // too so the whole output stays there regardless.
+    .arg(property_arg("RestoreOutputPath", ext_path.as_os_str()))
+    // Pin the *package* folder (extraction + read) to the resolved warm
+    // cache, overriding a project `RestorePackagesPath` or config
+    // `globalPackagesFolder` that would otherwise extract packages into a
+    // repo-local directory (a source-tree write the output redirects miss).
+    .arg(property_arg("RestorePackagesPath", cache_root.as_os_str()))
+    .arg("-p:RestoreRecursive=false")
+    .arg(property_arg("RestoreSources", empty_source.as_os_str()))
+    .arg("-p:RestoreAdditionalProjectSources=")
+    .arg("-p:RestorePackagesWithLockFile=false")
+    .arg(property_arg(
+        "NuGetLockFilePath",
+        scratch.join("packages.lock.json").as_os_str(),
+    ))
+    // NuGet's package audit contacts its `auditSources` even when
+    // `RestoreSources` points at the empty folder, so an unreachable audit
+    // endpoint would block until the deadline. Disable it to stay offline.
+    .arg("-p:NuGetAudit=false");
     // Resolve the SDK from the project's own `global.json` tree, not the LSP
     // process's working directory.
     if let Some(dir) = project.parent() {
         cmd.current_dir(dir);
     }
     apply_env(&mut cmd, env);
-
-    match BoundedCommand::new(cmd).timeout(RESTORE_DEADLINE).run() {
-        Ok(output) if output.status.success() => RunResult::Succeeded,
-        Ok(_) => RunResult::Declined,
-        Err(failure) => {
-            tracing::info!(project = %project.display(), %failure, "on-demand restore did not complete");
-            RunResult::Transient
-        }
-    }
+    Some(cmd)
 }
 
 /// `path` with a trailing `/`, as MSBuild directory properties require.

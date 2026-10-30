@@ -37,7 +37,7 @@ use borzoi_sema::resolve_project_files;
 use super::harness::{
     Graded, OracleFile, OurProject, Verdict, census, describe, failures, fcs_check_with, grade,
 };
-use crate::common::runtime_project_state_files;
+use crate::common::{checkout_key, runtime_project_state_files};
 
 /// A project loaded the way the LSP loads it, with the reference set its
 /// `AssemblyEnv` was built from.
@@ -336,24 +336,6 @@ fn fixture_project_docs_agree_with_fcs() {
 // The pinned project corpus
 // ============================================================================
 
-/// `path`'s key in the manifest: its repository's directory name and its path
-/// inside it, so the key is the same wherever the corpus is materialised.
-fn repo_key(path: &Path) -> String {
-    let root = path
-        .ancestors()
-        .find(|d| d.join(".git").exists())
-        .unwrap_or_else(|| panic!("{} is not inside a checkout", path.display()));
-    let name = root.file_name().unwrap().to_string_lossy();
-    let rel = path.strip_prefix(root).unwrap();
-    format!(
-        "{name}/{}",
-        rel.components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/")
-    )
-}
-
 /// The manifest spelling of a graded occurrence that is not an agreement.
 fn entry(g: &Graded) -> Option<String> {
     let fcs = match g.fcs_lines.as_deref() {
@@ -409,7 +391,7 @@ fn pinned_projects_docs_agree_with_fcs() {
             })
             .sum();
         let graded = grade(&loaded.ours, &fcs);
-        let names: Vec<String> = loaded.paths.iter().map(|p| repo_key(p)).collect();
+        let names: Vec<String> = loaded.paths.iter().map(|p| checkout_key(p)).collect();
         let named: Vec<(&str, &str)> = names
             .iter()
             .zip(&loaded.ours.texts)
@@ -431,7 +413,7 @@ fn pinned_projects_docs_agree_with_fcs() {
         cross_file_docs += cross.len();
         manifest.push(format!(
             "{} oracle-errors={errors} agree-doc={} cross-file-doc={} agree-none={}",
-            repo_key(project),
+            checkout_key(project),
             graded
                 .iter()
                 .filter(|g| matches!(g.verdict, Verdict::Agree { attached: true }))

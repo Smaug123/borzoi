@@ -1081,6 +1081,17 @@ jobs:
             cargo test -p borzoi-assembly --test all projection_skip_sweep:: \
             -- --ignored --nocapture
 
+      - name: Gate on the restore-graph oracle
+        # The half-A oracle of docs/nuget-dgspec-boundary-plan.md over the same
+        # restored projects: the dependency-graph spec generated without
+        # restoring must be exactly the one restore itself reads, and what the
+        # dgspec reader makes of it is pinned in `restore_graph_projects.txt`.
+        run: |
+          nix develop --command env \
+            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
+            cargo test -p borzoi --test all restore_graph::pinned_projects \
+            -- --ignored --nocapture
+
       - name: Gate on whole-project source docs
         # Hover's project-local `///` docs over the same restored projects,
         # loaded through the LSP's runtime path (Compile order, reference
