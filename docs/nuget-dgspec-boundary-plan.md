@@ -192,7 +192,12 @@ set declines. `tests/all/dgspec_diff.rs` holds it to certain-implies-exact
 against `DependencyGraphSpec.Load`, through the oracle's `normaliseDgSpec` op.
 That op projects NuGet's object model field by field, and refuses to answer if
 the SDK's NuGet has a property the projection does not account for (the oracle
-compiles against an older NuGet than it runs). The oracle gates are:
+compiles against an older NuGet than it runs). Every case is graded under
+the default environment *and* under each environment variable
+`NuGet.ProjectModel` consults, since a reading that depends on the caller's
+environment agrees with an oracle that shares it. That is how
+`NUGET_ENABLE_EXPERIMENTAL_MACROS` was found: it makes the reader expand
+`$(User)` in paths, so anything holding `$(` declines. The oracle gates are:
 
 - hand cases pinning which documents must commit and which must decline;
 - a generator mutating two templates (respelling values and keys, dropping,

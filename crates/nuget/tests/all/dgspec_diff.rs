@@ -260,34 +260,83 @@ enum Outcome {
     DeclinedRefused,
 }
 
-fn grade(oracle: &mut Oracle, text: &str) -> Result<(Outcome, Option<DgSpecDecline>), String> {
+/// The environment variables `NuGet.ProjectModel` consults, each set the way
+/// that changes its behaviour, plus the default environment. A commit must
+/// agree with NuGet under every one: a reading that depends on the caller's
+/// environment agrees with an oracle sharing that environment, so only
+/// varying it makes the dependence visible. (`NUGET_ENABLE_EXPERIMENTAL_MACROS`
+/// is the live one: it makes the reader expand `$(User)` in paths.)
+const ENVIRONMENTS: &[&[(&str, &str)]] = &[
+    &[],
+    &[("NUGET_ENABLE_EXPERIMENTAL_MACROS", "true")],
+    &[(
+        "NUGET_USE_LEGACY_ASSET_TARGET_FALLBACK_DEPENDENCY_RESOLUTION",
+        "true",
+    )],
+    &[("NUGET_ENABLE_LEGACY_DGSPEC_HASH_FUNCTION", "true")],
+];
+
+/// One oracle per entry of [`ENVIRONMENTS`], the default environment first.
+struct Oracles(Vec<(String, Oracle)>);
+
+impl Oracles {
+    fn spawn() -> Oracles {
+        Oracles(
+            ENVIRONMENTS
+                .iter()
+                .map(|environment| {
+                    (
+                        format!("{environment:?}"),
+                        Oracle::spawn_with_environment(environment),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+fn grade(oracles: &mut Oracles, text: &str) -> Result<(Outcome, Option<DgSpecDecline>), String> {
     let ours = parse_dgspec(text);
-    let response = oracle.request(&json!({"op": "normaliseDgSpec", "text": text}));
-    let loaded = response["ok"]
-        .as_bool()
-        .expect("normaliseDgSpec reports ok");
-    match ours {
-        Ok(spec) if loaded => {
-            let mut ours = canonical(&spec);
-            let mut theirs = response["spec"].clone();
-            normalise(&mut ours);
-            normalise(&mut theirs);
-            match first_difference(&ours, &theirs, "$") {
-                None => Ok((Outcome::Agree, None)),
-                Some(difference) => Err(format!("we read it differently: {difference}")),
-            }
+    let request = json!({"op": "normaliseDgSpec", "text": text});
+    let mut loaded_by_default = None;
+    for (environment, oracle) in &mut oracles.0 {
+        let response = oracle.request(&request);
+        let loaded = response["ok"]
+            .as_bool()
+            .expect("normaliseDgSpec reports ok");
+        loaded_by_default.get_or_insert(loaded);
+        let Ok(spec) = &ours else { continue };
+        if !loaded {
+            return Err(format!(
+                "we read a document NuGet refuses under {environment} ({}: {})",
+                response["exceptionType"], response["message"]
+            ));
         }
-        Ok(_) => Err(format!(
-            "we read a document NuGet refuses ({}: {})",
-            response["exceptionType"], response["message"]
-        )),
-        Err(decline) if loaded => Ok((Outcome::DeclinedLoadable, Some(decline))),
+        let mut ours = canonical(spec);
+        let mut theirs = response["spec"].clone();
+        normalise(&mut ours);
+        normalise(&mut theirs);
+        if let Some(difference) = first_difference(&ours, &theirs, "$") {
+            return Err(format!(
+                "we read it differently under {environment}: {difference}"
+            ));
+        }
+    }
+    match ours {
+        Ok(_) => Ok((Outcome::Agree, None)),
+        Err(decline) if loaded_by_default == Some(true) => {
+            Ok((Outcome::DeclinedLoadable, Some(decline)))
+        }
         Err(decline) => Ok((Outcome::DeclinedRefused, Some(decline))),
     }
 }
 
-fn assert_sound(oracle: &mut Oracle, label: &str, text: &str) -> (Outcome, Option<DgSpecDecline>) {
-    match grade(oracle, text) {
+fn assert_sound(
+    oracles: &mut Oracles,
+    label: &str,
+    text: &str,
+) -> (Outcome, Option<DgSpecDecline>) {
+    match grade(oracles, text) {
         Ok(outcome) => outcome,
         Err(violation) => panic!("{label}: {violation}\ndocument: {text}"),
     }
@@ -689,7 +738,15 @@ fn replacement(rng: &mut SplitMix64, key: &str, parent: &str) -> Value {
         _ => match rng.below(4) {
             0 => json!(true),
             1 => json!(false),
-            _ => json!(rng.pick(&["", "x", " /r/P.fsproj", "/r/P.fsproj", "C:\\r\\P.fsproj"])),
+            _ => json!(rng.pick(&[
+                "",
+                "x",
+                " /r/P.fsproj",
+                "/r/P.fsproj",
+                "C:\\r\\P.fsproj",
+                "$(User)/packages",
+                "/r/$(Foo)/P.fsproj",
+            ])),
         },
     }
 }
@@ -1123,6 +1180,10 @@ fn hand_cases() {
             }),
         ),
         (
+            "macro in a path",
+            with(&m, |d| meta(d)["packagesPath"] = json!("$(User)/packages")),
+        ),
+        (
             "unsupported alias",
             with(&m, |d| {
                 let f = fw(d).take();
@@ -1179,9 +1240,9 @@ fn hand_cases() {
         ),
     ];
 
-    let mut oracle = Oracle::spawn();
+    let mut oracles = Oracles::spawn();
     for (label, text) in &commits {
-        let (outcome, decline) = assert_sound(&mut oracle, label, text);
+        let (outcome, decline) = assert_sound(&mut oracles, label, text);
         assert_eq!(
             outcome,
             Outcome::Agree,
@@ -1190,7 +1251,7 @@ fn hand_cases() {
         );
     }
     for (label, text) in &declines {
-        let (outcome, _) = assert_sound(&mut oracle, label, text);
+        let (outcome, _) = assert_sound(&mut oracles, label, text);
         assert_ne!(
             outcome,
             Outcome::Agree,
@@ -1215,7 +1276,7 @@ fn mutated_specs_are_read_as_nuget_reads_them() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0x0d65_bec0_0001);
     let mut rng = SplitMix64(seed);
-    let mut oracle = Oracle::spawn();
+    let mut oracles = Oracles::spawn();
     let mut census: BTreeMap<(Mutation, Outcome), usize> = BTreeMap::new();
     let mut violations: Vec<(String, String)> = Vec::new();
 
@@ -1228,7 +1289,7 @@ fn mutated_specs_are_read_as_nuget_reads_them() {
             mutate(&mut rng, &mut doc, second);
         }
         let text = doc.text();
-        match grade(&mut oracle, &text) {
+        match grade(&mut oracles, &text) {
             Ok((outcome, _)) => *census.entry((first, outcome)).or_default() += 1,
             Err(violation) => violations.push((format!("{first:?}: {violation}"), text)),
         }
@@ -1356,7 +1417,7 @@ fn real_dgspecs_sweep() {
     files.sort();
     assert!(!files.is_empty(), "no *.nuget.dgspec.json under {root:?}");
 
-    let mut oracle = Oracle::spawn();
+    let mut oracles = Oracles::spawn();
     let mut outcomes: BTreeMap<Outcome, usize> = BTreeMap::new();
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut violations = Vec::new();
@@ -1364,7 +1425,7 @@ fn real_dgspecs_sweep() {
         let Ok(text) = std::fs::read_to_string(file) else {
             continue;
         };
-        match grade(&mut oracle, &text) {
+        match grade(&mut oracles, &text) {
             Ok((outcome, decline)) => {
                 *outcomes.entry(outcome).or_default() += 1;
                 if let Some(decline) = decline {

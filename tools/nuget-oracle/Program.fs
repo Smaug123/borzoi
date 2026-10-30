@@ -1,8 +1,12 @@
 /// Differential-test oracle over the real NuGet client libraries
 /// (test-only; never shipped in the LSP — see docs/nuget-restore-plan.md).
 ///
-/// Usage: `nuget-oracle --nuget-from <sdk-dir>`, where `<sdk-dir>` is one .NET
-/// SDK's directory (`<dotnet-root>/sdk/<version>/`).
+/// Usage: `nuget-oracle --nuget-from <sdk-dir> [--env NAME=VALUE]...`, where
+/// `<sdk-dir>` is one .NET SDK's directory (`<dotnet-root>/sdk/<version>/`).
+/// Each `--env` sets an environment variable before any NuGet type loads, so
+/// the differentials can grade NuGet under environments that change what it
+/// does (`NUGET_ENABLE_EXPERIMENTAL_MACROS`, for one, makes the dgspec reader
+/// expand `$(User)`).
 ///
 /// Which NuGet answers: the one in `<sdk-dir>`, loaded from there at runtime.
 /// The project references the NuGet packages for compilation only; none of
@@ -993,10 +997,25 @@ let private serve (sdkDir: string) =
 
         line <- Console.In.ReadLine()
 
+/// The `--env NAME=VALUE` assignments after `--nuget-from <dir>`, or `None`
+/// if anything else is there.
+let rec private environmentArguments (rest: string list) : (string * string) list option =
+    match rest with
+    | [] -> Some []
+    | "--env" :: assignment :: rest when assignment.IndexOf '=' > 0 ->
+        let i = assignment.IndexOf '='
+
+        environmentArguments rest
+        |> Option.map (fun more -> (assignment.Substring(0, i), assignment.Substring(i + 1)) :: more)
+    | _ -> None
+
 [<EntryPoint>]
 let main argv =
-    match argv with
-    | [| "--nuget-from"; dir |] ->
+    match List.ofArray argv with
+    | "--nuget-from" :: dir :: rest when (environmentArguments rest).IsSome ->
+        for (name, value) in (environmentArguments rest).Value do
+            Environment.SetEnvironmentVariable(name, value)
+
         let sdkDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath dir)
 
         if not (File.Exists(Path.Combine(sdkDir, "NuGet.Commands.dll"))) then
@@ -1019,5 +1038,5 @@ let main argv =
             serve sdkDir
             0
     | _ ->
-        eprintfn "usage: nuget-oracle --nuget-from <sdk-dir>"
+        eprintfn "usage: nuget-oracle --nuget-from <sdk-dir> [--env NAME=VALUE]..."
         2

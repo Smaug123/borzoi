@@ -24,6 +24,9 @@
 //!   or merges, depending on where they sit. None of it occurs in a dgspec the
 //!   SDK writes, so it is not worth modelling.
 //! - **Only `format: 1` is accepted.** NuGet does not check `format` at all.
+//! - **Anything holding `$(` declines.** The reader's reading of such a value
+//!   depends on the environment (`NUGET_ENABLE_EXPERIMENTAL_MACROS`), which the
+//!   document does not carry.
 //! - **An unsupported framework declines**, since this crate's framework parser
 //!   reads some of NuGet's irregular spellings as unsupported on purpose.
 //! - Comments and trailing commas, which NuGet accepts, are a syntax decline.
@@ -374,6 +377,9 @@ pub enum DgSpecDeclineReason {
     /// A name the reader may not keep distinct from a sibling's (see
     /// `Fields::into_named_members`).
     AmbiguousName,
+    /// A key or string holding `$(`, which the reader may expand as a macro
+    /// depending on the environment.
+    MacroLike,
     /// A framework this crate parses as unsupported. Where NuGet's parser
     /// salvages an irregular platform suffix (`net8.0-1`), ours deliberately
     /// does not (see [`NuGetFramework`]), so an unsupported framework here
@@ -421,6 +427,9 @@ impl fmt::Display for DgSpecDecline {
             }
             DgSpecDeclineReason::DuplicatePackageId => {
                 write!(f, "{path}: package id repeats, ignoring case")
+            }
+            DgSpecDeclineReason::MacroLike => {
+                write!(f, "{path}: holds `$(`, which NuGet may expand as a macro")
             }
             DgSpecDeclineReason::AmbiguousName => {
                 write!(f, "{path}: name may be merged with a sibling's")
@@ -476,6 +485,7 @@ pub fn parse_dgspec(text: &str) -> Result<DependencyGraphSpec, DgSpecDecline> {
         }
     };
     let path = JsonPath::default();
+    decline_macros(&path, &root)?;
     let mut fields = Fields::new(&path, &root)?;
 
     match fields.take("format") {
@@ -516,6 +526,32 @@ pub fn parse_dgspec(text: &str) -> Result<DependencyGraphSpec, DgSpecDecline> {
     fields.finish()?;
 
     Ok(DependencyGraphSpec { restore, projects })
+}
+
+/// Decline on any key or string holding `$(`. With
+/// `NUGET_ENABLE_EXPERIMENTAL_MACROS` set, the reader expands `$(User)` in
+/// paths, so such a value's reading depends on the caller's environment and
+/// user directory; MSBuild expands its own properties before writing a dgspec,
+/// so a real one never holds the sequence.
+fn decline_macros(path: &JsonPath, value: &Json) -> Parsed<()> {
+    const MACRO: &str = "$(";
+    match value {
+        Json::String(s) if s.contains(MACRO) => {
+            decline(path.clone(), DgSpecDeclineReason::MacroLike)
+        }
+        Json::Array(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, item)| decline_macros(&path.index(index), item)),
+        Json::Object(members) => members.iter().try_for_each(|(key, item)| {
+            let member_path = path.key(key);
+            if key.contains(MACRO) {
+                return decline(member_path, DgSpecDeclineReason::MacroLike);
+            }
+            decline_macros(&member_path, item)
+        }),
+        _ => Ok(()),
+    }
 }
 
 fn package_spec(path: &JsonPath, value: &Json) -> Parsed<PackageSpec> {
