@@ -34,9 +34,12 @@
 //! abandons it. Nothing bounds the sweep's *total* run time; what is bounded is
 //! how long it can hold anything else up.
 //!
-//! **What a report means when other messages interleave.** Each item is
-//! computed against the state at the moment its file is diagnosed, which is
-//! never earlier than the request's arrival. An edit landing mid-sweep can
+//! **What a report means when other messages interleave.** Which files are
+//! reported, and which project each linked file is diagnosed under, come from
+//! one generation of the project evaluations: a structural change mid-sweep
+//! (one that invalidates them) starts the sweep over. Each item is computed
+//! against the state at the moment its file is diagnosed, which is never
+//! earlier than the request's arrival. An edit landing mid-sweep can
 //! therefore stale an item already computed, exactly as an edit landing just
 //! after a monolithic sweep's reply would; the convergence mechanism is the
 //! same in both cases: the per-item `result_id` (the next pull compares it
@@ -57,6 +60,7 @@ use crate::handlers::preferred_uri;
 use crate::paths::{lexically_normalize, path_dedup_key};
 use crate::pull::{workspace_entry, workspace_unchanged};
 use crate::server::State;
+use crate::workspace::ProjectsGeneration;
 
 /// A `workspace/diagnostic` sweep in progress. Enumerates every `.fsproj`
 /// under the client's workspace roots plus the source files in their
@@ -74,6 +78,12 @@ pub struct Sweep {
     /// What the client last received for each URI, so unchanged files can
     /// answer `Unchanged` rather than being re-lexed.
     previous: HashMap<String, String>,
+    /// The project-evaluation generation every fact in `phase` was read
+    /// under. The file list and the ownership map are derived from project
+    /// evaluations, so once the generation moves they describe a tree that no
+    /// longer exists, and diagnosing the files under the new evaluations would
+    /// mix the two; the sweep starts over instead.
+    generation: ProjectsGeneration,
     phase: Phase,
 }
 
@@ -116,12 +126,20 @@ impl Sweep {
     /// Start a sweep over the roots `state` holds now; a root change later in
     /// the sweep does not move it.
     pub fn new(state: &State, params: WorkspaceDiagnosticParams) -> Self {
-        Sweep {
-            previous: params
+        Self::start(
+            state,
+            params
                 .previous_result_ids
                 .into_iter()
                 .map(|p| (p.uri.as_str().to_owned(), p.value))
                 .collect(),
+        )
+    }
+
+    fn start(state: &State, previous: HashMap<String, String>) -> Self {
+        Sweep {
+            previous,
+            generation: state.workspace.projects_generation(),
             phase: Phase::Discover {
                 pending: state.workspace_roots().to_vec(),
                 visited: HashSet::new(),
@@ -132,9 +150,21 @@ impl Sweep {
 
     /// Do one unit of work: read one directory, evaluate one project, or
     /// diagnose one file. A step that finds its pass exhausted does only the
-    /// in-memory hand-off to the next pass.
+    /// in-memory hand-off to the next pass, and one that finds the project
+    /// evaluations invalidated since the sweep began only starts it over.
+    ///
+    /// Starting over has no bound of its own: a client that keeps reporting
+    /// structural changes keeps the sweep from finishing, exactly as it would
+    /// keep a client that re-pulls on every refresh from settling.
     pub fn step(self, state: &mut State) -> Step {
-        let Sweep { previous, phase } = self;
+        if state.workspace.projects_generation() != self.generation {
+            return Step::Pending(Sweep::start(state, self.previous));
+        }
+        let Sweep {
+            previous,
+            generation,
+            phase,
+        } = self;
         let phase = match phase {
             Phase::Discover {
                 mut pending,
@@ -210,7 +240,11 @@ impl Sweep {
                 }
             },
         };
-        Step::Pending(Sweep { previous, phase })
+        Step::Pending(Sweep {
+            previous,
+            generation,
+            phase,
+        })
     }
 }
 
@@ -1114,6 +1148,49 @@ mod tests {
                 &warm,
                 &reference::handle(&mut synchronous, params_with(previous_ids(&cold)))
             );
+        }
+
+        /// A structural change landing at any step of a sweep yields the report
+        /// a sweep started after it would: the sweep never combines a file
+        /// list or an ownership map read from one set of project evaluations
+        /// with diagnoses run under another.
+        #[test]
+        fn a_structural_change_mid_sweep_reports_the_new_tree(
+            before in tree_strategy(),
+            after in tree_strategy(),
+            at in 0usize..48,
+        ) {
+            let tmp = TempDir::new().unwrap();
+            write_tree(tmp.path(), &before);
+            let mut state = State::default();
+            state.set_workspace_roots(vec![tmp.path().to_path_buf()]);
+            let mut sweep = Sweep::new(&state, params());
+            for _ in 0..at {
+                match sweep.step(&mut state) {
+                    Step::Pending(next) => sweep = next,
+                    // Finished before the change: nothing was in flight.
+                    Step::Done(_) => return Ok(()),
+                }
+            }
+
+            fs::remove_dir_all(tmp.path()).unwrap();
+            fs::create_dir(tmp.path()).unwrap();
+            write_tree(tmp.path(), &after);
+            let changed = tmp.path().join("P.fsproj");
+            state.apply_watched_changes(&[lsp_types::FileEvent {
+                uri: <lsp_types::Uri as crate::uri::UriExt>::from_file_path(&changed).unwrap(),
+                typ: lsp_types::FileChangeType::CHANGED,
+            }]);
+            let report = loop {
+                match sweep.step(&mut state) {
+                    Step::Pending(next) => sweep = next,
+                    Step::Done(report) => break report,
+                }
+            };
+
+            let mut fresh = State::default();
+            fresh.set_workspace_roots(vec![tmp.path().to_path_buf()]);
+            proptest::prop_assert_eq!(report, handle(&mut fresh, params()));
         }
     }
 }
