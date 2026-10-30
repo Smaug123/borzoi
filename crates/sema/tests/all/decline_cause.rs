@@ -17,11 +17,18 @@
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, DeclineCause, DeclineTier, DeferredReason, ProjectItems, Resolution, ResolvedFile,
-    SyntaxRecovery, resolve_file,
+    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ProjectItems, Resolution,
+    ResolvedFile, SyntaxRecovery, resolve_file,
 };
+use rowan::{TextRange, TextSize};
+
+use crate::attr_resolution_diff::fsharp_core_env;
 
 fn resolve(src: &str) -> ResolvedFile {
+    resolve_in(src, &AssemblyEnv::default())
+}
+
+fn resolve_in(src: &str, env: &AssemblyEnv) -> ResolvedFile {
     let parsed = parse(src);
     assert!(
         parsed.errors.is_empty(),
@@ -30,12 +37,23 @@ fn resolve(src: &str) -> ResolvedFile {
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(
-        &file,
-        &ProjectItems::default(),
-        &AssemblyEnv::default(),
-        &recovery,
-    )
+    resolve_file(&file, &ProjectItems::default(), env, &recovery)
+}
+
+/// The site recorded at the one occurrence of `needle` inside the one
+/// occurrence of `context` in `src`.
+fn site_at(resolved: &ResolvedFile, src: &str, context: &str, needle: &str) -> Option<DeclineSite> {
+    let mut at = src.match_indices(context);
+    let (start, _) = at
+        .next()
+        .unwrap_or_else(|| panic!("{context:?} is not in the snippet"));
+    assert!(at.next().is_none(), "{context:?} is not unique");
+    let start = start + context.find(needle).expect("needle inside its context");
+    let range = TextRange::new(
+        TextSize::try_from(start).expect("fits"),
+        TextSize::try_from(start + needle.len()).expect("fits"),
+    );
+    resolved.decline_site(range)
 }
 
 /// Every `(cause, tier)` the file recorded, deduplicated and sorted so a case
@@ -183,4 +201,105 @@ let value = 1
         )),
         "expected the declined attribute to name a guard, got {sites:?}"
     );
+}
+
+/// A **bare** name no scope entry binds, though an assembly surface F# opens
+/// with no source `open` supplies it, names that: `Some` and `None` are cases
+/// of the implicitly opened `Microsoft.FSharp.Core`, which sema folds no entry
+/// for, in expression and pattern position alike. Recorded at the name, since a
+/// bare name is the whole of its own path.
+#[test]
+fn an_implicitly_opened_union_case_names_the_surface_sema_does_not_fold() {
+    let src = "\
+module DeclineCase
+
+let o = Some 1
+let n =
+    match o with
+    | Some x -> x
+    | None -> 0
+";
+    let resolved = resolve_in(src, &fsharp_core_env());
+    let unfolded = Some(DeclineSite {
+        cause: DeclineCause::ImplicitSurfaceUnfolded,
+        tier: DeclineTier::PreWalk,
+    });
+    for (context, needle) in [
+        ("= Some 1", "Some"),
+        ("| Some x", "Some"),
+        ("| None", "None"),
+    ] {
+        assert_eq!(
+            site_at(&resolved, src, context, needle),
+            unfolded,
+            "{needle} in {context:?}"
+        );
+    }
+}
+
+/// An entry an explicit `open` put in scope **declining** names why the open
+/// declined it: an assembly active-pattern tag has no member to point at.
+#[test]
+fn an_opened_assembly_pattern_tag_names_why_it_commits_nothing() {
+    let src = "\
+module DeclineTag
+
+open Microsoft.FSharp.Quotations.Patterns
+
+let f (q : Microsoft.FSharp.Quotations.Expr) =
+    match q with
+    | Lambda (v, b) -> 1
+    | _ -> 0
+";
+    let resolved = resolve_in(src, &fsharp_core_env());
+    assert_eq!(
+        site_at(&resolved, src, "| Lambda", "Lambda"),
+        Some(DeclineSite {
+            cause: DeclineCause::AssemblyCaseUntargeted,
+            tier: DeclineTier::PreWalk,
+        })
+    );
+}
+
+/// An opaque `open` withdrawing an opened entry the name would otherwise have
+/// found is that name's guard — the bare-name face of an `open` whose values
+/// cannot be listed (`open type` of a project type here; on real projects an
+/// assembly module the projection cannot enumerate).
+#[test]
+fn an_opaque_open_names_the_bare_names_it_withdraws() {
+    let src = "\
+module DeclineOpaqueBare
+
+type T =
+    static member Make () = 1
+
+open type T
+
+let w = failwith \"x\"
+";
+    let resolved = resolve_in(src, &fsharp_core_env());
+    let opaque = Some(DeclineSite {
+        cause: DeclineCause::OpaqueOpen,
+        tier: DeclineTier::PreWalk,
+    });
+    assert_eq!(site_at(&resolved, src, "= failwith", "failwith"), opaque);
+}
+
+/// The no-noise direction for bare names: one nothing in scope binds records
+/// no site, whatever opens are live — an opaque `open` is no evidence it is
+/// why *this* name found nothing.
+#[test]
+fn a_bare_name_nothing_binds_records_no_site() {
+    let src = "\
+module DeclineAbsent
+
+type T =
+    static member Make () = 1
+
+open type T
+
+let v = nowhere
+";
+    let resolved = resolve_in(src, &fsharp_core_env());
+    assert_eq!(site_at(&resolved, src, "= nowhere", "nowhere"), None);
 }

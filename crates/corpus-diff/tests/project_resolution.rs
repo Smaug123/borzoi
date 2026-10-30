@@ -11,6 +11,7 @@ use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
     UnionCases, Version,
 };
+use borzoi_corpus_diff::deferral_shape::DeferralCause;
 use borzoi_corpus_diff::manifest::{ManifestError, project_corpus_manifest};
 use borzoi_corpus_diff::{
     Comparison, CorpusRun, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange,
@@ -1708,7 +1709,7 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
             // silent about.
             "Synthetic.fsproj A.fs:2:5-8 \"foo\" unoracled-definition",
             "Synthetic.fsproj B.fs compared match=1 assembly-match=0 attribute=0 member=0 definitions=1",
-            "Synthetic.fsproj B.fs:2:11-17 \"Shared\" project-deferral qualified-access unattributed",
+            "Synthetic.fsproj B.fs:2:11-17 \"Shared\" project-deferral qualified-access qualifier",
             "Synthetic.fsproj comparable assets=not_checked",
             "Uncertain/Uncertain.fsproj skipped load project-evaluation-failed",
         ]
@@ -1733,7 +1734,7 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
             item.outcome = ItemOutcome::Deferral {
                 graded,
                 served: ServedDecline::Unrecorded,
-                site: None,
+                cause: DeferralCause::Unexplained,
             };
         }
     }

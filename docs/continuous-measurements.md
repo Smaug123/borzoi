@@ -695,14 +695,17 @@ available at all: a tier is fixed where the decline *site* is built, not where
 the cause is named, so which tiers a cause can speak from is not a function of
 the cause. `DeclineCensus::pairs` carries the three shapes that defeat it.
 
-`decline_census.unattributed` is the census's own honesty check, and it is a
-count rather than a residual. A decline site is a claim and its absence is not:
-many deferrals have no causing guard at all — a dotted path's tail segments
-defer because member resolution is a later phase — so the census attributes
-what the ladder and its pre-walk gates do and reports the rest as unattributed.
-Read `unattributed` against `attributed`; a *rise* in the ratio means a new
-decline path appeared that no guard accounts for, which is worth looking at even
-though nothing failed.
+`decline_census.unattributed` counts the declines no guard recorded a site
+for, and it is a count rather than a residual. A decline site is a claim and its
+absence is not: many deferrals have no causing guard at all — a dotted path's
+tail segments defer because member resolution is a later phase — so the census
+attributes what the ladder, its pre-walk gates and the bare-name scope guards
+do, and splits the rest by `by_shape`: the model the resolver lacks where the
+record sits (`member_access_on_value`, `qualifier`, `type_parameter`, … —
+`borzoi_corpus_diff::deferral_shape`). What neither a site nor a shape explains
+is `decline_census.unexplained`, the census's own honesty check. A *rise* in it
+means a decline path appeared that the census cannot name, which is worth
+looking at even though nothing failed.
 
 `uses.attribute_commits_compared` is a **coverage** number, not a quality one:
 how many of the compared uses were answered out of name resolution's attribute
