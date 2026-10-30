@@ -825,10 +825,11 @@ jobs:
         # reference set: no expansion may differ from Roslyn's, and the count
         # expanded is pinned exactly. The packs come from `nix develop`. The
         # generated-program properties run deep here (the normal suite runs a
-        # few dozen cases each).
+        # few dozen cases each): their `deep_*` twins, in the module and its
+        # families, are the module's only ignored tests.
         run: |
           nix develop --command cargo test -p borzoi --test all -- --ignored --nocapture \
-            xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_generated_diff::deep_
+            xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_generated_diff::
 
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
