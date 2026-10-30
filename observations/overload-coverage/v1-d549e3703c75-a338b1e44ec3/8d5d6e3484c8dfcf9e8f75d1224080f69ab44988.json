@@ -1,0 +1,59 @@
+{
+  "observation_schema_version": 1,
+  "series": "v1-d549e3703c75-a338b1e44ec3",
+  "repository": "Smaug123/borzoi",
+  "commit": "8d5d6e3484c8dfcf9e8f75d1224080f69ab44988",
+  "measured_at": "2026-10-30T21:15:31Z",
+  "workflow": {
+    "run_id": 41127961097,
+    "run_number": 168,
+    "run_attempt": 1,
+    "url": "https://github.com/Smaug123/borzoi/actions/runs/41127961097"
+  },
+  "corpus": {
+    "source": "Smaug123/borzoi-overload-matrix",
+    "revision": "d549e3703c75d2765824d5ea2e8e383d89433e65"
+  },
+  "flake_lock_hash": "3661abea007ee4fb353b1ac92eff2361d70455afd3a93afd9be674170809f442",
+  "generator": {
+    "schema_version": 1,
+    "measurement": "overload-coverage",
+    "configuration": {
+      "corpus": "generated-overload-matrix",
+      "matrix_digest": "d549e3703c75d2765824d5ea2e8e383d89433e65",
+      "sites": 2584
+    },
+    "statistics": {
+      "affirmation_gap": {
+        "basis_points": 1857,
+        "denominator": 646,
+        "numerator": 120
+      },
+      "betterness_addressable": {
+        "basis_points": 3993,
+        "denominator": 646,
+        "numerator": 258
+      },
+      "commit_rate": {
+        "basis_points": 4148,
+        "denominator": 646,
+        "numerator": 268
+      },
+      "commits_on_error_lines": 112,
+      "outcomes": {
+        "betterness": 258,
+        "committed": 268,
+        "gate_declined": 0,
+        "group_incomplete": 0,
+        "no_survivor": 0,
+        "possibly_curried": 0,
+        "unaffirmable": 120
+      },
+      "sites": {
+        "fcs_errored": 1938,
+        "fcs_resolved": 646,
+        "total": 2584
+      }
+    }
+  }
+}
