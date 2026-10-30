@@ -107,23 +107,24 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-10-30, after `equality` and `comparison` constraints;
-2 602 walked bindings, 38.8 % complete — 38.2 % before them, when a
-constrained assembly operator was the only observed reason of 37 and present
-in 71):
+corpus sample (2026-10-30, after statically resolved operators over known
+operands; 2 602 walked bindings, 38.9 % complete — 38.2 % before `equality` and
+`comparison` constraints, when a constrained assembly operator was the only
+observed reason of 37 and present in 71):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
 | value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 409 | 552 |
-| method call on a receiver that is not an in-file value | 162 | 272 |
+| method call on a receiver that is not an in-file value | 163 | 272 |
 | `use`, `let rec` or `let!` inside an expression | 64 | 90 |
+| use of an in-file binder F# may reject for its attributes | 55 | 131 |
 | pattern annotation outside the modelled set | 49 | 331 |
 | `match` | 47 | 150 |
-| use of an in-file binder F# may reject for its attributes | 46 | 123 |
 | computation expression | 34 | 35 |
 | `new` | 32 | 37 |
-| assembly value with a constraint other than `equality`/`comparison` (its own, or a generic type's it applies) | 17 | 30 |
-| assembly operator with such a constraint (`+`, …) | 16 | 36 |
+| assembly value with a constraint other than `equality`/`comparison` (its own, or a generic type's it applies) | 10 | 21 |
+| statically resolved operator over an operand not known where it is applied | 2 | 16 |
+| assembly operator with such a constraint, used as a value | 1 | 1 |
 
 The sample checks each file in isolation against FSharp.Core and the BCL
 alone, so most of the first row is a preceding file's value, which no
@@ -532,7 +533,132 @@ scheme and `when` in hover (graded by the `tooltips` oracle), and widening the
 provable list — F# types' derived equality and comparison, FSharp.Core's
 `EqualityConditionalOn`/`ComparisonConditionalOn` generics (`list`,
 `option`), comparison through a BCL type's interfaces, `Map` and `Set` in the
-bridge.
+bridge. Generalising was measured before it was built, by letting a
+constrained variable generalise with no constraint carried at all (unsound,
+so an upper bound): on the stride-13 sample it moved **nothing** — no
+agreement, no complete binding, and no binder FCS constrains among the ones
+committed. Generic functions comparing their own parameters are rare in real
+code, and the few in the sample sit in bindings incomplete for another reason.
+It waits until those reasons fall.
+
+**Statically resolved operators over known primitive operands.** `+`'s
+signature is `^T1 -> ^T2 -> ^T3`: it says nothing of the result until the
+member constraint is solved, and over the primitive types F# solves it by a
+built-in rule (`SolveMemberConstraint` in ConstraintSolver.fs), not a member
+lookup. `function_ty::builtin_operator` recognises the functions that rule
+covers — FSharp.Core's own `Operators` (by assembly identity and full name,
+so `Operators.Checked` and any other module are not), each name on a closed
+list, every type parameter carrying an F#-only constraint and nothing in IL,
+and the IL signature the shape the rule assumes: `+ - * / %`,
+`&&& ||| ^^^`, `<<< >>>`, prefix `-`, and the conversion functions (`int`,
+`float`, `char`, `decimal`, …). `infer_builtin_operators_diff`'s recogniser
+test pins the list against FSharp.Core exactly.
+
+FCS applies the rule where it checks the application, from the operand types
+it knows there; an operand it does not know yet leaves the constraint pending,
+to be solved when it is known or, failing that, by weak resolution, which
+defaults it to `int` (`IsBinaryOpOtherArgType`). So inference
+(`Gen::builtin_application`) types only three shapes — `a OP b`, `-a`, and a
+conversion applied by name — walks the operands as the arguments they are,
+settles the binding (`Gen::settle`, which applies only equalities FCS has made
+by that point in the source), and reads the operand types there:
+
+- every operand known and on the rule's closed list (`builtin_verdict`): the
+  application is typed — the operands' one type for `+ - * / %` and the
+  bitwise operators (a number; `+` also `char` and `string`, `-` also `char`;
+  bitwise an integer), the left operand's for a shift over an `int`, the
+  operand's for `-` over a signed integer, float or `decimal`, the target for
+  a conversion from a number, `char` or `string`;
+- an operand not known there: `Incomplete::Builtin(OpenOperand)`, untyped —
+  except a conversion, whose signature fixes its result (`^T -> int`) and
+  which FCS unifies with the application's type before it checks the operand,
+  so it is typed whatever the operand is or becomes;
+- two different named types the rule takes one of: `Builtin(Violated)` — the
+  rule fires and equates them, which fails — except `&&&`'s operands, which
+  share one type parameter, so FCS checks the right operand against the
+  left's type and inserts F#'s `int` widening (`int64 &&& int` is accepted,
+  `int64 + int` is not); the grid found this;
+- anything else — another type's own operator members (`DateTime - DateTime`
+  is a `TimeSpan`), an enum, a unit of measure, `bool`: `Builtin(Undecided)`.
+
+Any other use — the operator as a value (`(+) a b`, `List.map int`,
+`x |> int`) — declines as a constrained signature, as before. One more FCS
+behaviour the generators met: in a check position whose expected type is
+known, FCS unifies the result's type variable with it *before* it solves the
+constraint, so `let (x: obj) = s + s` is rejected where a `string`-returning
+function would be coerced. Inference emits nothing in check positions, so it
+commits nothing there; the local-let generator keeps the operators out of
+coercion positions, where its well-typed family would stop being well-typed.
+
+`infer_builtin_operators_diff` is the grid: 28 uses (each operator infix,
+prefix `-`, each conversion by name and qualified, and value spellings) × 25
+operand sorts (every primitive, `bool`, `unit`, `obj`, `DateTime`,
+`TimeSpan`, `BigInteger`, an enum, a function, a tuple, `float<m>`) ×
+annotated, nested, literal, local, member-receiver, open, late-fixed and
+unmodelled operands, each with a twin over two different operand types. The
+grid's own table of what the rule solves is checked against FCS exactly over
+the primitives (FCS accepts a file over them exactly when the table says the
+rule solves it, and rejects every pair it calls violated); each solved file
+must leave every binding complete but for the deliberately open rows and
+commit every synth row (2 682 obligations); every decline over a modelled
+spelling must record the reason the table predicts (415 rejected files, 33
+accepted off the list). The argument-check generator draws `+`, `<<<`, `-`,
+`*` and `int`, and the local-let generator `+` and `int` at `int` and
+`string`. Deleting each gate fails a test: the whole rule, the
+operand-type check per operator (admitting any type to `*`, any operand to a
+conversion, an unsigned one to `-`, a float to `&&&`, any right operand to
+`<<<`), the one-type requirement, the bitwise widening exception, the settle
+before reading the operands, the conversion's typed result over an open
+operand, asking before the member-call route (which took `-a`), the
+`Operators` module check (`Operators.Checked` shares the names and shapes),
+and the decimal exclusion from `Violated`. The assembly-identity, shape and
+constraint-kind checks in the recogniser are not reached by any FSharp.Core
+there is; they keep another FSharp.Core's differently shaped operator from
+being read as one.
+
+Walking the operands reached member accesses nothing walked before
+(`name.Substring (0, name.Length - suffix.Length)`), and the whole-project
+gate then called three of them divergent: FCS names `System.String` reached
+through `string` (or `System.String` in an annotation) by the `netstandard`
+facade FSharp.Core compiles against, and reached through `open System` by
+`System.Runtime` — one entity, two names. The gate now accepts the oracle's
+assembly when the env's type forwarders send our answer's declaring type's
+path there (`AssemblyEnv::assembly_names_type`), and the full name must still
+agree; the three are agreements.
+
+Measured on the stride-13 corpus sample: agreements 978 + 945 → 994 + 953
+(24 added in 5 files, none lost), 0 divergences, complete bindings
+1 010 → 1 011. The prototype before it — the rule with no ground check, all
+three type parameters equated, no prefix `-` — measured +16, and admitting
+FSharp.Core's generic abbreviations in pattern annotations (`int list`,
+`int array`), the next candidate the census suggested, +3.
+
+**Parameter types.** A function parameter's own type is published where it is
+known for certain, and never from the parameter's binder variable (which on an
+incomplete binding is decoupled from the function type's slot, and can be
+grounded by a use the binding's unmodelled constraints contradict):
+
+- its **annotation**, exact in F# — subsumption applies at a call, never at the
+  binder — and kept on the binder even where FCS rejects the body;
+- otherwise its **slot** in a function type `Gen::finish` publishes, when the
+  slot is ground: the published function type's domains are the parameters'
+  types, a tuple parameter's elements its elements', so this claims nothing
+  the function type has not.
+
+A generic parameter stays silent: FCS's binder rendering renumbers a
+parameter's type on its own (`'a` for `y` in `let k x y = x`, whose type is
+`'a -> 'b -> 'a`), while hover names it as the function does (`'b`), and one
+published `Ty` cannot be both. `infer_parameter_types_diff` pins which
+parameters must commit, over annotated, argument-checked, condition-grounded,
+tuple, member-receiver and operator-operand parameters and their generic and
+open twins; every other grid grades the new commits against `binder-types` as
+it grades every binder. Deleting the annotation route or the published-owner
+check fails a test.
+
+Measured on the stride-13 corpus sample: agreements 994 + 953 → 994 + 1 068
+(115 parameters, none lost), 0 divergences, 3 more commits ungraded in
+unconverted declarations; completeness is unchanged, since nothing about a
+binding's walk moved.
 
 ### Remaining 3.x hard piles (census-priority order)
 

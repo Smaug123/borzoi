@@ -419,6 +419,27 @@ fn resolution_agrees_with_fcs_over_the_corpus() {
     }
 }
 
+/// A byte-order mark moves every byte of a file and no position FCS reports:
+/// it strips the mark before it counts line 1's columns, and our text keeps it.
+/// So the corpus with the mark in front must agree with FCS exactly as it does
+/// without, over the same uses, each three bytes later. Most snippets are one
+/// line long, so every range they grade sits on line 1, where a mapping that
+/// counted the mark would grade the character before the name.
+#[test]
+fn a_byte_order_mark_moves_no_verdict_over_the_corpus() {
+    const BOM: &str = "\u{feff}";
+    for source in CORPUS {
+        let plain = assert_matches_fcs(source);
+        let marked = assert_matches_fcs(&format!("{BOM}{source}"));
+        let shift = rowan::TextSize::of(BOM);
+        let mut expected: Vec<_> = plain.iter().map(|r| *r + shift).collect();
+        let mut marked: Vec<_> = marked.into_iter().collect();
+        expected.sort_by_key(|r| (r.start(), r.end()));
+        marked.sort_by_key(|r| (r.start(), r.end()));
+        assert_eq!(marked, expected, "{source:?}");
+    }
+}
+
 /// The same headline property, but over a handful of *randomly generated*
 /// well-scoped programs (`common::generator`), checked against FCS. This closes
 /// the gap the curated corpus leaves: the generated programs compose the

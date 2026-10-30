@@ -362,6 +362,49 @@ fn site(sites: &[(usize, Verdict, Vec<String>)], at: usize) -> (Verdict, Vec<Str
     (verdict.clone(), fcs.clone())
 }
 
+/// A byte-order mark moves bytes and no position FCS reports: it reads the
+/// file with the mark stripped. So every occurrence on line 1 of a file opened
+/// by one must be graded exactly as it is without it, three bytes later — here
+/// a definition with no doc, and a use of one with a doc from another file.
+#[test]
+fn a_byte_order_mark_moves_no_line_one_verdict() {
+    const BOM: &str = "\u{feff}";
+    let lib = "module A\n/// The x.\nlet x = 1\n";
+    let verdicts = |prefix: &str| {
+        let user = format!("{prefix}let y = A.x\n");
+        let (graded, _) = run_fixture(&[("A.fs", lib), ("B.fs", &user)], &[]);
+        graded
+            .into_iter()
+            .filter(|g| g.file == 1)
+            .map(|g| {
+                let start = usize::from(g.range.start()) - prefix.len();
+                (start, g.name, g.verdict, g.fcs_lines)
+            })
+            .collect::<Vec<_>>()
+    };
+    let plain = verdicts("");
+    let user = "let y = A.x\n";
+    let lines = |l: &[&str]| Some(l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    assert_eq!(
+        plain,
+        [
+            (
+                user.find('y').unwrap(),
+                "y".to_string(),
+                Verdict::Agree { attached: false },
+                lines(&[])
+            ),
+            (
+                user.find("A.x").unwrap(),
+                "x".to_string(),
+                Verdict::Agree { attached: true },
+                lines(&[" The x."])
+            ),
+        ]
+    );
+    assert_eq!(verdicts(BOM), plain);
+}
+
 #[test]
 fn a_member_reached_through_a_namesake_of_another_arity_shows_no_other_doc() {
     // FCS binds `T.M` to the non-generic `T`'s `M`; resolution may pick the

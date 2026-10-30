@@ -274,6 +274,35 @@ pub fn module_function_constrained(
         .collect()
 }
 
+/// The functions of the F# module `module` that inference types by F#'s
+/// built-in rule for a statically resolved operator or conversion
+/// (`function_ty::builtin_operator`), by F# source name, each with what it is
+/// read as (`Arith(Add)`, `Convert { target: … }`, …).
+pub fn module_builtin_operators(env: &AssemblyEnv, module: EntityHandle) -> Vec<(String, String)> {
+    env.member_indices(module)
+        .filter_map(|idx| {
+            let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {
+                return None;
+            };
+            let builtin = crate::function_ty::builtin_operator(env, module, m)?;
+            Some((
+                env.member_display_name(module, idx).to_string(),
+                format!("{builtin:?}"),
+            ))
+        })
+        .collect()
+}
+
+/// Whether the assembly called `assembly` names the non-generic top-level
+/// type `handle`: declares it, or is a facade whose type forwarders send its
+/// path there. FCS names a type by the assembly it reached it through, which
+/// for a corelib type FSharp.Core's references introduce (`string`) is the
+/// `netstandard` facade FSharp.Core compiles against; a differential reading
+/// that name asks this before calling it another type.
+pub fn assembly_names_type(env: &AssemblyEnv, assembly: &str, handle: EntityHandle) -> bool {
+    env.assembly_names_type(assembly, handle)
+}
+
 /// FSharp.Core's renamed generic types a [`Ty`](crate::Ty) may carry, as
 /// `(namespace, compiled name, source name, display name)`, for the test that
 /// checks the table against FSharp.Core itself.
