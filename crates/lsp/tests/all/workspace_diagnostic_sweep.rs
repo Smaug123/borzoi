@@ -459,3 +459,40 @@ fn a_refresh_owed_mid_sweep_follows_the_reply() {
         "the refresh must follow the sweep's reply: {sent:#?}"
     );
 }
+
+/// A refresh held for a sweep is released when the sweep is cancelled, without
+/// waiting for some later message to drain it.
+#[test]
+fn a_refresh_held_for_a_cancelled_sweep_is_released() {
+    let root = wide_root();
+    let changed = Uri::from_file_path(root.path().join("P00").join("F00.fs")).unwrap();
+    let watched = notification::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: changed,
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    let sent = run_script(
+        root.path(),
+        pull_refresh_caps(),
+        Vec::new(),
+        vec![sweep("sweep"), watched, cancel("sweep")],
+        End::AfterReplyTo("sweep"),
+    );
+    let refresh = sent
+        .iter()
+        .position(
+            |m| matches!(m, Message::Request(r) if r.method == WorkspaceDiagnosticRefresh::METHOD),
+        )
+        .unwrap_or_else(|| panic!("the watched change owed a refresh: {sent:#?}"));
+    let shutdown_ack = sent
+        .iter()
+        .position(
+            |m| matches!(m, Message::Response(r) if r.id == RequestId::from("shutdown".to_string())),
+        )
+        .unwrap_or_else(|| panic!("no shutdown acknowledgement: {sent:#?}"));
+    assert!(
+        refresh < shutdown_ack,
+        "the refresh must go out when the sweep ends, not wait for later traffic: {sent:#?}"
+    );
+}

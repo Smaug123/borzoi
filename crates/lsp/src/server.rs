@@ -710,17 +710,20 @@ pub fn run_with_fetcher(
                 // mutation or diagnostic publishing after `shutdown`.
                 if !shutting_down {
                     if not.method == Cancel::METHOD {
+                        // Every other request is answered before the next
+                        // message is read, so the sweep is all there is to
+                        // cancel.
                         if let Some(in_flight) = sweep.take() {
                             sweep = cancel_sweep_if_named(&connection, in_flight, &not)?;
                         }
-                        // Every other request is answered before the next
-                        // message is read, so there is nothing else to cancel.
-                        continue;
+                    } else {
+                        handle_notification(&mut state, &connection, not);
                     }
-                    handle_notification(&mut state, &connection, not);
                     // A notification can invalidate pull diagnostics or stale
                     // an open buffer's semantic tokens without any fold, so
-                    // drain refresh work here too, not only after requests.
+                    // drain refresh work here too, not only after requests —
+                    // including a diagnostic refresh a just-cancelled sweep
+                    // was holding.
                     maybe_send_refresh(&mut state, &connection, SweepStatus::of(&sweep));
                     refresh_project_deferrals(&mut state, &connection);
                 }
