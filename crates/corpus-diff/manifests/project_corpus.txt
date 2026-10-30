@@ -16028,9 +16028,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj V
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers perturbed definition declined=18 located=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers perturbed hover described=12 explained=18
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers perturbed references declined=18 referenced=12
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain definition declined=26 located=13
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain hover declined=1 explained=25
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain references declined=26
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain definition declined=29 located=13
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain hover declined=1 explained=28
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain references declined=29
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:10:15-44 "ValueSetDuringStabilization" project-deferral qualified-access unattributed
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:11:11-15 "Some" assembly-deferral unrecorded unattributed
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:12:11-15 "None" assembly-deferral unrecorded unattributed
