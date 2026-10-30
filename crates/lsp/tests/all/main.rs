@@ -41,6 +41,7 @@ mod project_assets_integration;
 mod project_deferral_e2e;
 mod reference_set_msbuild_diff;
 mod resolve_real_project_diff;
+mod restore_graph;
 mod restore_hostile_config_matrix;
 mod restore_on_demand_e2e;
 mod restore_to_scratch_diff;

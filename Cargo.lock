@@ -146,6 +146,7 @@ dependencies = [
  "borzoi-assembly",
  "borzoi-cst",
  "borzoi-msbuild",
+ "borzoi-nuget",
  "borzoi-oracle-harness",
  "borzoi-sema",
  "borzoi-spawn",
