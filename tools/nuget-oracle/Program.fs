@@ -102,6 +102,16 @@
 ///     where identity = {"informationalVersion":s,"path":s}: the
 ///     `AssemblyInformationalVersion` and load path of the `NuGet.Commands`
 ///     assembly that ran the restore.
+///   {"op":"normaliseDgSpec","text":s}
+///     NuGet's reading of a dependency-graph spec: `DependencyGraphSpec.Load`
+///     over `text`, projected to the canonical shape
+///     `crates/nuget/tests/all/dgspec_diff.rs` compares with.
+///     -> {"ok":true,"spec":{"restore":[..],"projects":[..]},"nugetCommands":identity}
+///      | {"ok":false,"exceptionType":s,"message":s,"nugetCommands":identity}
+///          (the reader refused the document)
+///   {"op":"nuGetLogCodes"}
+///     -> {"ok":true,"names":[..],"nugetCommands":identity}
+///          (`NuGetLogCode`'s names, `Undefined` included)
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -633,6 +643,319 @@ let private respondRestore (sdkDir: string) (root: JsonElement) : string =
         with _ ->
             ()
 
+/// A flags enum as its integer value: the canonical currency for
+/// `LibraryIncludeFlags`, `LibraryDependencyTarget` and
+/// `FrameworkDependencyFlags`, whose composite names (`All`, `None`) would
+/// otherwise make two spellings of one value compare unequal.
+let private flagsValue (x: 'e) : int64 = Convert.ToInt64(box x)
+
+/// A property the SDK's NuGet has but the compile-time reference (see
+/// nuget-oracle.fsproj) predates, read by name. Fails if it is absent, so an
+/// SDK that lacks it errors rather than reporting a default.
+let private runtimeProperty (o: obj) (name: string) : obj =
+    match o.GetType().GetProperty(name) with
+    | null -> failwithf "%s has no property %s" (o.GetType().FullName) name
+    | p -> p.GetValue o
+
+/// Every public instance property of each type `respondNormaliseDgSpec`
+/// projects, as the projection accounts for it: projected, or excluded with the
+/// reason given. The SDK's NuGet is newer than the one the oracle compiles
+/// against, so a property it reads a dgspec key into could be invisible to the
+/// projection's source; `checkProjectionCoverage` turns that into an error
+/// instead of a silently partial projection.
+let private projectionCoverage: (string * string list) list =
+    [ "NuGet.ProjectModel.PackageSpec",
+      [ "FilePath"; "Name"; "Version"; "IsDefaultVersion"; "TargetFrameworks"; "RuntimeGraph"
+        "RestoreSettings"; "RestoreMetadata"
+        // Derived from FilePath.
+        "BaseDirectory" ]
+      "NuGet.ProjectModel.TargetFrameworkInformation",
+      [ "TargetAlias"; "FrameworkName"; "Dependencies"; "Imports"; "AssetTargetFallback"; "Warn"
+        "DownloadDependencies"; "CentralPackageVersions"; "FrameworkReferences"; "PackagesToPrune"
+        "RuntimeIdentifierGraphPath" ]
+      "NuGet.ProjectModel.ProjectRestoreMetadata",
+      [ "ProjectStyle"; "ProjectPath"; "ProjectJsonPath"; "OutputPath"; "ProjectName"
+        "ProjectUniqueName"; "Sources"; "PackagesPath"; "CacheFilePath"; "FallbackFolders"
+        "ConfigFilePaths"; "TargetFrameworks"; "OriginalTargetFrameworks"; "CrossTargeting"
+        "LegacyPackagesDirectory"; "Files"; "ValidateRuntimeAssets"; "SkipContentFileWrite"
+        "ProjectWideWarningProperties"; "RestoreLockProperties"; "CentralPackageVersionsEnabled"
+        "CentralPackageVersionOverrideDisabled"; "CentralPackageFloatingVersionsEnabled"
+        "CentralPackageTransitivePinningEnabled"; "RestoreAuditProperties"; "SdkAnalysisLevel"
+        "UsingMicrosoftNETSdk"; "UseLegacyDependencyResolver"; "RestoreDoNotWriteDependencyGraphSpec" ]
+      "NuGet.ProjectModel.ProjectRestoreMetadataFrameworkInfo",
+      [ "TargetAlias"; "FrameworkName"; "ProjectReferences" ]
+      "NuGet.ProjectModel.ProjectRestoreReference",
+      [ "ProjectUniqueName"; "ProjectPath"; "IncludeAssets"; "ExcludeAssets"; "PrivateAssets" ]
+      "NuGet.ProjectModel.WarningProperties",
+      [ "WarningsAsErrors"; "NoWarn"; "AllWarningsAsErrors"; "WarningsNotAsErrors" ]
+      "NuGet.ProjectModel.RestoreAuditProperties",
+      [ "EnableAudit"; "AuditLevel"; "AuditMode"; "SuppressedAdvisories" ]
+      "NuGet.ProjectModel.RestoreLockProperties",
+      [ "RestorePackagesWithLockFile"; "NuGetLockFilePath"; "RestoreLockedMode" ]
+      "NuGet.LibraryModel.LibraryDependency",
+      [ "LibraryRange"; "IncludeType"; "SuppressParent"; "NoWarn"; "AutoReferenced"
+        "VersionCentrallyManaged"; "ReferenceType"; "GeneratePathProperty"; "Aliases"
+        "VersionOverride"
+        // LibraryRange.Name.
+        "Name" ]
+      "NuGet.LibraryModel.LibraryRange", [ "Name"; "VersionRange"; "TypeConstraint" ]
+      "NuGet.LibraryModel.DownloadDependency", [ "Name"; "VersionRange" ]
+      "NuGet.LibraryModel.FrameworkDependency", [ "Name"; "PrivateAssets" ] ]
+
+let private checkProjectionCoverage () =
+    let anchor = typeof<NuGet.ProjectModel.PackageSpec>
+
+    for (typeName, covered) in projectionCoverage do
+        let t =
+            [ anchor.Assembly; typeof<LibraryDependency>.Assembly ]
+            |> List.tryPick (fun a -> Option.ofObj (a.GetType typeName))
+
+        match t with
+        | None -> failwithf "projection names %s, which the SDK's NuGet does not define" typeName
+        | Some t ->
+            let actual =
+                t.GetProperties(BindingFlags.Public ||| BindingFlags.Instance)
+                |> Array.map (fun p -> p.Name)
+                |> Set.ofArray
+
+            let missing = Set.difference actual (Set.ofList covered)
+
+            if not missing.IsEmpty then
+                failwithf "%s has properties the dgspec projection does not account for: %s" typeName (String.Join(", ", missing))
+
+let private frameworkCanonical (f: NuGetFramework) : obj =
+    if isNull (box f) then
+        null
+    else
+        box
+            {| framework = f.Framework
+               version = string f.Version
+               platform = f.Platform
+               platformVersion = string f.PlatformVersion
+               profile = f.Profile |}
+
+let private rangeCanonical (r: VersionRange) : string =
+    if isNull (box r) then null else r.ToNormalizedString()
+
+let private versionCanonical (v: NuGetVersion) : string =
+    if isNull (box v) then null else v.ToFullString()
+
+let private stringsOrNull (xs: seq<string>) : string array =
+    if isNull (box xs) then null else Seq.toArray xs
+
+let private dependencyCanonical (d: LibraryDependency) =
+    {| name = d.Name
+       range = rangeCanonical d.LibraryRange.VersionRange
+       target = flagsValue d.LibraryRange.TypeConstraint
+       ``include`` = flagsValue d.IncludeType
+       suppressParent = flagsValue d.SuppressParent
+       noWarn = d.NoWarn |> Seq.map string |> Seq.toArray
+       autoReferenced = d.AutoReferenced
+       versionCentrallyManaged = d.VersionCentrallyManaged
+       referenceType = string d.ReferenceType
+       generatePathProperty = d.GeneratePathProperty
+       aliases = d.Aliases
+       versionOverride = rangeCanonical d.VersionOverride |}
+
+let private targetFrameworkCanonical (t: NuGet.ProjectModel.TargetFrameworkInformation) =
+    {| targetAlias = t.TargetAlias
+       framework = frameworkCanonical t.FrameworkName
+       dependencies = t.Dependencies |> Seq.map dependencyCanonical |> Seq.toArray
+       imports = t.Imports |> Seq.map frameworkCanonical |> Seq.toArray
+       assetTargetFallback = t.AssetTargetFallback
+       warn = t.Warn
+       downloadDependencies =
+        t.DownloadDependencies
+        |> Seq.map (fun d -> {| name = d.Name; range = rangeCanonical d.VersionRange |})
+        |> Seq.toArray
+       centralPackageVersions =
+        if isNull t.CentralPackageVersions then
+            null
+        else
+            t.CentralPackageVersions
+            |> Seq.map (fun kv ->
+                {| key = kv.Key
+                   name = kv.Value.Name
+                   range = rangeCanonical kv.Value.VersionRange |})
+            |> Seq.toArray
+       frameworkReferences =
+        if isNull t.FrameworkReferences then
+            null
+        else
+            t.FrameworkReferences
+            |> Seq.map (fun f ->
+                {| name = f.Name
+                   privateAssets = flagsValue f.PrivateAssets |})
+            |> Seq.toArray
+       packagesToPrune =
+        if isNull t.PackagesToPrune then
+            null
+        else
+            t.PackagesToPrune
+            |> Seq.map (fun kv ->
+                {| key = kv.Key
+                   name = kv.Value.Name
+                   range = rangeCanonical kv.Value.VersionRange |})
+            |> Seq.toArray
+       runtimeIdentifierGraphPath = t.RuntimeIdentifierGraphPath |}
+
+let private restoreMetadataCanonical (m: NuGet.ProjectModel.ProjectRestoreMetadata) : obj =
+    if isNull m then
+        null
+    else
+        let warnings = m.ProjectWideWarningProperties
+        let lockProps = m.RestoreLockProperties
+        let audit = m.RestoreAuditProperties
+
+        box
+            {| projectStyle = string m.ProjectStyle
+               projectPath = m.ProjectPath
+               projectJsonPath = m.ProjectJsonPath
+               outputPath = m.OutputPath
+               projectName = m.ProjectName
+               projectUniqueName = m.ProjectUniqueName
+               sources =
+                if isNull m.Sources then
+                    null
+                else
+                    m.Sources
+                    |> Seq.map (fun s ->
+                        {| name = s.Name
+                           source = s.Source
+                           isEnabled = s.IsEnabled
+                           protocolVersion = s.ProtocolVersion |})
+                    |> Seq.toArray
+               packagesPath = m.PackagesPath
+               cacheFilePath = m.CacheFilePath
+               fallbackFolders = stringsOrNull m.FallbackFolders
+               configFilePaths = stringsOrNull m.ConfigFilePaths
+               frameworks =
+                if isNull m.TargetFrameworks then
+                    null
+                else
+                    m.TargetFrameworks
+                    |> Seq.map (fun f ->
+                        {| targetAlias = f.TargetAlias
+                           framework = frameworkCanonical f.FrameworkName
+                           projectReferences =
+                            f.ProjectReferences
+                            |> Seq.map (fun r ->
+                                {| projectUniqueName = r.ProjectUniqueName
+                                   projectPath = r.ProjectPath
+                                   includeAssets = flagsValue r.IncludeAssets
+                                   excludeAssets = flagsValue r.ExcludeAssets
+                                   privateAssets = flagsValue r.PrivateAssets |})
+                            |> Seq.toArray |})
+                    |> Seq.toArray
+               originalTargetFrameworks = stringsOrNull m.OriginalTargetFrameworks
+               crossTargeting = m.CrossTargeting
+               legacyPackagesDirectory = m.LegacyPackagesDirectory
+               files = (if isNull m.Files then 0 else m.Files.Count)
+               validateRuntimeAssets = m.ValidateRuntimeAssets
+               skipContentFileWrite = m.SkipContentFileWrite
+               warningProperties =
+                if isNull warnings then
+                    null
+                else
+                    box
+                        {| allWarningsAsErrors = warnings.AllWarningsAsErrors
+                           warningsAsErrors = warnings.WarningsAsErrors |> Seq.map string |> Seq.toArray
+                           noWarn = warnings.NoWarn |> Seq.map string |> Seq.toArray
+                           warningsNotAsErrors = warnings.WarningsNotAsErrors |> Seq.map string |> Seq.toArray |}
+               restoreLockProperties =
+                if isNull lockProps then
+                    null
+                else
+                    box
+                        {| restorePackagesWithLockFile = lockProps.RestorePackagesWithLockFile
+                           nuGetLockFilePath = lockProps.NuGetLockFilePath
+                           restoreLockedMode = lockProps.RestoreLockedMode |}
+               centralPackageVersionsEnabled = m.CentralPackageVersionsEnabled
+               centralPackageVersionOverrideDisabled = m.CentralPackageVersionOverrideDisabled
+               centralPackageFloatingVersionsEnabled = m.CentralPackageFloatingVersionsEnabled
+               centralPackageTransitivePinningEnabled = m.CentralPackageTransitivePinningEnabled
+               restoreAuditProperties =
+                if isNull audit then
+                    null
+                else
+                    box
+                        {| enableAudit = audit.EnableAudit
+                           auditLevel = audit.AuditLevel
+                           auditMode = audit.AuditMode
+                           suppressedAdvisories =
+                            (if isNull audit.SuppressedAdvisories then
+                                 null
+                             else
+                                 Seq.toArray audit.SuppressedAdvisories) |}
+               sdkAnalysisLevel = versionCanonical m.SdkAnalysisLevel
+               usingMicrosoftNETSdk = m.UsingMicrosoftNETSdk
+               useLegacyDependencyResolver = m.UseLegacyDependencyResolver
+               restoreDoNotWriteDependencyGraphSpec = runtimeProperty m "RestoreDoNotWriteDependencyGraphSpec" |}
+
+let private packageSpecCanonical (p: NuGet.ProjectModel.PackageSpec) =
+    {| name = p.Name
+       filePath = p.FilePath
+       version = versionCanonical p.Version
+       isDefaultVersion = p.IsDefaultVersion
+       runtimeGraphEntries =
+        (if isNull p.RuntimeGraph then
+             0
+         else
+             p.RuntimeGraph.Runtimes.Count + p.RuntimeGraph.Supports.Count)
+       hideWarningsAndErrors =
+        (not (isNull p.RestoreSettings)) && p.RestoreSettings.HideWarningsAndErrors
+       restore = restoreMetadataCanonical p.RestoreMetadata
+       frameworks = p.TargetFrameworks |> Seq.map targetFrameworkCanonical |> Seq.toArray |}
+
+/// NuGet's own reading of a dependency-graph spec: `DependencyGraphSpec.Load`
+/// over `text` written to a file as UTF-8 without a BOM (a leading U+FEFF in
+/// `text` therefore reaches the reader as BOM bytes), projected to the
+/// canonical shape `crates/nuget/tests/all/dgspec_diff.rs` compares ours with.
+/// Arrays keep NuGet's order; the comparison decides which of them are sets.
+let private respondNormaliseDgSpec (sdkDir: string) (root: JsonElement) : string =
+    checkProjectionCoverage ()
+    let text = root.GetProperty("text").GetString()
+
+    let path =
+        Path.Combine(Path.GetTempPath(), "nuget-oracle-dgspec-" + Guid.NewGuid().ToString("N") + ".json")
+
+    try
+        File.WriteAllText(path, text, Text.UTF8Encoding(false))
+
+        let loaded =
+            try
+                Ok(NuGet.ProjectModel.DependencyGraphSpec.Load path)
+            with ex ->
+                Error ex
+
+        match loaded with
+        | Ok spec ->
+            JsonSerializer.Serialize
+                {| ok = true
+                   spec =
+                    {| restore = Seq.toArray spec.Restore
+                       projects = spec.Projects |> Seq.map packageSpecCanonical |> Seq.toArray |}
+                   nugetCommands = nugetCommandsIdentity sdkDir |}
+        | Error ex ->
+            JsonSerializer.Serialize
+                {| ok = false
+                   exceptionType = ex.GetType().FullName
+                   message = ex.Message
+                   nugetCommands = nugetCommandsIdentity sdkDir |}
+    finally
+        try
+            File.Delete path
+        with _ ->
+            ()
+
+/// `NuGetLogCode`'s names, which decide which warning codes a dgspec's lists
+/// keep (the reader drops any `Enum.TryParse` refuses).
+let private respondNuGetLogCodes (sdkDir: string) : string =
+    JsonSerializer.Serialize
+        {| ok = true
+           names = Enum.GetNames(typeof<NuGetLogCode>)
+           nugetCommands = nugetCommandsIdentity sdkDir |}
+
 /// The request loop. Kept out of `main` so that compiling `main` never needs a
 /// NuGet type, which would load NuGet before the `Resolving` handler exists.
 [<MethodImpl(MethodImplOptions.NoInlining)>]
@@ -659,6 +982,8 @@ let private serve (sdkDir: string) =
                     | "selectDependencyGroup" -> respondSelectDependencyGroup root
                     | "selectCompileAssets" -> respondSelectCompileAssets root
                     | "restore" -> respondRestore sdkDir root
+                    | "normaliseDgSpec" -> respondNormaliseDgSpec sdkDir root
+                    | "nuGetLogCodes" -> respondNuGetLogCodes sdkDir
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}

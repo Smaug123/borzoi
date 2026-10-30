@@ -1,6 +1,7 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** proposed; nothing landed. Supersedes slice 8 of
+> **Status:** stage 1 has landed, and so has the NuGet-identity half of
+> stage 3 (the oracle runs the SDK's own NuGet). Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -182,20 +183,56 @@ identity CI grades.
 > Implement this plan with each stage on its own branch, stacked as necessary on
 > previous branches, so that a reviewer can review each branch in isolation.
 
-### Stage 1: typed dgspec model and parser
+### Stage 1: typed dgspec model and parser — landed
 
-**Dependencies:** none.
-**Implements:** *The currency is a value, not an interface.*
-**Correctness oracle:**
-- New `tools/nuget-oracle` op `normaliseDgSpec`: load with
-  `DependencyGraphSpec.Load`, re-serialise. Property (certain-implies-exact):
-  for every dgspec we parse without declining, our model's canonical projection
-  equals the projection of NuGet's re-serialised document.
-- Property: injecting any unknown key at any object node of a parsed spec
-  turns the parse into a decline that names that path. This is an absolute
-  property, so it holds regardless of which shapes the generator can build.
-- Generated specs come from extending `resolver_diff`'s graph generator to
-  emit dgspecs. The corpus fixtures arrive in stage 2.
+`borzoi_nuget::dgspec::parse_dgspec` reads a dgspec into NuGet's
+interpretation of it, or declines naming the JSON path. Its vocabulary is
+closed: an unmodelled key, a repeated key, or a spelling outside the modelled
+set declines. `tests/all/dgspec_diff.rs` holds it to certain-implies-exact
+against `DependencyGraphSpec.Load`, through the oracle's `normaliseDgSpec` op.
+That op projects NuGet's object model field by field, and refuses to answer if
+the SDK's NuGet has a property the projection does not account for (the oracle
+compiles against an older NuGet than it runs). The oracle gates are:
+
+- hand cases pinning which documents must commit and which must decline;
+- a generator mutating two templates (respelling values and keys, dropping,
+  duplicating and inserting members, confusing types), which must agree at
+  least once per mutation kind;
+- the absolute property that a key inserted into any object declines at or
+  beneath the insertion;
+- the warning-code table equal to `NuGetLogCode`'s names;
+- an ignored sweep over every `obj/*.nuget.dgspec.json` under
+  `BORZOI_DGSPEC_SWEEP_ROOT`.
+
+The generator in place of `resolver_diff`'s graphs reaches the reader's
+spelling rules, which those graphs do not exercise. The rules it found, each of
+which a naive reader gets wrong:
+- a missing `target` is 47, not `Package`;
+- `BuildTransitive` implies `Build` in every flags field;
+- flag tokens trim spaces but not tabs, and unknown names are dropped;
+- `exclude` folds into `include`;
+- a `framework` field overrides its alias;
+- an absent `targetAlias` is `""`;
+- an empty `imports` entry is skipped, and a non-specific one fails the load;
+- an empty `suppressedAdvisories` is null;
+- an unnamed framework reference fails the load;
+- a project reference's empty flags string is the default, though a
+  dependency's empty `include` is no flags;
+- framework references and `restore` names that differ only in case are
+  merged (paths only on a case-insensitive file system);
+- warning codes parse case-sensitively, numerically and as flag combinations;
+- keys are case-sensitive;
+- a non-boolean where a boolean belongs reads as `false`;
+- the project key and `format` are ignored.
+
+The generator also found two divergences in the landed framework parser,
+reached through dgspec aliases:
+- **Salvaged platform suffixes.** NuGet salvages `net8.0-1` (platform `1`); ours
+  reads it as unsupported, by design. So the dgspec reader declines any
+  framework it parses as unsupported.
+- **Malformed PCL versions.** NuGet reads `portable.-net45+win8` as
+  unsupported, and ours read it as `.NETPortable` 0.0. That is fixed and
+  pinned in `framework_diff.rs`.
 
 ### Stage 2: the half-A oracle and the reference globals
 

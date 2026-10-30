@@ -117,8 +117,10 @@ This is a Cargo workspace with nine members:
   warm-cache restore (`docs/nuget-restore-plan.md`): the `NuGetVersion` /
   `VersionRange` / `NuGetFramework` models, global-packages-folder and
   `.nuspec` reading, the conservative offline resolver, and compile-asset
-  selection (NuGet's content model). Everything either resolves *identically*
-  to `dotnet restore` or declines. Self-contained: depends only on `roxmltree`.
+  selection (NuGet's content model), and the dependency-graph spec reader
+  (`dgspec`, `docs/nuget-dgspec-boundary-plan.md`). Everything either resolves
+  *identically* to `dotnet restore` or declines. Self-contained: depends only
+  on `roxmltree` and `serde`/`serde_json`.
   Differentially tested against the real NuGet client libraries via
   `tools/nuget-oracle` — a test-only JSONL batch oracle in the same mould as
   `tools/fcs-dump`; it is never a runtime dependency of the LSP. The oracle
