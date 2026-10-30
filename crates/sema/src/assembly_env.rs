@@ -4732,6 +4732,20 @@ impl AssemblyEnv {
         found
     }
 
+    /// Whether the assembly called `assembly` names the type `handle`: it
+    /// declares it, or forwards its path there ([`Self::forwarded_target_at_path`]).
+    /// Only a non-generic top-level type is asked about; any other answers
+    /// `false`.
+    pub(crate) fn assembly_names_type(&self, assembly: &str, handle: EntityHandle) -> bool {
+        let entity = self.entity(handle);
+        if !self.top_level_types.contains(&handle) || !entity.generic_parameters.is_empty() {
+            return false;
+        }
+        let mut path = entity.namespace.clone();
+        path.push(entity.name.clone());
+        self.forwarded_target_at_path(assembly, &path, ABBREV_CHASE_FUEL) == Some(handle)
+    }
+
     /// Whether the **top-level rooting FQN above `handle`** is exported by
     /// more than one loaded DLL — the reference-order collision guard for a
     /// chase that starts at `handle`. FCS merges same-FQN roots by reference

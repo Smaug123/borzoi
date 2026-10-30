@@ -10,6 +10,8 @@ src/Compiler/AbstractIL/ilsign.fs:272:21-272:29 expr agree
 src/Compiler/AbstractIL/ilsign.fs:272:21-272:39 expr agree
 src/Compiler/AbstractIL/ilsign.fs:272:9-272:18 binder agree
 src/Compiler/AbstractIL/ilsign.fs:284:5-290:7 expr agree
+src/Compiler/AbstractIL/ilsign.fs:287:32-287:75 expr agree
+src/Compiler/AbstractIL/ilsign.fs:287:9-287:29 binder agree
 src/Compiler/AbstractIL/ilsign.fs:288:5-290:7 expr agree
 src/Compiler/AbstractIL/ilsign.fs:290:5-290:7 expr agree
 src/Compiler/AbstractIL/ilsign.fs:36:5-36:22 binder agree
@@ -19,6 +21,8 @@ src/Compiler/AbstractIL/ilsign.fs:58:9-58:18 binder agree
 src/Compiler/AbstractIL/ilsign.fs:59:26-59:35 expr agree
 src/Compiler/AbstractIL/ilsign.fs:59:26-59:55 expr agree
 src/Compiler/AbstractIL/ilsign.fs:59:9-59:23 binder agree
+src/Compiler/AbstractIL/ilsign.fs:62:26-62:47 expr agree
+src/Compiler/AbstractIL/ilsign.fs:62:9-62:23 binder agree
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs compared
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:163:13-164:22 unconverted-decl "|IsSimpleOrBoundExpr|_|"
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:31:5-56:37 unconverted-decl "GroupUpdatesToNestedFields"
@@ -61,6 +65,8 @@ src/Compiler/Driver/CreateILModule.fs:49:9-50:40 unconverted-decl "TryFindBoolAt
 src/Compiler/Driver/XmlDocFileWriter.fs compared
 src/Compiler/Driver/XmlDocFileWriter.fs:15:32-15:47 expr agree
 src/Compiler/Facilities/prim-lexing.fs compared
+src/Compiler/Facilities/prim-lexing.fs:418:17-418:21 binder agree
+src/Compiler/Facilities/prim-lexing.fs:418:24-418:49 expr agree
 src/Compiler/Optimize/LowerStateMachines.fs compared
 src/Compiler/Optimize/LowerStateMachines.fs:128:9-129:22 unconverted-decl "IsStateMachineExpr"
 src/Compiler/Optimize/LowerStateMachines.fs:178:13-180:19 unconverted-decl "BindResumableCodeDefinitions"
@@ -214,8 +220,21 @@ src/FSharp.Core/quotations.fs compared
 src/FSharp.Core/quotations.fs:1380:9-1380:73 expr agree
 src/FSharp.Core/quotations.fs:1683:14-1683:19 expr agree
 src/FSharp.Core/quotations.fs:1686:13-1686:15 expr agree
+src/FSharp.Core/quotations.fs:1719:13-1719:31 expr agree
+src/FSharp.Core/quotations.fs:1722:13-1722:36 expr agree
+src/FSharp.Core/quotations.fs:1725:13-1725:31 expr agree
+src/FSharp.Core/quotations.fs:1728:13-1728:32 expr agree
+src/FSharp.Core/quotations.fs:1731:13-1731:32 expr agree
+src/FSharp.Core/quotations.fs:1734:17-1734:19 binder agree
+src/FSharp.Core/quotations.fs:1734:22-1734:56 expr agree
+src/FSharp.Core/quotations.fs:1735:17-1735:19 binder agree
+src/FSharp.Core/quotations.fs:1735:22-1735:40 expr agree
+src/FSharp.Core/quotations.fs:1739:13-1739:32 expr agree
+src/FSharp.Core/quotations.fs:1748:13-1748:39 expr agree
 src/FSharp.Core/quotations.fs:1872:21-1872:24 binder agree
 src/FSharp.Core/quotations.fs:1872:27-1872:28 expr agree
+src/FSharp.Core/quotations.fs:2325:13-2325:14 binder agree
+src/FSharp.Core/quotations.fs:2325:17-2325:29 expr agree
 src/FSharp.Core/quotations.fs:2327:21-2327:22 binder agree
 src/FSharp.Core/quotations.fs:2327:25-2327:26 expr agree
 src/Microsoft.FSharp.Compiler/Program.fs compared
@@ -1826,6 +1845,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLite
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:12:5-12:10 binder agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:13:5-25:7 expr agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:25:5-25:7 expr agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:33:5-33:18 expr agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:41:5-41:10 binder agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:42:20-42:25 expr agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/NamedLiteral02.fs:42:9-42:17 binder agree
@@ -2111,6 +2131,10 @@ tests/fsharp/Compiler/CodeGen/EmittedIL/ComputationExpressionOptimizations.fs co
 tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs compared
 tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:16:13-16:14 binder agree
 tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:16:17-16:19 expr agree
+tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:28:13-28:25 binder agree
+tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:28:30-28:35 expr agree
+tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:29:13-29:27 binder agree
+tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:29:30-29:33 expr agree
 tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:30:13-30:26 binder agree
 tests/fsharp/Compiler/Conformance/BasicGrammarElements/IntegerConstants.fs:30:30-30:32 expr agree
 tests/fsharp/Compiler/Language/OptionalInteropTests.fs compared

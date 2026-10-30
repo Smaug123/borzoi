@@ -475,7 +475,9 @@ use rowan::{TextRange, TextSize};
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::DefId;
-use crate::function_ty::{FunctionTyGap, ModuleFunctionScheme, module_function_scheme};
+use crate::function_ty::{
+    Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, builtin_operator, module_function_scheme,
+};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -676,6 +678,28 @@ pub enum Incomplete {
     /// A use whose type parameter carries `equality` or `comparison`, solved
     /// to a type that does not satisfy it or is not known to.
     Constraint(ConstraintGap),
+    /// An application of one of FSharp.Core's statically resolved operators
+    /// or conversion functions whose solution F# builds in (`a + b`, `-a`,
+    /// `int a`), not typed, and why.
+    Builtin(BuiltinGap),
+}
+
+/// Why an application of a statically resolved operator or conversion was
+/// not typed: the census's split of [`Incomplete::Builtin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BuiltinGap {
+    /// An operand's type is not known where the operator is applied. FCS
+    /// then leaves the constraint pending, and may solve it later by weak
+    /// resolution — which defaults an operand to `int` — so what it settles
+    /// on is not knowable from here.
+    OpenOperand,
+    /// The operand types are known and F# provably rejects them (FS0001):
+    /// two different types, one of which the operator's rule solves over.
+    Violated,
+    /// The operand types are known but are not on the closed list the rule
+    /// is modelled over: a type whose own operator members, enum underlying
+    /// type or unit of measure would decide it.
+    Undecided,
 }
 
 /// Why a constrained instantiation left its binding incomplete: the
@@ -2922,6 +2946,11 @@ impl<'a> Gen<'a> {
             unparenthesize(func.clone()),
             Some(Expr::LongIdent(li)) if self.module_value_path(&li).is_some()
         );
+        // Asked first: a prefix operator (`-a`) is a bare `LONG_IDENT_EXPR`
+        // callee, which is otherwise read as a member access.
+        if let Some(r) = self.builtin_application(&func, &arg) {
+            return r;
+        }
         if !module_value && is_member_access_callee(&func) {
             return self.infer_method_call(&func, &arg);
         }
@@ -2995,6 +3024,122 @@ impl<'a> Gen<'a> {
         };
         let tf = self.operator_value(&op)?;
         Some(self.apply(tf, &lhs))
+    }
+
+    /// The application of `func` to `arg` when it is a use of one of
+    /// FSharp.Core's operators or conversion functions whose solution F#
+    /// builds in ([`builtin_operator`]), as [`Self::infer_app`] returns it;
+    /// `None` when it is not one. Three shapes are: `a OP b` with a binary
+    /// one (`+`, `&&&`, `<<<`), and a unary one applied to its operand by name
+    /// (`int a`, `Operators.int a`) or as a prefix operator (`-a`). Any other
+    /// use — the operator as a value (`(+) a b`, `List.map int`, `a |> int`)
+    /// — is not, and declines as a constrained signature
+    /// ([`Self::assembly_value_use`]).
+    ///
+    /// FCS solves the operator's constraint where it checks the application,
+    /// from its operands' types as it knows them there; one it does not know
+    /// yet leaves the constraint to be solved later, by weak resolution if
+    /// nothing else fixes it, which may default it to `int`
+    /// (`IsBinaryOpOtherArgType`). So the operands are walked as the
+    /// arguments they are, the binding settled ([`Self::settle`], which
+    /// applies only what FCS has applied by this point in source order), and
+    /// the operand types read there: the application is typed when every one
+    /// is known and on the rule's list ([`builtin_verdict`]), and otherwise
+    /// the binding is incomplete with the reason and the application untyped —
+    /// but for a conversion whose operand is not known, or not modelled,
+    /// whose result its signature fixes.
+    fn builtin_application(&mut self, func: &Expr, arg: &Expr) -> Option<Option<TyVid>> {
+        let (builtin, operands) = match func {
+            Expr::App(inner) if inner.is_infix() => {
+                let (op, lhs) = (inner.func()?, inner.arg()?);
+                let builtin = self.builtin_callee(&op)?;
+                if !matches!(
+                    builtin,
+                    Builtin::Arith(_) | Builtin::Bitwise | Builtin::Shift
+                ) {
+                    return None;
+                }
+                (builtin, vec![lhs, arg.clone()])
+            }
+            Expr::Ident(_) | Expr::LongIdent(_) => {
+                let builtin = self.builtin_callee(func)?;
+                if !matches!(builtin, Builtin::Negate | Builtin::Convert { .. }) {
+                    return None;
+                }
+                (builtin, vec![arg.clone()])
+            }
+            _ => return None,
+        };
+        let mut vars = Vec::new();
+        let mut walked = true;
+        for operand in &operands {
+            let d = self.table.fresh();
+            match self.infer_expr(operand, Some(d)) {
+                Some(v) => vars.push(v),
+                // The operand's own walk recorded why it is not typed.
+                None => walked = false,
+            }
+        }
+        let verdict = if walked {
+            self.settle();
+            let tys: Vec<Ty> = vars
+                .iter()
+                .map(|v| self.table.resolve(&Ty::Var(*v)))
+                .collect();
+            let verdict = builtin_verdict(&builtin, &tys);
+            if let Err(gap) = verdict {
+                self.mark_incomplete(Incomplete::Builtin(gap));
+            }
+            Some(verdict)
+        } else {
+            // The operand's own walk recorded why it is not typed.
+            None
+        };
+        let result = match (verdict, &builtin) {
+            (Some(Ok(result)), _) => result,
+            // A conversion's signature fixes its result (`^T -> int`), and FCS
+            // unifies that with the application's type before it checks the
+            // operand, so the application is `int` whatever the operand turns
+            // out to be, or whenever it is solved. Only a known operand the
+            // rule rejects, or may, is left untyped.
+            (None | Some(Err(BuiltinGap::OpenOperand)), Builtin::Convert { target }) => {
+                target.clone()
+            }
+            _ => return Some(None),
+        };
+        let r = self.table.fresh();
+        self.eq(Ty::Var(r), result);
+        Some(Some(r))
+    }
+
+    /// The [`Builtin`] the callee `e` names, if it names one: a bare name or
+    /// operator token, or a module-qualified path, that the resolver resolved
+    /// to the referenced assembly's member [`builtin_operator`] reads as one.
+    /// A shadowing definition, in this file or an opened module, is what the
+    /// resolver names instead, and is not one.
+    fn builtin_callee(&self, e: &Expr) -> Option<Builtin> {
+        let at = match e {
+            Expr::Ident(ident) => ident.ident()?.text_range(),
+            Expr::LongIdent(li) => {
+                let long_ident = li.long_ident()?;
+                if long_ident.active_pat_names().next().is_some() {
+                    return None;
+                }
+                let mut idents = long_ident.idents();
+                match (idents.next(), idents.next()) {
+                    (Some(tok), None) => tok.text_range(),
+                    _ => self.module_value_path(li)?,
+                }
+            }
+            _ => return None,
+        };
+        let Some(Resolution::Member { parent, idx }) = self.resolved.resolution_at(at) else {
+            return None;
+        };
+        let Member::Method(m) = self.env.member_at(parent, idx) else {
+            return None;
+        };
+        builtin_operator(self.env, parent, m)
     }
 
     /// The type variable of an infix operator's value, as [`Self::infer_callee`]
@@ -5414,6 +5559,156 @@ pub(crate) fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool 
         || p.is_unmanaged
         || !p.type_constraints.is_empty()
         || p.fsharp_constraints != FSharpConstraints::Free
+}
+
+/// The primitive types F#'s built-in operator rules distinguish
+/// (ConstraintSolver.fs: `isSignedIntegerTy`, `isUnsignedIntegerTy`,
+/// `isFpTy`, `isDecimalTy`, `isCharTy`, `isStringTy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuiltinKind {
+    /// `sbyte`, `int16`, `int`, `int64`, `nativeint`.
+    Signed,
+    /// `byte`, `uint16`, `uint32`, `uint64`, `unativeint`.
+    Unsigned,
+    /// `float32`, `float`.
+    Float,
+    Decimal,
+    Char,
+    String,
+}
+
+impl BuiltinKind {
+    /// An integer, signed or not (`IsIntegerOrIntegerEnumTy`, enums aside).
+    fn integer(self) -> bool {
+        matches!(self, BuiltinKind::Signed | BuiltinKind::Unsigned)
+    }
+
+    /// A number (`IsNumericOrIntegralEnumType`, enums aside).
+    fn numeric(self) -> bool {
+        self.integer() || matches!(self, BuiltinKind::Float | BuiltinKind::Decimal)
+    }
+}
+
+/// The [`BuiltinKind`] of `ty`, if it is one: exactly the type, with no
+/// argument. An enum, a measure-annotated number and every other type are
+/// not, and a rule over them is not modelled.
+fn builtin_kind(ty: &Ty) -> Option<BuiltinKind> {
+    let Ty::Named { path, args } = ty else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let kind = match path.as_slice() {
+        ["System", "SByte" | "Int16" | "Int32" | "Int64" | "IntPtr"] => BuiltinKind::Signed,
+        [
+            "System",
+            "Byte" | "UInt16" | "UInt32" | "UInt64" | "UIntPtr",
+        ] => BuiltinKind::Unsigned,
+        ["System", "Single" | "Double"] => BuiltinKind::Float,
+        ["System", "Decimal"] => BuiltinKind::Decimal,
+        ["System", "Char"] => BuiltinKind::Char,
+        ["System", "String"] => BuiltinKind::String,
+        _ => return None,
+    };
+    Some(kind)
+}
+
+/// Whether `ty` is a type a FSharp.Core conversion function may return: a
+/// number or `char`.
+pub(crate) fn is_conversion_target(ty: &Ty) -> bool {
+    builtin_kind(ty).is_some_and(|k| k.numeric() || k == BuiltinKind::Char)
+}
+
+/// The type of an application of `builtin` to operands of types `operands`
+/// (as many as it takes), by F#'s built-in rule for it, or why it is not
+/// typed. Read off `SolveMemberConstraint` (ConstraintSolver.fs), over the
+/// types [`builtin_kind`] names and nothing else:
+///
+/// - `+ - * / %`: two operands of one type, the result that type — a number,
+///   or for `+` also `char` and `string`, for `-` also `char`. (`decimal`'s
+///   own operator members solve it where the rule steps aside, to the same
+///   type.)
+/// - `&&& ||| ^^^`: two operands of one integer type, the result that type.
+/// - `<<< >>>`: an integer and an `int`, the result the integer's type.
+/// - `~-`: a signed integer, a float or `decimal`, the result its type.
+/// - a conversion: a number, `char` or `string`, the result its target.
+///
+/// An operand not yet known is [`BuiltinGap::OpenOperand`]. Two different
+/// operand types of which the rule takes one is [`BuiltinGap::Violated`]:
+/// the rule fires and equates them (`SolveTypeEqualsTypeKeepAbbrevs`), which
+/// fails. Anything else off the list is [`BuiltinGap::Undecided`] — another
+/// type's own operator members (`DateTime - DateTime`), an enum, a unit of
+/// measure.
+fn builtin_verdict(builtin: &Builtin, operands: &[Ty]) -> Result<Ty, BuiltinGap> {
+    if !operands.iter().all(Ty::is_ground) {
+        return Err(BuiltinGap::OpenOperand);
+    }
+    let kinds: Vec<Option<BuiltinKind>> = operands.iter().map(builtin_kind).collect();
+    let binary = |admits: &dyn Fn(BuiltinKind) -> bool| match (operands, kinds.as_slice()) {
+        ([a, b], [Some(ka), Some(kb)]) if a == b && admits(*ka) => {
+            debug_assert_eq!(ka, kb);
+            Ok(a.clone())
+        }
+        ([a, b], [Some(ka), Some(kb)])
+            if a != b
+                && (admits(*ka) || admits(*kb))
+                && *ka != BuiltinKind::Decimal
+                && *kb != BuiltinKind::Decimal =>
+        {
+            Err(BuiltinGap::Violated)
+        }
+        _ => Err(BuiltinGap::Undecided),
+    };
+    match builtin {
+        Builtin::Arith(Arith::Add) => {
+            binary(&|k| k.numeric() || matches!(k, BuiltinKind::Char | BuiltinKind::String))
+        }
+        Builtin::Arith(Arith::Sub) => binary(&|k| k.numeric() || k == BuiltinKind::Char),
+        Builtin::Arith(Arith::Mul | Arith::Div | Arith::Mod) => binary(&BuiltinKind::numeric),
+        // `&&&`'s operands share its one type parameter, so FCS checks the
+        // right operand against the left's type once it knows it, and there
+        // inserts F#'s widening of an `int` (to `int64`, `nativeint` or
+        // `float`): such a pair is not rejected. `+`'s three type
+        // parameters are independent, so nothing is expected of its right
+        // operand and nothing is widened.
+        Builtin::Bitwise
+            if operands.get(1) == Some(&Ty::named("System.Int32"))
+                && operands.first().is_some_and(|a| {
+                    [
+                        Ty::named("System.Int64"),
+                        Ty::named("System.IntPtr"),
+                        Ty::named("System.Double"),
+                    ]
+                    .contains(a)
+                }) =>
+        {
+            Err(BuiltinGap::Undecided)
+        }
+        Builtin::Bitwise => binary(&BuiltinKind::integer),
+        Builtin::Shift => match (operands, kinds.as_slice()) {
+            ([a, b], [Some(ka), _]) if ka.integer() && *b == Ty::named("System.Int32") => {
+                Ok(a.clone())
+            }
+            ([_, _], [Some(ka), Some(kb)]) if ka.integer() && *kb != BuiltinKind::Decimal => {
+                Err(BuiltinGap::Violated)
+            }
+            _ => Err(BuiltinGap::Undecided),
+        },
+        Builtin::Negate => match (operands, kinds.as_slice()) {
+            ([a], [Some(BuiltinKind::Signed | BuiltinKind::Float | BuiltinKind::Decimal)]) => {
+                Ok(a.clone())
+            }
+            _ => Err(BuiltinGap::Undecided),
+        },
+        Builtin::Convert { target } => match kinds.as_slice() {
+            [Some(k)] if k.numeric() || matches!(k, BuiltinKind::Char | BuiltinKind::String) => {
+                Ok(target.clone())
+            }
+            _ => Err(BuiltinGap::Undecided),
+        },
+    }
 }
 
 /// One of the two constraints [`satisfies`] decides.
