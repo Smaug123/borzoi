@@ -2918,6 +2918,15 @@ impl AppExpr {
     /// unmodelled construct even though the parser stores it under an
     /// [`SyntaxKind::APP_EXPR`]. The whitespace-separated `f [i]` (application of a
     /// list literal) carries **no** marker and so is *not* a bracket indexer.
+    ///
+    /// The marker is where the parser saw an indexer, not the checker's verdict.
+    /// FCS's `TcApplicationThen` first tries to unify the receiver's type with a
+    /// function type: if it can, `f[i]` is an application (with an FS3365
+    /// note); only otherwise is it an indexed lookup. A markerless `(f x)[1]`,
+    /// whose receiver ends where the list begins, follows the same rule
+    /// (`isAdjacentListExpr`), so reading it as an application agrees with FCS
+    /// exactly when the receiver unifies with a function type, which is the
+    /// shape an application imposes.
     pub fn is_bracket_indexer(&self) -> bool {
         accessor!("AppExpr::is_bracket_indexer");
         self.0

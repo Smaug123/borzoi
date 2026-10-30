@@ -5,18 +5,18 @@
 //! `f g(x)` is `f (g(x))`, not `(f g) (x)`. These pin that nesting, now that
 //! the atomic flag round-trips (so the inner atomic app diffs against FCS).
 //!
-//! Some no-space argument forms below still make FCS set `ParseHadErrors` while
-//! emitting the recovery AST shown in the comments. Those use the explicit
-//! `fcs_rejects_ours_accepts` helper so the parser acceptance gap is visible.
+//! An argument that ends in an adjacent application (`f g(x)`) is FS0597, a
+//! parse error that keeps the tree, so those cases check both the tree and the
+//! error's span (`parser_diff_successive_args` grades the rule as a matrix).
 
-use crate::common::{assert_asts_match, assert_asts_match_fcs_rejects_ours_accepts};
+use crate::common::{assert_asts_match, assert_asts_match_with_diagnostic};
 
 /// `f g(x)` — whitespace application of `f` to the *adjacent* application
 /// `g(x)`. FCS: `App(NonAtomic, f, App(Atomic, g, (x)))` = `f (g(x))`. The
 /// adjacent `g(x)` binds tighter than the surrounding `f _`.
 #[test]
 fn diff_ast_ws_then_adjacent() {
-    assert_asts_match_fcs_rejects_ours_accepts("f g(x)\n");
+    assert_asts_match_with_diagnostic("f g(x)\n", 597);
 }
 
 /// `f g (x)` — all whitespace-separated, so left-associative:
@@ -46,7 +46,7 @@ fn diff_ast_adjacent_chain() {
 /// `App(App(f, g), App(h, (x)))` = `(f g) (h(x))`.
 #[test]
 fn diff_ast_ws_chain_trailing_adjacent() {
-    assert_asts_match_fcs_rejects_ours_accepts("f g h(x)\n");
+    assert_asts_match_with_diagnostic("f g h(x)\n", 597);
 }
 
 /// `f a(x) b` — an adjacent application in the *middle* of a whitespace
@@ -54,7 +54,7 @@ fn diff_ast_ws_chain_trailing_adjacent() {
 /// outer chain stays left-associative around it.
 #[test]
 fn diff_ast_adjacent_in_middle() {
-    assert_asts_match_fcs_rejects_ours_accepts("f a(x) b\n");
+    assert_asts_match_with_diagnostic("f a(x) b\n", 597);
 }
 
 /// `f -g(x)` — an *adjacent-prefix* argument (`-g`) whose operand itself has
@@ -64,12 +64,12 @@ fn diff_ast_adjacent_in_middle() {
 /// (`parse_postfix_expr`), not just an atom, or the `(x)` is stranded.
 #[test]
 fn diff_ast_adjacent_prefix_arg_with_call() {
-    assert_asts_match_fcs_rejects_ours_accepts("f -g(x)\n");
+    assert_asts_match_with_diagnostic("f -g(x)\n", 597);
 }
 
 /// `f &g(x)` — the address-of counterpart: `App(f, AddressOf(App(g, (x))))`.
 /// The `&` operand is `atomicExpr` too, so `(x)` binds inside it.
 #[test]
 fn diff_ast_adjacent_addressof_arg_with_call() {
-    assert_asts_match_fcs_rejects_ours_accepts("f &g(x)\n");
+    assert_asts_match_with_diagnostic("f &g(x)\n", 597);
 }

@@ -763,7 +763,7 @@ impl<'src> Parser<'src> {
         // A missing argument is the error-recovery path.
         let starts_arg = self.peek_starts_aftertype_arg();
         if starts_arg {
-            self.parse_atomic_expr_head();
+            let _ = self.parse_atomic_expr_head();
         } else if new_span.is_some()
             && new_span == self.obj_brace_base_new
             && matches!(self.next_non_trivia_raw_at_pos(), Some(Token::RBrace))
@@ -1466,16 +1466,21 @@ impl<'src> Parser<'src> {
     /// arg/atomic position, where it cannot stand alone. Sign-folded /
     /// minus-level prefixes belong to [`Parser::parse_minus_expr`] one
     /// level up.
-    pub(super) fn parse_prefix_op_app(&mut self) {
+    ///
+    /// Returns the operand's [`EndsInAdjacentApp`] flag, which FCS's
+    /// production passes on (`!f(x)` ends in an adjacent application).
+    pub(super) fn parse_prefix_op_app(&mut self) -> EndsInAdjacentApp {
         let cp = self.builder.checkpoint();
         self.emit_prefix_op_as_long_ident();
-        if self.peek_starts_atomic_expr() {
-            self.parse_atomic_expr();
+        let ends = if self.peek_starts_atomic_expr() {
+            self.parse_atomic_expr_flagged()
         } else {
             self.push_missing_operand_error();
-        }
+            EndsInAdjacentApp::No
+        };
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
         self.builder.finish_node();
+        ends
     }
 }
