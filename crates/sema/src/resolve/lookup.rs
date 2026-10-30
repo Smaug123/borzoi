@@ -2251,7 +2251,17 @@ impl<'a> Resolver<'a> {
     /// in scope, and otherwise a binder this pass drops. Records the case it
     /// references; where none commits, records which guard declined it, if one
     /// did ([`Self::bare_case_decline`]).
-    pub(super) fn resolve_provisional_case_head(&mut self, name: &str, range: TextRange) {
+    /// Returns the scope entry the head must still enter, if any. A head that
+    /// no case reference takes, and that no unfolded implicit surface could
+    /// supply as a case (FSharp.Core's `None`, which the walk does not fold),
+    /// is a variable to FCS (`fun X -> X`): the entry declines, hiding from the
+    /// body whatever the enclosing scope gives the name — a value, a type, an
+    /// opened type's member.
+    pub(super) fn resolve_provisional_case_head(
+        &mut self,
+        name: &str,
+        range: TextRange,
+    ) -> Option<ScopeEntry> {
         let res = self.case_reference(name);
         if let Some(res) = res {
             self.record(range, res);
@@ -2261,6 +2271,14 @@ impl<'a> Resolver<'a> {
         {
             self.record_decline(range, DeclineSite::pre_walk(cause));
         }
+        let a_variable = res.is_none() && self.unfolded_implicit_surface(name).is_none();
+        a_variable.then(|| {
+            ScopeEntry::binding(
+                name.to_string(),
+                Resolution::Deferred(DeferredReason::UnboundName),
+                self.open_generation,
+            )
+        })
     }
 
     pub(super) fn case_reference(&self, name: &str) -> Option<Resolution> {
@@ -2502,7 +2520,7 @@ impl<'a> Resolver<'a> {
         // whole path is then a member access we don't model, so defer it. Gated on
         // the raw token text (`base`, no backticks) so the quoted form is
         // unaffected.
-        if first.text() == "base" {
+        if first.text() == "base" || is_synthesized_argument_name(&id_text(first)) {
             return;
         }
 
@@ -2572,11 +2590,16 @@ impl<'a> Resolver<'a> {
                 // never later than the same-file enum we model, so it does not take).
                 // A contributor mark the position cannot order against the
                 // enum keeps the qualifier: the path then declines at the mark.
+                // So does an unmodelled binder in scope (an instance member's
+                // `` ``base`` `` receiver): it has no position to order, and
+                // FCS binds it over any enum of the name.
                 Some(DefKind::EnumCase) => {
                     head_is_value
                         && match self.value_slot_position(head) {
                             Some(vp) => vp > self.defs[type_id.index()].range.start(),
-                            None => self.lookup_entry(head).is_some_and(|e| e.mark.is_some()),
+                            None => self.lookup_entry(head).is_some_and(|e| {
+                                e.mark.is_some() || matches!(e.resolution, Resolution::Deferred(_))
+                            }),
                         }
                 }
                 // A union case loses the qualifier to *any* definite non-case value.
@@ -5110,4 +5133,15 @@ impl<'a> Resolver<'a> {
     pub(super) fn latest_entry_exists(&self, name: &str) -> bool {
         self.latest_entry(name).is_some()
     }
+}
+
+/// Whether `name` is spelled like the binding FCS synthesizes for a parameter
+/// that is not a plain name (`_`, a tuple): `_arg1`, `_arg2`, …. A use of that
+/// spelling inside such a member, lambda or function is the synthesized
+/// binding, which the walk does not model, so the walk never commits one
+/// rather than bind an enclosing value of the name. Real code spells these
+/// names essentially never.
+pub(super) fn is_synthesized_argument_name(name: &str) -> bool {
+    name.strip_prefix("_arg")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }

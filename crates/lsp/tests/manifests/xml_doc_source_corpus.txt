@@ -1696,8 +1696,24 @@ src/Compiler/CodeGen/EraseUnions.Emit.fs:22:96-22:103	altName Parameter def agre
 src/Compiler/CodeGen/EraseUnions.Emit.fs:230:9-230:15	lab2pc Value { is_function: false } def agree-none
 src/Compiler/CodeGen/EraseUnions.Emit.fs:232:5-232:6	g Parameter use agree-none
 src/Compiler/CodeGen/EraseUnions.Emit.fs:233:15-233:23	ICodeGen Type use agree-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:234:32-234:33	m Parameter def unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:234:37-234:38	m Parameter use unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:236:31-236:35	ilTy Parameter def unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:237:36-237:37	m Parameter def unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:237:41-237:47	lab2pc Value { is_function: false } use unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:237:48-237:49	m Parameter use unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:237:54-237:60	instrs Value { is_function: false } use unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:238:32-238:33	x Parameter def unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:238:36-238:42	instrs Value { is_function: false } use unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:238:47-238:48	x Parameter use unpaired-none
 src/Compiler/CodeGen/EraseUnions.Emit.fs:23:25-23:31	access Parameter use agree-none
 src/Compiler/CodeGen/EraseUnions.Emit.fs:23:8-23:11	alt Parameter use agree-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:240:20-240:22	cg Value { is_function: false } def unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:240:34-240:36	xs Parameter def unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:241:21-241:22	i PatternLocal def unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:241:26-241:28	xs Parameter use unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:242:21-242:23	cg Value { is_function: false } use unpaired-none
+src/Compiler/CodeGen/EraseUnions.Emit.fs:242:34-242:35	i PatternLocal use unpaired-none
 src/Compiler/CodeGen/EraseUnions.Emit.fs:248:18-248:24	lab2pc Value { is_function: false } use unpaired-none
 src/Compiler/CodeGen/EraseUnions.Emit.fs:249:18-249:24	instrs Value { is_function: false } use unpaired-none
 src/Compiler/CodeGen/EraseUnions.Emit.fs:24:13-24:19	baseTy Value { is_function: false } def agree-none
@@ -3068,6 +3084,44 @@ src/Compiler/Facilities/prim-lexing.fs:169:24-169:34	sourceText Parameter def ag
 src/Compiler/Facilities/prim-lexing.fs:169:36-169:47	ISourceText Type use agree-none
 src/Compiler/Facilities/prim-lexing.fs:169:9-169:22	ofISourceText Value { is_function: true } def agree-none
 src/Compiler/Facilities/prim-lexing.fs:170:15-170:29	ISourceTextNew Type use declined ConstructorCall fcs-none
+src/Compiler/Facilities/prim-lexing.fs:172:26-172:31	index Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:172:34-172:44	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:172:45-172:50	index Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:174:36-174:37	x Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:174:41-174:51	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:174:66-174:67	x Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:176:39-176:49	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:178:51-178:61	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:180:39-180:40	x Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:180:42-180:43	y Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:180:47-180:57	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:180:75-180:76	x Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:180:78-180:79	y Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:182:36-182:37	x Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:182:39-182:40	y Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:182:44-182:54	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:182:69-182:70	x Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:182:72-182:73	y Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:184:31-184:41	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:186:36-186:37	x Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:186:41-186:51	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:186:66-186:67	x Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:29-188:30	a Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:32-188:33	b Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:35-188:36	c Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:38-188:39	d Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:43-188:53	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:61-188:62	a Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:64-188:65	b Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:67-188:68	c Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:188:70-188:71	d Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:190:42-190:43	x Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:190:47-190:57	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:190:78-190:79	x Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:194:19-194:29	sourceText Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:196:24-196:33	byteArray Parameter def agree-none
+src/Compiler/Facilities/prim-lexing.fs:196:65-196:74	byteArray Parameter use agree-none
+src/Compiler/Facilities/prim-lexing.fs:196:79-196:88	byteArray Parameter use agree-none
 src/Compiler/Facilities/prim-lexing.fs:210:15-210:23	Position Type def agree-none
 src/Compiler/Facilities/prim-lexing.fs:215:12-215:13	x Value { is_function: false } def agree-none
 src/Compiler/Facilities/prim-lexing.fs:215:23-215:24	x Value { is_function: false } use agree-none
@@ -6555,14 +6609,184 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1209:13-1209:20	visitor Value { is_
 src/Compiler/Service/ServiceParseTreeWalk.fs:120:36-120:53	SyntaxVisitorPath Type use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:120:92-120:94	'T TypeParam use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1210:19-1210:36	SyntaxVisitorBase Type use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1211:36-1211:40	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1211:45-1211:60	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1211:62-1211:66	expr Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1212:27-1212:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1213:53-1213:59	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1213:63-1213:67	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1213:71-1213:76	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1213:80-1213:86	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1213:87-1213:92	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1213:93-1213:97	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1213:98-1213:104	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1216:21-1216:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1216:30-1216:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1216:37-1216:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1216:43-1216:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1216:68-1216:72	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1217:21-1217:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1217:37-1217:41	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1219:35-1219:39	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1219:41-1219:56	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1219:58-1219:61	pat Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1220:21-1220:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1220:30-1220:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1220:37-1220:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1220:43-1220:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1220:67-1220:70	pat Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1221:21-1221:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1221:37-1221:40	pat Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1223:36-1223:40	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1223:42-1223:57	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1223:59-1223:66	synType Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1224:27-1224:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1225:108-1225:114	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1225:115-1225:120	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1225:121-1225:125	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1225:126-1225:132	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1225:81-1225:87	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1225:91-1225:95	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1225:99-1225:104	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1228:21-1228:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1228:30-1228:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1228:37-1228:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1228:43-1228:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1228:68-1228:75	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1229:21-1229:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1229:37-1229:44	synType Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:122:30-122:34	path Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:122:36-122:41	cases Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:122:43-122:48	range Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1231:42-1231:46	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1231:48-1231:63	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1231:65-1231:78	synModuleDecl Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1232:21-1232:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1232:30-1232:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1232:37-1232:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1232:43-1232:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1232:70-1232:83	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1234:27-1234:40	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1235:43-1235:48	types PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1236:29-1236:33	path Value { is_function: false } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1236:57-1236:70	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1236:74-1236:78	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1238:29-1238:31	ty PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1238:35-1238:40	types PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1239:29-1239:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1239:38-1239:44	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1239:45-1239:50	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1239:51-1239:55	path Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1239:80-1239:82	ty PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:123:17-123:21	path Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:123:23-123:28	cases Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:123:30-123:35	range Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1243:21-1243:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1243:37-1243:50	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1245:49-1245:53	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1245:55-1245:75	synModuleOrNamespace Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1246:21-1246:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1246:30-1246:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1246:37-1246:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1246:43-1246:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1246:81-1246:101	synModuleOrNamespace Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1249:43-1249:47	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1249:49-1249:64	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1249:66-1249:77	matchClause Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1250:21-1250:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1250:30-1250:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1250:37-1250:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1250:43-1250:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1250:75-1250:86	matchClause Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1251:21-1251:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1251:37-1251:48	matchClause Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1253:39-1253:43	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1253:45-1253:60	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1253:62-1253:72	synBinding Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1254:27-1254:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1255:53-1255:59	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1255:63-1255:67	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1255:71-1255:76	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1255:80-1255:86	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1255:87-1255:92	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1255:93-1255:97	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1255:98-1255:104	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1258:21-1258:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1258:30-1258:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1258:37-1258:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1258:43-1258:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1258:71-1258:81	synBinding Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1259:21-1259:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1259:37-1259:47	synBinding Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1261:52-1261:56	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1261:58-1261:81	synModuleOrNamespaceSig Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1262:21-1262:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1262:30-1262:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1262:37-1262:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1262:43-1262:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1262:84-1262:107	synModuleOrNamespaceSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1265:45-1265:49	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1265:51-1265:66	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1265:68-1265:84	synModuleSigDecl Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1266:21-1266:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1266:30-1266:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1266:37-1266:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1266:43-1266:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1266:77-1266:93	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1268:27-1268:43	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1269:46-1269:51	types PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1270:29-1270:33	path Value { is_function: false } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1270:64-1270:80	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1270:84-1270:88	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1272:29-1272:31	ty PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1272:35-1272:40	types PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1273:29-1273:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1273:38-1273:44	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1273:45-1273:50	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1273:51-1273:55	path Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1273:83-1273:85	ty PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1277:21-1277:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1277:37-1277:53	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1279:38-1279:42	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1279:44-1279:59	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1279:61-1279:67	valSig Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:127:35-127:52	SyntaxVisitorPath Type use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:127:90-127:92	'T TypeParam use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1280:27-1280:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1281:52-1281:58	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1281:62-1281:66	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1281:70-1281:75	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1281:79-1281:85	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1281:86-1281:91	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1281:92-1281:96	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1281:97-1281:103	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1284:21-1284:26	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1284:30-1284:36	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1284:37-1284:42	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1284:43-1284:47	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1284:70-1284:76	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1285:21-1285:36	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1285:37-1285:43	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1287:42-1287:46	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1287:48-1287:52	_pat Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1288:27-1288:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1289:53-1289:57	node PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1289:61-1289:65	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1289:69-1289:74	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1289:78-1289:84	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1289:85-1289:90	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1289:91-1289:95	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1289:96-1289:100	node PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1294:58-1294:62	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1294:64-1294:72	_synType Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1295:27-1295:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1296:53-1296:57	node PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1296:61-1296:65	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1296:69-1296:74	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1296:78-1296:84	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1296:85-1296:90	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1296:91-1296:95	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1296:96-1296:100	node PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:129:29-129:33	path Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:129:35-129:40	cases Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:129:42-129:47	range Parameter def agree-none
@@ -6604,20 +6828,272 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1317:21-1317:26	state Value { is_fu
 src/Compiler/Service/ServiceParseTreeWalk.fs:1317:29-1317:34	state Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1319:13-1319:20	visitor Value { is_function: false } def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1320:19-1320:36	SyntaxVisitorBase Type use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1321:36-1321:40	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1321:45-1321:60	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1321:62-1321:66	expr Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1322:27-1322:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1323:53-1323:59	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1323:63-1323:67	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1324:31-1324:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1324:38-1324:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1324:44-1324:48	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1324:49-1324:55	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1325:32-1325:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1326:35-1326:41	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1326:42-1326:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1326:49-1326:53	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1326:74-1326:78	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1327:36-1327:42	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1328:33-1328:38	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1328:42-1328:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1329:33-1329:48	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1329:49-1329:53	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1333:31-1333:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1333:38-1333:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1333:44-1333:48	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1333:69-1333:73	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1334:32-1334:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1335:29-1335:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1335:38-1335:44	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1336:29-1336:44	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1336:45-1336:49	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1339:35-1339:39	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1339:41-1339:56	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1339:58-1339:61	pat Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1340:27-1340:33	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1340:34-1340:39	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1340:40-1340:44	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1340:64-1340:67	pat Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1341:28-1341:34	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1342:25-1342:30	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1342:34-1342:40	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1343:25-1343:40	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1343:41-1343:44	pat Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1346:36-1346:40	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1346:42-1346:57	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1346:59-1346:66	synType Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1347:27-1347:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1348:81-1348:87	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1348:91-1348:95	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1349:31-1349:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1349:38-1349:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1349:44-1349:48	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1349:49-1349:55	parent PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:134:53-134:70	SyntaxVisitorPath Type use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:134:93-134:95	'T TypeParam use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1350:32-1350:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1351:35-1351:41	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1351:42-1351:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1351:49-1351:53	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1351:74-1351:81	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1352:36-1352:42	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1353:33-1353:38	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1353:42-1353:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1354:33-1354:48	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1354:49-1354:56	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1358:31-1358:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1358:38-1358:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1358:44-1358:48	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1358:69-1358:76	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1359:32-1359:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1360:29-1360:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1360:38-1360:44	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1361:29-1361:44	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1361:45-1361:52	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1364:42-1364:46	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1364:48-1364:63	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1364:65-1364:78	synModuleDecl Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1365:27-1365:33	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1365:34-1365:39	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1365:40-1365:44	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1365:67-1365:80	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1366:28-1366:34	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1367:25-1367:30	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1367:34-1367:40	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1369:31-1369:44	synModuleDecl Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:136:47-136:51	path Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:136:53-136:60	synType Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1370:47-1370:52	types PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1371:33-1371:37	path Value { is_function: false } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1371:61-1371:74	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1371:78-1371:82	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1373:37-1373:41	loop Value { is_function: true } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1373:42-1373:47	types Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1374:39-1374:44	types Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1375:41-1375:56	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1375:57-1375:70	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1376:35-1376:37	ty PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1376:41-1376:46	types PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1377:43-1377:49	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1377:50-1377:55	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1377:56-1377:60	path Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1377:85-1377:87	ty PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1378:44-1378:50	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1379:41-1379:46	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1379:50-1379:56	state' PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:137:17-137:21	path Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:137:23-137:30	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1380:41-1380:45	loop Value { is_function: true } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1380:46-1380:51	types PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1383:29-1383:33	loop Value { is_function: true } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1383:34-1383:39	types PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1385:32-1385:47	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1385:48-1385:61	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1389:49-1389:53	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1389:55-1389:75	synModuleOrNamespace Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1390:27-1390:33	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1390:34-1390:39	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1390:40-1390:44	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1390:78-1390:98	synModuleOrNamespace Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1391:28-1391:34	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1392:25-1392:30	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1392:34-1392:40	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1396:43-1396:47	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1396:49-1396:64	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1396:66-1396:77	matchClause Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1397:27-1397:33	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1397:34-1397:39	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1397:40-1397:44	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1397:72-1397:83	matchClause Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1398:28-1398:34	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1399:25-1399:30	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1399:34-1399:40	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1400:25-1400:40	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1400:41-1400:52	matchClause Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1403:39-1403:43	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1403:45-1403:60	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1403:62-1403:72	synBinding Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1404:27-1404:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1405:53-1405:59	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1405:63-1405:67	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1406:31-1406:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1406:38-1406:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1406:44-1406:48	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1406:49-1406:55	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1407:32-1407:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1408:35-1408:41	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1408:42-1408:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1408:49-1408:53	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1408:77-1408:87	synBinding Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1409:36-1409:42	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1410:33-1410:38	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1410:42-1410:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1411:33-1411:48	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1411:49-1411:59	synBinding Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1415:31-1415:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1415:38-1415:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1415:44-1415:48	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1415:72-1415:82	synBinding Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1416:32-1416:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1417:29-1417:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1417:38-1417:44	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1418:29-1418:44	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1418:45-1418:55	synBinding Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:141:120-141:122	'T TypeParam use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:141:38-141:55	SyntaxVisitorPath Type use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1421:52-1421:56	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1421:58-1421:81	synModuleOrNamespaceSig Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1422:27-1422:33	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1422:34-1422:39	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1422:40-1422:44	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1422:81-1422:104	synModuleOrNamespaceSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1423:28-1423:34	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1424:25-1424:30	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1424:34-1424:40	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1428:45-1428:49	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1428:51-1428:66	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1428:68-1428:84	synModuleSigDecl Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1429:27-1429:33	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1429:34-1429:39	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1429:40-1429:44	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1429:74-1429:90	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1430:28-1430:34	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1431:25-1431:30	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1431:34-1431:40	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1433:31-1433:47	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1434:50-1434:55	types PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1435:33-1435:37	path Value { is_function: false } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1435:68-1435:84	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1435:88-1435:92	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1437:37-1437:41	loop Value { is_function: true } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1437:42-1437:47	types Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1438:39-1438:44	types Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1439:41-1439:56	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1439:57-1439:73	synModuleSigDecl Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:143:32-143:36	path Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:143:38-143:45	copyOpt Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:143:47-143:58	recordField Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1440:35-1440:37	ty PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1440:41-1440:46	types PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1441:43-1441:49	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1441:50-1441:55	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1441:56-1441:60	path Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1441:88-1441:90	ty PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1442:44-1442:50	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1443:41-1443:46	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1443:50-1443:56	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1444:41-1444:45	loop Value { is_function: true } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1444:46-1444:51	types PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1447:29-1447:33	loop Value { is_function: true } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1447:34-1447:39	types PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1449:32-1449:47	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1449:48-1449:64	synModuleSigDecl Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:144:17-144:21	path Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:144:23-144:30	copyOpt Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:144:32-144:43	recordField Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1453:38-1453:42	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1453:44-1453:59	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1453:61-1453:67	valSig Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1454:27-1454:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1455:52-1455:58	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1455:62-1455:66	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1456:31-1456:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1456:38-1456:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1456:44-1456:48	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1456:49-1456:55	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1457:32-1457:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1458:35-1458:41	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1458:42-1458:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1458:49-1458:53	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1458:76-1458:82	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1459:36-1459:42	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1460:33-1460:38	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1460:42-1460:48	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1461:33-1461:48	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1461:49-1461:55	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1465:31-1465:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1465:38-1465:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1465:44-1465:48	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1465:71-1465:77	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1466:32-1466:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1467:29-1467:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1467:38-1467:44	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1468:29-1468:44	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1468:45-1468:51	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1471:42-1471:46	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1471:48-1471:52	_pat Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1472:27-1472:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1473:53-1473:57	node PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1473:61-1473:65	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1474:31-1474:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1474:38-1474:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1474:44-1474:48	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1474:49-1474:53	node PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1475:32-1475:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1476:29-1476:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1476:38-1476:44	state' PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1481:58-1481:62	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1481:64-1481:72	_synType Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1482:27-1482:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1483:53-1483:57	node PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1483:61-1483:65	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1484:31-1484:37	folder Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1484:38-1484:43	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1484:44-1484:48	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1484:49-1484:53	node PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1485:32-1485:38	state' PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1486:29-1486:34	state Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1486:38-1486:44	state' PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:148:113-148:115	'T TypeParam use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:148:40-148:57	SyntaxVisitorPath Type use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1492:30-1492:59	traverseUntil Value { is_function: true } use agree-doc
@@ -6665,13 +7141,143 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:150:40-150:53	hashDirective Paramet
 src/Compiler/Service/ServiceParseTreeWalk.fs:150:55-150:60	range Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1510:13-1510:20	visitor Value { is_function: false } def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1511:19-1511:36	SyntaxVisitorBase Type use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1512:36-1512:40	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1512:45-1512:60	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1512:62-1512:66	expr Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1513:28-1513:32	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1514:54-1514:60	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1514:64-1514:74	parentPath PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1514:78-1514:85	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1514:86-1514:96	parentPath PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1514:97-1514:103	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1516:53-1516:60	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1516:61-1516:65	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1516:86-1516:90	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1517:53-1517:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1517:69-1517:73	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1519:35-1519:39	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1519:41-1519:56	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1519:58-1519:61	pat Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:151:17-151:21	path Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:151:23-151:36	hashDirective Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:151:38-151:43	range Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1520:21-1520:28	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1520:29-1520:33	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1520:53-1520:56	pat Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1521:53-1521:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1521:69-1521:72	pat Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1523:36-1523:40	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1523:42-1523:57	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1523:59-1523:66	synType Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1524:28-1524:32	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1525:106-1525:113	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1525:114-1525:124	parentPath PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1525:125-1525:131	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1525:82-1525:88	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1525:92-1525:102	parentPath PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1527:53-1527:60	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1527:61-1527:65	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1527:86-1527:93	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1528:53-1528:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1528:69-1528:76	synType Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1530:42-1530:46	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1530:48-1530:63	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1530:65-1530:78	synModuleDecl Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1531:21-1531:28	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1531:29-1531:33	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1531:56-1531:69	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1533:31-1533:44	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1534:47-1534:52	types PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1535:33-1535:37	path Value { is_function: false } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1535:61-1535:74	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1535:78-1535:82	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1536:29-1536:34	types PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1536:78-1536:85	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1536:86-1536:90	path Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1538:53-1538:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1538:69-1538:82	synModuleDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1540:49-1540:53	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1540:55-1540:75	synModuleOrNamespace Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1541:21-1541:28	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1541:29-1541:33	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1541:67-1541:87	synModuleOrNamespace Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1543:43-1543:47	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1543:49-1543:64	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1543:66-1543:77	matchClause Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1544:21-1544:28	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1544:29-1544:33	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1544:61-1544:72	matchClause Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1545:53-1545:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1545:69-1545:80	matchClause Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1547:39-1547:43	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1547:45-1547:60	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1547:62-1547:72	synBinding Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1548:28-1548:32	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1549:54-1549:60	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1549:64-1549:74	parentPath PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1549:78-1549:85	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1549:86-1549:96	parentPath PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1549:97-1549:103	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1551:53-1551:60	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1551:61-1551:65	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1551:89-1551:99	synBinding Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1552:53-1552:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1552:69-1552:79	synBinding Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1554:52-1554:56	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1554:58-1554:81	synModuleOrNamespaceSig Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1555:21-1555:28	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1555:29-1555:33	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1555:70-1555:93	synModuleOrNamespaceSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1557:45-1557:49	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1557:51-1557:66	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1557:68-1557:84	synModuleSigDecl Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1558:21-1558:28	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1558:29-1558:33	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1558:63-1558:79	synModuleSigDecl Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:155:110-155:112	'T TypeParam use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:155:44-155:61	SyntaxVisitorPath Type use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1560:31-1560:47	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1561:50-1561:55	types PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1562:33-1562:37	path Value { is_function: false } def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1562:68-1562:84	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1562:88-1562:92	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1563:29-1563:34	types PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1563:81-1563:88	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1563:89-1563:93	path Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1565:53-1565:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1565:69-1565:85	synModuleSigDecl Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1567:38-1567:42	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1567:44-1567:59	defaultTraverse Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1567:61-1567:67	valSig Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1568:28-1568:32	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1569:53-1569:59	parent PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1569:63-1569:73	parentPath PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1569:77-1569:84	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1569:85-1569:95	parentPath PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1569:96-1569:102	parent PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1571:53-1571:60	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1571:61-1571:65	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1571:88-1571:94	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1572:53-1572:68	defaultTraverse Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1572:69-1572:75	valSig Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1574:42-1574:46	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1574:48-1574:52	_pat Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1575:27-1575:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1576:53-1576:57	node PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1576:61-1576:65	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1576:69-1576:76	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1576:77-1576:81	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1576:82-1576:86	node PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1579:58-1579:62	path Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1579:64-1579:72	_synType Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:157:38-157:42	path Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:157:44-157:64	synModuleOrNamespace Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1580:27-1580:31	path Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1581:53-1581:57	node PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1581:61-1581:65	path PatternLocal def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1581:69-1581:76	chooser Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1581:77-1581:81	path PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:1581:82-1581:86	node PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1585:39-1585:59	pick Value { is_function: true } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1585:60-1585:68	position Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:1585:69-1585:76	visitor Value { is_function: false } use agree-none
@@ -16587,6 +17193,11 @@ src/Compiler/Utilities/sformat.fs:143:9-143:18	leftParen Value { is_function: fa
 src/Compiler/Utilities/sformat.fs:1441:17-1441:23	nDepth Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1441:26-1441:34	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1444:17-1444:31	propsAndFields Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1446:28-1446:32	this Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:1446:41-1446:43	p1 Parameter def agree-none
+src/Compiler/Utilities/sformat.fs:1446:45-1446:47	p2 Parameter def agree-none
+src/Compiler/Utilities/sformat.fs:1446:59-1446:61	p1 Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1446:67-1446:69	p2 Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:144:22-144:36	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:144:9-144:19	rightParen Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1450:16-1450:30	propsAndFields Value { is_function: false } use agree-none
@@ -27996,6 +28607,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotation
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/UInt64.fs:9:17-9:18	q Value { is_function: false } use unpaired-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/UInt64.fs:9:5-9:7	r1 Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_InvalidQuotationLiteral03.fs	compared fcs-check-errors
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_InvalidQuotationLiteral03.fs:6:25-6:29	this Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/OperatorInSplice.fs	compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/OperatorInSplice.fs:12:13-12:14	x Parameter use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/OperatorInSplice.fs:12:19-12:31	expand_power Value { is_function: true } use agree-none
@@ -28431,6 +29043,8 @@ tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafety
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:11:32-11:33	x Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:13:9-13:16	ObjExpr Value { is_function: true } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:14:15-14:16	I Type use declined ConstructorCall fcs-none
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:15:20-15:24	this Value { is_function: false } def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:15:32-15:33	x Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:17:9-17:13	test Value { is_function: true } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:18:13-18:17	addr Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestInterfaceMethod.fs:18:29-18:30	I Type use agree-none
@@ -29048,7 +29662,14 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/I
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:49:5-49:6	t Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:51:3-51:6	res Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:53:11-53:16	I_003 Type use agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:54:16-54:17	x Value { is_function: false } def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:54:23-54:24	i Parameter def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:54:28-54:29	i Parameter use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:56:14-56:19	I_002 Type use agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:57:18-57:19	x Value { is_function: false } def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:57:24-57:25	s Parameter def unpaired-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:58:18-58:19	x Value { is_function: false } def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:58:24-58:25	c Parameter def unpaired-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:5:12-5:14	'a TypeParam def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:5:6-5:11	I_000 Type def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:61:13-61:16	res Value { is_function: false } use agree-none
@@ -38380,12 +39001,15 @@ vsintegration/src/FSharp.Editor/Common/Logger.fs:75:68-75:78	functionId Paramete
 vsintegration/src/FSharp.Editor/Common/Logger.fs:77:19-77:29	functionId Parameter def agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:77:9-77:17	LogBlock Value { is_function: true } def agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:78:53-78:63	functionId Parameter use agree-none
+vsintegration/src/FSharp.Editor/Common/Logger.fs:82:60-82:70	functionId Parameter use agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:85:25-85:32	message Parameter def agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:85:33-85:43	functionId Parameter def agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:85:9-85:24	LogBlockMessage Value { is_function: true } def agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:86:60-86:67	message Parameter use agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:86:69-86:79	functionId Parameter use agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:8:6-8:25	LogEditorFunctionId Type def agree-none
+vsintegration/src/FSharp.Editor/Common/Logger.fs:90:67-90:74	message Parameter use agree-none
+vsintegration/src/FSharp.Editor/Common/Logger.fs:90:76-90:86	functionId Parameter use agree-none
 vsintegration/src/FSharp.Editor/Common/Logger.fs:9:7-9:30	Classification_Semantic EnumCase def agree-none
 vsintegration/src/FSharp.Editor/Diagnostics/SimplifyNameDiagnosticAnalyzer.fs	compared fcs-check-errors
 vsintegration/src/FSharp.Editor/Diagnostics/SimplifyNameDiagnosticAnalyzer.fs:100:32-100:43	diagnostics Value { is_function: false } use unpaired-none

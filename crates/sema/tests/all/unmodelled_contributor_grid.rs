@@ -116,16 +116,20 @@ enum Use {
     Pattern,
     /// `let probe = N.GetType ()`: the head of a dotted path.
     Head,
+    /// `let probe = { new System.Object() with override _.ToString() = string
+    /// (N 1) }`: inside an object-expression member.
+    ObjectExpression,
 }
 
 impl Use {
-    const ALL: [Use; 6] = [
+    const ALL: [Use; 7] = [
         Use::Applied,
         Use::Head,
         Use::FunctionValue,
         Use::Local,
         Use::Nested,
         Use::Pattern,
+        Use::ObjectExpression,
     ];
 
     fn applies_to(self, kind: Kind, route: Route) -> bool {
@@ -144,6 +148,9 @@ impl Use {
             Use::Nested => vec!["module GridUse =", "    let probe = @N 1"],
             Use::Pattern => vec!["let probe x = match x with @N _ -> 1 | _ -> 0"],
             Use::Head => vec!["let probe = @N.GetType ()"],
+            Use::ObjectExpression => vec![
+                "let probe = { new System.Object() with override _.ToString() = string (@N 1) }",
+            ],
         }
     }
 }
@@ -1818,10 +1825,13 @@ enum CeUse {
     /// `query { for … do select N }`: the argument of another operation's
     /// clause, which the translation does not read by name.
     ClauseArgument,
+    /// `b { return { new System.Object() with override _.ToString() = …N 1… } … }`:
+    /// inside an object-expression member the expression contains.
+    ObjectExpression,
 }
 
 impl CeUse {
-    const ALL: [CeUse; 10] = [
+    const ALL: [CeUse; 11] = [
         CeUse::Statement,
         CeUse::Return,
         CeUse::Lambda,
@@ -1832,6 +1842,7 @@ impl CeUse {
         CeUse::LetBound,
         CeUse::Pattern,
         CeUse::ClauseArgument,
+        CeUse::ObjectExpression,
     ];
 
     fn applies_to(self, kind: CeKind, builder: CeBuilder) -> bool {
@@ -1840,6 +1851,9 @@ impl CeUse {
             CeUse::Head => !kind.is_case(),
             CeUse::Pattern => kind.is_case(),
             CeUse::ClauseArgument => builder.form() == CeForm::Query,
+            // A query is quoted, and a quotation cannot hold an object
+            // expression.
+            CeUse::ObjectExpression => builder.form() != CeForm::Query,
             _ => true,
         }
     }
@@ -1865,6 +1879,10 @@ fn ce_probe_template(kind: CeKind, builder: CeBuilder, use_: CeUse) -> String {
         CeUse::InnerCe => "async { return @P 1 }".to_string(),
         CeUse::LetBound => "gridR".to_string(),
         CeUse::ClauseArgument => "@P".to_string(),
+        CeUse::ObjectExpression => {
+            "(let gridO = { new System.Object() with override _.ToString() = string (@P 1) } in gridO.GetHashCode())"
+                .to_string()
+        }
         CeUse::Pattern => {
             let subject = if kind == CeKind::OwnCase {
                 "GridEOther"

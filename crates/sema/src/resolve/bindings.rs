@@ -191,10 +191,17 @@ impl<'a> Resolver<'a> {
                 // `let f None = …`): a constructor-shaped head naming a known
                 // union case in scope is a case *reference*, so resolve it;
                 // otherwise decline (drop) — a genuine maybe-var head stays
-                // unrecorded (a coverage gap, never wrong). See the module-level
+                // unrecorded. It still hides any enclosing value of its name,
+                // since FCS binds it as a variable. See the module-level
                 // "Provisional pattern heads" note.
                 if def.provisional {
-                    self.resolve_provisional_case_head(&def.key(), def.range);
+                    if let Some(mask) = self.resolve_provisional_case_head(&def.key(), def.range) {
+                        if matches!(def.kind, DefKind::Value { .. }) {
+                            item_entries.push(mask);
+                        } else {
+                            param_entries.push(mask);
+                        }
+                    }
                     continue;
                 }
                 let name = def.key().to_string();
@@ -408,9 +415,19 @@ impl<'a> Resolver<'a> {
                     };
                     // Provisional maybe-var head (`None` in `let f None = …`):
                     // resolve a known union-case reference, else decline (drop),
-                    // as in `prepare_binding`.
+                    // as in `prepare_binding`. A head naming no case is a
+                    // variable binder in FCS, so it still hides any enclosing
+                    // value of its name, as in `pattern_locals`.
                     if def.provisional {
-                        self.resolve_provisional_case_head(&def.key(), def.range);
+                        if let Some(mask) =
+                            self.resolve_provisional_case_head(&def.key(), def.range)
+                        {
+                            if matches!(def.kind, DefKind::Value { .. }) {
+                                value_entries.push(mask);
+                            } else {
+                                params.push(mask);
+                            }
+                        }
                         continue;
                     }
                     let name = def.key().to_string();

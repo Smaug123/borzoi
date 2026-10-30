@@ -111,6 +111,10 @@ pub enum RefKind {
     MemberParam,
     /// A static member's parameter.
     StaticMemberParam,
+    /// An object-expression member's self identifier.
+    ObjectSelfIdentifier,
+    /// An object-expression member's parameter.
+    ObjectMemberParam,
     /// A union case, constructed or matched.
     UnionCase,
     /// `T.S(…)`: a static member through its type.
@@ -145,6 +149,8 @@ impl RefKind {
         RefKind::SelfIdentifier,
         RefKind::MemberParam,
         RefKind::StaticMemberParam,
+        RefKind::ObjectSelfIdentifier,
+        RefKind::ObjectMemberParam,
         RefKind::UnionCase,
         RefKind::StaticMember,
         RefKind::Construction,
@@ -219,6 +225,14 @@ forms! {
     IfThenElse,
     /// `(fun x -> …) arg`.
     Lambda,
+    /// `{ new IObj with member … }` bound by a block-level `let`.
+    ObjectExpression,
+    /// An object expression's `interface … with` section.
+    ObjectExpressionInterface,
+    /// An object-expression member with a named self identifier.
+    ObjectSelfNamed,
+    /// An object-expression member whose self identifier is `_`.
+    ObjectSelfDiscarded,
     /// `M.x`.
     Qualified,
     /// `T.S(…)`.
@@ -287,7 +301,8 @@ pub fn generate(nums: Vec<u32>) -> Generated {
 enum Ty {
     Int,
     Exn,
-    /// An instance of a generated class (every one has `Get` and `Other`).
+    /// An instance of a generated class or of the prelude's interface `IObj`
+    /// (every one has `Get` and `Other`).
     Obj,
     /// An instance of the prelude's disposable `D`.
     Disp,
@@ -314,6 +329,8 @@ enum Site {
     SelfId,
     MemberParam,
     StaticParam,
+    ObjectSelf,
+    ObjectParam,
 }
 
 /// How a scope entry was brought into scope.
@@ -538,6 +555,8 @@ impl Gen {
                 Site::SelfId => RefKind::SelfIdentifier,
                 Site::MemberParam => RefKind::MemberParam,
                 Site::StaticParam => RefKind::StaticMemberParam,
+                Site::ObjectSelf => RefKind::ObjectSelfIdentifier,
+                Site::ObjectParam => RefKind::ObjectMemberParam,
             },
         };
         let name = b.name.clone();
@@ -559,7 +578,7 @@ impl Gen {
                 self.s(" of int");
             }
         }
-        self.s("\n");
+        self.s("\n\ntype IObj =\n    abstract Get : int -> int\n    abstract Other : int\n");
         let root = self.new_module("Top".to_string(), false);
         let mut scope = Scope::default();
         self.decls(&mut scope, root, 0, 0);
@@ -945,7 +964,7 @@ impl Gen {
         let choices = if depth >= MAX_BLOCK_DEPTH || self.starved() {
             1
         } else {
-            14
+            15
         };
         match self.choice(choices) {
             0 | 1 => self.simple(scope, 0),
@@ -961,7 +980,8 @@ impl Gen {
             11 => self.match_block(scope, indent, depth),
             12 => self.if_block(scope, indent, depth),
             13 if self.flip() => self.union_let(scope, indent, depth),
-            _ => self.instance_let(scope, indent, depth),
+            13 => self.instance_let(scope, indent, depth),
+            _ => self.object_let(scope, indent, depth),
         }
     }
 
@@ -1066,6 +1086,73 @@ impl Gen {
         let mut inner = scope.clone();
         inner.push(&b, Via::Direct);
         self.rest(&mut inner, indent, depth);
+    }
+
+    /// `let o = { new IObj with … }`: an object expression, whose members see
+    /// the enclosing block's names under their own self identifier and
+    /// parameter, and sometimes an `interface … with` section over the same
+    /// scope. The self identifier and the parameter are drawn from the pool
+    /// the enclosing binders use, so either may hide one of them; they are
+    /// distinct from each other, or the member would bind a name twice.
+    fn object_let(&mut self, scope: &mut Scope, indent: usize, depth: usize) {
+        self.form(Form::ObjectExpression);
+        self.s("let ");
+        let name = INT_NAMES[self.choice(INT_NAMES.len())];
+        let o = self.binder(name, Ty::Obj, Site::LocalLet);
+        self.s(" =");
+        self.nl(indent + 4);
+        self.s("{ new IObj with");
+        self.nl(indent + 8);
+        self.s("member ");
+        let mut member_scope = scope.clone();
+        let self_name = self.object_self(&mut member_scope);
+        self.s(".Get(");
+        let qfree: Vec<&str> = INT_NAMES
+            .iter()
+            .copied()
+            .filter(|n| Some(*n) != self_name)
+            .collect();
+        let qname = qfree[self.choice(qfree.len())];
+        let q = self.binder(qname, Ty::Int, Site::ObjectParam);
+        self.s(": int) : int =");
+        member_scope.push(&q, Via::Direct);
+        self.nl(indent + 12);
+        self.block(&mut member_scope, indent + 12, depth + 1);
+        self.nl(indent + 8);
+        self.s("member ");
+        let mut other_scope = scope.clone();
+        self.object_self(&mut other_scope);
+        self.s(".Other : int = ");
+        self.simple(&mut other_scope, 0);
+        if self.flip() {
+            self.form(Form::ObjectExpressionInterface);
+            self.nl(indent + 6);
+            self.s("interface System.IDisposable with");
+            self.nl(indent + 8);
+            self.s("member _.Dispose() = ignore (");
+            self.simple(&mut scope.clone(), 0);
+            self.s(")");
+        }
+        self.s(" }");
+        let mut inner = scope.clone();
+        inner.push(&o, Via::Direct);
+        self.rest(&mut inner, indent, depth);
+    }
+
+    /// An object-expression member's self identifier: a binder pushed onto
+    /// `scope`, whose name is returned, or `_`.
+    fn object_self(&mut self, scope: &mut Scope) -> Option<&'static str> {
+        if self.flip() {
+            self.form(Form::ObjectSelfNamed);
+            let n = INT_NAMES[self.choice(INT_NAMES.len())];
+            let me = self.binder(n, Ty::Obj, Site::ObjectSelf);
+            scope.push(&me, Via::Direct);
+            Some(n)
+        } else {
+            self.form(Form::ObjectSelfDiscarded);
+            self.s("_");
+            None
+        }
     }
 
     /// `ignore (…)` — a `unit` statement over `scope`.

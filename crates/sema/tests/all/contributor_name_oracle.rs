@@ -643,9 +643,9 @@ fn generate(seed: u64, extra_names: &BTreeSet<String>) -> Program {
         _ => 0,
     };
     let mut probes = Vec::new();
-    // Each candidate is used bare in expression position, and — capitalised,
-    // where a bare pattern is a constructor reference rather than a binder —
-    // in pattern position too.
+    // Each candidate is used bare in expression position, inside an
+    // object-expression member, and — capitalised, where a bare pattern is a
+    // constructor reference rather than a binder — in pattern position too.
     let mut write_probes = |probe: &mut String, indent: &str| {
         for (k, name) in candidates.iter().enumerate() {
             let mut forms = vec![(format!("{indent}let oraProbe{k} = "), String::new())];
@@ -655,6 +655,14 @@ fn generate(seed: u64, extra_names: &BTreeSet<String>) -> Program {
                     " -> 1 | _ -> 0".to_string(),
                 ));
             }
+            // Inside an object-expression member, which closes over the same
+            // scope.
+            forms.push((
+                format!(
+                    "{indent}let oraObj{k} = {{ new System.Object() with override _.ToString() = string ("
+                ),
+                ") }".to_string(),
+            ));
             // A static operator is reached through its symbol.
             if name == "op_PlusDot" {
                 forms = vec![(format!("{indent}let oraProbe{k} = ("), ") 1 2".to_string())];

@@ -1,9 +1,9 @@
 //! Type definitions (`define_*`) and type-position name resolution.
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, LongIdentPat, MemberDefn, MemberLeading, MemberLetBindings, Pat,
-    SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, TyparDecls, Type, TypeDefn, TypeDefnRepr,
-    ValSig,
+    ActivePatName, AstNode, Binding, GetSetMember, LongIdentPat, MemberDefn, MemberLeading,
+    MemberLetBindings, ObjExpr, Pat, SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, TyparDecls,
+    Type, TypeDefn, TypeDefnRepr, ValSig,
 };
 
 use super::state::Frame;
@@ -98,6 +98,18 @@ enum AttrCandidate {
     /// The candidate misses everywhere we model, with no shadow possible: FCS
     /// would fail it too, so the next candidate may be tried.
     NoMatch,
+}
+
+/// Which receiver a member body sees: none for a `static` member or a
+/// constructor, an instance's otherwise.
+#[derive(Clone, Copy)]
+enum Receiver {
+    Static,
+    /// `has_base`: whether the type has a base receiver (`base`) — not a
+    /// record's or union's members.
+    Instance {
+        has_base: bool,
+    },
 }
 
 /// The generic-parameter list of a `let`/`member` binding head, if the head is
@@ -866,8 +878,13 @@ impl<'a> Resolver<'a> {
         }
 
         // Member bodies, each against its own (static or instance) field scope.
+        // A record's or union's members have no base receiver.
+        let has_base = !matches!(
+            defn.repr(),
+            Some(TypeDefnRepr::Record(_) | TypeDefnRepr::Union(_))
+        );
         for m in &members {
-            self.resolve_member_body(m, &static_entries, &instance_entries);
+            self.resolve_member_body(m, &static_entries, &instance_entries, has_base);
         }
     }
 
@@ -912,7 +929,15 @@ impl<'a> Resolver<'a> {
         m: &MemberDefn,
         static_entries: &[ScopeEntry],
         instance_entries: &[ScopeEntry],
+        has_base: bool,
     ) {
+        let receiver = |is_static: bool| {
+            if is_static {
+                Receiver::Static
+            } else {
+                Receiver::Instance { has_base }
+            }
+        };
         match m {
             MemberDefn::Member(mm) => {
                 let Some(b) = mm.binding() else {
@@ -921,83 +946,21 @@ impl<'a> Resolver<'a> {
                 // A `static member` and a secondary constructor (`new`) are both
                 // static contexts: no self-id, no access to the instance scope.
                 let is_static = mm.is_static() || mm.leading_keyword() == MemberLeading::New;
-                // The member's *own* generic parameters (`member _.M<'T>`), nested
-                // above the enclosing type's — so a member-signature `'T` use
-                // resolves to the member's decl, shadowing a same-named type typar.
-                // Wraps the whole member: its param annotations (via
-                // `pattern_locals` → `resolve_pat_types`), return type, and body.
-                let pushed_typars = self.enter_typars(b.pat().as_ref().and_then(head_typar_decls));
                 // The field scope is pushed *before* the parameter patterns are
                 // resolved, so a param pattern that uses a class-local active
                 // pattern (`member _.M(Hit y)`) resolves it against the class
                 // fields, not a same-named module recognizer.
                 let depth = self.push_field_scope(is_static, static_entries, instance_entries);
-                let mut entries = Vec::new();
-                if let Some(Pat::LongIdent(l)) = b.pat() {
-                    // The self-identifier is the first head segment on an
-                    // *instance* member — before the member name (`member
-                    // this.Name`), or, on the invalid active-pattern-named form
-                    // (`member x.(|Hit|)`), the only ident, the name being a
-                    // sibling `ActivePatName`. Static members / constructors have
-                    // none.
-                    if !is_static && let Some(head) = l.head() {
-                        let idents: Vec<SyntaxToken> = head.idents().collect();
-                        let name_is_active_pattern = l
-                            .syntax()
-                            .children()
-                            .any(|c| ActivePatName::can_cast(c.kind()));
-                        let self_len = if name_is_active_pattern { 1 } else { 2 };
-                        if idents.len() >= self_len
-                            && let Some(first) = idents.first()
-                            && let Some(entry) = self.bind_self_ident(first)
-                        {
-                            entries.push(entry);
-                        }
-                    }
-                    entries.extend(self.pattern_locals(l.args(), BinderRole::Param));
-                }
-                if let Some(ret) = b.return_type() {
-                    self.resolve_type(&ret);
-                }
-                self.scopes.push(Frame { entries });
-                if let Some(body) = b.expr() {
-                    self.resolve_expr(&body);
-                }
-                self.scopes.pop();
+                self.resolve_member_binding(&b, receiver(is_static));
                 self.pop_field_scope(depth);
-                self.leave_typars(pushed_typars);
             }
             MemberDefn::GetSetMember(g) => {
-                // A get/set property shares one self-identifier across both
-                // accessors; each accessor has its own parameter list + body. The
-                // field scope wraps the whole property so the self-id and every
-                // accessor parameter pattern resolve against the class fields.
+                // The field scope wraps the whole property so the self-id and
+                // every accessor parameter pattern resolve against the class
+                // fields.
                 let is_static = g.is_static();
                 let depth = self.push_field_scope(is_static, static_entries, instance_entries);
-                let self_entry = (!is_static)
-                    .then(|| {
-                        g.head_pat().and_then(|p| p.head()).and_then(|h| {
-                            let idents: Vec<SyntaxToken> = h.idents().collect();
-                            (idents.len() >= 2).then(|| idents[0].clone())
-                        })
-                    })
-                    .flatten()
-                    .and_then(|tok| self.bind_self_ident(&tok));
-                for acc in [g.getter(), g.setter()].into_iter().flatten() {
-                    let mut entries = Vec::new();
-                    if let Some(e) = &self_entry {
-                        entries.push(e.clone());
-                    }
-                    entries.extend(self.pattern_locals(acc.args(), BinderRole::Param));
-                    if let Some(ret) = acc.return_type() {
-                        self.resolve_type(&ret);
-                    }
-                    self.scopes.push(Frame { entries });
-                    if let Some(body) = acc.body() {
-                        self.resolve_expr(&body);
-                    }
-                    self.scopes.pop();
-                }
+                self.resolve_get_set_member(g, receiver(is_static));
                 self.pop_field_scope(depth);
             }
             MemberDefn::AutoProperty(a) => {
@@ -1020,7 +983,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
                 for inner in i.members() {
-                    self.resolve_member_body(&inner, static_entries, instance_entries);
+                    self.resolve_member_body(&inner, static_entries, instance_entries, has_base);
                 }
             }
             // A signature carries no body, only types: the slot's own type
@@ -1095,6 +1058,144 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve one `member` binding — its own generic parameters, its
+    /// receiver's names (an instance member's), its parameter patterns, its
+    /// return annotation and its body — against whatever scope the caller has
+    /// open: the type's field scope for a type member, the enclosing
+    /// expression's for an object-expression member.
+    fn resolve_member_binding(&mut self, b: &Binding, receiver: Receiver) {
+        // The member's *own* generic parameters (`member _.M<'T>`), nested
+        // above the enclosing scope's — so a member-signature `'T` use resolves
+        // to the member's decl, shadowing a same-named enclosing typar. Wraps
+        // the whole member: its param annotations (via `pattern_locals` →
+        // `resolve_pat_types`), return type, and body.
+        let pushed_typars = self.enter_typars(b.pat().as_ref().and_then(head_typar_decls));
+        let mut entries = Vec::new();
+        if let Some(Pat::LongIdent(l)) = b.pat() {
+            // The self-identifier is the first head segment on an *instance*
+            // member — before the member name (`member this.Name`), or, on the
+            // invalid active-pattern-named form (`member x.(|Hit|)`), the only
+            // ident, the name being a sibling `ActivePatName`. Static members /
+            // constructors have none.
+            if let Receiver::Instance { has_base } = receiver
+                && let Some(head) = l.head()
+            {
+                let idents: Vec<SyntaxToken> = head.idents().collect();
+                let name_is_active_pattern = l
+                    .syntax()
+                    .children()
+                    .any(|c| ActivePatName::can_cast(c.kind()));
+                let self_len = if name_is_active_pattern { 1 } else { 2 };
+                let self_tok = (idents.len() >= self_len)
+                    .then(|| idents.first().cloned())
+                    .flatten();
+                entries.extend(self.instance_receiver_entries(self_tok.as_ref(), has_base));
+            }
+            entries.extend(self.pattern_locals(l.args(), BinderRole::Param));
+        }
+        if let Some(ret) = b.return_type() {
+            self.resolve_type(&ret);
+        }
+        self.scopes.push(Frame { entries });
+        if let Some(body) = b.expr() {
+            self.resolve_expr(&body);
+        }
+        self.scopes.pop();
+        self.leave_typars(pushed_typars);
+    }
+
+    /// Resolve a get/set property against whatever scope the caller has open
+    /// (see [`Self::resolve_member_binding`]). Both accessors share one
+    /// self-identifier; each has its own parameter list and body.
+    fn resolve_get_set_member(&mut self, g: &GetSetMember, receiver: Receiver) {
+        let receiver = match receiver {
+            Receiver::Static => Vec::new(),
+            Receiver::Instance { has_base } => {
+                let self_tok = g.head_pat().and_then(|p| p.head()).and_then(|h| {
+                    let idents: Vec<SyntaxToken> = h.idents().collect();
+                    (idents.len() >= 2).then(|| idents[0].clone())
+                });
+                self.instance_receiver_entries(self_tok.as_ref(), has_base)
+            }
+        };
+        for acc in [g.getter(), g.setter()].into_iter().flatten() {
+            let mut entries = receiver.clone();
+            entries.extend(self.pattern_locals(acc.args(), BinderRole::Param));
+            if let Some(ret) = acc.return_type() {
+                self.resolve_type(&ret);
+            }
+            self.scopes.push(Frame { entries });
+            if let Some(body) = acc.body() {
+                self.resolve_expr(&body);
+            }
+            self.scopes.pop();
+        }
+    }
+
+    /// Resolve the members of an object expression (`{ new T(args) with
+    /// member … interface I with member … }`) — its `with` block and each
+    /// `interface … with` section. Unlike a type's members, an object
+    /// expression's close over the enclosing expression's scope: each member
+    /// sees the locals and parameters in force where the object expression is
+    /// written, under its own self-identifier and parameters, which shadow
+    /// them. There is no field scope to add.
+    ///
+    /// Declined, recording nothing:
+    ///
+    /// * the whole object expression when its base call carries an alias
+    ///   (`{ new B() as b with … }`), a binding this does not model;
+    /// * the value-binding form's bindings (`{ new T() with X = e }`);
+    /// * a member that cannot appear in an object expression — `static`, `new`,
+    ///   `let`, `do`, `member val`, a signature — since FCS's reading of one
+    ///   is error recovery.
+    pub(super) fn resolve_object_expression_members(&mut self, e: &ObjExpr) {
+        let has_base_alias = e
+            .syntax()
+            .children_with_tokens()
+            .any(|el| el.kind() == SyntaxKind::AS_TOK);
+        if has_base_alias {
+            return;
+        }
+        for m in e.members().chain(e.extra_impls()) {
+            self.resolve_object_member(&m);
+        }
+    }
+
+    /// One member of an object expression; see
+    /// [`Self::resolve_object_expression_members`].
+    fn resolve_object_member(&mut self, m: &MemberDefn) {
+        match m {
+            MemberDefn::Member(mm) => {
+                if mm.is_static() || mm.leading_keyword() == MemberLeading::New {
+                    return;
+                }
+                if let Some(b) = mm.binding() {
+                    self.resolve_member_binding(&b, Receiver::Instance { has_base: true });
+                }
+            }
+            MemberDefn::GetSetMember(g) => {
+                if !g.is_static() {
+                    self.resolve_get_set_member(g, Receiver::Instance { has_base: true });
+                }
+            }
+            MemberDefn::Interface(i) => {
+                if let Some(ty) = i.interface_type() {
+                    self.resolve_type(&ty);
+                }
+                for inner in i.members() {
+                    self.resolve_object_member(&inner);
+                }
+            }
+            MemberDefn::AutoProperty(_)
+            | MemberDefn::LetBindings(_)
+            | MemberDefn::Do(_)
+            | MemberDefn::AbstractSlot(_)
+            | MemberDefn::ValField(_)
+            | MemberDefn::MemberSig(_)
+            | MemberDefn::Inherit(_) => {}
+        }
+    }
+
     /// Process a type's class-level `let` / `let rec` field group, mirroring
     /// [`Self::resolve_local_let`](super::Resolver::resolve_local_let) but routing
     /// the value binders into the caller's field accumulators (by the group's
@@ -1132,6 +1233,40 @@ impl<'a> Resolver<'a> {
             static_entries.extend(value_entries.iter().cloned());
         }
         instance_entries.extend(value_entries);
+    }
+
+    /// The scope entries an instance member's body opens with: its
+    /// self-identifier (`self_tok`, `this` in `member this.M`), and the names
+    /// FCS gives the receiver whatever the member calls it. Those are
+    /// `` ``base`` `` — the base-class receiver, where there is one
+    /// (`has_base`: not in a record's or union's members), which a back-ticked
+    /// use reaches although it spells an ordinary name — and, for a discarded
+    /// self-identifier (`member _.M`), `` ``_`` ``, which FCS binds to the
+    /// discarded receiver — as it does for an omitted one (`member M() = …`,
+    /// recovered input, where FCS synthesizes a `_` receiver). Neither is
+    /// modelled as a binder, so both hide any enclosing value of the name and
+    /// decline.
+    fn instance_receiver_entries(
+        &mut self,
+        self_tok: Option<&SyntaxToken>,
+        has_base: bool,
+    ) -> Vec<ScopeEntry> {
+        let unmodelled = |name: &str, generation| {
+            ScopeEntry::binding(
+                name.to_string(),
+                Resolution::Deferred(DeferredReason::UnboundName),
+                generation,
+            )
+        };
+        let mut entries = Vec::new();
+        if has_base {
+            entries.push(unmodelled("base", self.open_generation));
+        }
+        match self_tok {
+            Some(tok) if tok.text() != "_" => entries.extend(self.bind_self_ident(tok)),
+            Some(_) | None => entries.push(unmodelled("_", self.open_generation)),
+        }
+        entries
     }
 
     /// Intern a member's self-identifier token (`this` in `member this.M`) as a

@@ -75,6 +75,7 @@ mod resolve_member_signatures_diff;
 mod resolve_module_opens;
 mod resolve_named_args_diff;
 mod resolve_nested_modules;
+mod resolve_object_expressions_diff;
 mod resolve_project;
 mod resolve_project_assembly_diff;
 mod resolve_project_diff;
