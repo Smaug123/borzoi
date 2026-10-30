@@ -2264,9 +2264,9 @@ impl<'a> Resolver<'a> {
                 .unwrap_or_default();
             names.sort();
             for name in names {
-                let mut entry = ScopeEntry::opened(
+                let mut entry = ScopeEntry::opened_declined(
                     name,
-                    Resolution::Deferred(DeferredReason::UnboundName),
+                    DeclineCause::SignatureScreened,
                     generation,
                     open_pos,
                 );
