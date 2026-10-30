@@ -81,9 +81,6 @@ src/Compiler/Checking/CheckRecordSyntaxHelpers.fs	compared fcs-check-errors b1=8
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:51:28 "_, field"	gap
 src/Compiler/Checking/OverloadResolutionCache.fs	compared fcs-check-errors b1=81 external=119
 src/Compiler/CodeGen/EraseUnions.Emit.fs	compared fcs-check-errors b1=306 external=73
-src/Compiler/CodeGen/EraseUnions.Emit.fs:220:25 "'Mark"	gap
-src/Compiler/CodeGen/EraseUnions.Emit.fs:221:41 "'Mark"	gap
-src/Compiler/CodeGen/EraseUnions.Emit.fs:223:29 "'Mark"	gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:283:47 "'Mark"	gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:348:37 "'Mark"	gap
 src/Compiler/CodeGen/EraseUnions.Emit.fs:351:46 "'Mark"	gap
@@ -142,7 +139,6 @@ src/Compiler/Facilities/prim-lexing.fs:232:9 "Position"	gap
 src/Compiler/Facilities/prim-lexing.fs:235:9 "Position"	gap
 src/Compiler/Facilities/prim-lexing.fs:239:27 "Position"	gap
 src/Compiler/Facilities/prim-lexing.fs:241:39 "Position"	gap
-src/Compiler/Facilities/prim-lexing.fs:30:41 "ISourceText"	gap
 src/Compiler/Facilities/prim-lexing.fs:363:13 "LexBuffer<'Char>"	gap
 src/Compiler/Facilities/prim-lexing.fs:363:14 "exBuffer<'Char>"	gap
 src/Compiler/Facilities/prim-lexing.fs:368:17 "LexBuffer<'Char>"	gap
@@ -156,6 +152,7 @@ src/Compiler/Facilities/prim-lexing.fs:387:9 "LexBuffer"	gap
 src/Compiler/Facilities/prim-lexing.fs:387:9 "LexBuffer<char>"	gap
 src/Compiler/Facilities/prim-lexing.fs:387:9 "LexBuffer<char>\n            .FromFunction"	gap
 src/Compiler/Facilities/prim-lexing.fs:436:6 "GenericImplFragments"	gap
+src/Compiler/Facilities/prim-lexing.fs:511:54 "LexBuffer"	gap x2
 src/Compiler/Facilities/prim-lexing.fs:515:43 "UnicodeTables"	gap
 src/Compiler/Optimize/LowerStateMachines.fs	compared fcs-check-errors b1=753 external=572
 src/Compiler/Optimize/LowerStateMachines.fs:273:47 "TTarget(vs, targetExpr, flags)"	gap
@@ -167,19 +164,15 @@ src/Compiler/Optimize/LowerStateMachines.fs:826:74 "TTarget(vs, _, _)"	gap
 src/Compiler/Optimize/LowerStateMachines.fs:960:5 "LowerStateMachine"	gap
 src/Compiler/Service/QuickParse.fs	compared fcs-check-errors b1=519 external=322
 src/Compiler/Service/QuickParse.fs:238:55 "prior, residue"	gap
+src/Compiler/Service/QuickParse.fs:288:65 "PartialLongName"	gap
+src/Compiler/Service/QuickParse.fs:432:69 "PartialLongName"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs	compared fcs-check-errors b1=1775 external=701
-src/Compiler/Service/ServiceParseTreeWalk.fs:105:15 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:106:13 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1072:34 "SynValSig(synType = t; attributes = attributes; synExpr = expr; range = m)"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:113:37 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:113:90 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1155:80 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1163:20 "SynField(attributes = attributes)"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1164:24 "SynUnionCase(attributes = attributes)"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1165:23 "SynEnumCase(attributes = attributes)"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1166:20 "SynTyparDecl(attributes = attributes)"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:120:36 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:120:92 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1210:19 "SyntaxVisitorBase<unit>"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1210:20 "yntaxVisitorBase<unit>"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1212:27 "path"	gap
@@ -309,8 +302,6 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1273:57 "SyntaxNode.SynTypeDefnSig"
 src/Compiler/Service/ServiceParseTreeWalk.fs:1273:83 "ty"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1277:21 "defaultTraverse"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1277:37 "synModuleSigDecl"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:127:35 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:127:90 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1280:27 "path"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1281:23 "SyntaxNode"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1281:23 "SyntaxNode.SynMemberSig"	gap
@@ -393,8 +384,6 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1349:31 "folder"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1349:38 "state"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1349:44 "path"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1349:49 "parent"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:134:53 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:134:93 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1351:35 "folder"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1351:42 "state'"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1351:49 "path"	gap
@@ -489,8 +478,6 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1417:29 "state"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1417:38 "state'"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1418:29 "defaultTraverse"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1418:45 "synBinding"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:141:120 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:141:38 "SyntaxVisitorPath"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1422:27 "folder"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1422:34 "state"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1422:40 "path"	gap
@@ -573,8 +560,6 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1484:44 "path"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1484:49 "node"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1486:29 "state"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1486:38 "state'"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:148:113 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:148:40 "SyntaxVisitorPath"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1492:30 "SyntaxTraversal"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1511:19 "SyntaxVisitorBase<'T>"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1511:20 "yntaxVisitorBase<'T>"	gap
@@ -665,8 +650,6 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1558:29 "path"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1558:35 "SyntaxNode"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1558:35 "SyntaxNode.SynModuleSigDecl"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1558:63 "synModuleSigDecl"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:155:110 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:155:44 "SyntaxVisitorPath"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1560:31 "synModuleSigDecl"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1562:40 "SyntaxNode"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1562:40 "SyntaxNode.SynModuleSigDecl"	gap
@@ -713,29 +696,6 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1618:9 "SyntaxNodes"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1621:9 "SyntaxNodes"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1624:9 "SyntaxNodes"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1627:9 "SyntaxNodes"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:162:40 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:162:98 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:170:15 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:170:87 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:171:13 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:178:37 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:178:72 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:185:109 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:185:30 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:185:78 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:192:113 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:192:31 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:192:80 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:198:47 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:198:99 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:205:119 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:205:47 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:213:124 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:213:15 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:213:73 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:220:118 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:220:33 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:220:84 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:325:57 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:325:77 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:327:37 "'T"	gap
@@ -767,38 +727,20 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:45:11 "SynModuleSigDecl"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:46:11 "SynValSig"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:47:11 "SynTypeDefnSig"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:48:11 "SynMemberSig"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:55:106 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:55:15 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:55:64 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:56:13 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:587:42 "SynInterfaceImpl(interfaceTy = ty)"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:65:37 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:65:92 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:73:15 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:73:64 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:74:13 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:783:58 "p"	alt-binder fcs=779:33 ours=783:32 fcs-check-errors
 src/Compiler/Service/ServiceParseTreeWalk.fs:792:44 "p"	alt-binder fcs=779:33 ours=791:33 fcs-check-errors
 src/Compiler/Service/ServiceParseTreeWalk.fs:800:44 "p"	alt-binder fcs=779:33 ours=799:32 fcs-check-errors
 src/Compiler/Service/ServiceParseTreeWalk.fs:805:67 "p"	alt-binder fcs=779:33 ours=805:41 fcs-check-errors
 src/Compiler/Service/ServiceParseTreeWalk.fs:816:55 "pat"	alt-binder fcs=813:31 ours=815:42 fcs-check-errors
 src/Compiler/Service/ServiceParseTreeWalk.fs:824:39 "StripParenTypes ty"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:82:115 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:82:15 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:82:70 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:836:67 "ty"	alt-binder fcs=825:33 ours=832:40 fcs-check-errors
 src/Compiler/Service/ServiceParseTreeWalk.fs:890:117 "synMemberDefns"	alt-binder fcs=871:90 ours=887:72 fcs-check-errors
 src/Compiler/Service/ServiceParseTreeWalk.fs:893:33 "synMemberDefns"	alt-binder fcs=871:90 ours=887:72 fcs-check-errors
-src/Compiler/Service/ServiceParseTreeWalk.fs:89:125 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:89:34 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:89:86 "'T"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:914:35 "SynField(attributes = attributes)"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:919:35 "SynEnumCase(attributes = attributes)"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:924:35 "SynUnionCase(attributes = attributes; caseType = caseType)"	gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:930:47 "SynField(attributes = attributes)"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:97:115 "'T"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:97:15 "SyntaxVisitorPath"	gap
-src/Compiler/Service/ServiceParseTreeWalk.fs:97:71 "'T"	gap
 src/Compiler/SyntaxTree/LexFilter.fs	compared fcs-check-errors b1=2471 external=645
 src/Compiler/SyntaxTree/LexFilter.fs:1172:23 "NULL"	gap
 src/Compiler/SyntaxTree/LexFilter.fs:1663:42 "SEMICOLON_SEMICOLON"	gap
@@ -823,7 +765,6 @@ src/Compiler/SyntaxTree/LexFilter.fs:415:14 "END"	gap
 src/Compiler/SyntaxTree/LexFilter.fs:416:12 "END"	gap
 src/Compiler/SyntaxTree/LexFilter.fs:417:15 "END"	gap
 src/Compiler/SyntaxTree/LexFilter.fs:424:14 "END"	gap
-src/Compiler/SyntaxTree/LexFilter.fs:446:31 "LexbufState"	gap
 src/Compiler/SyntaxTree/LexFilter.fs:475:28 "TokenTup"	gap
 src/Compiler/SyntaxTree/LexFilter.fs:480:17 "TokenTup"	gap
 src/Compiler/SyntaxTree/LexFilter.fs:498:31 "LexbufState"	gap
@@ -1147,8 +1088,6 @@ src/Compiler/TypedTree/TcGlobals.fs:45:25 "IntrinsicValRef(mvr, _, _, _, key)"	g
 src/Compiler/TypedTree/TcGlobals.fs:472:117 "argTys, retTy"	gap
 src/Compiler/TypedTree/WellKnownAttribs.fs	compared fcs-clean b1=69 external=169
 src/Compiler/TypedTree/WellKnownAttribs.fs:124:53 "'TFlags"	gap x2
-src/Compiler/TypedTree/WellKnownAttribs.fs:125:26 "'TItem"	gap x2
-src/Compiler/TypedTree/WellKnownAttribs.fs:126:24 "'TFlags"	gap x2
 src/Compiler/TypedTree/WellKnownAttribs.fs:147:9 "WellKnownAttribs"	gap
 src/Compiler/TypedTree/WellKnownAttribs.fs:152:13 "WellKnownAttribs"	gap
 src/Compiler/TypedTree/WellKnownAttribs.fs:154:13 "WellKnownAttribs"	gap
@@ -1167,6 +1106,7 @@ src/Compiler/Utilities/sformat.fs:1028:42 "wordL"	gap
 src/Compiler/Utilities/sformat.fs:1028:49 "tagText"	gap
 src/Compiler/Utilities/sformat.fs:1063:17 "wordL"	gap
 src/Compiler/Utilities/sformat.fs:1063:24 "tagText"	gap
+src/Compiler/Utilities/sformat.fs:1073:66 "Layout"	gap x2
 src/Compiler/Utilities/sformat.fs:1091:34 "spaceListL"	gap
 src/Compiler/Utilities/sformat.fs:1091:56 "wordL"	gap
 src/Compiler/Utilities/sformat.fs:1091:63 "tagText"	gap
@@ -1223,7 +1163,6 @@ src/Compiler/Utilities/sformat.fs:1206:58 "Precedence"	gap
 src/Compiler/Utilities/sformat.fs:1217:41 "Precedence"	gap
 src/Compiler/Utilities/sformat.fs:1218:24 "boundedUnfoldL"	gap
 src/Compiler/Utilities/sformat.fs:1218:60 "Precedence"	gap
-src/Compiler/Utilities/sformat.fs:121:32 "Layout"	gap
 src/Compiler/Utilities/sformat.fs:1223:17 "wordL"	gap
 src/Compiler/Utilities/sformat.fs:1223:24 "tagPunctuation"	gap
 src/Compiler/Utilities/sformat.fs:1227:28 "wordL"	gap
@@ -1288,6 +1227,7 @@ src/Compiler/Utilities/sformat.fs:1524:21 "Layout"	gap
 src/Compiler/Utilities/sformat.fs:1524:21 "Layout.objL"	gap
 src/Compiler/Utilities/sformat.fs:1526:38 "'a"	gap x2
 src/Compiler/Utilities/sformat.fs:1527:43 "Precedence"	gap
+src/Compiler/Utilities/sformat.fs:1529:30 "FormatOptions"	gap
 src/Compiler/Utilities/sformat.fs:1531:19 "tagKeyword"	gap
 src/Compiler/Utilities/sformat.fs:1550:13 "tagNumericLiteral"	gap
 src/Compiler/Utilities/sformat.fs:1572:13 "tagNumericLiteral"	gap
@@ -1336,12 +1276,12 @@ src/Compiler/Utilities/sformat.fs:594:10 "ReflectUtils"	gap
 src/Compiler/Utilities/sformat.fs:634:27 "Breaks(next, outer, stack)"	gap
 src/Compiler/Utilities/sformat.fs:644:19 "Breaks(next, outer, stack)"	gap
 src/Compiler/Utilities/sformat.fs:655:21 "Breaks(next, outer, stack)"	gap
+src/Compiler/Utilities/sformat.fs:666:52 "TaggedText"	gap
 src/Compiler/Utilities/sformat.fs:695:41 "length"	gap
 src/Compiler/Utilities/sformat.fs:710:34 "Layout"	gap
 src/Compiler/Utilities/sformat.fs:710:34 "Layout.JuxtapositionMiddle"	gap
 src/Compiler/Utilities/sformat.fs:785:26 "Layout"	gap
 src/Compiler/Utilities/sformat.fs:785:26 "Layout.JuxtapositionMiddle"	gap
-src/Compiler/Utilities/sformat.fs:82:24 "TaggedText"	gap
 src/Compiler/Utilities/sformat.fs:853:19 "Value"	gap
 src/Compiler/Utilities/sformat.fs:853:19 "Value.GetValueInfo"	gap
 src/Compiler/Utilities/sformat.fs:858:19 "wordL"	gap
@@ -1404,6 +1344,7 @@ src/Compiler/Utilities/sformat.fs:898:44 "^^"	gap
 src/Compiler/Utilities/sformat.fs:898:47 "rightL"	gap
 src/Compiler/Utilities/sformat.fs:898:54 "rightBracket"	gap
 src/Compiler/Utilities/sformat.fs:898:9 "leftL"	gap
+src/Compiler/Utilities/sformat.fs:991:37 "FormatOptions"	gap
 src/FSharp.Build/SubstituteText.fs	compared fcs-check-errors b1=48 external=36
 src/FSharp.Core/Linq.fs	compared fcs-check-errors b1=1538 external=798
 src/FSharp.Core/Linq.fs:23:40 "'T"	gap
@@ -1559,41 +1500,43 @@ src/FSharp.Core/eventmodule.fs:91:44 "'U2"	gap
 src/FSharp.Core/eventmodule.fs:91:71 "'Delegate"	gap
 src/FSharp.Core/eventmodule.fs:91:82 "'T"	gap
 src/FSharp.Core/quotations.fs	compared fcs-check-errors b1=3931 external=1871
-src/FSharp.Core/quotations.fs:1022:45 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1061:36 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1084:39 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1115:32 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1130:57 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1182:52 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1192:59 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1204:48 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1214:53 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1227:60 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1242:53 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1242:71 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1255:60 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1255:78 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1270:61 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1282:99 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1294:54 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1304:92 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:1022:45 "Expr"	gap
+src/FSharp.Core/quotations.fs:1061:36 "Expr"	gap
+src/FSharp.Core/quotations.fs:1084:39 "Expr"	gap
+src/FSharp.Core/quotations.fs:1115:32 "Expr"	gap
+src/FSharp.Core/quotations.fs:1130:57 "Expr"	gap
+src/FSharp.Core/quotations.fs:1182:52 "Expr"	gap
+src/FSharp.Core/quotations.fs:1192:59 "Expr"	gap
+src/FSharp.Core/quotations.fs:1204:48 "Expr"	gap
+src/FSharp.Core/quotations.fs:1214:53 "Expr"	gap
+src/FSharp.Core/quotations.fs:1227:60 "Expr"	gap
+src/FSharp.Core/quotations.fs:1242:53 "Expr"	gap
+src/FSharp.Core/quotations.fs:1242:71 "Expr"	gap
+src/FSharp.Core/quotations.fs:1255:60 "Expr"	gap
+src/FSharp.Core/quotations.fs:1255:78 "Expr"	gap
+src/FSharp.Core/quotations.fs:1270:61 "Expr"	gap
+src/FSharp.Core/quotations.fs:1282:99 "Expr"	gap
+src/FSharp.Core/quotations.fs:1294:54 "Expr"	gap
+src/FSharp.Core/quotations.fs:1304:92 "Expr"	gap
 src/FSharp.Core/quotations.fs:131:27 "Var"	gap
-src/FSharp.Core/quotations.fs:1346:28 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1346:38 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:1358:31 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:1346:28 "Expr"	gap
+src/FSharp.Core/quotations.fs:1346:38 "Expr"	gap
+src/FSharp.Core/quotations.fs:1358:31 "Expr"	gap
 src/FSharp.Core/quotations.fs:1382:61 "'T"	gap
 src/FSharp.Core/quotations.fs:139:9 "base"	gap
 src/FSharp.Core/quotations.fs:1451:43 "parentT: Type, nm, marity, argTys, retTy"	gap
 src/FSharp.Core/quotations.fs:1590:51 "'T"	gap
 src/FSharp.Core/quotations.fs:1645:42 "genericType: Type, argTypes, retType, methName, numMethTyargs"	gap
 src/FSharp.Core/quotations.fs:1648:35 "genericType: Type, argTypes, retType, methName, numMethTyargs"	gap
-src/FSharp.Core/quotations.fs:179:35 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors x2
+src/FSharp.Core/quotations.fs:179:35 "Expr"	gap x2
 src/FSharp.Core/quotations.fs:1802:30 "ByteStream"	gap
 src/FSharp.Core/quotations.fs:1814:26 "ByteStream"	gap
-src/FSharp.Core/quotations.fs:181:27 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors x2
+src/FSharp.Core/quotations.fs:181:27 "Expr"	gap x2
 src/FSharp.Core/quotations.fs:1823:10 "SimpleUnpickle"	gap
+src/FSharp.Core/quotations.fs:1923:28 "Var"	gap x2
 src/FSharp.Core/quotations.fs:1995:32 "Var"	gap
 src/FSharp.Core/quotations.fs:1995:32 "Var.Global"	gap
+src/FSharp.Core/quotations.fs:2003:25 "Var"	gap x2
 src/FSharp.Core/quotations.fs:2003:26 "ar"	gap
 src/FSharp.Core/quotations.fs:2140:46 "OneTyArg tyarg"	gap
 src/FSharp.Core/quotations.fs:2141:44 "OneTyArg tyarg"	gap
@@ -1616,23 +1559,26 @@ src/FSharp.Core/quotations.fs:2182:47 "OneTyArg ty"	gap
 src/FSharp.Core/quotations.fs:2197:47 "OneTyArg ty"	gap
 src/FSharp.Core/quotations.fs:2198:47 "OneTyArg ty"	gap
 src/FSharp.Core/quotations.fs:2219:47 "OneTyArg ty"	gap
-src/FSharp.Core/quotations.fs:2257:36 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors x2
+src/FSharp.Core/quotations.fs:2257:36 "Expr"	gap x2
 src/FSharp.Core/quotations.fs:2273:36 "E t"	gap
 src/FSharp.Core/quotations.fs:2288:24 "Var"	gap
-src/FSharp.Core/quotations.fs:228:102 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:228:102 "Expr"	gap
+src/FSharp.Core/quotations.fs:2313:34 "Var"	gap x2
 src/FSharp.Core/quotations.fs:2313:35 "ar"	gap
-src/FSharp.Core/quotations.fs:2345:60 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors x2
-src/FSharp.Core/quotations.fs:234:14 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:2345:60 "Expr"	gap x2
+src/FSharp.Core/quotations.fs:234:14 "Expr"	gap
 src/FSharp.Core/quotations.fs:2355:23 "ReflectedDefinitionTableKey"	gap
 src/FSharp.Core/quotations.fs:2355:23 "ReflectedDefinitionTableKey.GetKey"	gap
 src/FSharp.Core/quotations.fs:2369:23 "ReflectedDefinitionTableKey"	gap
 src/FSharp.Core/quotations.fs:2369:23 "ReflectedDefinitionTableKey.GetKey"	gap
 src/FSharp.Core/quotations.fs:2430:63 "ReflectedDefinitionTableKey"	gap
 src/FSharp.Core/quotations.fs:2430:63 "ReflectedDefinitionTableKey.GetKey"	gap
-src/FSharp.Core/quotations.fs:2484:92 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:2490:21 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:2484:92 "Expr"	gap
+src/FSharp.Core/quotations.fs:2490:21 "Expr"	gap
+src/FSharp.Core/quotations.fs:2490:29 "Expr"	gap
 src/FSharp.Core/quotations.fs:2490:34 "'T"	gap
 src/FSharp.Core/quotations.fs:2491:29 "'T"	gap
+src/FSharp.Core/quotations.fs:2492:13 "Expr"	gap
 src/FSharp.Core/quotations.fs:2492:13 "Expr<'T>"	gap
 src/FSharp.Core/quotations.fs:2492:14 "xpr<'T>"	gap
 src/FSharp.Core/quotations.fs:2492:18 "'T"	gap
@@ -1993,17 +1939,18 @@ src/FSharp.Core/quotations.fs:2783:11 "ValueObj"	gap
 src/FSharp.Core/quotations.fs:2789:11 "ValueObj"	gap
 src/FSharp.Core/quotations.fs:2795:11 "Comb0"	gap
 src/FSharp.Core/quotations.fs:2795:17 "ValueOp"	gap
-src/FSharp.Core/quotations.fs:2800:34 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:2800:34 "Expr"	gap
+src/FSharp.Core/quotations.fs:2802:45 "Var"	gap x2
 src/FSharp.Core/quotations.fs:2804:15 "Let"	gap
 src/FSharp.Core/quotations.fs:2804:23 "TupleGet"	gap
 src/FSharp.Core/quotations.fs:2804:32 "Var"	gap
 src/FSharp.Core/quotations.fs:2810:11 "LambdaTerm"	gap
 src/FSharp.Core/quotations.fs:2818:11 "Application"	gap
 src/FSharp.Core/quotations.fs:2821:15 "NewTuple"	gap
-src/FSharp.Core/quotations.fs:2826:31 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:2826:31 "Expr"	gap
 src/FSharp.Core/quotations.fs:2827:28 "|TupledLambda|_|"	gap
 src/FSharp.Core/quotations.fs:2827:9 "qOneOrMoreRLinear"	gap
-src/FSharp.Core/quotations.fs:2830:36 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:2830:36 "Expr"	gap
 src/FSharp.Core/quotations.fs:2831:28 "|TupledApplication|_|"	gap
 src/FSharp.Core/quotations.fs:2831:9 "qOneOrMoreLLinear"	gap
 src/FSharp.Core/quotations.fs:2837:11 "IfThenElse"	gap
@@ -2018,8 +1965,9 @@ src/FSharp.Core/quotations.fs:2902:9 "Expr"	gap
 src/FSharp.Core/quotations.fs:2902:9 "Expr.TryGetReflectedDefinition"	gap
 src/FSharp.Core/quotations.fs:2906:9 "Expr"	gap
 src/FSharp.Core/quotations.fs:2906:9 "Expr.TryGetReflectedDefinition"	gap
-src/FSharp.Core/quotations.fs:290:22 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:2912:47 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:290:22 "Expr"	gap
+src/FSharp.Core/quotations.fs:2912:31 "ExprConstInfo"	gap
+src/FSharp.Core/quotations.fs:2912:47 "Expr"	gap
 src/FSharp.Core/quotations.fs:2916:15 "AppOp"	gap
 src/FSharp.Core/quotations.fs:2917:15 "IfThenElseOp"	gap
 src/FSharp.Core/quotations.fs:2918:15 "LetRecOp"	gap
@@ -2046,7 +1994,7 @@ src/FSharp.Core/quotations.fs:2936:15 "StaticMethodCallOp"	gap
 src/FSharp.Core/quotations.fs:2937:15 "InstanceMethodCallOp"	gap
 src/FSharp.Core/quotations.fs:2938:15 "StaticMethodCallWOp"	gap
 src/FSharp.Core/quotations.fs:2939:15 "InstanceMethodCallWOp"	gap
-src/FSharp.Core/quotations.fs:293:24 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:293:24 "Expr"	gap
 src/FSharp.Core/quotations.fs:2941:15 "CoerceOp"	gap
 src/FSharp.Core/quotations.fs:2942:15 "NewArrayOp"	gap
 src/FSharp.Core/quotations.fs:2943:15 "NewDelegateOp"	gap
@@ -2073,24 +2021,26 @@ src/FSharp.Core/quotations.fs:2964:18 "E"	gap
 src/FSharp.Core/quotations.fs:2967:15 "VarTerm"	gap
 src/FSharp.Core/quotations.fs:2968:15 "LambdaTerm"	gap
 src/FSharp.Core/quotations.fs:2969:15 "CombTerm"	gap
-src/FSharp.Core/quotations.fs:2969:74 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:2969:58 "ExprConstInfo"	gap
+src/FSharp.Core/quotations.fs:2969:74 "Expr"	gap
 src/FSharp.Core/quotations.fs:2970:15 "HoleTerm"	gap
-src/FSharp.Core/quotations.fs:2972:24 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:2972:24 "Expr"	gap
 src/FSharp.Core/quotations.fs:319:22 "'T"	gap
-src/FSharp.Core/quotations.fs:325:23 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:325:23 "Expr"	gap
 src/FSharp.Core/quotations.fs:328:27 "E x"	gap
-src/FSharp.Core/quotations.fs:333:38 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:333:38 "Expr"	gap
 src/FSharp.Core/quotations.fs:334:32 "|Lambda|_|"	gap
-src/FSharp.Core/quotations.fs:366:38 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors x2
+src/FSharp.Core/quotations.fs:366:38 "Expr"	gap x2
 src/FSharp.Core/quotations.fs:447:13 "Expr"	gap x4
 src/FSharp.Core/quotations.fs:447:14 "xpr"	gap
 src/FSharp.Core/quotations.fs:447:18 "term"	gap
 src/FSharp.Core/quotations.fs:447:24 "attribs"	gap
-src/FSharp.Core/quotations.fs:448:26 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:448:26 "Expr"	gap
 src/FSharp.Core/quotations.fs:484:9 "Expr"	gap
 src/FSharp.Core/quotations.fs:487:9 "Expr"	gap
-src/FSharp.Core/quotations.fs:489:19 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:519:28 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:489:19 "Expr"	gap
+src/FSharp.Core/quotations.fs:502:29 "Expr"	gap
+src/FSharp.Core/quotations.fs:519:28 "Expr"	gap
 src/FSharp.Core/quotations.fs:525:22 "E x"	gap
 src/FSharp.Core/quotations.fs:530:22 "E x"	gap
 src/FSharp.Core/quotations.fs:535:22 "E x"	gap
@@ -2100,21 +2050,21 @@ src/FSharp.Core/quotations.fs:558:23 "E x"	gap
 src/FSharp.Core/quotations.fs:564:22 "E x"	gap
 src/FSharp.Core/quotations.fs:570:25 "E x"	gap
 src/FSharp.Core/quotations.fs:576:27 "E x"	gap
-src/FSharp.Core/quotations.fs:808:34 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:808:34 "Expr"	gap
 src/FSharp.Core/quotations.fs:809:28 "|Lambda|_|"	gap
-src/FSharp.Core/quotations.fs:811:34 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors x2
+src/FSharp.Core/quotations.fs:811:34 "Expr"	gap x2
 src/FSharp.Core/quotations.fs:878:24 "'T"	gap
 src/FSharp.Core/quotations.fs:878:30 "Expr"	gap
 src/FSharp.Core/quotations.fs:88:41 "'T"	gap
-src/FSharp.Core/quotations.fs:947:32 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:950:32 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:950:45 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:953:32 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:953:45 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:953:58 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:947:32 "Expr"	gap
+src/FSharp.Core/quotations.fs:950:32 "Expr"	gap
+src/FSharp.Core/quotations.fs:950:45 "Expr"	gap
+src/FSharp.Core/quotations.fs:953:32 "Expr"	gap
+src/FSharp.Core/quotations.fs:953:45 "Expr"	gap
+src/FSharp.Core/quotations.fs:953:58 "Expr"	gap
 src/FSharp.Core/quotations.fs:96:6 "Helpers"	gap
-src/FSharp.Core/quotations.fs:971:60 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
-src/FSharp.Core/quotations.fs:982:47 "Expr"	alt-binder fcs=228:76 ours=446:38 fcs-check-errors
+src/FSharp.Core/quotations.fs:971:60 "Expr"	gap
+src/FSharp.Core/quotations.fs:982:47 "Expr"	gap
 src/Microsoft.FSharp.Compiler/Program.fs	compared fcs-clean b1=0 external=3
 tests/EndToEndBuildTests/DesignTimeProviderPackaging/Host/Library.fs	compared fcs-clean b1=1 external=1
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/Fsc/Optimize.fs	compared fcs-check-errors b1=0 external=25
@@ -2176,7 +2126,6 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembe
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:6:32 "Foo<'a>"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/FieldMembers/Staticfield03.fs:6:33 "oo<'a>"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/InterfaceSpecificationsAndImplementations/ConcreteUnitOnInterface01.fs	compared fcs-clean b1=17 external=7
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/InterfaceSpecificationsAndImplementations/ConcreteUnitOnInterface01.fs:7:20 "'state"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/E_ErrorsForInlineValue.fs	compared fcs-check-errors b1=0 external=4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/Basic/ManyLetBindings.fs	compared fcs-clean b1=0 external=1
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/LetBindings/TypeFunctions/E_typeof_undefined_01.fs	compared fcs-check-errors b1=1 external=1
@@ -2356,16 +2305,14 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/C
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs	compared fcs-clean b1=4 external=6
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs:11:18 "C"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs	compared fcs-clean b1=9 external=15
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:13 "DelegateReturningAFunctionValue"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:13 "DelegateReturningAFunctionValue<_>"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/EnumTypes/EnumTypes.fs	compared fcs-check-errors b1=16 external=82
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs	compared fcs-check-errors b1=30 external=32
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:12:11 "I_000"	gap x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:13:11 "I_000"	gap x2
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:19:16 "'a"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:25:11 "I_002"	gap x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:26:11 "I_002"	gap x2
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:27:18 "'a"	gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:27:24 "'a"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/E_MultipleInterfaceInheritance.fs:54:28 "i"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/InterfaceTypes/MultipleInst05.fs	compared fcs-check-errors b1=15 external=0
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_ImplicitCTorUse02.fs	compared fcs-check-errors b1=1 external=11
@@ -2376,16 +2323,15 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/S
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs:16:24 "x"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs:16:27 "y"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs	compared fcs-clean b1=35 external=31
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:23:11 "RIP"	gap x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:28:26 "IP"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:29:15 "rg_unused_is_RIP"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:29:46 "rg_unused_is_RIP"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:30:15 "rg_used_is_RIP"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:30:46 "rg_used_is_RIP"	gap
-tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:9:35 "RIP"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/E_ExtensionInNamespace01.fs	compared fcs-check-errors b1=0 external=2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs	compared fcs-clean b1=3 external=4
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs:17:10 "M"	gap
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs:18:14 "T"	gap x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs	compared fcs-check-errors b1=7 external=8
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:11:10 "M"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeKindInference/infer_interface002.fs	compared fcs-clean b1=5 external=15
@@ -2629,7 +2575,6 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_Multi
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs	our-parse-errors
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_HashOfSealedType01.fs	compared fcs-clean b1=2 external=3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs	compared fcs-clean b1=7 external=9
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:12:33 "kg"	gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:16:24 "T4"	gap x4
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:16:25 "4"	gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:20:32 "kg"	gap
@@ -2661,6 +2606,7 @@ tests/FSharp.Compiler.Service.Tests/FsiTests.fs:634:78 "CustomType2"	gap
 tests/FSharp.Compiler.Service.Tests/PostInferenceChecksTests.fs	compared fcs-check-errors b1=44 external=46
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs	compared fcs-check-errors b1=28 external=27
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:68:40 "this"	gap
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:73:47 "Parenthesization"	gap
 tests/FSharp.Core.UnitTests/FSharp.Core/DiscriminatedUnionType.fs	compared fcs-check-errors b1=138 external=167
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs	compared fcs-check-errors b1=23 external=112
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs	compared fcs-check-errors b1=304 external=704
@@ -2745,8 +2691,10 @@ tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/ExtraTopLevelOperatorsTests.fs	compared fcs-check-errors b1=24 external=70
 tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleChecked.fs	compared fcs-check-errors b1=0 external=133
 tests/FSharp.Test.Utilities/CompilerAssert.fs	compared fcs-check-errors b1=889 external=830
+tests/FSharp.Test.Utilities/CompilerAssert.fs:1000:67 "ILVerifier"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1001:52 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1001:52 "SourceCodeFileKind.Create"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:1003:74 "ILVerifier"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1004:64 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1004:64 "SourceCodeFileKind.Create"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:1019:63 "_"	gap
@@ -2799,17 +2747,27 @@ tests/FSharp.Test.Utilities/CompilerAssert.fs:593:36 "(errors, _, outputFilePath
 tests/FSharp.Test.Utilities/CompilerAssert.fs:605:36 "_, deps"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:627:85 "_"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:655:6 "CompilerAssertHelpers"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:660:61 "SourceCodeFileKind"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:669:70 "SourceCodeFileKind"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:669:94 "ILVerifier"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:676:16 "ILVerifier"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:679:100 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:693:56 "overwrite"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:717:43 "Compilation"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:719:55 "errors, _, _"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:725:33 "Compilation"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:726:9 "CompilerAssert"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:726:9 "CompilerAssert.CompileWithErrors"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:728:36 "Compilation"	gap x2
+tests/FSharp.Test.Utilities/CompilerAssert.fs:739:36 "Compilation"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:751:55 "errors, _, outputFilePath"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:760:33 "Compilation"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:761:128 "newProcess"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:761:29 "CompilerAssert"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:761:29 "CompilerAssert.ExecuteAux"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:761:62 "ignoreWarnings"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:761:96 "beforeExecute"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:768:44 "Compilation"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:769:28 "CompilerAssert"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:769:28 "CompilerAssert.ExecuteAux"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:769:60 "newProcess"	gap
@@ -2823,22 +2781,32 @@ tests/FSharp.Test.Utilities/CompilerAssert.fs:927:9 "CompilerAssert"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:927:9 "CompilerAssert.TypeCheckWithErrorsAndOptions"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:930:9 "CompilerAssert"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:930:9 "CompilerAssert.TypeCheckWithErrors"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:957:59 "SourceCodeFileKind"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:963:31 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:963:31 "SourceCodeFileKind.Create"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:967:39 "SourceCodeFileKind"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:968:9 "CompilerAssert"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:968:9 "CompilerAssert.CompileExeWithOptions"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:971:53 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:971:53 "SourceCodeFileKind.Create"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:971:9 "CompilerAssert"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:971:9 "CompilerAssert.CompileExeWithOptions"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:973:65 "SourceCodeFileKind"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:977:46 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:977:46 "SourceCodeFileKind.Create"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:979:45 "SourceCodeFileKind"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:983:43 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:983:43 "SourceCodeFileKind.Create"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:985:74 "SourceCodeFileKind"	gap x2
+tests/FSharp.Test.Utilities/CompilerAssert.fs:985:99 "ILVerifier"	gap x2
+tests/FSharp.Test.Utilities/CompilerAssert.fs:988:87 "ILVerifier"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:989:55 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:989:55 "SourceCodeFileKind.Create"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:991:105 "SourceCodeFileKind"	gap x2
 tests/FSharp.Test.Utilities/CompilerAssert.fs:995:75 "SourceCodeFileKind"	gap
 tests/FSharp.Test.Utilities/CompilerAssert.fs:995:75 "SourceCodeFileKind.Create"	gap
+tests/FSharp.Test.Utilities/CompilerAssert.fs:997:54 "SourceCodeFileKind"	gap x2
+tests/FSharp.Test.Utilities/CompilerAssert.fs:997:79 "ILVerifier"	gap x2
 tests/FSharp.Test.Utilities/Utilities.fs	compared fcs-check-errors b1=153 external=135
 tests/FSharp.Test.Utilities/Utilities.fs:248:60 "recursive"	gap
 tests/FSharp.Test.Utilities/Utilities.fs:250:14 "TestReferences"	gap
@@ -2912,23 +2880,34 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:45 "MSBuildProps"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:9 "Build"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:247:13 "Build"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:255:43 "RunConfig"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:260:47 "RunConfig"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:287:27 "Build"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:287:27 "Build.MSBuildProps.makeDll"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:287:33 "MSBuildProps"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:288:9 "Build"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:290:30 "RunConfig"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:294:34 "RunConfig"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:308:11 "Local"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:309:11 "NuGet"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:310:11 "Git"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:313:11 "Local"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:314:11 "NuGet"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:315:11 "Git"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:330:30 "RunConfig"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:333:35 "Git"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:334:35 "NuGet"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:348:23 "{Results = {MeanS = mean}}"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:349:28 "{ Results = {AllocatedMB = allocated}}"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:373:30 "RunConfig"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:376:33 "RunConfig"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:412:35 "RunConfig"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:417:29 "RunConfig"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:427:21 "Local"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:429:21 "Git"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:431:21 "NuGet"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:438:39 "RunConfig"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:34 "RunConfig"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:457:21 "Git"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:457:21 "Git.checkoutAndBuild"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:457:42 "config"	gap
@@ -2936,6 +2915,8 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:459:43 "Git"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:459:43 "Git.prepareRevisionCheckout"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:459:74 "revision"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:35 "RunConfig"	gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:474:26 "RunConfig"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:77:9 "Utils"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:81:9 "Utils"	gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:82:9 "Utils"	gap
@@ -3139,14 +3120,11 @@ tests/fsharp/typecheck/sigs/neg36.fs:10:17 "D<string,string>"	gap
 tests/fsharp/typecheck/sigs/neg36.fs:10:18 "<string,string>"	gap
 tests/fsharp/typecheck/sigs/neg36.fs:21:17 "PA"	gap x4
 tests/fsharp/typecheck/sigs/neg36.fs:21:18 "A"	gap
-tests/fsharp/typecheck/sigs/neg36.fs:22:22 "'a"	gap
 tests/fsharp/typecheck/sigs/neg36.fs:26:17 "PB"	gap x3
 tests/fsharp/typecheck/sigs/neg36.fs:26:17 "PB<int>"	gap
 tests/fsharp/typecheck/sigs/neg36.fs:26:18 "B<int>"	gap
 tests/fsharp/typecheck/sigs/neg36.fs:31:17 "PC"	gap x4
 tests/fsharp/typecheck/sigs/neg36.fs:31:18 "C"	gap
-tests/fsharp/typecheck/sigs/neg36.fs:6:22 "'T"	gap
-tests/fsharp/typecheck/sigs/neg36.fs:7:22 "'U"	gap
 tests/fsharp/typecheck/sigs/neg48.fs	compared fcs-check-errors b1=0 external=56
 tests/fsharp/typecheck/sigs/neg59.fs	compared fcs-check-errors b1=12 external=55
 tests/fsharp/typecheck/sigs/neg59.fs:13:22 "dbOne"	gap

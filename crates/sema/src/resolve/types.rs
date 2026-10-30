@@ -3,6 +3,7 @@
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, LongIdentPat, MemberDefn, MemberLeading, MemberLetBindings, Pat,
     SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, TyparDecls, Type, TypeDefn, TypeDefnRepr,
+    ValSig,
 };
 
 use super::state::Frame;
@@ -147,12 +148,21 @@ impl<'a> Resolver<'a> {
         name: &SyntaxToken,
         slot: SlotClass,
         access_root_len: Option<usize>,
+        arity: usize,
     ) {
         let def = Def::from_token(name, DefKind::Type);
         let key = def.key().to_string();
         let range = def.range;
         let id = self.intern(def);
         self.record(range, Resolution::Local(id));
+        self.type_def_open_marks.insert(id, self.open_decls_seen);
+        self.type_def_arities.insert(id, arity);
+        *self
+            .type_decl_counts
+            .entry(self.container_path.clone())
+            .or_default()
+            .entry(key.clone())
+            .or_default() += 1;
         // Filed under the current container path (see [`Self::type_defs`]). Last
         // definition of a name wins — a redefinition shadows the earlier one for
         // later uses, mirroring the value frames' last-wins.
@@ -238,7 +248,8 @@ impl<'a> Resolver<'a> {
     /// Resolve a bare typar name (`T` of `'T`/`^T`) against the open typar
     /// frames. Binds only when **exactly one** open generic scope declares the
     /// name; `None` otherwise — either no scope declares it (implicit
-    /// generalisation, a constraint-only variable) or **more than one** does.
+    /// generalisation, a constraint-only variable) or **more than one** does,
+    /// or one list declares it twice.
     ///
     /// The multi-frame case is a same-name shadow, and F#'s disambiguation is
     /// *context-dependent*, not a uniform nearest/outermost rule (verified
@@ -252,13 +263,19 @@ impl<'a> Resolver<'a> {
     /// *visible* here as a collision, never silently leaking the outer binder.
     pub(super) fn lookup_typar(&self, name: &str) -> Option<DefId> {
         let mut hit = None;
-        for frame in &self.typar_scopes {
-            if let Some((_, id)) = frame.iter().rev().find(|(n, _)| n == name) {
-                if hit.is_some() {
-                    return None; // declared in >1 open scope — an unmodelled shadow
-                }
-                hit = Some(*id);
+        for (_, id) in self
+            .typar_scopes
+            .iter()
+            .flatten()
+            .filter(|(n, _)| n == name)
+        {
+            if hit.is_some() {
+                // Declared more than once: in two open scopes (an unmodelled
+                // shadow), or twice in one list (`<'a, 'a>`, which FCS
+                // accepts, binding the first).
+                return None;
             }
+            hit = Some(*id);
         }
         hit
     }
@@ -1006,14 +1023,75 @@ impl<'a> Resolver<'a> {
                     self.resolve_member_body(&inner, static_entries, instance_entries);
                 }
             }
-            // `let`/`do` fields are handled by the caller; abstract slots, val
-            // fields, member signatures, and `inherit` carry no resolvable body.
-            MemberDefn::LetBindings(_)
-            | MemberDefn::Do(_)
-            | MemberDefn::AbstractSlot(_)
-            | MemberDefn::ValField(_)
-            | MemberDefn::MemberSig(_)
-            | MemberDefn::Inherit(_) => {}
+            // A signature carries no body, only types: the slot's own type
+            // parameters (`abstract N<'U> : …`) nest above the type's, exactly
+            // as a generic member's do, and its argument labels (`x: int`)
+            // bind nothing a use could see.
+            MemberDefn::AbstractSlot(s) => {
+                if let Some(sig) = s.val_sig() {
+                    self.resolve_member_signature(&sig);
+                }
+            }
+            MemberDefn::MemberSig(ms) => {
+                if let Some(sig) = ms.val_sig() {
+                    self.resolve_member_signature(&sig);
+                }
+            }
+            MemberDefn::ValField(v) => {
+                if let Some(ty) = v.ty() {
+                    self.resolve_type(&ty);
+                }
+            }
+            // `let`/`do` fields are handled by the caller; `inherit` carries no
+            // resolvable body.
+            MemberDefn::LetBindings(_) | MemberDefn::Do(_) | MemberDefn::Inherit(_) => {}
+        }
+    }
+
+    /// Resolve the types of a member signature (`abstract N<'U> : 'U -> 'T`)
+    /// with the signature's own type parameters in scope above the enclosing
+    /// type's, and the `when` constraints on them.
+    ///
+    /// A type parameter no scope declares (`abstract P : 'V -> 'V`) is left
+    /// unrecorded. FCS generalises it implicitly where it first meets it, but
+    /// which occurrence that is depends on what FCS manages to check — it
+    /// skips the arguments of an application it cannot resolve, and declares
+    /// past an attribute argument spelling the parameter — so naming one here
+    /// would guess.
+    fn resolve_member_signature(&mut self, sig: &ValSig) {
+        let explicit = sig.typar_decls();
+        let pushed = self.enter_typars(explicit.clone());
+        if let Some(decls) = &explicit {
+            self.resolve_typar_constraints(decls);
+        }
+        if let Some(ty) = sig.ty() {
+            self.resolve_type(&ty);
+        }
+        self.leave_typars(pushed);
+    }
+
+    /// Resolve the `when` clause inside a type-parameter list (`<'U when 'U :>
+    /// I and 'U : equality>`): each constraint's subject type parameter and
+    /// the types it names. An SRTP member constraint's signature is left
+    /// unrecorded.
+    fn resolve_typar_constraints(&mut self, decls: &TyparDecls) {
+        let Some(clause) = decls.constraint_clause() else {
+            return;
+        };
+        for c in clause.constraints() {
+            if let Some(subject) = c.typar()
+                && let Some(tok) = subject.ident()
+                && let Some(id) = self.lookup_typar(&id_text(&tok))
+                && let Some((range, _)) = typar_occurrence(subject.syntax())
+            {
+                self.record(range, Resolution::Local(id));
+            }
+            if let Some(ty) = c.ty() {
+                self.resolve_type(&ty);
+            }
+            for ty in c.type_args().chain(c.support_types()) {
+                self.resolve_type(&ty);
+            }
         }
     }
 
@@ -1353,8 +1431,64 @@ impl<'a> Resolver<'a> {
         // every implicit open (fsi-verified — a local `type DirectShadow`
         // wins against the fixture's auto-opened one).
         if let [only] = names
-            && let Some(id) = self.lookup_type_def(only)
+            && let Some((id, found_at)) = self.lookup_type_def_with_container(only)
         {
+            // A namespace does not see its parent namespace's types unopened
+            // (`namespace N.Inner` binds FSharp.Core's `int` over an `N.int`);
+            // only enclosing *modules* are lexical scopes.
+            if found_at < self.enclosing_namespace().len() {
+                return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                    DeclineCause::InFileTypeOutsideNamespace,
+                ));
+            }
+            // The hit is the latest declaration of the name in the enclosing
+            // containers so far. FCS may bind another when those containers
+            // declare the name more than once (it picks by the written
+            // arity), or, in a `rec` block, when a declaration the walk has
+            // not reached yet uses it.
+            let visible: usize = (0..=self.container_path.len())
+                .filter_map(|k| {
+                    self.type_decl_counts
+                        .get(&self.container_path[..k])
+                        .and_then(|m| m.get(only.as_str()))
+                })
+                .sum();
+            let declared = self.own_type_decl_counts.get(only).copied().unwrap_or(0);
+            if visible > 1
+                || (self.recursive_module_active && declared > visible)
+                || self.own_exception_simple_names.contains(only.as_str())
+            {
+                return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                    DeclineCause::InFileTypeNameReused,
+                ));
+            }
+            // An `open` since the definition may bring a same-named type,
+            // which FCS binds instead: the latest of the two wins.
+            if self
+                .type_def_open_marks
+                .get(&id)
+                .is_none_or(|&mark| mark < self.open_decls_seen)
+            {
+                return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                    DeclineCause::InFileTypeOpenedOver,
+                ));
+            }
+            // An explicit application names the type of that arity: an
+            // opened generic `List<'T>` beside an in-file `List`.
+            let decl_arity = self.type_def_arities.get(&id).copied();
+            if arity > 0 && decl_arity != Some(arity) {
+                return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                    DeclineCause::InFileArityMismatch,
+                ));
+            }
+            // A bare name prefers a non-generic type: with type arguments
+            // omitted, FCS binds any arity-0 `Action` in scope — an
+            // assembly's, an opened module's — over an in-file `Action<'T>`.
+            if arity == 0 && decl_arity != Some(0) {
+                return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                    DeclineCause::InFileArityMismatch,
+                ));
+            }
             return TypePathResolution::InFileType(id);
         }
 
@@ -2376,6 +2510,17 @@ impl<'a> Resolver<'a> {
     /// type of the same name shadows the enclosing one. `None` if no in-file type
     /// of that name is in scope. (Cross-file / assembly types are a later slice.)
     /// `name` is already a name ([`id_text`]), not a token's text.
+    /// [`Self::lookup_type_def`], with the length of the container path the
+    /// def was found under.
+    fn lookup_type_def_with_container(&self, name: &str) -> Option<(DefId, usize)> {
+        (0..=self.container_path.len()).rev().find_map(|k| {
+            self.type_defs
+                .get(&self.container_path[..k])
+                .and_then(|m| m.get(name))
+                .map(|id| (*id, k))
+        })
+    }
+
     pub(super) fn lookup_type_def(&self, name: &str) -> Option<DefId> {
         (0..=self.container_path.len()).rev().find_map(|k| {
             self.type_defs

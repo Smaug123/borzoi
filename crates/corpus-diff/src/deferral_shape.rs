@@ -76,9 +76,9 @@ pub enum DeferralShape {
     /// The record sits in an **attribute's arguments** (`[<A(Flags.X)>]`,
     /// `[<A(Name = v)>]`). Only the attribute's type name is resolved.
     AttributeArgument,
-    /// A type in an **abstract slot**, a class **`val` field** or a **member
-    /// signature** (`abstract Apply : T -> U`, `val Next : T`). The resolver
-    /// walks member bodies but not these declarations' types.
+    /// A type in a **member signature** the resolver does not walk: an SRTP
+    /// member constraint's (`when ^T : (static member Zero : ^T)`). Abstract
+    /// slots' and `val` fields' types are walked.
     MemberSignature,
     /// A **generic type parameter** (`'a`, `^T`) the resolver left
     /// unanswered. It binds a parameter only to an explicit `<'a>` declaration
@@ -293,8 +293,7 @@ fn single_name_shape(
 ///   argument, which are resolved;
 /// - an `ATTRIBUTE`'s arguments — every child but the attribute's own type
 ///   name, which is;
-/// - an abstract slot, a `val` field or a member signature, whose types are
-///   not.
+/// - a member signature (an SRTP member constraint's), whose types are not.
 fn unwalked_region(token: &SyntaxToken) -> Option<DeferralShape> {
     let mut child: Option<SyntaxNode> = None;
     for node in token.parent_ancestors() {
@@ -310,7 +309,7 @@ fn unwalked_region(token: &SyntaxToken) -> Option<DeferralShape> {
             {
                 return Some(DeferralShape::AttributeArgument);
             }
-            SyntaxKind::ABSTRACT_SLOT | SyntaxKind::VAL_FIELD | SyntaxKind::MEMBER_SIG => {
+            SyntaxKind::MEMBER_SIG => {
                 return Some(DeferralShape::MemberSignature);
             }
             _ => {}
@@ -436,6 +435,7 @@ module Inner =
 let w = Demo.Widget.Missing
 let k (x : 'b) = x
 let mk<'c when 'c : equality> (x : 'c) = x
+let inline zero< ^d when ^d : (static member Zero : ^d)> () = ()
 
 open Inner
 
@@ -496,7 +496,7 @@ let p = g () |> f
         ("open Inner", "Inner", DeferralShape::DeclarationPath),
         ("(x : 'b)", "'b", DeferralShape::TypeParameter),
         ("'c : equality", "'c", DeferralShape::TypeParameter),
-        ("Apply : R", "R", DeferralShape::MemberSignature),
+        ("Zero : ^d", "^d", DeferralShape::MemberSignature),
         (
             "Obsolete(Inner.v)",
             "Inner",
