@@ -745,7 +745,7 @@ fn is_conversion_operator(name: &str) -> bool {
 
 /// Strip a trailing `` `n `` generic-arity suffix from one name segment.
 /// `List`1` → `List`; a name with no such suffix is returned unchanged.
-fn demangle_segment(seg: &str) -> &str {
+pub fn demangle_segment(seg: &str) -> &str {
     match seg.rfind('`') {
         Some(tick) => {
             let suffix = &seg[tick + 1..];

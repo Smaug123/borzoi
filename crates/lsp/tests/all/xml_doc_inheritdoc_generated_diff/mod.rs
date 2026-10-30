@@ -13,14 +13,29 @@
 //! compiled by the oracle and every inheritdoc-bearing entry compared,
 //! certain-implies-exact, against Roslyn's expansion.
 //!
+//! The submodules generate the dimensions a single compiled program cannot
+//! reach, each a family of its own: the identity of assembly references and
+//! forwarders ([`identity`]), the layout of the documentation file
+//! ([`doc_layout`]), same-named types across assemblies whose accessor and
+//! method IDs collide ([`collisions`]), accessors named off the `get_`/`set_`
+//! convention ([`renamed_accessors`]), and base-type arguments built from the
+//! context's own parameters ([`context_args`]).
+//!
 //! Every generated program must compile: a generator that writes invalid C#
 //! fails the property, so no dimension can drop out unnoticed. A liveness
-//! check over a fixed sample asserts that each dimension of the vocabulary
-//! reaches a compared entry, and that the comparison mostly expands.
+//! check over a fixed sample of each family asserts that each dimension of
+//! its vocabulary reaches an *expanded* entry, so the property cannot pass on
+//! a dimension the generator never emits or the expansion always declines.
 //!
 //! The properties run [`DEFAULT_CASES`] cases in the normal suite; the
 //! `#[ignore]`d `deep_*` twins run [`DEEP_CASES`] (CI's `<inheritdoc>` sweep
 //! step runs them). `BORZOI_INHERITDOC_CASES` overrides both.
+
+mod collisions;
+mod context_args;
+mod doc_layout;
+mod identity;
+mod renamed_accessors;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -1546,6 +1561,18 @@ fn override_chain() -> impl Strategy<Value = Program> {
 /// Run `run` over `cases` programs from `strategy`, persisting a failure's
 /// seed beside this file as the `proptest!` macro does.
 fn check(strategy: impl Strategy<Value = Program>, cases: u32) {
+    check_each(strategy, cases, |p| {
+        run(&p);
+    });
+}
+
+/// Run `body` over `cases` values from `strategy`, persisting a failure's
+/// seed beside this module as the `proptest!` macro does.
+fn check_each<P: std::fmt::Debug>(
+    strategy: impl Strategy<Value = P>,
+    cases: u32,
+    body: impl Fn(P),
+) {
     let config = Config {
         cases,
         source_file: Some(file!()),
@@ -1556,11 +1583,83 @@ fn check(strategy: impl Strategy<Value = Program>, cases: u32) {
     };
     let mut runner = TestRunner::new(config);
     if let Err(e) = runner.run(&strategy, |p| {
-        run(&p);
+        body(p);
         Ok(())
     }) {
         panic!("{e}");
     }
+}
+
+/// `count` values of `strategy` from a deterministic runner: the fixed
+/// sample a liveness check reads.
+fn sample<P>(strategy: &impl Strategy<Value = P>, count: usize) -> Vec<P> {
+    use proptest::strategy::ValueTree;
+    let mut runner = TestRunner::deterministic();
+    (0..count)
+        .map(|_| strategy.new_tree(&mut runner).unwrap().current())
+        .collect()
+}
+
+/// The oracle, recovered if a panic poisoned its mutex: a property's failing
+/// case may panic mid-request, and the cases proptest then shrinks through
+/// must still reach the oracle, or every one reports the poisoning instead
+/// of its own failure. The child itself stays in step: a request answers or
+/// errors on its own line.
+fn oracle_guard() -> std::sync::MutexGuard<'static, crate::common::inheritdoc_oracle::Oracle> {
+    crate::common::inheritdoc_oracle::oracle()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Panic, with `program` and the first disagreement, if any compared entry
+/// disagrees with Roslyn: the certain-implies-exact property.
+fn assert_sound(compared: &[Compared], program: &str) {
+    let mut census = Census::default();
+    census.add(compared);
+    if let Some((key, ours, roslyn)) = census.disagrees.first() {
+        panic!(
+            "{} expansion(s) disagree with Roslyn; first, {key}:\nours: {ours}\nroslyn: {roslyn}\nprogram:\n{program}",
+            census.disagrees.len()
+        );
+    }
+}
+
+/// Record `compared` against each of `dims`.
+fn reach_by<D: Ord + Copy>(
+    reach: &mut BTreeMap<D, Reach>,
+    dims: impl IntoIterator<Item = D>,
+    verdict: &Verdict,
+) {
+    for d in dims {
+        let r = reach.entry(d).or_default();
+        r.compared += 1;
+        if matches!(verdict, Verdict::Agrees) {
+            r.expanded += 1;
+        }
+    }
+}
+
+/// Print the reach of every one of `all`, then fail naming each that no
+/// sampled entry expanded.
+fn assert_every_dimension_expands<D: Ord + Copy + std::fmt::Debug>(
+    family: &str,
+    all: &[D],
+    reach: &BTreeMap<D, Reach>,
+) {
+    eprintln!("== {family}: reach per dimension");
+    for d in all {
+        eprintln!("  {d:?}: {:?}", reach.get(d));
+    }
+    let dead: Vec<String> = all
+        .iter()
+        .filter(|d| !reach.get(d).is_some_and(|r| r.expanded > 0))
+        .map(|d| format!("{d:?}: {:?}", reach.get(d)))
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "{family}: dimensions no sampled entry expands: {}",
+        dead.join(", ")
+    );
 }
 
 #[test]

@@ -1490,6 +1490,15 @@ pub struct AccessorSlot {
     pub is_final: bool,
     /// As [`MethodLike::has_other_method_impl`], for this accessor.
     pub has_other_method_impl: bool,
+    /// The interface members this accessor implements explicitly, one per
+    /// `MethodImpl` row whose body it is: the rows the owning member's
+    /// `implements` unions, kept per accessor, because a row naming an
+    /// external interface's accessor ([`ImplementedMember::Unresolved`])
+    /// carries only that accessor's name, and which *role* it plays — getter
+    /// or setter, adder or remover, whose signatures never coincide — is
+    /// known only from which accessor the row sits on.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub implements: Vec<InterfaceMemberImpl>,
 }
 
 /// One in-assembly-undecidable `MethodImpl` row: the declaration's parent

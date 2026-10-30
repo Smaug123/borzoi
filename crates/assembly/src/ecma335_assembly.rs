@@ -2607,6 +2607,7 @@ impl Ecma335Assembly {
                 is_abstract: a.is_abstract,
                 is_final: a.is_final,
                 has_other_method_impl: self.has_other_method_impl(a),
+                implements: self.project_implements(a),
             })
             .collect()
     }

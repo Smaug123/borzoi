@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use borzoi::assembly_cache::AssemblyCache;
+use borzoi::semantic::build_env_from_dll_paths;
 use borzoi::xml_doc::file::DocEntry;
 use borzoi::xml_doc::inherit::{Outcome, expand};
 use borzoi::xml_doc::key::{DocIdIndex, DocTarget};
@@ -22,6 +24,11 @@ use super::inheritdoc_oracle::{Expanded, oracle};
 pub struct Compared {
     pub key: String,
     pub verdict: Verdict,
+    /// The documentation IDs Roslyn names as the candidate of each
+    /// `<inheritdoc>` of the entry's own text (its census `rules`): what the
+    /// expansion inherits from first, for attributing a comparison to the
+    /// symbols it read.
+    pub roslyn_candidates: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,12 +58,20 @@ fn looks_like_inheritdoc(name: &str) -> bool {
     name.to_lowercase().replace('ı', "i") == "inheritdoc"
 }
 
-fn parse(xml: &str) -> DocElement {
+/// Roslyn's expanded entry; `None` where it has no documentation for the
+/// symbol at all (an empty fragment: its provider never read an entry for
+/// the key).
+fn parse(xml: &str) -> Option<DocElement> {
+    if xml.is_empty() {
+        return None;
+    }
     let doc =
         roxmltree::Document::parse(xml).unwrap_or_else(|e| panic!("Roslyn's XML: {e}: {xml}"));
-    DocElement::from_roxmltree(doc.root_element())
-        .expect("Roslyn's expansion within the depth bound")
-        .normalized()
+    Some(
+        DocElement::from_roxmltree(doc.root_element())
+            .expect("Roslyn's expansion within the depth bound")
+            .normalized(),
+    )
 }
 
 /// A short census bucket for a decline: the variant path of its `Debug`
@@ -69,14 +84,33 @@ fn bucket(why: &borzoi::xml_doc::inherit::Decline) -> String {
     }
 }
 
+/// The env over `references`, and the references it was built from: the
+/// list less each lower-version duplicate it unifies away. MSBuild's conflict
+/// resolution removes those before any compiler sees the set, so Roslyn's
+/// compilation must be given this list, not the raw one — given both
+/// versions, Roslyn binds a reference to whichever it picks, an assembly no
+/// real build hands it.
+pub fn build_env(
+    references: &[PathBuf],
+    cache: &AssemblyCache,
+) -> (Arc<AssemblyEnv>, Vec<PathBuf>) {
+    let (env, kept) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), cache);
+    (Arc::new(env), kept)
+}
+
 /// Compare every inheritdoc-bearing entry of `dll` (one of `references`,
-/// all of which `env` was built from).
+/// exactly the set `env` was built from: see [`build_env`]).
 pub fn compare_assembly(
     env: &Arc<AssemblyEnv>,
     sources: &mut DocSources,
     references: &[PathBuf],
     dll: &Path,
 ) -> Vec<Compared> {
+    assert!(
+        references.iter().any(|r| r == dll),
+        "{} is not in the reference set",
+        dll.display()
+    );
     let Ok(file) = sources.files.load(&xml_path_for(dll)) else {
         return Vec::new();
     };
@@ -118,7 +152,7 @@ pub fn compare_assembly(
                         // so a spelling the expansion misses is caught here.
                         Outcome::Inherited | Outcome::NoInheritdoc => {
                             let roslyn = parse(xml);
-                            if roslyn == expansion.member.clone().normalized() {
+                            if roslyn == Some(expansion.member.clone().normalized()) {
                                 Verdict::Agrees
                             } else {
                                 Verdict::Disagrees {
@@ -129,7 +163,7 @@ pub fn compare_assembly(
                         }
                         Outcome::Declined(why) => Verdict::Declined {
                             cause: bucket(&why),
-                            roslyn_left_it: has_inheritdoc(&parse(xml)),
+                            roslyn_left_it: parse(xml).is_some_and(|e| has_inheritdoc(&e)),
                         },
                     }
                 }
@@ -140,7 +174,15 @@ pub fn compare_assembly(
                 Verdict::NoStart(format!("roslyn: {other:?}, ours: {} target(s)", ours.len()))
             }
         };
-        out.push(Compared { key, verdict });
+        let roslyn_candidates = match &theirs {
+            Expanded::Ok { rules, .. } => rules.iter().filter_map(|(_, c)| c.clone()).collect(),
+            _ => Vec::new(),
+        };
+        out.push(Compared {
+            key,
+            verdict,
+            roslyn_candidates,
+        });
     }
     out
 }
