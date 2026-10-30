@@ -107,22 +107,24 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-10-26, after assembly module values; 2 602 walked
-bindings, 37.9 % complete — 37.4 % before them, when a value not bound in the
-file was the only observed reason of 467 and present in 664):
+corpus sample (2026-10-30, after generic named types in assembly values;
+2 602 walked bindings, 38.2 % complete — 37.9 % before them, when an assembly
+value over a type the bridge did not carry was the only observed reason of 11
+and present in 76):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 407 | 550 |
+| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 408 | 551 |
 | method call on a receiver that is not an in-file value | 161 | 271 |
 | `use`, `let rec` or `let!` inside an expression | 64 | 90 |
-| pattern annotation outside the modelled set | 47 | 331 |
-| `match` | 47 | 149 |
+| pattern annotation outside the modelled set | 49 | 331 |
+| `match` | 47 | 150 |
 | use of an in-file binder F# may reject for its attributes | 45 | 123 |
-| constrained assembly operator (`+`, `=`, …) | 37 | 65 |
+| constrained assembly operator (`+`, `=`, …) | 37 | 71 |
+| computation expression | 34 | 35 |
 | `new` | 32 | 37 |
-| assembly value with a constrained type parameter | 17 | 34 |
-| assembly value over a type the bridge does not carry (`'T list`, …) | 11 | 76 |
+| assembly value with a constrained type parameter (its own, or a generic type's it applies) | 17 | 36 |
+| assembly value over a type the bridge does not carry | 3 | 5 |
 
 The sample checks each file in isolation against FSharp.Core and the BCL
 alone, so most of the first row is a preceding file's value, which no
@@ -193,10 +195,10 @@ behind a named type — `type Dist = float<m>` pickles as the bare name, so ever
 named head the type applies is cleared through the abbreviation chase, in
 whichever assembly declares it (`module_function_measures_diff`) — plus the
 val's own `[<CompilerMessage>]` and `[<RequiresExplicitTypeArguments>]`, which
-reject a use and live in the pickle alone (`MethodLike::val_facts`). The
-bridge carries no generic named type, so `@` and `:=` (over `'T list` and
-`'T ref`, F# types under a compiled name) and `^` (obsolete as an error, which
-FCS types as `obj`) decline too. Every FSharp.Core `Operators` function the reading admits (14,
+reject a use and live in the pickle alone (`MethodLike::val_facts`). `^`
+(obsolete as an error, which FCS types as `obj`) declines too; `@` and `:=`,
+over `'T list` and `'T ref`, are typed since the bridge carries generic named
+types (below). Every FSharp.Core `Operators` function the reading admits (14,
 `id` and `box` among them), bound as a value, has exactly the type FCS gives
 it. `infer_operators_diff` grades a generated grid — every operator ×
 operand kind (literal, annotated or open parameter, lambda, nested application,
@@ -309,9 +311,8 @@ parameter is its type, a group of several their tuple
 `[]`1` pickle head hides no measure) and non-generic named types: the type
 the reference's own scope resolves to (following forwarders), when it is the
 only type at its path and F# names it as the IL does — `Ty` keeps no
-assembly, so a type two assemblies declare declines on both sides; a generic named type
-(`'T list`, `'T option`, `seq<'T>`) declines, since FSharp.Core's are renamed
-and `Ty` carries one path. It also declines a val another assembly cannot
+assembly, so a type two assemblies declare declines on both sides — and
+generic named types (below). It also declines a val another assembly cannot
 access, and one whose module, or a module enclosing it, carries an
 error-level `[<Obsolete>]` or `[<CompilerMessage>]`, which FCS checks on the
 way to the val. A preceding file's value, an inaccessible val (the resolver records
@@ -325,7 +326,7 @@ generated fixture assembly (`module_value_corpus`): 69 signature shapes
 ones, tuple-typed parameter, function returned, function taken, `obj` taken,
 named types, arrays, values, type functions, inline, `[<CompiledName>]`,
 warning-level attributes, and the declines — constraints, measures, renamed
-and generic named types, `[<RequiresExplicitTypeArguments>]`, obsolete and
+types, `[<RequiresExplicitTypeArguments>]`, obsolete and
 compiler-message errors, an internal val, a literal) × 14 use forms × 6 positions × 3
 spellings, with a per-row obligation on every well-typed synth row whose FCS
 type is ground (3 753), a census check that each declined shape records
@@ -346,6 +347,80 @@ Measured on the stride-13
 corpus sample: 890 + 862 → 899 + 870 agreements (17 added, none lost), 0
 divergences, 973 → 987 complete bindings; bridging every named type, unchecked,
 added nothing over that.
+
+**Generic named types.** The bridge carries a generic named type applied to
+arguments it carries in turn — `'T list`, `'T option`, `Result<'T, 'E>`,
+`seq<'T>`, `ResizeArray<'T>`, `KeyValuePair<_, _>`, a user's generic record,
+union or class, nested and in arrays — as `Ty::Named` with its arguments, the
+representation annotations already use. Its path is the compiled one
+(`Microsoft.FSharp.Collections.FSharpList`), which is FCS's canonical
+rendering, so the rules are those of a non-generic type over that path:
+
+- the reference's own scope resolves it (following forwarders), and it is the
+  only type in its namespace, at its arity, that its IL or source name could
+  be read back as (`AssemblyEnv::sole_generic_type_referenced`); a namespace
+  with a dropped type declines;
+- F# names it as the IL does, or it is one of FSharp.Core's renamed generics
+  (`FSHARP_CORE_RENAMED`: `list`, `option`, `voption`, `ref`, `Result`,
+  `Choice`, `Async`, `Map`, `Set`), checked to be FSharp.Core's own type with
+  that source name; `Ty::render_fsharp` shows those by their F# name, since
+  `FSharpList` cannot be written in F#;
+- no type parameter of it is constrained (`Map`, `Set`, `Nullable`, a user's
+  `when 'T : comparison`), since nothing checks an argument against a
+  constraint; a type with a measure parameter, which IL erases, declines at
+  the val's measure check first, directly or through an abbreviation;
+- not byref-like (`ReadOnlySpan<_>`), not `System.Tuple`/`System.ValueTuple`
+  (FCS renders those structurally), not nested.
+
+Two rules of the use follow FCS for the new types. `MakeApplicableExprWithFlex`
+loosens a parameter whose type is not sealed (`isSealedTy`): an F# union,
+record or struct, and a `[<Sealed>]` class, are sealed, an interface
+(`seq<'T>`) or an unsealed class (`ResizeArray<'T>`) is not and is loosened
+to a bounded variable as before. The sealed test reads a generic type by its
+compiled path (`AssemblyEnv::generic_type_at_compiled_path`), since the
+source-name index does not hold `FSharpList` under that name. And an
+argument checked against a sealed generic domain discharges as an equality
+(`Gen::no_subsumption_ty`), as against a sealed primitive: FCS checks a
+function argument by an equality first (`UnifyOverallType`), and no subtype
+coerces into a sealed type, so `List.map f xs` with `xs` an assembly value
+fixes its result. Member access on a generic receiver still parks, and
+annotations still decline a renamed or abbreviated generic head (`int list`,
+`ResizeArray<int>`), so neither path met these types before and neither
+changes.
+
+`infer_assembly_values_diff` adds the dimension to its generated fixture:
+F# list (nested, in an array, through a user abbreviation), option (of a list,
+a tuple, a function), `Result`, `voption`, `ref`, `Choice`, `Async`,
+`seq` taken and returned, `ResizeArray`, a BCL struct and delegate, user
+generic records, unions, classes sealed and not, an abbreviation of a
+generic instantiation, and the declines (a constrained typar, `Map`,
+`Nullable`, measure-parameterised generics directly and through an
+abbreviation, a renamed user generic with and without the arity suffix, a
+struct tuple, a one-tuple, a nested generic, byref-like spans), each × the
+existing use forms, positions and spellings with ill-typed twins: 137 shapes,
+6 834 per-row obligations. The twin assembly declares a colliding generic
+(both sides decline) and generic types of its own (read through the twin's
+scope, and committed). The FSharp.Core sweep now reads 638 module members
+(279 before), every one FCS's type, and each of the 450 whose parameters are
+all of a shape FCS treats as sealed must commit when returned. Each new gate
+was checked by deleting it; some test fails without each, except three kept
+as defence in depth (the forwarded target's own name, which the arity-aware
+path walk already pins; the FSharp.Core identity of a renamed type, which the
+sole-occupant check already enforces against an impostor at its path; and the
+top-level full-name comparison, which the rename and nesting checks already
+decide). Treating every generic domain, sealed or not, as an equality also
+survives: FCS's function arguments are equality-first, so this is the
+existing conservatism of `no_subsumption_ty`, not a soundness gate.
+
+Measured on the stride-13 corpus sample: agreements unchanged at 899 + 870
+(the manifest does not move), 0 divergences, 987 → 994 complete bindings;
+`AssemblyValue(Type)` falls from 11 / 76 to 3 / 5 (only observed / present),
+and the reasons that rose in its place are lambdas (present in 52 → 71),
+constrained operators (65 → 71), computation expressions (only observed in
+24 → 34) and `AssemblyValue(Constrained)` (present in 34 → 36). Every FSharp.Core function over `seq<'T>` (the `Seq` module,
+`List.ofSeq`, `Array.concat`, …) still owes nothing: FCS loosens the
+interface to a bounded variable and condenses it back on generalisation,
+which inference does not model.
 
 A member access on an F# record, union or exception type publishes no
 receiver node: FCS reads a record field as a field get, under which its typed

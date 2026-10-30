@@ -2236,9 +2236,10 @@ impl<'a> Gen<'a> {
         // and a renamed entity needs two — FCS's canonical currency is the
         // COMPILED name (`Microsoft.FSharp.Core.FSharpResult`) while
         // [`Ty::render_fsharp`] must show the source name a user can write
-        // (`Result`), which no alias table recovers from the compiled one.
-        // Committing the compiled path would make hover display a name that does
-        // not resolve in F# source.
+        // (`Result`). Its table of FSharp.Core's renamed generics
+        // (`FSHARP_CORE_RENAMED`) is what the signature bridge checks a renamed
+        // type against; this bridge does not, so it declines every renamed one
+        // rather than show a compiled name that does not resolve in F# source.
         let mut path: Vec<String> = entity.namespace.clone();
         path.push(entity.name.clone());
         if self.env.entity_full_name(handle) != path.join(".") {
@@ -3813,8 +3814,16 @@ impl<'a> Gen<'a> {
     /// root. Everything else is `false`.
     fn no_subsumption_ty(&mut self, ty: &Ty) -> bool {
         match ty {
-            // Only a sealed BCL primitive; `obj` and arbitrary named types are not.
-            Ty::Named { path, args } => args.is_empty() && is_sealed_primitive(path),
+            // A sealed BCL primitive; `obj` and other nullary named types are
+            // not.
+            Ty::Named { path, args } if args.is_empty() => is_sealed_primitive(path),
+            // A sealed generic application (`'a list`, `int option`, a generic
+            // record or struct): a sealed type has no subtype to coerce into
+            // it, and its arguments are invariant, so the equality FCS tries
+            // first is its relation. Where it fails, FCS may still convert
+            // (an `op_Implicit` into the type), and the failed equality
+            // rolls the binding back ([`Self::verified`]).
+            Ty::Named { .. } => is_sealed(self.env, ty),
             Ty::Tuple(elems) => elems.iter().all(|e| self.no_subsumption_ty(e)),
             Ty::Var(v) => self.is_scheme_inst_root(*v),
             // Arrays, functions, and quantified `Param`s (never bound into the
@@ -5712,7 +5721,15 @@ fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
             let Some((name, namespace)) = path.split_last() else {
                 return false;
             };
-            let Some(handle) = env.lookup_type_if_certain(namespace, name, args.len()) else {
+            // A generic application names its type by its compiled path, which
+            // the source-name index does not hold for a renamed one
+            // (`FSharpList`).
+            let handle = if args.is_empty() {
+                env.lookup_type_if_certain(namespace, name, 0)
+            } else {
+                env.generic_type_at_compiled_path(namespace, name, args.len())
+            };
+            let Some(handle) = handle else {
                 return false;
             };
             let entity = env.entity(handle);

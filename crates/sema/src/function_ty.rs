@@ -27,17 +27,19 @@
 //! `[<RequiresExplicitTypeArguments>]` written without them, or a val another
 //! assembly cannot access.
 //!
-//! The types it carries over are deliberately few: primitives, the function's
-//! own type parameters, F# function types, reference tuples (`System.Tuple`
-//! of two to seven elements), vectors, `unit`, and non-generic named types
-//! the env resolves to one entity that F# names as the IL does. A generic
-//! named type is a gap: FSharp.Core's own (`'T list`, `'T option`) are
-//! renamed, which `Ty`'s one path cannot carry (FCS renders the compiled
-//! `FSharpList`, hover must show `list`), and bridging the rest soundly
-//! needs the checks `Gen::applied_annotation_ty` makes of an annotation head.
-//! Bridging every named type, unchecked, was measured on the corpus sample to
-//! add no agreement over this set, while other blockers dominate. A
-//! nullable-reference annotation is a gap too: `Ty` cannot carry F#'s `| null`.
+//! The types it carries over are: primitives, the function's own type
+//! parameters, F# function types, reference tuples (`System.Tuple` of two to
+//! seven elements), vectors, `unit`, and named types the env resolves to one
+//! entity — non-generic, or generic and applied to arguments it carries in
+//! turn (`'T list`, `Result<int, string>`, `seq<'T>`, a user's generic
+//! record). A named type is carried by its compiled path, which is how FCS's
+//! canonical renderer names it, so it must be the only type that path could be
+//! read back as, and F# must name it as the IL does — or, for FSharp.Core's
+//! renamed generics (`FSharpList` is `list`), be FSharp.Core's own, whose F#
+//! name [`Ty::render_fsharp`] shows. A generic type constraining any of its
+//! type parameters is a gap, since nothing checks its arguments against the
+//! constraint. A nullable-reference annotation is a gap too: `Ty` cannot carry
+//! F#'s `| null`.
 
 use borzoi_assembly::{
     Access, ArgGroups, AssemblyIdentity, Augmentation, EntityKind, MethodLike, Nullability,
@@ -47,7 +49,7 @@ use borzoi_assembly::{
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::infer::{constrained_parameter, rejected_by_attributes};
 use crate::member_ty::primitive_to_ty;
-use crate::ty::Ty;
+use crate::ty::{FSHARP_CORE_RENAMED, Ty};
 
 /// FSharp.Core's public-key token.
 const FSHARP_CORE_PUBLIC_KEY_TOKEN: [u8; 8] = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a];
@@ -74,8 +76,9 @@ pub enum FunctionTyGap {
     /// An F# method whose val the signature pickle did not describe, so neither
     /// its use-checked attributes nor its units of measure are known.
     Unread,
-    /// A type parameter is constrained — by IL, by an F#-only constraint, or by
-    /// one the pickle was not read for.
+    /// A type parameter — the function's own, or one of a generic type its
+    /// signature applies — is constrained: by IL, by an F#-only constraint, or
+    /// by one the pickle was not read for.
     Constrained,
     /// The F# type mentions a unit of measure the IL erased, or names a type
     /// not proven free of one.
@@ -276,7 +279,8 @@ impl Bridge<'_> {
                 type_args,
                 segment_arities,
             } if is_fsharp_core(assembly.as_ref().unwrap_or(self.declaring))
-                && is_fsharp_core_namespace(namespace) =>
+                && is_fsharp_core_namespace(namespace)
+                && (type_args.is_empty() || name == "FSharpFunc") =>
             {
                 if type_args
                     .iter()
@@ -324,6 +328,37 @@ impl Bridge<'_> {
                         .map(|a| self.ty(&a.ty))
                         .collect::<Result<_, _>>()?,
                 ))
+            }
+            // A generic, top-level named type applied to its arguments, by its
+            // compiled path, which is how FCS renders it: see
+            // [`Bridge::generic_path`].
+            TypeRef::Named {
+                assembly,
+                namespace,
+                name,
+                type_args,
+                segment_arities,
+            } if !type_args.is_empty()
+                && segment_arities.as_slice() == [type_args.len()]
+                && !name.contains('/') =>
+            {
+                if type_args
+                    .iter()
+                    .any(|a| a.nullability == Nullability::Annotated)
+                {
+                    return Err(FunctionTyGap::Type);
+                }
+                let scope = assembly.as_ref().unwrap_or(self.declaring);
+                let handle = self
+                    .env
+                    .sole_generic_type_referenced(&scope.name, namespace, name, type_args.len())
+                    .ok_or(FunctionTyGap::Type)?;
+                let path = self.generic_path(handle)?;
+                let args = type_args
+                    .iter()
+                    .map(|a| self.ty(&a.ty))
+                    .collect::<Result<_, _>>()?;
+                Ok(Ty::Named { path, args })
             }
             // A non-generic, top-level named type, by the path FCS renders
             // it under — which is the IL's only when the type the reference's
@@ -391,5 +426,72 @@ impl Bridge<'_> {
             | TypeRef::Ptr(_)
             | TypeRef::ByRef { .. } => Err(FunctionTyGap::Type),
         }
+    }
+
+    /// The compiled path of the generic type `handle` a signature applies,
+    /// which is FCS's canonical rendering of it and so what [`Ty::Named`]
+    /// carries, when an instantiation of it may be read as written:
+    ///
+    /// - it is a type F# applies as written: not a module, an abbreviation, a
+    ///   measure or byref-like, and not one of the heads FCS renders
+    ///   structurally (`System.Tuple` and `System.ValueTuple`, and
+    ///   `FSharpFunc`, which the FSharp.Core arm reads);
+    /// - F# names it as the IL does — or it is one of FSharp.Core's renamed
+    ///   generics ([`FSHARP_CORE_RENAMED`]), which [`Ty::render_fsharp`] shows
+    ///   by their F# name, and the entity is FSharp.Core's own with that
+    ///   source name;
+    /// - none of its type parameters is constrained ([`constrained_parameter`]):
+    ///   nothing here checks an argument against a constraint, and an IL
+    ///   signature can apply a type to an argument F# would reject (an
+    ///   assembly built without its pickle, or a C# one).
+    ///
+    /// A type with a measure parameter never gets here: IL erases the
+    /// parameter, and the val's measure check declines first.
+    fn generic_path(&self, handle: EntityHandle) -> Result<Vec<String>, FunctionTyGap> {
+        let entity = self.env.entity(handle);
+        if entity.is_byref_like
+            || matches!(
+                entity.kind,
+                EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
+            )
+        {
+            return Err(FunctionTyGap::Type);
+        }
+        let mut path = entity.namespace.clone();
+        path.push(entity.name.clone());
+        if matches!(
+            path.iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            ["System", "Tuple"]
+                | ["System", "ValueTuple"]
+                | ["Microsoft", "FSharp", "Core", "FSharpFunc"]
+        ) {
+            return Err(FunctionTyGap::Type);
+        }
+        let namespace = entity.namespace.join(".");
+        let source = match &entity.source_name {
+            None => entity.name.as_str(),
+            Some(source)
+                if is_fsharp_core(&entity.assembly)
+                    && FSHARP_CORE_RENAMED.iter().any(|&(ns, compiled, src, _)| {
+                        ns == namespace && compiled == entity.name && src == source
+                    }) =>
+            {
+                source.as_str()
+            }
+            Some(_) => return Err(FunctionTyGap::Type),
+        };
+        // Top-level: its full name is its namespace and its F# name.
+        let mut full = entity.namespace.clone();
+        full.push(source.to_owned());
+        if self.env.entity_full_name(handle) != full.join(".") {
+            return Err(FunctionTyGap::Type);
+        }
+        if entity.generic_parameters.iter().any(constrained_parameter) {
+            return Err(FunctionTyGap::Constrained);
+        }
+        Ok(path)
     }
 }
