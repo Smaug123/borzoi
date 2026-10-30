@@ -2424,6 +2424,10 @@ pub struct FcsTypedDump {
     pub types: FcsTypeMap,
     pub errors: Vec<FcsCheckError>,
     pub unconverted: Vec<FcsUnconverted>,
+    /// For a `binder-types` dump, the constraint kinds on each binder's type
+    /// parameters, by binder range (see [`GradedDumps::hides_constraint`]);
+    /// empty for a `types` dump.
+    pub typar_constraints: HashMap<(usize, usize), Vec<String>>,
 }
 
 fn normalise_unconverted(raw: Vec<RawUnconverted>, idx: &LineIndex) -> Vec<FcsUnconverted> {
@@ -2521,6 +2525,9 @@ pub struct GradedDumps {
     pub binders: FcsTypeMap,
     pub errors: Vec<FcsCheckError>,
     pub ungraded: Vec<(usize, usize)>,
+    /// Each binder's type-parameter constraint kinds; see
+    /// [`Self::hides_constraint`].
+    pub binder_constraints: HashMap<(usize, usize), Vec<String>>,
 }
 
 impl GradedDumps {
@@ -2546,7 +2553,22 @@ impl GradedDumps {
             types: types.types,
             binders: binders.types,
             errors: types.errors,
+            binder_constraints: binders.typar_constraints,
         })
+    }
+
+    /// Whether our type `ours` for the binder at `range`, which renders as
+    /// FCS's does, says less than FCS's: it mentions a type parameter, and FCS
+    /// constrains one. The canonical rendering omits constraints, so
+    /// `'a -> 'a -> System.Boolean` agrees as a string with FCS's
+    /// `'a -> 'a -> bool when 'a : equality`, and only this tells a hover that
+    /// drops the constraint from one that has none to drop.
+    pub fn hides_constraint(&self, range: (usize, usize), ours: &str) -> bool {
+        ours.contains('\'')
+            && self
+                .binder_constraints
+                .get(&range)
+                .is_some_and(|kinds| !kinds.is_empty())
     }
 
     /// Whether `[start, end)` overlaps a declaration FCS could not convert.
@@ -2624,10 +2646,35 @@ pub fn parse_fcs_types_dump(json: &str, source: &str) -> FcsTypedDump {
     full_dump("types", types, errors, unconverted, source)
 }
 
+/// Each binder's type-parameter constraint kinds, by binder range. Refuses a
+/// payload whose binders do not carry the field: a reader of it is asking
+/// whether a generic type hides a constraint, which an oracle predating the
+/// field cannot say.
+fn binder_typar_constraints(json: &str, source: &str) -> HashMap<(usize, usize), Vec<String>> {
+    let dump: BinderTypesDump =
+        serde_json::from_str(json).expect("fcs-dump binder-types JSON shape");
+    let idx = LineIndex::new(source);
+    dump.binders
+        .into_iter()
+        .map(|b| {
+            let start = idx.offset(b.range.start.line, b.range.start.col);
+            let end = idx.offset(b.range.end.line, b.range.end.col);
+            let kinds = b.typar_constraints.expect(
+                "the `binder-types` payload carries no `TyparConstraints` — the oracle \
+                 predates it (check BORZOI_FCS_DUMP)",
+            );
+            ((start, end), kinds)
+        })
+        .collect()
+}
+
 /// The `binder-types` dump in full; see [`parse_fcs_types_dump`].
 pub fn parse_fcs_binder_types_dump(json: &str, source: &str) -> FcsTypedDump {
     let (types, errors, unconverted) = parse_binder_types_dump(json, source);
-    full_dump("binder-types", types, errors, unconverted, source)
+    FcsTypedDump {
+        typar_constraints: binder_typar_constraints(json, source),
+        ..full_dump("binder-types", types, errors, unconverted, source)
+    }
 }
 
 fn full_dump(
@@ -2651,6 +2698,7 @@ fn full_dump(
         types,
         errors,
         unconverted: normalise_unconverted(unconverted, &LineIndex::new(source)),
+        typar_constraints: HashMap::new(),
     }
 }
 
@@ -2716,6 +2764,11 @@ struct RawBinder {
     /// [`borzoi_sema::Ty::render`].
     #[serde(rename = "TypeCanon")]
     type_canon: String,
+    /// The kinds of constraint the binder type's type parameters carry
+    /// (`equality`, `comparison`, `other`, `unknown`), which `TypeCanon` cannot
+    /// show. `None` from an oracle that predates the field.
+    #[serde(rename = "TyparConstraints")]
+    typar_constraints: Option<Vec<String>>,
 }
 
 /// Parse the `binder-types` subcommand's JSON into a map from a binder's

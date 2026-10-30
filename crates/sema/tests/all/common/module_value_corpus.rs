@@ -435,21 +435,45 @@ pub const SHAPES: &[Shape] = &[
         Some("1"),
         false,
     ),
-    // Declined: what the IL cannot carry.
-    declined(
+    // `equality` and `comparison`, the constraints that unify nothing: read,
+    // each instantiation checked against the closed list of types known to
+    // satisfy it.
+    admitted(
         "eqC",
-        "",
         "eqC (x: 'a) (y: 'a) = (x = y)",
         &["1", "2"],
+        None,
+        true,
+    ),
+    admitted(
+        "cmpC",
+        "cmpC (x: 'a) (y: 'a) = compare x y",
+        &["1", "2"],
+        None,
+        true,
+    ),
+    admitted(
+        "bothC",
+        "bothC (x: 'a when 'a : equality and 'a : comparison) (y: 'a) = (x = y, compare x y)",
+        &["\"s\"", "\"t\""],
+        None,
+        true,
+    ),
+    // Declined: what the IL cannot carry, and constraints nothing checks.
+    declined(
+        "nullC",
+        "",
+        "nullC (x: 'a when 'a : null) = x",
+        &["\"s\""],
         true,
         FunctionTyGap::Constrained,
         Rejection::No,
     ),
     declined(
-        "cmpC",
+        "eqNullC",
         "",
-        "cmpC (x: 'a) (y: 'a) = compare x y",
-        &["1", "2"],
+        "eqNullC (x: 'a when 'a : equality and 'a : null) (y: 'a) = (x = y)",
+        &["\"s\"", "\"t\""],
         true,
         FunctionTyGap::Constrained,
         Rejection::No,
@@ -1048,6 +1072,8 @@ type SoloClass(q: int) =
     member _.Q = q
     member _.M = q
 
+type FnRec = { F: int -> int }
+
 [<Struct>]
 type SoloStruct =
     { Q: int }
@@ -1096,7 +1122,8 @@ pub const RECEIVERS: &[(&str, &str)] = &[
 ];
 
 /// The module of operators, outside FSharp.Core: one sealed, one generic, one
-/// constrained, and one over a type the bridge does not carry.
+/// `equality`-constrained, one constrained by `null`, which nothing checks,
+/// and one over a type the bridge does not carry.
 pub const OPS_MODULE: &str = "Ops";
 
 const OPS: &str = "\
@@ -1104,6 +1131,7 @@ module Ops =
     let (+++) (a: int) (b: int) = a + b
     let (|>>) (x: 'a) (f: 'a -> 'b) = f x
     let (=~) (a: 'a) (b: 'a) = (a = b)
+    let (=?) (a: 'a when 'a : null) (b: 'a) = obj.ReferenceEquals(a, b)
     let (+@) (a: struct (int * int)) (b: int) = b
     let (+?) (a: int option) (b: int) = b
     let (|Even|Odd|) (x: int) = if x % 2 = 0 then Even else Odd

@@ -7,11 +7,14 @@
 //! arguments, the F#-only constraints on its type parameters, any unit of
 //! measure, and (in the return position) `unit`. The signature pickle supplies
 //! the first three per method — [`MethodLike::arg_groups`], each
-//! parameter's [`FSharpConstraints`](borzoi_assembly::FSharpConstraints), and
+//! parameter's [`FSharpConstraints`], and
 //! [`MethodLike::val_facts`] — and the fourth is a fixed rule. With them the IL
 //! signature *is* the F# type, so [`module_function_scheme`] rebuilds that type
 //! as a scheme over the method's type parameters; anything the facts cannot
-//! vouch for is a [`FunctionTyGap`], and the caller declines (D5).
+//! vouch for is a [`FunctionTyGap`], and the caller declines (D5). Of the
+//! constraints, only `equality` and `comparison` are read into the scheme
+//! ([`ModuleFunctionScheme::requirements`]), for the caller to check: they
+//! unify nothing, so the IL signature is still the use's type.
 //!
 //! A measure need not appear in the val's pickled type to have been erased: a
 //! function over `type Dist = float<m>` pickles the name `Dist` only, compiles
@@ -42,8 +45,9 @@
 //! F#'s `| null`.
 
 use borzoi_assembly::{
-    Access, ArgGroups, AssemblyIdentity, Augmentation, EntityKind, MethodLike, Nullability,
-    ParamDefault, Primitive, TypeRef, ValFacts, ValMeasures,
+    Access, ArgGroups, AssemblyIdentity, Augmentation, EntityKind, EqualityComparison,
+    FSharpConstraints, MethodLike, Nullability, ParamDefault, Primitive, TypeParameter, TypeRef,
+    ValFacts, ValMeasures,
 };
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
@@ -91,9 +95,46 @@ pub enum FunctionTyGap {
     Type,
 }
 
+/// The F# type of a module function or value as [`module_function_scheme`]
+/// reads it: the type over [`Ty::Param`]s, and what each parameter must
+/// satisfy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleFunctionScheme {
+    /// Curried over the argument groups, each type parameter the
+    /// [`Ty::Param`] of its index.
+    pub(crate) ty: Ty,
+    /// Per type parameter, by index: the `equality`/`comparison` constraint
+    /// it carries, if any. No other constraint is read.
+    pub(crate) requirements: Vec<Option<EqualityComparison>>,
+}
+
+/// What a use of a method type parameter must satisfy, if it can be checked:
+/// `Ok(None)` for none, `Ok(Some(_))` for F#'s `equality`/`comparison` and
+/// nothing else, `Err(())` for any constraint nothing checks — an IL one, any
+/// other F#-only one, or one the pickle was not read for.
+fn checkable_requirement(p: &TypeParameter) -> Result<Option<EqualityComparison>, ()> {
+    let il = p.reference_type_constraint
+        || p.value_type_constraint
+        || p.default_constructor_constraint
+        || p.is_unmanaged
+        || !p.type_constraints.is_empty();
+    match p.fsharp_constraints {
+        _ if il => Err(()),
+        FSharpConstraints::Free => Ok(None),
+        FSharpConstraints::Supports(ec) => Ok(Some(ec)),
+        FSharpConstraints::Present | FSharpConstraints::Unknowable => Err(()),
+    }
+}
+
 /// The F# type of `method`, a function or value of the F# module `handle` in
 /// `env` — as a scheme: curried over its argument groups, with each of its
 /// type parameters as the [`Ty::Param`] of its index, ready for instantiation.
+///
+/// A type parameter constrained only by `equality` or `comparison` is read,
+/// with the constraint ([`ModuleFunctionScheme::requirements`]): those two
+/// unify nothing, so the use types as the signature says, and the caller checks
+/// what each one is solved to. Any other constraint is a
+/// [`FunctionTyGap::Constrained`].
 ///
 /// The argument groups are the val's pickled ones ([`curried_domains`]): a
 /// module *value* (`let x = …`, or a type function such as `List.empty`,
@@ -112,7 +153,7 @@ pub(crate) fn module_function_scheme(
     env: &AssemblyEnv,
     handle: EntityHandle,
     method: &MethodLike,
-) -> Result<Ty, FunctionTyGap> {
+) -> Result<ModuleFunctionScheme, FunctionTyGap> {
     let module = env.entity(handle);
     if module.kind != EntityKind::Module
         || !method.is_static
@@ -161,9 +202,12 @@ pub(crate) fn module_function_scheme(
             }
         }
     }
-    if method.generic_parameters.iter().any(constrained_parameter) {
-        return Err(FunctionTyGap::Constrained);
-    }
+    let requirements = method
+        .generic_parameters
+        .iter()
+        .map(checkable_requirement)
+        .collect::<Result<Vec<_>, ()>>()
+        .map_err(|()| FunctionTyGap::Constrained)?;
     let params = &method.signature.parameters;
     if params
         .iter()
@@ -193,10 +237,11 @@ pub(crate) fn module_function_scheme(
         .map(|p| bridge.ty(&p.ty))
         .collect::<Result<Vec<_>, _>>()?;
     let domains = curried_domains(method, &params)?;
-    Ok(domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
+    let ty = domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
         arg: Box::new(arg),
         ret: Box::new(ret),
-    }))
+    });
+    Ok(ModuleFunctionScheme { ty, requirements })
 }
 
 /// The curried domains of `method`'s F# type, from its bridged IL parameter

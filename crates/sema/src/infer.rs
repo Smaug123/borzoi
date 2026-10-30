@@ -463,7 +463,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use borzoi_assembly::{EntityKind, FSharpConstraints, Member, Primitive, TypeRef};
+use borzoi_assembly::{
+    EntityKind, EqualityComparison, FSharpConstraints, Member, MemberMeasures, Primitive, TypeRef,
+};
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
     ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat,
@@ -473,7 +475,7 @@ use rowan::{TextRange, TextSize};
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::DefId;
-use crate::function_ty::{FunctionTyGap, module_function_scheme};
+use crate::function_ty::{FunctionTyGap, ModuleFunctionScheme, module_function_scheme};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -671,6 +673,22 @@ pub enum Incomplete {
     RejectedUse,
     /// An infix application whose operator inference does not type, and why.
     Operator(OperatorGap),
+    /// A use whose type parameter carries `equality` or `comparison`, solved
+    /// to a type that does not satisfy it or is not known to.
+    Constraint(ConstraintGap),
+}
+
+/// Why a constrained instantiation left its binding incomplete: the
+/// census's split of [`Incomplete::Constraint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ConstraintGap {
+    /// The type provably does not satisfy the constraint (a function type
+    /// compared, `obj` ordered): F# rejects the use with FS0001.
+    Violated,
+    /// The type is not on the closed list of those known to satisfy it, nor
+    /// provably outside it: an in-file type, an F# generic, a type whose
+    /// interfaces would decide comparison.
+    Undecided,
 }
 
 /// Why an infix operator was not typed: the census's split of
@@ -1155,6 +1173,13 @@ struct Gen<'a> {
     /// is checked against union-find **roots** ([`Self::is_scheme_inst_root`]), so
     /// a var unioned with an instantiation var still counts.
     scheme_inst_vars: HashSet<TyVid>,
+    /// The current binding's instantiation variables whose type parameter
+    /// carries `equality` or `comparison`, and which
+    /// ([`Self::constrained_scheme_use`]). Each is poisoned when it is made, so
+    /// none generalises while open — no scheme here can say `when` — and
+    /// [`Self::check_constraints`] checks what each is solved to once the
+    /// binding is solved.
+    constrained: Vec<(TyVid, EqualityComparison)>,
     /// The file's in-scope instance-extension-member surface (OV-6): the
     /// extension-absence gate the method-call wake consults before committing an
     /// overload. Computed once in [`infer_file`] from the file and the env.
@@ -1264,6 +1289,7 @@ impl<'a> Gen<'a> {
             member_resolutions: HashMap::new(),
             cur_mark: 0,
             scheme_inst_vars: HashSet::new(),
+            constrained: Vec::new(),
             rejected_defs: HashSet::new(),
             dropped: Vec::new(),
             eq_failures: 0,
@@ -1337,6 +1363,7 @@ impl<'a> Gen<'a> {
         self.bounded_flex.clear();
         self.undecided_uses.clear();
         self.opaque.clear();
+        self.constrained.clear();
         mark
     }
 
@@ -3052,7 +3079,29 @@ impl<'a> Gen<'a> {
             _ => Err(FunctionTyGap::NotAFunction),
         }
         .map_err(Incomplete::AssemblyValue)?;
-        Ok(self.scheme_use(&scheme))
+        Ok(self.constrained_scheme_use(&scheme))
+    }
+
+    /// [`Self::scheme_use`] over a module function's reading: each type
+    /// parameter carrying `equality` or `comparison` instantiates to a variable
+    /// recorded with its constraint ([`Self::constrained`]) and poisoned, so it
+    /// is checked once the binding is solved and never generalised while open.
+    fn constrained_scheme_use(&mut self, scheme: &ModuleFunctionScheme) -> TyVid {
+        let mut fresh: HashMap<u32, TyVid> = HashMap::new();
+        let body = self.instantiate_rec(&scheme.ty, &mut fresh);
+        for (i, req) in scheme.requirements.iter().enumerate() {
+            let Some(req) = req else { continue };
+            // A type parameter the type does not mention has no variable to
+            // check; FCS solves it by default, which nothing reads.
+            if let Some(&v) = u32::try_from(i).ok().and_then(|i| fresh.get(&i)) {
+                self.constrained.push((v, *req));
+                self.poison.push(v);
+            }
+        }
+        let ty = self.loosened(&body).unwrap_or(body);
+        let uv = self.table.fresh();
+        self.eq(Ty::Var(uv), ty);
+        uv
     }
 
     /// The type variable of a use of a value whose type is `scheme`: the
@@ -4331,7 +4380,8 @@ impl<'a> Gen<'a> {
         self.trial = Some(TrialLog::default());
         let outcome = self.run_worklist(Fire::All);
         let log = self.trial.take().unwrap_or_default();
-        let outcome = if outcome.discharged == 0 || self.verified(&outcome) {
+        let speculative = self.probed_constraint_verdict(&outcome);
+        let outcome = if outcome.discharged == 0 || self.verified(&outcome, speculative) {
             self.table.commit(snapshot);
             outcome
         } else {
@@ -4352,6 +4402,64 @@ impl<'a> Gen<'a> {
         for ac in outcome.args {
             self.poison_arg_check(ac);
         }
+        self.check_constraints(speculative);
+    }
+
+    /// The worst verdict ([`satisfies`]) over the current binding's
+    /// constrained instantiations ([`Self::constrained`]) in the table as it
+    /// stands.
+    fn constraint_verdict(&mut self) -> Verdict {
+        constraint_verdict_of(&mut self.table, self.env, &self.constrained)
+    }
+
+    /// [`Self::constraint_verdict`] once every relation the solve left
+    /// unapplied — the argument checks still pending and the check-mode
+    /// relations the walk dropped ([`Self::dropped`]) — is applied too, as
+    /// [`Self::verified`]'s probe applies them: a constrained instantiation
+    /// that only such a relation fixes is met there and nowhere else. The table
+    /// is left as it was.
+    fn probed_constraint_verdict(&mut self, outcome: &WorklistOutcome) -> Verdict {
+        let relations: Vec<(TyVid, TyVid)> = outcome
+            .args
+            .iter()
+            .map(|ac| (ac.arg, ac.dom))
+            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
+            .collect();
+        let env = self.env;
+        let constrained = &self.constrained;
+        let mut verdict = Verdict::Holds;
+        let _ = self.table.probe(|t| -> Result<(), ()> {
+            for (a, b) in &relations {
+                // A relation that does not unify fails the speculation in
+                // `verified` on its own; the rest still decide the verdict.
+                let _ = t.unify(&Ty::Var(*a), &Ty::Var(*b));
+            }
+            verdict = constraint_verdict_of(t, env, constrained);
+            Err(())
+        });
+        verdict
+    }
+
+    /// Record in the census what the binding just solved did to its
+    /// constrained instantiations ([`Self::constrained`]): the worse of
+    /// `speculative`, their verdict under the speculative solve, and their
+    /// verdict now.
+    ///
+    /// The check is over a whole substitution, so the order FCS meets the uses
+    /// in cannot matter to it. A violation, or a type not known either way,
+    /// marks the binding incomplete — it is not the program FCS accepts, or not
+    /// one known to be — and [`Self::verified`] has already refused the
+    /// speculative solve that produced it. A variable left open needs nothing
+    /// here: it was poisoned when it was made, so it does not generalise.
+    fn check_constraints(&mut self, speculative: Verdict) {
+        match worse(speculative, self.constraint_verdict()) {
+            Verdict::Holds | Verdict::Open => {}
+            Verdict::Fails => self.mark_incomplete(Incomplete::Constraint(ConstraintGap::Violated)),
+            Verdict::Undecided => {
+                self.mark_incomplete(Incomplete::Constraint(ConstraintGap::Undecided))
+            }
+        }
+        self.constrained.clear();
     }
 
     /// Whether a speculative solve's argument checks may be kept
@@ -4368,6 +4476,16 @@ impl<'a> Gen<'a> {
     /// - no member to have been resolved through a check FCS applies only
     ///   after it ([`WorklistOutcome::late_member`]): FCS rejects a member
     ///   access on a receiver it does not know yet (FS0072), consistent or not;
+    /// - every constrained instantiation ([`Self::constrained`]) to satisfy
+    ///   its constraint, or be open, with the relations above applied
+    ///   (`constraints`, [`Self::probed_constraint_verdict`]): a branch that
+    ///   joins an open parameter to a function can be what fixes one. A
+    ///   violation changes no type in itself, but
+    ///   FCS meets it inside an argument check (`UnifyOverallType`), undoes the
+    ///   equality it was solving, and reports the error with the rest of that
+    ///   unification never applied: `a |> hash` over a function-holding `a`
+    ///   leaves the pipe's result `'a`. A type not known to satisfy it may be
+    ///   such a violation;
     ///
     /// and, in the result with every relation applied, each value use
     /// loosened as FCS loosens it:
@@ -4379,8 +4497,11 @@ impl<'a> Gen<'a> {
     ///   depends on whether it knew that type at the use.
     ///
     /// The joint unification is a probe: the table is left as it was.
-    fn verified(&mut self, outcome: &WorklistOutcome) -> bool {
+    fn verified(&mut self, outcome: &WorklistOutcome, constraints: Verdict) -> bool {
         if self.eq_failures > 0 || outcome.failed > 0 || outcome.late_member {
+            return false;
+        }
+        if matches!(constraints, Verdict::Fails | Verdict::Undecided) {
             return false;
         }
         let env = self.env;
@@ -5293,6 +5414,133 @@ pub(crate) fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool 
         || p.is_unmanaged
         || !p.type_constraints.is_empty()
         || p.fsharp_constraints != FSharpConstraints::Free
+}
+
+/// One of the two constraints [`satisfies`] decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Needs {
+    Equality,
+    Comparison,
+}
+
+/// What is known of a type against `equality` or `comparison`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// It satisfies the constraint.
+    Holds,
+    /// It provably does not: F# reports FS0001.
+    Fails,
+    /// It is on neither list.
+    Undecided,
+    /// It still holds a type variable, and nothing else decides it.
+    Open,
+}
+
+/// Whether `ty` satisfies `needs`, by a **closed** list read off FCS's
+/// `SolveTypeSupportsEquality` / `SolveTypeSupportsComparison`
+/// (ConstraintSolver.fs):
+///
+/// - a function type fails both (`SpecialNotEquatableHeadType`; and
+///   `FSharpFunc` implements no `IComparable`);
+/// - a tuple or an array satisfies either exactly when its elements do
+///   (`SpecialComparableHeadType`); so do `nativeint` and `unativeint`, which
+///   have no elements;
+/// - the sealed primitives and `string` satisfy both: none carries
+///   `[<NoEquality>]` or `[<NoComparison>]`, and each implements
+///   `IComparable`; `unit` satisfies equality;
+/// - `obj` satisfies equality (`Object.Equals`) and fails comparison;
+/// - a non-generic type of an assembly that is not F#-authored satisfies
+///   equality unless it carries `[<NoEquality>]`: FCS reads it through IL, so it
+///   is no F# structural type that could lack generated equality.
+///
+/// Everything else is [`Verdict::Undecided`]: an F# record, union or struct
+/// (its equality is derived from its fields and attributes), a generic type
+/// (its parameters may be `EqualityConditionalOn`), and comparison on any
+/// other named type (it turns on the interface hierarchy). A type parameter
+/// left in the type is [`Verdict::Open`] when nothing else decides.
+fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
+    match ty {
+        Ty::Var(_) => Verdict::Open,
+        // A rigid type parameter, which satisfies a constraint only if it
+        // declares it. None reaches a binding's table today (an annotation
+        // naming a type parameter declines), so this is the reading that stays
+        // sound if one does.
+        Ty::Param(_) => Verdict::Undecided,
+        Ty::Fun { .. } => Verdict::Fails,
+        Ty::Tuple(elems) => elems.iter().fold(Verdict::Holds, |acc, e| {
+            worse(acc, satisfies(env, e, needs))
+        }),
+        Ty::Array { elem, .. } => satisfies(env, elem, needs),
+        Ty::Named { path, args } if args.is_empty() => {
+            if is_sealed_primitive(path) {
+                if needs == Needs::Comparison && *ty == Ty::named(UNIT) {
+                    return Verdict::Undecided;
+                }
+                return Verdict::Holds;
+            }
+            if *ty == Ty::named(OBJECT) {
+                return match needs {
+                    Needs::Equality => Verdict::Holds,
+                    Needs::Comparison => Verdict::Fails,
+                };
+            }
+            if needs == Needs::Comparison {
+                return Verdict::Undecided;
+            }
+            let Some((name, namespace)) = path.split_last() else {
+                return Verdict::Undecided;
+            };
+            match env.lookup_type_if_certain(namespace, name, 0) {
+                Some(handle) => {
+                    let entity = env.entity(handle);
+                    if entity.member_measures == MemberMeasures::NotFSharp
+                        && entity.generic_parameters.is_empty()
+                        && !entity.is_no_equality
+                    {
+                        Verdict::Holds
+                    } else {
+                        Verdict::Undecided
+                    }
+                }
+                None => Verdict::Undecided,
+            }
+        }
+        Ty::Named { .. } => Verdict::Undecided,
+    }
+}
+
+/// The worst verdict ([`satisfies`]) over `constrained`, each variable with
+/// the constraints it carries, as `table` resolves them.
+fn constraint_verdict_of(
+    table: &mut InferTable,
+    env: &AssemblyEnv,
+    constrained: &[(TyVid, EqualityComparison)],
+) -> Verdict {
+    let mut verdict = Verdict::Holds;
+    for &(v, req) in constrained {
+        let ty = table.resolve(&Ty::Var(v));
+        for (needed, wanted) in [
+            (Needs::Equality, req.equality),
+            (Needs::Comparison, req.comparison),
+        ] {
+            if wanted {
+                verdict = worse(verdict, satisfies(env, &ty, needed));
+            }
+        }
+    }
+    verdict
+}
+
+/// The verdict of a type made of parts with verdicts `a` and `b`: any part
+/// failing fails it, then any undecided, then any open.
+fn worse(a: Verdict, b: Verdict) -> Verdict {
+    let rank = |v| match v {
+        Verdict::Fails => 3,
+        Verdict::Undecided => 2,
+        Verdict::Open => 1,
+        Verdict::Holds => 0,
+    };
+    if rank(b) > rank(a) { b } else { a }
 }
 
 /// The highest array rank F# accepts in an annotation.

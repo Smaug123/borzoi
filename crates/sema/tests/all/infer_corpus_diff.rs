@@ -422,6 +422,7 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
     let binders_dump = parse_fcs_binder_types_dump(&binders_json, &source);
     let (fcs_types, errors) = (types_dump.types, types_dump.errors);
     let fcs_binders = binders_dump.types;
+    let binder_constraints = binders_dump.typar_constraints;
     // The two ops convert the same declarations, but each reports its own
     // failures; a declaration either could not convert is ungraded for both.
     let mut unconverted = types_dump.unconverted;
@@ -488,7 +489,14 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
                 t.manifest.push(format!("{key} unconverted ours={ours:?}"));
                 continue;
             }
-            if theirs == Some(ours) {
+            // A generic binder type agrees only if FCS constrains none of its
+            // type parameters: the rendering cannot show a constraint.
+            let hides = kind == "binder"
+                && ours.contains('\'')
+                && binder_constraints
+                    .get(&(*s, *e))
+                    .is_some_and(|k| !k.is_empty());
+            if theirs == Some(ours) && !hides {
                 if kind == "expr" {
                     t.agree_exprs += 1;
                 } else {
@@ -497,10 +505,17 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
                 t.manifest.push(format!("{key} agree"));
                 continue;
             }
-            let disagreement = format!(
-                "ours={ours:?} fcs={}",
-                theirs.map_or("<no node>".to_string(), |f| format!("{f:?}"))
-            );
+            let disagreement = if hides {
+                format!(
+                    "ours={ours:?} hides constraints {:?}",
+                    binder_constraints[&(*s, *e)]
+                )
+            } else {
+                format!(
+                    "ours={ours:?} fcs={}",
+                    theirs.map_or("<no node>".to_string(), |f| format!("{f:?}"))
+                )
+            };
             let site = Site {
                 path: path.to_path_buf(),
                 kind,
