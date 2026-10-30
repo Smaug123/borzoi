@@ -69,6 +69,7 @@ fn slot(name: &str, is_virtual: bool, is_newslot: bool) -> AccessorSlot {
         is_abstract: false,
         is_final: false,
         has_other_method_impl: false,
+        implements: Vec::new(),
     }
 }
 

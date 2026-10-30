@@ -39,8 +39,8 @@
 
 use borzoi_assembly::doc_id::type_enc;
 use borzoi_assembly::{
-    Access, AssemblyIdentity, Entity, EntityKind, ImplementedMember, InterfaceMemberImpl, Member,
-    NullableType, Primitive, TypeRef,
+    Access, AccessorSlot, AssemblyIdentity, Entity, EntityKind, ImplementedMember,
+    InterfaceMemberImpl, Member, NullableType, Primitive, TypeRef,
 };
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition, MemberIndex};
 
@@ -858,9 +858,12 @@ fn explicit_candidate(
 /// accessors, and what Roslyn inherits from is the property or event that
 /// *owns* those accessor methods — read off the interface's own projection
 /// ([`borzoi_assembly::AccessorSlot::name`]), never off the accessors'
-/// names, which metadata need not spell by the `get_`/`set_` convention. A
-/// method's row naming an accessor, or rows that no single member owns
-/// exactly, are undecidable.
+/// names, which metadata need not spell by the `get_`/`set_` convention. Each
+/// row is matched to the interface accessor of the role its own accessor
+/// plays ([`borzoi_assembly::AccessorSlot::implements`]): Roslyn binds a row
+/// by name and signature, and a getter's row naming a setter binds nothing.
+/// A method's row naming an accessor, or rows that no single member owns
+/// exactly, role for role, are undecidable.
 fn unresolved_explicit_candidate(
     env: &AssemblyEnv,
     parent: EntityHandle,
@@ -918,21 +921,48 @@ fn unresolved_explicit_candidate(
             _ => return Undecidable::ExplicitImplementation.into(),
         },
         Member::Property(_) | Member::Event(_) => {
-            let accessors = match member {
-                Member::Property(p) => p.accessor_slots.len(),
-                Member::Event(e) => e.accessor_slots.len(),
-                _ => unreachable!(),
+            // Each accessor's one row names the interface accessor of its
+            // own role: Roslyn binds a row by name *and* signature, and a
+            // getter's signature is never a setter's (nor an adder's a
+            // remover's), so a row naming another role's accessor binds
+            // nothing. Together the rows name exactly one member's
+            // accessors, role for role.
+            let Some(mine) = slot_roles(member) else {
+                return Undecidable::ExplicitImplementation.into();
             };
-            let mut have = raws.clone();
+            let mut have: Vec<(AccessorRole, &str)> = Vec::new();
+            for (role, slot) in &mine {
+                match slot.implements.as_slice() {
+                    [
+                        InterfaceMemberImpl {
+                            member: ImplementedMember::Unresolved(raw),
+                            ..
+                        },
+                    ] => have.push((*role, raw.as_str())),
+                    _ => return Undecidable::ExplicitImplementation.into(),
+                }
+            }
+            if have.len() != raws.len() {
+                // A row on no accessor the slots record.
+                return Undecidable::ExplicitImplementation.into();
+            }
             have.sort_unstable();
-            // Every accessor of the member has its one row, and together they
-            // name exactly the accessors of one interface member.
-            let owners: Vec<&(Kind, &str, Vec<&str>)> = owned
-                .iter()
-                .filter(|(k, _, names)| *k == kind(member) && *names == have)
+            let owners: Vec<(Kind, &str)> = members(env, iface)
+                .filter(|(_, m)| kind(m) == kind(member))
+                .filter(|(_, m)| {
+                    slot_roles(m).is_some_and(|roles| {
+                        let mut named: Vec<(AccessorRole, &str)> = roles
+                            .iter()
+                            .map(|(role, slot)| (*role, slot.name.as_str()))
+                            .collect();
+                        named.sort_unstable();
+                        named == have
+                    })
+                })
+                .map(|(_, m)| (kind(m), member_name(m)))
                 .collect();
             match owners.as_slice() {
-                [(k, name, _)] if have.len() == accessors => (*k, *name),
+                [(k, name)] => (*k, *name),
                 _ => return Undecidable::ExplicitImplementation.into(),
             }
         }
@@ -946,6 +976,48 @@ fn unresolved_explicit_candidate(
         wanted_kind,
         wanted_name,
     )
+}
+
+/// The role an accessor plays for its property or event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AccessorRole {
+    Get,
+    Set,
+    Add,
+    Remove,
+    Fire,
+}
+
+/// Each accessor slot of a property or event with the role it plays, read
+/// off the slots' role order (getter then setter; adder, remover, then
+/// fire); `None` for any other member, and where one method plays several
+/// roles, so that the slots are fewer than the roles.
+fn slot_roles(m: &Member) -> Option<Vec<(AccessorRole, &AccessorSlot)>> {
+    let (roles, slots): (Vec<AccessorRole>, &[AccessorSlot]) = match m {
+        Member::Property(p) => (
+            [
+                (p.has_getter, AccessorRole::Get),
+                (p.has_setter, AccessorRole::Set),
+            ]
+            .into_iter()
+            .filter_map(|(has, role)| has.then_some(role))
+            .collect(),
+            &p.accessor_slots,
+        ),
+        Member::Event(e) => (
+            [
+                (true, AccessorRole::Add),
+                (true, AccessorRole::Remove),
+                (e.has_fire, AccessorRole::Fire),
+            ]
+            .into_iter()
+            .filter_map(|(has, role)| has.then_some(role))
+            .collect(),
+            &e.accessor_slots,
+        ),
+        Member::Method(_) | Member::Field(_) => return None,
+    };
+    (roles.len() == slots.len()).then(|| roles.into_iter().zip(slots).collect())
 }
 
 /// The one member of `iface` of kind `wanted_kind`, named `wanted_name`,

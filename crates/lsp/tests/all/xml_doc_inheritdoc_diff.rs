@@ -13,13 +13,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use borzoi::assembly_cache::AssemblyCache;
-use borzoi::semantic::build_env_from_dll_paths;
 use borzoi::xml_doc::lookup::DocSources;
 use borzoi_sema::AssemblyEnv;
 use tempfile::TempDir;
 
 use crate::common::ensure_system_runtime_dll;
-use crate::common::inheritdoc_diff::{Census, Compared, Verdict, compare_assembly};
+use crate::common::inheritdoc_diff::{Census, Compared, Verdict, build_env, compare_assembly};
 use crate::common::inheritdoc_oracle::{AssemblyRefPatch, oracle};
 
 /// `dynamic` needs `DynamicAttribute`, which the reference pack keeps in
@@ -86,7 +85,7 @@ pub struct Dep<'a> {
     /// Whether `Fx` is compiled against it.
     pub visible: bool,
     /// A rewrite of the compiled DLL, for metadata no C# compiler writes.
-    pub patch: Option<fn(&std::path::Path)>,
+    pub patch: Option<&'a dyn Fn(&std::path::Path)>,
 }
 
 /// [`fixture`], with `Fx` compiled against dependency assemblies built from
@@ -162,12 +161,12 @@ fn fixture_over(
         let cache = AssemblyCache::at(dir.path().to_path_buf());
         (dir, cache)
     });
-    let (env, _) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), cache);
+    let (env, references) = build_env(&references, cache);
     Ok(Fixture {
         _dir: dir,
         dll,
         references,
-        env: Arc::new(env),
+        env,
     })
 }
 
@@ -1082,7 +1081,9 @@ namespace F
 /// advances one node, so a `<member>` immediately after another — no
 /// whitespace between — is never indexed. Here `B`'s entry is invisible to
 /// Roslyn, which expands `D`'s `<inheritdoc/>` to nothing; inheriting `B`'s
-/// summary would be a different answer.
+/// summary would be a different answer. `E`'s own entry is invisible too:
+/// that it holds no `<inheritdoc>` Roslyn expands (only a namespaced one)
+/// does not make "Roslyn shows it as it is" true.
 #[test]
 fn an_entry_adjacent_to_the_previous_one_is_read_differently() {
     let fx = fixture(
@@ -1097,6 +1098,9 @@ public class B { }
 
 /// <inheritdoc/>
 public class D : B { }
+
+/// <inheritdoc xmlns="urn:x"/>
+public class E { }
 "#,
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
@@ -1113,11 +1117,13 @@ public class D : B { }
     census.print("adjacent entries");
     census.assert_sound();
     let v = verdicts(&compared);
-    assert!(
-        matches!(v.get("T:F.D"), Some(Verdict::Declined { cause, .. }) if cause == "ReadDifferently"),
-        "{:?}",
-        v.get("T:F.D")
-    );
+    for key in ["T:F.D", "T:F.E"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Declined { cause, .. }) if cause == "ReadDifferently"),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
 }
 
 /// The index reads the first `<doc>` of a `<span>`-wrapped file, but Roslyn's
@@ -1200,7 +1206,7 @@ public class C : N.I
             referenced: true,
             against: &[],
             visible: true,
-            patch: Some(swap_getter_names),
+            patch: Some(&swap_getter_names),
         }],
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
@@ -1257,7 +1263,7 @@ public class C : N.I
             referenced: true,
             against: &[],
             visible: true,
-            patch: Some(rename_getter_to_read),
+            patch: Some(&rename_getter_to_read),
         }],
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
@@ -1266,6 +1272,75 @@ public class C : N.I
     census.add(&compared);
     census.print("explicit precedence through a renamed accessor");
     census.assert_sound();
+}
+
+/// Swap the names of `N.I.P`'s setter and `N.I.Q`'s getter.
+fn swap_setter_and_getter(dll: &std::path::Path) {
+    oracle()
+        .lock()
+        .unwrap()
+        .swap_method_names(dll, "set_P", "get_Q");
+}
+
+/// Roslyn resolves an explicit implementation's `MethodImpl` row by name
+/// *and* signature. `C` was compiled against an `N.I` whose `P` has a setter
+/// `set_P` and whose `Q` has a getter `get_Q`, and is loaded beside one where
+/// those two names are swapped. `C`'s row for `P` names `set_P`, which now
+/// names `Q`'s getter, an `int()` the row's `void(int)` does not match: to
+/// Roslyn `C`'s `I.P` implements nothing, and neither does its `I.Q`. Read
+/// by name alone, `I.P` would inherit `I.Q`'s summary.
+#[test]
+fn an_external_accessor_row_binds_by_role_not_name_alone() {
+    const IFC: &str = "namespace N {\n/// <summary>I.</summary>\npublic interface I {\n/// <summary>I.P's own.</summary>\nint P { set; }\n/// <summary>I.Q's own.</summary>\nint Q { get; } } }";
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The implementer.</summary>
+public class C : N.I
+{
+    /// <inheritdoc/>
+    int N.I.P { set { } }
+
+    /// <inheritdoc/>
+    int N.I.Q => 0;
+}
+"#,
+        &[
+            Dep {
+                name: "Ifc",
+                source: IFC,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "Ifc",
+                source: IFC,
+                alias: None,
+                referenced: true,
+                against: &[],
+                visible: false,
+                patch: Some(&swap_setter_and_getter),
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("an accessor row naming another role's method");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in ["P:F.C.N#I#P", "P:F.C.N#I#Q"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Declined { .. })),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
 }
 
 /// Assembly binding compares culture: a reference to `Dep, Culture=ja` does
@@ -1494,11 +1569,10 @@ public class D : F.T
         oracle.patch_assembly_ref(&patched, "Real", patch);
         let references = vec![runtime.clone(), patched, real.clone(), fx.clone()];
         let cache = AssemblyCache::at(dir.path().join(format!("cache{i}")));
-        let (env, _) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), &cache);
+        let (env, references) = build_env(&references, &cache);
         // `compare` drives the oracle itself.
         drop(oracle);
-        let compared =
-            compare_assembly(&Arc::new(env), &mut DocSources::default(), &references, &fx);
+        let compared = compare_assembly(&env, &mut DocSources::default(), &references, &fx);
         oracle = crate::common::inheritdoc_oracle::oracle().lock().unwrap();
         let mut census = Census::default();
         census.add(&compared);
@@ -1738,7 +1812,12 @@ public class C{i}<T> : C{prev}<Pair<T, T>>
 /// own type parameters as its definition (`` T:F.Self`1 ``). A type nested in
 /// the context inherits the context's parameters, so `Outer<T>.S` is `S`'s
 /// own definition too (`` T:F.Outer`1.S ``), not a constructed
-/// `` T:F.Outer{`0}.S ``. Unrelated generics (`G<T>`) render constructed.
+/// `` T:F.Outer{`0}.S ``. The rule is per level of the name: in
+/// `` T:F.Host`1.Ctx.N{System.Int32} `` and `` T:F.Two`2.N{`0} `` the
+/// enclosers are their definitions and only the innermost level is
+/// constructed, and inside braces (`` T:F.G{F.Inside`1} ``) alike. Unrelated
+/// generics (`G<T>`), and a type from other arguments than its own
+/// (`Swap<U, T>`, `Half<T, int>`), render constructed.
 #[test]
 fn a_type_argument_nested_in_the_context_renders_as_roslyn_does() {
     let fx = fixture(
@@ -1763,6 +1842,39 @@ public class Self<T> : B<Self<T>> { }
 
 /// <inheritdoc/>
 public class Plain<T> : B<G<T>> { }
+
+/// <summary>Host.</summary>
+public class Host<T>
+{
+    /// <summary>Host.S.</summary>
+    public class S { }
+
+    /// <inheritdoc/>
+    public class Ctx : B<Host<T>.Ctx.N<int>>
+    {
+        /// <summary>Ctx.N.</summary>
+        public class N<V> { }
+    }
+
+    /// <inheritdoc/>
+    public class Beside : B<Host<T>.S> { }
+}
+
+/// <inheritdoc/>
+public class Two<T, U> : B<Two<T, U>.N<T>>
+{
+    /// <summary>Two.N.</summary>
+    public class N<V> { }
+}
+
+/// <inheritdoc/>
+public class Inside<T> : B<G<Inside<T>>> { }
+
+/// <inheritdoc/>
+public class Swap<T, U> : B<Swap<U, T>> { }
+
+/// <inheritdoc/>
+public class Half<T, U> : B<Half<T, int>> { }
 "#,
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
@@ -1772,7 +1884,17 @@ public class Plain<T> : B<G<T>> { }
     census.print("type arguments nested in the context");
     census.assert_sound();
     let v = verdicts(&compared);
-    for key in ["T:F.Self`1", "T:F.Plain`1"] {
+    for key in [
+        "T:F.Self`1",
+        "T:F.Plain`1",
+        "T:F.Outer`1",
+        "T:F.Host`1.Ctx",
+        "T:F.Host`1.Beside",
+        "T:F.Two`2",
+        "T:F.Inside`1",
+        "T:F.Swap`2",
+        "T:F.Half`2",
+    ] {
         assert!(
             matches!(v.get(key), Some(Verdict::Agrees)),
             "{key}: {:?}",

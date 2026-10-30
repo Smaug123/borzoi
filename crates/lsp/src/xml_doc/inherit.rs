@@ -44,7 +44,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use borzoi_assembly::doc_id::type_enc;
+use borzoi_assembly::doc_id::{demangle_segment, type_enc};
 use borzoi_assembly::{Access, Member, Primitive, TypeRef};
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
 
@@ -52,7 +52,7 @@ use super::candidate::{
     Candidate, Instantiation, NoCandidate, ParameterSlot, Reached, Undecidable, candidate,
     il_faithful, inherits_automatically, type_parameters_in_scope,
 };
-use super::key::{DocIdIndex, DocTarget, type_name};
+use super::key::{DocIdIndex, DocTarget};
 use super::lookup::{DocLookup, DocSources, Located, xml_path_for};
 use super::tree::{DocElement, DocNode, MAX_DEPTH, Namespacing, name_is};
 use super::xpath::{Unsupported, authored_path, default_path};
@@ -68,7 +68,8 @@ pub struct Expansion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The entry has no `<inheritdoc>`.
+    /// The entry has no `<inheritdoc>`, and Roslyn reads it as the index
+    /// does: Roslyn shows it as it is.
     NoInheritdoc,
     /// Every `<inheritdoc>` was expanded, exactly as Roslyn expands it.
     Inherited,
@@ -87,8 +88,9 @@ pub enum Decline {
     Cref(CrefMiss),
     /// The inherited symbol's documentation could not be read.
     InheritedDoc(Box<DocLookup>),
-    /// The inherited symbol's entry is one Roslyn's documentation provider
-    /// reads differently (nested, unlisted, namespaced file).
+    /// The entry, or the inherited symbol's, is one Roslyn's documentation
+    /// provider reads differently (nested, unlisted, stepped over, namespaced
+    /// file).
     ReadDifferently,
     /// A `path` outside the modelled XPath.
     Path(Unsupported),
@@ -167,6 +169,15 @@ pub fn expand(
     start: DocTarget,
     entry: Located,
 ) -> Expansion {
+    // Every outcome but a decline is a claim about what Roslyn shows, which
+    // holds only for an entry its provider reads as the index does — even
+    // "nothing to expand".
+    if !entry.file.read_as_roslyn_reads(&entry.key) {
+        return Expansion {
+            member: entry.member,
+            outcome: Outcome::Declined(Decline::ReadDifferently),
+        };
+    }
     if !has_inheritdoc(&entry.member) {
         return Expansion {
             member: entry.member,
@@ -182,12 +193,7 @@ pub fn expand(
         hops: 0,
         nodes: 0,
     };
-    let result = if entry.file.read_as_roslyn_reads(&entry.key) {
-        walk.expand_entry(&Reached::definition(env, start), &entry.member)
-    } else {
-        Err(Decline::ReadDifferently)
-    };
-    match result {
+    match walk.expand_entry(&Reached::definition(env, start), &entry.member) {
         Ok(expanded) => Expansion {
             member: expanded.normalized(),
             outcome: Outcome::Inherited,
@@ -676,40 +682,16 @@ fn type_argument_id(
         // has no ID of its own.
         TypeRef::Primitive(Primitive::Object) => Err(TypeArgMiss::MaybeDynamic),
         TypeRef::Primitive(_) => Ok(Some(format!("T:{}", type_enc(arg)))),
-        TypeRef::Named { type_args, .. } => {
-            let def = match env.il_type_definition(inst.context, arg) {
-                IlTypeDefinition::Resolved(def) => def,
-                _ => return Err(TypeArgMiss::Unbound),
-            };
-            // Roslyn renders a type constructed from its own type parameters
-            // as its definition (`` T:P.E`1 ``), and the model can tell only
-            // at the top level, for the context type or an encloser of it.
-            let own = |args: &[borzoi_assembly::NullableType]| {
-                !args.is_empty()
-                    && args.iter().enumerate().all(|(i, a)| {
-                        matches!(a.ty, TypeRef::Var { index, is_method: false } if usize::from(index) == i)
-                    })
-            };
-            let enclosing = env
-                .enclosing_chain_from_root(inst.context)
-                .unwrap_or_default();
-            if own(type_args) && enclosing.contains(&def) {
-                if env.entity(def).generic_parameters.len() == type_args.len()
-                    && let Ok(name) = type_name(env, def)
-                {
-                    return Ok(Some(name.type_id()));
-                }
-                return Err(TypeArgMiss::SelfConstructed);
+        TypeRef::Named { .. } => {
+            if !matches!(
+                env.il_type_definition(inst.context, arg),
+                IlTypeDefinition::Resolved(_)
+            ) {
+                return Err(TypeArgMiss::Unbound);
             }
-            if own(type_args) && may_share_parameters(env, &enclosing, def) {
-                return Err(TypeArgMiss::SelfConstructed);
-            }
-            // The same rendering applies inside the braces, where it is not
-            // modelled: decline if any nested argument may take it.
-            if self_constructed_inside(env, inst.context, &enclosing, type_args, &own)? {
-                return Err(TypeArgMiss::SelfConstructed);
-            }
-            Ok(Some(format!("T:{}", type_enc(arg))))
+            let enclosing = env.enclosing_chain_from_root(inst.context);
+            let id = reference_enc(env, inst.context, enclosing.as_deref(), arg)?;
+            Ok(Some(format!("T:{id}")))
         }
     }
 }
@@ -726,56 +708,172 @@ fn primitives_bind(core: Option<&HashSet<String>>, ty: &TypeRef) -> bool {
     }
 }
 
-/// Whether `def` may declare some of its type parameters through the same
-/// encloser as the context, whose chain from the root is `enclosing`: a type
-/// nested in the context or beside it inherits their encloser's parameters,
-/// so one constructed from the context's parameters may be its own
-/// definition, which Roslyn renders unconstructed. Where the chains share no
-/// type the parameters cannot coincide.
-fn may_share_parameters(env: &AssemblyEnv, enclosing: &[EntityHandle], def: EntityHandle) -> bool {
-    env.enclosing_chain_from_root(def)
-        .is_none_or(|chain| chain.iter().any(|h| enclosing.contains(h)))
-}
-
-/// Whether some type nested in `args` is constructed from the context's
-/// type parameters `0..n`, in order, *and* is the context or one of its
-/// enclosers — a type Roslyn renders as its own definition.
-fn self_constructed_inside(
+/// The ID Roslyn's reference-ID visitor writes for `ty`, a type written in
+/// `context` (whose chain from the root is `enclosing`, `None` where it is
+/// unplaced). Each level of a constructed type's name is a symbol of its own,
+/// and one whose arguments — its enclosers' included — are its own type
+/// parameters *is* its definition, written `` Name`n ``; the other levels
+/// take their arguments in braces. A level's own parameters are the
+/// context's, in order, where the level is the context or one of its
+/// enclosers, or nested in one of those that declares them. Where no level of
+/// `ty` can be a definition this is [`type_enc`].
+fn reference_enc(
     env: &AssemblyEnv,
     context: EntityHandle,
-    enclosing: &[EntityHandle],
-    args: &[borzoi_assembly::NullableType],
-    own: &impl Fn(&[borzoi_assembly::NullableType]) -> bool,
+    enclosing: Option<&[EntityHandle]>,
+    ty: &TypeRef,
+) -> Result<String, TypeArgMiss> {
+    if !has_definition_level(env, context, enclosing, ty)? {
+        return Ok(type_enc(ty));
+    }
+    let TypeRef::Named {
+        namespace,
+        name,
+        type_args,
+        segment_arities,
+        ..
+    } = ty
+    else {
+        // An array, pointer or byref of such a type: its suffix is not
+        // modelled here.
+        return Err(TypeArgMiss::SelfConstructed);
+    };
+    let segments: Vec<&str> = name.split('/').collect();
+    let total = segment_arities
+        .iter()
+        .copied()
+        .fold(0usize, usize::saturating_add);
+    if segments.len() != segment_arities.len() || total != type_args.len() {
+        return Err(TypeArgMiss::SelfConstructed);
+    }
+    let own = definition_args(env, context, enclosing, ty)?;
+    let mut out: String = namespace.iter().map(|seg| format!("{seg}.")).collect();
+    let mut next = 0usize;
+    for (k, (seg, &arity)) in segments.iter().zip(segment_arities).enumerate() {
+        if k > 0 {
+            out.push('.');
+        }
+        out.push_str(demangle_segment(seg));
+        if arity == 0 {
+            continue;
+        }
+        if next + arity <= own {
+            out.push_str(&format!("`{arity}"));
+        } else {
+            let inner = type_args[next..next + arity]
+                .iter()
+                .map(|a| reference_enc(env, context, enclosing, &a.ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            out.push('{');
+            out.push_str(&inner.join(","));
+            out.push('}');
+        }
+        next += arity;
+    }
+    Ok(out)
+}
+
+/// Whether some level of `ty`, or of a type nested in its arguments, is its
+/// own definition ([`definition_args`]).
+fn has_definition_level(
+    env: &AssemblyEnv,
+    context: EntityHandle,
+    enclosing: Option<&[EntityHandle]>,
+    ty: &TypeRef,
 ) -> Result<bool, TypeArgMiss> {
-    for a in args {
-        match &a.ty {
-            TypeRef::Named { type_args, .. } => {
-                if own(type_args) {
-                    match env.il_type_definition(context, &a.ty) {
-                        IlTypeDefinition::Resolved(def)
-                            if !enclosing.contains(&def)
-                                && !may_share_parameters(env, enclosing, def) => {}
-                        IlTypeDefinition::Resolved(_) => return Ok(true),
-                        _ => return Err(TypeArgMiss::Unbound),
-                    }
-                }
-                if self_constructed_inside(env, context, enclosing, type_args, own)? {
+    match ty {
+        TypeRef::Named { type_args, .. } => {
+            if definition_args(env, context, enclosing, ty)? > 0 {
+                return Ok(true);
+            }
+            for a in type_args {
+                if has_definition_level(env, context, enclosing, &a.ty)? {
                     return Ok(true);
                 }
             }
-            TypeRef::Array { element, .. }
-                if self_constructed_inside(
-                    env,
-                    context,
-                    enclosing,
-                    std::slice::from_ref(element),
-                    own,
-                )? =>
-            {
-                return Ok(true);
-            }
-            _ => {}
+            Ok(false)
+        }
+        TypeRef::Array { element, .. } => {
+            has_definition_level(env, context, enclosing, &element.ty)
+        }
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
+            has_definition_level(env, context, enclosing, inner)
+        }
+        TypeRef::Ptr(None) | TypeRef::Primitive(_) | TypeRef::Var { .. } => Ok(false),
+    }
+}
+
+/// How many of `ty`'s leading arguments belong to levels of its name that
+/// are their own definitions: the cumulative arity of the deepest such
+/// level, `0` for none (and for a type that is not constructed).
+///
+/// The context's type parameter `` `i `` is the one its chain from the root
+/// introduces at index `i`, so it is a level's own `i`th parameter exactly
+/// when that parameter is introduced by a type the two chains share. A level
+/// is its definition when every argument up to its cumulative arity is the
+/// context's parameter of that index, and that arity stays within what the
+/// shared types introduce.
+fn definition_args(
+    env: &AssemblyEnv,
+    context: EntityHandle,
+    enclosing: Option<&[EntityHandle]>,
+    ty: &TypeRef,
+) -> Result<usize, TypeArgMiss> {
+    let TypeRef::Named {
+        name,
+        type_args,
+        segment_arities,
+        ..
+    } = ty
+    else {
+        return Ok(0);
+    };
+    let leading = type_args
+        .iter()
+        .enumerate()
+        .take_while(|(i, a)| {
+            matches!(a.ty, TypeRef::Var { index, is_method: false } if usize::from(index) == *i)
+        })
+        .count();
+    if leading == 0 {
+        return Ok(0);
+    }
+    let enclosing = enclosing.ok_or(TypeArgMiss::SelfConstructed)?;
+    let def = match env.il_type_definition(context, ty) {
+        IlTypeDefinition::Resolved(def) => def,
+        _ => return Err(TypeArgMiss::Unbound),
+    };
+    let chain = env
+        .enclosing_chain_from_root(def)
+        .ok_or(TypeArgMiss::SelfConstructed)?;
+    let shared = chain
+        .iter()
+        .zip(enclosing)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let introduced = match shared {
+        0 => 0,
+        n => env.entity(chain[n - 1]).generic_parameters.len(),
+    };
+    let limit = leading.min(introduced);
+    if limit == 0 {
+        return Ok(0);
+    }
+    // The levels must line up with the chain, each carrying the parameters
+    // its entity declares, for a level's arity to say which are its own.
+    if name.split('/').count() != chain.len() || segment_arities.len() != chain.len() {
+        return Err(TypeArgMiss::SelfConstructed);
+    }
+    let mut cumulative = 0usize;
+    let mut own = 0usize;
+    for (&arity, &level) in segment_arities.iter().zip(&chain) {
+        cumulative = cumulative.saturating_add(arity);
+        if env.entity(level).generic_parameters.len() != cumulative {
+            return Err(TypeArgMiss::SelfConstructed);
+        }
+        if cumulative <= limit {
+            own = cumulative;
         }
     }
-    Ok(false)
+    Ok(own)
 }
