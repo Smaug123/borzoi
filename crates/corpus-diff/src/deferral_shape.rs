@@ -104,8 +104,10 @@ pub enum DeferralShape {
     /// `Name = v`): the resolver deliberately leaves an argument that may be
     /// named unrecorded, since it cannot tell a setter from an equality test.
     NamedArgument,
-    /// A **symbolic operator** (`&&`, `|>`, `::`, `..`, `&`). Operators are not
-    /// resolved.
+    /// A **symbolic operator** (`&&`, `|>`, `::`, `..`, `&`) no guard declined.
+    /// The resolver has no operator model: an operator token that is not an
+    /// identifier is never looked up, and one that is found no scope entry to
+    /// commit.
     Operator,
     /// A **qualifier** — a segment of a dotted path before the one the record
     /// names, reached without a value on its left (`List` in `List.map`,
