@@ -459,6 +459,7 @@ fn decorate_type_def(td: &mut TypeDef, modifier: CustomMod) {
             name: _,
             signature,
             index_parameters,
+            has_this: _,
             getter: _,
             setter: _,
             other_accessors: _,
@@ -528,10 +529,14 @@ fn decorate_method(m: &mut Method, modifier: CustomMod) {
         decorate_method_sig(sig, modifier);
     }
     for i in implements {
+        // A declaration signature carrying any modifier projects to none
+        // (`InterfaceMemberImpl::declarations`), so a consumer declines: the
+        // decoration would move the projection by design, and is not made.
         let InterfaceMemberImpl {
             interface,
             member: _,
             decl: _,
+            declaration: _,
         } = i;
         decorate_result(interface, modifier);
     }

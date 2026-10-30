@@ -13,14 +13,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use borzoi::assembly_cache::AssemblyCache;
-use borzoi::semantic::build_env_from_dll_paths;
 use borzoi::xml_doc::lookup::DocSources;
 use borzoi_sema::AssemblyEnv;
 use tempfile::TempDir;
 
 use crate::common::ensure_system_runtime_dll;
-use crate::common::inheritdoc_diff::{Census, Compared, Verdict, compare_assembly};
+use crate::common::inheritdoc_diff::{Census, Compared, Verdict, build_env, compare_assembly};
 use crate::common::inheritdoc_oracle::{AssemblyRefPatch, oracle};
+
+/// `dynamic` needs `DynamicAttribute`, which the reference pack keeps in
+/// `System.Linq.Expressions`; a fixture over `System.Runtime` alone declares
+/// its own, as the compiler accepts.
+pub const DYNAMIC_ATTRIBUTE: &str = r#"
+namespace System.Runtime.CompilerServices
+{
+    /// <summary>The compiler's marker for `dynamic`.</summary>
+    public sealed class DynamicAttribute : System.Attribute
+    {
+        /// <summary>A whole-type `dynamic`.</summary>
+        public DynamicAttribute() { }
+
+        /// <summary>A `dynamic` at the flagged positions.</summary>
+        public DynamicAttribute(bool[] transformFlags) { }
+    }
+}
+"#;
 
 /// A compiled fixture and the env over its reference set.
 pub struct Fixture {
@@ -68,7 +85,7 @@ pub struct Dep<'a> {
     /// Whether `Fx` is compiled against it.
     pub visible: bool,
     /// A rewrite of the compiled DLL, for metadata no C# compiler writes.
-    pub patch: Option<fn(&std::path::Path)>,
+    pub patch: Option<&'a dyn Fn(&std::path::Path)>,
 }
 
 /// [`fixture`], with `Fx` compiled against dependency assemblies built from
@@ -150,12 +167,12 @@ pub fn fixture_from(dir: TempDir, dll: PathBuf, references: Vec<PathBuf>) -> Fix
         let cache = AssemblyCache::at(dir.path().to_path_buf());
         (dir, cache)
     });
-    let (env, _) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), cache);
+    let (env, references) = build_env(&references, cache);
     Fixture {
         _dir: dir,
         dll,
         references,
-        env: Arc::new(env),
+        env,
     }
 }
 
@@ -503,25 +520,17 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
     census.print("handwritten");
     census.assert_sound();
     let v = verdicts(&compared);
-    // Every `cref` (and `path`) case.
     let must_expand = [
-        "M:F.D.OwnPlusCref(System.Int32)",
-        "M:F.D.PathNodes(System.Int32)",
-        "M:F.D.PathRemarks",
-        "M:F.D.NestedSummary",
-        "M:F.D.CrossAssembly",
-        // A spelling Roslyn does not take for `<inheritdoc>` (a dotless `ı`),
-        // shown as it is.
-        "E:F.Spell.Changed",
-    ];
-    // Every bare `<inheritdoc/>` Roslyn expands: implicit candidates, not
-    // modelled, so each declines as one.
-    let implicit = [
         "T:F.D",
         "M:F.D.#ctor(System.String)",
         "M:F.D.M(System.Int32)",
         "P:F.D.P",
         "E:F.D.Changed",
+        "M:F.D.OwnPlusCref(System.Int32)",
+        "M:F.D.PathNodes(System.Int32)",
+        "M:F.D.PathRemarks",
+        "M:F.D.NestedSummary",
+        "M:F.D.CrossAssembly",
         "T:F.D2",
         "M:F.D2.#ctor(System.String)",
         "M:F.D2.M(System.Int32)",
@@ -545,6 +554,7 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
         "M:F.O2.M(System.Int32)",
         "M:F.Spell.#ctor(System.String)",
         "M:F.Spell.M(System.Int32)",
+        "E:F.Spell.Changed",
         "M:F.Dim.V",
         "M:F.Dim.A",
         "M:F.RD.M(System.Int32@)",
@@ -554,12 +564,6 @@ fn handwritten_cases_expand_exactly_as_roslyn() {
         match v.get(key) {
             Some(Verdict::Agrees) => {}
             other => wrong.push(format!("{key}: {other:?}")),
-        }
-    }
-    for key in implicit {
-        match v.get(key) {
-            Some(Verdict::Declined { cause, .. }) if cause == "ImplicitCandidate" => {}
-            other => wrong.push(format!("{key} should decline as implicit: {other:?}")),
         }
     }
     // Roslyn removes an <inheritdoc> whose path selects nothing; hover keeps
@@ -631,6 +635,313 @@ public class User
         matches!(v.get("M:F.User.Plain"), Some(Verdict::Agrees)),
         "{:?}",
         v.get("M:F.User.Plain")
+    );
+}
+
+/// Two assemblies defining the same full type name: a signature's types are
+/// compared by the definition they bind to, as Roslyn compares them, not by
+/// name — `Mid.M(B::N.T)` is an overload, not what `Derived.M(A::N.T)`
+/// overrides.
+#[test]
+fn same_named_types_from_two_assemblies_are_different_types() {
+    let t = "namespace N; public class T { }";
+    let fx = fixture_with(
+        r#"
+extern alias A;
+extern alias B;
+
+namespace F;
+
+/// <summary>The base.</summary>
+public class Base
+{
+    /// <summary>Base.M, taking A's T.</summary>
+    public virtual void M(A::N.T t) { }
+}
+
+/// <summary>The middle.</summary>
+public class Mid : Base
+{
+    /// <summary>Mid.M, taking B's T: an overload.</summary>
+    public virtual void M(B::N.T t) { }
+}
+
+/// <summary>The derived.</summary>
+public class Derived : Mid
+{
+    /// <inheritdoc/>
+    public override void M(A::N.T t) { }
+}
+"#,
+        &[
+            Dep {
+                name: "DepA",
+                source: t,
+                alias: Some("A"),
+                referenced: true,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "DepB",
+                source: t,
+                alias: Some("B"),
+                referenced: true,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("same-named types");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("M:F.Derived.M(N.T)"), Some(Verdict::Agrees)),
+        "{:?}",
+        v.get("M:F.Derived.M(N.T)")
+    );
+}
+
+/// Roslyn's base-constructor rule compares parameter types with the default
+/// symbol comparer, which tells `dynamic` from `object` and one tuple's
+/// element names from another's — distinctions metadata carries only in
+/// attributes. `D(dynamic)` has no base constructor to Roslyn, so the
+/// `B(object)` beside it must not be inherited from.
+#[test]
+fn a_base_constructor_differing_by_an_attribute_carried_distinction_is_not_inherited() {
+    let fx = fixture(
+        &[
+            DYNAMIC_ATTRIBUTE,
+            r#"
+namespace F {
+
+/// <summary>The base.</summary>
+public class B
+{
+    /// <summary>B from an object.</summary>
+    public B(object x) { }
+
+    /// <summary>B from an unnamed tuple.</summary>
+    public B((int, string) t, int y) { }
+
+    /// <summary>B from an IntPtr.</summary>
+    public B(System.IntPtr p, string s) { }
+
+    /// <summary>B from objects.</summary>
+    public B(object[] xs, int y) { }
+
+    /// <summary>B from an int.</summary>
+    public B(int i) { }
+}
+
+/// <summary>The derived.</summary>
+public class D : B
+{
+    /// <inheritdoc/>
+    public D(dynamic x) : base((object)x) { }
+
+    /// <inheritdoc/>
+    public D((int a, string b) t, int y) : base(t, y) { }
+
+    /// <inheritdoc/>
+    public D(nint p, string s) : base(p, s) { }
+
+    /// <inheritdoc/>
+    public D(dynamic[] xs, int y) : base((object[])xs, y) { }
+
+    /// <inheritdoc/>
+    public D(int i) : base(i) { }
+}
+}
+"#,
+        ]
+        .concat(),
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("attribute-carried distinctions");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in [
+        "M:F.D.#ctor(System.Object)",
+        "M:F.D.#ctor(System.ValueTuple{System.Int32,System.String},System.Int32)",
+        "M:F.D.#ctor(System.Object[],System.Int32)",
+    ] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Declined { cause, .. }) if cause == "Undecidable(AttributeCarriedDistinction)"),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+    assert!(
+        matches!(v.get("M:F.D.#ctor(System.Int32)"), Some(Verdict::Agrees)),
+        "{:?}",
+        v.get("M:F.D.#ctor(System.Int32)")
+    );
+}
+
+/// Roslyn finds a `<typeparamref>`'s parameter innermost first — a method's
+/// own, then its type's, then the enclosing types' — and takes the first of
+/// the name. A method `M<T>` of `G<T>` reached as `G<int>.M` refers to its
+/// own `T`, which stays a reference; so does a nested `In<T>` of `O<T>`.
+#[test]
+fn a_shadowing_type_parameter_is_the_innermost() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>A generic base.</summary>
+public class G<T>
+{
+    /// <summary>M of <typeparamref name="T"/>.</summary>
+    public virtual void M<T>(T x) { }
+
+    /// <summary>Q of <typeparamref name="T"/> and <typeparamref name="U"/>.</summary>
+    public virtual void Q<U>(T x, U u) { }
+}
+
+/// <summary>A closed derivation.</summary>
+public class GI : G<int>
+{
+    /// <inheritdoc/>
+    public override void M<T>(T x) { }
+
+    /// <inheritdoc/>
+    public override void Q<U>(int x, U u) { }
+}
+
+/// <summary>An outer generic.</summary>
+public class O<T>
+{
+    /// <summary>An inner generic, shadowing <typeparamref name="T"/>.</summary>
+    public class In<T>
+    {
+        /// <summary>M of <typeparamref name="T"/>.</summary>
+        public virtual void M() { }
+    }
+}
+
+/// <summary>A closed nested derivation.</summary>
+public class OI : O<int>.In<string>
+{
+    /// <inheritdoc/>
+    public override void M() { }
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("shadowing type parameters");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in [
+        "M:F.GI.M``1(``0)",
+        "M:F.GI.Q``1(System.Int32,``0)",
+        "M:F.OI.M",
+    ] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Agrees)),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+}
+
+/// Two references to a type that the loaded assembly of their name lacks,
+/// made against different versions of it: Roslyn binds both into the loaded
+/// assembly, where they name one missing type, so `Derived.M` overrides
+/// `Mid.M`. Comparing the references' versions instead would step past `Mid`
+/// to `Base0`.
+#[test]
+fn references_to_a_missing_type_of_a_loaded_assembly_are_one_type() {
+    let dep = |version: &str, body: &str| {
+        format!(
+            "[assembly: System.Reflection.AssemblyVersion(\"{version}\")]\nnamespace N {{ {body} }}"
+        )
+    };
+    let dep_1 = dep("1.0.0.0", "public class T { }");
+    let dep_2 = dep("2.0.0.0", "public class T { }");
+    let dep_3 = dep("3.0.0.0", "public class Other { }");
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The derived.</summary>
+public class Derived : Hi.Mid
+{
+    /// <inheritdoc/>
+    public override N.T M() => null!;
+}
+"#,
+        &[
+            Dep {
+                name: "Dep",
+                source: &dep_1,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "Dep",
+                source: &dep_2,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: false,
+                patch: None,
+            },
+            Dep {
+                name: "Dep",
+                source: &dep_3,
+                alias: None,
+                referenced: true,
+                against: &[],
+                visible: false,
+                patch: None,
+            },
+            Dep {
+                name: "Lo",
+                source: "namespace Lo {\n/// <summary>The root.</summary>\npublic class Base0 {\n/// <summary>Base0.M.</summary>\npublic virtual N.T M() => null!; } }",
+                alias: None,
+                referenced: true,
+                against: &[0],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "Hi",
+                source: "namespace Hi {\n/// <summary>The middle.</summary>\npublic class Mid : Lo.Base0 {\n/// <summary>Mid.M.</summary>\npublic new virtual N.T M() => null!; } }",
+                alias: None,
+                referenced: true,
+                against: &[1, 3],
+                visible: true,
+                patch: None,
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("missing type of a loaded assembly");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("M:F.Derived.M"), Some(Verdict::Declined { cause, .. }) if cause == "Undecidable(TypeIdentity)"),
+        "{:?}",
+        v.get("M:F.Derived.M")
     );
 }
 
@@ -758,6 +1069,832 @@ namespace F
         "{:?}",
         v.get("M:F.U.A")
     );
+}
+
+/// Roslyn's documentation provider reads each `<member>` whole and then
+/// advances one node, so a `<member>` immediately after another — no
+/// whitespace between — is never indexed. Here `B`'s entry is invisible to
+/// Roslyn, which expands `D`'s `<inheritdoc/>` to nothing; inheriting `B`'s
+/// summary would be a different answer. `E`'s own entry is invisible too:
+/// that it holds no `<inheritdoc>` Roslyn expands (only a namespaced one)
+/// does not make "Roslyn shows it as it is" true.
+#[test]
+fn an_entry_adjacent_to_the_previous_one_is_read_differently_through_a_candidate() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>A.</summary>
+public class A { }
+
+/// <summary>B.</summary>
+public class B { }
+
+/// <inheritdoc/>
+public class D : B { }
+
+/// <inheritdoc xmlns="urn:x"/>
+public class E { }
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let xml = fx.dll.with_extension("xml");
+    let compact: String = std::fs::read_to_string(&xml)
+        .unwrap()
+        .lines()
+        .map(str::trim)
+        .collect();
+    std::fs::write(&xml, compact).unwrap();
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("adjacent entries");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in ["T:F.D", "T:F.E"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Declined { cause, .. }) if cause == "ReadDifferently"),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+}
+
+/// The index reads the first `<doc>` of a `<span>`-wrapped file, but Roslyn's
+/// documentation provider indexes every `<member>` in the document, last one
+/// wins. With a second `<doc>` re-documenting `B`, Roslyn expands `D`'s
+/// `<inheritdoc/>` to the second summary; inheriting the first would be a
+/// different answer.
+#[test]
+fn an_entry_in_a_second_doc_section_is_read_differently_through_a_candidate() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>B.</summary>
+public class B { }
+
+/// <inheritdoc/>
+public class D : B { }
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let xml = fx.dll.with_extension("xml");
+    let compiled = std::fs::read_to_string(&xml).unwrap();
+    let body = compiled
+        .trim_start()
+        .strip_prefix("<?xml version=\"1.0\"?>")
+        .expect("the compiler writes an XML declaration");
+    let wrapped = format!(
+        "<span>{body}<doc><assembly><name>Fx</name></assembly><members>\
+         <member name=\"T:F.B\"><summary>The second B.</summary></member>\
+         </members></doc></span>"
+    );
+    std::fs::write(&xml, wrapped).unwrap();
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("a second <doc> section");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    assert!(
+        matches!(v.get("T:F.D"), Some(Verdict::Declined { cause, .. }) if cause == "ReadDifferently"),
+        "{:?}",
+        v.get("T:F.D")
+    );
+}
+
+/// Swap the names of the two getters of `N.I`: `P`'s getter is `get_Q` and
+/// `Q`'s is `get_P` — legal metadata no C# compiler writes.
+fn swap_getter_names(dll: &std::path::Path) {
+    oracle()
+        .lock()
+        .unwrap()
+        .swap_method_names(dll, "get_P", "get_Q");
+}
+
+/// An explicit implementation of a property of an interface in another
+/// assembly is a `MethodImpl` row naming the interface's *accessor*. The
+/// property that owns the accessor is what Roslyn inherits from, whatever the
+/// accessor is called: `I.P` here, though its getter is named `get_Q`.
+#[test]
+fn an_external_accessor_belongs_to_its_owner_not_its_name() {
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The implementer.</summary>
+public class C : N.I
+{
+    /// <inheritdoc/>
+    int N.I.P => 0;
+
+    /// <inheritdoc/>
+    int N.I.Q => 0;
+}
+"#,
+        &[Dep {
+            name: "Ifc",
+            source: "namespace N {\n/// <summary>I.</summary>\npublic interface I {\n/// <summary>I.P's own.</summary>\nint P { get; }\n/// <summary>I.Q's own.</summary>\nint Q { get; } } }",
+            alias: None,
+            referenced: true,
+            against: &[],
+            visible: true,
+            patch: Some(&swap_getter_names),
+        }],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("external accessor ownership");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in ["P:F.C.N#I#P", "P:F.C.N#I#Q"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Agrees)),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+}
+
+/// Rename `N.I.P`'s getter to `Read`, by swapping names with a method of
+/// another type: no accessor-naming convention then points at `P`.
+fn rename_getter_to_read(dll: &std::path::Path) {
+    oracle()
+        .lock()
+        .unwrap()
+        .swap_method_names(dll, "get_P", "Read");
+}
+
+/// An explicit implementation takes precedence over a public member that
+/// would implement the interface member implicitly. Through an interface in
+/// another assembly the explicit row names a raw accessor *method*, so which
+/// interface member it implements is read off the interface's accessor
+/// ownership, never off the accessor's name: here `I.P`'s getter is named
+/// `Read`, and the explicit `I.P` — not the public `P` — implements `I.P`.
+#[test]
+fn an_external_explicit_implementation_outranks_a_public_member_whatever_its_accessors_are_called()
+{
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The implementer.</summary>
+public class C : N.I
+{
+    int N.I.P => 0;
+
+    /// <inheritdoc/>
+    public int P => 0;
+}
+"#,
+        &[Dep {
+            name: "Ifc",
+            source: "namespace N {\n/// <summary>I.</summary>\npublic interface I {\n/// <summary>I.P's own.</summary>\nint P { get; } }\n/// <summary>Other.</summary>\npublic class Other {\n/// <summary>Other.Read.</summary>\npublic int Read() => 0; } }",
+            alias: None,
+            referenced: true,
+            against: &[],
+            visible: true,
+            patch: Some(&rename_getter_to_read),
+        }],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("explicit precedence through a renamed accessor");
+    census.assert_sound();
+}
+
+/// Swap the names of `N.I.P`'s setter and `N.I.Q`'s getter.
+fn swap_setter_and_getter(dll: &std::path::Path) {
+    oracle()
+        .lock()
+        .unwrap()
+        .swap_method_names(dll, "set_P", "get_Q");
+}
+
+/// Roslyn resolves an explicit implementation's `MethodImpl` row by name
+/// *and* signature. `C` was compiled against an `N.I` whose `P` has a setter
+/// `set_P` and whose `Q` has a getter `get_Q`, and is loaded beside one where
+/// those two names are swapped. `C`'s row for `P` names `set_P`, which now
+/// names `Q`'s getter, an `int()` the row's `void(int)` does not match: to
+/// Roslyn `C`'s `I.P` implements nothing, and neither does its `I.Q`. Read
+/// by name alone, `I.P` would inherit `I.Q`'s summary.
+#[test]
+fn an_external_accessor_row_binds_by_role_not_name_alone() {
+    const IFC: &str = "namespace N {\n/// <summary>I.</summary>\npublic interface I {\n/// <summary>I.P's own.</summary>\nint P { set; }\n/// <summary>I.Q's own.</summary>\nint Q { get; } } }";
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <summary>The implementer.</summary>
+public class C : N.I
+{
+    /// <inheritdoc/>
+    int N.I.P { set { } }
+
+    /// <inheritdoc/>
+    int N.I.Q => 0;
+}
+"#,
+        &[
+            Dep {
+                name: "Ifc",
+                source: IFC,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "Ifc",
+                source: IFC,
+                alias: None,
+                referenced: true,
+                against: &[],
+                visible: false,
+                patch: Some(&swap_setter_and_getter),
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("an accessor row naming another role's method");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in ["P:F.C.N#I#P", "P:F.C.N#I#Q"] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Declined { .. })),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
+}
+
+/// Assembly binding compares culture: a reference to `Dep, Culture=ja` does
+/// not bind to a loaded `Dep, Culture=fr`, so to Roslyn `D`'s base is missing
+/// and its `<inheritdoc/>` inherits nothing.
+#[test]
+fn a_reference_does_not_bind_across_cultures() {
+    let dep = |culture: &str| {
+        format!(
+            "[assembly: System.Reflection.AssemblyCulture(\"{culture}\")]\nnamespace L {{\n/// <summary>Base ({culture}).</summary>\npublic class Base {{ }} }}"
+        )
+    };
+    let (ja, fr) = (dep("ja"), dep("fr"));
+    let fx = fixture_with(
+        r#"
+namespace F;
+
+/// <inheritdoc/>
+public class D : L.Base { }
+"#,
+        &[
+            Dep {
+                name: "Dep",
+                source: &ja,
+                alias: None,
+                referenced: false,
+                against: &[],
+                visible: true,
+                patch: None,
+            },
+            Dep {
+                name: "Dep",
+                source: &fr,
+                alias: None,
+                referenced: true,
+                against: &[],
+                visible: false,
+                patch: None,
+            },
+        ],
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("cultures");
+    census.assert_sound();
+}
+
+/// Roslyn binds an `AssemblyRef` to a referenced assembly by identity — name,
+/// public-key token, version — not by simple name. Each row rewrites `Fx`'s
+/// reference to `System.Runtime`, the one loaded DLL of that name, so that
+/// some part of its identity no loaded DLL carries; every expansion must
+/// still agree with Roslyn's, whichever way Roslyn binds the reference.
+#[test]
+fn a_reference_binds_by_identity_not_simple_name_through_a_candidate() {
+    const SOURCE: &str = r#"
+namespace F;
+
+/// <inheritdoc/>
+public class D : System.Exception
+{
+    /// <inheritdoc/>
+    public override string ToString() => "";
+
+    /// <inheritdoc cref="System.IDisposable.Dispose"/>
+    public void Cref() { }
+}
+"#;
+    let rows: &[(&str, AssemblyRefPatch)] = &[
+        ("unchanged", AssemblyRefPatch::default()),
+        (
+            "another token",
+            AssemblyRefPatch {
+                token: Some("b03f5f7f11d50a3b"),
+                ..Default::default()
+            },
+        ),
+        (
+            "no token",
+            AssemblyRefPatch {
+                drop_token: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "a higher version",
+            AssemblyRefPatch {
+                version: Some("11.0.0.0"),
+                ..Default::default()
+            },
+        ),
+        (
+            "a lower version",
+            AssemblyRefPatch {
+                version: Some("4.0.0.0"),
+                ..Default::default()
+            },
+        ),
+        (
+            "a higher revision",
+            AssemblyRefPatch {
+                version: Some("10.0.0.1"),
+                ..Default::default()
+            },
+        ),
+    ];
+    // Every row's census is printed before any is asserted, so a failure
+    // shows the whole table.
+    let mut censuses = Vec::new();
+    for (label, patch) in rows {
+        let fx = fixture_patched(SOURCE, &|dll| {
+            oracle()
+                .lock()
+                .unwrap()
+                .patch_assembly_ref(dll, "System.Runtime", patch);
+        })
+        .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+        let compared = compare(&fx);
+        let mut census = Census::default();
+        census.add(&compared);
+        census.print(&format!("System.Runtime referenced with {label}"));
+        censuses.push(census);
+    }
+    for census in &censuses {
+        census.assert_sound();
+    }
+    assert_eq!(
+        censuses[0].agrees, 3,
+        "the unchanged reference must expand every entry"
+    );
+}
+
+/// The identity check holds through a type forwarder too. `Real` is
+/// strong-named and defines `F.T`; `Fwd` forwards `F.T` to it; `Fx` was
+/// compiled against a `Fwd` that still defined `F.T`, so its reference goes
+/// through the forwarder. Each row rewrites `Fwd`'s reference to `Real`, and
+/// every expansion must still agree with Roslyn's.
+#[test]
+fn a_forwarder_binds_its_target_by_identity_through_a_candidate() {
+    const T: &str = r#"
+namespace F;
+
+/// <summary>The real T.</summary>
+public class T
+{
+    /// <summary>T.M.</summary>
+    public virtual void M() { }
+}
+"#;
+    let dir = TempDir::new().unwrap();
+    let runtime = ensure_system_runtime_dll();
+    let key = runtime.with_file_name("netstandard.dll");
+    let mut oracle = oracle().lock().unwrap();
+    let real = oracle
+        .compile_signed(
+            T,
+            "Real",
+            &dir.path().join("real"),
+            std::slice::from_ref(&runtime),
+            &key,
+        )
+        .unwrap_or_else(|e| panic!("Real does not compile: {e:#?}"));
+    let fwd_defining = oracle
+        .compile(
+            T,
+            "Fwd",
+            &dir.path().join("fwd-defining"),
+            std::slice::from_ref(&runtime),
+        )
+        .unwrap_or_else(|e| panic!("the defining Fwd does not compile: {e:#?}"));
+    let fwd = oracle
+        .compile(
+            "[assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(F.T))]",
+            "Fwd",
+            &dir.path().join("fwd"),
+            &[runtime.clone(), real.clone()],
+        )
+        .unwrap_or_else(|e| panic!("the forwarding Fwd does not compile: {e:#?}"));
+    let fx = oracle
+        .compile(
+            r#"
+namespace G;
+
+/// <inheritdoc/>
+public class D : F.T
+{
+    /// <inheritdoc/>
+    public override void M() { }
+}
+"#,
+            "Fx",
+            &dir.path().join("fx"),
+            &[runtime.clone(), fwd_defining],
+        )
+        .unwrap_or_else(|e| panic!("Fx does not compile: {e:#?}"));
+    let rows: &[(&str, AssemblyRefPatch)] = &[
+        ("unchanged", AssemblyRefPatch::default()),
+        (
+            "another token",
+            AssemblyRefPatch {
+                token: Some("cc7b13ffcd2ddd52"),
+                ..Default::default()
+            },
+        ),
+        (
+            "no token",
+            AssemblyRefPatch {
+                drop_token: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "a higher version",
+            AssemblyRefPatch {
+                version: Some("2.0.0.0"),
+                ..Default::default()
+            },
+        ),
+    ];
+    let mut censuses = Vec::new();
+    for (i, (label, patch)) in rows.iter().enumerate() {
+        let patched = dir.path().join(format!("fwd{i}")).join("Fwd.dll");
+        std::fs::create_dir_all(patched.parent().unwrap()).unwrap();
+        std::fs::copy(&fwd, &patched).unwrap();
+        oracle.patch_assembly_ref(&patched, "Real", patch);
+        let references = vec![runtime.clone(), patched, real.clone(), fx.clone()];
+        let cache = AssemblyCache::at(dir.path().join(format!("cache{i}")));
+        let (env, references) = build_env(&references, &cache);
+        // `compare` drives the oracle itself.
+        drop(oracle);
+        let compared = compare_assembly(&env, &mut DocSources::default(), &references, &fx);
+        oracle = crate::common::inheritdoc_oracle::oracle().lock().unwrap();
+        let mut census = Census::default();
+        census.add(&compared);
+        census.print(&format!("a forwarder to Real with {label}"));
+        censuses.push(census);
+    }
+    drop(oracle);
+    for census in &censuses {
+        census.assert_sound();
+    }
+    assert_eq!(
+        censuses[0].agrees, 2,
+        "the unchanged forwarder must expand both entries"
+    );
+}
+
+/// A property's or event's accessor is a method with a documentation ID of
+/// its own (`M:F.Mod.get_x`), which the model folds into its owner. Roslyn
+/// binds a `cref` naming that ID to the accessor like any other method, so
+/// where another assembly's `F.Mod` declares an ordinary method of the
+/// accessor's name, the `cref` has two targets: which one Roslyn's "first
+/// symbol" picks depends on reference order, and inheriting the ordinary
+/// method's documentation is not provably its answer. Each row is one way an
+/// accessor's ID is spelled; in both orders the entry must agree with Roslyn,
+/// and the accessor guard must fire — so that a row whose order happens to
+/// make Roslyn pick the ordinary method still checks the ID was recognised.
+#[test]
+fn a_cref_naming_an_accessor_id_is_ambiguous_with_a_method_of_that_name() {
+    // (shape, the accessor-bearing type, the ordinary-method type, the cref)
+    let rows: &[(&str, &str, &str, &str)] = &[
+        (
+            "a getter",
+            "public class Mod { /// <summary>A's x.</summary>\n public int x => 0; }",
+            "public class Mod { /// <summary>B's get_x.</summary>\n public int get_x() => 0; }",
+            "M:F.Mod.get_x",
+        ),
+        (
+            "a getter of a generic type",
+            "public class Mod<T> { /// <summary>A's x.</summary>\n public int x => 0; }",
+            "public class Mod<T> { /// <summary>B's get_x.</summary>\n public int get_x() => 0; }",
+            "M:F.Mod`1.get_x",
+        ),
+        (
+            "a getter of a type nested in a generic one",
+            "public class Outer<T> { /// <summary>A's Mod.</summary>\n public class Mod { /// <summary>A's x.</summary>\n public int x => 0; } }",
+            "public class Outer<T> { /// <summary>B's Mod.</summary>\n public class Mod { /// <summary>B's get_x.</summary>\n public int get_x() => 0; } }",
+            "M:F.Outer`1.Mod.get_x",
+        ),
+        (
+            "an indexer's getter",
+            "public class Mod { /// <summary>A's indexer.</summary>\n public int this[int i] => 0; }",
+            "public class Mod { /// <summary>B's get_Item.</summary>\n public int get_Item(int i) => 0; }",
+            "M:F.Mod.get_Item(System.Int32)",
+        ),
+        (
+            "a setter",
+            "public class Mod { /// <summary>A's x.</summary>\n public int x { set { } } }",
+            "public class Mod { /// <summary>B's set_x.</summary>\n public void set_x(int value) { } }",
+            "M:F.Mod.set_x(System.Int32)",
+        ),
+        (
+            "an event's adder",
+            "public class Mod { /// <summary>A's E.</summary>\n public event System.EventHandler? E; }",
+            "public class Mod { /// <summary>B's add_E.</summary>\n public void add_E(System.EventHandler h) { } }",
+            "M:F.Mod.add_E(System.EventHandler)",
+        ),
+    ];
+    let mut censuses = Vec::new();
+    let mut guarded = Vec::new();
+    for (shape, accessor, method, cref) in rows {
+        let accessor = format!("namespace F;\n/// <summary>A's.</summary>\n{accessor}");
+        let method = format!("namespace F;\n/// <summary>B's.</summary>\n{method}");
+        let fx_source = format!(
+            "namespace G;\n/// <summary>C.</summary>\npublic class C\n{{\n    /// <inheritdoc cref=\"{cref}\"/>\n    public void Inherits() {{ }}\n}}\n"
+        );
+        let dep = |name, source| Dep {
+            name,
+            source,
+            alias: None,
+            referenced: true,
+            against: &[],
+            visible: false,
+            patch: None,
+        };
+        let orders = [
+            (
+                "accessor first",
+                [dep("DepA", &accessor), dep("DepB", &method)],
+            ),
+            (
+                "method first",
+                [dep("DepB", &method), dep("DepA", &accessor)],
+            ),
+        ];
+        for (order, deps) in orders {
+            let fx = fixture_with(&fx_source, &deps)
+                .unwrap_or_else(|e| panic!("{shape}: fixture does not compile: {e:#?}"));
+            let compared = compare(&fx);
+            let mut census = Census::default();
+            census.add(&compared);
+            census.print(&format!("{shape}, {order}"));
+            censuses.push(census);
+            let verdict = verdicts(&compared)
+                .get("M:G.C.Inherits")
+                .map(|v| (*v).clone());
+            guarded.push((
+                format!("{shape}, {order}"),
+                matches!(&verdict, Some(Verdict::Declined { cause, .. }) if cause == "Cref(MaybeAccessor)"),
+                verdict,
+            ));
+        }
+    }
+    for census in &censuses {
+        census.assert_sound();
+    }
+    for (row, fired, verdict) in &guarded {
+        assert!(fired, "{row}: the accessor guard did not fire: {verdict:?}");
+    }
+}
+
+/// [`DocIdIndex::may_name_an_accessor`] over System.Runtime's real
+/// `System.Exception`: an accessor's ID is one, an ordinary method's is not —
+/// until the projection loses the accessors' names, when no method ID of the
+/// type can be told apart from an accessor's.
+#[test]
+fn accessor_ids_are_known_or_every_method_id_of_the_type_is_suspect() {
+    use borzoi::xml_doc::key::DocIdIndex;
+    use borzoi_assembly::{EcmaView, Member};
+
+    let bytes = std::fs::read(ensure_system_runtime_dll()).unwrap();
+    let view = borzoi_assembly::Ecma335Assembly::parse(&bytes).unwrap();
+    let types = view.enumerate_type_defs().unwrap();
+    let system = |name: &str, arity: usize| {
+        types
+            .iter()
+            .find(|e| {
+                e.namespace == ["System"] && e.name == name && e.generic_parameters.len() == arity
+            })
+            .unwrap_or_else(|| panic!("System.{name}`{arity}"))
+            .clone()
+    };
+    let exception = system("Exception", 0);
+    // A generic declaring type spells its arity inside the method ID's head.
+    let nullable = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![system("Nullable", 1)]));
+    assert!(nullable.may_name_an_accessor("M:System.Nullable`1.get_Value"));
+    assert!(nullable.may_name_an_accessor("M:System.Nullable`1.get_HasValue"));
+    assert!(!nullable.may_name_an_accessor("M:System.Nullable`1.GetValueOrDefault"));
+    assert!(!nullable.may_name_an_accessor("M:System.Nullable`1.GetValueOrDefault(`0)"));
+    let named = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![exception.clone()]));
+    assert!(named.may_name_an_accessor("M:System.Exception.get_Message"));
+    assert!(named.may_name_an_accessor("M:System.Exception.add_SerializeObjectState(System.EventHandler{System.Runtime.Serialization.SafeSerializationEventArgs})"));
+    assert!(!named.may_name_an_accessor("M:System.Exception.GetBaseException"));
+    assert!(!named.may_name_an_accessor("T:System.Exception"));
+    assert!(!named.may_name_an_accessor("P:System.Exception.Message"));
+
+    let mut blanked = exception;
+    for member in &mut blanked.members {
+        if let Member::Property(p) = member {
+            for slot in &mut p.accessor_slots {
+                slot.name.clear();
+            }
+        }
+    }
+    let unnamed = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![blanked]));
+    assert!(unnamed.may_name_an_accessor("M:System.Exception.GetBaseException"));
+    assert!(!unnamed.may_name_an_accessor("M:System.ArgumentException.GetBaseException"));
+}
+
+/// Substituting a base type's arguments copies the whole argument tree into
+/// each use of a type parameter, so along `C_i<T> : C_{i-1}<Pair<T, T>>` the
+/// instantiation doubles at every hop — exponential work and memory long
+/// before [`borzoi::xml_doc::inherit::MAX_HOPS`] or the node limits apply.
+/// Instantiations are bounded by
+/// [`borzoi::xml_doc::candidate::MAX_INSTANTIATION_NODES`]: the classes whose
+/// chains stay under it expand as Roslyn does, and the rest decline.
+#[test]
+fn an_instantiation_that_doubles_per_hop_is_bounded() {
+    use borzoi::xml_doc::candidate::MAX_INSTANTIATION_NODES;
+    const LEVELS: usize = 12;
+    let mut source = String::from(
+        r#"
+namespace F;
+
+/// <summary>A pair.</summary>
+public class Pair<A, B> { }
+
+/// <summary>C0's summary.</summary>
+public class C0<T>
+{
+    /// <summary>C0.M.</summary>
+    public virtual void M() { }
+}
+"#,
+    );
+    for i in 1..=LEVELS {
+        source.push_str(&format!(
+            r#"
+/// <inheritdoc/>
+public class C{i}<T> : C{prev}<Pair<T, T>>
+{{
+    /// <inheritdoc/>
+    public override void M() {{ }}
+}}
+"#,
+            prev = i - 1
+        ));
+    }
+    let fx = fixture(&source).unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("instantiations doubling per hop");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    // C_i's deepest hop instantiates C0 with an argument of 2^(i+1) - 1 nodes.
+    for i in 1..=LEVELS {
+        let largest = (1usize << (i + 1)) - 1;
+        for key in [format!("T:F.C{i}`1"), format!("M:F.C{i}`1.M")] {
+            let verdict = v.get(key.as_str());
+            if largest <= MAX_INSTANTIATION_NODES {
+                assert!(
+                    matches!(verdict, Some(Verdict::Agrees)),
+                    "{key}: {verdict:?}"
+                );
+            } else {
+                assert!(
+                    matches!(verdict, Some(Verdict::Declined { cause, .. }) if cause == "Undecidable(InstantiationTooLarge)"),
+                    "{key}: {verdict:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A `<typeparamref>` inherited from `B<X>` is rewritten to the ID of the
+/// argument `X` stands for, and Roslyn renders a type constructed from its
+/// own type parameters as its definition (`` T:F.Self`1 ``). A type nested in
+/// the context inherits the context's parameters, so `Outer<T>.S` is `S`'s
+/// own definition too (`` T:F.Outer`1.S ``), not a constructed
+/// `` T:F.Outer{`0}.S ``. The rule is per level of the name: in
+/// `` T:F.Host`1.Ctx.N{System.Int32} `` and `` T:F.Two`2.N{`0} `` the
+/// enclosers are their definitions and only the innermost level is
+/// constructed, and inside braces (`` T:F.G{F.Inside`1} ``) alike. Unrelated
+/// generics (`G<T>`), and a type from other arguments than its own
+/// (`Swap<U, T>`, `Half<T, int>`), render constructed.
+#[test]
+fn a_type_argument_nested_in_the_context_renders_as_roslyn_does() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>B of <typeparamref name="X"/>.</summary>
+public class B<X> { }
+
+/// <summary>G.</summary>
+public class G<A> { }
+
+/// <inheritdoc/>
+public class Outer<T> : B<Outer<T>.S>
+{
+    /// <summary>S.</summary>
+    public class S { }
+}
+
+/// <inheritdoc/>
+public class Self<T> : B<Self<T>> { }
+
+/// <inheritdoc/>
+public class Plain<T> : B<G<T>> { }
+
+/// <summary>Host.</summary>
+public class Host<T>
+{
+    /// <summary>Host.S.</summary>
+    public class S { }
+
+    /// <inheritdoc/>
+    public class Ctx : B<Host<T>.Ctx.N<int>>
+    {
+        /// <summary>Ctx.N.</summary>
+        public class N<V> { }
+    }
+
+    /// <inheritdoc/>
+    public class Beside : B<Host<T>.S> { }
+}
+
+/// <inheritdoc/>
+public class Two<T, U> : B<Two<T, U>.N<T>>
+{
+    /// <summary>Two.N.</summary>
+    public class N<V> { }
+}
+
+/// <inheritdoc/>
+public class Inside<T> : B<G<Inside<T>>> { }
+
+/// <inheritdoc/>
+public class Swap<T, U> : B<Swap<U, T>> { }
+
+/// <inheritdoc/>
+public class Half<T, U> : B<Half<T, int>> { }
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("type arguments nested in the context");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    for key in [
+        "T:F.Self`1",
+        "T:F.Plain`1",
+        "T:F.Outer`1",
+        "T:F.Host`1.Ctx",
+        "T:F.Host`1.Beside",
+        "T:F.Two`2",
+        "T:F.Inside`1",
+        "T:F.Swap`2",
+        "T:F.Half`2",
+    ] {
+        assert!(
+            matches!(v.get(key), Some(Verdict::Agrees)),
+            "{key}: {:?}",
+            v.get(key)
+        );
+    }
 }
 
 /// Roslyn's documentation provider reads each `<member>` whole and then
@@ -1033,11 +2170,10 @@ public class D
         oracle.patch_assembly_ref(&patched, "Real", patch);
         let references = vec![runtime.clone(), patched, real.clone(), fx.clone()];
         let cache = AssemblyCache::at(dir.path().join(format!("cache{i}")));
-        let (env, _) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), &cache);
+        let (env, references) = build_env(&references, &cache);
         // `compare` drives the oracle itself.
         drop(oracle);
-        let compared =
-            compare_assembly(&Arc::new(env), &mut DocSources::default(), &references, &fx);
+        let compared = compare_assembly(&env, &mut DocSources::default(), &references, &fx);
         oracle = crate::common::inheritdoc_oracle::oracle().lock().unwrap();
         let mut census = Census::default();
         census.add(&compared);
@@ -1052,158 +2188,6 @@ public class D
         censuses[0].agrees, 1,
         "the unchanged forwarder must expand the entry"
     );
-}
-
-/// A property's or event's accessor is a method with a documentation ID of
-/// its own (`M:F.Mod.get_x`), which the model folds into its owner. Roslyn
-/// binds a `cref` naming that ID to the accessor like any other method, so
-/// where another assembly's `F.Mod` declares an ordinary method of the
-/// accessor's name, the `cref` has two targets: which one Roslyn's "first
-/// symbol" picks depends on reference order, and inheriting the ordinary
-/// method's documentation is not provably its answer. Each row is one way an
-/// accessor's ID is spelled; in both orders the entry must agree with Roslyn,
-/// and the accessor guard must fire — so that a row whose order happens to
-/// make Roslyn pick the ordinary method still checks the ID was recognised.
-#[test]
-fn a_cref_naming_an_accessor_id_is_ambiguous_with_a_method_of_that_name() {
-    // (shape, the accessor-bearing type, the ordinary-method type, the cref)
-    let rows: &[(&str, &str, &str, &str)] = &[
-        (
-            "a getter",
-            "public class Mod { /// <summary>A's x.</summary>\n public int x => 0; }",
-            "public class Mod { /// <summary>B's get_x.</summary>\n public int get_x() => 0; }",
-            "M:F.Mod.get_x",
-        ),
-        (
-            "a getter of a generic type",
-            "public class Mod<T> { /// <summary>A's x.</summary>\n public int x => 0; }",
-            "public class Mod<T> { /// <summary>B's get_x.</summary>\n public int get_x() => 0; }",
-            "M:F.Mod`1.get_x",
-        ),
-        (
-            "a getter of a type nested in a generic one",
-            "public class Outer<T> { /// <summary>A's Mod.</summary>\n public class Mod { /// <summary>A's x.</summary>\n public int x => 0; } }",
-            "public class Outer<T> { /// <summary>B's Mod.</summary>\n public class Mod { /// <summary>B's get_x.</summary>\n public int get_x() => 0; } }",
-            "M:F.Outer`1.Mod.get_x",
-        ),
-        (
-            "an indexer's getter",
-            "public class Mod { /// <summary>A's indexer.</summary>\n public int this[int i] => 0; }",
-            "public class Mod { /// <summary>B's get_Item.</summary>\n public int get_Item(int i) => 0; }",
-            "M:F.Mod.get_Item(System.Int32)",
-        ),
-        (
-            "a setter",
-            "public class Mod { /// <summary>A's x.</summary>\n public int x { set { } } }",
-            "public class Mod { /// <summary>B's set_x.</summary>\n public void set_x(int value) { } }",
-            "M:F.Mod.set_x(System.Int32)",
-        ),
-        (
-            "an event's adder",
-            "public class Mod { /// <summary>A's E.</summary>\n public event System.EventHandler? E; }",
-            "public class Mod { /// <summary>B's add_E.</summary>\n public void add_E(System.EventHandler h) { } }",
-            "M:F.Mod.add_E(System.EventHandler)",
-        ),
-    ];
-    let mut censuses = Vec::new();
-    let mut guarded = Vec::new();
-    for (shape, accessor, method, cref) in rows {
-        let accessor = format!("namespace F;\n/// <summary>A's.</summary>\n{accessor}");
-        let method = format!("namespace F;\n/// <summary>B's.</summary>\n{method}");
-        let fx_source = format!(
-            "namespace G;\n/// <summary>C.</summary>\npublic class C\n{{\n    /// <inheritdoc cref=\"{cref}\"/>\n    public void Inherits() {{ }}\n}}\n"
-        );
-        let dep = |name, source| Dep {
-            name,
-            source,
-            alias: None,
-            referenced: true,
-            against: &[],
-            visible: false,
-            patch: None,
-        };
-        let orders = [
-            (
-                "accessor first",
-                [dep("DepA", &accessor), dep("DepB", &method)],
-            ),
-            (
-                "method first",
-                [dep("DepB", &method), dep("DepA", &accessor)],
-            ),
-        ];
-        for (order, deps) in orders {
-            let fx = fixture_with(&fx_source, &deps)
-                .unwrap_or_else(|e| panic!("{shape}: fixture does not compile: {e:#?}"));
-            let compared = compare(&fx);
-            let mut census = Census::default();
-            census.add(&compared);
-            census.print(&format!("{shape}, {order}"));
-            censuses.push(census);
-            let verdict = verdicts(&compared)
-                .get("M:G.C.Inherits")
-                .map(|v| (*v).clone());
-            guarded.push((
-                format!("{shape}, {order}"),
-                matches!(&verdict, Some(Verdict::Declined { cause, .. }) if cause == "Cref(MaybeAccessor)"),
-                verdict,
-            ));
-        }
-    }
-    for census in &censuses {
-        census.assert_sound();
-    }
-    for (row, fired, verdict) in &guarded {
-        assert!(fired, "{row}: the accessor guard did not fire: {verdict:?}");
-    }
-}
-
-/// [`DocIdIndex::may_name_an_accessor`] over System.Runtime's real
-/// `System.Exception`: an accessor's ID is one, an ordinary method's is not —
-/// until the projection loses the accessors' names, when no method ID of the
-/// type can be told apart from an accessor's.
-#[test]
-fn accessor_ids_are_known_or_every_method_id_of_the_type_is_suspect() {
-    use borzoi::xml_doc::key::DocIdIndex;
-    use borzoi_assembly::{EcmaView, Member};
-
-    let bytes = std::fs::read(ensure_system_runtime_dll()).unwrap();
-    let view = borzoi_assembly::Ecma335Assembly::parse(&bytes).unwrap();
-    let types = view.enumerate_type_defs().unwrap();
-    let system = |name: &str, arity: usize| {
-        types
-            .iter()
-            .find(|e| {
-                e.namespace == ["System"] && e.name == name && e.generic_parameters.len() == arity
-            })
-            .unwrap_or_else(|| panic!("System.{name}`{arity}"))
-            .clone()
-    };
-    let exception = system("Exception", 0);
-    // A generic declaring type spells its arity inside the method ID's head.
-    let nullable = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![system("Nullable", 1)]));
-    assert!(nullable.may_name_an_accessor("M:System.Nullable`1.get_Value"));
-    assert!(nullable.may_name_an_accessor("M:System.Nullable`1.get_HasValue"));
-    assert!(!nullable.may_name_an_accessor("M:System.Nullable`1.GetValueOrDefault"));
-    assert!(!nullable.may_name_an_accessor("M:System.Nullable`1.GetValueOrDefault(`0)"));
-    let named = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![exception.clone()]));
-    assert!(named.may_name_an_accessor("M:System.Exception.get_Message"));
-    assert!(named.may_name_an_accessor("M:System.Exception.add_SerializeObjectState(System.EventHandler{System.Runtime.Serialization.SafeSerializationEventArgs})"));
-    assert!(!named.may_name_an_accessor("M:System.Exception.GetBaseException"));
-    assert!(!named.may_name_an_accessor("T:System.Exception"));
-    assert!(!named.may_name_an_accessor("P:System.Exception.Message"));
-
-    let mut blanked = exception;
-    for member in &mut blanked.members {
-        if let Member::Property(p) = member {
-            for slot in &mut p.accessor_slots {
-                slot.name.clear();
-            }
-        }
-    }
-    let unnamed = DocIdIndex::of_env(&AssemblyEnv::from_entities(vec![blanked]));
-    assert!(unnamed.may_name_an_accessor("M:System.Exception.GetBaseException"));
-    assert!(!unnamed.may_name_an_accessor("M:System.ArgumentException.GetBaseException"));
 }
 
 /// A referenced DLL the env could not read at all may declare a symbol of
@@ -1861,5 +2845,87 @@ public class U
     );
     std::fs::write(&xml, text).unwrap();
     let v = sound_verdict(&fx, "an enum backing field", "M:F.U.Cref");
+    assert!(matches!(v, Verdict::Declined { .. }), "{v:?}");
+}
+
+/// An interface carrying `[TypeIdentifier]` is a No-PIA local type: with no
+/// canonical type to unify it with, Roslyn's importer resolves it to an
+/// error type, so neither an implementer nor a derived interface inherits
+/// from it.
+#[test]
+fn an_implicit_candidate_in_a_no_pia_local_type_declines() {
+    let fx = fixture(
+        r#"
+namespace System.Runtime.InteropServices
+{
+    internal sealed class TypeIdentifierAttribute : System.Attribute
+    {
+        public TypeIdentifierAttribute(string scope, string identifier) { }
+    }
+}
+
+namespace F
+{
+    /// <summary>I.</summary>
+    [System.Runtime.InteropServices.TypeIdentifier("scope", "id")]
+    public interface I
+    {
+        /// <summary>I.M.</summary>
+        void M();
+    }
+
+    /// <inheritdoc/>
+    public interface J : I { }
+
+    /// <summary>C.</summary>
+    public class C : I
+    {
+        /// <inheritdoc/>
+        public void M() { }
+    }
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    for key in ["T:F.J", "M:F.C.M"] {
+        let v = sound_verdict(&fx, "a No-PIA local type", key);
+        assert!(matches!(v, Verdict::Declined { .. }), "{key}: {v:?}");
+    }
+}
+
+/// An explicit implementation the projector drops (a custom attribute on its
+/// type parameter) still implements the interface member to Roslyn, so a
+/// public method of the same name implements nothing and inherits nothing.
+/// The drop's record does not spell the member's name, so any drop on the
+/// type declines an implicit implementation.
+#[test]
+fn a_dropped_explicit_implementation_declines_an_implicit_one() {
+    let fx = fixture(
+        r#"
+namespace F;
+
+/// <summary>Marker.</summary>
+[System.AttributeUsage(System.AttributeTargets.GenericParameter)]
+public sealed class MarkerAttribute : System.Attribute { }
+
+/// <summary>I.</summary>
+public interface I
+{
+    /// <summary>I.M.</summary>
+    void M<T>();
+}
+
+/// <summary>C.</summary>
+public class C : I
+{
+    void I.M<[Marker] T>() { }
+
+    /// <inheritdoc/>
+    public void M<T>() { }
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let v = sound_verdict(&fx, "a dropped explicit implementation", "M:F.C.M``1");
     assert!(matches!(v, Verdict::Declined { .. }), "{v:?}");
 }

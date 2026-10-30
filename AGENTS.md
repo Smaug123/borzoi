@@ -176,14 +176,21 @@ This is a Cargo workspace with nine members:
   `nuget-oracle` mould) that calls Roslyn's internal expansion by
   reflection, evaluates Roslyn's XPath selection, and compiles purpose-built
   C# fixtures (rewriting a method name or an `AssemblyRef` in one, for
-  metadata no compiler writes). `xml_doc_inheritdoc_xpath_diff` holds the
+  metadata no compiler writes) or emits assemblies from a description
+  (System.Reflection.Metadata). `xml_doc_inheritdoc_xpath_diff` holds the
   XPath subset to certain-implies-exact against it; `xml_doc_inheritdoc_diff`
   (handwritten fixtures), `xml_doc_inheritdoc_cref_diff` (generated reference
   sets whose dimensions are the ways Roslyn's importer and declaration-ID
   lookup see metadata differently from the env's index, every documented ID
-  cited by a `cref`) and the ignored `xml_doc_inheritdoc_sweep` (the
-  ASP.NET Core pack, plus a NuGet cache under `BORZOI_INHERITDOC_SWEEP_ROOT`)
-  hold every `<inheritdoc>` expansion to it.
+  cited by a `cref`), `xml_doc_inheritdoc_generated_diff` (generated C#),
+  `xml_doc_inheritdoc_metadata_diff` (generated metadata: accessor names,
+  reference versions/cultures/case, facades, core-library shapes, custom
+  modifiers, `MethodImpl` rows, doc-file layouts — with a per-dimension
+  census and liveness) — the generators run a few dozen cases each in
+  the normal suite, hundreds in their ignored `deep_*` twins,
+  `BORZOI_INHERITDOC_CASES` overriding them all — and the ignored
+  `xml_doc_inheritdoc_sweep` (the ASP.NET Core pack, plus a NuGet cache under
+  `BORZOI_INHERITDOC_SWEEP_ROOT`) hold every `<inheritdoc>` expansion to it.
 - `crates/corpus-diff/` — `borzoi-corpus-diff`. Test-only, unpublished: an
   empirical whole-project name-resolution differential. It loads real F#
   projects through the same runtime path the LSP uses (`Workspace` +
@@ -391,7 +398,7 @@ nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ign
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_source_diff::corpus:: -- --ignored  #  ~20 s
-nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_  #  ~2 min
+nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ xml_doc_inheritdoc_generated_diff::deep_ xml_doc_inheritdoc_metadata_diff::deep_  #  ~4 min
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s

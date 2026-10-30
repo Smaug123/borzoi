@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e076324adddbae8f3005b515f3b904fab2c060abbe6fdd9fb103d4b875aa5e6c # shrinks to World { core: Pack, lo_culture: false, ref_culture: false, target: Lo, ex: Loaded, twin: None, imethods: [IMethod { ret: Int, param: Int }], iprops: [], bmethods: [BMethod { ret: Int, param: Int, ret_mod: None, param_mod: None, is_abstract: false, is_final: false }], overs: [Skip, Skip, Skip], iimpls: [Explicit, Implicit], pimpls: [Implicit, Implicit], d2: false, cref: false, lo_layout: Indented, hi_layout: Indented, misdeclare: true }

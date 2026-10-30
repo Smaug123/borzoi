@@ -400,6 +400,9 @@ pub(crate) struct InterfaceMemberImpl {
     pub(crate) member: String,
     /// What the declaration method is, per its `MethodSemantics` linkage.
     pub(crate) decl: DeclSemantics,
+    /// The declaration's own signature — the `MemberRef`'s blob, or the
+    /// `MethodDef`'s — or the [`SigError`] it decoded to.
+    pub(crate) declaration: Result<DecodedMethodSig, SigError>,
 }
 
 /// What a `MethodImpl`'s `MethodDeclaration` method *is*, per the
@@ -463,10 +466,12 @@ pub(crate) struct Property {
     /// The property's type (the `PropertySig` type; index parameters are not
     /// projected).
     pub(crate) signature: Result<ModifiedType, SigError>,
-    /// The `PropertySig`'s index parameters, read only for the custom
-    /// modifiers they carry (the accessors' parameters are what is
-    /// projected).
+    /// The `PropertySig`'s index parameters, read for the custom modifiers
+    /// they carry and to check the accessors' parameters (which are what is
+    /// projected) against.
     pub(crate) index_parameters: Result<Vec<ModifiedType>, SigError>,
+    /// The `PropertySig`'s `HASTHIS` bit; `None` for an empty blob.
+    pub(crate) has_this: Option<bool>,
     pub(crate) getter: Option<MethodId>,
     pub(crate) setter: Option<MethodId>,
     /// Accessors linked by a `MethodSemantics` row carrying the `Other` (0x4)

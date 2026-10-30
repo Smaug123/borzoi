@@ -1827,6 +1827,15 @@ pub struct AccessorSlot {
     pub is_final: bool,
     /// As [`MethodLike::has_other_method_impl`], for this accessor.
     pub has_other_method_impl: bool,
+    /// The interface members this accessor implements explicitly, one per
+    /// `MethodImpl` row whose body it is: the rows the owning member's
+    /// `implements` unions, kept per accessor, because a row naming an
+    /// external interface's accessor ([`ImplementedMember::Unresolved`])
+    /// carries only that accessor's name, and which *role* it plays — getter
+    /// or setter, adder or remover, whose signatures never coincide — is
+    /// known only from which accessor the row sits on.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub implements: Vec<InterfaceMemberImpl>,
 }
 
 /// One in-assembly-undecidable `MethodImpl` row: the declaration's parent
@@ -1858,6 +1867,30 @@ pub struct InterfaceMemberImpl {
     /// The member on the *interface* (never derived from the implementing
     /// member's own name, which need not match), with its declared kind.
     pub member: ImplementedMember,
+    /// The declarations' own signatures, which with their names are what
+    /// bind them to one member of the interface — whatever the implementing
+    /// bodies' signatures: one for a method, one per accessor row for a
+    /// property or event. `None` where any is outside the projectable subset,
+    /// or carries a custom modifier anywhere (whether one takes part in the
+    /// binding is not modelled): a consumer needing them declines.
+    pub declarations: Option<Vec<DeclaredSignature>>,
+}
+
+/// A `MethodImpl` declaration's signature, as its `MemberRef` (or
+/// `MethodDef`) spells it: written in terms of the declaring interface's own
+/// type parameters ([`TypeRef::Var`] with `is_method: false` indexes the
+/// interface definition's, not the implementer's) and the method's own.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DeclaredSignature {
+    pub is_static: bool,
+    pub generic_arity: usize,
+    /// Each parameter's type, a byref one as [`TypeRef::ByRef`] (never
+    /// `readonly`: an `in` parameter's `modreq` would make the signature a
+    /// modified one, which projects to none).
+    pub parameters: Vec<TypeRef>,
+    /// The return type; `void` as [`Primitive::Void`].
+    pub return_type: TypeRef,
 }
 
 /// The interface-side member a `MethodImpl` declaration names, classified by
@@ -2210,6 +2243,12 @@ pub struct Property {
     /// each accessor separately, the setter with its value argument
     /// (`P:N.Widget.Count(System.Int32)`), so a settable property has two keys.
     pub setter_xml_doc_sig: Option<String>,
+    /// Whether the `PropertySig`'s index parameters disagree with the
+    /// accessors' (which [`Self::parameters`] projects): an F# property over
+    /// static accessors taking the instance, or malformed metadata. A
+    /// consumer comparing the property's own signature, as Roslyn does,
+    /// declines.
+    pub signature_disagrees_with_accessors: bool,
     /// The vtable facts of each distinct accessor, getter first then setter
     /// (an absent one omitted).
     #[cfg_attr(feature = "serde", serde(default))]

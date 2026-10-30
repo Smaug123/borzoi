@@ -7596,6 +7596,7 @@ mod from_views_tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            signature_disagrees_with_accessors: false,
             drops_optional_modifier: false,
             accessor_slots: Vec::new(),
         })
