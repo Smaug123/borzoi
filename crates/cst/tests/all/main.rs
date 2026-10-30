@@ -71,6 +71,7 @@ mod parser_diff_quote_pat;
 mod parser_diff_ranges;
 mod parser_diff_recovery;
 mod parser_diff_reserved_idents;
+mod parser_diff_seq_separators;
 mod parser_diff_sig_files;
 mod parser_diff_srtp_support_matrix;
 mod parser_diff_static_optimization;

@@ -1,7 +1,7 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_corpus_diff:: -- --ignored
-(match) 5428 files
+(match) 5429 files
 .github/skills/fsharp-diagnostics/server/Server.fs fcs-normaliser-unmodelled
 buildtools/fslex/Parsing.fs fcs-normaliser-unmodelled
 buildtools/fslex/fslexlex.fs fcs-normaliser-unmodelled
@@ -392,7 +392,6 @@ tests/fsharp/core/printing/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/quotes/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/recordResolution/test.fsx we-reject-fcs-accepts divergent 34/40/42
 tests/fsharp/core/subtype/test.fsx fcs-normaliser-unmodelled
-tests/fsharp/core/syntax/test.fsx ast-divergent
 tests/fsharp/core/tlr/test.fsx we-reject-fcs-accepts divergent 21/53/56
 tests/fsharp/core/topinit/generate.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/unicode/kanji-unicode-utf16.fs non-utf8
