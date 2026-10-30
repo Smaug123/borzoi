@@ -22,11 +22,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borzoi::restore::{
-    RestoreGraph, RestoreGraphSource, RestoreOutcome, restore_graph, restore_to_scratch_assemblies,
-};
+use borzoi::restore::{RestoreGraph, RestoreGraphSource, restore_graph};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
-use borzoi::workspace::Workspace;
 use borzoi_nuget::dgspec::{DependencyGraphSpec, DgSpecDecline, PathSegment, parse_dgspec};
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use serde_json::Value;
@@ -199,10 +196,14 @@ fn committed_spec(project: &Path) -> DependencyGraphSpec {
 fn a_single_project_generates_the_spec_restore_reads() {
     let root = write_tree("single", &[("App.fsproj", APP), ("App.fs", "module App\n")]);
     let spec = committed_spec(&root.join("App.fsproj"));
-    let app = std::fs::canonicalize(root.join("App.fsproj")).unwrap();
+    // `write_tree` returns the real path; on Windows that is in verbatim form
+    // (`\\?\C:\…`), which MSBuild is handed without the prefix.
+    let app = root.join("App.fsproj");
+    let app = app.to_str().unwrap();
+    let app = app.strip_prefix(r"\\?\").unwrap_or(app);
     assert_eq!(
         spec.restore,
-        vec![app.to_str().unwrap().to_owned()],
+        vec![app.to_owned()],
         "the entry, by its real path"
     );
     assert_eq!(spec.projects.len(), 1);
@@ -241,12 +242,12 @@ fn a_project_reference_brings_its_project_into_the_spec() {
 }
 
 /// A project named through a symlink, of its directory or of the project file
-/// itself, declines down both routes, and so does the shipped restore. Restore
-/// runs in the project's directory, which the OS reports by its real path, so
-/// the symlinked spelling would be spelt two ways in one evaluation, and NuGet
-/// then drops the project's `ProjectReference`s; resolving it instead moves the
-/// directory MSBuild searches for `Directory.Build.props` and the like away
-/// from the one the LSP evaluated. Neither restores the project the LSP sees.
+/// itself, declines down both routes. Restore runs in the project's directory,
+/// which the OS reports by its real path, so such a project is spelt two ways
+/// in one evaluation and NuGet drops its `ProjectReference`s from the spec
+/// restore reads: the routes would disagree, and neither spec is the project
+/// the LSP evaluated. (The shipped restore still restores such a spelling;
+/// see the plan's stage 2.)
 #[cfg(unix)]
 #[test]
 fn a_project_named_through_a_symlink_declines() {
@@ -277,21 +278,6 @@ fn a_project_named_through_a_symlink_declines() {
             Ok(Graphs::Agree(_)) => panic!("{}: must decline", project.display()),
             Err(failure) => panic!("{failure}"),
         }
-        let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
-        let served = workspace.served_tfm_for_project(&project);
-        assert!(
-            matches!(
-                restore_to_scratch_assemblies(
-                    &project,
-                    &dotnet_root(),
-                    &served,
-                    Some(workspace.env())
-                ),
-                RestoreOutcome::Declined
-            ),
-            "{}: the shipped restore must decline too",
-            project.display()
-        );
     }
     // By its real path, the same project keeps its reference.
     let spec = committed_spec(&root.join("real").join("App.fsproj"));
@@ -331,8 +317,14 @@ fn a_project_conditioned_on_restores_globals_generates_alike() {
 }
 
 /// The MSBuild command line the `dotnet` CLI forwards for `verb`, read from the
-/// first line of its diagnostic output, as a set of arguments.
-fn forwarded_arguments(project: &Path, verb: &[&str]) -> std::collections::BTreeSet<String> {
+/// first line of its diagnostic output, as a set of arguments. The line does not
+/// quote, so `root` (which may contain spaces) is replaced by `<root>` before it
+/// is split.
+fn forwarded_arguments(
+    root: &Path,
+    project: &Path,
+    verb: &[&str],
+) -> std::collections::BTreeSet<String> {
     let mut cmd = std::process::Command::new(dotnet_root().join("dotnet"));
     cmd.current_dir(project.parent().unwrap())
         .args(verb)
@@ -346,7 +338,11 @@ fn forwarded_arguments(project: &Path, verb: &[&str]) -> std::collections::BTree
         .lines()
         .find(|line| line.contains("--target:"))
         .unwrap_or_else(|| panic!("no forwarded MSBuild command line for {verb:?}:\n{stdout}"));
-    line.split_whitespace().skip(1).map(str::to_owned).collect()
+    line.replace(root.to_str().expect("UTF-8 root"), "<root>")
+        .split_whitespace()
+        .skip(1)
+        .map(str::to_owned)
+        .collect()
 }
 
 /// What `dotnet restore` forwards to MSBuild beyond its target is exactly
@@ -362,8 +358,9 @@ fn restore_forwards_no_global_the_generated_route_lacks() {
     );
     let project = root.join("App.fsproj");
     let output = root.join("graph.dg.json");
-    let restored = forwarded_arguments(&project, &["restore"]);
+    let restored = forwarded_arguments(&root, &project, &["restore"]);
     let generated = forwarded_arguments(
+        &root,
         &project,
         &[
             "msbuild",
@@ -381,7 +378,7 @@ fn restore_forwards_no_global_the_generated_route_lacks() {
     assert_eq!(
         only_generated,
         [
-            &format!("--property:RestoreGraphOutputPath={}", output.display()),
+            "--property:RestoreGraphOutputPath=<root>/graph.dg.json",
             "--target:GenerateRestoreGraphFile",
         ],
         "what `dotnet msbuild` forwards beyond `dotnet restore`"

@@ -261,20 +261,27 @@ to the scratch directories each was written under. The checks run on:
   and commit; none of them prunes (they target `net8.0` and `netstandard2.0`),
   so pruning's breadth comes from stage 1's local sweep, not this census.
 
-Two findings changed the shipped restore:
-- **Symlinked project paths.** Restore runs in the project's directory,
-  which the OS reports by its real path. A project named through a symlink was
-  therefore spelt two ways in one evaluation, and NuGet dropped its
-  `ProjectReference`s, so the restore never saw them. Naming the project by its
-  real path instead moves the directories MSBuild searches for
-  `Directory.Build.props` and the like away from the ones the LSP evaluated.
-  Neither restores the project the LSP sees, so such a project now declines,
-  down both routes and in the shipped restore.
+The routes check turned up two findings:
 - **Injected globals.** `dotnet restore` forwards one global property beyond its
   target, `NuGetInteractive=false`, that `dotnet msbuild` does not, so a project
   conditioned on it generated a different spec. The shared builder now passes it
-  for every verb. A test diffs the MSBuild command lines the two verbs forward,
-  so an SDK that starts forwarding another global fails by name.
+  for every verb, which for the shipped restore only repeats what the CLI adds.
+  A test diffs the MSBuild command lines the two verbs forward, so an SDK that
+  starts forwarding another global fails by name.
+- **Symlinked project paths: open, in the shipped restore.** Restore runs in the
+  project's directory, which the OS reports by its real path. A project named
+  through a symlink is therefore spelt two ways in one evaluation, and NuGet
+  drops its `ProjectReference`s: the shipped restore of such a spelling never
+  sees them. The oracle declines such a spelling, so it makes no claim there.
+  The shipped restore is unchanged, because no fix local to it is right:
+  - naming the project by its real path moves the directories MSBuild searches
+    for `Directory.Build.props` and the like away from the ones the LSP
+    evaluated;
+  - declining poisons the LSP's assembly-env cache, which is keyed by
+    canonical path, for the real spelling too.
+
+  The LSP keys a project by its canonical path but evaluates the spelling it
+  was handed, so the fix belongs at that boundary, as its own change.
 
 ### Stage 3: the decomposition is lossless
 

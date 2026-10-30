@@ -46,14 +46,6 @@
 //! - **Project-rooted.** The command's working directory is the project
 //!   directory, so `dotnet` resolves the SDK from the project's `global.json`
 //!   (rather than the LSP process's cwd) — the same SDK the evaluator saw.
-//! - **Real paths only.** A project whose path is not its real path (a symlink
-//!   in it, of a directory or of the project file) is declined. Restore runs in
-//!   the project's directory, which the OS reports by its real path, so such a
-//!   project would be spelt two ways in one evaluation, and NuGet then drops its
-//!   `ProjectReference`s from the graph. Naming it by its real path instead moves
-//!   the directories MSBuild searches for `Directory.Build.props` and the like
-//!   away from the ones the LSP evaluated. Neither restores the project the LSP
-//!   sees.
 //! - **Bounded.** It runs under [`BoundedCommand`] with a deadline as a backstop.
 //!
 //! These isolation guarantees are enforced through MSBuild global properties, so
@@ -246,7 +238,7 @@ pub fn restore_to_scratch_assemblies(
 
 /// What an offline restore of a project is run with.
 struct RestoreInputs {
-    /// The project, whose path is its real path (see the module docs).
+    /// The project.
     project: PathBuf,
     /// The warm cache the restore reads.
     cache_root: PathBuf,
@@ -289,15 +281,8 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
         );
         return None;
     };
-    let Some(project) = as_real_path(project) else {
-        tracing::info!(
-            project = %project.display(),
-            "on-demand restore declined: the project is not named by its real path"
-        );
-        return None;
-    };
     Some(RestoreInputs {
-        project,
+        project: project.to_path_buf(),
         cache_root,
     })
 }
@@ -364,13 +349,22 @@ pub enum RestoreGraphSource {
 /// way `source` says, under exactly the SDK, environment and global properties
 /// [`restore_to_scratch_assemblies`] restores with. This is the half-A oracle
 /// of `docs/nuget-dgspec-boundary-plan.md`; the LSP itself never calls it.
+///
+/// It declines a project not named by its real path. Restore runs in the
+/// project's directory, which the OS reports by its real path, so such a
+/// project is spelt two ways in one evaluation, and NuGet drops its
+/// `ProjectReference`s from the spec restore reads; the two routes then
+/// disagree, and neither is the project the LSP evaluated.
 pub fn restore_graph(
     project: &Path,
     dotnet_root: &Path,
     env: &SdkDiscoveryEnv,
     source: RestoreGraphSource,
 ) -> RestoreGraph {
-    let Some(inputs) = restore_inputs(project, env) else {
+    let Some(project) = as_real_path(project) else {
+        return RestoreGraph::Declined;
+    };
+    let Some(inputs) = restore_inputs(&project, env) else {
         return RestoreGraph::Declined;
     };
     let project = inputs.project.as_path();

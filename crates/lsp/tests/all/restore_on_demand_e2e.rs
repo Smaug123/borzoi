@@ -37,9 +37,6 @@ fn write_unrestored_project(tag: &str) -> std::path::PathBuf {
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-nuget-{tag}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
-    // By its real path: the on-demand restore declines a project named
-    // through a symlink, and the temporary directory is one on macOS.
-    let root = std::fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         format!(
