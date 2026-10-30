@@ -203,7 +203,7 @@ fn chain_position(
     (!env.is_module(chain[position])).then_some(position)
 }
 
-/// Every function of the F# module `module` that inference reads a type off
+/// Every function and value of the F# module `module` that inference reads a type off
 /// (`function_ty::module_function_scheme`), by its F# source name, with that
 /// type rendered as FCS's canonical renderer renders the generalised type of a
 /// value use of it (`flexed`, with type parameters renumbered by first
@@ -263,29 +263,37 @@ pub fn module_function_application_type(
 }
 
 /// The type a **value use** of a function of type `ty` has in FCS: each
-/// curried domain that is not sealed becomes a fresh type parameter, which F#
-/// constrains to coerce to it (`MakeApplicableExprWithFlex`), so `unbox` bound
-/// as a value is `'a -> 'b`, not `obj -> 'b`. `System.Object` is the one
-/// unsealed type [`crate::function_ty::module_function_scheme`] carries; `next`
-/// is the first unused parameter index.
+/// curried domain that is not sealed, and each such element of a tupled one,
+/// becomes a fresh type parameter, which F# constrains to coerce to it
+/// (`MakeApplicableExprWithFlex`), so `unbox` bound as a value is `'a -> 'b`,
+/// not `obj -> 'b`. `System.Object` is the one unsealed type
+/// [`crate::function_ty::module_function_scheme`] carries; `next` is the first
+/// unused parameter index.
 fn flexed(ty: &crate::Ty, mut next: u32) -> crate::Ty {
     use crate::Ty;
-    match ty {
-        Ty::Fun { arg, ret } => {
-            let arg = match &**arg {
-                Ty::Named { path, args } if args.is_empty() && path == &["System", "Object"] => {
-                    next += 1;
-                    Ty::Param(next - 1)
-                }
-                other => other.clone(),
-            };
-            Ty::Fun {
-                arg: Box::new(arg),
-                ret: Box::new(flexed(ret, next)),
-            }
+    let mut flex = |t: &Ty| match t {
+        Ty::Named { path, args } if args.is_empty() && path == &["System", "Object"] => {
+            next += 1;
+            Ty::Param(next - 1)
         }
         other => other.clone(),
+    };
+    let mut domains = Vec::new();
+    let mut ret = ty;
+    while let Ty::Fun { arg, ret: next_ret } = ret {
+        domains.push(match &**arg {
+            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(&mut flex).collect()),
+            other => flex(other),
+        });
+        ret = next_ret;
     }
+    domains
+        .into_iter()
+        .rev()
+        .fold(ret.clone(), |ret, arg| Ty::Fun {
+            arg: Box::new(arg),
+            ret: Box::new(ret),
+        })
 }
 
 /// The [`Ty::Param`](crate::Ty::Param) indices of `ty` in first-appearance

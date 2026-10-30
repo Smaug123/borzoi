@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The fixture behind the assembly module-value differential
+       (tests/all/infer_assembly_values_diff.rs): module functions and values
+       spanning the signature shapes a use of an assembly value is typed
+       through, and the headers of infer_operators_diff's grids moved into
+       modules of their own.
+
+       `Generated.fs` is NOT checked in: it is emitted from the tables in
+       crates/sema/tests/all/common/module_value_corpus.rs before this project
+       is built, so the fixture and the probes cannot drift apart. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaModuleValueFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>
