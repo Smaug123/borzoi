@@ -17,8 +17,8 @@ use std::thread::JoinHandle;
 use borzoi_cst::language_version::LanguageVersion;
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument, Exit,
-    Notification as NotificationTrait, PublishDiagnostics, ShowMessage,
+    Cancel, DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument,
+    DidOpenTextDocument, Exit, Notification as NotificationTrait, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
     Completion, DocumentDiagnosticRequest, DocumentSymbolRequest, GotoDefinition, HoverRequest,
@@ -45,6 +45,7 @@ use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
     DefinitionOutcome, PendingFetch, default_source_fetcher, location_for_pending, url_location,
 };
+use crate::handlers::workspace_diagnostic::{Step, Sweep};
 use crate::project_deferral;
 use crate::publish::PublishState;
 use crate::semantic::{CanonicalProject, SemanticState};
@@ -617,11 +618,40 @@ pub fn run_with_fetcher(
     // the (possibly late) `client/registerCapability` response that arrives in
     // the shutdown→exit window.
     let mut shutting_down = false;
-    for msg in &connection.receiver {
+    // The `workspace/diagnostic` sweep in flight, if any. At most one: a newer
+    // request supersedes it. While it is set the loop never blocks on the
+    // connection — it polls, and steps the sweep whenever nothing is waiting —
+    // so any message waits behind at most one sweep step.
+    let mut sweep: Option<InFlightSweep> = None;
+    loop {
+        let msg = match sweep.take() {
+            None => match connection.receiver.recv() {
+                Ok(msg) => msg,
+                // The peer hung up.
+                Err(_) => break,
+            },
+            Some(in_flight) => match connection.receiver.try_recv() {
+                Ok(msg) => {
+                    sweep = Some(in_flight);
+                    msg
+                }
+                // The peer hung up: nobody is left to read the report.
+                Err(err) if err.is_disconnected() => break,
+                Err(_) => {
+                    sweep = advance_sweep(&mut state, &connection, in_flight)?;
+                    continue;
+                }
+            },
+        };
         match msg {
             Message::Request(req) => {
                 if req.method == Shutdown::METHOD {
                     shutting_down = true;
+                    // Answer the sweep before acknowledging: no request may be
+                    // left unanswered once the lifecycle forbids servicing it.
+                    if let Some(old) = sweep.take() {
+                        server_cancel(&connection, old)?;
+                    }
                     // Acknowledge with a `null` result; the spec then expects an
                     // `exit` notification, which ends the loop below.
                     connection
@@ -658,22 +688,40 @@ pub fn run_with_fetcher(
                         Dispatch::Defer { id, pending } => {
                             dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
                         }
+                        // A sweep: the loop steps it while idle and replies when
+                        // it completes. A client that asks again has given up on
+                        // the older one.
+                        Dispatch::Sweep { id, sweep: started } => {
+                            if let Some(old) = sweep.replace(InFlightSweep::new(id, started)) {
+                                server_cancel(&connection, old)?;
+                            }
+                        }
                     }
-                    maybe_send_refresh(&mut state, &connection);
+                    maybe_send_refresh(&mut state, &connection, SweepStatus::of(&sweep));
                 }
             }
             Message::Notification(not) => {
                 if not.method == Exit::METHOD {
+                    // Any sweep in flight is abandoned unanswered: `exit` ends
+                    // the session.
                     return Ok(());
                 }
                 // Drop every other notification once shutting down — no cache
                 // mutation or diagnostic publishing after `shutdown`.
                 if !shutting_down {
+                    if not.method == Cancel::METHOD {
+                        if let Some(in_flight) = sweep.take() {
+                            sweep = cancel_sweep_if_named(&connection, in_flight, &not)?;
+                        }
+                        // Every other request is answered before the next
+                        // message is read, so there is nothing else to cancel.
+                        continue;
+                    }
                     handle_notification(&mut state, &connection, not);
                     // A notification can invalidate pull diagnostics or stale
                     // an open buffer's semantic tokens without any fold, so
                     // drain refresh work here too, not only after requests.
-                    maybe_send_refresh(&mut state, &connection);
+                    maybe_send_refresh(&mut state, &connection, SweepStatus::of(&sweep));
                     refresh_project_deferrals(&mut state, &connection);
                 }
             }
@@ -682,11 +730,124 @@ pub fn run_with_fetcher(
                 // refresh (if any) go out. Any other response (the one-shot
                 // `registerCapability`, or a late/stray one) carries nothing we act
                 // on, and must not abort a shutdown.
-                handle_refresh_reply(&mut state, &connection, &resp.id, shutting_down);
+                handle_refresh_reply(
+                    &mut state,
+                    &connection,
+                    &resp.id,
+                    shutting_down,
+                    SweepStatus::of(&sweep),
+                );
             }
         }
     }
 
+    Ok(())
+}
+
+/// A `workspace/diagnostic` sweep the dispatch loop is stepping, with the id
+/// its reply answers.
+struct InFlightSweep {
+    id: RequestId,
+    sweep: Sweep,
+    /// Spans the whole sweep, from the request to its reply (or abandonment);
+    /// entered around each step.
+    span: tracing::Span,
+}
+
+impl InFlightSweep {
+    fn new(id: RequestId, sweep: Sweep) -> Self {
+        let span = tracing::info_span!("lsp.workspace_diagnostic.sweep", id = %id);
+        InFlightSweep { id, sweep, span }
+    }
+}
+
+/// Whether a `workspace/diagnostic` sweep is in flight, which holds back an owed
+/// diagnostic refresh (see [`maybe_send_refresh`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SweepStatus {
+    Idle,
+    InFlight,
+}
+
+impl SweepStatus {
+    fn of(sweep: &Option<InFlightSweep>) -> Self {
+        match sweep {
+            Some(_) => SweepStatus::InFlight,
+            None => SweepStatus::Idle,
+        }
+    }
+}
+
+/// Do one step of `in_flight`. When that completes it, send the report and do
+/// the per-request follow-up the loop does after any reply (deferral toasts,
+/// owed refreshes — including a diagnostic refresh the sweep was holding), and
+/// return `None`.
+fn advance_sweep(
+    state: &mut State,
+    connection: &Connection,
+    in_flight: InFlightSweep,
+) -> Result<Option<InFlightSweep>, Box<dyn Error + Send + Sync>> {
+    let InFlightSweep { id, sweep, span } = in_flight;
+    match span.in_scope(|| sweep.step(state)) {
+        Step::Pending(sweep) => Ok(Some(InFlightSweep { id, sweep, span })),
+        Step::Done(report) => {
+            drop(span);
+            refresh_project_deferrals(state, connection);
+            enqueue_response(
+                connection,
+                WorkspaceDiagnosticRequest::METHOD,
+                ok_response(id, &report),
+            )?;
+            maybe_send_refresh(state, connection, SweepStatus::Idle);
+            Ok(None)
+        }
+    }
+}
+
+/// Answer `in_flight` with a `$/cancelRequest`'s `RequestCancelled` if `cancel`
+/// names it, returning `None`; otherwise hand it back untouched. A malformed
+/// cancellation names nothing.
+fn cancel_sweep_if_named(
+    connection: &Connection,
+    in_flight: InFlightSweep,
+    cancel: &Notification,
+) -> Result<Option<InFlightSweep>, Box<dyn Error + Send + Sync>> {
+    let named = serde_json::from_value::<lsp_types::CancelParams>(cancel.params.clone())
+        .ok()
+        .map(|params| match params.id {
+            lsp_types::NumberOrString::Number(n) => RequestId::from(n),
+            lsp_types::NumberOrString::String(s) => RequestId::from(s),
+        });
+    if named.as_ref() != Some(&in_flight.id) {
+        return Ok(Some(in_flight));
+    }
+    connection.sender.send(Message::Response(err_response(
+        in_flight.id,
+        lsp_server::ErrorCode::RequestCanceled,
+        "workspace diagnostic sweep cancelled by the client".to_string(),
+    )))?;
+    Ok(None)
+}
+
+/// Answer `in_flight` as cancelled by the server — superseded by a newer sweep,
+/// or by `shutdown`. Neither wants the client to re-issue it, so
+/// `retriggerRequest` is `false` (the `DiagnosticServerCancellationData` a
+/// diagnostic request's `ServerCancelled` error carries).
+fn server_cancel(
+    connection: &Connection,
+    in_flight: InFlightSweep,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let data = lsp_types::DiagnosticServerCancellationData {
+        retrigger_request: false,
+    };
+    connection.sender.send(Message::Response(Response {
+        id: in_flight.id,
+        response_result: Err(lsp_server::ResponseError {
+            code: lsp_server::ErrorCode::ServerCancelled as i32,
+            message: "workspace diagnostic sweep superseded".to_string(),
+            data: Some(serde_json::to_value(data).expect("cancellation data serialises")),
+        }),
+    }))?;
     Ok(())
 }
 
@@ -862,23 +1023,43 @@ fn fetch_location(
     location_for_pending(&pending.dest, pending.line, pending.column)
 }
 
-/// One dispatched request's outcome: a response to send now, or a deferred
+/// One dispatched request's outcome: a response to send now, a deferred
 /// go-to-definition whose SourceLink fetch the shell performs on the fetch pool,
-/// replying out-of-band when it completes. Responses are correlated by id, so
-/// out-of-order delivery (a later request answered before the deferred one) is
-/// spec-legal and expected.
+/// or a `workspace/diagnostic` sweep the shell steps between other messages.
+/// The latter two reply out-of-band when they complete. Responses are
+/// correlated by id, so out-of-order delivery (a later request answered before
+/// an earlier one) is spec-legal and expected.
 pub enum Dispatch {
     Reply(Response),
     Defer {
         id: RequestId,
         pending: PendingFetch,
     },
+    Sweep {
+        id: RequestId,
+        sweep: Sweep,
+    },
 }
 
 /// Route a request: go-to-definition may defer (a cold SourceLink fetch, ~1 s of
-/// network the dispatch loop must not block on); every other request replies
-/// synchronously.
+/// network the dispatch loop must not block on), `workspace/diagnostic` starts a
+/// sweep (unbounded work the loop must not block on); every other request
+/// replies synchronously.
 pub fn handle_request(state: &mut State, req: Request) -> Dispatch {
+    if req.method == WorkspaceDiagnosticRequest::METHOD {
+        let id = req.id.clone();
+        return match extract::<WorkspaceDiagnosticRequest>(req) {
+            Ok((id, params)) => Dispatch::Sweep {
+                id,
+                sweep: Sweep::new(state, params),
+            },
+            Err(err) => Dispatch::Reply(err_response(
+                id,
+                lsp_server::ErrorCode::InvalidParams,
+                format!("workspace diagnostic params: {err:?}"),
+            )),
+        };
+    }
     if req.method == GotoDefinition::METHOD {
         let id = req.id.clone();
         return match extract::<GotoDefinition>(req) {
@@ -897,8 +1078,8 @@ pub fn handle_request(state: &mut State, req: Request) -> Dispatch {
 }
 
 /// The synchronous request handlers — everything except a *deferred*
-/// go-to-definition (which `handle_request` intercepts above). Always produces a
-/// response to send immediately.
+/// go-to-definition and a `workspace/diagnostic` sweep (which `handle_request`
+/// intercepts above). Always produces a response to send immediately.
 fn handle_request_sync(state: &mut State, req: Request) -> Response {
     let id = req.id.clone();
     match req.method.as_str() {
@@ -977,17 +1158,6 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
                 id,
                 lsp_server::ErrorCode::InvalidParams,
                 format!("diagnostic params: {err:?}"),
-            ),
-        },
-        WorkspaceDiagnosticRequest::METHOD => match extract::<WorkspaceDiagnosticRequest>(req) {
-            Ok((id, params)) => {
-                let resp = crate::handlers::workspace_diagnostic::handle(state, params);
-                ok_response(id, &resp)
-            }
-            Err(err) => err_response(
-                id,
-                lsp_server::ErrorCode::InvalidParams,
-                format!("workspace diagnostic params: {err:?}"),
             ),
         },
         method => err_response(
@@ -1565,20 +1735,29 @@ where
 /// diagnostic acknowledgement. Unsupported work is drained because
 /// capabilities are fixed for the session and must not accumulate for a
 /// request the client forbids.
-fn maybe_send_refresh(state: &mut State, conn: &Connection) {
+///
+/// While a `workspace/diagnostic` sweep is in flight an owed diagnostic refresh
+/// stays owed, and goes out once the sweep has replied: sent earlier, it would
+/// tell the client to re-pull before the client held the report it staled, and
+/// a client that ignores a refresh with its pull still outstanding would then
+/// keep that stale report. Semantic-token refresh is unaffected.
+fn maybe_send_refresh(state: &mut State, conn: &Connection, sweep: SweepStatus) {
     if state.pending_refresh_id.is_some() {
         return;
     }
 
-    if std::mem::take(&mut state.wants_diagnostic_refresh) && state.supports_diagnostic_refresh() {
-        let id = RequestId::from(format!(
-            "borzoi/diagnostic-refresh/{}",
-            state.server_request_seq
-        ));
-        state.server_request_seq += 1;
-        state.pending_refresh_id = Some(id.clone());
-        send_request::<WorkspaceDiagnosticRefresh>(conn, id, ());
-        return;
+    if state.wants_diagnostic_refresh && sweep == SweepStatus::Idle {
+        state.wants_diagnostic_refresh = false;
+        if state.supports_diagnostic_refresh() {
+            let id = RequestId::from(format!(
+                "borzoi/diagnostic-refresh/{}",
+                state.server_request_seq
+            ));
+            state.server_request_seq += 1;
+            state.pending_refresh_id = Some(id.clone());
+            send_request::<WorkspaceDiagnosticRefresh>(conn, id, ());
+            return;
+        }
     }
 
     if !state.semantic.take_wants_refresh() || !state.supports_semantic_tokens_refresh() {
@@ -1603,11 +1782,12 @@ fn handle_refresh_reply(
     conn: &Connection,
     resp_id: &RequestId,
     shutting_down: bool,
+    sweep: SweepStatus,
 ) {
     if state.pending_refresh_id.as_ref() == Some(resp_id) {
         state.pending_refresh_id = None;
         if !shutting_down {
-            maybe_send_refresh(state, conn);
+            maybe_send_refresh(state, conn, sweep);
         }
     }
 }
@@ -2702,7 +2882,7 @@ mod tests {
         state.set_client_capabilities(caps_with_both_refreshes());
 
         state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let diagnostic_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2719,7 +2899,13 @@ mod tests {
             "semantic refresh waits behind the diagnostic refresh"
         );
 
-        handle_refresh_reply(&mut state, &server, &diagnostic_id, false);
+        handle_refresh_reply(
+            &mut state,
+            &server,
+            &diagnostic_id,
+            false,
+            SweepStatus::Idle,
+        );
         let semantic_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2742,7 +2928,7 @@ mod tests {
         state.set_client_capabilities(caps_with_diagnostic_refresh(true, Some(true)));
 
         state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let first_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2753,13 +2939,13 @@ mod tests {
         };
 
         state.apply_watched_changes(&[changed(url("file:///p/Directory.Build.props"))]);
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         assert!(
             client.receiver.try_recv().is_err(),
             "no second refresh while the first is in flight"
         );
 
-        handle_refresh_reply(&mut state, &server, &first_id, false);
+        handle_refresh_reply(&mut state, &server, &first_id, false, SweepStatus::Idle);
         match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2781,7 +2967,7 @@ mod tests {
         state.set_client_capabilities(caps_with_both_refreshes());
 
         state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let first_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2796,11 +2982,12 @@ mod tests {
             &server,
             &RequestId::from("unrelated".to_string()),
             false,
+            SweepStatus::Idle,
         );
         assert_eq!(state.pending_refresh_id.as_ref(), Some(&first_id));
         assert!(client.receiver.try_recv().is_err());
 
-        handle_refresh_reply(&mut state, &server, &first_id, true);
+        handle_refresh_reply(&mut state, &server, &first_id, true, SweepStatus::Idle);
         assert!(state.pending_refresh_id.is_none());
         assert!(
             client.receiver.try_recv().is_err(),
@@ -2842,7 +3029,7 @@ mod tests {
                 .resolved_project_and_env_for(&proj, workspace, docs)
                 .expect("warm");
         }
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
 
         // Export-changing edit to A, then a token request for A itself.
         state
@@ -2860,7 +3047,7 @@ mod tests {
                 .resolved_prefix_and_env_for(&proj, 0, workspace, docs)
                 .expect("fold after edit");
         }
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
 
         // Exactly one message reached the client: the refresh request.
         let msg = client
@@ -2893,7 +3080,7 @@ mod tests {
 
         // First edit, nothing in flight: one refresh goes out and is outstanding.
         state.semantic.invalidate_project(proj);
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let first_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2915,7 +3102,7 @@ mod tests {
         // in-flight gate sends nothing — the burst coalesces.
         for _ in 0..2 {
             state.semantic.invalidate_project(proj);
-            maybe_send_refresh(&mut state, &server);
+            maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         }
         assert!(
             client.receiver.try_recv().is_err(),
@@ -2926,7 +3113,7 @@ mod tests {
         // (`handle_refresh_reply`, exactly what the dispatch loop's
         // `Message::Response` arm calls) clears the in-flight slot and re-drains,
         // sending the one coalesced follow-up.
-        handle_refresh_reply(&mut state, &server, &first_id, false);
+        handle_refresh_reply(&mut state, &server, &first_id, false, SweepStatus::Idle);
         match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2957,7 +3144,7 @@ mod tests {
 
         // Edit 1, nothing in flight: one refresh goes out and is outstanding.
         state.semantic.invalidate_project(proj);
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let first_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2973,7 +3160,7 @@ mod tests {
         // The client acknowledges the refresh *before* the next edit — the ordering
         // the finding is about. Nothing is owed at the reply, so it sends nothing
         // and clears the slot.
-        handle_refresh_reply(&mut state, &server, &first_id, false);
+        handle_refresh_reply(&mut state, &server, &first_id, false, SweepStatus::Idle);
         assert!(
             state.pending_refresh_id.is_none(),
             "the reply cleared the in-flight slot"
@@ -2986,7 +3173,7 @@ mod tests {
         // Edit 2, now that the slot is clear: a *second*, distinct refresh. The gate
         // did not coalesce across the reply boundary — one refresh per edit.
         state.semantic.invalidate_project(proj);
-        maybe_send_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let second_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
