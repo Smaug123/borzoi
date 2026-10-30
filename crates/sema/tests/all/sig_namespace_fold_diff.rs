@@ -314,6 +314,14 @@ const SHAPES: &[Shape] = &[
         imp: "type AO = (Microsoft.FSharp.Core.AutoOpenAttribute)\n\ntype V =\n    | Vcase\n\n[<AO>]\nmodule M =\n    let ref (x : int) = x\n",
         model: Model::Unmodelled,
     },
+    // An exception is a type too, and an auto-open one publishes its
+    // statics (Codex review).
+    Shape {
+        label: "auto_open_exception",
+        sig: "type V =\n    | Vcase\n\n[<AutoOpen>]\nexception E of string\n    with\n        static member ref : int -> int\n    end\n",
+        imp: "type V =\n    | Vcase\n\n[<AutoOpen>]\nexception E of string\n    with\n        static member ref (x : int) = x\n    end\n",
+        model: Model::Unmodelled,
+    },
     Shape {
         label: "enum_lowercase",
         sig: "type U =\n    | ref = 0\n    | failwith = 1\n",

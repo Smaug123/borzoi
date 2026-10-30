@@ -888,6 +888,12 @@ fn collect_auto_open_type_containers(
                     out.push(container.to_vec());
                 }
             }
+            // An exception is a type too, and may carry static members.
+            SigDecl::Exception(exn) => {
+                if may_publish_statics(exn.attributes(), exn.syntax(), false) {
+                    out.push(container.to_vec());
+                }
+            }
             SigDecl::NestedModule(nm) => {
                 let Some(li) = nm.long_id() else { continue };
                 let mut nested = container.to_vec();
@@ -910,14 +916,29 @@ fn collect_auto_open_type_containers(
 /// borrowed ones. A type whose signature declares no static member publishes
 /// none, auto-open or not.
 fn sig_type_may_be_auto_open(defn: &TypeDefn) -> bool {
-    use borzoi_cst::syntax::SyntaxKind;
-    if attrs_auto_open(defn.attributes()) {
+    may_publish_statics(
+        defn.attributes(),
+        defn.syntax(),
+        matches!(defn.repr(), Some(TypeDefnRepr::Abbrev(_))),
+    )
+}
+
+/// [`sig_type_may_be_auto_open`] over any type-like declaration — a `type`
+/// definition or an `exception` — given its attribute lists, its syntax (for
+/// a `static` member) and whether it is an abbreviation (whose statics are
+/// borrowed from its target).
+fn may_publish_statics(
+    attrs: impl Iterator<Item = AttributeList>,
+    syntax: &SyntaxNode,
+    abbreviation: bool,
+) -> bool {
+    let attrs: Vec<AttributeList> = attrs.collect();
+    if attrs_auto_open(attrs.iter().cloned()) {
         return true;
     }
-    defn.attributes().next().is_some()
-        && (matches!(defn.repr(), Some(TypeDefnRepr::Abbrev(_)))
-            || defn
-                .syntax()
+    !attrs.is_empty()
+        && (abbreviation
+            || syntax
                 .descendants_with_tokens()
                 .filter_map(|el| el.into_token())
                 .any(|t| t.kind() == SyntaxKind::STATIC_TOK))
@@ -1331,6 +1352,11 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             }
                         }
                         SigDecl::Exception(exn) => {
+                            collect_auto_open_type_containers(
+                                &ns,
+                                &[SigDecl::Exception(exn.clone())],
+                                &mut auto_open_type_containers,
+                            );
                             if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
                                 let mut path = ns.clone();
                                 path.push(id_text(&ident).to_string());
@@ -1338,7 +1364,15 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 value_paths.push(path);
                             }
                         }
-                        _ => {}
+                        // A `val` cannot sit directly under a namespace (FCS
+                        // rejects it); if one parses, nothing here lists
+                        // the name it would bring, so the namespace is
+                        // treated as publishing names it cannot list.
+                        SigDecl::Val(_) => auto_open_type_containers.push(ns.clone()),
+                        // An `open`, a directive, and a module abbreviation
+                        // (file-local) put nothing in the namespace.
+                        SigDecl::Open(_) | SigDecl::HashDirective(_) | SigDecl::ModuleAbbrev(_) => {
+                        }
                     }
                 }
             }
