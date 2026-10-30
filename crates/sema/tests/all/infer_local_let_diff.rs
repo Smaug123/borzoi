@@ -245,6 +245,11 @@ fn check_parsed(
             "binder type mismatch for `{}` at {key:?}\n{source}",
             def.name
         );
+        assert!(
+            !dumps.hides_constraint(key, &ours),
+            "binder `{}` typed `{ours}`, which FCS constrains\n{source}",
+            def.name
+        );
         c.binders += 1;
         if let Some(&in_pattern) = local_binder_ranges.get(&key) {
             c.local_binders += 1;

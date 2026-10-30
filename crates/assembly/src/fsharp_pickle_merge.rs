@@ -55,15 +55,15 @@
 use crate::ecma335_assembly::strip_arity;
 use crate::error::ImportError;
 use crate::fsharp_pickle::model::{
-    IsType, PickledAttribExpr, PickledAttribute, PickledCcu, PickledConst, PickledEntity,
-    PickledExnRepr, PickledExpr, PickledMemberKind, PickledTcRef, PickledTyconRepr, PickledType,
-    PickledVal, TupleKind, TyparKind,
+    FSharpTyparConstraint, IsType, PickledAttribExpr, PickledAttribute, PickledCcu, PickledConst,
+    PickledEntity, PickledExnRepr, PickledExpr, PickledMemberKind, PickledTcRef, PickledTyconRepr,
+    PickledType, PickledVal, TupleKind, TyparKind,
 };
 use crate::model::{
     AbbreviationTarget, Access, ArgGroup, ArgGroups, AssemblyIdentity, Augmentation,
-    CompilerMessage, CurriedArg, CurriedArgs, Entity, EntityKind, FSharpConstraints,
-    FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete, ReadValFacts,
-    SkippedMember, TypeParameter, UnionCases, ValMeasures,
+    CompilerMessage, CurriedArg, CurriedArgs, Entity, EntityKind, EqualityComparison,
+    FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete,
+    ReadValFacts, SkippedMember, TypeParameter, UnionCases, ValMeasures,
 };
 use std::collections::HashMap;
 
@@ -559,17 +559,36 @@ fn abbreviation_lookup_name(entity: &PickledEntity) -> String {
     }
 }
 
+/// What one typar's pickled constraint list says ([`FSharpConstraints`]): free
+/// when it is empty; which of `equality` and `comparison` it holds when it holds
+/// nothing else; and bare presence otherwise.
+///
+/// `DefaultsTo` restricts nothing — it only picks a default for an unresolved
+/// typar — but it reads as `Present` all the same, and so declines where it
+/// need not: a coverage loss inside a sound direction.
+fn constraint_reading(constraints: &[FSharpTyparConstraint]) -> FSharpConstraints {
+    if constraints.is_empty() {
+        return FSharpConstraints::Free;
+    }
+    let mut supports = EqualityComparison {
+        equality: false,
+        comparison: false,
+    };
+    for c in constraints {
+        match c {
+            FSharpTyparConstraint::SupportsEquality => supports.equality = true,
+            FSharpTyparConstraint::SupportsComparison => supports.comparison = true,
+            _ => return FSharpConstraints::Present,
+        }
+    }
+    FSharpConstraints::Supports(supports)
+}
+
 /// One [`FSharpConstraints`] per pickled typar of `entity`, in declaration
 /// order, or `None` when the pickled positions cannot be matched to the ECMA
 /// row's generic parameters.
 ///
-/// The only usable fact is **presence**: nothing in this crate checks a
-/// constraint against a type argument, so the constraint list collapses to
-/// `Free`/`Present`. That makes `DefaultsTo` — which restricts nothing, it only
-/// picks a default for an unresolved typar — read as `Present` and so decline a
-/// head it need not. That is a coverage loss inside a sound direction, and
-/// spending a per-variant classification on it before a measurement shows the
-/// loss is real would be modelling constraint *semantics* for no consumer.
+/// Each typar's list is read by [`constraint_reading`].
 ///
 /// `None` (hence `Unknowable`) for a measure-bearing entity: an erased
 /// `[<Measure>]` typar has no CLR generic parameter, so the pickled list is
@@ -592,13 +611,7 @@ fn pickled_typar_constraints(
                 .tables
                 .typars
                 .get(ti as usize)
-                .map(|t| {
-                    if t.constraints.is_empty() {
-                        FSharpConstraints::Free
-                    } else {
-                        FSharpConstraints::Present
-                    }
-                })
+                .map(|t| constraint_reading(&t.constraints))
                 // Unreachable while `is_measure_free` treats an unknown index as
                 // a measure, but the `Option` is what makes that a decline
                 // rather than a panic if that ever changes.
@@ -1668,8 +1681,8 @@ fn logical_name_arity(name: &str) -> Option<usize> {
 /// the IL signature is no longer the F# type.
 ///
 /// A type parameter whose index does not resolve, or a type shape the scan
-/// does not model, leaves both unknown: a measure could hide behind it. The
-/// constraint list collapses to `Free`/`Present`, as for an entity's
+/// does not model, leaves both unknown: a measure could hide behind it. Each
+/// constraint list is read by [`constraint_reading`], as an entity's is
 /// ([`pickled_typar_constraints`]). A dangling table index elsewhere in the
 /// type is a malformed pickle — a loud `Err`.
 fn val_type_facts(pickled: &PickledCcu, v: &PickledVal) -> Result<ValTypeFacts, ImportError> {
@@ -1685,11 +1698,7 @@ fn val_type_facts(pickled: &PickledCcu, v: &PickledVal) -> Result<ValTypeFacts, 
         if is_measure_typar(typar.flags) {
             return Ok((None, Some(ValMeasures::Measured)));
         }
-        readings.push(if typar.constraints.is_empty() {
-            FSharpConstraints::Free
-        } else {
-            FSharpConstraints::Present
-        });
+        readings.push(constraint_reading(&typar.constraints));
     }
     // Heads are collected whatever the val's accessibility: a non-public
     // function can mention a non-public type, whose head then resolves for no
@@ -8550,6 +8559,12 @@ mod tests {
         e
     }
 
+    /// The reading of a [`typar_spec`] written constrained: `comparison` alone.
+    const COMPARISON_ONLY: FSharpConstraints = FSharpConstraints::Supports(EqualityComparison {
+        equality: false,
+        comparison: true,
+    });
+
     fn readings(e: &Entity) -> Vec<FSharpConstraints> {
         e.generic_parameters
             .iter()
@@ -8568,7 +8583,7 @@ mod tests {
         apply_typar_constraints(&mut owned, &ccu).expect("apply");
         assert_eq!(
             readings(&owned[0]),
-            vec![FSharpConstraints::Present, FSharpConstraints::Free],
+            vec![COMPARISON_ONLY, FSharpConstraints::Free],
             "each typar takes its own pickled reading, by position"
         );
     }
@@ -8634,7 +8649,7 @@ mod tests {
         apply_typar_constraints(&mut owned, &ccu).expect("apply");
         assert_eq!(
             readings(&owned[0]),
-            vec![FSharpConstraints::Present],
+            vec![COMPARISON_ONLY],
             "the arity-1 row takes the arity-1 pickle entry's reading"
         );
     }
@@ -8702,10 +8717,7 @@ mod tests {
         apply_typar_constraints(&mut owned, &ccu).expect("apply");
         assert_eq!(
             (readings(&owned[0]), readings(&owned[1])),
-            (
-                vec![FSharpConstraints::Present],
-                vec![FSharpConstraints::Free]
-            ),
+            (vec![COMPARISON_ONLY], vec![FSharpConstraints::Free]),
             "each alias takes its own pickled reading; the shared compiled name is \
              not their identity"
         );

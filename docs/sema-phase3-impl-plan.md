@@ -107,24 +107,23 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-10-30, after generic named types in assembly values;
-2 602 walked bindings, 38.2 % complete — 37.9 % before them, when an assembly
-value over a type the bridge did not carry was the only observed reason of 11
-and present in 76):
+corpus sample (2026-10-30, after `equality` and `comparison` constraints;
+2 602 walked bindings, 38.8 % complete — 38.2 % before them, when a
+constrained assembly operator was the only observed reason of 37 and present
+in 71):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 408 | 551 |
-| method call on a receiver that is not an in-file value | 161 | 271 |
+| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 409 | 552 |
+| method call on a receiver that is not an in-file value | 162 | 272 |
 | `use`, `let rec` or `let!` inside an expression | 64 | 90 |
 | pattern annotation outside the modelled set | 49 | 331 |
 | `match` | 47 | 150 |
-| use of an in-file binder F# may reject for its attributes | 45 | 123 |
-| constrained assembly operator (`+`, `=`, …) | 37 | 71 |
+| use of an in-file binder F# may reject for its attributes | 46 | 123 |
 | computation expression | 34 | 35 |
 | `new` | 32 | 37 |
-| assembly value with a constrained type parameter (its own, or a generic type's it applies) | 17 | 36 |
-| assembly value over a type the bridge does not carry | 3 | 5 |
+| assembly value with a constraint other than `equality`/`comparison` (its own, or a generic type's it applies) | 17 | 30 |
+| assembly operator with such a constraint (`+`, …) | 16 | 36 |
 
 The sample checks each file in isolation against FSharp.Core and the BCL
 alone, so most of the first row is a preceding file's value, which no
@@ -462,6 +461,78 @@ implementation file or are scripts), compared files 325 → 351, agreements
 899 + 870 → 963 + 933 (127 added, all in newly compared files, none lost),
 0 divergences, 100 unconverted declarations holding 5 ungraded commits.
 Completeness is unchanged: it is tallied before the oracle runs.
+
+**`equality` and `comparison` constraints.** A module function whose type
+parameters carry F#'s `equality` or `comparison` constraint and nothing else
+— `= <> < > <= >=`, `compare`, `hash`, `max`, `List.contains`, `List.sort`,
+`dict`, … — is read like any other (`module_function_scheme`). The pickle
+reading records which of the two a type parameter carries
+(`FSharpConstraints::Supports`, beside `Free`, `Present` for any other
+constraint, and `Unknowable`); F# pickles `equality and comparison` as
+`comparison` alone. The two constraints unify nothing — FCS's
+`SolveTypeSupportsEquality`/`SolveTypeSupportsComparison` add the constraint
+to a variable or check a type and report FS0001 — so the use types as its
+signature says, and each constrained instantiation variable is:
+
+- **checked** over the binding's final substitution, against a closed list read
+  off those two functions: a function type fails both; tuples and arrays
+  recurse; the sealed primitives and `string` satisfy both; `unit`, `obj` and a
+  non-generic type of an assembly that is not F#-authored (absent
+  `[<NoEquality>]`) satisfy equality; `obj` fails comparison. Anything else — an
+  F# record, union or class, a generic type, comparison through an interface
+  hierarchy — is undecided. A violation or an undecided type marks the binding
+  `Incomplete::Constraint(Violated | Undecided)`;
+- **refused speculation**: `Gen::verified` rejects a solve whose constrained
+  instantiations fail or are undecided. A violation changes no type in
+  itself, but FCS meets it inside an argument check (`UnifyOverallType`),
+  undoes the equality it was solving and reports the error with the rest of
+  that unification never applied: `a |> hash` over an `int * (int -> int)`
+  leaves the pipe's result `'a` in FCS. The grid found this; the design had
+  assumed types were the same either way. The verdict is taken with the
+  relations the solve left unapplied applied too, as `verified`'s probe
+  applies them: a branch joining an open parameter to a function can be the
+  only thing that fixes a constrained instantiation;
+- **never generalised while open**: it is poisoned when it is made. The
+  canonical renderings do not show `when`, so a scheme dropping
+  `when 'a : equality` would pass every types oracle while hover showed it
+  wrong. The `binder-types` oracle now reports each binder's type-parameter
+  constraint kinds (`TyparConstraints`), and the graders (`check_in`, the
+  corpus sweep, the local-let differential) count a generic binder type FCS
+  constrains as a disagreement.
+
+`infer_equality_constraints_diff` is the grid: twelve uses (FSharp.Core's
+operators and functions, prefix and qualified operator spellings, the
+fixture's own `eqC`/`cmpC`) × 34 operand sorts (every primitive, `unit`,
+`obj`, tuples and arrays with and without a function, BCL classes, an
+interface, a BCL struct, F# records and a class from the fixture — one with a
+function field and no equality — and in-file records plain, `NoEquality`,
+`NoComparison`, `CustomEquality`) × annotated, nested, piped, literal,
+half-open and branch-joined operands in synth, argument, tuple and branch positions, plus open
+and rigid-`'T` operands. Its table of provable sorts is checked against FCS
+(a sort called provable never draws an error); each file FCS accepts over a
+provable sort must leave every binding complete and commit every synth row
+(1 526 per-row obligations); each FS0001 twin (84) must record
+`Incomplete::Constraint` where inference reads the operands. The
+assembly-values shape grid admits the fixture's `eqC`, `cmpC` and `bothC`,
+and declines `null`-constrained controls. Deleting each gate fails a test —
+the ground check, the speculation refusal, the no-generalise poison, the
+kind filter (admitting any constraint), `obj` and other named types under
+comparison, the F#-authorship test, the function-type verdict — except the
+rigid-type-parameter verdict, which no input reaches (an annotation naming a
+type parameter declines first).
+
+Measured on the stride-13 corpus sample: agreements 963 + 933 → 978 + 945
+(27 added in 12 files, none lost), 0 divergences, complete bindings
+994 → 1 010, constrained operators 37 / 71 → 16 / 36 and constrained
+assembly values 17 / 36 → 17 / 30 (only observed / present). Two commits in
+an unconverted declaration (a `[<NoEquality>]` record compared) are ungraded.
+
+Not done: generalising over a constrained variable with the constraint in the
+scheme and `when` in hover (graded by the `tooltips` oracle), and widening the
+provable list — F# types' derived equality and comparison, FSharp.Core's
+`EqualityConditionalOn`/`ComparisonConditionalOn` generics (`list`,
+`option`), comparison through a BCL type's interfaces, `Map` and `Set` in the
+bridge.
 
 ### Remaining 3.x hard piles (census-priority order)
 
