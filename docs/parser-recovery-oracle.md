@@ -212,7 +212,8 @@ The recovery fixes in this change:
 
   A body delimited by `begin … end` is not closed, since its `end` still
   matches; nor does an attribute list that never closes count as evidence of a
-  missing representation.
+  missing representation, nor a member keyword after the `=`
+  (`type T = static`), which begins a member the type recovers inside.
 
   The rule is FCS's LALR error recovery, which no table of hand-picked shapes
   covers. `recover_nested_module_scope_after_a_broken_declaration_matches_fcs`
@@ -224,9 +225,8 @@ The recovery fixes in this change:
   following declaration FCS keeps must land in FCS's module. The cells where
   it does not are pinned one per line in
   `tests/manifests/nested_module_scope.txt`: 1,831 of them without this rule,
-  893 with it. Of the 73 this rule makes worse, most are FCS grammar quirks
-  after the broken head rather than the boundary: `type T = static` before
-  `type V` (FCS reads a `static type` member), `= and` (a type group),
+  878 with it. Of the 58 this rule makes worse, most are FCS grammar quirks
+  after the broken head rather than the boundary: `= and` (a type group),
   `= then`, `= else`, `= <-`, `= open`, `= begin`. Most of what remains overall
   is not the boundary rule:
 

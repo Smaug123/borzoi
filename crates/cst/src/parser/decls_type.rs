@@ -1316,12 +1316,21 @@ impl<'src> Parser<'src> {
         while matches!(raw(i), Some(Token::LBrackLess)) {
             let mut depth = 0usize;
             loop {
-                match raw(i) {
-                    Some(Token::LBrackLess) => depth += 1,
-                    Some(Token::GreaterRBrack) => depth -= 1,
+                match self.filtered_tokens.get(start + i) {
+                    Some((Ok(FilteredToken::Raw(Token::LBrackLess)), _)) => depth += 1,
+                    Some((Ok(FilteredToken::Raw(Token::GreaterRBrack)), _)) => depth -= 1,
                     // An attribute list that never closes says nothing about
-                    // what follows it; FCS recovers inside the type.
-                    _ if start + i >= self.filtered_tokens.len() => return false,
+                    // what follows it; FCS recovers inside the type. The scan
+                    // stops at the representation's first layout boundary,
+                    // so a run of unterminated lists costs one pass, not one
+                    // pass per definition over the rest of the file.
+                    None
+                    | Some((
+                        Ok(FilteredToken::Virtual(
+                            Virtual::BlockEnd | Virtual::BlockSep | Virtual::DeclEnd,
+                        )),
+                        _,
+                    )) => return false,
                     _ => {}
                 }
                 i += 1;
@@ -1525,6 +1534,20 @@ impl<'src> Parser<'src> {
             // other than a `type` or `module` keyword (also swallowed), which
             // FCS reads as a declaration of its own.
             missing_repr |= match self.peek() {
+                // A member keyword begins a member the type's own recovery
+                // takes over (`type T = static`), as FCS's does.
+                Some((
+                    Ok(FilteredToken::Raw(
+                        Token::Static
+                        | Token::Default
+                        | Token::Override
+                        | Token::Member
+                        | Token::Val
+                        | Token::New
+                        | Token::Inherit,
+                    )),
+                    _,
+                )) => false,
                 Some((Ok(FilteredToken::Raw(_)), _)) => true,
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), end)) => self
                     .next_significant_raw_start_after(equals_end, |t| {

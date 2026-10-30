@@ -972,6 +972,28 @@ fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
     );
 }
 
+/// A member keyword after the `=` begins a member the type recovers inside, so
+/// `type T = static;` leaves `x` in `A`, as in FCS.
+#[test]
+fn recover_member_keyword_representation_keeps_the_module_open() {
+    use crate::common::recovery::{Unit, fcs_units};
+    let src = "module M\nmodule A =\n    type T = static;\n    let x = 1\n";
+    let at = src.find("let x").expect("the declaration");
+    let scope = |units: &[Unit]| {
+        units
+            .iter()
+            .find(|u| u.key.start == at && u.key.kind == "Let")
+            .map(|u| u.key.scope.len())
+    };
+    let fcs = {
+        let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
+        std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
+        fcs_units(&crate::common::fcs_ast_batch(tmp.path()), src).expect("FCS record is readable")
+    };
+    assert_eq!(scope(&fcs), Some(2), "FCS keeps `x` in `A`");
+    assert_eq!(scope(&our_units(&borzoi_cst::parser::parse(src))), Some(2));
+}
+
 /// A type definition with no representation closes its nested module, as in
 /// FCS: the declarations after it belong to the enclosing module.
 #[test]
