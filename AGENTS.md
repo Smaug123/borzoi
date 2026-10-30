@@ -79,7 +79,8 @@ This is a Cargo workspace with nine members:
   `modifier_metamorphic` probe: ECMA-335 II.7.1.1's `modopt`/`modreq` rule
   checked as a *metamorphic property* over real assemblies (decorate every
   signature node with an unrecognised modifier and re-project — a `modopt`
-  must move nothing, a `modreq` must leave no member standing). Any guard in
+  must move nothing but the member's `drops_optional_modifier` record, a
+  `modreq` must leave no member standing). Any guard in
   the projector that inspects the *head* of a signature (`matches!(sig,
   TypeSig::ByRef(_))`) silently stops firing when a modifier sits in front of
   it, and the compiler cannot catch that; the probe can, so read it before
@@ -221,6 +222,15 @@ real F# Compiler Service by *differential* tests living in `crates/cst/tests/all
   we-reject/FCS-accepts, we-accept/FCS-rejects, clean-but-AST-divergent,
   unmodelled, parser panics, and other batch/IO failures. Use it when you need
   the full worklist rather than the ratcheted corpus gate's sample output.
+- **Recovered trees** — where either parser rejects a file, the corpus sweep
+  also grades the two recovered trees against each other
+  (`common/recovery.rs`): every declaration outside the damaged region (both
+  sides' error spans) must match, key for key and shape for shape, and the
+  verdict is pinned per file in the manifest. `recovery_sweep.rs` manufactures
+  more broken input by deleting one token (or the member name after a `.`, the
+  `foo.` shape completion runs on) from clean corpus files. Write a recovery
+  case as `common::recovery::assert_recovered_trees_agree(src, n)`. See
+  `docs/parser-recovery-oracle.md`, which also lists what remains divergent.
 
 Common commands:
 
@@ -349,6 +359,7 @@ before pushing rather than discovering it in CI:
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --ignored  #  ~30 s
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_panic_sweep::fresh_seed -- --ignored  # ~10 s
+nix develop -c cargo test -p borzoi-cst  --test all recovery_sweep::       -- --ignored  # ~3 min
 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
 nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored  #  ~25 s
 nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ignored    #  ~30 s

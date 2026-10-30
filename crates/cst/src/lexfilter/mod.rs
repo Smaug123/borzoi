@@ -510,7 +510,7 @@ impl Context {
 /// `parenTokensBalance` pairs in LexFilter.fs:408-426 for the subset we
 /// currently track.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Opener {
+pub enum Opener {
     Paren,    // `(`    closes with `)`   (RPAREN — swallowed by outer wrapper)
     Brace,    // `{`    closes with `}`   (RBRACE — swallowed by outer wrapper)
     Brack,    // `[`    closes with `]`   (RBRACK — emitted)
@@ -703,6 +703,65 @@ where
     }
 }
 
+/// Run the offside filter to completion and return every context it pushed,
+/// in push order (see [`ContextPush`]). A diagnostic view of the filter's
+/// layout decisions, for callers that must know where the filter, rather than
+/// a parser, put a block's offside line.
+pub fn context_pushes<'a, I>(source: &'a str, lang: LanguageVersion, tokens: I) -> Vec<ContextPush>
+where
+    I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>,
+{
+    let mut f = Filter::new(source, lang, tokens);
+    f.pushes = Some(Vec::new());
+    f.by_ref().for_each(drop);
+    f.pushes.expect("set above")
+}
+
+/// One context the filter pushed: what it was, the byte offset of its anchor
+/// (FCS's `Context.StartPos`), and how many contexts were beneath it.
+///
+/// A context the filter pops and re-pushes in place (a `SeqBlock` flipping
+/// between its first and later elements) appears once per push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextPush {
+    pub kind: PushedContext,
+    pub anchor: usize,
+    pub depth: usize,
+}
+
+/// The kind of a [`ContextPush`], for the contexts that delimit a module's
+/// declarations. Every other context is [`PushedContext::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushedContext {
+    /// FCS's `CtxtSeqBlock`: a block whose aligned elements are separated by
+    /// `OBLOCKSEP`.
+    SeqBlock,
+    /// FCS's `CtxtModuleBody`: a named module's body, nested (after its `=`)
+    /// or, when `whole_file`, the rest of the file.
+    ModuleBody {
+        whole_file: bool,
+    },
+    /// FCS's `CtxtNamespaceBody`.
+    NamespaceBody,
+    /// FCS's `CtxtParen`, with the token that opened it.
+    Paren(Opener),
+    Other,
+}
+
+impl PushedContext {
+    fn of(ctxt: &Context) -> Self {
+        match ctxt {
+            Context::SeqBlock { .. } => PushedContext::SeqBlock,
+            Context::ModuleBody { whole_file, .. } => PushedContext::ModuleBody {
+                whole_file: *whole_file,
+            },
+            Context::NamespaceBody { .. } => PushedContext::NamespaceBody,
+            Context::Paren { opener, .. } => PushedContext::Paren(*opener),
+            _ => PushedContext::Other,
+        }
+    }
+}
+
 /// A completed [`filter_collect`] run: the filtered stream plus the run's
 /// side outputs.
 pub struct FilterRun<'a> {
@@ -847,6 +906,8 @@ struct Filter<'a, I> {
     /// [`FilterRun::shape_depends_on_language_version`] for the full
     /// soundness argument (`false` proves version-independence).
     shape_depends_on_language_version: bool,
+    /// Every context pushed so far, when [`context_pushes`] asked for them.
+    pushes: Option<Vec<ContextPush>>,
 }
 
 /// How a context push treats an offside anchor — FCS's `strictIndentation`
@@ -948,6 +1009,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             reports_invalid_decls_in_type: lang.reports_invalid_decls_in_type_definitions(),
             diagnostics: Vec::new(),
             shape_depends_on_language_version: false,
+            pushes: None,
         }
     }
 
@@ -1696,6 +1758,14 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if strict && !correct {
             return false;
         }
+        let push = self.pushes.is_some().then(|| ContextPush {
+            kind: PushedContext::of(&ctxt),
+            anchor: self.byte_offset(ctxt.start_pos()),
+            depth: self.offside_stack.len(),
+        });
+        if let (Some(push), Some(pushes)) = (push, &mut self.pushes) {
+            pushes.push(push);
+        }
         self.offside_stack.push(ctxt);
         self.push_undentation_skip();
         true
@@ -1770,6 +1840,16 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         false
     }
 
+    /// The byte offset of `pos`, a token-start position (see
+    /// [`Self::utf16_col`]).
+    fn byte_offset(&self, pos: Pos) -> usize {
+        let idx = self
+            .line_starts
+            .binary_search_by_key(&pos.line, |&(line, _)| line)
+            .expect("context Pos lines host a token start");
+        self.line_starts[idx].1 + pos.col as usize
+    }
+
     /// The FCS-facing column of `pos`: UTF-16 code units from the line start
     /// (FCS's lexbuf column scale), converted from our byte column. The two
     /// diverge whenever a non-ASCII character precedes `pos` on its line
@@ -1777,11 +1857,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// position — contexts anchor only at those — so its line always has a
     /// [`Self::line_starts`] entry and its column ends on a char boundary.
     fn utf16_col(&self, pos: Pos) -> u32 {
-        let idx = self
-            .line_starts
-            .binary_search_by_key(&pos.line, |&(line, _)| line)
-            .expect("context Pos lines host a token start");
-        let line_start = self.line_starts[idx].1;
+        let line_start = self.byte_offset(Pos { col: 0, ..pos });
         self.source[line_start..line_start + pos.col as usize]
             .chars()
             .map(|c| c.len_utf16() as u32)

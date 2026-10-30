@@ -300,10 +300,26 @@
 //!   [`is_sealed_primitive`]), a tuple of such (recursively), or an unbound root
 //!   that is a **scheme-instantiation variable of ours** (a provenance set
 //!   [`Gen::scheme_inst_vars`] populated by [`Gen::instantiate`], membership
-//!   checked against union-find roots). `obj`, arbitrary named types, arrays, and
-//!   [`Ty::Fun`] are excluded — F# admits a coercion there, so equality would be
-//!   wrong (e.g. `let g y = fo y` with `fo : obj -> int` keeps `g : 'a -> int` in
-//!   FCS, so we defer rather than emit `obj -> int`).
+//!   checked against union-find roots), or a **function type**
+//!   ([`Gen::function_domain`]), which F# relates to an argument by equality
+//!   alone. `obj`, arbitrary named types and arrays are excluded — F# admits a
+//!   coercion there, so equality would be wrong.
+//!
+//! **Loosening at each use.** FCS gives a use of a value a type the
+//! definition does not have (`MakeApplicableExprWithFlex`): every parameter of
+//! a type that is not sealed becomes a fresh variable that is a subtype of it,
+//! so `let g y = fo y` with `fo : obj -> int` keeps `g : 'a -> int`, and
+//! `let g = fo` is `'a -> int` too. [`Gen::value_use`] models that wherever
+//! the value's type is known at the use, so an argument check against a
+//! function type relates the argument's type FCS has.
+//!
+//! **Verification.** FCS checks in source order; the worklist does not. On a
+//! body FCS rejects, a check can fire that FCS never applied — `(p |> fs, fi p,
+//! p)` fixes `p` to `string` in FCS, which then rejects `fi p`. So
+//! [`Gen::solve`] fires the checks under a snapshot and keeps them only when
+//! [`Gen::verified`]: every relation the binding holds is consistent as an
+//! equality, so FCS, which tries an equality first, applies all of them, in
+//! whatever order. Otherwise no check fires at all.
 //!
 //! **Deferred poisoning** replaces the "un-poison" idea (never remove poison, just
 //! don't add it). At binding finalisation (in [`Gen::solve`], before the poison
@@ -425,14 +441,23 @@
 //! one and the inner one a callee — no node inside, as for any curried call.
 //! The operator's value is whatever the resolver says its token names
 //! ([`Gen::operator_value`]): an in-file definition is an applied value like
-//! any other, and FSharp.Core's own operator has its signature read as its F#
-//! type ([`crate::function_ty::module_function_scheme`]) and instantiated like
-//! a scheme of ours. Only a signature with no constraint on any type parameter
+//! any other, and an assembly's operator is a use of an assembly value (below).
+//! Only a signature with no constraint on any type parameter
 //! qualifies — `+` and `=` decline — since the instantiated variables are
 //! scheme-instantiation variables, against which an argument check discharges
 //! as an equality. Everything else declines with an [`Incomplete::Operator`]
 //! reason. A result fixed only through a function-typed domain (`|>`'s
-//! `'T1 -> 'U`) stays open: an argument check does not discharge against one.
+//! `'T1 -> 'U`) is fixed by the check against it, where the binding's checks
+//! are verified.
+//!
+//! **Assembly values.** A use the resolver resolved to a referenced F#
+//! assembly's module function or value — a bare name at its token, a
+//! qualified `List.map` over the whole path — is typed as FCS types a use of a
+//! value (`TcVal`): the member's IL signature read as its F# type
+//! ([`crate::function_ty::module_function_scheme`]), instantiated and loosened
+//! as a generalised in-file binder's is ([`Gen::assembly_value_use`]). A
+//! module-qualified callee is a value application, not a method call. What
+//! the reading declines records [`Incomplete::AssemblyValue`].
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
@@ -444,11 +469,11 @@ use borzoi_cst::syntax::{
     ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat,
     SequentialExpr, SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, Type,
 };
-use rowan::TextRange;
+use rowan::{TextRange, TextSize};
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::DefId;
-use crate::function_ty::{FunctionTyGap, is_fsharp_core, module_function_scheme};
+use crate::function_ty::{FunctionTyGap, module_function_scheme};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -579,11 +604,16 @@ pub enum Incomplete {
     /// An expression form inference does not model at all, by its syntax kind:
     /// a `match`, a record, a bang or `use`/`rec` `let`, …
     Unmodelled(SyntaxKind),
-    /// A value reference that is not to an in-file binder: an assembly value,
-    /// a preceding file's value, or a name the resolver deferred.
+    /// A value reference the resolver resolved neither to an in-file binder nor
+    /// to a referenced assembly's member: a preceding file's value, or a name
+    /// it deferred.
     NotInFileValue,
-    /// A member access or call rooted at a qualified path rather than a value —
-    /// a module function (`List.map`) or a static member (`String.Join`).
+    /// A use of a referenced assembly's member (`List.map`, a bare `id`) whose
+    /// F# type is not read off its signature, and why.
+    AssemblyValue(FunctionTyGap),
+    /// A member access or call rooted at a qualified path rather than a value:
+    /// a static member (`String.Join`), or a member of a module value
+    /// (`M.v.Length`).
     QualifiedPath,
     /// A literal whose type is not fixed in isolation (`1I`, `__LINE__`).
     DeferredLiteral,
@@ -622,9 +652,9 @@ pub enum Incomplete {
     /// Any other pattern, by its syntax kind: a constructor, a record, a
     /// literal, …
     PatternShape(SyntaxKind),
-    /// A callee that is not an in-file value or a curried application, by its
-    /// syntax kind: an operator that is not a plain name, a qualified module function
-    /// (`List.map`), a lambda, …
+    /// A callee that is not a value or a curried application, by its syntax
+    /// kind: an operator that is not a plain name, a type application, a
+    /// lambda, …
     CalleeShape(SyntaxKind),
     /// A method call whose callee is not modelled, by the callee's syntax kind
     /// (a receiver that is not an in-file value, …).
@@ -650,16 +680,13 @@ pub enum OperatorGap {
     /// The resolver named no binder for the operator: a deferred lookup, or a
     /// definition in a preceding file.
     Unresolved,
-    /// A referenced assembly's operator that is not FSharp.Core's own.
-    NotFSharpCore,
-    /// An FSharp.Core operator with a constraint on a type parameter — an
-    /// F#-only one (`=` needs `equality`, `+` is statically resolved) or an IL
-    /// one — or whose constraints were not read.
+    /// A referenced assembly's operator with a constraint on a type parameter
+    /// — an F#-only one (`=` needs `equality`, `+` is statically resolved) or
+    /// an IL one — or whose constraints were not read.
     Constrained,
-    /// An FSharp.Core operator whose signature does not carry over as its F#
-    /// type: a tupled argument group (`||>`), a type the bridge does not carry
-    /// (`@` over `'T list`), a unit of measure, or an obsolete-as-error marker
-    /// (`^`).
+    /// A referenced assembly's operator whose signature does not carry over as
+    /// its F# type: a type the bridge does not carry (`@` over `'T list`), a
+    /// unit of measure, or an obsolete-as-error marker (`^`).
     Signature,
 }
 
@@ -697,7 +724,7 @@ enum PatShape {
 /// when its receiver's head becomes concrete (turning the straight-line loop
 /// into a worklist). Neither carries an origin span yet — those arrive with
 /// Phase 4 diagnostics, the first consumer that needs them.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Constraint {
     /// The two types must be equal.
     Eq(Ty, Ty),
@@ -724,6 +751,10 @@ enum Constraint {
         result: TyVid,
         use_range: TextRange,
         kind: MemberAccessKind,
+        /// Where FCS has checked everything the lookup reads besides the
+        /// receiver: a method call's arguments, which it checks before it
+        /// resolves the overload; for a data member, the access itself.
+        args_by: TextSize,
     },
     /// A **suspended application argument↔parameter check** (Stage 3.3c): at a
     /// modelled application `f x`, the argument variable `arg` and the function's
@@ -739,7 +770,7 @@ enum Constraint {
     /// application result `r` (deferred poison), so nothing bogus generalises. `r`
     /// is carried only to drive that deferred poison; the discharge reads only
     /// `arg`/`dom`.
-    ArgCheck { arg: TyVid, dom: TyVid, r: TyVid },
+    ArgCheck(ArgCheck),
 }
 
 /// A pending application argument↔parameter check inside [`Gen::solve`] (Stage
@@ -751,6 +782,9 @@ struct ArgCheck {
     arg: TyVid,
     dom: TyVid,
     r: TyVid,
+    /// The argument's source span. FCS, which checks in source order, applies
+    /// the relation while it checks the argument, so by its end at the latest.
+    span: TextRange,
 }
 
 /// Which kind of member a suspended [`Constraint::HasMember`] resolves to — a
@@ -810,6 +844,10 @@ struct SuspendedMember {
     result: TyVid,
     use_range: TextRange,
     kind: MemberAccessKind,
+    args_by: TextSize,
+    /// Whether the member waited on its receiver, which FCS must know at the
+    /// access itself; otherwise it waited only on its arguments.
+    waited_on_receiver: bool,
 }
 
 /// Infer best-effort types for `file`, given its name resolution `resolved` and
@@ -1125,6 +1163,78 @@ struct Gen<'a> {
     /// for their attributes ([`Self::rejected_use_defs`]); computed once in
     /// [`infer_file`].
     rejected_defs: HashSet<TextRange>,
+    /// **Per binding**: every check-mode relation the walk dropped, as the
+    /// checked expression's variable and its expected one
+    /// ([`Self::infer_expr`]). FCS applies each one, as an equality whenever
+    /// that is consistent with what it knows — which is what
+    /// [`Self::verified`] tests them for.
+    dropped: Vec<(TyVid, TyVid, TextRange)>,
+    /// **Per binding**: how many equalities failed to unify. A failed one is a
+    /// relation FCS rejects, in an order the solver does not keep.
+    eq_failures: usize,
+    /// **Per binding**: the variables a loosened value use stands in for a
+    /// parameter type other than `obj` ([`Self::loosened`]). In FCS each is a
+    /// subtype of that type, a constraint inference does not model.
+    bounded_flex: Vec<TyVid>,
+    /// **Per binding**: the variables of the value uses whose loosening could
+    /// not be decided at the use, because the value's type was not yet known
+    /// there ([`Self::value_use`]).
+    undecided_uses: Vec<TyVid>,
+    /// Each annotated parameter's annotation: what FCS knows of the parameter
+    /// at every use in its body.
+    param_annotations: HashMap<DefId, Ty>,
+    /// **Per binding**: the variables FCS constrains through a relation
+    /// inference does not model, so that what FCS makes of them is unknown
+    /// here ([`Self::arg_check_binds_only_current_vars`], [`Self::verified`]):
+    /// each binder this binding refers to that is not its own — an earlier
+    /// binder, whose type FCS fixed at its own binding — and each argument of
+    /// a method call, which FCS relates to a parameter type it reads off the
+    /// method it resolves; and each member access's result, until its wake
+    /// binds it to the member's type.
+    ///
+    /// A method argument's entry carries the argument's span: a relation
+    /// inside the argument is one FCS checks before it relates the argument to
+    /// the parameter, so it may bind the argument's variables.
+    opaque: Vec<(TyVid, Option<TextRange>)>,
+    /// The undo log of the speculative solve in progress ([`Self::solve`]).
+    trial: Option<TrialLog>,
+}
+
+/// What a speculative solve ([`Gen::solve`]) changed outside the table and
+/// the constraint list, so that it can be undone.
+#[derive(Debug, Default)]
+struct TrialLog {
+    /// Each member resolution recorded, with the one it replaced.
+    resolutions: Vec<(TextRange, Option<Resolution>)>,
+    /// Each guard confirmed.
+    guards: Vec<GuardId>,
+}
+
+/// Which argument checks a run of the worklist may fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fire {
+    /// None: the walk is not finished ([`Gen::settle`]), or the binding's
+    /// checks could not be verified ([`Gen::solve`]).
+    None,
+    /// Every check whose gate holds.
+    All,
+}
+
+/// What one run of the worklist did ([`Gen::run_worklist`]).
+#[derive(Debug, Default)]
+struct WorklistOutcome {
+    /// The member accesses still pending.
+    members: Vec<SuspendedMember>,
+    /// The argument checks still pending.
+    args: Vec<ArgCheck>,
+    /// How many argument checks discharged.
+    discharged: usize,
+    /// How many argument checks fired and failed to unify.
+    failed: usize,
+    /// Whether a member access was resolved after an argument check that ends
+    /// after it in the source had discharged — so possibly through that check,
+    /// which FCS had not yet applied at the access.
+    late_member: bool,
 }
 
 impl<'a> Gen<'a> {
@@ -1155,6 +1265,13 @@ impl<'a> Gen<'a> {
             cur_mark: 0,
             scheme_inst_vars: HashSet::new(),
             rejected_defs: HashSet::new(),
+            dropped: Vec::new(),
+            eq_failures: 0,
+            bounded_flex: Vec::new(),
+            undecided_uses: Vec::new(),
+            param_annotations: HashMap::new(),
+            opaque: Vec::new(),
+            trial: None,
         }
     }
 
@@ -1215,6 +1332,11 @@ impl<'a> Gen<'a> {
         self.cur_body = None;
         self.poison.clear();
         self.cur_params.clear();
+        self.dropped.clear();
+        self.eq_failures = 0;
+        self.bounded_flex.clear();
+        self.undecided_uses.clear();
+        self.opaque.clear();
         mark
     }
 
@@ -1247,6 +1369,7 @@ impl<'a> Gen<'a> {
         result: TyVid,
         use_range: TextRange,
         kind: MemberAccessKind,
+        args_by: TextSize,
     ) {
         self.constraints.push(Constraint::HasMember {
             recv,
@@ -1254,6 +1377,7 @@ impl<'a> Gen<'a> {
             result,
             use_range,
             kind,
+            args_by,
         });
         // Poison both endpoints: an unwoken (open) member relation must not let its
         // receiver or result generalise. A ground endpoint is unaffected (poison
@@ -1261,6 +1385,9 @@ impl<'a> Gen<'a> {
         // ([`Self::gen_member_access`]) and the method call ([`Self::infer_method_call`]).
         self.poison.push(recv);
         self.poison.push(result);
+        // Until the wake binds it to the member's type, the result is one FCS
+        // knows and inference does not; once bound it has no variable left.
+        self.opaque.push((result, None));
     }
 
     /// Generate a **data-member** access chain over a receiver variable `recv`, one
@@ -1286,6 +1413,7 @@ impl<'a> Gen<'a> {
                 result,
                 seg.text_range(),
                 MemberAccessKind::Data,
+                seg.text_range().start(),
             );
             cur = result;
             last = Some(result);
@@ -1743,8 +1871,12 @@ impl<'a> Gen<'a> {
             // relation suspended rather than eagerly poisoned (the
             // [`Self::infer_arg`] opt-out, shared with application arguments).
             if let Some(bv) = self.infer_arg(&rhs, r) {
-                self.constraints
-                    .push(Constraint::ArgCheck { arg: bv, dom: r, r });
+                self.constraints.push(Constraint::ArgCheck(ArgCheck {
+                    arg: bv,
+                    dom: r,
+                    r,
+                    span: node_span(rhs.syntax()),
+                }));
             }
         } else {
             self.mark_incomplete(Incomplete::Recovery);
@@ -2104,9 +2236,10 @@ impl<'a> Gen<'a> {
         // and a renamed entity needs two — FCS's canonical currency is the
         // COMPILED name (`Microsoft.FSharp.Core.FSharpResult`) while
         // [`Ty::render_fsharp`] must show the source name a user can write
-        // (`Result`), which no alias table recovers from the compiled one.
-        // Committing the compiled path would make hover display a name that does
-        // not resolve in F# source.
+        // (`Result`). Its table of FSharp.Core's renamed generics
+        // (`FSHARP_CORE_RENAMED`) is what the signature bridge checks a renamed
+        // type against; this bridge does not, so it declines every renamed one
+        // rather than show a compiled name that does not resolve in F# source.
         let mut path: Vec<String> = entity.namespace.clone();
         path.push(entity.name.clone());
         if self.env.entity_full_name(handle) != path.join(".") {
@@ -2182,6 +2315,7 @@ impl<'a> Gen<'a> {
             self.poison.push(exp);
             if let Some(r) = result {
                 self.poison.push(r);
+                self.dropped.push((r, exp, node_span(e.syntax())));
             }
         }
         result
@@ -2258,41 +2392,20 @@ impl<'a> Gen<'a> {
                     return None;
                 };
                 let Some(def) = self.def_at(tok.text_range()) else {
-                    // A use of a name we do not resolve to an in-file binder
-                    // (cross-file, assembly, deferred, unresolved) is unmodelled.
-                    self.mark_incomplete(Incomplete::NotInFileValue);
-                    return None;
+                    // A referenced assembly's value, read off its signature;
+                    // anything else that is not an in-file binder (a
+                    // preceding file's, a deferred name) is unmodelled.
+                    let uv = self.assembly_value_or_incomplete(tok.text_range())?;
+                    self.emit(tok.text_range(), uv, expected);
+                    return Some(uv);
                 };
                 if self.use_may_be_rejected(def) {
                     self.mark_incomplete(Incomplete::RejectedUse);
                     return None;
                 }
-                if let Some(scheme) = self.def_schemes.get(&def).cloned() {
-                    let body = self.instantiate(&scheme);
-                    let uv = self.table.fresh();
-                    self.eq(Ty::Var(uv), body);
-                    self.emit(tok.text_range(), uv, expected);
-                    return Some(uv);
-                }
-                let dv = self.def_var(def);
-                // A reference to an **environment** binder — one *not* introduced
-                // by the current binding (not one of its parameters) — must not be
-                // generalised (Stage 3.2c-2c). Such a binder carries an FCS-known
-                // type from *its own* binding: an earlier value's type (which we
-                // may not have modelled, e.g. an annotated `let a : int = 1`, a
-                // `let rec` or tuple-pattern binding that inference skipped) or a
-                // later forward reference. Poison its variable so a still-open
-                // environment reference blocks generalisation (a *ground* one — a
-                // typed earlier value — is unaffected, since poison only bites open
-                // vars). Without this, a skipped earlier binder allocates its
-                // variable lazily at the use site (index ≥ the current mark), and
-                // the mark check alone would wrongly treat it as quantifiable
-                // (`let a : int = 1 \n let h x = (x, a)` ⇒ a bogus `'a -> 'a * 'b`).
-                if !self.is_current_param(def) {
-                    self.poison.push(dv);
-                }
-                self.emit(tok.text_range(), dv, expected);
-                Some(dv)
+                let uv = self.value_use(def);
+                self.emit(tok.text_range(), uv, expected);
+                Some(uv)
             }
             // Parentheses are transparent: the type, position (so `expected`
             // passes straight through), and emission are the inner expression's;
@@ -2776,7 +2889,13 @@ impl<'a> Gen<'a> {
         // member access (Stage 3.3d). `infer_callee` never modelled such a callee
         // (it always deferred), so routing it to method typing only adds coverage —
         // no value-application emission changes.
-        if is_member_access_callee(&func) {
+        // A module-qualified function (`List.map f`, `(List.map) f`) is a
+        // value, applied with value semantics, not a method call.
+        let module_value = matches!(
+            unparenthesize(func.clone()),
+            Some(Expr::LongIdent(li)) if self.module_value_path(&li).is_some()
+        );
+        if !module_value && is_member_access_callee(&func) {
             return self.infer_method_call(&func, &arg);
         }
         // Synthesize the function position (no node emitted).
@@ -2812,11 +2931,12 @@ impl<'a> Gen<'a> {
                 // Suspend the arg↔param relation. `solve` wakes it (a complete
                 // binding + a no-subsumption `d`) or, failing that, poisons
                 // `arg`/`d`/`r` — so an unwoken relation never generalises anything.
-                self.constraints.push(Constraint::ArgCheck {
+                self.constraints.push(Constraint::ArgCheck(ArgCheck {
                     arg: arg_var,
                     dom: d,
                     r,
-                });
+                    span: node_span(arg.syntax()),
+                }));
             }
             None => {
                 // The argument did not synthesize a variable (an unmodelled
@@ -2857,20 +2977,17 @@ impl<'a> Gen<'a> {
     /// FSharp.Core's is reached only when nothing shadows it.
     ///
     /// - **An in-file binder** is an applied value like any other
-    ///   ([`Self::callee_def`]).
-    /// - **FSharp.Core's own operator** — a member of one of its modules, by
-    ///   the declaring assembly's name and public-key token — has its signature
-    ///   read as its F# type ([`module_function_scheme`]) and instantiated,
-    ///   each type parameter a fresh scheme-instantiation variable. Only a
+    ///   ([`Self::value_use`]).
+    /// - **An assembly's operator** — a member of one of its F# modules — is a
+    ///   use of an assembly value ([`Self::assembly_value_use`]). Only a
     ///   signature with no constraint on any type parameter qualifies:
     ///   instantiating a constrained one as a plain variable would claim a
     ///   constraint is modelled that is not, which is what walk-completeness
-    ///   rests on. The resolver's map holds no assembly reading under an
-    ///   incomplete projection, so this door is sealed as the others are.
+    ///   rests on.
     ///
-    /// Anything else — another assembly's operator, a deferred or cross-file
-    /// lookup, a signature that does not carry over — declines, marking the
-    /// binding incomplete with the reason.
+    /// Anything else — a deferred or cross-file lookup, a signature that does
+    /// not carry over — declines, marking the binding incomplete with the
+    /// reason.
     fn operator_value(&mut self, op: &Expr) -> Option<TyVid> {
         let tok = match op {
             Expr::LongIdent(li) => li.long_ident().and_then(|li| {
@@ -2891,43 +3008,88 @@ impl<'a> Gen<'a> {
                 self.mark_incomplete(Incomplete::RejectedUse);
                 return None;
             }
-            return Some(self.callee_def(def));
+            return Some(self.value_use(def));
         }
-        let Some(Resolution::Member { parent, idx }) =
-            self.resolved.resolution_at(tok.text_range())
-        else {
-            self.mark_incomplete(Incomplete::Operator(OperatorGap::Unresolved));
-            return None;
+        match self.assembly_value_use(tok.text_range()) {
+            Ok(v) => Some(v),
+            Err(why) => {
+                let why = match why {
+                    Incomplete::AssemblyValue(FunctionTyGap::Constrained) => {
+                        OperatorGap::Constrained
+                    }
+                    Incomplete::AssemblyValue(_) => OperatorGap::Signature,
+                    _ => OperatorGap::Unresolved,
+                };
+                self.mark_incomplete(Incomplete::Operator(why));
+                None
+            }
+        }
+    }
+
+    /// The type variable of a use of the referenced assembly's value the
+    /// resolver says the use at `at` names — a function or value of an F#
+    /// module, by its IL signature read as its F# type
+    /// ([`module_function_scheme`]) — or why it is not typed. `at` is where the
+    /// resolver keys the use: a bare name's token, or a qualified path's whole
+    /// range ([`Self::module_value_path`]).
+    ///
+    /// FCS types such a use exactly as it types a use of a generalised in-file
+    /// binder (`TcVal`): each type parameter becomes a fresh inference
+    /// variable, and the value is loosened at the use
+    /// (`MakeApplicableExprWithFlex`). So it is [`Self::scheme_use`] over the
+    /// reading. Whatever the reading cannot vouch for — a constrained type
+    /// parameter, a unit of measure, an argument-group shape, a type the bridge
+    /// does not carry, an attribute that rejects the use — declines with its
+    /// reason. The resolver's map holds no assembly reading under an
+    /// incomplete projection, and a preceding file's value is not a
+    /// [`Resolution::Member`], so both decline as [`Incomplete::NotInFileValue`].
+    fn assembly_value_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
+        let Some(Resolution::Member { parent, idx }) = self.resolved.resolution_at(at) else {
+            return Err(Incomplete::NotInFileValue);
         };
-        let module = self.env.entity(parent);
-        if !is_fsharp_core(&module.assembly) {
-            self.mark_incomplete(Incomplete::Operator(OperatorGap::NotFSharpCore));
-            return None;
-        }
         let scheme = match self.env.member_at(parent, idx) {
             Member::Method(m) => module_function_scheme(self.env, parent, m),
             _ => Err(FunctionTyGap::NotAFunction),
-        };
-        let scheme = match scheme {
-            Ok(scheme) => scheme,
-            Err(gap) => {
-                let why = match gap {
-                    FunctionTyGap::Constrained => OperatorGap::Constrained,
-                    FunctionTyGap::NotAFunction
-                    | FunctionTyGap::Rejected
-                    | FunctionTyGap::Unread
-                    | FunctionTyGap::Measures
-                    | FunctionTyGap::Groups
-                    | FunctionTyGap::Type => OperatorGap::Signature,
-                };
-                self.mark_incomplete(Incomplete::Operator(why));
-                return None;
-            }
-        };
-        let body = self.instantiate(&scheme);
-        let v = self.table.fresh();
-        self.eq(Ty::Var(v), body);
-        Some(v)
+        }
+        .map_err(Incomplete::AssemblyValue)?;
+        Ok(self.scheme_use(&scheme))
+    }
+
+    /// The type variable of a use of a value whose type is `scheme`: the
+    /// scheme instantiated afresh and loosened as FCS loosens a value at a use
+    /// ([`Self::loosened`]).
+    fn scheme_use(&mut self, scheme: &Ty) -> TyVid {
+        let body = self.instantiate(scheme);
+        let ty = self.loosened(&body).unwrap_or(body);
+        let uv = self.table.fresh();
+        self.eq(Ty::Var(uv), ty);
+        uv
+    }
+
+    /// The range of a qualified path `M.f` that names a referenced F# module's
+    /// member: the shape of a module-qualified value (`List.map`,
+    /// `Microsoft.FSharp.Core.Operators.id`). The resolver records such a
+    /// member over the whole path, as FCS reports it, so that is the range
+    /// read. `None` for a path whose head is an in-file binder (a member access
+    /// on a value), for one with an active-pattern segment, and for every other
+    /// record — a path that only begins with a module value (`M.v.Length`)
+    /// among them.
+    fn module_value_path(&self, li: &LongIdentExpr) -> Option<TextRange> {
+        let long_ident = li.long_ident()?;
+        if long_ident.active_pat_names().next().is_some() {
+            return None;
+        }
+        let idents: Vec<SyntaxToken> = long_ident.idents().collect();
+        let (head, rest) = idents.split_first()?;
+        let last = rest.last()?;
+        if self.def_at(head.text_range()).is_some() {
+            return None;
+        }
+        let whole = TextRange::new(head.text_range().start(), last.text_range().end());
+        match self.resolved.resolution_at(whole)? {
+            Resolution::Member { parent, .. } if self.env.is_module(parent) => Some(whole),
+            _ => None,
+        }
     }
 
     /// Walk a modelled application's **argument** in check mode against the
@@ -3013,15 +3175,22 @@ impl<'a> Gen<'a> {
                     return None;
                 };
                 let Some(def) = self.def_at(tok.text_range()) else {
-                    self.mark_incomplete(Incomplete::NotInFileValue);
-                    return None;
+                    return self.assembly_value_or_incomplete(tok.text_range());
                 };
                 if self.use_may_be_rejected(def) {
                     self.mark_incomplete(Incomplete::RejectedUse);
                     return None;
                 }
-                Some(self.callee_def(def))
+                Some(self.value_use(def))
             }
+            // A module-qualified value (`List.map f`).
+            Expr::LongIdent(li) => match self.module_value_path(li) {
+                Some(whole) => self.assembly_value_or_incomplete(whole),
+                None => {
+                    self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
+                    None
+                }
+            },
             _ => {
                 self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
                 None
@@ -3029,24 +3198,124 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// The type variable of an applied in-file binder, recording no node: a
-    /// generalised binder instantiates its scheme afresh, and any other
-    /// contributes its own variable, poisoned when it is an environment
-    /// reference (not a parameter of this binding) exactly as in
-    /// [`Self::infer_construct`]'s ident arm — a still-open one blocks
-    /// generalisation; a ground one is unaffected.
-    fn callee_def(&mut self, def: DefId) -> TyVid {
+    /// [`Self::assembly_value_use`], recording why the binding is incomplete
+    /// when it declines.
+    fn assembly_value_or_incomplete(&mut self, at: TextRange) -> Option<TyVid> {
+        match self.assembly_value_use(at) {
+            Ok(v) => Some(v),
+            Err(why) => {
+                self.mark_incomplete(why);
+                None
+            }
+        }
+    }
+
+    /// The type variable of a use of the in-file binder `def`, recording no
+    /// node — the type FCS gives the use, which is not always the binder's.
+    ///
+    /// - A **generalised** binder instantiates its scheme afresh.
+    /// - Any other contributes its own variable, **poisoned** when it is an
+    ///   environment reference (not a parameter of this binding): such a
+    ///   binder carries an FCS-known type from its own binding — an earlier
+    ///   value we may not have typed (an annotated `let a : int = 1`, a skipped
+    ///   `let rec`), or a later forward reference — so a still-open one must
+    ///   block generalisation, while a ground one (a typed earlier value) is
+    ///   unaffected. Without it, a skipped earlier binder allocates its variable
+    ///   lazily at the use (index ≥ the current mark), and the mark check alone
+    ///   would treat it as quantifiable (`let a : int = 1 \n let h x = (x, a)`
+    ///   ⇒ a bogus `'a -> 'a * 'b`).
+    ///
+    /// **Loosening.** FCS loosens a value at each use
+    /// (`MakeApplicableExprWithFlex`): a parameter of a type that is not sealed
+    /// becomes a fresh type variable that is a subtype of it, so `let g = fo`
+    /// with `fo : obj -> int` makes `g : 'a -> int`. It decides on the type it
+    /// knows at the use, so the use is modelled exactly where that type is
+    /// known here too — a scheme, an earlier binder's ground type, a settled
+    /// local, a parameter's annotation ([`Self::loosened`]). Where it is not —
+    /// an unannotated parameter, an earlier binder left open — the use keeps
+    /// the binder's variable and is recorded as **undecided**, which
+    /// [`Self::verified`] checks once the binding is solved.
+    fn value_use(&mut self, def: DefId) -> TyVid {
         if let Some(scheme) = self.def_schemes.get(&def).cloned() {
-            let body = self.instantiate(&scheme);
-            let uv = self.table.fresh();
-            self.eq(Ty::Var(uv), body);
-            return uv;
+            return self.scheme_use(&scheme);
         }
         let dv = self.def_var(def);
-        if !self.is_current_param(def) {
+        let current_param = self.is_current_param(def);
+        if !current_param {
             self.poison.push(dv);
+            self.opaque.push((dv, None));
         }
-        dv
+        let known = match self.param_annotations.get(&def) {
+            Some(ann) => Some(ann.clone()),
+            None if current_param => None,
+            None => Some(self.table.resolve(&Ty::Var(dv))).filter(Ty::is_ground),
+        };
+        let Some(known) = known else {
+            self.undecided_uses.push(dv);
+            return dv;
+        };
+        match self.loosened(&known) {
+            Some(ty) => {
+                let uv = self.table.fresh();
+                self.eq(Ty::Var(uv), ty);
+                uv
+            }
+            None => dv,
+        }
+    }
+
+    /// The type FCS gives a use of a value of type `ty`
+    /// (`MakeApplicableExprWithFlex`), or `None` when it is `ty` itself: each
+    /// parameter of each curried group — each element of a tupled one — whose
+    /// type is not sealed ([`is_sealed`]) becomes a fresh variable, a subtype
+    /// of that type in FCS. The fresh variable is poisoned: FCS generalises
+    /// such a variable by its own rules (a bounded one in argument position is
+    /// condensed to its bound), which are not modelled. A bound other than
+    /// `obj`, which every type meets, is a constraint inference cannot check,
+    /// so its variable is recorded ([`Self::bounded_flex`]).
+    fn loosened(&mut self, ty: &Ty) -> Option<Ty> {
+        let mut groups = Vec::new();
+        let mut ret = ty;
+        while let Ty::Fun { arg, ret: next } = ret {
+            groups.push(arg.as_ref());
+            ret = next;
+        }
+        let elements = |group: &Ty| match group {
+            Ty::Tuple(elems) => elems.clone(),
+            other => vec![other.clone()],
+        };
+        if groups
+            .iter()
+            .all(|g| elements(g).iter().all(|e| is_sealed(self.env, e)))
+        {
+            return None;
+        }
+        let ret = ret.clone();
+        let mut loosened = Vec::new();
+        for group in groups {
+            let mut elems: Vec<Ty> = elements(group)
+                .into_iter()
+                .map(|e| {
+                    if is_sealed(self.env, &e) {
+                        return e;
+                    }
+                    let v = self.table.fresh();
+                    self.poison.push(v);
+                    if e != Ty::named(OBJECT) {
+                        self.bounded_flex.push(v);
+                    }
+                    Ty::Var(v)
+                })
+                .collect();
+            loosened.push(match group {
+                Ty::Tuple(_) => Ty::Tuple(elems),
+                _ => elems.pop().expect("one element"),
+            });
+        }
+        Some(loosened.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
+            arg: Box::new(arg),
+            ret: Box::new(ret),
+        }))
     }
 
     /// Type a **single-candidate instance method call** `recv.Method(args)` (Stage
@@ -3105,6 +3374,7 @@ impl<'a> Gen<'a> {
                     args: arg_vids,
                     is_static: true,
                 },
+                node_span(arg.syntax()).end(),
             );
             // Discard any argument sub-expression nodes (the shared method-call
             // rule: a method call emits nothing inside itself).
@@ -3142,6 +3412,7 @@ impl<'a> Gen<'a> {
                 args: arg_vids,
                 is_static: false,
             },
+            node_span(arg.syntax()).end(),
         );
         // Discard every node emitted inside the call (receiver + argument
         // sub-expressions): a method call emits nothing inside itself (see the doc).
@@ -3302,13 +3573,18 @@ impl<'a> Gen<'a> {
     /// [`Ty`] for [`AssemblyEnv::may_apply`] / [`AssemblyEnv::must_apply`].
     fn walk_arg_element(&mut self, el: &Expr) -> TyVid {
         let expected = self.table.fresh();
-        match self.infer_expr(el, Some(expected)) {
+        let v = match self.infer_expr(el, Some(expected)) {
             Some(v) => v,
             None => {
                 self.mark_incomplete_propagated();
                 self.table.fresh()
             }
-        }
+        };
+        // The relation to the parameter is not the stand-in's but unknown, so
+        // it is opaque rather than dropped.
+        self.dropped.retain(|&(_, e, _)| e != expected);
+        self.opaque.push((v, Some(node_span(el.syntax()))));
+        v
     }
 
     /// Resolve a **method-call callee** (a member access in function position) into
@@ -3409,6 +3685,13 @@ impl<'a> Gen<'a> {
             self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
+        // A module-qualified value (`List.length`), whose node FCS keys at
+        // the whole path.
+        if let Some(whole) = self.module_value_path(li) {
+            let uv = self.assembly_value_or_incomplete(whole)?;
+            self.emit(whole, uv, expected);
+            return Some(uv);
+        }
         // An active-pattern name segment cannot be projected as a plain member
         // token, so a path carrying one is unmodelled here.
         if long_ident.active_pat_names().next().is_some() {
@@ -3497,6 +3780,7 @@ impl<'a> Gen<'a> {
         let dv = self.def_var(def);
         if !self.is_current_param(def) {
             self.poison.push(dv);
+            self.opaque.push((dv, None));
         }
         Some(dv)
     }
@@ -3515,12 +3799,11 @@ impl<'a> Gen<'a> {
     ///   quantified typar of one of our own schemes admits no coercion.
     ///
     /// Deliberately **excluded** (conservative — silence over a wrong type, D5):
-    /// `System.Object` (subsumption target for every type — FCS keeps the argument
-    /// generic there), arbitrary named types (we cannot cheaply prove sealedness),
-    /// arrays, and [`Ty::Fun`] (F#'s function-coercion rules are less clear). Each
-    /// leaves the `ArgCheck` undischarged, so the application defers rather than
-    /// grounding to a possibly-wrong type. (Extending to sealed/reference named
-    /// types where FCS also grounds is a possible follow-up.)
+    /// `System.Object` (subsumption target for every type), arbitrary named types
+    /// (we cannot cheaply prove sealedness), and arrays. Each leaves the
+    /// `ArgCheck` undischarged, so the application defers rather than grounding
+    /// to a possibly-wrong type. A function type is the other domain a check
+    /// discharges against ([`Self::function_domain`]).
     fn no_subsumption_domain(&mut self, dom: TyVid) -> bool {
         let resolved = self.table.resolve(&Ty::Var(dom));
         self.no_subsumption_ty(&resolved)
@@ -3531,8 +3814,16 @@ impl<'a> Gen<'a> {
     /// root. Everything else is `false`.
     fn no_subsumption_ty(&mut self, ty: &Ty) -> bool {
         match ty {
-            // Only a sealed BCL primitive; `obj` and arbitrary named types are not.
-            Ty::Named { path, args } => args.is_empty() && is_sealed_primitive(path),
+            // A sealed BCL primitive; `obj` and other nullary named types are
+            // not.
+            Ty::Named { path, args } if args.is_empty() => is_sealed_primitive(path),
+            // A sealed generic application (`'a list`, `int option`, a generic
+            // record or struct): a sealed type has no subtype to coerce into
+            // it, and its arguments are invariant, so the equality FCS tries
+            // first is its relation. Where it fails, FCS may still convert
+            // (an `op_Implicit` into the type), and the failed equality
+            // rolls the binding back ([`Self::verified`]).
+            Ty::Named { .. } => is_sealed(self.env, ty),
             Ty::Tuple(elems) => elems.iter().all(|e| self.no_subsumption_ty(e)),
             Ty::Var(v) => self.is_scheme_inst_root(*v),
             // Arrays, functions, and quantified `Param`s (never bound into the
@@ -3550,6 +3841,19 @@ impl<'a> Gen<'a> {
         self.scheme_inst_vars
             .iter()
             .any(|&iv| self.table.unioned(iv, v))
+    }
+
+    /// Whether `ac`'s domain resolves to a **function type** it may discharge
+    /// against, as FCS relates them: an argument is checked against its
+    /// parameter's type by an equality first and a coercion only if that
+    /// fails, and a function type admits no coercion but equality (F# function
+    /// types are invariant), so `Eq(arg, dom)` is FCS's own relation — given
+    /// that the argument's type is the one FCS has, which a loosened use of a
+    /// value makes sure of ([`Self::value_use`]). Where the equality fixes a
+    /// variable FCS bounds by a subtype constraint, [`Self::verified`] undoes
+    /// it.
+    fn function_domain(&mut self, ac: ArgCheck) -> bool {
+        matches!(self.table.resolve(&Ty::Var(ac.dom)), Ty::Fun { .. })
     }
 
     /// Constrain an `if` / `while` condition to `bool`. A condition admits **no**
@@ -3869,6 +4173,7 @@ impl<'a> Gen<'a> {
                 if site == BinderSite::Param {
                     let dv = self.def_var(*def);
                     self.eq(Ty::Var(dv), t.clone());
+                    self.param_annotations.insert(*def, t.clone());
                 }
                 t.clone()
             }
@@ -3992,10 +4297,11 @@ impl<'a> Gen<'a> {
     ///   pending.
     /// - **`ArgCheck`** (Stage 3.3c) is *suspended*: it fires once the enclosing
     ///   binding is walk-complete **and** its domain `dom` resolves to a
-    ///   [no-subsumption](Self::no_subsumption_domain) type, discharging
-    ///   `Eq(arg, dom)`. An `ArgCheck` that never fires, or whose `Eq` fails, is
-    ///   **undischarged** and — after the fixpoint — poisons `arg`, `dom`, and the
-    ///   application result `r`, so an unwoken arg relation never generalises.
+    ///   [no-subsumption](Self::no_subsumption_domain) type or a
+    ///   [function type](Self::function_domain), discharging `Eq(arg, dom)`. An
+    ///   `ArgCheck` that never fires, or whose `Eq` fails, is **undischarged**
+    ///   and — after the fixpoint — poisons `arg`, `dom`, and the application
+    ///   result `r`, so an unwoken arg relation never generalises.
     ///
     /// The loop fixpoints: discharge every pending `Eq`, then scan the suspended
     /// lists — a member/arg wake pushes a new `Eq` (discharged next iteration) and
@@ -4003,16 +4309,130 @@ impl<'a> Gen<'a> {
     /// `s.A.B`, or an `ArgCheck` whose `dom` a prior wake grounds). Each suspension
     /// fires at most once, so termination is by count. Members that never wake are
     /// dropped; `ArgCheck`s that never fire are poisoned (see above).
+    ///
+    /// **The solve is speculative.** FCS checks a body in source order: the
+    /// first relation to fix a variable wins and a later conflicting one is
+    /// reported and recovered; a member is looked up on what is known of its
+    /// receiver at the access. The fixpoint keeps no order, so on a body FCS
+    /// rejects it can fire a check FCS never applied — `(p |> fs, fi p, p)` would
+    /// make `p` an `int` through `fi`, where FCS has fixed it to `string` and
+    /// rejects `fi p`. So the argument checks are fired under a snapshot, and
+    /// kept only if the result is [verified](Self::verified): every relation the
+    /// binding holds, modelled or dropped, is consistent as an equality, so FCS —
+    /// which tries an equality first — rejects none of them, and the order in
+    /// which they are applied cannot matter. Otherwise everything the checks did
+    /// is undone and the binding is solved with none of them firing: each stays
+    /// undischarged and poisoned, which is silence.
     fn solve(&mut self) {
-        let (_members, suspended_args) = self.run_worklist(true);
+        let constraints = self.constraints.clone();
+        let poison = self.poison.len();
+        let eq_failures = self.eq_failures;
+        let snapshot = self.table.snapshot();
+        self.trial = Some(TrialLog::default());
+        let outcome = self.run_worklist(Fire::All);
+        let log = self.trial.take().unwrap_or_default();
+        let outcome = if outcome.discharged == 0 || self.verified(&outcome) {
+            self.table.commit(snapshot);
+            outcome
+        } else {
+            self.table.rollback_to(snapshot);
+            self.undo(log);
+            self.poison.truncate(poison);
+            self.eq_failures = eq_failures;
+            self.constraints = constraints;
+            self.run_worklist(Fire::None)
+        };
         // Deferred poison (Stage 3.3c): every arg check still pending never fired
-        // (its domain never became no-subsumption, or the binding is incomplete), so
-        // its `arg`/`dom`/`r` are poisoned — an undischarged arg relation must not
-        // let any of them generalise. (A fired-and-failed check was already poisoned
-        // in the worklist; a fired-and-succeeded one poisons nothing.) Members that
-        // never woke are dropped.
-        for ac in suspended_args {
+        // (its domain never became ready, the binding is incomplete, or its
+        // checks were not verified), so its `arg`/`dom`/`r` are poisoned — an
+        // undischarged arg relation must not let any of them generalise. (A
+        // fired-and-failed check was already poisoned in the worklist; a
+        // fired-and-succeeded one poisons nothing.) Members that never woke are
+        // dropped.
+        for ac in outcome.args {
             self.poison_arg_check(ac);
+        }
+    }
+
+    /// Whether a speculative solve's argument checks may be kept
+    /// ([`Self::solve`]): whether the binding's relations, taken as equalities,
+    /// are consistent — so FCS, which tries an equality first at each and
+    /// falls back to a coercion or an error only when it fails, applies every
+    /// one of them as an equality, in whatever order, and agrees with what the
+    /// discharges grounded. That needs:
+    ///
+    /// - no equality to have failed, and no fired check;
+    /// - the relations the solve did not apply — the checks still pending and
+    ///   the check-mode relations the walk dropped ([`Self::dropped`]) — to
+    ///   unify with the result, all together;
+    /// - no member to have been resolved through a check FCS applies only
+    ///   after it ([`WorklistOutcome::late_member`]): FCS rejects a member
+    ///   access on a receiver it does not know yet (FS0072), consistent or not;
+    ///
+    /// and, in the result with every relation applied, each value use
+    /// loosened as FCS loosens it:
+    ///
+    /// - no bounded loosened variable ([`Self::bounded_flex`]) fixed to a
+    ///   type, a subtype constraint nothing checks;
+    /// - no undecided use ([`Self::undecided_uses`]) of a value taking a
+    ///   parameter of a type that is not sealed: whether FCS loosened it
+    ///   depends on whether it knew that type at the use.
+    ///
+    /// The joint unification is a probe: the table is left as it was.
+    fn verified(&mut self, outcome: &WorklistOutcome) -> bool {
+        if self.eq_failures > 0 || outcome.failed > 0 || outcome.late_member {
+            return false;
+        }
+        let env = self.env;
+        let relations: Vec<(TyVid, TyVid, TextRange)> = outcome
+            .args
+            .iter()
+            .map(|ac| (ac.arg, ac.dom, ac.span))
+            .chain(self.dropped.iter().copied())
+            .collect();
+        // A relation touching what FCS knows and inference does not proves
+        // nothing by being consistent here.
+        for &(a, b, span) in &relations {
+            if self.touches_opaque(a, b, span) {
+                return false;
+            }
+        }
+        let relations: Vec<(TyVid, TyVid)> =
+            relations.into_iter().map(|(a, b, _)| (a, b)).collect();
+        let bounded = &self.bounded_flex;
+        let undecided = &self.undecided_uses;
+        let mut consistent = false;
+        let _ = self.table.probe(|t| -> Result<(), ()> {
+            let unified = relations
+                .iter()
+                .all(|(a, b)| t.unify(&Ty::Var(*a), &Ty::Var(*b)).is_ok());
+            let unbound = bounded
+                .iter()
+                .all(|v| matches!(t.resolve(&Ty::Var(*v)), Ty::Var(_)));
+            let unloosened = undecided
+                .iter()
+                .all(|v| !takes_unsealed_parameter(env, &t.resolve(&Ty::Var(*v))));
+            consistent = unified && unbound && unloosened;
+            Err(())
+        });
+        consistent
+    }
+
+    /// Undo what a speculative solve recorded outside the table
+    /// ([`TrialLog`]), latest first.
+    fn undo(&mut self, log: TrialLog) {
+        for (range, previous) in log.resolutions.into_iter().rev() {
+            match previous {
+                Some(res) => {
+                    self.member_resolutions.insert(range, res);
+                }
+                None => {
+                    self.member_resolutions.remove(&range);
+                }
+            }
+        }
+        for g in log.guards {
+            self.guards[g].confirmed = false;
         }
     }
 
@@ -4030,34 +4450,36 @@ impl<'a> Gen<'a> {
     /// **whole** binding's walk-completeness, which is not known until the walk
     /// ends, so it waits for [`Self::solve`].
     fn settle(&mut self) {
-        let (members, args) = self.run_worklist(false);
-        for m in members {
+        let outcome = self.run_worklist(Fire::None);
+        for m in outcome.members {
             self.constraints.push(Constraint::HasMember {
                 recv: m.recv,
                 name: m.name,
                 result: m.result,
                 use_range: m.use_range,
                 kind: m.kind,
+                args_by: m.args_by,
             });
         }
-        for ac in args {
-            self.constraints.push(Constraint::ArgCheck {
-                arg: ac.arg,
-                dom: ac.dom,
-                r: ac.r,
-            });
+        for ac in outcome.args {
+            self.constraints.push(Constraint::ArgCheck(ac));
         }
     }
 
     /// The worklist behind [`Self::solve`] and [`Self::settle`]: discharge every
-    /// pending constraint to a fixpoint and return the suspensions that never
-    /// fired. `fire_args` gates the [`ArgCheck`] wake — [`Self::settle`] runs
-    /// without it, since the check's completeness gate is not yet decided.
-    fn run_worklist(&mut self, fire_args: bool) -> (Vec<SuspendedMember>, Vec<ArgCheck>) {
+    /// pending constraint to a fixpoint and report what it did, with the
+    /// suspensions that never fired. `fire` gates the [`ArgCheck`] wake —
+    /// [`Self::settle`] runs without it, since the check's completeness gate is
+    /// not yet decided.
+    fn run_worklist(&mut self, fire: Fire) -> WorklistOutcome {
         // Split the batch: discharge every eager `Eq` now, park suspensions.
         let mut suspended: Vec<SuspendedMember> = Vec::new();
         let mut suspended_args: Vec<ArgCheck> = Vec::new();
         self.discharge_eqs(&mut suspended, &mut suspended_args);
+        let mut outcome = WorklistOutcome::default();
+        // The latest end of a discharged check's argument, which a member
+        // resolved afterwards may have learned its receiver from.
+        let mut latest_discharge: Option<TextSize> = None;
 
         // Fixpoint: scan the parked members and arg-checks; wake each whose watched
         // variable is now concrete/ready, discharging any `Eq` its wake produces.
@@ -4070,7 +4492,10 @@ impl<'a> Gen<'a> {
             for m in std::mem::take(&mut suspended) {
                 match self.table.resolve(&Ty::Var(m.recv)) {
                     // Unresolved receiver — keep it parked for a later wake.
-                    Ty::Var(_) => still_pending.push(m),
+                    Ty::Var(_) => still_pending.push(SuspendedMember {
+                        waited_on_receiver: true,
+                        ..m
+                    }),
                     // A concrete named receiver — attempt the member lookup (a data
                     // member or a method, per `m.kind`), which may push an
                     // `Eq(result, member_ty)` and record the resolved member's
@@ -4093,6 +4518,16 @@ impl<'a> Gen<'a> {
                     Ty::Named { path, .. } => {
                         if self.wake_member(&path, &m.name, m.result, m.use_range, &m.kind) {
                             woke = true;
+                            // FCS reads the receiver at the access, and a
+                            // method's arguments once they are checked.
+                            let by = if m.waited_on_receiver {
+                                m.use_range.start()
+                            } else {
+                                m.args_by
+                            };
+                            if latest_discharge.is_some_and(|end| end > by) {
+                                outcome.late_member = true;
+                            }
                         } else {
                             still_pending.push(m);
                         }
@@ -4117,9 +4552,9 @@ impl<'a> Gen<'a> {
             // from retro-grounding an *earlier* binding's still-open variable.
             let mut still_pending_args: Vec<ArgCheck> = Vec::new();
             for ac in std::mem::take(&mut suspended_args) {
-                if fire_args
+                if fire == Fire::All
                     && self.complete
-                    && self.no_subsumption_domain(ac.dom)
+                    && (self.no_subsumption_domain(ac.dom) || self.function_domain(ac))
                     && self.arg_check_binds_only_current_vars(ac)
                 {
                     // Fire: discharge the arg↔param relation as a genuine equality,
@@ -4135,6 +4570,10 @@ impl<'a> Gen<'a> {
                         .is_err()
                     {
                         self.poison_arg_check(ac);
+                        outcome.failed += 1;
+                    } else {
+                        outcome.discharged += 1;
+                        latest_discharge = latest_discharge.max(Some(ac.span.end()));
                     }
                     woke = true;
                 } else {
@@ -4151,7 +4590,9 @@ impl<'a> Gen<'a> {
                 break;
             }
         }
-        (suspended, suspended_args)
+        outcome.members = suspended;
+        outcome.args = suspended_args;
+        outcome
     }
 
     /// Poison an **undischarged** arg check's `arg`, `dom`, and result `r` (Stage
@@ -4178,15 +4619,44 @@ impl<'a> Gen<'a> {
     /// (D5). Ground endpoints have no open roots, so grounded-argument wakes
     /// (`let n = fb b`) and same-binding instantiations (`let n = id 42`,
     /// `let g y = id y`) fire exactly as before.
+    ///
+    /// An earlier binder's open variable can also be given a *structure* of
+    /// this binding's variables, by an equality of this binding's: applying
+    /// it, `oldf x`, makes it `d -> r`. Those variables are then the earlier
+    /// binder's, though created here, and grounding `r` retypes it as surely —
+    /// `oldf x |> inc` would make `oldf` return `int` where FCS has it return
+    /// whatever it does. So no variable the resolution of an environment use
+    /// in this binding mentions may be bound either — nor one in a method
+    /// call's argument, which FCS fixes against the method's parameter
+    /// ([`Self::opaque`]).
     fn arg_check_binds_only_current_vars(&mut self, ac: ArgCheck) -> bool {
+        !self.touches_opaque(ac.arg, ac.dom, ac.span)
+    }
+
+    /// Whether relating `a` to `b`, at `span` in the source, could bind a
+    /// variable whose type FCS decides by something inference does not see:
+    /// one older than this binding, or one an [`Self::opaque`] entry's
+    /// resolution mentions — unless that entry is a method argument whose
+    /// span holds `span`, a relation FCS checks before it relates the argument
+    /// to the method's parameter.
+    fn touches_opaque(&mut self, a: TyVid, b: TyVid, span: TextRange) -> bool {
         let mut roots: HashSet<TyVid> = HashSet::new();
-        let arg = self.table.resolve(&Ty::Var(ac.arg));
-        collect_var_roots(&arg, &mut roots);
-        let dom = self.table.resolve(&Ty::Var(ac.dom));
-        collect_var_roots(&dom, &mut roots);
-        roots
-            .into_iter()
-            .all(|v| !self.table.any_older_unioned(v, self.cur_mark))
+        for v in [a, b] {
+            let ty = self.table.resolve(&Ty::Var(v));
+            collect_var_roots(&ty, &mut roots);
+        }
+        let mut opaque: HashSet<TyVid> = HashSet::new();
+        for (u, within) in self.opaque.clone() {
+            if within.is_some_and(|arg| arg.contains_range(span)) {
+                continue;
+            }
+            let ty = self.table.resolve(&Ty::Var(u));
+            collect_var_roots(&ty, &mut opaque);
+        }
+        roots.into_iter().any(|v| {
+            self.table.any_older_unioned(v, self.cur_mark)
+                || opaque.iter().any(|&o| self.table.unioned(o, v))
+        })
     }
 
     /// Discharge every pending `Eq` in `self.constraints` (best-effort, via
@@ -4202,7 +4672,9 @@ impl<'a> Gen<'a> {
         for c in std::mem::take(&mut self.constraints) {
             match c {
                 Constraint::Eq(a, b) => {
-                    let _ = self.table.unify_atomic(&a, &b);
+                    if self.table.unify_atomic(&a, &b).is_err() {
+                        self.eq_failures += 1;
+                    }
                 }
                 Constraint::HasMember {
                     recv,
@@ -4210,6 +4682,7 @@ impl<'a> Gen<'a> {
                     result,
                     use_range,
                     kind,
+                    args_by,
                 } => {
                     suspended.push(SuspendedMember {
                         recv,
@@ -4217,11 +4690,11 @@ impl<'a> Gen<'a> {
                         result,
                         use_range,
                         kind,
+                        args_by,
+                        waited_on_receiver: false,
                     });
                 }
-                Constraint::ArgCheck { arg, dom, r } => {
-                    suspended_args.push(ArgCheck { arg, dom, r });
-                }
+                Constraint::ArgCheck(ac) => suspended_args.push(ac),
             }
         }
     }
@@ -4446,21 +4919,38 @@ impl<'a> Gen<'a> {
         // even if the type bridge failed (a generic member type) or the return is
         // void — the member's *identity* is known, so hover / go-to-definition can
         // render it though the type defers.
-        self.member_resolutions.insert(
+        let previous = self.member_resolutions.insert(
             use_range,
             Resolution::Member {
                 parent: decl_handle,
                 idx,
             },
         );
+        if let Some(log) = &mut self.trial {
+            log.resolutions.push((use_range, previous));
+        }
         // The access is one FCS accepts, so what its receiver emitted stands.
         // Whether the receiver has nodes at all is then an assembly reading —
         // the member's existence — so under the seal below it is not confirmed:
         // an incomplete projection publishes only what an empty env would.
+        //
+        // Nor is it on an F# record, union or exception type: FCS reads such a
+        // type's field as a field get, under which the typed tree keeps no
+        // node at the receiver (`let f (v: R) = v.Q` has one at `v.Q` only).
+        // Its other members keep one, so this under-publishes there.
+        let fsharp_field_carrier = matches!(
+            self.env.entity(decl_handle).kind,
+            EntityKind::Record | EntityKind::Union | EntityKind::Exception
+        );
         if let Some(&g) = self.guard_on_member.get(&use_range)
+            && !fsharp_field_carrier
             && !self.env.identities_incomplete()
+            && !self.guards[g].confirmed
         {
             self.guards[g].confirmed = true;
+            if let Some(log) = &mut self.trial {
+                log.guards.push(g);
+            }
         }
         if is_void {
             return true;
@@ -4489,7 +4979,13 @@ impl<'a> Gen<'a> {
         if self.env.identities_incomplete() {
             return true;
         }
-        let _ = self.table.unify_atomic(&Ty::Var(result), &member_ty);
+        if self
+            .table
+            .unify_atomic(&Ty::Var(result), &member_ty)
+            .is_err()
+        {
+            self.eq_failures += 1;
+        }
         true
     }
 
@@ -4829,7 +5325,7 @@ const MAX_ARRAY_RANK: u32 = 32;
 /// entity came through F# signature data — costs only a decline on an IL type
 /// carrying an attribute F# would not consult there, which is not a shape a
 /// C# compiler emits.
-fn rejected_by_attributes(entity: &borzoi_assembly::Entity) -> bool {
+pub(crate) fn rejected_by_attributes(entity: &borzoi_assembly::Entity) -> bool {
     error_obsolete(entity) || error_compiler_message(entity)
 }
 
@@ -5184,6 +5680,76 @@ fn is_sealed_primitive(path: &[String]) -> bool {
 /// F#'s `unit`, as FCS names it.
 const UNIT: &str = "Microsoft.FSharp.Core.Unit";
 
+/// `System.Object`, the bound of a loosening every type meets.
+const OBJECT: &str = "System.Object";
+
+/// Whether `ty` is a function taking a parameter — of any curried group, or
+/// any element of a tupled one — of a known type that is not sealed: one FCS
+/// loosens at a use of a value of this type, if it knows the type there
+/// ([`Gen::value_use`]). A parameter whose type is still a variable is not.
+fn takes_unsealed_parameter(env: &AssemblyEnv, ty: &Ty) -> bool {
+    let mut ty = ty;
+    while let Ty::Fun { arg, ret } = ty {
+        let unsealed = |t: &Ty| !matches!(t, Ty::Var(_)) && !is_sealed(env, t);
+        let hit = match arg.as_ref() {
+            Ty::Tuple(elems) => elems.iter().any(unsealed),
+            other => unsealed(other),
+        };
+        if hit {
+            return true;
+        }
+        ty = ret;
+    }
+    false
+}
+
+/// Whether FCS treats `ty` as **sealed** (`isSealedTy`), so that a use of a
+/// value taking it does not loosen it ([`Gen::loosened`]). `false` whenever it
+/// cannot be shown, which loosens more than FCS does and so only declines.
+///
+/// A type variable is not a reference type, so it is sealed, as are function,
+/// tuple and array types, `unit`, value types, and F# unions, records and
+/// exceptions. An IL class is sealed by its flag (an F# class carries the flag
+/// exactly when it is `[<Sealed>]`); an interface never is.
+fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) | Ty::Param(_) | Ty::Fun { .. } | Ty::Tuple(_) | Ty::Array { .. } => true,
+        Ty::Named { path, args } => {
+            if (args.is_empty() && is_sealed_primitive(path)) || *ty == Ty::named(UNIT) {
+                return true;
+            }
+            let Some((name, namespace)) = path.split_last() else {
+                return false;
+            };
+            // A generic application names its type by its compiled path, which
+            // the source-name index does not hold for a renamed one
+            // (`FSharpList`).
+            let handle = if args.is_empty() {
+                env.lookup_type_if_certain(namespace, name, 0)
+            } else {
+                env.generic_type_at_compiled_path(namespace, name, args.len())
+            };
+            let Some(handle) = handle else {
+                return false;
+            };
+            let entity = env.entity(handle);
+            match entity.kind {
+                EntityKind::Struct
+                | EntityKind::Enum
+                | EntityKind::Union
+                | EntityKind::Record
+                | EntityKind::Exception
+                | EntityKind::Delegate => true,
+                EntityKind::Class => entity.is_sealed,
+                EntityKind::Interface
+                | EntityKind::Module
+                | EntityKind::Abbreviation
+                | EntityKind::Measure => false,
+            }
+        }
+    }
+}
+
 fn literal_ty(c: &ConstExpr) -> Option<Ty> {
     let kind = c.literal()?.kind();
     let prim = |path: &str| Some(Ty::named(path));
@@ -5388,6 +5954,7 @@ mod tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
+            metadata_arity_suffix: Some(0),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,

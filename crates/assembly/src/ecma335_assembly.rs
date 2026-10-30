@@ -13,11 +13,11 @@ use crate::fsharp_resource::{
     foreign_signature_data_present, is_compressed_kind, primary_signature_resource_for_host,
 };
 use crate::model::{
-    Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
-    CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
-    FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
-    Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
+    Access, AccessorSlot, ArgGroups, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
+    CompilerFeatureRequired, CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind,
+    Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember,
+    IndexParameter, InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature,
+    ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
     SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
     UnclassifiedMethodImpl, UnionCases, ValFacts, Variance, Version,
 };
@@ -116,6 +116,18 @@ impl EcmaView for Ecma335Assembly {
         self.image.references.iter().map(project_identity).collect()
     }
 
+    fn culture_qualified_names(&self) -> Option<Vec<String>> {
+        Some(
+            self.image
+                .assembly
+                .iter()
+                .chain(&self.image.references)
+                .filter(|a| !a.culture.is_empty())
+                .map(|a| a.name.clone())
+                .collect(),
+        )
+    }
+
     fn enumerate_type_defs_with_skips(
         &self,
     ) -> Result<(Vec<Entity>, AssemblyProjectionSkips), ImportError> {
@@ -160,7 +172,7 @@ impl EcmaView for Ecma335Assembly {
             .map(|f| crate::model::TypeForwarder {
                 namespace: f.namespace.clone(),
                 name: f.name.clone(),
-                assembly: f.assembly.clone(),
+                assembly: project_identity(&f.assembly),
             })
             .collect())
     }
@@ -368,6 +380,7 @@ impl Ecma335Assembly {
                     for member in &mut entity.members {
                         if let Member::Method(m) = member {
                             m.arg_group_count = None;
+                            m.arg_groups = ArgGroups::Unknowable;
                             // A method typar carries F# constraints too
                             // (`let f<'T when 'T : comparison>`), and its F# type
                             // may mention a unit of measure the IL erased. The
@@ -859,6 +872,7 @@ impl Ecma335Assembly {
                 "Microsoft.FSharp.Core",
                 "AutoOpenAttribute",
             )?,
+            metadata_arity_suffix: metadata_arity_suffix(&td.name.name),
             is_require_qualified_access: self.has_attribute(
                 &td.attributes,
                 "Microsoft.FSharp.Core",
@@ -1861,8 +1875,18 @@ impl Ecma335Assembly {
                     detail: format!("TypeRef nesting scope out of range: {cur}"),
                 }
             })?;
-            chain.push(strip_arity(&r.name.name).to_string());
-            arities.push(arity_suffix(&r.name.name));
+            // A non-canonical suffix stays part of the reference's name: it
+            // names no `TypeDef` whose suffix the projection recorded.
+            match canonical_suffix(&r.name.name) {
+                Some((i, n)) => {
+                    chain.push(r.name.name[..i].to_string());
+                    arities.push(n);
+                }
+                None => {
+                    chain.push(r.name.name.clone());
+                    arities.push(0);
+                }
+            }
             let (namespace, assembly) = match r.scope {
                 // The row named a scope the reader does not model, so this
                 // reference cannot be attributed to an assembly. Refuse *here*,
@@ -2421,7 +2445,7 @@ impl Ecma335Assembly {
             out.push_or_skip(
                 &m.name,
                 self.project_method(m, type_context, false)
-                    .map(Member::Method),
+                    .map(|m| Member::Method(Box::new(m))),
             );
         }
         for f in &td.fields {
@@ -2532,6 +2556,14 @@ impl Ecma335Assembly {
 
         let implements = self.project_implements(m);
         let unclassified_impls = self.project_unclassified(m);
+        let has_other_method_impl = self.has_other_method_impl(m);
+        let drops_optional_modifier = match &sig.return_type {
+            RetType::Void(mods) => mods.iter().any(|m| !m.required),
+            RetType::Type(t) => carries_optional_modifier(t),
+        } || sig
+            .parameters
+            .iter()
+            .any(|p| carries_optional_modifier(&p.ty));
 
         Ok(MethodLike {
             name: m.name.clone(),
@@ -2546,6 +2578,7 @@ impl Ecma335Assembly {
             // of an assembly whose host F# signature pickle decodes, since a
             // curried F# member is indistinguishable here. See the OV-6.1 plan.
             arg_group_count: Some(1),
+            arg_groups: ArgGroups::NotFSharp,
             // The signature's `HASTHIS` bit is the canonical static-ness signal
             // (mirrors the reference's `!signature.instance`).
             is_static: !sig.has_this,
@@ -2592,7 +2625,35 @@ impl Ecma335Assembly {
             implements,
             unclassified_impls,
             xml_doc_sig: None,
+            has_other_method_impl,
+            drops_optional_modifier,
         })
+    }
+
+    /// Whether `m` is the body of a `MethodImpl` row the projection does not
+    /// surface: one the reader did not classify as an interface member
+    /// ([`Method::has_other_method_impl`]), or one whose interface failed to
+    /// project and so was dropped from [`Self::project_implements`] /
+    /// [`Self::project_unclassified`].
+    fn has_other_method_impl(&self, m: &Method) -> bool {
+        m.has_other_method_impl
+            || self.project_implements(m).len() != m.implements.len()
+            || self.project_unclassified(m).len() != m.unclassified_impls.len()
+    }
+
+    /// The [`AccessorSlot`] of each distinct accessor, in the order given.
+    fn accessor_slots(&self, accessors: &[&Method]) -> Vec<AccessorSlot> {
+        accessors
+            .iter()
+            .map(|a| AccessorSlot {
+                name: a.name.clone(),
+                is_virtual: a.is_virtual,
+                is_newslot: a.is_new_slot,
+                is_abstract: a.is_abstract,
+                is_final: a.is_final,
+                has_other_method_impl: self.has_other_method_impl(a),
+            })
+            .collect()
     }
 
     /// Project a method's explicit-interface implementations (from its
@@ -3016,6 +3077,18 @@ impl Ecma335Assembly {
             unclassified_impls,
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            accessor_slots: self.accessor_slots(&unique_accessors),
+            // Index parameters that cannot be read may carry one too.
+            drops_optional_modifier: p.signature.as_ref().is_ok_and(carries_optional_modifier)
+                || p.index_parameters
+                    .as_ref()
+                    .map_or(true, |ps| ps.iter().any(carries_optional_modifier))
+                || proj_getter
+                    .as_ref()
+                    .is_some_and(|g| g.drops_optional_modifier)
+                || proj_setter
+                    .as_ref()
+                    .is_some_and(|s| s.drops_optional_modifier),
         })
     }
 
@@ -3119,6 +3192,7 @@ impl Ecma335Assembly {
             implements,
             unclassified_impls,
             xml_doc_sig: None,
+            accessor_slots: self.accessor_slots(&unique_accessors),
         })
     }
 
@@ -3299,7 +3373,7 @@ impl Ecma335Assembly {
                 {
                     projected.is_module_value_binding = true;
                 }
-                Ok(Some(Member::Method(projected)))
+                Ok(Some(Member::Method(Box::new(projected))))
             })();
             out.push_or_skip_opt(&m.name, projected);
         }
@@ -3420,7 +3494,7 @@ impl Ecma335Assembly {
                     if !il_heuristic {
                         projected.source_name = None;
                     }
-                    return Ok(Some(Member::Method(projected)));
+                    return Ok(Some(Member::Method(Box::new(projected))));
                 }
                 // A union's properties are kept as *candidates*, to be settled
                 // against the host pickle's published member list once that is
@@ -4374,8 +4448,51 @@ fn arity_suffix(name: &str) -> usize {
     0
 }
 
+/// Where a metadata name's canonical backtick arity suffix starts, and its
+/// value: a backtick then a positive decimal without leading zeros
+/// (`List`1`, `Func`16`).
+fn canonical_suffix(name: &str) -> Option<(usize, usize)> {
+    let i = name.rfind('`')?;
+    let digits = &name[i + 1..];
+    if digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((i, digits.parse().ok()?))
+}
+
+/// [`Entity::metadata_arity_suffix`] of a `TypeDef` named `name`: its
+/// canonical suffix, or 0 for a name with no suffix. A name [`strip_arity`]
+/// strips of a non-canonical suffix (`Foo`0`, `Foo`01`) projects as the bare
+/// name, which another `TypeDef` may genuinely spell, so it records none.
+fn metadata_arity_suffix(name: &str) -> Option<usize> {
+    match canonical_suffix(name) {
+        Some((_, n)) => Some(n),
+        None if strip_arity(name).len() == name.len() => Some(0),
+        None => None,
+    }
+}
+
 /// Project the reader's raw assembly identity onto the `Entity`-level model,
 /// deriving the `PublicKeyToken` (the model carries the token, not the key).
+/// Whether a signature position carries an optional custom modifier, at any
+/// depth — what the projector drops (II.7.1.1).
+fn carries_optional_modifier(t: &ModifiedType) -> bool {
+    t.mods.iter().any(|m| !m.required)
+        || match &t.ty {
+            TypeSig::Generic { args, .. } => args.iter().any(carries_optional_modifier),
+            TypeSig::SzArray(e) | TypeSig::ByRef(e) | TypeSig::Ptr(Some(e)) => {
+                carries_optional_modifier(e)
+            }
+            TypeSig::Array { element, .. } => carries_optional_modifier(element),
+            TypeSig::Primitive(_)
+            | TypeSig::Named { .. }
+            | TypeSig::TypeVar(_)
+            | TypeSig::MethodVar(_)
+            | TypeSig::Ptr(None)
+            | TypeSig::TypedByRef => false,
+        }
+}
+
 fn project_identity(raw: &RawAssemblyIdentity) -> AssemblyIdentity {
     AssemblyIdentity {
         name: raw.name.clone(),
@@ -5319,6 +5436,7 @@ mod tests {
             attributes: vec![],
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
+            has_other_method_impl: false,
         };
 
         let td = TypeDef {
@@ -5342,6 +5460,7 @@ mod tests {
             properties: vec![RawProp {
                 name: "v".to_string(),
                 signature: Ok(ModifiedType::plain(TypeSig::Primitive(RawPrimitive::Int32))),
+                index_parameters: Ok(vec![]),
                 getter: Some(MethodId(0)),
                 setter: Some(MethodId(1)),
                 other_accessors: vec![],

@@ -24,6 +24,7 @@ src/Compiler/Checking/OverloadResolutionCache.fs fcs-failed
 src/Compiler/CodeGen/EraseUnions.Emit.fs fcs-failed
 src/Compiler/Driver/CreateILModule.fs fcs-failed
 src/Compiler/Driver/XmlDocFileWriter.fs compared
+src/Compiler/Driver/XmlDocFileWriter.fs:15:32-15:47 expr agree
 src/Compiler/Facilities/prim-lexing.fs compared
 src/Compiler/Optimize/LowerStateMachines.fs fcs-failed
 src/Compiler/Service/QuickParse.fs compared
@@ -36,11 +37,15 @@ src/Compiler/TypedTree/TcGlobals.fs fcs-failed
 src/Compiler/TypedTree/WellKnownAttribs.fs compared
 src/Compiler/Utilities/PathMap.fs compared
 src/Compiler/Utilities/sformat.fs compared
+src/Compiler/Utilities/sformat.fs:461:9-461:20 binder agree
+src/Compiler/Utilities/sformat.fs:462:9-462:55 expr agree
 src/Compiler/Utilities/sformat.fs:464:9-464:23 binder agree
 src/Compiler/Utilities/sformat.fs:465:9-470:43 expr agree
 src/Compiler/Utilities/sformat.fs:476:25-476:61 expr agree
 src/Compiler/Utilities/sformat.fs:478:25-478:55 expr agree
 src/Compiler/Utilities/sformat.fs:481:9-483:89 expr agree
+src/Compiler/Utilities/sformat.fs:570:17-570:20 binder agree
+src/Compiler/Utilities/sformat.fs:570:24-570:29 expr agree
 src/Compiler/Utilities/sformat.fs:631:18-631:21 expr agree
 src/Compiler/Utilities/sformat.fs:631:9-631:15 binder agree
 src/Compiler/Utilities/sformat.fs:758:22-758:23 expr agree
@@ -58,6 +63,8 @@ src/FSharp.Core/Linq.fs:205:9-241:45 expr agree
 src/FSharp.Core/Linq.fs:243:13-243:17 binder agree
 src/FSharp.Core/Linq.fs:243:20-243:25 expr agree
 src/FSharp.Core/Linq.fs:243:20-243:41 expr agree
+src/FSharp.Core/Linq.fs:37:33-37:82 expr agree
+src/FSharp.Core/Linq.fs:37:9-37:20 binder agree
 src/FSharp.Core/Linq.fs:50:9-50:23 binder agree
 src/FSharp.Core/Linq.fs:51:9-55:39 expr agree
 src/FSharp.Core/Linq.fs:57:30-57:67 expr agree
@@ -1570,9 +1577,15 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotation
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/VarIsMutable01c.fs compared
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/SyntacticSugar/Slices04.fs compared
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs compared
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs:15:12-15:25 expr agree
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test02.fs:15:7-15:9 binder agree
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs compared
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs:14:12-14:25 expr agree
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test15.fs:14:7-14:9 binder agree
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/Legacy/Test28.fs compared
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs compared
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs:12:12-12:25 expr agree
+tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test12.fs:12:7-12:9 binder agree
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/Attributes/New/Test25.fs fcs-failed
 tests/FSharp.Compiler.ComponentTests/Conformance/GeneratedEqualityHashingComparison/IComparison/DU.fs compared
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturn/TestArrayParam.fs compared
@@ -1691,6 +1704,10 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs:1:13-1:14 binder agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/ForEachRangeStepIntPtr.fs:1:17-1:19 expr agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs compared
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:6:5-6:6 binder agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:6:9-6:25 expr agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:7:5-7:6 binder agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ForLoop/NonTrivialBranchingBindingInEnd02.fs:7:9-7:25 expr agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/MethodImplAttribute/MethodImplAttribute.NoInlining_InlineKeyword.fs compared

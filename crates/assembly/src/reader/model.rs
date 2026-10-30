@@ -367,6 +367,12 @@ pub(crate) struct Method {
     /// in-image identical; deciding needs the referenced assembly, so the
     /// rows are surfaced raw rather than dropped or guessed at.
     pub(crate) unclassified_impls: Vec<UnclassifiedImpl>,
+    /// Whether a `MethodImpl` row whose body is this method (and whose
+    /// `Class` is its owner) contributed to neither [`Self::implements`] nor
+    /// [`Self::unclassified_impls`]: an ancestor-class redirection (a C#
+    /// covariant-return override), or a declaration that could not be read
+    /// or classified.
+    pub(crate) has_other_method_impl: bool,
 }
 
 /// One undecidable `MethodImpl` row: the declaration's parent type and the
@@ -457,6 +463,10 @@ pub(crate) struct Property {
     /// The property's type (the `PropertySig` type; index parameters are not
     /// projected).
     pub(crate) signature: Result<ModifiedType, SigError>,
+    /// The `PropertySig`'s index parameters, read only for the custom
+    /// modifiers they carry (the accessors' parameters are what is
+    /// projected).
+    pub(crate) index_parameters: Result<Vec<ModifiedType>, SigError>,
     pub(crate) getter: Option<MethodId>,
     pub(crate) setter: Option<MethodId>,
     /// Accessors linked by a `MethodSemantics` row carrying the `Other` (0x4)

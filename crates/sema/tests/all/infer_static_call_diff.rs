@@ -447,7 +447,7 @@ mod synthetic {
         agc: Option<usize>,
         template: &MethodLike,
     ) -> Member {
-        Member::Method(MethodLike {
+        Member::Method(Box::new(MethodLike {
             name: name.to_string(),
             access: Access::Public,
             signature: MethodSignature {
@@ -456,6 +456,11 @@ mod synthetic {
                 return_nullability: Nullability::Oblivious,
             },
             arg_group_count: agc,
+            arg_groups: if agc == Some(1) {
+                borzoi_assembly::ArgGroups::NotFSharp
+            } else {
+                borzoi_assembly::ArgGroups::Unknowable
+            },
             is_static: true,
             is_virtual: false,
             is_abstract: false,
@@ -463,7 +468,7 @@ mod synthetic {
             generic_parameters: vec![],
             source_name: None,
             ..template.clone()
-        })
+        }))
     }
 
     /// The env: real `System.Runtime` entities plus the given `Demo.*` classes.
@@ -555,7 +560,7 @@ mod synthetic {
                 _ => None,
             })
             .expect("String method template");
-        (entity, method)
+        (entity, *method)
     }
 
     pub fn i4() -> TypeRef {

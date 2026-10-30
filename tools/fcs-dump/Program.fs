@@ -5174,6 +5174,87 @@ let private dumpUses (absolute: string) =
     Console.Out.Write(json)
     Console.Out.WriteLine()
 
+/// Dump FCS's tooltip for every value, function or member use in a single file:
+/// the hover-signature oracle. Each record is the use's range and the
+/// `MainDescription` of each tooltip element FCS shows there — the signature
+/// line an editor renders (`val map: mapping: ('T -> 'U) -> list: 'T list -> 'U
+/// list`), as the concatenated text of its tagged runs. The tooltip is asked for
+/// at the end of the use's range, with the use's source text as the dotted name
+/// FCS looks up, which is how an editor asks for it.
+let private dumpTooltips (absolute: string) =
+    let text = File.ReadAllText(absolute)
+    let sourceText = SourceText.ofString text
+    let lines = text.Split('\n')
+    let checker = FSharpChecker.Create()
+
+    let opts0, scriptDiags =
+        checker.GetProjectOptionsFromScript(
+            absolute,
+            sourceText,
+            assumeDotNetFramework = false,
+            useSdkRefs = true)
+        |> Async.RunSynchronously
+
+    let opts =
+        { opts0 with
+            OtherOptions = Array.append opts0.OtherOptions (extraRefArgs ()) }
+
+    let blocking =
+        scriptDiags
+        |> List.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    if not (List.isEmpty blocking) then
+        let summary =
+            blocking
+            |> List.map (fun d -> sprintf "FS%04d: %s" d.ErrorNumber d.Message)
+            |> String.concat "; "
+        failwithf "fcs-dump tooltips: script resolution failed: %s" summary
+
+    let _parseResults, checkAnswer =
+        checker.ParseAndCheckFileInProject(absolute, 0, sourceText, opts, userOpName = "fcs-dump-tooltips")
+        |> Async.RunSynchronously
+
+    let checkResults =
+        match checkAnswer with
+        | FSharpCheckFileAnswer.Succeeded r -> r
+        | FSharpCheckFileAnswer.Aborted -> failwith "fcs-dump tooltips: type-check aborted"
+
+    let describe (FSharp.Compiler.EditorServices.ToolTipText elements) =
+        [| for element in elements do
+               match element with
+               | FSharp.Compiler.EditorServices.ToolTipElement.Group items ->
+                   for item in items do
+                       yield item.MainDescription |> Array.map (fun t -> t.Text) |> String.concat ""
+               | FSharp.Compiler.EditorServices.ToolTipElement.CompositionError message -> yield "<error> " + message
+               | FSharp.Compiler.EditorServices.ToolTipElement.None -> () |]
+
+    let tips =
+        checkResults.GetAllUsesOfAllSymbolsInFile()
+        |> Seq.filter (fun u -> u.Symbol :? FSharpMemberOrFunctionOrValue)
+        |> Seq.filter (fun u -> u.Range.StartLine = u.Range.EndLine)
+        |> Seq.map (fun u ->
+            let r = u.Range
+            let lineText = lines.[r.StartLine - 1].TrimEnd('\r')
+            let written = lineText.Substring(r.StartColumn, r.EndColumn - r.StartColumn)
+            let names = written.Split('.') |> Array.map (fun s -> s.Trim()) |> Array.toList
+            let tip =
+                checkResults.GetToolTip(r.EndLine, r.EndColumn, lineText, names, FSharpTokenTag.Identifier)
+            {| Range = r
+               IsFromDefinition = u.IsFromDefinition
+               Descriptions = describe tip |})
+        |> Seq.toArray
+
+    let errors =
+        checkResults.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+        |> Array.map (fun d ->
+            {| Line = d.StartLine
+               Code = d.ErrorNumber
+               Message = d.Message |})
+    let payload = {| Tooltips = tips; Errors = errors |}
+    let json = JsonSerializer.Serialize(payload, buildOptions ())
+    Console.Out.Write(json)
+    Console.Out.WriteLine()
+
 // ============================================================================
 // Attribute-resolution dump (EX-3 §2(d) attribute-resolution oracle)
 // ============================================================================
@@ -7233,6 +7314,7 @@ let private usage () =
     eprintfn "  entities <dll-path>      dump entity skeletons of a managed DLL"
     eprintfn "  uses <source-path>       dump symbol uses (name-resolution oracle)"
     eprintfn "  attrs <source-path>      dump each attribute's resolved type (attribute-resolution oracle)"
+    eprintfn "  tooltips <source-path>   dump FCS's tooltip at every value/member use (hover-signature oracle)"
     eprintfn "  attrs-batch              read paths from stdin; one tolerant attrs JSON line per file"
     eprintfn "  uses-project             read Compile-ordered paths from stdin; dump per-file uses"
     eprintfn "  uses-census-batch        read paths from stdin; emit per-file classified uses (Phase-3 census)"
@@ -7328,6 +7410,9 @@ let main argv =
         0
     | [| "attrs"; sourcePath |] ->
         dumpAttrs (Path.GetFullPath sourcePath)
+        0
+    | [| "tooltips"; sourcePath |] ->
+        dumpTooltips (Path.GetFullPath sourcePath)
         0
     | [| "attrs-batch" |] ->
         dumpAttrsBatch ()
