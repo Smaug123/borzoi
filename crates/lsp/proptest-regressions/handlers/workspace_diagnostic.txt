@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 893afed03ede0637d2050bfebc35d2993510c8ba0c33af383302d866ac134a22 # shrinks to tree = Tree { projects: [TreeProject { dir: 1, name: "P", defines_foo: false, includes: [5] }, TreeProject { dir: 1, name: "Q", defines_foo: true, includes: [5] }], sources: [(0, 0, 0)] }
+cc bce84a7a3e22cd5bf81bfb5669374124d1de57c246c4ea67c4f44a5fe6d8961c # shrinks to tree = Tree { projects: [TreeProject { dir: 1, name: "P", defines_foo: true, includes: [4] }, TreeProject { dir: 2, name: "P", defines_foo: false, includes: [4] }], sources: [(5, 0, 0)] }
