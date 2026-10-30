@@ -22,8 +22,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borzoi::restore::{RestoreGraph, RestoreGraphSource, restore_graph};
+use borzoi::restore::{
+    RestoreGraph, RestoreGraphSource, RestoreOutcome, restore_graph, restore_to_scratch_assemblies,
+};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
+use borzoi::workspace::Workspace;
 use borzoi_nuget::dgspec::{DependencyGraphSpec, DgSpecDecline, PathSegment, parse_dgspec};
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use serde_json::Value;
@@ -142,7 +145,9 @@ fn write_tree(tag: &str, files: &[(&str, &str)]) -> PathBuf {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
-    root
+    // By its real path: a project named through a symlink declines, and the
+    // temporary directory is one on macOS.
+    std::fs::canonicalize(&root).unwrap()
 }
 
 const APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
@@ -235,13 +240,16 @@ fn a_project_reference_brings_its_project_into_the_spec() {
     assert!(!root.join("lib/obj").exists(), "nor its reference's obj/");
 }
 
-/// A project named through a symlinked directory: restore runs in the
-/// project's directory, which the OS reports by its real path, so the project
-/// path and the working directory spell the directory differently. The
-/// reference must survive that, in the spec restore itself reads.
+/// A project named through a symlink, of its directory or of the project file
+/// itself, declines down both routes, and so does the shipped restore. Restore
+/// runs in the project's directory, which the OS reports by its real path, so
+/// the symlinked spelling would be spelt two ways in one evaluation, and NuGet
+/// then drops the project's `ProjectReference`s; resolving it instead moves the
+/// directory MSBuild searches for `Directory.Build.props` and the like away
+/// from the one the LSP evaluated. Neither restores the project the LSP sees.
 #[cfg(unix)]
 #[test]
-fn a_project_named_through_a_symlink_keeps_its_project_reference() {
+fn a_project_named_through_a_symlink_declines() {
     let root = write_tree(
         "symlinked",
         &[
@@ -252,28 +260,132 @@ fn a_project_named_through_a_symlink_keeps_its_project_reference() {
         ],
     );
     std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
-    let project = root.join("link").join("App.fsproj");
+    std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+    std::fs::write(root.join("elsewhere/App.fs"), "module App\n").unwrap();
+    std::os::unix::fs::symlink(
+        root.join("real/App.fsproj"),
+        root.join("elsewhere/App.fsproj"),
+    )
+    .unwrap();
 
-    let env = SdkDiscoveryEnv::from_process_env();
-    let RestoreGraph::Written { text, .. } =
-        restore_graph(&project, &dotnet_root(), &env, RestoreGraphSource::Restored)
-    else {
-        panic!("restore wrote no spec");
-    };
-    let spec =
-        parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declined: {decline}"));
+    for project in [
+        root.join("link").join("App.fsproj"),
+        root.join("elsewhere").join("App.fsproj"),
+    ] {
+        match both_routes(&project) {
+            Ok(Graphs::Declined) => {}
+            Ok(Graphs::Agree(_)) => panic!("{}: must decline", project.display()),
+            Err(failure) => panic!("{failure}"),
+        }
+        let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
+        let served = workspace.served_tfm_for_project(&project);
+        assert!(
+            matches!(
+                restore_to_scratch_assemblies(
+                    &project,
+                    &dotnet_root(),
+                    &served,
+                    Some(workspace.env())
+                ),
+                RestoreOutcome::Declined
+            ),
+            "{}: the shipped restore must decline too",
+            project.display()
+        );
+    }
+    // By its real path, the same project keeps its reference.
+    let spec = committed_spec(&root.join("real").join("App.fsproj"));
     let entry = spec
         .projects
         .iter()
         .find(|p| p.restore.project_unique_name.ends_with("App.fsproj"))
         .expect("the entry is in the spec");
-    assert_eq!(
-        entry.restore.frameworks[0].project_references.len(),
-        1,
-        "restore must see the entry's ProjectReference"
+    assert_eq!(entry.restore.frameworks[0].project_references.len(), 1);
+}
+
+/// A project conditioned on a global `dotnet restore` injects
+/// (`NuGetInteractive`) must generate the spec restore reads: the generated
+/// route has to evaluate under the same globals, or the implicit `FSharp.Core`
+/// reference appears down one route only.
+#[test]
+fn a_project_conditioned_on_restores_globals_generates_alike() {
+    let conditioned = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <DisableImplicitFSharpCoreReference Condition="'$(NuGetInteractive)' == 'false'">true</DisableImplicitFSharpCoreReference>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="App.fs" />
+  </ItemGroup>
+</Project>
+"#;
+    let root = write_tree(
+        "interactive",
+        &[("App.fsproj", conditioned), ("App.fs", "module App\n")],
     );
-    // And the generated spec is that one, as for any other project.
-    committed_spec(&project);
+    let spec = committed_spec(&root.join("App.fsproj"));
+    assert!(
+        spec.projects[0].frameworks[0].dependencies.is_empty(),
+        "under restore's globals the implicit FSharp.Core reference is disabled"
+    );
+}
+
+/// The MSBuild command line the `dotnet` CLI forwards for `verb`, read from the
+/// first line of its diagnostic output, as a set of arguments.
+fn forwarded_arguments(project: &Path, verb: &[&str]) -> std::collections::BTreeSet<String> {
+    let mut cmd = std::process::Command::new(dotnet_root().join("dotnet"));
+    cmd.current_dir(project.parent().unwrap())
+        .args(verb)
+        .arg(project)
+        .args(["-nologo", "-v:diag", "-p:NuGetAudit=false"]);
+    let output = borzoi_spawn::BoundedCommand::new(cmd)
+        .timeout(std::time::Duration::from_secs(300))
+        .run_ok(format_args!("dotnet {verb:?} -v:diag"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find(|line| line.contains("--target:"))
+        .unwrap_or_else(|| panic!("no forwarded MSBuild command line for {verb:?}:\n{stdout}"));
+    line.split_whitespace().skip(1).map(str::to_owned).collect()
+}
+
+/// What `dotnet restore` forwards to MSBuild beyond its target is exactly
+/// `NuGetInteractive=false`, which the shared command builder in `restore.rs`
+/// passes for every verb. An SDK that starts forwarding another global fails
+/// here by name, rather than making the generated spec quietly diverge from
+/// the one restore reads.
+#[test]
+fn restore_forwards_no_global_the_generated_route_lacks() {
+    let root = write_tree(
+        "forwarded",
+        &[("App.fsproj", APP), ("App.fs", "module App\n")],
+    );
+    let project = root.join("App.fsproj");
+    let output = root.join("graph.dg.json");
+    let restored = forwarded_arguments(&project, &["restore"]);
+    let generated = forwarded_arguments(
+        &project,
+        &[
+            "msbuild",
+            "-t:GenerateRestoreGraphFile",
+            &format!("-p:RestoreGraphOutputPath={}", output.display()),
+        ],
+    );
+    let only_restored: Vec<&String> = restored.difference(&generated).collect();
+    let only_generated: Vec<&String> = generated.difference(&restored).collect();
+    assert_eq!(
+        only_restored,
+        ["--property:NuGetInteractive=false", "--target:Restore"],
+        "what `dotnet restore` forwards beyond `dotnet msbuild`"
+    );
+    assert_eq!(
+        only_generated,
+        [
+            &format!("--property:RestoreGraphOutputPath={}", output.display()),
+            "--target:GenerateRestoreGraphFile",
+        ],
+        "what `dotnet msbuild` forwards beyond `dotnet restore`"
+    );
 }
 
 #[test]

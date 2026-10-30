@@ -253,18 +253,28 @@ tautological. In its place, `tests/all/restore_graph.rs` checks the stronger
 claim the reference needs: the generated spec *equals* the one restore read, up
 to the scratch directories each was written under. The checks run on:
 - fixtures (a single project, a project reference, a locked project, a
-  project named through a symlink);
+  project named through a symlink, a project conditioned on restore's
+  injected global);
 - every corpus project, in CI's `corpus-diff` job (`restore_graph::pinned_projects`),
   where the stage-1 reader's verdict on each spec is pinned in
   `tests/manifests/restore_graph_projects.txt`. All six corpus projects agree
   and commit; none of them prunes (they target `net8.0` and `netstandard2.0`),
   so pruning's breadth comes from stage 1's local sweep, not this census.
 
-The symlink fixture records a bug the check found in the shipped restore. Restore
-runs in the project's directory, which the OS reports by its real path. A
-project named through a symlink was therefore spelt two ways in one evaluation,
-and NuGet dropped its `ProjectReference`s from the graph, so the restore never
-saw them. `restore.rs` now resolves the project's real path first.
+Two findings changed the shipped restore:
+- **Symlinked project paths.** Restore runs in the project's directory,
+  which the OS reports by its real path. A project named through a symlink was
+  therefore spelt two ways in one evaluation, and NuGet dropped its
+  `ProjectReference`s, so the restore never saw them. Naming the project by its
+  real path instead moves the directories MSBuild searches for
+  `Directory.Build.props` and the like away from the ones the LSP evaluated.
+  Neither restores the project the LSP sees, so such a project now declines,
+  down both routes and in the shipped restore.
+- **Injected globals.** `dotnet restore` forwards one global property beyond its
+  target, `NuGetInteractive=false`, that `dotnet msbuild` does not, so a project
+  conditioned on it generated a different spec. The shared builder now passes it
+  for every verb. A test diffs the MSBuild command lines the two verbs forward,
+  so an SDK that starts forwarding another global fails by name.
 
 ### Stage 3: the decomposition is lossless
 

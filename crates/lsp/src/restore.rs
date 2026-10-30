@@ -46,10 +46,14 @@
 //! - **Project-rooted.** The command's working directory is the project
 //!   directory, so `dotnet` resolves the SDK from the project's `global.json`
 //!   (rather than the LSP process's cwd) — the same SDK the evaluator saw.
-//! - **By real path.** The project is named by its real path, symlinks
-//!   resolved. The working directory is reported by its real path anyway, and a
-//!   project spelt two ways in one evaluation loses its `ProjectReference`s from
-//!   NuGet's graph.
+//! - **Real paths only.** A project whose path is not its real path (a symlink
+//!   in it, of a directory or of the project file) is declined. Restore runs in
+//!   the project's directory, which the OS reports by its real path, so such a
+//!   project would be spelt two ways in one evaluation, and NuGet then drops its
+//!   `ProjectReference`s from the graph. Naming it by its real path instead moves
+//!   the directories MSBuild searches for `Directory.Build.props` and the like
+//!   away from the ones the LSP evaluated. Neither restores the project the LSP
+//!   sees.
 //! - **Bounded.** It runs under [`BoundedCommand`] with a deadline as a backstop.
 //!
 //! These isolation guarantees are enforced through MSBuild global properties, so
@@ -242,10 +246,7 @@ pub fn restore_to_scratch_assemblies(
 
 /// What an offline restore of a project is run with.
 struct RestoreInputs {
-    /// The project, by its real path. Restore runs in the project's directory,
-    /// which the OS reports by its real path, so a project named through a
-    /// symlink would otherwise be spelt two ways in one evaluation, and NuGet
-    /// then drops its `ProjectReference`s from the graph.
+    /// The project, whose path is its real path (see the module docs).
     project: PathBuf,
     /// The warm cache the restore reads.
     cache_root: PathBuf,
@@ -288,10 +289,10 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
         );
         return None;
     };
-    let Some(project) = real_path(project) else {
+    let Some(project) = as_real_path(project) else {
         tracing::info!(
             project = %project.display(),
-            "on-demand restore declined: the project path does not resolve"
+            "on-demand restore declined: the project is not named by its real path"
         );
         return None;
     };
@@ -301,14 +302,22 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
     })
 }
 
-/// `path` with every symlink resolved. On Windows, where that yields a
-/// verbatim (`\\?\`) path MSBuild does not take, it is only made absolute.
-fn real_path(path: &Path) -> Option<PathBuf> {
-    if cfg!(windows) {
-        std::path::absolute(path).ok()
-    } else {
-        std::fs::canonicalize(path).ok()
-    }
+/// `path`, made absolute, if that is already its real path: no symlink in it,
+/// no `..`, and every component spelt as the file system spells it. `None`
+/// otherwise, or if it does not resolve.
+fn as_real_path(path: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    let real = std::fs::canonicalize(path).ok()?;
+    // Windows reports a real path in verbatim form (`\\?\C:\…`,
+    // `\\?\UNC\server\…`); compare it in the ordinary form.
+    let real = match real.to_str() {
+        Some(verbatim) if cfg!(windows) => match verbatim.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => PathBuf::from(format!(r"\\{unc}")),
+            None => PathBuf::from(verbatim.strip_prefix(r"\\?\").unwrap_or(verbatim)),
+        },
+        _ => real,
+    };
+    (real == absolute).then_some(absolute)
 }
 
 /// What [`restore_graph`] produced.
@@ -532,7 +541,13 @@ fn offline_restore_command(
     // NuGet's package audit contacts its `auditSources` even when
     // `RestoreSources` points at the empty folder, so an unreachable audit
     // endpoint would block until the deadline. Disable it to stay offline.
-    .arg("-p:NuGetAudit=false");
+    .arg("-p:NuGetAudit=false")
+    // The one global `dotnet restore` adds beyond its target (see
+    // `tests/all/restore_graph.rs`, which diffs what each verb forwards to
+    // MSBuild). Passing it for every verb makes `msbuild` evaluate the project
+    // under the same globals, so a project conditioned on it restores and
+    // generates alike.
+    .arg("-p:NuGetInteractive=false");
     // Resolve the SDK from the project's own `global.json` tree, not the LSP
     // process's working directory.
     if let Some(dir) = project.parent() {

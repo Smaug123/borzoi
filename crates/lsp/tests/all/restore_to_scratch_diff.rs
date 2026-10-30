@@ -79,6 +79,9 @@ fn write_project(tag: &str, item_group: &str) -> PathBuf {
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-scratch-diff-{tag}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
+    // By its real path: the on-demand restore declines a project named
+    // through a symlink, and the temporary directory is one on macOS.
+    let root = std::fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         format!(
@@ -159,6 +162,9 @@ fn write_multi_project(tag: &str) -> PathBuf {
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-scratch-multi-{tag}-{unique}"));
     std::fs::create_dir_all(root.join("lib")).unwrap();
+    // By its real path: the on-demand restore declines a project named
+    // through a symlink, and the temporary directory is one on macOS.
+    let root = std::fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         r#"<Project Sdk="Microsoft.NET.Sdk">
