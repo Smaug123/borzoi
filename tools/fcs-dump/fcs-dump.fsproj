@@ -7,8 +7,8 @@
     <AssemblyName>fcs-dump</AssemblyName>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Nullable>enable</Nullable>
-    <!-- The SDK auto-references FSharp.Core at its bundled version; we want
-         to pin a newer patch to satisfy FCS, so opt out of the implicit ref. -->
+    <!-- The SDK auto-references FSharp.Core at its bundled version, which
+         follows the SDK rather than FCS; opt out and pin the one FCS needs. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <!-- Copy each package's doc XML beside its DLL in the build output. The
          borzoi-assembly doc-ID differential (`doc_id_fsharp_diff.rs`) grades
@@ -23,8 +23,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Pin FSharp.Core so it matches what FCS 43.12.204 requires; the SDK
-         ships an older patch revision and would otherwise trigger NU1605. -->
+    <!-- FSharp.Compiler.Service depends on exactly one FSharp.Core version
+         (an `[x, x]` range); this must be it. -->
     <PackageReference Include="FSharp.Core" Version="10.1.204" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.12.204" />
     <PackageReference Include="FSharp.SystemTextJson" Version="1.4.36" />

@@ -13,13 +13,14 @@ use borzoi_assembly::{
 };
 use borzoi_corpus_diff::manifest::{ManifestError, project_corpus_manifest};
 use borzoi_corpus_diff::{
-    Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
-    Graded, ItemOutcome, LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus,
-    ProjectRecord, ProjectSkip, ProjectUse, ProjectVerdict, ServedDecline, SetAside, SkippedUses,
-    UseDecl, check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env,
-    explain_token, fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project,
-    load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
-    parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
+    Comparison, CorpusRun, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange,
+    FileUses, Graded, ItemOutcome, LoadLimits, LoadOptions, LoadSkip, LoadedProject,
+    ProjectAssetsStatus, ProjectCandidates, ProjectCorpusRunOptions, ProjectRecord, ProjectSkip,
+    ProjectUse, ProjectVerdict, ServedDecline, SetAside, SkippedUses, UseDecl,
+    check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env, explain_token,
+    fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project,
+    load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
+    project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
@@ -3423,6 +3424,97 @@ fn the_manifest_counts_handler_probes_and_lists_every_inconsistent_one() {
     );
 }
 
+/// The handler fixtures, each file's text after `prefix`, written under `root`
+/// at the same relative paths whatever the prefix. Returns the projects in the
+/// order they are visited.
+fn write_handler_fixtures(root: &Path, prefix: &str) -> Vec<PathBuf> {
+    let file = |rel: &str, src: &str| write(&root.join(rel), &format!("{prefix}{src}"));
+    for (name, a) in [("Alpha", "A1.fs"), ("Zeta", "A2.fs")] {
+        write(
+            &root.join("siblings").join(format!("{name}.fsproj")),
+            &format!(
+                "<Project>\n  <ItemGroup>\n    <Compile Include=\"{a}\" />\n    \
+                 <Compile Include=\"B.fs\" />\n  </ItemGroup>\n</Project>\n"
+            ),
+        );
+    }
+    file("siblings/A1.fs", "module A\nlet x = 1\n");
+    file("siblings/A2.fs", "module A\nlet x = 2\n");
+    file("siblings/B.fs", "module B\nlet y = A.x\n");
+
+    let single = |dir: &str, name: &str, src: &str| {
+        let project = root.join(dir).join("P.fsproj");
+        write(
+            &project,
+            &format!(
+                "<Project>\n  <ItemGroup>\n    <Compile Include=\"{name}\" />\n  \
+                 </ItemGroup>\n</Project>\n"
+            ),
+        );
+        file(&format!("{dir}/{name}"), src);
+        project
+    };
+    let strings = single(
+        "strings",
+        "M.fs",
+        "module M\n\nmodule String =\n    let length (s : string) = s.Length\n\n\
+         let n = (* count *) String.length \"ab\"\n",
+    );
+    let quoted = single(
+        "quoted",
+        "Q.fs",
+        "module Q\n\nlet ``a : b`` = 1\nlet c = (* quoted *) ``a : b`` + 1\n",
+    );
+
+    // Every kind of declaration and use the handlers answer for, across two
+    // files, with comments on the lines whose uses the perturbed run should
+    // re-ask.
+    write(
+        &root.join("zoo").join("Zoo.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"Zoo.fs\" />\n    \
+         <Compile Include=\"Use.fs\" />\n  </ItemGroup>\n</Project>\n",
+    );
+    file("zoo/Zoo.fs", ZOO_SOURCE);
+    file("zoo/Use.fs", ZOO_USE_SOURCE);
+
+    // Graded uses and a declaration on line 1, where a byte-order mark sits:
+    // a last file needs no module header, so its first line can be code.
+    write(
+        &root.join("lineone").join("P.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"A.fs\" />\n    \
+         <Compile Include=\"B.fs\" />\n  </ItemGroup>\n</Project>\n",
+    );
+    file("lineone/A.fs", "module A\nlet x = 1\n");
+    file("lineone/B.fs", "let y = A.x + A.x\nlet z = y\n");
+
+    vec![
+        root.join("siblings").join("Alpha.fsproj"),
+        root.join("siblings").join("Zeta.fsproj"),
+        strings,
+        quoted,
+        root.join("zoo").join("Zoo.fsproj"),
+        root.join("lineone").join("P.fsproj"),
+    ]
+}
+
+/// The whole runner over `visited`, every record asked everything.
+fn run_handler_fixtures(visited: Vec<PathBuf>) -> CorpusRun {
+    run_project_corpus_diff_with_options(
+        ProjectCandidates {
+            discovered: visited.len(),
+            exhaustive: false,
+            max_files: None,
+            visited,
+            discovery_errors: Vec::new(),
+        },
+        ProjectCorpusRunOptions {
+            // The fixtures are small enough to ask every record everything.
+            handler_sample_stride: Some(NonZeroUsize::MIN),
+            ..ProjectCorpusRunOptions::default()
+        },
+    )
+}
+
 /// The handler differential end to end, on projects shaped to break its own
 /// grading rather than the server: each must come out with no divergence, and
 /// each must actually have been asked.
@@ -3442,78 +3534,9 @@ fn the_manifest_counts_handler_probes_and_lists_every_inconsistent_one() {
 #[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
 fn handler_fixtures_agree_with_fcs() {
     use borzoi_corpus_diff::handler_diff::Variant;
-    use borzoi_corpus_diff::{ProjectCandidates, ProjectCorpusRunOptions};
 
-    let siblings = tempfile::tempdir().expect("tempdir");
-    for (name, a) in [("Alpha", "A1.fs"), ("Zeta", "A2.fs")] {
-        write(
-            &siblings.path().join(format!("{name}.fsproj")),
-            &format!(
-                "<Project>\n  <ItemGroup>\n    <Compile Include=\"{a}\" />\n    \
-                 <Compile Include=\"B.fs\" />\n  </ItemGroup>\n</Project>\n"
-            ),
-        );
-    }
-    write(&siblings.path().join("A1.fs"), "module A\nlet x = 1\n");
-    write(&siblings.path().join("A2.fs"), "module A\nlet x = 2\n");
-    write(&siblings.path().join("B.fs"), "module B\nlet y = A.x\n");
-
-    let single = |file: &str, src: &str| {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project = tmp.path().join("P.fsproj");
-        write(
-            &project,
-            &format!(
-                "<Project>\n  <ItemGroup>\n    <Compile Include=\"{file}\" />\n  \
-                 </ItemGroup>\n</Project>\n"
-            ),
-        );
-        write(&tmp.path().join(file), src);
-        (tmp, project)
-    };
-    let (_strings, strings) = single(
-        "M.fs",
-        "module M\n\nmodule String =\n    let length (s : string) = s.Length\n\n\
-         let n = (* count *) String.length \"ab\"\n",
-    );
-    let (_quoted, quoted) = single(
-        "Q.fs",
-        "module Q\n\nlet ``a : b`` = 1\nlet c = (* quoted *) ``a : b`` + 1\n",
-    );
-
-    // Every kind of declaration and use the handlers answer for, across two
-    // files, with comments on the lines whose uses the perturbed run should
-    // re-ask.
-    let zoo = tempfile::tempdir().expect("tempdir");
-    write(
-        &zoo.path().join("Zoo.fsproj"),
-        "<Project>\n  <ItemGroup>\n    <Compile Include=\"Zoo.fs\" />\n    \
-         <Compile Include=\"Use.fs\" />\n  </ItemGroup>\n</Project>\n",
-    );
-    write(&zoo.path().join("Zoo.fs"), ZOO_SOURCE);
-    write(&zoo.path().join("Use.fs"), ZOO_USE_SOURCE);
-
-    let visited = vec![
-        siblings.path().join("Alpha.fsproj"),
-        siblings.path().join("Zeta.fsproj"),
-        strings,
-        quoted,
-        zoo.path().join("Zoo.fsproj"),
-    ];
-    let run = run_project_corpus_diff_with_options(
-        ProjectCandidates {
-            discovered: visited.len(),
-            exhaustive: false,
-            max_files: None,
-            visited,
-            discovery_errors: Vec::new(),
-        },
-        ProjectCorpusRunOptions {
-            // The fixtures are small enough to ask every record everything.
-            handler_sample_stride: Some(NonZeroUsize::MIN),
-            ..ProjectCorpusRunOptions::default()
-        },
-    );
+    let root = tempfile::tempdir().expect("tempdir");
+    let run = run_handler_fixtures(write_handler_fixtures(root.path(), ""));
     assert_eq!(run.divergence_details, Vec::<String>::new());
     let mut owned_elsewhere = 0;
     for record in &run.projects {
@@ -3543,6 +3566,47 @@ fn handler_fixtures_agree_with_fcs() {
     assert_eq!(
         owned_elsewhere, 1,
         "one sibling answers `B.fs` as the other's"
+    );
+}
+
+/// A prefix that moves bytes but no position FCS or an editor reports changes
+/// nothing a run says: the manifest of the fixtures with every file opened by a
+/// byte-order mark is the manifest without it, line for line.
+///
+/// FCS strips the mark before it counts columns, and our text keeps it, so
+/// every place a run maps between FCS's `(line, col)`, byte offsets and LSP
+/// positions has to agree about where line 1 starts. A mapping that does not
+/// lands each line-1 range one character early. On the `lineone` fixture, whose
+/// last file starts with code, that grades the uses on line 1 at the wrong
+/// bytes and the use of `y` against a declaration one character before it: a
+/// divergence in every direction from a project that compiles.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn a_byte_order_mark_moves_no_handler_fixture_verdict() {
+    let manifest = |prefix: &str| {
+        let root = tempfile::tempdir().expect("tempdir");
+        let run = run_handler_fixtures(write_handler_fixtures(root.path(), prefix));
+        assert_eq!(
+            run.divergence_details,
+            Vec::<String>::new(),
+            "prefix {prefix:?}"
+        );
+        project_corpus_manifest(&run.projects, root.path())
+            .unwrap_or_else(|e| panic!("prefix {prefix:?}: {e}"))
+            .render("")
+    };
+    let plain = manifest("");
+    // Not vacuous: the line-1 uses are graded, and agree.
+    assert!(
+        plain
+            .lines()
+            .any(|l| l.starts_with("lineone/P.fsproj B.fs compared match=3 ")),
+        "{plain}"
+    );
+    assert_eq!(
+        manifest("\u{feff}"),
+        plain,
+        "a byte-order mark moved a verdict"
     );
 }
 

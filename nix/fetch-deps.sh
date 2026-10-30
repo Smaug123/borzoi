@@ -85,7 +85,7 @@ done <"$project_list"
 # The bundled-end-to-end test (crates/lsp/tests/csharp_sidecar_bundled_e2e.rs)
 # writes a fresh net10.0 F# exe + C# library into a temp dir and restores them
 # there. Capture that closure too so the temp-dir restore is offline-clean,
-# even though today it resolves entirely from the SDK packs and adds nothing.
+# even when it resolves entirely from the SDK packs and adds nothing.
 syn="$work/syn"
 mkdir -p "$syn/csharp" "$syn/fsharp"
 cat >"$syn/csharp/Lib.csproj" <<'EOF'
