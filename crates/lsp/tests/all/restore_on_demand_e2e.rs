@@ -37,6 +37,10 @@ fn write_unrestored_project(tag: &str) -> std::path::PathBuf {
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-nuget-{tag}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
+    // By its real path: the on-demand restore declines a project whose
+    // directory is reached through a symlink, and the temporary directory is
+    // one on macOS.
+    let root = std::fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         format!(
@@ -274,8 +278,8 @@ fn framework_and_flowed(state: &mut State, fsproj: &std::path::Path) -> (bool, b
 /// project's targets with the process's working directory set to the project's
 /// directory, which the OS reports by its real path, so `dotnet restore` of
 /// that spelling resolves the reference by a spelling the evaluation never
-/// used, and drops it: the restored framework is there, the flowed package is
-/// not. Either the package is there too, or nothing is claimed.
+/// used, and drops it: the restored framework would be there, the flowed
+/// package not. So the restore declines, and nothing is claimed.
 #[cfg(unix)]
 #[test]
 fn a_symlink_spelt_project_never_loses_its_references_packages() {
@@ -290,6 +294,7 @@ fn a_symlink_spelt_project_never_loses_its_references_packages() {
         "an env with the framework but without the package `lib/Lib.fsproj` \
          brings has lost the project reference"
     );
+    assert!(!framework, "the restore declines a symlinked directory");
 
     std::fs::remove_dir_all(&root).ok();
 }
