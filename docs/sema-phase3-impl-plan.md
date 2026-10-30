@@ -437,6 +437,32 @@ baseline that opens such a module for that reason. And `let applyTo g x = g x`
 does not generalise (an applied unannotated parameter's use is undecided), so a
 function passed to an in-file higher-order function owes no commit.
 
+**The oracle grades around what FCS cannot convert.** The `types` and
+`binder-types` oracles read FCS's public expression view, which FCS converts
+from its typed tree one binding body at a time, re-solving each call's witness
+arguments as it goes. A call whose type arguments violate a constraint (`g = g`
+with `g : int -> int`, a `[<NoEquality>]` record compared) re-raises the
+constraint error there, and a pattern match FCS recovered from throws `"error
+recovery"`; either used to sink the whole file. fcs-dump now converts per leaf
+declaration and reports each one that throws as `Unconverted` (FCS's range for
+it, its name and the message), with nothing from inside it. The sweep widens
+each such range to the source declaration around it — FCS's range stops short
+of it, at the first local of a `let`-chained body — and records every commit of
+ours there as **ungraded**, never as agreement or disagreement, whether or not
+FCS reported an error beside it; an unconverted declaration it cannot place
+skips the file. Every other parser of the dumps refuses a payload with an
+unconverted declaration rather than read its missing nodes as FCS's answer.
+Reaching those files exposed one oracle hang: FCS reports a unit-of-measure
+abbreviation (`[<Measure>] type sqrm = m^2`) as an abbreviation whose
+`AbbreviatedType` is itself, and every abbreviation-chasing renderer in
+fcs-dump looped on it; they now stop at a measure.
+
+Measured on the stride-13 corpus sample: fcs-failed 30 → 4 (the rest have no
+implementation file or are scripts), compared files 325 → 351, agreements
+899 + 870 → 963 + 933 (127 added, all in newly compared files, none lost),
+0 divergences, 100 unconverted declarations holding 5 ungraded commits.
+Completeness is unchanged: it is tallied before the oracle runs.
+
 ### Remaining 3.x hard piles (census-priority order)
 
 Each stays `Deferred` (D5 silence) until the corpus demands it
