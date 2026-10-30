@@ -772,16 +772,20 @@ struct SignatureSurface {
     exports: Vec<model::SigExport>,
 }
 
-/// Whether the node carries any accessibility token (`private` / `internal` /
-/// `public`) anywhere. Gates the *type* surface: `type private T` and
-/// repr-level accessibility (`type T = private | …`) are a later Stage-3
-/// slice — a skipped decl's names stay in the screen's token set, so
-/// readings of them defer.
-fn has_access_token(node: &SyntaxNode) -> bool {
+/// Whether the node carries a `private` accessibility token anywhere. Gates
+/// the *type* surface: `type private T` and a private representation (`type
+/// T = private | …`) restrict the cases to part of the project, which is a
+/// later Stage-3 slice — a skipped decl's names stay in the screen's token
+/// set, so readings of them defer. `internal` and `public` restrict nothing
+/// sema can see (one project is one assembly), so a type carrying only those
+/// exports exactly like an unannotated one.
+fn has_private_access_token(node: &SyntaxNode) -> bool {
     use borzoi_cst::syntax::SyntaxKind;
     node.descendants_with_tokens()
         .filter_map(|el| el.into_token())
-        .any(|t| t.kind() == SyntaxKind::ACCESS_TOK)
+        .any(|t| {
+            t.kind() == SyntaxKind::ACCESS_TOK && t.text() != "internal" && t.text() != "public"
+        })
 }
 
 /// The accessibility classification of one signature `val` (FCS-probed
@@ -971,10 +975,11 @@ fn collect_sig_container_exports(
             }
             SigDecl::Types(types) => {
                 for defn in types.defns() {
-                    // Accessibility on the type or its representation
-                    // (`type private T`, `type T = private | …`) is Stage 3:
-                    // skip — the screen keeps the cases deferred.
-                    if has_access_token(defn.syntax()) {
+                    // Private accessibility on the type or its
+                    // representation (`type private T`, `type T = private |
+                    // …`) is Stage 3: skip — the screen keeps the cases
+                    // deferred.
+                    if has_private_access_token(defn.syntax()) {
                         continue;
                     }
                     let Some(type_ident) = defn.long_id().and_then(single_ident) else {
@@ -1055,6 +1060,8 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut auto_open_nested = Vec::new();
     let mut auto_open_type_containers = Vec::new();
     let mut value_paths = Vec::new();
+    let mut bare_value_paths: Vec<Vec<String>> = Vec::new();
+    let mut namespaces: HashSet<Vec<String>> = HashSet::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
     for fragment in sig.modules() {
@@ -1090,6 +1097,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                     .long_id()
                     .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
                     .unwrap_or_default();
+                namespaces.insert(ns.clone());
                 for decl in fragment.sig_decls() {
                     match decl {
                         SigDecl::NestedModule(nm) => {
@@ -1129,12 +1137,46 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         // their own exposed value paths (RQA-blind: an
                         // over-collected RQA case only defers more).
                         SigDecl::Types(types) => {
+                            // The exactly-modelled half: visible union/enum
+                            // cases get a signature identity at `ns.Case`
+                            // (and `ns.Type.Case`), exactly as under a module
+                            // root. The container walker also records an
+                            // `[<AutoOpen>]` type with the namespace as its
+                            // container.
+                            collect_sig_container_exports(
+                                &ns,
+                                std::iter::once(SigDecl::Types(types.clone())),
+                                None,
+                                &mut defs,
+                                &mut exports,
+                                &mut auto_open_type_containers,
+                            );
                             for defn in types.defns() {
-                                // A type declared *directly* under the
-                                // namespace has no container walker to report
-                                // it: the namespace itself is the container.
-                                if attrs_auto_open(defn.attributes()) {
-                                    auto_open_type_containers.push(ns.clone());
+                                // The bare value-space names the type puts in
+                                // scope where `ns` is opened: an RQA union's
+                                // cases put none. Enum cases are counted
+                                // too, which only ever over-marks.
+                                let rqa = attrs_require_qualified_access(defn.attributes());
+                                let bare_idents: Vec<SyntaxToken> = match defn.repr() {
+                                    Some(TypeDefnRepr::Union(_)) if rqa => Vec::new(),
+                                    Some(TypeDefnRepr::Union(u)) => {
+                                        u.cases().filter_map(|c| c.ident()).collect()
+                                    }
+                                    Some(TypeDefnRepr::Enum(e)) => {
+                                        e.cases().filter_map(|c| c.ident()).collect()
+                                    }
+                                    Some(TypeDefnRepr::Abbrev(a)) => a
+                                        .ty()
+                                        .as_ref()
+                                        .and_then(abbrev_target_single_ident)
+                                        .into_iter()
+                                        .collect(),
+                                    _ => Vec::new(),
+                                };
+                                for ident in bare_idents {
+                                    let mut path = ns.clone();
+                                    path.push(id_text(&ident).to_string());
+                                    bare_value_paths.push(path);
                                 }
                                 let case_idents: Vec<SyntaxToken> = match defn.repr() {
                                     Some(TypeDefnRepr::Union(u)) => {
@@ -1171,6 +1213,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
                                 let mut path = ns.clone();
                                 path.push(id_text(&ident).to_string());
+                                bare_value_paths.push(path.clone());
                                 value_paths.push(path);
                             }
                         }
@@ -1225,6 +1268,19 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         .iter()
         .filter_map(|e| e.type_qualified.clone())
         .collect();
+    // A namespace stays hidden-valued only where the signature exposes a
+    // bare name its exported surface does not carry.
+    let mut namespace_hidden_values: Vec<Vec<String>> = Vec::new();
+    for path in &bare_value_paths {
+        if exported_value_paths.contains(path) {
+            continue;
+        }
+        if let Some((_, container)) = path.split_last()
+            && !namespace_hidden_values.iter().any(|c| c == container)
+        {
+            namespace_hidden_values.push(container.to_vec());
+        }
+    }
     let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),
@@ -1233,6 +1289,8 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         value_paths,
         exported_value_paths,
         exported_case_paths,
+        namespaces,
+        namespace_hidden_values,
     });
     SignatureSurface {
         screen,

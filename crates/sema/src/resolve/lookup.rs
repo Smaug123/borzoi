@@ -13,7 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, Resolution, SlotClass,
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity, OpenTrace,
+    Resolution, SlotClass,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, MarkReach, OpenInterpretation, Resolver,
@@ -133,6 +134,17 @@ struct SubmoduleFold {
     has_type: bool,
 }
 
+/// The walk state before one `open` — see [`Resolver::open_trace_snapshot`].
+pub(super) struct OpenTraceSnapshot {
+    opaque_value: bool,
+    opaque_dotted: bool,
+    unmodelled: bool,
+    generation: usize,
+    entries: usize,
+    imports: usize,
+    shortening: usize,
+}
+
 /// One open-fold **group**'s assembly-side surfaces and the residue verdicts
 /// that decide how its names may be committed — see
 /// [`Resolver::assembly_fold_group`], which is the only thing that builds one.
@@ -157,6 +169,11 @@ pub(super) struct AssemblyFoldGroup {
     /// A namespace half's constructor-slot type name may evict an earlier open's
     /// same-named value, with no collision entry to demote.
     cross_kind_ns_type: bool,
+    /// The project namespace half may bring value-space names nothing here
+    /// enumerates. They shadow everything folded before the group whether or
+    /// not the path has any assembly half or project contestant, so this alone
+    /// raises the barrier.
+    project_ns_hidden: bool,
     /// Whether the path is also an in-project namespace — the caller's cue to
     /// fold the project half's own values after this group.
     pub(super) project_ns: bool,
@@ -174,8 +191,9 @@ impl AssemblyFoldGroup {
     /// bump staled. Every caller gets that from the per-head `head_entry_staled`
     /// veto in the qualified channels (codex round 10).
     pub(super) fn barrier(&self) -> bool {
-        (!self.surfaces.is_empty() || self.path_dropped)
-            && (self.demote || self.below_vals || self.cross_kind_ns_type)
+        self.project_ns_hidden
+            || ((!self.surfaces.is_empty() || self.path_dropped)
+                && (self.demote || self.below_vals || self.cross_kind_ns_type))
     }
 
     /// Whether the group hides names it cannot LIST — which needs more than the
@@ -393,6 +411,7 @@ impl<'a> Resolver<'a> {
             below_vals,
             path_dropped,
             cross_kind_ns_type,
+            project_ns_hidden,
             project_ns,
         }
     }
@@ -879,11 +898,29 @@ impl<'a> Resolver<'a> {
     /// namespace (see the `open` arm in `decls.rs`): position 0 is FCS's real
     /// fold position for it, while re-running it at a later `open`'s text
     /// position would wrongly override a binding declared in between.
-    pub(super) fn open_own_enclosing_namespace(&mut self) {
+    ///
+    /// `header` is the block header's namespace path, the range the
+    /// resolution-explain trace records this implicit open at.
+    pub(super) fn open_own_enclosing_namespace(&mut self, header: TextRange) {
         let namespace = self.enclosing_namespace().to_vec();
         if namespace.is_empty() {
             return;
         }
+        let trace_before = self.open_trace_snapshot();
+        self.fold_own_enclosing_namespace(&namespace);
+        let opacity = self.open_opacity_since(&trace_before);
+        self.trace_opens.push(OpenTrace {
+            range: header,
+            path: namespace,
+            is_type: false,
+            implicit: true,
+            opacity,
+        });
+    }
+
+    /// The fold behind [`Self::open_own_enclosing_namespace`].
+    fn fold_own_enclosing_namespace(&mut self, namespace: &[String]) {
+        let namespace = namespace.to_vec();
         // The same-FQN assembly **module** half — `ResolveLongIdentAsModuleOrNamespace`
         // returns modules and namespaces alike, so a top-level `module A.B` in
         // one reference merges with `namespace A.B` in another.
@@ -1049,6 +1086,53 @@ impl<'a> Resolver<'a> {
         // tier 2 — an extra tier-1 copy of the same path would decide nothing.
         if self.is_project_module_path(&namespace) {
             self.opaque_dotted_open = true;
+        }
+    }
+
+    /// The walk state an `open` can perturb, captured before it so
+    /// [`Self::open_opacity_since`] can say what that open changed — the
+    /// resolution-explain trace's per-open record ([`OpenTrace`]).
+    pub(super) fn open_trace_snapshot(&self) -> OpenTraceSnapshot {
+        OpenTraceSnapshot {
+            opaque_value: self.opaque_value_open,
+            opaque_dotted: self.opaque_dotted_open,
+            unmodelled: self.unmodelled_open_active,
+            generation: self.open_generation,
+            entries: self.scopes.last().map_or(0, |f| f.entries.len()),
+            imports: self.imports.len(),
+            shortening: self.open_shortening_prefixes.len(),
+        }
+    }
+
+    /// What the open since `before` did to the walk state, mechanism by
+    /// mechanism (see [`OpenOpacity`]).
+    ///
+    /// The three flags are write-only and monotone within a block, so `now &&
+    /// !before` is exactly this open's contribution. The generation is only
+    /// ever bumped, so a strict increase is this open's own barrier. Opened
+    /// entries all land in `module_frame()` (`scopes.last()`) and an open
+    /// never enters a nested module, so a new `Deferred` entry after the
+    /// snapshot is this open's import (a fully-enumerated open can import a
+    /// name that is itself `Deferred`, setting no flag and bumping no
+    /// generation). And `imports` / `open_shortening_prefixes` grow only
+    /// within the open, so a strict length increase in either is its own
+    /// reading contribution — a qualified-path precedence entry that can
+    /// re-own a later dotted head against a lower open's reading.
+    pub(super) fn open_opacity_since(&self, before: &OpenTraceSnapshot) -> OpenOpacity {
+        OpenOpacity {
+            opaque_value: self.opaque_value_open && !before.opaque_value,
+            opaque_dotted: self.opaque_dotted_open && !before.opaque_dotted,
+            unmodelled: self.unmodelled_open_active && !before.unmodelled,
+            staled_earlier: self.open_generation > before.generation,
+            imported_deferred: self.scopes.last().is_some_and(|f| {
+                f.entries
+                    .get(before.entries..)
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|e| matches!(e.resolution, Resolution::Deferred(_)))
+            }),
+            added_reading: self.imports.len() > before.imports
+                || self.open_shortening_prefixes.len() > before.shortening,
         }
     }
 

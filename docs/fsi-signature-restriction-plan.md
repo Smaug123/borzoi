@@ -453,11 +453,31 @@ with these mechanics settled in review/probing:
   `open Pn; Md.shown` reaches the export (FCS-probed, codex round 1) — the
   materialisation also publishes (nothing on the impl side does — its
   fragments are anonymous — yet FCS treats the implicit module as real and
-  openable). Val/module accessibility is the landed Stage-3 slice (see
-  its notes below); `type private` / repr-level accessibility,
+  openable). Visible union/enum cases declared **directly under a
+  `namespace`** export the same way, at `N.Case` / `N.Type.Case`. A type
+  or representation annotated `internal` (or `public`) exports like an
+  unannotated one — one project is one assembly, so it restricts nothing
+  sema can see. Val/module accessibility is the landed Stage-3 slice (see
+  its notes below); `type private` / a private representation,
   active-pattern/operator `val`s, operator-named cases, exceptions,
   abbreviations, records, and nested-module recursion all stay
   screen-deferred (Stage 3+).
+- **The namespace's hidden-value marker comes from the signature.** An
+  `open N` (or a `namespace N` block's implicit open of itself) folds every
+  value-space name the project's earlier `N` fragments contribute; one it
+  cannot enumerate must shadow everything folded before it (the generation
+  barrier). Directly under a namespace the only such names are union/enum
+  cases and exception constructors, and the signature names every one it
+  exposes. So the implementation's dropped identities there mark nothing:
+  `N` is a hidden-value module only when the signature exposes a bare name
+  its exported surface does not carry (`SigScreen::namespace_hidden_values`
+  — a privately-represented union's cases, an exception, a nullary case
+  spelled as an abbreviation, an enum case). An opaque `type U` exposes
+  none. Marking the namespace per dropped implementation item instead made
+  one signatured namespace-direct union stale every FSharp.Core name in
+  every later file of the namespace (WoofWare.Incremental's
+  `OnUpdateHandler.fsi`); `tests/all/sig_namespace_fold_diff.rs` grades the
+  shapes against FCS.
 - **Incremental fold:** the stash joins `same_export_contribution`, so a
   `.fsi` surface edit invalidates the suffix; the impl-slot append runs in
   both folds before the in-sync comparison.

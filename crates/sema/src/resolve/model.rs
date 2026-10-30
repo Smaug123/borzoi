@@ -136,6 +136,22 @@ pub(super) struct SigScreen {
     /// signatured `[<RequireQualifiedAccess>] type T = CaseC` — `M.T.CaseC`
     /// binds the `.fsi` case), so a value commit there would be wrong.
     pub(super) exported_case_paths: HashSet<Vec<String>>,
+    /// The `namespace` fragments the signature declares. A value-space name
+    /// directly under one of them can only be a union/enum case or an
+    /// exception constructor, and the signature text says exactly which of
+    /// those it exposes — so the paired implementation's own dropped
+    /// identities there mark nothing hidden
+    /// ([`FileExportIndices::derive`]); [`Self::namespace_hidden_values`]
+    /// carries the namespace's marker instead.
+    pub(super) namespaces: HashSet<Vec<String>>,
+    /// The namespaces where the signature exposes a **bare** value-space name
+    /// that its exactly-modelled surface does not export — a case of an
+    /// `internal` or privately-represented union, a nullary case spelled as
+    /// an abbreviation, an exception constructor, an enum case. Opening such
+    /// a namespace may bring in a name nothing enumerates, so it stays a
+    /// hidden-value module. A namespace whose bare names are all exported
+    /// (or that exposes none, like an opaque `type U`) is fully enumerable.
+    pub(super) namespace_hidden_values: Vec<Vec<String>>,
 }
 
 /// One export the paired signature contributes **at the implementation's
@@ -1458,10 +1474,20 @@ impl FileExportIndices {
                     // the dropped surface, so it survives into the ordinary
                     // export arm below.
                     Some(item_idx)
-                        if screen.is_some()
+                        if let Some(screen) = screen
                             && matches!(file.exports.items[*item_idx].def, ExportDef::Own(_)) =>
                     {
-                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                        // Directly under a namespace the signature names
+                        // every bare value it exposes there, so the screen's
+                        // own verdict ([`SigScreen::namespace_hidden_values`],
+                        // pushed below) replaces the per-item marker.
+                        let in_sig_namespace = decl
+                            .path
+                            .split_last()
+                            .is_some_and(|(_, container)| screen.namespaces.contains(container));
+                        if !in_sig_namespace {
+                            push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                        }
                     }
                     Some(item_idx) => {
                         let it = &file.exports.items[*item_idx];
@@ -1669,6 +1695,11 @@ impl FileExportIndices {
             // when the implementation's own decls produced no marker.
             for root in &screen.roots {
                 push_hidden(&mut fi, root.path.clone(), HiddenNames::SigDeclared);
+            }
+            // A namespace where the signature exposes a bare name its
+            // modelled surface does not export.
+            for ns in &screen.namespace_hidden_values {
+                push_hidden(&mut fi, ns.clone(), HiddenNames::SigDeclared);
             }
             // Signature-declared `[<AutoOpen>]` nested modules (conclusion 6)
             // — auto-open even when the implementation carries no attribute,
@@ -2548,6 +2579,14 @@ pub struct OpenTrace {
     pub path: Vec<String>,
     /// Whether this is an `open type …` (vs a plain `open <path>`).
     pub is_type: bool,
+    /// Whether this is the **implicit** open of a block's own enclosing
+    /// namespace, which every `namespace N` block performs before its first
+    /// declaration (FCS's `ImplicitlyOpenOwnNamespace`). Its
+    /// [`range`](Self::range) is then the header's namespace path. It folds
+    /// every earlier fragment of `N` — the project's own files included — so
+    /// a fragment the fold cannot enumerate perturbs every name in the block
+    /// with no `open` written anywhere.
+    pub implicit: bool,
     /// How this open perturbs later resolution (see [`OpenOpacity`]).
     pub opacity: OpenOpacity,
 }
