@@ -72,11 +72,11 @@ enum Model {
     /// The signature's bare names are exactly exported: the FSharp.Core
     /// names stay committed, and `Ok`/`Some`/`Case1` commit to the `.fsi`.
     Exposed,
-    /// The signature exposes no bare value name (or none that is
-    /// unmodelled): the FSharp.Core names stay committed.
+    /// Every bare name the signature exposes is known by name, exported or
+    /// not: the FSharp.Core names it does not spell stay committed.
     Precise,
-    /// The signature exposes a bare name the fold does not model, so the
-    /// fold must shadow everything before it: no obligation.
+    /// The fold cannot list the names the row brings, or the row spells the
+    /// FSharp.Core names themselves: no obligation.
     Unmodelled,
 }
 
@@ -167,19 +167,19 @@ const SHAPES: &[Shape] = &[
         label: "private_repr",
         sig: "type U =\n    private\n    | Case1 of int\n    | Ok\n    | Some of string\n",
         imp: "type U =\n    private\n    | Case1 of int\n    | Ok\n    | Some of string\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     Shape {
         label: "two_types_one_private",
         sig: "type V =\n    | Vcase\n\ntype private U =\n    | Case1 of int\n    | Ok\n",
         imp: "type V =\n    | Vcase\n\ntype private U =\n    | Case1 of int\n    | Ok\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     Shape {
         label: "exception",
         sig: "exception Ok of string\n",
         imp: "exception Ok of string\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     // A signatured exception spelled like an FSharp.Core function: FCS binds
     // the exception, so the FSharp.Core function must not stay committed.
@@ -187,7 +187,7 @@ const SHAPES: &[Shape] = &[
         label: "exception_failure",
         sig: "exception Failure of string\n",
         imp: "exception Failure of string\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     Shape {
         label: "unsigned_exception_failure",
@@ -201,7 +201,7 @@ const SHAPES: &[Shape] = &[
         label: "abbrev_case",
         sig: "type U = Ok\n",
         imp: "type U = Ok\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     // Two declarations put `Ok` in bare scope, one of them unmodelled (FCS
     // reads `type B = Ok` as a nullary case): neither may be the export.
@@ -209,32 +209,32 @@ const SHAPES: &[Shape] = &[
         label: "duplicate_case_abbrev",
         sig: "type A =\n    | Ok of int\n\ntype B = Ok\n",
         imp: "type A =\n    | Ok of int\n\ntype B = Ok\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     Shape {
         label: "duplicate_case_across_type_decls",
         sig: "type A =\n    | Ok\n    | X\n\ntype C =\n    | Ok\n    | Y\n",
         imp: "type A =\n    | Ok\n    | X\n\ntype C =\n    | Ok\n    | Y\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     Shape {
         label: "duplicate_case_in_one_group",
         sig: "type A =\n    | Ok\n    | X\n\nand C =\n    | Ok\n    | Y\n",
         imp: "type A =\n    | Ok\n    | X\n\nand C =\n    | Ok\n    | Y\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     Shape {
         label: "duplicate_case_and_exception",
         sig: "type A =\n    | Ok of int\n\nexception Ok of string\n",
         imp: "type A =\n    | Ok of int\n\nexception Ok of string\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     // A class named like the case takes the constructor slot (Codex review).
     Shape {
         label: "case_then_class",
         sig: "type U =\n    | Ok of int\n\ntype Ok =\n    new : unit -> Ok\n",
         imp: "type U =\n    | Ok of int\n\ntype Ok() = class end\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     // `[<RequireQualifiedAccess>]` under another name (Codex review): the
     // cases are not in bare scope, which the written name cannot say.
@@ -242,7 +242,7 @@ const SHAPES: &[Shape] = &[
         label: "aliased_rqa",
         sig: "type Qual = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual>]\ntype U =\n    | Case1 of int\n    | Ok\n",
         imp: "type Qual = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual>]\ntype U =\n    | Case1 of int\n    | Ok\n",
-        model: Model::Unmodelled,
+        model: Model::Precise,
     },
     // WoofWare.Incremental's `Cutoff.fsi` shape: well-known attributes and
     // an `internal` representation.
@@ -269,6 +269,14 @@ const SHAPES: &[Shape] = &[
         label: "enum",
         sig: "type U =\n    | Case1 = 0\n    | Ok = 1\n",
         imp: "type U =\n    | Case1 = 0\n    | Ok = 1\n",
+        model: Model::Precise,
+    },
+    // An `[<AutoOpen>]` type publishes statics the signature need not name:
+    // the one namespace-direct shape whose names the fold cannot list.
+    Shape {
+        label: "auto_open_type",
+        sig: "[<AutoOpen>]\ntype T =\n    static member Ok : int\n",
+        imp: "[<AutoOpen>]\ntype T =\n    static member Ok = 1\n",
         model: Model::Unmodelled,
     },
     Shape {
@@ -571,14 +579,16 @@ fn signature_namespace_fold_agrees_with_fcs() {
 
 /// The resolution-explain trace records each block's implicit open of its
 /// own enclosing namespace, so a namespace fold that shadows everything can be
-/// read off the trace rather than hand-traced: an unmodelled row raises the
-/// barrier and the dotted-head blanket there, an exactly-exported one neither.
+/// read off the trace rather than hand-traced: a row whose names the fold
+/// cannot list raises the barrier and the dotted-head blanket there; one whose
+/// names it knows, exported or not, raises neither.
 #[test]
 fn the_implicit_namespace_open_is_traced() {
     let cases = [
         ("exposed", false),
         ("opaque", false),
-        ("private_repr", true),
+        ("private_repr", false),
+        ("auto_open_type", true),
     ];
     for (label, perturbs) in cases {
         let shape = SHAPES.iter().find(|s| s.label == label).expect("row");
@@ -613,13 +623,12 @@ fn the_implicit_namespace_open_is_traced() {
 }
 
 /// One namespace-level declaration that puts `Ok` somewhere — a pairwise
-/// grid's alphabet. `precise` says whether it leaves the fold enumerable on
-/// its own.
+/// grid's alphabet. Every one is known by name, so every pair must keep the
+/// FSharp.Core names it does not spell committed.
 struct Fragment {
     label: &'static str,
     sig: &'static str,
     imp: &'static str,
-    precise: bool,
 }
 
 const FRAGMENTS: &[Fragment] = &[
@@ -627,69 +636,59 @@ const FRAGMENTS: &[Fragment] = &[
         label: "union",
         sig: "type A1 =\n    | Ok of int\n",
         imp: "type A1 =\n    | Ok of int\n",
-        precise: true,
     },
     Fragment {
         label: "rqa",
         sig: "[<RequireQualifiedAccess>]\ntype A2 =\n    | Ok\n",
         imp: "[<RequireQualifiedAccess>]\ntype A2 =\n    | Ok\n",
-        precise: true,
     },
     Fragment {
         label: "abbrev_case",
         sig: "type A3 = Ok\n",
         imp: "type A3 = Ok\n",
-        precise: false,
     },
     Fragment {
         label: "exception",
         sig: "exception Ok of string\n",
         imp: "exception Ok of string\n",
-        precise: false,
     },
     Fragment {
         label: "private_repr",
         sig: "type A5 =\n    private\n    | Ok\n",
         imp: "type A5 =\n    private\n    | Ok\n",
-        precise: false,
     },
     Fragment {
         label: "enum",
         sig: "type A6 =\n    | Ok = 1\n",
         imp: "type A6 =\n    | Ok = 1\n",
-        precise: false,
     },
     Fragment {
         label: "record",
         sig: "type A7 = { Ok : int }\n",
         imp: "type A7 = { Ok : int }\n",
-        precise: true,
     },
     Fragment {
         label: "class",
         sig: "type Ok =\n    new : unit -> Ok\n",
         imp: "type Ok() = class end\n",
-        precise: false,
     },
     Fragment {
         label: "aliased_rqa",
         sig: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
         imp: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
-        precise: false,
     },
     Fragment {
         label: "opaque",
         sig: "type A8\n",
         imp: "type A8 =\n    | Ok\n",
-        precise: true,
     },
 ];
 
 /// Every ordered pair of distinct [`FRAGMENTS`] in one signatured namespace:
 /// the collision space a single-declaration table cannot reach (two
 /// declarations of one bare name, one of them unmodelled, is how a stale
-/// export became a wrong target). Graded exactly as the table is; a pair of
-/// precise fragments must keep the FSharp.Core names committed.
+/// export became a wrong target). Graded exactly as the table is, and every
+/// pair must keep the FSharp.Core names committed.
 #[test]
 fn pairwise_namespace_declarations_agree_with_fcs() {
     let mut wrong = Vec::new();
@@ -711,11 +710,9 @@ fn pairwise_namespace_declarations_agree_with_fcs() {
             for reader in [Reader::SameNamespaceAfter, Reader::OpenAfter] {
                 let mut c = grade_cell(&shape, reader);
                 wrong.append(&mut c.wrong);
-                if a.precise && b.precise {
-                    for needle in ["ref", "failwith"] {
-                        if !c.assembly.contains(&needle) {
-                            missing.push(format!("[{label} / {reader:?}]: {needle:?}"));
-                        }
+                for needle in ["ref", "failwith"] {
+                    if !c.assembly.contains(&needle) {
+                        missing.push(format!("[{label} / {reader:?}]: {needle:?}"));
                     }
                 }
             }

@@ -2249,6 +2249,32 @@ impl<'a> Resolver<'a> {
             self.module_frame().entries.push(entry);
             count += 1;
         }
+        // A signatured fragment's bare names with no exported identity
+        // ([`ProjectItems::namespace_shadow_names`](super::model::ProjectItems)):
+        // each may be a case, so it defers both namespaces exactly as a
+        // deferred straddle does. Pushed last, so it out-positions every entry
+        // this fold made — which over-defers a same-named later fragment's
+        // export, and never lets an earlier one stand.
+        if is_namespace {
+            let mut names: Vec<String> = self
+                .preceding
+                .namespace_shadow_names
+                .get(namespace)
+                .map(|names| names.iter().cloned().collect())
+                .unwrap_or_default();
+            names.sort();
+            for name in names {
+                let mut entry = ScopeEntry::opened(
+                    name,
+                    Resolution::Deferred(DeferredReason::UnboundName),
+                    generation,
+                    open_pos,
+                );
+                entry.opened_case = true;
+                self.module_frame().entries.push(entry);
+                count += 1;
+            }
+        }
         count
     }
 

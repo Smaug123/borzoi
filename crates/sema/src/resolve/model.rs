@@ -141,17 +141,19 @@ pub(super) struct SigScreen {
     /// exception constructor, and the signature text says exactly which of
     /// those it exposes — so the paired implementation's own dropped
     /// identities there mark nothing hidden
-    /// ([`FileExportIndices::derive`]); [`Self::namespace_hidden_values`]
-    /// carries the namespace's marker instead.
+    /// ([`FileExportIndices::derive`]); [`Self::namespace_unexported_names`]
+    /// carries what they hide instead.
     pub(super) namespaces: HashSet<Vec<String>>,
-    /// The namespaces where the signature exposes a **bare** value-space name
-    /// that its exactly-modelled surface does not export — a case of an
-    /// `internal` or privately-represented union, a nullary case spelled as
-    /// an abbreviation, an exception constructor, an enum case. Opening such
-    /// a namespace may bring in a name nothing enumerates, so it stays a
-    /// hidden-value module. A namespace whose bare names are all exported
-    /// (or that exposes none, like an opaque `type U`) is fully enumerable.
-    pub(super) namespace_hidden_values: Vec<Vec<String>>,
+    /// The `(namespace, name)` pairs of every **bare** value-space name the
+    /// signature may expose directly under a namespace without an exported
+    /// identity: a case of an attributed union (whose
+    /// `[<RequireQualifiedAccess>]` its written attributes cannot settle), of
+    /// a privately represented one, a nullary case spelled as an abbreviation,
+    /// an exception constructor, an enum case, a name two declarations share.
+    /// Each is known by name, so it shadows by name
+    /// ([`ProjectItems::namespace_shadow_names`]) rather than hiding the whole
+    /// namespace behind a generation barrier.
+    pub(super) namespace_unexported_names: Vec<(Vec<String>, String)>,
 }
 
 /// One export the paired signature contributes **at the implementation's
@@ -313,6 +315,15 @@ pub struct ProjectItems {
     /// [`Resolver::modules_with_hidden_values`](super::state::Resolver::modules_with_hidden_values)). A later file's `open M` of one
     /// must bump the open generation so it shadows earlier opens.
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
+    /// Bare value names a signatured file exposes directly under each
+    /// namespace without an exported identity
+    /// ([`SigScreen::namespace_unexported_names`]). A fold of the namespace
+    /// puts each in scope naming nothing, after everything else it folds, so
+    /// it shadows a same-named earlier entry — an implicit FSharp.Core
+    /// auto-open's, an assembly half's, another project fragment's — without
+    /// a target of its own. Known by name, so unlike a hidden-value marker it
+    /// stales nothing else.
+    pub(super) namespace_shadow_names: HashMap<Vec<String>, HashSet<String>>,
     /// The subset of [`Self::modules_with_hidden_values`] whose markers no
     /// signature bounds — so an `open` of a path marked here must stale its
     /// **own** assembly entries via the generation bump, not just earlier
@@ -1211,6 +1222,12 @@ impl ProjectItems {
         for hidden in idx.opaque_hidden_value_modules {
             self.opaque_hidden_value_modules.insert(hidden);
         }
+        for (namespace, name) in idx.namespace_shadow_names {
+            self.namespace_shadow_names
+                .entry(namespace)
+                .or_default()
+                .insert(name);
+        }
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
         }
@@ -1386,6 +1403,7 @@ struct FileExportIndices {
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
+    namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
 
 /// Where the names a hidden-value marker fears come from — the one question
@@ -1479,7 +1497,7 @@ impl FileExportIndices {
                     {
                         // Directly under a namespace the signature names
                         // every bare value it exposes there, so the screen's
-                        // own verdict ([`SigScreen::namespace_hidden_values`],
+                        // own name list ([`SigScreen::namespace_unexported_names`],
                         // pushed below) replaces the per-item marker.
                         let in_sig_namespace = decl
                             .path
@@ -1696,11 +1714,10 @@ impl FileExportIndices {
             for root in &screen.roots {
                 push_hidden(&mut fi, root.path.clone(), HiddenNames::SigDeclared);
             }
-            // A namespace where the signature exposes a bare name its
-            // modelled surface does not export.
-            for ns in &screen.namespace_hidden_values {
-                push_hidden(&mut fi, ns.clone(), HiddenNames::SigDeclared);
-            }
+            // The bare names the signature exposes under a namespace without
+            // an exported identity shadow by name.
+            fi.namespace_shadow_names
+                .extend(screen.namespace_unexported_names.iter().cloned());
             // Signature-declared `[<AutoOpen>]` nested modules (conclusion 6)
             // — auto-open even when the implementation carries no attribute,
             // and hidden so the namespace fold's barrier fires for them.

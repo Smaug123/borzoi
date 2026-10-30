@@ -915,69 +915,27 @@ fn push_namespace_decl(
     }
 }
 
-/// What a signature type's attributes say about `[<RequireQualifiedAccess>]`:
-/// `Some(true)` when one is spelled as it, `Some(false)` when every one is a
-/// well-known attribute that is not it, `None` otherwise. An attribute is
-/// matched by its written name, so an abbreviation of the attribute under
-/// another name (`type Qual = RequireQualifiedAccessAttribute`, then
-/// `[<Qual>]`) is exactly what the `None` arm is for: such a type's cases may
-/// or may not be in bare scope.
-fn sig_type_rqa(defn: &TypeDefn) -> Option<bool> {
-    if attrs_require_qualified_access(defn.attributes()) {
-        return Some(true);
-    }
-    attrs_all_well_known(defn.attributes()).then_some(false)
-}
-
-/// Whether every attribute in the lists is spelled as one of FSharp.Core's
-/// or the BCL's common type attributes, none of which is
-/// `[<RequireQualifiedAccess>]` or `[<Struct>]`.
-fn attrs_all_well_known(attrs: impl Iterator<Item = AttributeList>) -> bool {
-    const KNOWN: &[&str] = &[
-        "AbstractClass",
-        "AllowNullLiteral",
-        "AutoOpen",
-        "CLIMutable",
-        "Class",
-        "CompilationRepresentation",
-        "CompiledName",
-        "CustomComparison",
-        "CustomEquality",
-        "DebuggerDisplay",
-        "DefaultAugmentation",
-        "Flags",
-        "Interface",
-        "Measure",
-        "NoComparison",
-        "NoEquality",
-        "Obsolete",
-        "ReferenceEquality",
-        "Sealed",
-        "Serializable",
-        "StructuralComparison",
-        "StructuralEquality",
-        "StructuredFormatDisplay",
-    ];
-    attrs
-        .flat_map(|list| list.attributes().collect::<Vec<_>>())
-        .all(|attr| {
-            attr.type_name()
-                .and_then(|li| li.idents().last())
-                .is_some_and(|seg| {
-                    let name = id_text(&seg);
-                    let name = name.strip_suffix("Attribute").unwrap_or(&name);
-                    KNOWN.contains(&name)
-                })
-        })
+/// Whether a signature type's cases are **certainly** in bare scope where
+/// its container is opened: it carries no attribute at all.
+///
+/// An attribute is known only by its written name, and any name can be an
+/// abbreviation of `RequireQualifiedAccessAttribute` (`type Obsolete =
+/// RequireQualifiedAccessAttribute`, then `[<Obsolete>]`), just as
+/// `[<RequireQualifiedAccess>]` can name something else. So an attributed
+/// type's cases are exported type-qualified only, and their bare names are
+/// shadowed without a target
+/// ([`SigScreen::namespace_unexported_names`](model::SigScreen::namespace_unexported_names)).
+fn sig_cases_certainly_bare(defn: &TypeDefn) -> bool {
+    defn.attributes().next().is_none()
 }
 
 /// The names a signature type definition may put in **bare value scope**:
-/// the cases of a union not certainly `[<RequireQualifiedAccess>]`, enum
-/// cases, and a single-ident abbreviation target (FCS reads one that names
-/// no type as a nullary union case). Over-collected where uncertain.
+/// every union case (whether the type is `[<RequireQualifiedAccess>]` is not
+/// knowable from its written attributes), every enum case, and a single-ident
+/// abbreviation target (FCS reads one that names no type as a nullary union
+/// case). Over-collected where uncertain.
 fn sig_bare_value_idents(defn: &TypeDefn) -> Vec<SyntaxToken> {
     match defn.repr() {
-        Some(TypeDefnRepr::Union(_)) if sig_type_rqa(defn) == Some(true) => Vec::new(),
         Some(TypeDefnRepr::Union(u)) => u.cases().filter_map(|c| c.ident()).collect(),
         Some(TypeDefnRepr::Enum(e)) => e.cases().filter_map(|c| c.ident()).collect(),
         Some(TypeDefnRepr::Abbrev(a)) => a
@@ -991,16 +949,15 @@ fn sig_bare_value_idents(defn: &TypeDefn) -> Vec<SyntaxToken> {
 }
 
 /// The type's own name, when the type may take FCS's unqualified
-/// **constructor slot** and so compete with a same-named case: anything but a
-/// plain union or record — a class, a struct, an abbreviation, an opaque
-/// `type T` whose representation the signature hides, a type whose
-/// attributes may make it a struct.
+/// **constructor slot** and so compete with a same-named case: anything but
+/// an attribute-free union or record — a class, an abbreviation, an opaque
+/// `type T` whose representation the signature hides, a type an attribute
+/// may make a struct.
 fn sig_type_slot_name(defn: &TypeDefn) -> Option<SyntaxToken> {
     let plain = matches!(
         defn.repr(),
         Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_))
-    ) && !attrs_mark_struct(defn.attributes())
-        && attrs_all_well_known(defn.attributes());
+    ) && defn.attributes().next().is_none();
     if plain {
         return None;
     }
@@ -1147,7 +1104,7 @@ fn collect_sig_container_exports(
                     // A case enters bare scope only when the type is
                     // certainly not `[<RequireQualifiedAccess>]`; otherwise
                     // it exports type-qualified only.
-                    let rqa = sig_type_rqa(&defn) != Some(false);
+                    let rqa = !sig_cases_certainly_bare(&defn);
                     let tq_path = |case: &str| {
                         let mut p = container.to_vec();
                         p.push(type_name.clone());
@@ -1424,19 +1381,16 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         .iter()
         .filter_map(|e| e.type_qualified.clone())
         .collect();
-    // A namespace stays hidden-valued only where the signature exposes a
-    // bare name its exported surface does not carry.
-    let mut namespace_hidden_values: Vec<Vec<String>> = Vec::new();
-    for path in &bare_value_paths {
-        if exported_value_paths.contains(path) {
-            continue;
-        }
-        if let Some((_, container)) = path.split_last()
-            && !namespace_hidden_values.iter().any(|c| c == container)
-        {
-            namespace_hidden_values.push(container.to_vec());
-        }
-    }
+    // The bare names the signature may expose directly under a namespace
+    // without an exported identity: in scope, shadowing, naming nothing.
+    let namespace_unexported_names: Vec<(Vec<String>, String)> = bare_value_paths
+        .iter()
+        .filter(|path| !exported_value_paths.contains(*path))
+        .filter_map(|path| {
+            let (name, container) = path.split_last()?;
+            Some((container.to_vec(), name.clone()))
+        })
+        .collect();
     let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),
@@ -1446,7 +1400,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         exported_value_paths,
         exported_case_paths,
         namespaces,
-        namespace_hidden_values,
+        namespace_unexported_names,
     });
     SignatureSurface {
         screen,
