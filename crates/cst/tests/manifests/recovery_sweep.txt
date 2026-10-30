@@ -34,7 +34,7 @@ src/Compiler/TypedTree/QuotationPickler.fs@3231 token outside-damage 132/132/133
 src/Compiler/TypedTree/TcGlobals.fsi@4522 token exact 46/46/46
 src/Compiler/Utilities/Activity.fsi@1935 token divergent 1/1/1 beyond-fcs:33
 src/Compiler/Utilities/ImmutableArray.fsi@63 token divergent 0/0/1 beyond-fcs:23
-src/Compiler/Utilities/illib.fs@24268 token exact 215/215/216
+src/Compiler/Utilities/illib.fs@24268 token divergent 206/215/216
 src/Compiler/Utilities/illib.fs@38379 member exact 215/215/216
 src/Compiler/Utilities/rational.fs@650 token exact 19/19/19
 src/Compiler/Utilities/rational.fs@942 member exact 18/18/19
@@ -46,7 +46,7 @@ src/FSharp.Build/MapSourceRoots.fs@5016 token outside-damage 8/8/9
 src/FSharp.Compiler.LanguageServer/Executable.fs@278 member exact 3/3/4
 src/FSharp.Compiler.LanguageServer/Executable.fs@337 token exact 3/3/4
 src/FSharp.Core/Linq.fsi@2442 token divergent 15/15/15
-src/FSharp.Core/collections.fs@783 token outside-damage 6/6/7 beyond-fcs:5
+src/FSharp.Core/collections.fs@783 token divergent 6/6/7 beyond-fcs:4
 src/FSharp.Core/map.fsi@12465 token exact 38/38/38
 src/FSharp.Core/map.fsi@9834 member exact 37/37/38
 src/FSharp.Core/observable.fs@1043 token exact 18/18/18
@@ -54,7 +54,7 @@ src/FSharp.Core/observable.fs@5384 member exact 17/17/18
 src/FSharp.Core/reflect.fs@25205 member exact 112/112/113
 src/FSharp.Core/reflect.fs@58358 token outside-damage 112/112/113
 src/FSharp.Core/result.fs@217 member exact 19/19/20
-src/FSharp.Core/result.fs@2781 token outside-damage 16/16/19
+src/FSharp.Core/result.fs@2781 token divergent 16/16/19
 src/FSharp.Core/string.fs@2971 member exact 21/21/22
 src/FSharp.Core/string.fs@4512 token exact 22/22/22
 tests/EndToEndBuildTests/BasicProvider/BasicProvider.DesignTime/BasicProvider.Provider.fs@1941 token outside-damage 7/7/8
@@ -70,7 +70,7 @@ tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/platform/error_04.fs@49
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/standalone/standalone.fs@568 token exact 6/6/6
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/tokenize/tokenize.fs@1045 token exact 7/7/7
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/warn/warn_level1.fs@251 token outside-damage 5/5/6
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsi/FsiCliTests.fs@1290 token outside-damage 5/5/8
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsi/FsiCliTests.fs@1290 token divergent 5/5/8
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsi/FsiCliTests.fs@1430 member exact 8/8/9
 tests/FSharp.Compiler.ComponentTests/CompilerService/RangeModule.fs@321 token exact 10/10/11
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/Basic/E_LocalLetBinding02.fs@177 token outside-damage 2/2/3
@@ -275,7 +275,7 @@ tests/FSharp.Compiler.ComponentTests/Debugger/DebuggerTestHelpers.fs@986 token e
 tests/FSharp.Compiler.ComponentTests/Debugger/ForArrowDebugPoints.fs@1583 token exact 14/14/14
 tests/FSharp.Compiler.ComponentTests/Diagnostics/ParsingAtEOF.fs@2454 token divergent 14/14/16
 tests/FSharp.Compiler.ComponentTests/EmittedIL/CodeGenRegressions/CodeGenRegressions_Closures.fs@4946 member exact 19/19/20
-tests/FSharp.Compiler.ComponentTests/EmittedIL/CodeGenRegressions/CodeGenRegressions_Closures.fs@6742 token divergent 14/14/16 beyond-fcs:4
+tests/FSharp.Compiler.ComponentTests/EmittedIL/CodeGenRegressions/CodeGenRegressions_Closures.fs@6742 token divergent 14/14/16
 tests/FSharp.Compiler.ComponentTests/EmittedIL/CompiledNameAttribute/CompiledNameAttribute01.fs@252 token exact 2/2/2
 tests/FSharp.Compiler.ComponentTests/EmittedIL/CompiledNameAttribute/CompiledNameAttribute05.fs@111 token exact 1/1/2
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForNInRangeArrays.fs@1761 token outside-damage 34/34/36 beyond-fcs:10
@@ -480,7 +480,7 @@ tests/fsharp/regression/literal-value-bug-1/test.fs@18 token divergent 1/1/3
 tests/fsharp/typeProviders/helloWorld/providedNullAssemblyName.fsx@13 token outside-damage 1/1/3 beyond-fcs:1
 tests/fsharp/typeProviders/helloWorldCSharp/test.fsx@804 token exact 10/10/10
 tests/fsharp/typeProviders/negTests/EVIL_PROVIDER_GetTypes_Null.fsx@60 token exact 2/2/3
-tests/fsharp/typeProviders/negTests/EVIL_PROVIDER_ReturnsTypeWithIncorrectNameFromApplyStaticArguments.fsx@176 token divergent 3/3/5
+tests/fsharp/typeProviders/negTests/EVIL_PROVIDER_ReturnsTypeWithIncorrectNameFromApplyStaticArguments.fsx@176 token exact 3/3/5
 tests/fsharp/typeProviders/negTests/neg2.fsx@23 token outside-damage 2/2/3
 tests/fsharp/typeProviders/negTests/neg2.fsx@85 member exact 2/2/3
 tests/fsharp/typeProviders/negTests/neg6.fsx@251 token outside-damage 6/6/7

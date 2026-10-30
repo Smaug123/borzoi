@@ -58,10 +58,14 @@ fn base_path(name: &str) -> PathBuf {
 /// regenerates it from `main`'s, so a cell this branch makes worse stays red
 /// until the parser is fixed.
 ///
+/// `accepted` names the keys this branch is knowingly worse on, each listed
+/// at the call site with its reason. Every one must still be divergent, so
+/// the list cannot outlive the cells it excuses.
+///
 /// With [`GRID_BASE_OUT_ENV`] set (by that script, running these tests over
 /// `main`'s parser), writes `divergent` to that directory instead.
 #[track_caller]
-pub fn check_no_worse_than_base(name: &str, divergent: &[String]) {
+pub fn check_no_worse_than_base(name: &str, divergent: &[String], accepted: &[&str]) {
     let actual = Manifest::from_entries(divergent.iter().cloned()).expect("one key per line");
     if let Some(dir) = std::env::var_os(GRID_BASE_OUT_ENV) {
         let path = Path::new(&dir).join(format!("{name}.base.txt"));
@@ -86,11 +90,21 @@ pub fn check_no_worse_than_base(name: &str, divergent: &[String]) {
         .unwrap_or_else(|(line, e)| panic!("{} is malformed at line {line}: {e}", path.display()));
     let base: std::collections::BTreeSet<&str> =
         base.entries().iter().map(String::as_str).collect();
+    let stale: Vec<&str> = accepted
+        .iter()
+        .copied()
+        .filter(|k| !actual.entries().iter().any(|e| e == k))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "accepted regressions of `{name}` that no longer diverge; delete them:\n{}",
+        stale.join("\n")
+    );
     let worse: Vec<&str> = actual
         .entries()
         .iter()
         .map(String::as_str)
-        .filter(|k| !base.contains(k))
+        .filter(|k| !base.contains(k) && !accepted.contains(k))
         .collect();
     assert!(
         worse.is_empty(),

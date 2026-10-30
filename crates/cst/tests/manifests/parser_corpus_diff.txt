@@ -93,7 +93,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/Accessibil
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface06.fs both-reject exact 3/3/4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords.fs both-reject exact 2/2/3
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords02.fs both-reject exact 2/2/3
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_let01.fs both-reject exact 1/1/5
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_let01.fs both-reject outside-damage 1/1/5
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_member01.fs both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_module01.fs both-reject divergent 0/1/3
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_type01.fs both-reject exact 2/2/3
@@ -378,21 +378,21 @@ tests/fsharp/core/math/numbers/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/math/numbersVS2008/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/members/absil.fs both-reject divergent 0/0/1
 tests/fsharp/core/members/absil.fsi both-reject divergent 15/15/17 beyond-fcs:531
-tests/fsharp/core/members/basics-hw/test.fsx we-reject-fcs-accepts divergent 1775/1778/1781
+tests/fsharp/core/members/basics-hw/test.fsx we-reject-fcs-accepts divergent 1773/1778/1781
 tests/fsharp/core/members/basics/test.fs range-divergent
 tests/fsharp/core/members/console/console2.fs both-reject divergent 5/5/7
 tests/fsharp/core/members/incremental-hw-mutrec/test.fsx we-reject-fcs-accepts divergent 134/134/136
 tests/fsharp/core/members/incremental-hw/test.fsx we-reject-fcs-accepts divergent 137/137/139
 tests/fsharp/core/members/incremental/test.fsx we-reject-fcs-accepts divergent 133/133/135
 tests/fsharp/core/nested/test.fsx range-divergent
-tests/fsharp/core/patterns/test.fsx we-reject-fcs-accepts outside-damage 586/586/588
+tests/fsharp/core/patterns/test.fsx we-reject-fcs-accepts divergent 581/584/588
 tests/fsharp/core/printf-interpolated/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/printf/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/printing/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/quotes/test.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/recordResolution/test.fsx we-reject-fcs-accepts divergent 34/40/42
 tests/fsharp/core/subtype/test.fsx fcs-normaliser-unmodelled
-tests/fsharp/core/tlr/test.fsx we-reject-fcs-accepts outside-damage 55/55/56
+tests/fsharp/core/tlr/test.fsx we-reject-fcs-accepts divergent 21/53/56
 tests/fsharp/core/topinit/generate.fsx fcs-normaliser-unmodelled
 tests/fsharp/core/unicode/kanji-unicode-utf16.fs non-utf8
 tests/fsharp/core/unicode/kanji-unicode-utf7-codepage-65000.fs both-reject outside-damage 1/1/3
@@ -814,7 +814,7 @@ tests/service/data/SyntaxTree/Type/As 06.fs both-reject exact 1/1/2
 tests/service/data/SyntaxTree/Type/As 07.fs we-accept-fcs-rejects exact 1/1/3
 tests/service/data/SyntaxTree/Type/As 08.fs both-reject outside-damage 1/1/2
 tests/service/data/SyntaxTree/Type/Cascading Nested Invalid Constructs 01.fs both-reject outside-damage 1/1/6
-tests/service/data/SyntaxTree/Type/Deeply Indented Type 01.fs both-reject outside-damage 3/3/8
+tests/service/data/SyntaxTree/Type/Deeply Indented Type 01.fs both-reject divergent 3/3/8
 tests/service/data/SyntaxTree/Type/Double Semicolon Delimiters 01.fs both-reject outside-damage 4/4/6
 tests/service/data/SyntaxTree/Type/Enum 03.fs both-reject outside-damage 1/1/3
 tests/service/data/SyntaxTree/Type/Enum 04.fs both-reject outside-damage 2/2/3

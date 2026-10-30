@@ -1498,13 +1498,8 @@ impl<'src> Parser<'src> {
                 // decl, or EOF). Ground-truthed against the filtered stream for
                 // single-decl, multi-decl, expr-body, open-body, empty-body,
                 // and doubly-nested bodies.
-                // `depth > 0`: the `OBLOCKEND` closes a block opened inside
-                // this body that no declaration claimed (the remains of an
-                // abandoned construct, see the expression-start arm above),
-                // not the body itself.
                 if scope == BodyScope::Nested
                     && *v == Virtual::BlockEnd
-                    && depth <= 0
                     && !matches!(
                         self.next_non_trivia_filtered_after_pos(),
                         Some(FilteredToken::Virtual(Virtual::DeclEnd))

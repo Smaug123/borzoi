@@ -126,10 +126,10 @@ shape, because that shape is what the member-completion handler anchors on.
 
 ## What remains
 
-These were measured on 2026-10-29, after the fixes in this change. Of the 731
-files that one parser or both reject, 280 are `exact`, 396 are
-`outside-damage`, and 55 are `divergent`. Of the 584 deletion cases against
-FCS, 43 are `divergent`, all in the token family. Every member-name deletion
+These were measured on 2026-10-30, after the fixes in this change. Of the 731
+files that one parser or both reject, 279 are `exact`, 394 are
+`outside-damage`, and 58 are `divergent`. Of the 584 deletion cases against
+FCS, 46 are `divergent`, all in the token family. Every member-name deletion
 is `exact`.
 
 The divergent files, by cause (each file counted once, by its first divergence):
@@ -137,11 +137,11 @@ The divergent files, by cause (each file counted once, by its first divergence):
 | count | class |
 |---|---|
 | 13 | **A `module` or `open` inside a type body.** These are the `Module After …`, `Module Between …` and `Module Inside …` fixtures under `tests/service/data/SyntaxTree/Type/`, plus `E_openInTypeDecl.fs`. FCS closes the type and recovers the nested module, with its body. Our parser ends the enclosing module there instead. |
-| 8 | **`we-reject-fcs-accepts` files.** Our parser rejects valid code (an acceptance gap, not a recovery defect), and the recovery from that rejection then drops or misplaces a later declaration. Most are the large `tests/fsharp/core/*/test.fsx` scripts. |
+| 10 | **`we-reject-fcs-accepts` files.** Our parser rejects valid code (an acceptance gap, not a recovery defect), and the recovery from that rejection then drops or misplaces a later declaration. Most are the large `tests/fsharp/core/*/test.fsx` scripts. |
 | 7 | **A second module head with no `=`.** Examples are `module A` after the file's own `module` header, and a `module` head after `#indent "off"`. FCS recovers a `NestedModule`. Our parser drops the keyword as an error and makes an expression declaration of the name. |
 | 6 | **The file's module header normalises differently** (the first divergence the grader reports; later units may differ too). Not yet investigated. |
 | 4 | **FSharp.Core sources** (`Query.fs`, `prim-types.fs`, `array2.fs`, `nativeptr.fs`). Not yet investigated. |
-| 17 | A tail of single cases. |
+| 18 | A tail of single cases. |
 
 The recovery fixes in this change:
 
@@ -149,9 +149,13 @@ The recovery fixes in this change:
   declarations.** When a declaration parser gives up part-way through a type,
   the rest of the type's body sits in offside blocks that no declaration owns.
   The module loop now treats an expression start inside such a block
-  (block depth > 0) as debris, and does not let an `OBLOCKEND` at that depth
-  close a nested module's body. Before the fix, this was the largest class of
-  divergence: member bodies spilled out as `Expr` declarations.
+  (block depth > 0) as debris. Before the fix, this was the largest class of
+  divergence: member bodies spilled out as `Expr` declarations. Such a block's
+  `OBLOCKEND` still closes a nested module's body: whether FCS closes the
+  module after an error is decided by its parser's error recovery (an error
+  inside a type body recovers there, one in a `let`'s right-hand side closes
+  the module), and following it construct by construct is not worth its
+  cost.
 - **A stray token's debris is one region.** `member this.P = 1` outside a
   type no longer makes `this.P = 1` an expression declaration. The region runs
   to the end of the stray's line (past the end of a comment or string that
@@ -182,18 +186,36 @@ The recovery fixes in this change:
   closed and balanced brackets, keyword blocks, a `struct` tuple, comments and
   strings on one line or across lines, separators, a declaration), then
   nothing, an indented `let`, or an indented expression, then two
-  declarations or (after one item) a nested module, against FCS. It pins in
+  declarations or (after one item) a nested module, against FCS. The stray
+  also sits in a nested module and in a doubly nested one, after one item,
+  with each later declaration's module graded. It pins in
   `tests/manifests/debris_grid.txt` each divergent cell, and each unit FCS
   keeps after the stray's lines that our tree lacks (which an error span of
-  ours covering it would otherwise hide). Of its 9,720 cells, #356's parser
-  diverges on 6,282 and loses 57 units; this one diverges on 582 and loses 12,
-  all of which #356's also loses. Ten divergent cells are worse than #356's:
+  ours covering it would otherwise hide).
+
+  `recover_nested_module_scope_after_a_broken_declaration_matches_fcs` grades
+  the module each declaration lands in after a broken first declaration of a
+  nested module (`type T =` or `let w =` followed by each of 73 token classes,
+  attributes before and after the `=`, single or double nesting, a
+  `begin … end` body, a line indented past the broken declaration, a type
+  before `let x`): 9,344 cells, pinned in
+  `tests/manifests/nested_module_scope.txt`.
+
+  Neither grid may diverge where the parser on `main` agrees with FCS: each
+  divergent key must be in the grid's `.base.txt`, which
+  `tools/cst-grid-base.sh` regenerates by running the grid over `main`'s
+  parser. That is a hard assertion; no environment variable rewrites it. The
+  exceptions are listed, each with its reason, in `DEBRIS_GRID_ACCEPTED`:
   six after an unclosed `begin` (`_ foo begin )`, `;`, `=`, each with and
   without an indented `let` after it), where the `begin` stays open, LexFilter
   leaves the next line's `let` raw, and the module loop cannot begin a
-  declaration with it; and `private` or `->` before
+  declaration with it; four with `private` or `->` before
   `foo type T = struct end` followed by `;` or a stray `end` and an indented
-  expression.
+  expression; and five doubly nested cells with an indented continuation,
+  where FCS's error recovery keeps the outer module's `let y` in it and ours
+  closes the outer module with the inner one.
+  Against `main`, the debris grid's divergent lines go from 7,819 to
+  1,164 and the scope grid's from 7,254 to 7,210.
 
 Two live defects were found and not fixed. Both are outside recovery proper:
 
