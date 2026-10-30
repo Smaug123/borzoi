@@ -137,14 +137,14 @@ fn entity_annotations_compose_with_parameters_and_returns() {
         binder_render(param, "f").as_deref(),
         Some("System.String -> System.String")
     );
-    assert_eq!(assert_binder_sound(param), 1);
+    assert_eq!(assert_binder_sound(param), 2);
 
     let ret = "module M\nopen System\nlet h x : String = x\n";
     assert_eq!(
         binder_render(ret, "h").as_deref(),
         Some("System.String -> System.String")
     );
-    assert_eq!(assert_binder_sound(ret), 1);
+    assert_eq!(assert_binder_sound(ret), 2);
 }
 
 /// Structural recursion over entity leaves: `String * Guid` renders exactly

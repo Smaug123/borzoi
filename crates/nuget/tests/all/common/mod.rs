@@ -177,9 +177,23 @@ pub struct Oracle {
 impl Oracle {
     /// Spawn the oracle on the NuGet of [`sdk_dir`].
     pub fn spawn() -> Oracle {
+        Oracle::spawn_with_environment(&[])
+    }
+
+    /// [`Self::spawn`], with each `(name, value)` set in the oracle's
+    /// environment before NuGet loads.
+    pub fn spawn_with_environment(environment: &[(&str, &str)]) -> Oracle {
         let sdk = sdk_dir().to_str().expect("SDK directory is UTF-8");
+        let assignments: Vec<String> = environment
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        let mut args = vec!["--nuget-from", sdk];
+        for assignment in &assignments {
+            args.extend(["--env", assignment.as_str()]);
+        }
         Oracle {
-            child: BatchChild::spawn(ensure_oracle_built(), &["--nuget-from", sdk]),
+            child: BatchChild::spawn(ensure_oracle_built(), &args),
         }
     }
 

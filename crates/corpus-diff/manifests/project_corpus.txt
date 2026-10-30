@@ -17647,7 +17647,7 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:5:13-23 "Reflection" assembly-deferral unrecorded unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:5:24-32 "Metadata" assembly-deferral unrecorded unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:5:6-12 "System" assembly-deferral unrecorded unattributed
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs compared match=331 assembly-match=203 attribute=1 member=0 definitions=170
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs compared match=331 assembly-match=206 attribute=1 member=3 definitions=170
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs handlers perturbed definition declined=20 located=12 located-elsewhere=18
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs handlers perturbed hover described=38 explained=12
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs handlers perturbed references declined=12 referenced=38
@@ -17882,9 +17882,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:42:78-91 "Length" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:430:34-52 "Name" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:430:43-47 "Name" project-deferral qualified-access unattributed
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:43:13-27 "Substring" assembly-deferral qualified-access unattributed
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:43:32-43 "Length" assembly-deferral qualified-access unattributed
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:43:46-59 "Length" assembly-deferral qualified-access unattributed
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:443:38-52 "DumpedAssembly" project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:443:82-95 "MetadataToken" project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AttributeFormatting.fs:4:13-23 "Reflection" assembly-deferral unrecorded unattributed

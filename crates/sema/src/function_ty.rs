@@ -14,7 +14,11 @@
 //! vouch for is a [`FunctionTyGap`], and the caller declines (D5). Of the
 //! constraints, only `equality` and `comparison` are read into the scheme
 //! ([`ModuleFunctionScheme::requirements`]), for the caller to check: they
-//! unify nothing, so the IL signature is still the use's type.
+//! unify nothing, so the IL signature is still the use's type. FSharp.Core's
+//! statically resolved arithmetic operators and conversion functions are read
+//! apart ([`builtin_operator`]): their signature says nothing of their result
+//! until F#'s built-in rule solves the constraint, so the caller types a use
+//! by the rule.
 //!
 //! A measure need not appear in the val's pickled type to have been erased: a
 //! function over `type Dist = float<m>` pickles the name `Dist` only, compiles
@@ -154,6 +158,175 @@ pub(crate) fn module_function_scheme(
     handle: EntityHandle,
     method: &MethodLike,
 ) -> Result<ModuleFunctionScheme, FunctionTyGap> {
+    use_checks(env, handle, method)?;
+    let requirements = method
+        .generic_parameters
+        .iter()
+        .map(checkable_requirement)
+        .collect::<Result<Vec<_>, ()>>()
+        .map_err(|()| FunctionTyGap::Constrained)?;
+    let ty = signature_ty(env, handle, method)?;
+    Ok(ModuleFunctionScheme { ty, requirements })
+}
+
+/// One of FSharp.Core's statically resolved operators or conversion
+/// functions whose solution, over the primitive types, F# builds in rather
+/// than looks up (`SolveMemberConstraint`'s built-in rules in the F#
+/// compiler's ConstraintSolver.fs). Its signature (`^T1 -> ^T2 -> ^T3` for
+/// `+`) says nothing about its result until the constraint is solved, so a
+/// use is typed by the rule ([`crate::infer`]'s `builtin_verdict`), not by
+/// the signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Builtin {
+    /// `+ - * / %`, by its compiled name.
+    Arith(Arith),
+    /// `&&& ||| ^^^`.
+    Bitwise,
+    /// `<<< >>>`.
+    Shift,
+    /// Prefix `-` (`~-`).
+    Negate,
+    /// A conversion function (`int`, `float`, `char`, …) to `target`, a
+    /// numeric type or `char`.
+    Convert {
+        /// The type the function's signature returns.
+        target: Ty,
+    },
+}
+
+/// Which arithmetic operator a [`Builtin::Arith`] is: F# solves each over a
+/// different set of types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Arith {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+/// The [`Builtin`] `method` of the module `handle` is, if it is one: a
+/// function of FSharp.Core's own `Microsoft.FSharp.Core.Operators` (by
+/// assembly identity, public-key token included) whose compiled name is on
+/// the closed list below, that a use may name ([`use_checks`]), whose every
+/// type parameter carries an F#-only constraint and nothing in IL — the
+/// statically resolved member constraint the rule solves — and whose IL
+/// signature has the shape the rule assumes. A function that matches on name
+/// but not on shape is not read as one: a different FSharp.Core could declare
+/// a different operator under the name.
+pub(crate) fn builtin_operator(
+    env: &AssemblyEnv,
+    handle: EntityHandle,
+    method: &MethodLike,
+) -> Option<Builtin> {
+    // The name first: it is the cheap test, and most functions fail it.
+    let shape = match method.name.as_str() {
+        "op_Addition" => Shape::Arith(Arith::Add),
+        "op_Subtraction" => Shape::Arith(Arith::Sub),
+        "op_Multiply" => Shape::Arith(Arith::Mul),
+        "op_Division" => Shape::Arith(Arith::Div),
+        "op_Modulus" => Shape::Arith(Arith::Mod),
+        "op_BitwiseAnd" | "op_BitwiseOr" | "op_ExclusiveOr" => Shape::Bitwise,
+        "op_LeftShift" | "op_RightShift" => Shape::Shift,
+        "op_UnaryNegation" => Shape::Negate,
+        "ToByte" | "ToSByte" | "ToInt16" | "ToUInt16" | "ToInt" | "ToInt32" | "ToUInt"
+        | "ToUInt32" | "ToInt64" | "ToUInt64" | "ToIntPtr" | "ToUIntPtr" | "ToSingle"
+        | "ToDouble" | "ToDecimal" | "ToChar" => Shape::Convert,
+        _ => return None,
+    };
+    let module = env.entity(handle);
+    if !is_fsharp_core(&module.assembly)
+        || env.entity_full_name(handle) != "Microsoft.FSharp.Core.Operators"
+    {
+        return None;
+    }
+    use_checks(env, handle, method).ok()?;
+    if method.generic_parameters.is_empty()
+        || !method.generic_parameters.iter().all(|p| {
+            p.fsharp_constraints == FSharpConstraints::Present
+                && !(p.reference_type_constraint
+                    || p.value_type_constraint
+                    || p.default_constructor_constraint
+                    || p.is_unmanaged
+                    || !p.type_constraints.is_empty())
+        })
+    {
+        return None;
+    }
+    let ty = signature_ty(env, handle, method).ok()?;
+    let p = Ty::Param;
+    let fun = |arg: Ty, ret: Ty| Ty::Fun {
+        arg: Box::new(arg),
+        ret: Box::new(ret),
+    };
+    let (builtin, expected) = match shape {
+        Shape::Arith(op) => (Builtin::Arith(op), fun(p(0), fun(p(1), p(2)))),
+        Shape::Bitwise => (Builtin::Bitwise, fun(p(0), fun(p(0), p(0)))),
+        Shape::Shift => (
+            Builtin::Shift,
+            fun(p(0), fun(Ty::named("System.Int32"), p(0))),
+        ),
+        Shape::Negate => (Builtin::Negate, fun(p(0), p(0))),
+        Shape::Convert => {
+            let Ty::Fun { ret, .. } = &ty else {
+                return None;
+            };
+            let target = (**ret).clone();
+            if !crate::infer::is_conversion_target(&target) {
+                return None;
+            }
+            (
+                Builtin::Convert {
+                    target: target.clone(),
+                },
+                fun(p(0), target),
+            )
+        }
+    };
+    let mut mentioned = Vec::new();
+    collect_params(&expected, &mut mentioned);
+    (ty == expected && mentioned.len() == method.generic_parameters.len()).then_some(builtin)
+}
+
+/// The signature shape a [`Builtin`]'s name promises, before the signature
+/// is read.
+#[derive(Debug, Clone, Copy)]
+enum Shape {
+    Arith(Arith),
+    Bitwise,
+    Shift,
+    Negate,
+    Convert,
+}
+
+/// The distinct [`Ty::Param`] indices `ty` mentions.
+fn collect_params(ty: &Ty, out: &mut Vec<u32>) {
+    match ty {
+        Ty::Param(i) => {
+            if !out.contains(i) {
+                out.push(*i);
+            }
+        }
+        Ty::Var(_) => {}
+        Ty::Named { args, .. } => args.iter().for_each(|a| collect_params(a, out)),
+        Ty::Array { elem, .. } => collect_params(elem, out),
+        Ty::Tuple(elems) => elems.iter().for_each(|e| collect_params(e, out)),
+        Ty::Fun { arg, ret } => {
+            collect_params(arg, out);
+            collect_params(ret, out);
+        }
+    }
+}
+
+/// Whether `method` is a function or value of the F# module `handle` that a
+/// use may name: not a member of a type, accessible, and not one F# rejects
+/// at the use for its attributes, its pickled facts, or the module it is
+/// reached through; and, since IL erases them, mentioning no unit of measure.
+fn use_checks(
+    env: &AssemblyEnv,
+    handle: EntityHandle,
+    method: &MethodLike,
+) -> Result<(), FunctionTyGap> {
     let module = env.entity(handle);
     if module.kind != EntityKind::Module
         || !method.is_static
@@ -202,12 +375,19 @@ pub(crate) fn module_function_scheme(
             }
         }
     }
-    let requirements = method
-        .generic_parameters
-        .iter()
-        .map(checkable_requirement)
-        .collect::<Result<Vec<_>, ()>>()
-        .map_err(|()| FunctionTyGap::Constrained)?;
+    Ok(())
+}
+
+/// The F# type of `method`, a function or value of the F# module `handle`,
+/// read off its IL signature and pickled argument groups, with each of its
+/// type parameters the [`Ty::Param`] of its index. What its type parameters
+/// must satisfy is the caller's to read.
+fn signature_ty(
+    env: &AssemblyEnv,
+    handle: EntityHandle,
+    method: &MethodLike,
+) -> Result<Ty, FunctionTyGap> {
+    let module = env.entity(handle);
     let params = &method.signature.parameters;
     if params
         .iter()
@@ -237,11 +417,10 @@ pub(crate) fn module_function_scheme(
         .map(|p| bridge.ty(&p.ty))
         .collect::<Result<Vec<_>, _>>()?;
     let domains = curried_domains(method, &params)?;
-    let ty = domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
+    Ok(domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
         arg: Box::new(arg),
         ret: Box::new(ret),
-    });
-    Ok(ModuleFunctionScheme { ty, requirements })
+    }))
 }
 
 /// The curried domains of `method`'s F# type, from its bridged IL parameter
