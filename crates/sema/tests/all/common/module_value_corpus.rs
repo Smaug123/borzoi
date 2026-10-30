@@ -499,23 +499,459 @@ pub const SHAPES: &[Shape] = &[
         FunctionTyGap::Measures,
         Rejection::No,
     ),
-    declined(
+    // Generic named types, read by their compiled path. F# lists, options,
+    // results, value options, refs, choices and asyncs (FSharp.Core renames
+    // each), nested and in arrays.
+    admitted("intList", "intList = [1]", &[], None, false),
+    admitted(
         "lst",
-        "",
         "lst (x: int list) = x.Length",
-        &["[1]"],
+        &["intList"],
+        Some("ints"),
+        false,
+    ),
+    admitted(
+        "lstG",
+        "lstG (xs: 'a list) = xs",
+        &["intList"],
+        Some("ints"),
+        true,
+    ),
+    admitted(
+        "lstMap",
+        "lstMap (f: 'a -> 'b) (xs: 'a list) = List.map f xs",
+        &["showInt", "intList"],
+        Some("1"),
+        true,
+    ),
+    admitted("lstRet", "lstRet (x: 'a) = [x]", &["1"], None, true),
+    admitted("intLists", "intLists = [[1]]", &[], None, false),
+    admitted(
+        "lstNest",
+        "lstNest (xs: int list list) = 1",
+        &["intLists"],
+        Some("intList"),
+        false,
+    ),
+    admitted("lstArr", "lstArr = [| [1] |]", &[], None, false),
+    admitted(
+        "arrLst",
+        "arrLst (xs: int list[]) = xs.Length",
+        &["lstArr"],
+        Some("ints"),
+        false,
+    ),
+    admitted("optVal", "optVal = Some 1", &[], None, false),
+    admitted(
+        "optInt",
+        "optInt (o: int option) = 1",
+        &["optVal"],
+        Some("1"),
+        false,
+    ),
+    admitted("optG", "optG (x: 'a) = Some x", &["\"s\""], None, true),
+    admitted("optLstVal", "optLstVal = Some [1]", &[], None, false),
+    admitted(
+        "optLst",
+        "optLst (o: int list option) = 1",
+        &["optLstVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted("optTupVal", "optTupVal = Some (1, \"s\")", &[], None, false),
+    admitted(
+        "optTup",
+        "optTup (o: (int * string) option) = 1",
+        &["optTupVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted("optFnVal", "optFnVal = Some showInt", &[], None, false),
+    admitted(
+        "optFn",
+        "optFn (o: (int -> string) option) = 1",
+        &["optFnVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted(
+        "resVal",
+        "resVal : Result<int, string> = Ok 1",
+        &[],
+        None,
+        false,
+    ),
+    admitted(
+        "res",
+        "res (r: Result<int, string>) = 1",
+        &["resVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted(
+        "resG",
+        "resG (x: 'a) : Result<'a, string> = Ok x",
+        &["1"],
+        None,
+        true,
+    ),
+    admitted("voptVal", "voptVal = ValueSome 1", &[], None, false),
+    admitted(
+        "vopt",
+        "vopt (x: int voption) = 1",
+        &["voptVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted("refVal", "refVal = ref 1", &[], None, false),
+    admitted(
+        "deref",
+        "deref (r: int ref) = r.Value",
+        &["refVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted(
+        "choiceVal",
+        "choiceVal : Choice<int, string> = Choice1Of2 1",
+        &[],
+        None,
+        false,
+    ),
+    admitted(
+        "choice",
+        "choice (c: Choice<int, string>) = 1",
+        &["choiceVal"],
+        Some("resVal"),
+        false,
+    ),
+    admitted(
+        "asyncVal",
+        "asyncVal = async { return 1 }",
+        &[],
+        None,
+        false,
+    ),
+    admitted(
+        "runA",
+        "runA (a: Async<int>) = 1",
+        &["asyncVal"],
+        Some("optVal"),
+        false,
+    ),
+    // `seq<int>` is an interface and `ResizeArray<int>` an unsealed class,
+    // which FCS loosens at a use; returned, neither is loosened.
+    admitted(
+        "seqP",
+        "seqP (xs: seq<int>) = 1",
+        &["intList"],
+        Some("1"),
+        true,
+    ),
+    admitted(
+        "seqRet",
+        "seqRet (n: int) : seq<int> = Seq.singleton n",
+        &["1"],
+        Some("\"s\""),
+        false,
+    ),
+    admitted("raVal", "raVal = ResizeArray<int>()", &[], None, false),
+    admitted(
+        "raP",
+        "raP (xs: ResizeArray<int>) = xs.Count",
+        &["raVal"],
+        Some("intList"),
+        true,
+    ),
+    // A BCL struct and a delegate, both sealed.
+    admitted(
+        "kvpVal",
+        "kvpVal = System.Collections.Generic.KeyValuePair<int, string>(1, \"s\")",
+        &[],
+        None,
+        false,
+    ),
+    admitted(
+        "kvp",
+        "kvp (p: System.Collections.Generic.KeyValuePair<int, string>) = p.Key",
+        &["kvpVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted(
+        "funcVal",
+        "funcVal = System.Func<int, int>(fun x -> x)",
+        &[],
+        None,
+        false,
+    ),
+    // User generic types, and abbreviations of generic types.
+    admitted("gboxVal", "gboxVal = { G = 1 }", &[], None, false),
+    admitted(
+        "gbox",
+        "gbox (b: GBox<int>) = b.G",
+        &["gboxVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted("gboxG", "gboxG (x: 'a) = { G = x }", &["1"], None, true),
+    admitted("guVal", "guVal : GU<string> = GA \"s\"", &[], None, false),
+    admitted(
+        "gu",
+        "gu (u: GU<string>) = 1",
+        &["guVal"],
+        Some("gboxVal"),
+        false,
+    ),
+    // A generic F# class FCS loosens at a use, and a sealed one it does not.
+    admitted("gclassVal", "gclassVal = GClass<int>(1)", &[], None, false),
+    admitted(
+        "gclassP",
+        "gclassP (c: GClass<int>) = c.X",
+        &["gclassVal"],
+        Some("optVal"),
+        true,
+    ),
+    admitted(
+        "gsealedVal",
+        "gsealedVal = GSealed<int>(1)",
+        &[],
+        None,
+        false,
+    ),
+    admitted(
+        "gsealedP",
+        "gsealedP (c: GSealed<int>) = c.X",
+        &["gsealedVal"],
+        Some("gclassVal"),
+        false,
+    ),
+    admitted(
+        "intBox",
+        "intBox (b: IntBox) = b.G",
+        &["gboxVal"],
+        Some("optVal"),
+        false,
+    ),
+    admitted(
+        "lstAbbrev",
+        "lstAbbrev (xs: Lst<int>) = 1",
+        &["intList"],
+        Some("ints"),
+        false,
+    ),
+    // Declined generic named types: a constrained type parameter, a measure
+    // parameter, a renamed type outside FSharp.Core's, and the heads FCS
+    // renders structurally.
+    declined(
+        "cboxVal",
+        "",
+        "cboxVal = { C = 1 }",
+        &[],
+        false,
+        FunctionTyGap::Constrained,
+        Rejection::No,
+    ),
+    declined(
+        "cbox",
+        "",
+        "cbox (b: CBox<int>) = 1",
+        &["cboxVal"],
+        false,
+        FunctionTyGap::Constrained,
+        Rejection::No,
+    ),
+    declined(
+        "mapVal",
+        "",
+        "mapVal : Map<int, string> = Map.empty",
+        &[],
+        false,
+        FunctionTyGap::Constrained,
+        Rejection::No,
+    ),
+    declined(
+        "mapP",
+        "",
+        "mapP (m: Map<int, string>) = m.Count",
+        &["mapVal"],
+        false,
+        FunctionTyGap::Constrained,
+        Rejection::No,
+    ),
+    declined(
+        "nullableVal",
+        "",
+        "nullableVal = System.Nullable<int>(1)",
+        &[],
+        false,
+        FunctionTyGap::Constrained,
+        Rejection::No,
+    ),
+    declined(
+        "nullableP",
+        "",
+        "nullableP (x: System.Nullable<int>) = 1",
+        &["nullableVal"],
+        false,
+        FunctionTyGap::Constrained,
+        Rejection::No,
+    ),
+    declined(
+        "mboxVal",
+        "",
+        "mboxVal : MBox<m> = { V = 1.0<m> }",
+        &[],
+        false,
+        FunctionTyGap::Measures,
+        Rejection::No,
+    ),
+    declined(
+        "mbox",
+        "",
+        "mbox (b: MBox<m>) = 1",
+        &["mboxVal"],
+        false,
+        FunctionTyGap::Measures,
+        Rejection::No,
+    ),
+    declined(
+        "mboxAbbrev",
+        "",
+        "mboxAbbrev (b: MBoxM) = 1",
+        &["mboxVal"],
+        false,
+        FunctionTyGap::Measures,
+        Rejection::No,
+    ),
+    declined(
+        "mpairVal",
+        "",
+        "mpairVal : MPair<int, m> = { A = 1; W = 1.0<m> }",
+        &[],
+        false,
+        FunctionTyGap::Measures,
+        Rejection::No,
+    ),
+    declined(
+        "mpair",
+        "",
+        "mpair (p: MPair<int, m>) = p.A",
+        &["mpairVal"],
+        false,
+        FunctionTyGap::Measures,
+        Rejection::No,
+    ),
+    declined(
+        "mpairG",
+        "",
+        "mpairG (p: MPair<'a, 'u>) = p.A",
+        &["mpairVal"],
+        true,
+        FunctionTyGap::Measures,
+        Rejection::No,
+    ),
+    declined(
+        "rgboxVal",
+        "",
+        "rgboxVal = { R = 1 }",
+        &[],
         false,
         FunctionTyGap::Type,
         Rejection::No,
     ),
-    // `seq<int>` is an interface, which FCS loosens at a use.
     declined(
-        "seqP",
+        "rgbox",
         "",
-        "seqP (xs: seq<int>) = 1",
-        &["ints"],
-        true,
+        "rgbox (b: RGBox<int>) = b.R",
+        &["rgboxVal"],
+        false,
         FunctionTyGap::Type,
+        Rejection::No,
+    ),
+    // Renamed with the arity suffix spelled out, so the IL names it as a
+    // generic type of its arity: only the rename tells it apart.
+    declined(
+        "rgbox2Val",
+        "",
+        "rgbox2Val = { R2 = 1 }",
+        &[],
+        false,
+        FunctionTyGap::Type,
+        Rejection::No,
+    ),
+    declined(
+        "rgbox2",
+        "",
+        "rgbox2 (b: RGBox2<int>) = b.R2",
+        &["rgbox2Val"],
+        false,
+        FunctionTyGap::Type,
+        Rejection::No,
+    ),
+    declined(
+        "structTupVal",
+        "",
+        "structTupVal = struct (1, 2)",
+        &[],
+        false,
+        FunctionTyGap::Type,
+        Rejection::No,
+    ),
+    declined(
+        "structTup",
+        "",
+        "structTup (p: struct (int * int)) = 1",
+        &["structTupVal"],
+        false,
+        FunctionTyGap::Type,
+        Rejection::No,
+    ),
+    declined(
+        "tup1Val",
+        "",
+        "tup1Val = System.Tuple<int>(1)",
+        &[],
+        false,
+        FunctionTyGap::Type,
+        Rejection::No,
+    ),
+    declined(
+        "tup8Val",
+        "",
+        "tup8Val = (1, 2, 3, 4, 5, 6, 7, 8)",
+        &[],
+        false,
+        FunctionTyGap::Type,
+        Rejection::No,
+    ),
+    // A parameter of an eight-tuple type compiles to eight parameters, one
+    // group, so it is read as the tuple it is.
+    admitted(
+        "tup8",
+        "tup8 (t: int * int * int * int * int * int * int * int) = 1",
+        &["(1, 2, 3, 4, 5, 6, 7, 8)"],
+        Some("1"),
+        false,
+    ),
+    // A generic type nested in a generic type: its pickled head is not one
+    // the measure check can place, so it declines there.
+    declined(
+        "keysVal",
+        "",
+        "keysVal = System.Collections.Generic.Dictionary<int, string>().Keys",
+        &[],
+        false,
+        FunctionTyGap::Measures,
+        Rejection::No,
+    ),
+    declined(
+        "keys",
+        "",
+        "keys (k: System.Collections.Generic.Dictionary<int, string>.KeyCollection) = k.Count",
+        &["keysVal"],
+        false,
+        FunctionTyGap::Measures,
         Rejection::No,
     ),
     declined(
@@ -616,6 +1052,37 @@ type SoloClass(q: int) =
 type SoloStruct =
     { Q: int }
     member this.M = this.Q
+
+type GBox<'T> = { G: 'T }
+
+type GU<'T> =
+    | GA of 'T
+    | GB
+
+type CBox<'T when 'T : comparison> = { C: 'T }
+
+type MBox<[<Measure>] 'u> = { V: float<'u> }
+
+type MBoxM = MBox<m>
+
+type MPair<'a, [<Measure>] 'u> = { A: 'a; W: float<'u> }
+
+type GClass<'T>(x: 'T) =
+    member _.X = x
+
+[<Sealed>]
+type GSealed<'T>(x: 'T) =
+    member _.X = x
+
+type IntBox = GBox<int>
+
+type Lst<'a> = 'a list
+
+[<CompiledName(\"RenamedGBox\")>]
+type RGBox<'T> = { R: 'T }
+
+[<CompiledName(\"RenamedGBox2`1\")>]
+type RGBox2<'T> = { R2: 'T }
 ";
 
 /// The receiver types of the member-access grid, and a module value of each
@@ -637,7 +1104,8 @@ module Ops =
     let (+++) (a: int) (b: int) = a + b
     let (|>>) (x: 'a) (f: 'a -> 'b) = f x
     let (=~) (a: 'a) (b: 'a) = (a = b)
-    let (+@) (a: int list) (b: int) = b
+    let (+@) (a: struct (int * int)) (b: int) = b
+    let (+?) (a: int option) (b: int) = b
     let (|Even|Odd|) (x: int) = if x % 2 = 0 then Even else Odd
     let (|Pos|_|) (x: int) = if x > 0 then Some x else None
 ";
@@ -674,6 +1142,17 @@ module CmWarnMod =
     let v = 1
 ";
 
+/// The module of functions over a byref-like generic, which no use may read
+/// (F# rejects such a function as a first-class value), beside a control.
+pub const BYREF_LIKE_MODULE: &str = "ByRefLike";
+
+const BYREF_LIKE: &str = "
+module ByRefLike =
+    let spanLen (s: System.ReadOnlySpan<int>) = s.Length
+    let spanOf (xs: int[]) = System.ReadOnlySpan<int>(xs)
+    let control (x: int list) = x
+";
+
 /// `Collision.Thing`, which the twin assembly (`module_value_twin_env`)
 /// declares too, with a member of another type.
 const COLLISION: &str = "
@@ -681,9 +1160,13 @@ namespace Collision
 
 type Thing = { P: string }
 
+type GThing<'T> = { P: string; T: 'T }
+
 module A =
     let item: Thing = { P = \"s\" }
     let take (t: Thing) = t.P
+    let gitem: GThing<int> = { P = \"s\"; T = 1 }
+    let gtake (t: GThing<int>) = t.P
 ";
 
 /// The fixture source: [`SHAPES`] as the module [`MODULE`], each of
@@ -713,6 +1196,7 @@ pub fn fixture_source() -> String {
         }
     }
     out.push_str(REJECTED_MODULES);
+    out.push_str(BYREF_LIKE);
     out.push_str(COLLISION);
     out
 }

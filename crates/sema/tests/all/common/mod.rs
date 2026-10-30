@@ -1500,6 +1500,15 @@ pub fn module_value_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
             .join("netstandard.dll");
         let sysrt = std::fs::read(&sysrt_path).expect("read System.Runtime.dll");
         let netstd = std::fs::read(&netstd_path).expect("read netstandard.dll");
+        // `ResizeArray<'T>`'s target, `System.Collections.Generic.List<'T>`,
+        // lives in System.Collections.
+        let collections = std::fs::read(
+            sysrt_path
+                .parent()
+                .expect("ref dir")
+                .join("System.Collections.dll"),
+        )
+        .expect("read System.Collections.dll");
         let fixture = std::fs::read(ensure_module_value_fixture_built())
             .expect("read the module-value fixture");
         let twin =
@@ -1508,6 +1517,7 @@ pub fn module_value_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
             Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
             Ecma335Assembly::parse(&sysrt).expect("parse System.Runtime.dll"),
             Ecma335Assembly::parse(&netstd).expect("parse netstandard.dll"),
+            Ecma335Assembly::parse(&collections).expect("parse System.Collections.dll"),
             Ecma335Assembly::parse(&fixture).expect("parse SemaModuleValueFixture.dll"),
             Ecma335Assembly::parse(&twin).expect("parse SemaModuleValueTwin.dll"),
         ];

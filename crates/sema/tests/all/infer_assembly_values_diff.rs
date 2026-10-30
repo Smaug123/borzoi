@@ -333,7 +333,7 @@ const UNDECIDED_PARAMETER_FLOW: &[&str] = &["hofObj"];
 /// checks fix it undoes them (`Gen::bounded_flex`), and FCS condenses a
 /// generalised bounded variable back to its bound, which is not modelled:
 /// these owe no commit, as the in-file pipe grid's `fc` and `fv` owe none.
-const BOUNDED_LOOSENING: &[&str] = &["takesCmp", "takesUri"];
+const BOUNDED_LOOSENING: &[&str] = &["takesCmp", "takesUri", "seqP", "raP", "gclassP"];
 
 /// One generated use of a shape.
 struct ShapeRow {
@@ -602,11 +602,12 @@ fn an_assembly_operator_outside_fsharp_core_is_an_application_of_its_signature()
          let r2 p = (p +++ 1, p)\n\
          let r3 p = (p |>> strLen, p)\n\
          let r4 () = 1 =~ 2\n\
-         let r5 () = [1] +@ 2\n\
+         let r5 () = struct (1, 2) +@ 2\n\
          let r6 () = (|Even|Odd|) 3\n\
          let r7 () = {NS}.{OPS_MODULE}.(|Pos|_|) 3\n\
          let r8 () = (|Even|Odd|)\n\
-         let r9 () = match 3 with Even -> 1 | Odd -> 2\n"
+         let r9 () = match 3 with Even -> 1 | Odd -> 2\n\
+         let r10 () = optVal +? 2\n"
     );
     let at = |needle: &str| {
         let start = src.find(needle).expect("the row");
@@ -617,6 +618,7 @@ fn an_assembly_operator_outside_fsharp_core_is_an_application_of_its_signature()
         at("1 |>> showInt"),
         at("p +++ 1"),
         at("p |>> strLen"),
+        at("optVal +? 2"),
     ];
     let rows: Vec<Row> = must
         .iter()
@@ -659,16 +661,28 @@ fn a_named_type_two_assemblies_declare_is_not_read() {
                let b () = let v = Collision.B.item in v.P\n\
                let c () = Collision.B.item\n\
                let d () = Collision.A.take Collision.A.item\n\
-               let e () = Collision.B.take Collision.B.item\n";
+               let e () = Collision.B.take Collision.B.item\n\
+               let f () = let v = Collision.A.gitem in v.P\n\
+               let g () = let v = Collision.B.gitem in v.P\n\
+               let h () = Collision.A.gitem\n\
+               let i () = Collision.B.gitem\n\
+               let j () = Collision.A.gtake Collision.A.gitem\n\
+               let k () = Collision.B.gtake Collision.B.gitem\n";
     // Both sides decline, the one a path lookup happens to land on too: which
-    // one that is depends on reference order, which `Ty` does not carry.
-    let accesses: Vec<(usize, usize)> = ["Collision.A.item in v.P", "Collision.B.item in v.P"]
-        .iter()
-        .map(|body| {
-            let at = src.find(body).expect("the row") + body.len() - "v.P".len();
-            (at, at + "v.P".len())
-        })
-        .collect();
+    // one that is depends on reference order, which `Ty` does not carry. The
+    // generic `GThing<'T>` is declared by both too.
+    let accesses: Vec<(usize, usize)> = [
+        "Collision.A.item in v.P",
+        "Collision.B.item in v.P",
+        "Collision.A.gitem in v.P",
+        "Collision.B.gitem in v.P",
+    ]
+    .iter()
+    .map(|body| {
+        let at = src.find(body).expect("the row") + body.len() - "v.P".len();
+        (at, at + "v.P".len())
+    })
+    .collect();
     let rows: Vec<Row> = accesses
         .iter()
         .map(|&range| Row { range, synth: true })
@@ -683,6 +697,182 @@ fn a_named_type_two_assemblies_declare_is_not_read() {
             .contains(&Incomplete::AssemblyValue(FunctionTyGap::Type)),
         "the ambiguous type is read: {c:?}"
     );
+}
+
+/// A generic record and union the twin assembly alone declares: a function or
+/// value over them reads them from the twin, through the reference's own
+/// scope, and commits FCS's type.
+#[test]
+fn a_generic_type_of_another_assembly_is_read_through_its_scope() {
+    let src = "module TwinUse\n\
+               open TwinOnly\n\
+               let a () = TwinFns.tbox TwinFns.tboxVal\n\
+               let b () = TwinFns.tboxVal\n\
+               let c () = TwinFns.tboxG 1\n\
+               let d () = TwinFns.tu TwinFns.tuVal\n\
+               let e () = TwinFns.tuVal\n\
+               let f () = TwinFns.tboxVal |> TwinFns.tbox\n";
+    let must: Vec<(usize, usize)> = [
+        "TwinFns.tbox TwinFns.tboxVal",
+        "TwinFns.tboxVal\n",
+        "TwinFns.tboxG 1",
+        "TwinFns.tu TwinFns.tuVal",
+        "TwinFns.tuVal\n",
+        "TwinFns.tboxVal |> TwinFns.tbox",
+    ]
+    .iter()
+    .map(|body| {
+        let body = body.trim_end();
+        let at = src
+            .match_indices(body)
+            .map(|(i, _)| i)
+            .find(|&i| src[..i].ends_with("= "))
+            .expect("the row");
+        (at, at + body.len())
+    })
+    .collect();
+    let rows: Vec<Row> = must
+        .iter()
+        .map(|&range| Row { range, synth: true })
+        .collect();
+    let c =
+        check_in(Defs::Assembly, "twin_generic", src, &rows, true).expect("FCS checks the file");
+    assert_eq!(
+        c.committed_rows.len(),
+        must.len(),
+        "a function over the twin's generic types is not typed: {c:?}\n{src}"
+    );
+    let ill = "module TwinIll\n\
+               open TwinOnly\n\
+               let a () = TwinFns.tbox TwinFns.tuVal\n\
+               let b () = TwinFns.tu TwinFns.tboxVal\n\
+               let c () = TwinFns.tbox (TwinFns.tboxG \"s\")\n";
+    let c =
+        check_in(Defs::Assembly, "twin_generic_ill", ill, &[], false).expect("FCS checks the file");
+    assert!(
+        c.errors >= 3,
+        "the ill-typed twin file stopped being rejected: {c:?}"
+    );
+}
+
+/// A member access on an assembly value of a generic type — an F# list,
+/// option, ref, a generic record, union and struct, a BCL class — through a
+/// local, a parameter, the path itself and a pipe. A generic receiver's
+/// members are instantiation-dependent and the member lookup is not, so the
+/// accesses are only graded: whatever is committed is FCS's.
+#[test]
+fn a_member_of_an_assembly_value_of_a_generic_type_commits_only_what_fcs_says() {
+    let receivers: &[(&str, &str, &[&str])] = &[
+        (
+            "int list",
+            "intList",
+            &["Length", "Head", "Tail", "IsEmpty"],
+        ),
+        ("int option", "optVal", &["Value", "IsSome"]),
+        ("int ref", "refVal", &["Value", "contents"]),
+        ("GBox<int>", "gboxVal", &["G"]),
+        ("GU<string>", "guVal", &["IsGA"]),
+        (
+            "System.Collections.Generic.KeyValuePair<int, string>",
+            "kvpVal",
+            &["Key", "Value"],
+        ),
+        ("ResizeArray<int>", "raVal", &["Count"]),
+        ("Result<int, string>", "resVal", &["IsOk"]),
+    ];
+    let mut src = format!(
+        "module GenericMembers\n\
+         open {NS}\n\
+         open {NS}.{MODULE}\n"
+    );
+    let mut n = 0;
+    for (ty, value, members) in receivers {
+        for member in *members {
+            src.push_str(&format!("let a{n} () = let v = {value} in v.{member}\n"));
+            src.push_str(&format!("let b{n} (v: {ty}) = v.{member}\n"));
+            src.push_str(&format!("let c{n} () = {value}.{member}\n"));
+            src.push_str(&format!("let d{n} () = {MODULE}.{value}.{member}\n"));
+            src.push_str(&format!("let e{n} () = ({value}.{member}, {value})\n"));
+            src.push_str(&format!("let f{n} p = (p.{member}, lstG [p])\n"));
+            n += 1;
+        }
+    }
+    let c =
+        check_in(Defs::Assembly, "generic_members", &src, &[], false).expect("FCS checks the file");
+    eprintln!("generic receivers: {c:?}");
+}
+
+/// A function over a byref-like generic (`ReadOnlySpan<int>`), taken or
+/// returned, is not read: F# admits such a type as a parameter of a function
+/// it applies directly, never in a function value's type, which is what a
+/// reading claims. The control beside them is.
+#[test]
+fn a_function_over_a_byref_like_generic_is_not_read() {
+    let env = module_value_fixture_env();
+    let module = env
+        .lookup_type(&[NS.to_owned()], module_value_corpus::BYREF_LIKE_MODULE, 0)
+        .expect("the fixture declares the byref-like module");
+    let read: HashMap<String, String> =
+        borzoi_sema::test_support::module_function_types(env, module)
+            .into_iter()
+            .collect();
+    assert!(
+        read.contains_key("control"),
+        "the control is not read: {read:?}"
+    );
+    for name in ["spanLen", "spanOf"] {
+        assert!(!read.contains_key(name), "{name} is read: {read:?}");
+    }
+}
+
+/// Every renamed FSharp.Core generic the bridge may carry is FSharp.Core's
+/// own type, at the compiled path the table says, with the source name the
+/// table says: the table `Ty::render_fsharp` reads its F# names from cannot
+/// name a type F# spells differently.
+#[test]
+fn every_renamed_fsharp_core_generic_is_the_type_the_table_says() {
+    let env = full_bcl_env();
+    let mut wrong = Vec::new();
+    for &(namespace, compiled, source, display) in borzoi_sema::test_support::fsharp_core_renamed()
+    {
+        let ns: Vec<String> = namespace.split('.').map(str::to_owned).collect();
+        let found: Vec<_> = env
+            .all_handles()
+            .filter(|&h| {
+                let e = env.entity(h);
+                e.namespace == ns && e.name == compiled && !e.generic_parameters.is_empty()
+            })
+            .collect();
+        if found.is_empty() {
+            wrong.push(format!("  {namespace}.{compiled}: not in FSharp.Core"));
+        }
+        for h in found {
+            let e = env.entity(h);
+            if e.assembly.name != "FSharp.Core" || e.source_name.as_deref() != Some(source) {
+                wrong.push(format!(
+                    "  {namespace}.{compiled}: {} names it {:?}",
+                    e.assembly.name, e.source_name
+                ));
+            }
+        }
+        // The display name is F#'s: the source name, or an FSharp.Core
+        // abbreviation of the type.
+        if display != source {
+            let abbrev = env.lookup_type(&ns, display, 1).or_else(|| {
+                env.lookup_type(
+                    &["Microsoft".into(), "FSharp".into(), "Core".into()],
+                    display,
+                    1,
+                )
+            });
+            if abbrev.is_none_or(|h| !env.is_abbreviation(h)) {
+                wrong.push(format!(
+                    "  {namespace}.{compiled}: `{display}` is not an FSharp.Core abbreviation"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// A member access on an assembly value of a record or a class type, through a
@@ -806,6 +996,9 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
     // by inference alone, since FCS may default a value it does not
     // generalise.
     let mut rows: Vec<(u32, (usize, usize), String, String)> = Vec::new();
+    // The rows a use of which no loosening touches, by a closed list of shapes
+    // FCS treats as sealed: each of these `w` must commit.
+    let mut owed: std::collections::HashSet<(usize, usize)> = Default::default();
     let mut handles: Vec<_> = env
         .all_handles()
         .filter(|&h| {
@@ -815,14 +1008,22 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
     handles.sort_by_key(|&h| env.entity_full_name(h));
     for handle in handles {
         let path = env.entity_full_name(handle);
+        let schemes: HashMap<String, borzoi_sema::Ty> =
+            borzoi_sema::test_support::module_function_schemes(env, handle)
+                .into_iter()
+                .collect();
         for (name, ty) in borzoi_sema::test_support::module_function_types(env, handle) {
             let n = rows.len();
+            let unloosened = schemes.get(&name).is_some_and(takes_only_surely_sealed);
             let spelled = format!("{path}.``{name}``");
             src.push_str(&format!("let v{n} = {spelled}\n"));
             let w = format!("w{n}");
             let start = src.len() + "let ".len();
             let line = src.lines().count() as u32 + 1;
             src.push_str(&format!("let {w} () = {spelled}\n"));
+            if unloosened {
+                owed.insert((start, start + w.len()));
+            }
             rows.push((
                 line,
                 (start, start + w.len()),
@@ -871,20 +1072,85 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
     );
 
     // Inference over the same file: every commit is FCS's, and the `w`
-    // functions, which generalise, commit.
+    // functions, which generalise, commit wherever no loosening touches the
+    // value.
     let c = check_in(Defs::InFile, "core_values", &src, &[], false).expect("FCS checks the file");
     let mut reasons: HashMap<String, usize> = HashMap::new();
     for r in &c.reasons {
         *reasons.entry(format!("{r:?}")).or_default() += 1;
     }
+    let committed: std::collections::HashSet<(usize, usize)> = c
+        .commits
+        .iter()
+        .filter(|(_, _, kind, _)| *kind == "binder")
+        .map(|(s, e, _, _)| (*s, *e))
+        .collect();
+    let missed: Vec<String> = rows
+        .iter()
+        .filter(|(line, range, ..)| owed.contains(range) && !erroring.contains(line))
+        .filter(|(_, range, ..)| !committed.contains(range))
+        .map(|(_, _, name, ty)| format!("  {name}: {ty}"))
+        .collect();
     eprintln!(
-        "FSharp.Core values: {} binder commits; incompleteness: {reasons:?}",
-        c.binders
+        "FSharp.Core values: {} binder commits, {} owed; incompleteness: {reasons:?}",
+        c.binders,
+        owed.len()
     );
     assert!(
-        c.binders * 2 >= rows.len(),
-        "inference committed {} binders over {} values",
-        c.binders,
+        missed.is_empty(),
+        "{} FSharp.Core value(s) no loosening touches are not typed when returned:\n{}",
+        missed.len(),
+        missed.join("\n")
+    );
+    assert!(
+        owed.len() * 2 >= rows.len(),
+        "vacuous: only {} of {} values owe a commit",
+        owed.len(),
         rows.len()
     );
+}
+
+/// Whether every parameter of the scheme `ty` — of each curried group, and
+/// each element of a tupled one — has a shape on a closed list FCS treats as
+/// sealed (`isSealedTy`), so that a use of the value is not loosened: a type
+/// parameter, a function, an array, `unit`, a sealed primitive, or one of
+/// FSharp.Core's sealed generics. A closed list rather than inference's own
+/// test, so the obligation it decides does not move with that test.
+fn takes_only_surely_sealed(ty: &borzoi_sema::Ty) -> bool {
+    use borzoi_sema::Ty;
+    const SEALED: &[&str] = &[
+        "System.Int32",
+        "System.Int64",
+        "System.Double",
+        "System.Single",
+        "System.Boolean",
+        "System.String",
+        "System.Char",
+        "System.Byte",
+        "System.Decimal",
+        "Microsoft.FSharp.Core.Unit",
+        "Microsoft.FSharp.Collections.FSharpList",
+        "Microsoft.FSharp.Core.FSharpOption",
+        "Microsoft.FSharp.Core.FSharpValueOption",
+        "Microsoft.FSharp.Core.FSharpResult",
+        "Microsoft.FSharp.Core.FSharpChoice",
+        "Microsoft.FSharp.Core.FSharpRef",
+    ];
+    let sealed = |t: &Ty| match t {
+        Ty::Param(_) | Ty::Fun { .. } | Ty::Array { .. } | Ty::Tuple(_) => true,
+        Ty::Named { path, .. } => SEALED.contains(&path.join(".").as_str()),
+        Ty::Var(_) => false,
+    };
+    let mut ty = ty;
+    while let Ty::Fun { arg, ret } = ty {
+        let ok = match arg.as_ref() {
+            Ty::Tuple(elems) => elems.iter().all(sealed),
+            other => sealed(other),
+        };
+        if !ok {
+            return false;
+        }
+        ty = ret;
+    }
+    true
 }

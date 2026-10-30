@@ -229,6 +229,33 @@ pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(St
         .collect()
 }
 
+/// Every function and value of the F# module `module` that inference reads a
+/// type off (`function_ty::module_function_scheme`), by its F# source name,
+/// with the scheme as read: before a use loosens it, each type parameter the
+/// [`Ty::Param`](crate::Ty::Param) of its index.
+pub fn module_function_schemes(
+    env: &AssemblyEnv,
+    module: EntityHandle,
+) -> Vec<(String, crate::Ty)> {
+    env.member_indices(module)
+        .filter_map(|idx| {
+            let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {
+                return None;
+            };
+            let scheme = crate::function_ty::module_function_scheme(env, module, m).ok()?;
+            Some((env.member_display_name(module, idx).to_string(), scheme))
+        })
+        .collect()
+}
+
+/// FSharp.Core's renamed generic types a [`Ty`](crate::Ty) may carry, as
+/// `(namespace, compiled name, source name, display name)`, for the test that
+/// checks the table against FSharp.Core itself.
+pub fn fsharp_core_renamed() -> &'static [(&'static str, &'static str, &'static str, &'static str)]
+{
+    crate::ty::FSHARP_CORE_RENAMED
+}
+
 /// The type of an application of the function `name` of the F# module
 /// `module` to `args` arguments, as the signature reading
 /// (`function_ty::module_function_scheme`) gives it: the scheme with its first

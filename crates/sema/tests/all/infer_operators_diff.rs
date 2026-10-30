@@ -238,22 +238,16 @@ const OPS: &[Op] = &[
     // whose result their annotations fix.
     op("+.", Sort::Int, Sort::Int, Sort::Int, Expect::Typed),
     op("&&.", Sort::Bool, Sort::Bool, Sort::Bool, Expect::Typed),
-    // A signature over a type the bridge does not carry (`'T list` and `'T
-    // ref` are F# types under a compiled name).
+    // Signatures over FSharp.Core's generic types, which F# names under a
+    // compiled name (`'T list` is `FSharpList<'T>`, `'T ref` is `FSharpRef<'T>`).
     op(
         "@",
         Sort::IntList,
         Sort::IntList,
         Sort::IntList,
-        Expect::Declined(OperatorGap::Signature),
+        Expect::Typed,
     ),
-    op(
-        ":=",
-        Sort::RefInt,
-        Sort::Int,
-        Sort::Unit,
-        Expect::Declined(OperatorGap::Signature),
-    ),
+    op(":=", Sort::RefInt, Sort::Int, Sort::Unit, Expect::Typed),
     // A tupled argument group beside a curried one, split by the pickle's
     // group sizes.
     op("||>", Sort::Pair, Sort::Curried, Sort::Int, Expect::Typed),
@@ -640,8 +634,9 @@ fn well_typed_operator_grid_agrees_with_fcs() {
     }
     eprintln!("well-typed grid: {committed} commits; at the application: {at_application:?}");
     // The in-file operators' annotations fix their result, so every synth row
-    // commits it: one per well-typed operand-kind pair.
-    for spelling in ["+.", "&&."] {
+    // commits it: one per well-typed operand-kind pair. So does `:=`'s
+    // signature, whose result is `unit` whatever its operands.
+    for spelling in ["+.", "&&.", ":="] {
         assert_eq!(
             at_application.get(spelling).copied().unwrap_or(0),
             25,

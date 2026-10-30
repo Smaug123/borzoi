@@ -182,9 +182,15 @@ impl Ty {
                 // own literal (`int`, `string list`) and needs no such treatment.
                 // `unit` is F#'s own type, not a BCL one, so it is not in
                 // `fsharp_alias`'s table.
+                // A renamed FSharp.Core generic shows the name F# gives it,
+                // since its compiled name cannot be written in F# source.
                 let unit =
                     (namespace == "Microsoft.FSharp.Core" && name == "Unit").then_some("unit");
+                let renamed = (!args.is_empty())
+                    .then(|| fsharp_core_renamed_display(&namespace, name))
+                    .flatten();
                 let head = unit
+                    .or(renamed)
                     .or_else(|| borzoi_assembly::fsharp_alias(&namespace, name))
                     .map(str::to_owned)
                     .unwrap_or_else(|| {
@@ -208,6 +214,44 @@ impl Ty {
             Ty::Var(_) => "'_".to_owned(),
         }
     }
+}
+
+/// FSharp.Core's generic types that F# **renames** with `[<CompiledName>]`
+/// and that a [`Ty`] may carry: `(namespace, compiled name, source name,
+/// display name)`.
+///
+/// [`Ty::Named`] names a type by its compiled path, which is FCS's canonical
+/// currency (`Microsoft.FSharp.Collections.FSharpList<System.Int32>`), but no
+/// F# source can name `FSharpList`: [`Ty::render_fsharp`] shows the name F#
+/// gives it instead, its FSharp.Core abbreviation where it has one (`list`,
+/// `option`) and its source name otherwise (`Result`). A `Ty` holding one of
+/// these paths is built only from FSharp.Core's own type, whose source name
+/// the bridge checks against this table (`function_ty`), so the table cannot
+/// name a type F# spells differently.
+pub(crate) const FSHARP_CORE_RENAMED: &[(&str, &str, &str, &str)] = &[
+    ("Microsoft.FSharp.Collections", "FSharpList", "List", "list"),
+    ("Microsoft.FSharp.Core", "FSharpOption", "Option", "option"),
+    (
+        "Microsoft.FSharp.Core",
+        "FSharpValueOption",
+        "ValueOption",
+        "voption",
+    ),
+    ("Microsoft.FSharp.Core", "FSharpRef", "Ref", "ref"),
+    ("Microsoft.FSharp.Core", "FSharpResult", "Result", "Result"),
+    ("Microsoft.FSharp.Core", "FSharpChoice", "Choice", "Choice"),
+    ("Microsoft.FSharp.Control", "FSharpAsync", "Async", "Async"),
+    ("Microsoft.FSharp.Collections", "FSharpMap", "Map", "Map"),
+    ("Microsoft.FSharp.Collections", "FSharpSet", "Set", "Set"),
+];
+
+/// The F# display name of a renamed FSharp.Core generic type
+/// ([`FSHARP_CORE_RENAMED`]) at `namespace.name`, if it is one.
+fn fsharp_core_renamed_display(namespace: &str, name: &str) -> Option<&'static str> {
+    FSHARP_CORE_RENAMED
+        .iter()
+        .find(|(ns, compiled, _, _)| *ns == namespace && *compiled == name)
+        .map(|&(_, _, _, display)| display)
 }
 
 /// The canonical name of the type parameter at position `i`: `'a`, `'b`, …,
@@ -618,6 +662,41 @@ mod tests {
             ret: Box::new(Ty::named("System.String")),
         };
         assert_eq!(f.render_fsharp(), "unit -> string");
+    }
+
+    /// A renamed FSharp.Core generic renders under its compiled name in the
+    /// canonical currency, which is FCS's, and under the name F# gives it in
+    /// the display form, since no F# source can name `FSharpList`. Only an
+    /// application is renamed: the compiled path alone, nullary, is not a
+    /// type any `Ty` carries, and keeps its canonical spelling.
+    #[test]
+    fn render_fsharp_names_a_renamed_fsharp_core_generic_as_fsharp_does() {
+        let int = Ty::named("System.Int32");
+        let app = |path: &str, args: Vec<Ty>| Ty::Named {
+            path: path.split('.').map(str::to_owned).collect(),
+            args,
+        };
+        let list = app("Microsoft.FSharp.Collections.FSharpList", vec![int.clone()]);
+        assert_eq!(
+            list.render(),
+            "Microsoft.FSharp.Collections.FSharpList<System.Int32>"
+        );
+        assert_eq!(list.render_fsharp(), "list<int>");
+        let nested = app("Microsoft.FSharp.Core.FSharpOption", vec![list]);
+        assert_eq!(nested.render_fsharp(), "option<list<int>>");
+        let result = app(
+            "Microsoft.FSharp.Core.FSharpResult",
+            vec![int.clone(), Ty::named("System.String")],
+        );
+        assert_eq!(result.render_fsharp(), "Result<int, string>");
+        for &(namespace, compiled, _, display) in FSHARP_CORE_RENAMED {
+            let ty = app(&format!("{namespace}.{compiled}"), vec![int.clone()]);
+            assert_eq!(ty.render_fsharp(), format!("{display}<int>"));
+        }
+        assert_eq!(
+            Ty::named("Microsoft.FSharp.Collections.FSharpList").render_fsharp(),
+            "Microsoft.FSharp.Collections.FSharpList"
+        );
     }
 
     #[test]

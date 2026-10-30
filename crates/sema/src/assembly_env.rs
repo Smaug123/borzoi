@@ -4477,6 +4477,77 @@ impl AssemblyEnv {
         (sole && self.lookup_type_if_certain(namespace, name, 0) == Some(target)).then_some(target)
     }
 
+    /// [`Self::sole_type_referenced`] for a top-level **generic** type: the
+    /// type a signature's reference to `namespace.name` with `arity` type
+    /// arguments denotes, read through the reference's own resolution scope
+    /// (the assembly called `scope`, following its type forwarders), when it is
+    /// also the only type the env holds that a [`Ty`](crate::Ty) path could be
+    /// read back as.
+    ///
+    /// `name` is the IL name, arity suffix stripped, and `Ty` names a generic
+    /// type by its namespace and IL name (FCS's canonical rendering is the
+    /// compiled name: `Microsoft.FSharp.Collections.FSharpList`). So the
+    /// occupants that count are every type in `namespace` at this arity, in any
+    /// assembly and of any accessibility, whose IL **or** source name is either
+    /// of the target's names: another assembly's type of the same compiled
+    /// path, and a type a source-name lookup of the path would find instead,
+    /// would both be read as this one. A namespace with a dropped type
+    /// declines, since the dropped type could be either.
+    pub(crate) fn sole_generic_type_referenced(
+        &self,
+        scope: &str,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Option<EntityHandle> {
+        if arity == 0 || self.namespace_has_dropped_type(namespace) {
+            return None;
+        }
+        let mut path = namespace.to_vec();
+        path.push(format!("{name}`{arity}"));
+        let target = self.forwarded_target_at_path(scope, &path, ABBREV_CHASE_FUEL)?;
+        let entity = self.entity(target);
+        if entity.namespace != namespace || entity.name != name {
+            return None;
+        }
+        let names = [name, entity.source_name.as_deref().unwrap_or(name)];
+        let mut occupants = self.types_in_namespace(namespace).iter().filter(|&&h| {
+            let e = self.entity(h);
+            !self.is_module(h)
+                && e.generic_parameters.len() == arity
+                && (names.contains(&e.name.as_str())
+                    || e.source_name.as_deref().is_some_and(|s| names.contains(&s)))
+        });
+        matches!((occupants.next(), occupants.next()), (Some(&h), None) if h == target)
+            .then_some(target)
+    }
+
+    /// The top-level type a generic [`Ty::Named`](crate::Ty::Named) path names
+    /// — `namespace` and the IL `name`, at `arity` — when exactly one type in
+    /// the env has that compiled path and no type there was dropped. The read
+    /// back of [`Self::sole_generic_type_referenced`]'s path, for a question
+    /// asked of the type itself (whether it is sealed). The source-name index
+    /// cannot answer it: a renamed type (`FSharpList`, source name `List`) is
+    /// not in it under its compiled name.
+    pub(crate) fn generic_type_at_compiled_path(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Option<EntityHandle> {
+        if arity == 0 || self.namespace_has_dropped_type(namespace) {
+            return None;
+        }
+        let mut found = self.types_in_namespace(namespace).iter().filter(|&&h| {
+            let e = self.entity(h);
+            !self.is_module(h) && e.generic_parameters.len() == arity && e.name == name
+        });
+        match (found.next(), found.next()) {
+            (Some(&h), None) => Some(h),
+            _ => None,
+        }
+    }
+
     /// Whether the named type `head`, mentioned by a signature in `from`'s
     /// assembly, provably hides no unit of measure: it resolves to a type that
     /// is not an abbreviation, or to an abbreviation whose target is decoded
