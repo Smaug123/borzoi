@@ -1798,63 +1798,7 @@ pub fn full_bcl_env() -> &'static borzoi_sema::AssemblyEnv {
 // Line/column → byte offset
 // ============================================================================
 
-/// Lookup byte offset for an FCS `(line, col)` position. FCS uses 1-based
-/// lines and 0-based columns, and columns count **UTF-16 code units** — so
-/// `col` cannot just be added to the line's byte start. `offset` walks the
-/// line a char at a time, accumulating UTF-16 units until it reaches `col`,
-/// and returns the byte position.
-pub struct LineIndex<'a> {
-    source: &'a str,
-    /// Byte offset of the start of each line (1-indexed: `starts[1]` is line 1).
-    starts: Vec<usize>,
-}
-
-impl<'a> LineIndex<'a> {
-    pub fn new(source: &'a str) -> Self {
-        // `starts[0]` is unused so we can index by 1-based line number.
-        let mut starts = vec![0, 0];
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push(i + 1);
-            }
-        }
-        Self { source, starts }
-    }
-
-    pub fn offset(&self, line: u32, col: u32) -> usize {
-        let line = line as usize;
-        let col = col as usize;
-        // FCS sometimes reports end positions one past the last line
-        // (line = lastLine+1, col = 0). Clamp those to the source length.
-        if line >= self.starts.len() {
-            return self.source.len();
-        }
-        let base = self.starts[line];
-        let line_end = self
-            .starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-
-        let mut units = 0usize;
-        let mut byte_pos = base;
-        for ch in self.source[base..line_end].chars() {
-            if units >= col {
-                break;
-            }
-            let next_units = units + ch.len_utf16();
-            // `col` falls inside a surrogate pair — defensive clamp to the
-            // char boundary just before. FCS only emits col positions at char
-            // boundaries, so this only fires on malformed input.
-            if next_units > col {
-                break;
-            }
-            units = next_units;
-            byte_pos += ch.len_utf8();
-        }
-        byte_pos.min(self.source.len())
-    }
-}
+pub use borzoi_oracle_harness::fcs_position::LineIndex;
 
 // ============================================================================
 // `uses` dump projection — the name-resolution oracle currency

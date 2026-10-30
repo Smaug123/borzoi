@@ -804,70 +804,7 @@ pub fn parse_fcs_dump(json: &str, source: &str) -> Vec<NormalisedToken> {
         .collect()
 }
 
-/// Lookup byte offset for an FCS `(line, col)` position. FCS uses 1-based
-/// lines and 0-based columns, and columns count **UTF-16 code units** — so
-/// `col` cannot just be added to the line's byte start: every BMP non-ASCII
-/// char (`—` is 3 UTF-8 bytes / 1 UTF-16 unit) and every supplementary char
-/// (`💩` is 4 UTF-8 bytes / 2 UTF-16 units via surrogate pair) shifts the
-/// two scales apart. FCS also strips a file-start UTF-8 BOM for line-1 column
-/// positions, so line 1, column 0 is the byte after that BOM. `offset` walks
-/// the line a char at a time, accumulating UTF-16 units until it reaches `col`,
-/// and returns the byte position.
-pub struct LineIndex<'a> {
-    source: &'a str,
-    /// Byte offset of the start of each line (1-indexed: `starts[1]` is line 1).
-    starts: Vec<usize>,
-}
-
-impl<'a> LineIndex<'a> {
-    pub fn new(source: &'a str) -> Self {
-        // `starts[0]` is unused so we can index by 1-based line number.
-        let line_one_start = source
-            .strip_prefix('\u{feff}')
-            .map_or(0, |_| '\u{feff}'.len_utf8());
-        let mut starts = vec![0, line_one_start];
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push(i + 1);
-            }
-        }
-        Self { source, starts }
-    }
-
-    pub fn offset(&self, line: u32, col: u32) -> usize {
-        let line = line as usize;
-        let col = col as usize;
-        // FCS sometimes reports end positions that point one past the last
-        // line (line = lastLine+1, col = 0). Clamp those to the source length.
-        if line >= self.starts.len() {
-            return self.source.len();
-        }
-        let base = self.starts[line];
-        let line_end = self
-            .starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-
-        let mut units = 0usize;
-        let mut byte_pos = base;
-        for ch in self.source[base..line_end].chars() {
-            if units >= col {
-                break;
-            }
-            let next_units = units + ch.len_utf16();
-            // `col` falls inside a surrogate pair — defensive clamp to the
-            // char boundary just before. FCS itself only emits col positions
-            // at char boundaries, so this only fires on malformed input.
-            if next_units > col {
-                break;
-            }
-            units = next_units;
-            byte_pos += ch.len_utf8();
-        }
-        byte_pos.min(self.source.len())
-    }
-}
+pub use borzoi_oracle_harness::fcs_position::LineIndex;
 
 // ============================================================================
 // Rust Token → FCS FSharpTokenKind name mapping (used by both raw &

@@ -2433,9 +2433,7 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/AttributeTargets/Field.fs:11:11 "
 tests/FSharp.Compiler.ComponentTests/EmittedIL/AttributeTargets/Field.fs:11:12 "xport" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/CodeGenRegressions/CodeGenRegressions_Crashes.fs compared fcs-check-errors match=9 external=108
 tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputationExpressions/ComputationExpr03.fs compared fcs-check-errors match=2 external=2
-tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs compared fcs-clean match=101 external=72
-tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs:1:39 " arra" gap
-tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs:1:48 " " gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/ComputedCollections/ForXInArray_ToList.fs compared fcs-clean match=103 external=72
 tests/FSharp.Compiler.ComponentTests/EmittedIL/DoNotBoxStruct/DoNotBoxStruct_Array_CSInterface.fs compared fcs-clean match=3 external=2
 tests/FSharp.Compiler.ComponentTests/EmittedIL/DoNotBoxStruct/DoNotBoxStruct_Array_CSInterface.fs:6:15 "'T" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/FixedBindings/PinAddressOfArrayElement.fs compared fcs-clean match=5 external=9
