@@ -231,6 +231,128 @@ fn a_name_the_signature_declares_twice_declines() {
     }
 }
 
+/// Where a member-shaped node of `K` that is not one of `K`'s members sits in
+/// the signature: a member constraint on a signature member.
+#[derive(Debug, Clone, Copy)]
+enum SigDecoy {
+    /// No `F` at all.
+    Absent,
+    /// `F` constrains `^T` to have `M`, with no doc there.
+    Constraint,
+    /// The same, with a doc on the constraint's `M`.
+    DocumentedConstraint,
+}
+
+/// Where a member-shaped node of `K` that is not one of `K`'s members sits in
+/// the implementation.
+#[derive(Debug, Clone, Copy)]
+enum ImplDecoy {
+    None,
+    /// `F`'s body calls `M` through a member constraint.
+    TraitCall,
+    /// A member's body builds an object expression with an `M`.
+    ObjectExprInMember,
+    /// A class `let` builds an object expression with an `M`.
+    ObjectExprInLet,
+}
+
+/// The project for one decoy placement: `K.M` declared or hidden by the
+/// signature, `K.M` itself undocumented in the implementation.
+fn decoy_project(declared: bool, sig: SigDecoy, imp: ImplDecoy) -> [(&'static str, String); 2] {
+    let mut fsi = String::from("module A\ntype K =\n    new: unit -> K\n");
+    if declared {
+        fsi.push_str(&format!("    /// {SIG_TEXT}\n    static member M: int\n"));
+    }
+    match sig {
+        SigDecoy::Absent => {}
+        SigDecoy::Constraint => fsi.push_str(
+            "    static member inline F: x: ^T -> int when ^T: (static member M: int)\n",
+        ),
+        SigDecoy::DocumentedConstraint => fsi.push_str(
+            "    static member inline F: x: ^T -> int when ^T: (\n        /// from the decoy\n        static member M: int)\n",
+        ),
+    }
+    let mut fs = String::from(
+        "module A\ntype IM =\n    abstract M: int\nlet inline helper (x: ^T) : int = (^T : (static member M: int) ())\ntype K() =\n",
+    );
+    if let ImplDecoy::ObjectExprInLet = imp {
+        fs.push_str("    let o =\n        { new IM with\n            /// from the decoy\n            member _.M = 3 }\n");
+    }
+    fs.push_str("    static member M = 1\n");
+    fs.push_str(match imp {
+        ImplDecoy::TraitCall => "    static member inline F (x: ^T) : int = (^T : (\n        /// from the decoy\n        static member M: int) ())\n",
+        _ => "    static member inline F (x: ^T) : int = helper x\n",
+    });
+    if let ImplDecoy::ObjectExprInMember = imp {
+        fs.push_str("    static member G () =\n        let o =\n            { new IM with\n                /// from the decoy\n                member _.M = 2 }\n        o.M\n");
+    }
+    fs.push_str("let z = K.M\n");
+    [("A.fsi", fsi), ("A.fs", fs)]
+}
+
+/// A member-shaped node nested in one of `K`'s members, or in a class `let`,
+/// is not a member of `K`: a member constraint's `M`, a trait call's, an
+/// object expression's. FCS pairs `K.M` with the signature's `M`, or with
+/// nothing when the signature hides it; so `K.M`'s doc is never a decoy's,
+/// and a decoy does not make the pairing ambiguous either.
+#[test]
+fn a_member_nested_in_a_member_is_not_a_member_of_the_type() {
+    use SigDecoy::*;
+    let mut wrong = Vec::new();
+    for declared in [false, true] {
+        for sig in [Absent, Constraint, DocumentedConstraint] {
+            for imp in [
+                ImplDecoy::None,
+                ImplDecoy::TraitCall,
+                ImplDecoy::ObjectExprInMember,
+                ImplDecoy::ObjectExprInLet,
+            ] {
+                let owned = decoy_project(declared, sig, imp);
+                let files: Vec<(&str, &str)> =
+                    owned.iter().map(|(n, t)| (*n, t.as_str())).collect();
+                let case = format!("declared {declared}, sig {sig:?}, impl {imp:?}");
+                let (graded, fcs) = run_fixture(&files, &[]);
+                assert_compiles(&fcs, &files);
+                for g in failures(&graded) {
+                    wrong.push(format!("{case}: {}", describe(&files, g)));
+                }
+                // `K.M`'s own definition and its use, in the implementation.
+                let sites: Vec<&Graded> = graded
+                    .iter()
+                    .filter(|g| g.file == 1 && g.name == "M" && g.declared_in == Some(1))
+                    .filter(|g| {
+                        let at = usize::from(g.range.start());
+                        let text = files[1].1;
+                        let begin = text[..at].rfind('\n').map_or(0, |i| i + 1);
+                        let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+                        matches!(
+                            text[begin..end].trim(),
+                            "static member M = 1" | "let z = K.M"
+                        )
+                    })
+                    .collect();
+                assert!(!sites.is_empty(), "{case}: no graded `K.M`: {graded:#?}");
+                let expected: &[String] = if declared {
+                    &[format!(" {SIG_TEXT}")]
+                } else {
+                    &[]
+                };
+                for g in sites {
+                    if (&g.verdict, g.fcs_lines.as_deref())
+                        != (&Verdict::Agree { attached: declared }, Some(expected))
+                    {
+                        wrong.push(format!(
+                            "{case}: `K.M` at {:?}: {:?}, FCS {:?}",
+                            g.range, g.verdict, g.fcs_lines
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// Trivia before a declaration on one side of the pair, in the shapes that
 /// decide what the collector attaches and whether it is blank.
 #[derive(Debug, Clone, Copy)]

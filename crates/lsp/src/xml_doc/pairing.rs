@@ -175,7 +175,11 @@ impl Declarations {
                 def_at(&name, DefKind::Type),
             );
         }
-        for member in defn.descendants().filter(|n| is_member_node(n.kind())) {
+        let members = defn
+            .descendants()
+            .filter(|n| is_member_node(n.kind()))
+            .filter(|n| owning_type(n).as_ref() == Some(defn));
+        for member in members {
             // A constructor: `new` heads its signature, and leaves a
             // definition's head without an identifier.
             if member
@@ -425,15 +429,9 @@ fn implementation_slot(element: &NodeOrToken<SyntaxNode, SyntaxToken>, def: &Def
             let Some(member) = ancestors(element).find(|n| is_member_node(n.kind())) else {
                 return ImplSlot::Unmodelled;
             };
-            // A member of the type itself: not an interface implementation's
-            // nor an object expression's.
-            let Some(defn) = member.parent().and_then(|p| match p.kind() {
-                SyntaxKind::TYPE_DEFN => Some(p),
-                SyntaxKind::OBJECT_MODEL_REPR => {
-                    p.parent().filter(|d| d.kind() == SyntaxKind::TYPE_DEFN)
-                }
-                _ => None,
-            }) else {
+            // A member of the type itself, not an object expression's; an
+            // interface implementation's is a dispatch slot.
+            let Some(defn) = owning_type(&member) else {
                 return ImplSlot::Unmodelled;
             };
             match type_key(&defn) {
@@ -505,6 +503,22 @@ fn is_member_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::MEMBER_SIG
             | SyntaxKind::ABSTRACT_SLOT
     )
+}
+
+/// The type definition whose member `member` is: its parent, through the
+/// type's `OBJECT_MODEL_REPR` and an `interface … with` block. A member-shaped
+/// node anywhere else under a type — a member constraint's, a trait call's, an
+/// object expression's in a member body or a class `let` — is nested in a
+/// member or a binding, and is no member of the type.
+fn owning_type(member: &SyntaxNode) -> Option<SyntaxNode> {
+    let mut parent = member.parent()?;
+    if parent.kind() == SyntaxKind::INTERFACE_IMPL {
+        parent = parent.parent()?;
+    }
+    if parent.kind() == SyntaxKind::OBJECT_MODEL_REPR {
+        parent = parent.parent()?;
+    }
+    (parent.kind() == SyntaxKind::TYPE_DEFN).then_some(parent)
 }
 
 fn is_dispatch(member: &SyntaxNode) -> bool {
