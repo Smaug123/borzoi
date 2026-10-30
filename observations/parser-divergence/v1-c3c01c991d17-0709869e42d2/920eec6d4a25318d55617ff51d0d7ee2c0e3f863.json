@@ -1,0 +1,49 @@
+{
+  "observation_schema_version": 1,
+  "series": "v1-c3c01c991d17-0709869e42d2",
+  "repository": "Smaug123/borzoi",
+  "commit": "920eec6d4a25318d55617ff51d0d7ee2c0e3f863",
+  "measured_at": "2026-10-30T09:41:34Z",
+  "workflow": {
+    "run_id": 41033618640,
+    "run_number": 153,
+    "run_attempt": 1,
+    "url": "https://github.com/Smaug123/borzoi/actions/runs/41033618640"
+  },
+  "corpus": {
+    "source": "dotnet/fsharp",
+    "revision": "c3c01c991d17643700d343cee5c5a1e20c06ce03"
+  },
+  "flake_lock_hash": "3661abea007ee4fb353b1ac92eff2361d70455afd3a93afd9be674170809f442",
+  "generator": {
+    "schema_version": 1,
+    "measurement": "parser-divergence",
+    "configuration": {
+      "corpus": "fsharp-src",
+      "defines": [
+        "COMPILED",
+        "EDITING"
+      ],
+      "file_extensions": [
+        "fs",
+        "fsi"
+      ]
+    },
+    "statistics": {
+      "ast_divergences": 0,
+      "both_reject": 617,
+      "fcs_unmodeled": 126,
+      "match_rate": {
+        "basis_points": 8574,
+        "matched": 4777,
+        "seen": 5571
+      },
+      "matches": 4777,
+      "other": 13,
+      "our_panics": 0,
+      "records": 5571,
+      "we_accept_fcs_rejects": 25,
+      "we_reject_fcs_accepts": 13
+    }
+  }
+}
