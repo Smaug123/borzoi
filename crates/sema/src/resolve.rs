@@ -915,6 +915,98 @@ fn push_namespace_decl(
     }
 }
 
+/// What a signature type's attributes say about `[<RequireQualifiedAccess>]`:
+/// `Some(true)` when one is spelled as it, `Some(false)` when every one is a
+/// well-known attribute that is not it, `None` otherwise. An attribute is
+/// matched by its written name, so an abbreviation of the attribute under
+/// another name (`type Qual = RequireQualifiedAccessAttribute`, then
+/// `[<Qual>]`) is exactly what the `None` arm is for: such a type's cases may
+/// or may not be in bare scope.
+fn sig_type_rqa(defn: &TypeDefn) -> Option<bool> {
+    if attrs_require_qualified_access(defn.attributes()) {
+        return Some(true);
+    }
+    attrs_all_well_known(defn.attributes()).then_some(false)
+}
+
+/// Whether every attribute in the lists is spelled as one of FSharp.Core's
+/// or the BCL's common type attributes, none of which is
+/// `[<RequireQualifiedAccess>]` or `[<Struct>]`.
+fn attrs_all_well_known(attrs: impl Iterator<Item = AttributeList>) -> bool {
+    const KNOWN: &[&str] = &[
+        "AbstractClass",
+        "AllowNullLiteral",
+        "AutoOpen",
+        "CLIMutable",
+        "Class",
+        "CompilationRepresentation",
+        "CompiledName",
+        "CustomComparison",
+        "CustomEquality",
+        "DebuggerDisplay",
+        "DefaultAugmentation",
+        "Flags",
+        "Interface",
+        "Measure",
+        "NoComparison",
+        "NoEquality",
+        "Obsolete",
+        "ReferenceEquality",
+        "Sealed",
+        "Serializable",
+        "StructuralComparison",
+        "StructuralEquality",
+        "StructuredFormatDisplay",
+    ];
+    attrs
+        .flat_map(|list| list.attributes().collect::<Vec<_>>())
+        .all(|attr| {
+            attr.type_name()
+                .and_then(|li| li.idents().last())
+                .is_some_and(|seg| {
+                    let name = id_text(&seg);
+                    let name = name.strip_suffix("Attribute").unwrap_or(&name);
+                    KNOWN.contains(&name)
+                })
+        })
+}
+
+/// The names a signature type definition may put in **bare value scope**:
+/// the cases of a union not certainly `[<RequireQualifiedAccess>]`, enum
+/// cases, and a single-ident abbreviation target (FCS reads one that names
+/// no type as a nullary union case). Over-collected where uncertain.
+fn sig_bare_value_idents(defn: &TypeDefn) -> Vec<SyntaxToken> {
+    match defn.repr() {
+        Some(TypeDefnRepr::Union(_)) if sig_type_rqa(defn) == Some(true) => Vec::new(),
+        Some(TypeDefnRepr::Union(u)) => u.cases().filter_map(|c| c.ident()).collect(),
+        Some(TypeDefnRepr::Enum(e)) => e.cases().filter_map(|c| c.ident()).collect(),
+        Some(TypeDefnRepr::Abbrev(a)) => a
+            .ty()
+            .as_ref()
+            .and_then(abbrev_target_single_ident)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The type's own name, when the type may take FCS's unqualified
+/// **constructor slot** and so compete with a same-named case: anything but a
+/// plain union or record — a class, a struct, an abbreviation, an opaque
+/// `type T` whose representation the signature hides, a type whose
+/// attributes may make it a struct.
+fn sig_type_slot_name(defn: &TypeDefn) -> Option<SyntaxToken> {
+    let plain = matches!(
+        defn.repr(),
+        Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_))
+    ) && !attrs_mark_struct(defn.attributes())
+        && attrs_all_well_known(defn.attributes());
+    if plain {
+        return None;
+    }
+    defn.long_id().and_then(single_ident)
+}
+
 /// The bare value names more than one of `decls` puts in scope: plain
 /// `val`s, the cases of a union without `[<RequireQualifiedAccess>]`, enum
 /// cases, a single-ident abbreviation target (FCS reads one that names no
@@ -942,24 +1034,10 @@ fn contested_bare_value_names(decls: &[SigDecl]) -> HashSet<String> {
             }
             SigDecl::Types(types) => {
                 for defn in types.defns() {
-                    let rqa = attrs_require_qualified_access(defn.attributes());
-                    let idents: Vec<SyntaxToken> = match defn.repr() {
-                        Some(TypeDefnRepr::Union(_)) if rqa => Vec::new(),
-                        Some(TypeDefnRepr::Union(u)) => {
-                            u.cases().filter_map(|c| c.ident()).collect()
-                        }
-                        Some(TypeDefnRepr::Enum(e)) => {
-                            e.cases().filter_map(|c| c.ident()).collect()
-                        }
-                        Some(TypeDefnRepr::Abbrev(a)) => a
-                            .ty()
-                            .as_ref()
-                            .and_then(abbrev_target_single_ident)
-                            .into_iter()
-                            .collect(),
-                        _ => Vec::new(),
-                    };
-                    for ident in idents {
+                    for ident in sig_bare_value_idents(&defn)
+                        .into_iter()
+                        .chain(sig_type_slot_name(&defn))
+                    {
                         note(id_text(&ident).to_string());
                     }
                 }
@@ -1066,7 +1144,10 @@ fn collect_sig_container_exports(
                         continue;
                     };
                     let type_name = id_text(&type_ident).to_string();
-                    let rqa = attrs_require_qualified_access(defn.attributes());
+                    // A case enters bare scope only when the type is
+                    // certainly not `[<RequireQualifiedAccess>]`; otherwise
+                    // it exports type-qualified only.
+                    let rqa = sig_type_rqa(&defn) != Some(false);
                     let tq_path = |case: &str| {
                         let mut p = container.to_vec();
                         p.push(type_name.clone());
@@ -1234,24 +1315,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 // scope where `ns` is opened: an RQA union's
                                 // cases put none. Enum cases are counted
                                 // too, which only ever over-marks.
-                                let rqa = attrs_require_qualified_access(defn.attributes());
-                                let bare_idents: Vec<SyntaxToken> = match defn.repr() {
-                                    Some(TypeDefnRepr::Union(_)) if rqa => Vec::new(),
-                                    Some(TypeDefnRepr::Union(u)) => {
-                                        u.cases().filter_map(|c| c.ident()).collect()
-                                    }
-                                    Some(TypeDefnRepr::Enum(e)) => {
-                                        e.cases().filter_map(|c| c.ident()).collect()
-                                    }
-                                    Some(TypeDefnRepr::Abbrev(a)) => a
-                                        .ty()
-                                        .as_ref()
-                                        .and_then(abbrev_target_single_ident)
-                                        .into_iter()
-                                        .collect(),
-                                    _ => Vec::new(),
-                                };
-                                for ident in bare_idents {
+                                for ident in sig_bare_value_idents(&defn) {
                                     let mut path = ns.clone();
                                     path.push(id_text(&ident).to_string());
                                     bare_value_paths.push(path);

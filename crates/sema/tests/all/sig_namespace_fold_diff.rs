@@ -229,6 +229,29 @@ const SHAPES: &[Shape] = &[
         imp: "type A =\n    | Ok of int\n\nexception Ok of string\n",
         model: Model::Unmodelled,
     },
+    // A class named like the case takes the constructor slot (Codex review).
+    Shape {
+        label: "case_then_class",
+        sig: "type U =\n    | Ok of int\n\ntype Ok =\n    new : unit -> Ok\n",
+        imp: "type U =\n    | Ok of int\n\ntype Ok() = class end\n",
+        model: Model::Unmodelled,
+    },
+    // `[<RequireQualifiedAccess>]` under another name (Codex review): the
+    // cases are not in bare scope, which the written name cannot say.
+    Shape {
+        label: "aliased_rqa",
+        sig: "type Qual = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual>]\ntype U =\n    | Case1 of int\n    | Ok\n",
+        imp: "type Qual = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual>]\ntype U =\n    | Case1 of int\n    | Ok\n",
+        model: Model::Unmodelled,
+    },
+    // WoofWare.Incremental's `Cutoff.fsi` shape: well-known attributes and
+    // an `internal` representation.
+    Shape {
+        label: "known_attributes_internal_repr",
+        sig: "[<NoEquality ; NoComparison>]\ntype U<'a> =\n    internal\n    | Ok\n    | Case1 of ('a -> int)\n",
+        imp: "[<NoEquality ; NoComparison>]\ntype U<'a> =\n    internal\n    | Ok\n    | Case1 of ('a -> int)\n",
+        model: Model::Precise,
+    },
     // The module-root analogues, read as `M.Ok`.
     Shape {
         label: "module_duplicate_case_abbrev",
@@ -641,6 +664,18 @@ const FRAGMENTS: &[Fragment] = &[
         sig: "type A7 = { Ok : int }\n",
         imp: "type A7 = { Ok : int }\n",
         precise: true,
+    },
+    Fragment {
+        label: "class",
+        sig: "type Ok =\n    new : unit -> Ok\n",
+        imp: "type Ok() = class end\n",
+        precise: false,
+    },
+    Fragment {
+        label: "aliased_rqa",
+        sig: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
+        imp: "type Qual9 = Microsoft.FSharp.Core.RequireQualifiedAccessAttribute\n\n[<Qual9>]\ntype A9 =\n    | Ok\n",
+        precise: false,
     },
     Fragment {
         label: "opaque",
