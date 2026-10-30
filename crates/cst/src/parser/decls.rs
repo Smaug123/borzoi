@@ -1044,7 +1044,7 @@ impl<'src> Parser<'src> {
                 // belongs to the enclosing module. An error inside a
                 // representation (`type T = int *`, a broken member) is caught
                 // within the type, and the module goes on.
-                if missing_repr && scope == BodyScope::Nested {
+                if Self::missing_repr_closes(missing_repr, scope, begin_delimited) {
                     return (seen_decl, seen_non_hash_decl, header_parsed);
                 }
                 continue;
@@ -1208,7 +1208,7 @@ impl<'src> Parser<'src> {
                     seen_decl = true;
                     seen_non_hash_decl = true;
                     // See the unattributed type-definition arm.
-                    if missing_repr && scope == BodyScope::Nested {
+                    if Self::missing_repr_closes(missing_repr, scope, begin_delimited) {
                         return (seen_decl, seen_non_hash_decl, header_parsed);
                     }
                 } else if !matches!(
@@ -1579,6 +1579,13 @@ impl<'src> Parser<'src> {
             seen_non_hash_decl = true;
         }
         (seen_decl, seen_non_hash_decl, header_parsed)
+    }
+
+    /// Whether a type definition with no representation (`missing_repr`)
+    /// closes the module body being parsed. Only a nested body closes, and not
+    /// one delimited by `begin … end`, whose `end` FCS still matches.
+    fn missing_repr_closes(missing_repr: bool, scope: BodyScope, begin_delimited: bool) -> bool {
+        missing_repr && scope == BodyScope::Nested && !begin_delimited
     }
 
     /// After a nested-module declaration: bring `depth` up to date, and when

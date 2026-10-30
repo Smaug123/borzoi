@@ -1319,7 +1319,9 @@ impl<'src> Parser<'src> {
                 match raw(i) {
                     Some(Token::LBrackLess) => depth += 1,
                     Some(Token::GreaterRBrack) => depth -= 1,
-                    _ if start + i >= self.filtered_tokens.len() => return true,
+                    // An attribute list that never closes says nothing about
+                    // what follows it; FCS recovers inside the type.
+                    _ if start + i >= self.filtered_tokens.len() => return false,
                     _ => {}
                 }
                 i += 1;

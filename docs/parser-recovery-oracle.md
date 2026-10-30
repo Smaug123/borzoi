@@ -210,26 +210,33 @@ The recovery fixes in this change:
   the enclosing module too, since FCS's layout contexts are one module deeper
   than its parser.
 
+  A body delimited by `begin … end` is not closed, since its `end` still
+  matches; nor does an attribute list that never closes count as evidence of a
+  missing representation.
+
   The rule is FCS's LALR error recovery, which no table of hand-picked shapes
   covers. `recover_nested_module_scope_after_a_broken_declaration_matches_fcs`
   generates the space instead: a nested module's first declaration (a `type`
-  or a `let`) whose `=` is followed by each of 69 tokens and short
-  sequences, × an attribute before the declaration (on its line or its own),
-  before the representation, or nowhere, × single or double nesting. Each
+  or a `let`) whose `=` is followed by each of 70 tokens and short sequences,
+  × an attribute before the declaration (on its line or its own), before the
+  representation, or nowhere, × single or double nesting × a body after `=` or
+  in `= begin … end` × whether a `type V = int` comes before `let x`. Each
   following declaration FCS keeps must land in FCS's module. The cells where
   it does not are pinned one per line in
-  `tests/manifests/nested_module_scope.txt`. Most of what remains there is
-  not the boundary rule:
+  `tests/manifests/nested_module_scope.txt`: 1,831 of them without this rule,
+  893 with it. Of the 73 this rule makes worse, most are FCS grammar quirks
+  after the broken head rather than the boundary: `type T = static` before
+  `type V` (FCS reads a `static type` member), `= and` (a type group),
+  `= then`, `= else`, `= <-`, `= open`, `= begin`. Most of what remains overall
+  is not the boundary rule:
 
   - a same-line `[<A>] let w = …` anchors the `let`'s context at the `let`, so
     FCS reports the following lines offside (FS0058) and nests them
     differently; our parser reports no error there;
   - a bare `member` or `override` representation, or a bracket left open
     (`let w = (`, `type T = [`, `begin`, or `[<A>] class` or `struct` with no
-    `end`), swallows the declarations after it.
-
-  The rest is: after `type T = then`, `= else` or `= <-` in a doubly nested
-  module, FCS closes both modules, and we close at most one.
+    `end`), swallows the declarations after it;
+  - an attribute list left open runs over the lines after it in FCS.
 
 Two live defects were found and not fixed. Both are outside recovery proper:
 

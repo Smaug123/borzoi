@@ -831,6 +831,7 @@ const SCOPE_GRID_RHS: &[&str] = &[
     "fun",
     "match",
     "null",
+    "[<A>",
 ];
 
 /// One cell of [`scope_grid`].
@@ -839,6 +840,9 @@ struct ScopeCase {
     decl: String,
     /// Whether the nested module sits inside another one.
     double: bool,
+    /// How the nested module's body is laid out, when not plainly: ` begin`
+    /// (`= begin … end`) and ` +type` (a `type V = int` before `let x`).
+    layout: String,
     source: String,
 }
 
@@ -846,8 +850,10 @@ struct ScopeCase {
 /// definition or a `let` whose `=` is followed by each [`SCOPE_GRID_RHS`], ×
 /// an attribute on the line before the declaration, before it on its own line,
 /// before its representation (its right-hand side, for a `let`), or nowhere ×
-/// single or double nesting. `let x` follows in the nested module `A`; doubly
-/// nested, `let y` follows in the outer module `O` and `let z` at top level.
+/// single or double nesting × a body after `=` or in `= begin … end` ×
+/// whether a `type V = int` comes before `let x`. `let x` follows in the
+/// nested module `A`; doubly nested, `let y` follows in the outer module `O`
+/// and `let z` at top level.
 ///
 /// An attribute on a `let`'s own line anchors the `let`'s context at the
 /// `let`, so the lines after it are offside of it in FCS: that placement
@@ -863,20 +869,42 @@ fn scope_grid() -> Vec<ScopeCase> {
                     .trim_end()
                     .to_string();
                 for double in [false, true] {
-                    let indent = if double { "        " } else { "    " };
-                    let body = decl.replace('⏎', &format!("\n{indent}"));
-                    let source = if double {
-                        format!(
-                            "module M\nmodule O =\n    module A =\n        {body}\n        let x = 1\n    let y = 2\nlet z = 3\n"
-                        )
-                    } else {
-                        format!("module M\nmodule A =\n    {body}\n    let x = 1\n")
-                    };
-                    out.push(ScopeCase {
-                        decl: decl.clone(),
-                        double,
-                        source,
-                    });
+                    for begin in [false, true] {
+                        for typed in [false, true] {
+                            let outer = if double { "    " } else { "" };
+                            let indent = format!("{outer}    ");
+                            let body = decl.replace('⏎', &format!("\n{indent}"));
+                            let open = if begin { " begin" } else { "" };
+                            let next = if typed {
+                                format!("{indent}type V = int\n")
+                            } else {
+                                String::new()
+                            };
+                            let close = if begin {
+                                format!("{outer}end\n")
+                            } else {
+                                String::new()
+                            };
+                            let nested = format!(
+                                "{outer}module A ={open}\n{indent}{body}\n{next}{indent}let x = 1\n{close}"
+                            );
+                            let source = if double {
+                                format!("module M\nmodule O =\n{nested}    let y = 2\nlet z = 3\n")
+                            } else {
+                                format!("module M\n{nested}")
+                            };
+                            out.push(ScopeCase {
+                                decl: decl.clone(),
+                                double,
+                                layout: format!(
+                                    "{}{}",
+                                    if begin { " begin" } else { "" },
+                                    if typed { " +type" } else { "" }
+                                ),
+                                source,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -910,20 +938,26 @@ fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
         } else {
             &["M", "A"]
         };
-        for name in ["let x", "let y", "let z"] {
+        for (name, kind) in [
+            ("type V", "Types"),
+            ("let x", "Let"),
+            ("let y", "Let"),
+            ("let z", "Let"),
+        ] {
             let Some(at) = src.find(name) else { continue };
             let module_of = |units: &[Unit]| {
                 units
                     .iter()
-                    .find(|u| u.key.start == at && u.key.kind == "Let")
+                    .find(|u| u.key.start == at && u.key.kind == kind)
                     .map_or("nowhere", |u| modules[u.key.scope.len() - 1])
             };
             let (want, got) = (module_of(&fcs), module_of(&ours));
             if want != "nowhere" && got != want {
                 divergences.push(format!(
-                    "{} | {} | `{name}`: FCS in {want}, ours in {got}",
+                    "{} | {}{} | `{name}`: FCS in {want}, ours in {got}",
                     case.decl,
                     if case.double { "double" } else { "single" },
+                    case.layout,
                 ));
             }
         }
