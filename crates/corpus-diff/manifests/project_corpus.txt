@@ -77,7 +77,7 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:9:3-25 "RequireQ
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:9:4-25 "``.ctor``" shadowed-constructor
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=38
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain definition declined=195
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain hover declined=89 explained=106
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain hover declined=42 explained=153
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain references declined=195
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:103-106 "v1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:103-106 "v1" project-deferral unrecorded signature_file
@@ -96,12 +96,7 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:32-35 "v2" 
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:32-35 "v2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:41-44 "k1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:86-89 "k1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:86-89 "k1" project-deferral unrecorded signature_file
@@ -132,9 +127,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:43-46 "ok" 
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:50-53 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:54-61 "error1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:63-70 "error2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:79-85 "Result" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:86-89 "ok" handlers plain hover first declined expected declined-project
@@ -154,9 +146,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:41-48 "erro
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:52-55 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:56-60 "ok1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:62-66 "ok2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:75-82 "error1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:75-82 "error1" project-deferral unrecorded signature_file
@@ -164,9 +153,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:84-91 "erro
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:96-99 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:20-22 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:24-26 "b" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:34-36 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:38-40 "b" project-deferral unrecorded signature_file
@@ -191,9 +177,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:113-119 "ra
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:20-28 "domain1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:30-38 "domain2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:40-46 "range" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:54-62 "domain1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:54-62 "domain1" project-deferral unrecorded signature_file
@@ -234,14 +217,9 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:21-29 "doma
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:31-39 "domain2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:41-48 "range1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:50-57 "range2" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:65-73 "domain1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:86-94 "domain2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:98-105 "range2" project-deferral unrecorded signature_file
@@ -249,8 +227,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:110-113 "Te
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:114-122 "domain1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:126-133 "range1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:135-143 "domain2" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:135-143 "domain2" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:135-143 "domain2" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:135-143 "domain2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:147-154 "range2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:18-26 "domain1" project-deferral unrecorded signature_file x2
@@ -271,9 +247,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:39-42 "Teq"
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:43-48 "fst1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:50-55 "fst2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:50-55 "fst2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:64-69 "fst1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:64-69 "fst1" project-deferral unrecorded signature_file
@@ -334,9 +307,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:24-26 "a" pr
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:28-30 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:17-19 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:21-23 "b" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:31-33 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:35-37 "b" project-deferral unrecorded signature_file
@@ -345,9 +315,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:20-23 "Teq" 
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:24-26 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:28-30 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:28-30 "b" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:39-41 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:39-41 "b" project-deferral unrecorded signature_file
@@ -361,9 +328,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:47-49 "c" pr
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:54-57 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:58-60 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:62-64 "c" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:20-22 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:24-26 "b" project-deferral unrecorded signature_file
@@ -383,8 +347,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:17-20 "Teq" 
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:21-23 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:25-27 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:39-41 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:46-48 "a" project-deferral unrecorded signature_file
@@ -452,9 +414,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:17-19 "a" pr
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:21-23 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:29-31 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:49-51 "b" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:72-74 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:76-78 "b" project-deferral unrecorded signature_file
@@ -500,9 +459,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:59-62 "k2" p
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:79-82 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:83-86 "k1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:88-91 "k2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:102-105 "v2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:22-25 "v1" project-deferral unrecorded signature_file x2
@@ -513,9 +469,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:40-42 "k" pr
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:59-62 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:63-66 "v1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:68-71 "v2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:76-79 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:76-79 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:76-79 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:76-79 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:80-83 "Map" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:84-86 "k" project-deferral unrecorded signature_file
@@ -2204,7 +2157,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj A
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:98:16-32 "globalFlag" project-deferral qualified-access opaque_value_head@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi handlers plain definition declined=6
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi handlers plain hover declined=3 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi handlers plain hover declined=1 explained=5
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi handlers plain references declined=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:13:28-45 "AdjustHeightsHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:13:49-52 "int" assembly-deferral unrecorded signature_file
@@ -2234,8 +2187,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj A
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:51:71-73 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:51:74-78 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:51:91-93 "b" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:51:91-93 "b" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:51:91-93 "b" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:51:91-93 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:51:94-98 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fsi:53:21-38 "AdjustHeightsHeap" project-deferral unrecorded signature_file
@@ -2533,7 +2484,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj A
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fs:9:49-57 "ValueOpt" project-deferral unrecorded member_access_on_expression
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=3
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi handlers plain definition declined=12
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi handlers plain hover declined=3 explained=9
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi handlers plain hover declined=1 explained=11
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi handlers plain references declined=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:10:22-24 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:10:28-32 "unit" assembly-deferral unrecorded signature_file
@@ -2552,8 +2503,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj A
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:8:29-31 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:8:33-35 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:8:40-42 "b" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:8:40-42 "b" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:8:40-42 "b" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ArrayFold.fsi:8:40-42 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AssemblyInfo.fs compared match=0 assembly-match=1 attribute=1 member=0 definitions=1
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AssemblyInfo.fs handlers perturbed definition located=12 located-elsewhere=18
@@ -2972,7 +2921,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj B
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:95:57-68 "length" handlers perturbed references middle declined expected fresh-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi handlers plain definition declined=18
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi handlers plain hover declined=9 explained=9
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi handlers plain hover declined=3 explained=15
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi handlers plain references declined=18
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:1:11-19 "WoofWare" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
@@ -2988,9 +2937,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj B
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:33:24-26 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:33:28-30 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:33:35-39 "bool" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:33:35-39 "bool" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:33:35-39 "bool" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:33:35-39 "bool" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:35:33-37 "Bind" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:35:38-40 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:35:42-44 "b" project-deferral unrecorded signature_file
@@ -3003,9 +2949,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj B
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:45-49 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:55-57 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:61-65 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:61-65 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:61-65 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:61-65 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:70-74 "Bind" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:75-77 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fsi:37:79-81 "b" handlers plain hover first declined expected declined-project
@@ -3281,7 +3224,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj C
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fs:49:57-68 "length" handlers perturbed references middle declined expected fresh-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=19
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi handlers plain definition declined=15 located=6
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi handlers plain hover declined=12 described=6 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi handlers plain hover declined=2 described=6 explained=13
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi handlers plain references declined=15 referenced=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:11:19-21 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:11:25-27 "a" project-deferral unrecorded signature_file x2
@@ -3314,8 +3257,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj C
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:24:47-53 "Cutoff" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:27:19-21 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:27:26-28 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:27:26-28 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:27:26-28 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:27:26-28 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:27:32-34 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:27:38-41 "int" assembly-deferral unrecorded signature_file
@@ -3329,14 +3270,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj C
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:31:48-54 "Cutoff" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:34:16-18 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:34:22-24 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:34:25-31 "Cutoff" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:34:25-31 "Cutoff" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:34:25-31 "Cutoff" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:34:25-31 "Cutoff" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:37:15-17 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:37:21-23 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:37:21-23 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:37:21-23 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:37:21-23 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:37:24-30 "Cutoff" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:40:19-21 "a" project-deferral unrecorded signature_file x2
@@ -3345,9 +3281,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj C
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:42:19-21 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:42:27-29 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:42:44-46 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:42:47-53 "Cutoff" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:42:47-53 "Cutoff" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:42:47-53 "Cutoff" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:42:47-53 "Cutoff" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:44:22-24 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Cutoff.fsi:44:28-30 "a" project-deferral unrecorded signature_file
@@ -3557,7 +3490,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj D
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:94:57-68 "length" handlers perturbed references middle declined expected fresh-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=19
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi handlers plain definition declined=12
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi handlers plain hover declined=3 explained=9
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi handlers plain hover explained=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi handlers plain references declined=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:11:14-17 "Dot" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:12:15-21 "string" assembly-deferral unrecorded signature_file x2
@@ -3571,9 +3504,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj D
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:23-29 "string" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:30-34 "list" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:46-49 "Map" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:46-49 "Map" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:46-49 "Map" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:46-49 "Map" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:50-56 "string" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:58-64 "string" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fsi:18:69-80 "DotUserInfo" project-deferral unrecorded signature_file
@@ -3947,7 +3877,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:9:4-25 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=27
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi handlers plain definition declined=27
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi handlers plain hover declined=22 explained=5
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi handlers plain hover declined=1 explained=26
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi handlers plain references declined=27
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:10:3-9 "StructAttribute" assembly-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:10:3-9 "StructAttribute" shadowed-constructor x2
@@ -3964,25 +3894,13 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:21:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:21:4-25 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:44-46 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:47-53 "Expert" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:47-53 "Expert" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:47-53 "Expert" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:47-53 "Expert" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:71-75 "bool" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:71-75 "bool" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:71-75 "bool" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:71-75 "bool" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:79-83 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:79-83 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:79-83 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:23:79-83 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:23-27 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:31-33 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:63-67 "bool" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:71-75 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:71-75 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:71-75 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:71-75 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:80-82 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:26:83-89 "Expert" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:28:23-29 "Expert" project-deferral unrecorded signature_file
@@ -3999,13 +3917,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:35:71-74 "int" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:35:78-82 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:36:35-41 "Expert" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:36:45-60 "ExpertEdgeCrate" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:36:45-60 "ExpertEdgeCrate" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:36:45-60 "ExpertEdgeCrate" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:36:45-60 "ExpertEdgeCrate" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:37:41-47 "Expert" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:37:41-47 "Expert" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:37:41-47 "Expert" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:37:41-47 "Expert" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:37:51-55 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:38:35-41 "Expert" project-deferral unrecorded signature_file
@@ -4019,9 +3931,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:19-21 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:26-28 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:32-36 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:32-36 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:32-36 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:32-36 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:41-47 "Expert" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:48-50 "a" handlers plain hover first declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fsi:42:48-50 "a" project-deferral unrecorded signature_file
@@ -4171,7 +4080,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fs:9:13-18 "Child" project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=14
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi handlers plain definition declined=27
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi handlers plain hover declined=18 explained=9
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi handlers plain hover declined=1 explained=26
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi handlers plain references declined=27
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:11:18-20 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:13:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
@@ -4180,14 +4089,8 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:18-23 "State" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:52-56 "bool" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:60-64 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:60-64 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:60-64 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:60-64 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:66-72 "option" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:77-81 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:77-81 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:77-81 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:77-81 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:85-87 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:92-94 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:17:95-106 "Expert1Node" project-deferral unrecorded signature_file
@@ -4199,18 +4102,12 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:20:23-34 "Expert1Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:20:38-42 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:20:38-42 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:20:38-42 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:20:38-42 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:21:24-35 "Expert1Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:21:39-43 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:22:27-38 "Expert1Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:22:44-61 "Expert1Dependency" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:22:65-69 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:23:30-41 "Expert1Node" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:23:47-64 "Expert1Dependency" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:23:47-64 "Expert1Dependency" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:23:47-64 "Expert1Dependency" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:23:47-64 "Expert1Dependency" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:23:68-72 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:3:6-8 "a" project-deferral unrecorded signature_file
@@ -4221,14 +4118,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj E
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:36-40 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:42-48 "option" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:52-54 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:52-54 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:52-54 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:52-54 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:55-59 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:63-65 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:66-83 "Expert1Dependency" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:66-83 "Expert1Dependency" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:66-83 "Expert1Dependency" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:8:66-83 "Expert1Dependency" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:9:17-19 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert1.fsi:9:20-37 "Expert1Dependency" project-deferral unrecorded signature_file
@@ -4704,16 +4596,13 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj F
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:99:75-93 "JoinLhsChange" project-deferral qualified-access opaque_value_head@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=39
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi handlers plain definition declined=24
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi handlers plain hover declined=18 explained=6
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi handlers plain hover explained=24
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi handlers plain references declined=24
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:17:7-29 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:17:7-29 "RequireQualifiedAccessAttribute" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:17:8-29 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:19:24-30 "Cutoff" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:19:34-40 "string" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:19:34-40 "string" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:19:34-40 "string" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:19:34-40 "string" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:1:11-19 "WoofWare" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:21:7-29 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file x2
@@ -4735,36 +4624,21 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj F
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:4:15-26 "TimingWheel" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:4:6-14 "WoofWare" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:51:19-23 "list" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:51:19-23 "list" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:51:19-23 "list" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:51:19-23 "list" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:51:9-18 "NodeCrate" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:53:14-20 "NodeId" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:54:20-24 "Kind" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:55:20-26 "Cutoff" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:56:20-26 "NodeId" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:56:20-26 "NodeId" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:56:20-26 "NodeId" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:56:20-26 "NodeId" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:56:27-40 "IReadOnlyList" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:57:20-26 "NodeId" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:57:27-40 "IReadOnlyList" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:58:20-31 "DotUserInfo" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:58:20-31 "DotUserInfo" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:58:20-31 "DotUserInfo" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:58:20-31 "DotUserInfo" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:58:32-38 "option" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:59:20-36 "StabilizationNum" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:60:20-36 "StabilizationNum" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:61:20-23 "int" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:62:20-24 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:62:20-24 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:62:20-24 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:62:20-24 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:63:13-17 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:63:13-17 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:63:13-17 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:63:13-17 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:65:28-33 "State" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:65:37-46 "NodeCrate" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fsi:65:47-51 "list" assembly-deferral unrecorded signature_file
@@ -5890,7 +5764,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:99:61-65 "Node" project-deferral unrecorded member_signature
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=136
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi handlers plain definition declined=216 located=12
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi handlers plain hover declined=47 described=12 explained=169
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi handlers plain hover declined=41 described=12 explained=175
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi handlers plain references declined=216 referenced=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:100:108-112 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:100:41-45 "bool" assembly-deferral unrecorded signature_file
@@ -6186,16 +6060,10 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:22-24 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:25-33 "Observer" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:37-43 "Result" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:37-43 "Result" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:37-43 "Result" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:37-43 "Result" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:44-46 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:25:48-51 "exn" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:26:15-17 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:26:21-23 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:26:24-32 "Observer" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:26:24-32 "Observer" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:26:24-32 "Observer" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:26:24-32 "Observer" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:26:36-38 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fsi:27:26-28 "a" handlers plain hover first declined expected declined-project x2
@@ -6495,7 +6363,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fs:8:49-53 "Node" project-deferral shadowable-type opaque_open@pre_walk x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=9
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi handlers plain definition declined=21
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi handlers plain hover declined=8 explained=13
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi handlers plain hover declined=5 explained=16
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi handlers plain references declined=21
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:10:11-22 "Incremental" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:10:26-44 "IncrementalBuilder" project-deferral unrecorded signature_file
@@ -6523,9 +6391,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:29-31 "b" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:35-39 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:40-42 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:46-50 "Node" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:46-50 "Node" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:46-50 "Node" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:46-50 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:51-53 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IncrementalBuilder.fsi:14:58-62 "Node" project-deferral unrecorded signature_file
@@ -6796,7 +6661,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:9:15-35 "InternalObserverEval" project-deferral shadowable-type opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=13
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi handlers plain definition declined=12
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi handlers plain hover declined=3 explained=9
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi handlers plain hover explained=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi handlers plain references declined=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:10:28-30 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:10:31-47 "InternalObserver" project-deferral unrecorded signature_file
@@ -6807,9 +6672,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:11:21-37 "InternalObserver" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:11:41-45 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:12:21-23 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:12:24-40 "InternalObserver" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:12:24-40 "InternalObserver" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:12:24-40 "InternalObserver" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:12:24-40 "InternalObserver" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:12:44-49 "State" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fsi:14:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
@@ -7806,7 +7668,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj K
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:9:11-18 "At" project-deferral unrecorded opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=15
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi handlers plain definition declined=15
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi handlers plain hover declined=8 explained=7
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi handlers plain hover declined=2 explained=13
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi handlers plain references declined=15
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:13:22-24 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:13:28-32 "Kind" project-deferral unrecorded signature_file
@@ -7838,9 +7700,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj K
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:26:63-72 "NodeCrate" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:26:76-80 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:26:85-89 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:26:85-89 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:26:85-89 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:26:85-89 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:28:19-21 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:28:26-28 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:28:32-36 "unit" assembly-deferral unrecorded signature_file
@@ -7859,9 +7718,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj K
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:7:34-38 "Kind" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:7:39-41 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:7:46-49 "int" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:7:46-49 "int" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:7:46-49 "int" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fsi:7:46-49 "int" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj List.fs compared match=14 assembly-match=6 attribute=1 member=0 definitions=13
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj List.fs handlers perturbed definition declined=5 located=12 located-elsewhere=13
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj List.fs handlers perturbed hover described=25 explained=5
@@ -9573,7 +9429,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj N
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fs:9:42-46 "Kind" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=8
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi handlers plain definition declined=6
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi handlers plain hover declined=3 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi handlers plain hover explained=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi handlers plain references declined=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:1:11-19 "WoofWare" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
@@ -9581,9 +9437,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj N
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:3:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:3:4-25 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:7:107-111 "list" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:7:107-111 "list" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:7:107-111 "list" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:7:107-111 "list" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:7:115-119 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:7:37-41 "bool" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeToDot.fsi:7:61-65 "bool" assembly-deferral unrecorded signature_file
@@ -9683,7 +9536,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj O
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fs:8:72-79 "Value" assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi handlers plain definition declined=9
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi handlers plain hover declined=6 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi handlers plain hover explained=9
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi handlers plain references declined=9
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:1:11-19 "WoofWare" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
@@ -9697,14 +9550,8 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj O
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:5:44-48 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:22-24 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:28-30 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:31-40 "Observer'" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:31-40 "Observer'" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:31-40 "Observer'" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:31-40 "Observer'" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:44-48 "bool" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:44-48 "bool" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:44-48 "bool" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:6:44-48 "bool" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:7:23-25 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:7:29-31 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Observer.fsi:7:32-41 "Observer'" project-deferral unrecorded signature_file
@@ -9744,7 +9591,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj O
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fs:49:19-39 "PreviousUpdateKind" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=11
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi handlers plain definition declined=9
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi handlers plain hover declined=6 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi handlers plain hover declined=1 explained=8
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi handlers plain references declined=9
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:11:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:11:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
@@ -9756,14 +9603,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj O
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:13:70-72 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:13:73-88 "OnUpdateHandler" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:15-17 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:15-17 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:15-17 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:15-17 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:18-33 "OnUpdateHandler" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:37-39 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:40-50 "NodeUpdate" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:40-50 "NodeUpdate" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:40-50 "NodeUpdate" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:40-50 "NodeUpdate" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:60-76 "StabilizationNum" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj OnUpdateHandler.fsi:14:80-84 "unit" assembly-deferral unrecorded signature_file
@@ -9873,7 +9715,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fs:4:6-12 "System" assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=7
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi handlers plain definition declined=18
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi handlers plain hover declined=3 explained=15
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi handlers plain hover declined=1 explained=17
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi handlers plain references declined=18
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:11:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:11:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
@@ -9883,8 +9725,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:15:30-45 "RaisedException" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:15:49-55 "string" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:15:59-61 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:15:59-61 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:15:59-61 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:15:59-61 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:17:19-34 "RaisedException" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RaisedException.fsi:17:38-40 "a" project-deferral unrecorded signature_file
@@ -10265,7 +10105,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:97:17-32 "ofUnit" project-deferral qualified-access opaque_value_head@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi handlers plain definition declined=24
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi handlers plain hover declined=21 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi handlers plain hover explained=24
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi handlers plain references declined=24
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:10:28-41 "RecomputeHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:10:45-48 "int" assembly-deferral unrecorded signature_file
@@ -10276,23 +10116,14 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:20:21-34 "RecomputeHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:20:38-41 "int" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:15-28 "RecomputeHeap" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:15-28 "RecomputeHeap" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:15-28 "RecomputeHeap" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:15-28 "RecomputeHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:32-34 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:35-39 "Node" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:35-39 "Node" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:35-39 "Node" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:35-39 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:29:43-47 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:36:18-31 "RecomputeHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:36:35-37 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:36:38-42 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:36:46-50 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:36:46-50 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:36:46-50 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:36:46-50 "unit" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:3:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:3:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:3:4-25 "``.ctor``" shadowed-constructor
@@ -10307,24 +10138,12 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:50:43-45 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:50:46-50 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:50:54-58 "unit" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:50:54-58 "unit" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:50:54-58 "unit" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:50:54-58 "unit" handlers plain hover middle declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:52:21-34 "RecomputeHeap" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:52:21-34 "RecomputeHeap" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:52:21-34 "RecomputeHeap" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:52:21-34 "RecomputeHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:52:38-42 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:6:37-40 "int" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:6:44-57 "RecomputeHeap" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:6:44-57 "RecomputeHeap" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:6:44-57 "RecomputeHeap" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:6:44-57 "RecomputeHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:7:18-31 "RecomputeHeap" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:7:35-38 "int" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:7:35-38 "int" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:7:35-38 "int" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fsi:7:35-38 "int" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs compared match=19 assembly-match=0 attribute=0 member=0 definitions=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs handlers perturbed definition declined=18 located=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs handlers perturbed hover described=12 explained=18
@@ -10441,7 +10260,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs:9:19-31 "length" assembly-deferral qualified-access opaque_value_head@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=4
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi handlers plain definition declined=9
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi handlers plain hover declined=6 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi handlers plain hover declined=2 explained=7
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi handlers plain references declined=9
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:1:11-19 "WoofWare" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
@@ -10454,15 +10273,11 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:35-40 "array" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:49-51 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:55-57 "b" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:55-57 "b" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:55-57 "b" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:55-57 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:72-74 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:78-80 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:84-86 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:91-93 "b" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:91-93 "b" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:91-93 "b" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:91-93 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:94-98 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fsi:5:99-105 "option" assembly-deferral unrecorded signature_file
@@ -11390,7 +11205,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:97:33-52 "numStabilizes" project-deferral qualified-access opaque_value_head@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=15
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi handlers plain definition declined=15
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi handlers plain hover declined=6 explained=9
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi handlers plain hover explained=15
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi handlers plain references declined=15
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:10:17-21 "Node" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:10:22-35 "IReadOnlyList" assembly-deferral unrecorded signature_file x2
@@ -11417,17 +11232,11 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:28:31-42 "DotUserInfo" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:28:43-49 "option" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:28:51-57 "option" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:28:51-57 "option" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:28:51-57 "option" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:28:51-57 "option" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:29:24-36 "RenderTarget" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:29:37-43 "option" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:30:25-29 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:30:30-34 "list" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:30:35-41 "option" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:30:35-41 "option" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:30:35-41 "option" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:30:35-41 "option" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:31:27-41 "RenderRelation" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:31:42-48 "option" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fsi:32:9-17 "Skeleton" project-deferral unrecorded signature_file
@@ -11557,7 +11366,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fs:8:4-25 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=10
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi handlers plain definition declined=9 located=6
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi handlers plain hover declined=6 described=6 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi handlers plain hover described=6 explained=9
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi handlers plain references declined=9 referenced=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:11:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:11:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
@@ -11568,12 +11377,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:1:20-31 "Incremental" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:20:18-34 "StabilizationNum" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:20:38-42 "bool" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:20:38-42 "bool" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:20:38-42 "bool" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:20:38-42 "bool" handlers plain hover middle declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:22:18-34 "StabilizationNum" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:22:18-34 "StabilizationNum" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:22:18-34 "StabilizationNum" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:22:18-34 "StabilizationNum" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:22:38-42 "bool" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StabilizationNum.fsi:24:16-32 "StabilizationNum" project-deferral unrecorded signature_file
@@ -14847,7 +14650,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fs:9:31-39 "Sequence" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi handlers plain definition declined=15
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi handlers plain hover declined=6 explained=9
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi handlers plain hover declined=2 explained=13
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi handlers plain references declined=15
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:10:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:10:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
@@ -14859,8 +14662,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:17:20-32 "StepFunction" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:17:37-43 "TimeNs" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:17:46-48 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:17:46-48 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:17:46-48 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:17:46-48 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:17:50-58 "Sequence" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:19:17-19 "a" project-deferral unrecorded signature_file
@@ -14877,8 +14678,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:29:49-51 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:29:53-57 "list" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:29:61-63 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:29:61-63 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:29:61-63 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:29:61-63 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:29:64-76 "StepFunction" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunction.fsi:35:28-30 "a" project-deferral unrecorded signature_file x2
@@ -15947,7 +15746,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj U
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:99:16-31 "toUnit" project-deferral qualified-access opaque_value_head@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=20
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi handlers plain definition declined=9 located=6
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi handlers plain hover declined=6 described=6 explained=3
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi handlers plain hover declined=1 described=6 explained=8
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi handlers plain references declined=9 referenced=6
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:11:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:11:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
@@ -15982,9 +15781,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj U
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:26:17-19 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:26:20-24 "Node" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:27:22-25 "int" assembly-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:27:22-25 "int" handlers plain hover first declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:27:22-25 "int" handlers plain hover last declined expected declined-assembly
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:27:22-25 "int" handlers plain hover middle declined expected declined-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:28:23-25 "b" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:28:26-33 "voption" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:29:20-22 "b" project-deferral unrecorded signature_file
@@ -15996,8 +15792,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj U
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:19-21 "a" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:23-25 "b" project-deferral unrecorded signature_file x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:30-32 "a" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:30-32 "a" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:30-32 "a" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:30-32 "a" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:36-40 "unit" assembly-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fsi:34:46-48 "b" project-deferral unrecorded signature_file
@@ -16130,7 +15924,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj V
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:9:30-32 "t" project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=4
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi handlers plain definition declined=12
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi handlers plain hover declined=5 explained=7
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi handlers plain hover declined=2 explained=10
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi handlers plain references declined=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:11:19-21 "a" handlers plain hover first declined expected declined-project x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:11:19-21 "a" project-deferral unrecorded signature_file x2
@@ -16154,9 +15948,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj V
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:8:34-36 "t" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:21-24 "Var" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:25-27 "a" project-deferral unrecorded signature_file
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:32-37 "State" handlers plain hover first declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:32-37 "State" handlers plain hover last declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:32-37 "State" handlers plain hover middle declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fsi:9:32-37 "State" project-deferral unrecorded signature_file
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj comparable assets=resolved packages=5 frameworks=152 project-refs=0
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs compared match=89 assembly-match=57 attribute=1 member=1 definitions=32
