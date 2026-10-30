@@ -149,11 +149,27 @@ running ahead.
 
 `restore.rs` needs no per-SDK revalidation. Every replacement does: A₁ models
 SDK target files that can change in any release, and B₁ models NuGet behaviour
-that `NuGet.Commands` can change. Both therefore key their trust on what they
-read: A₁ on the content hash of each SDK file in the restore cone, and B₁ on
-the dgspec schema (unknown field → decline). An SDK nobody has verified
-declines to `restore.rs`; it is never served on the assumption that it behaves
-like its predecessor.
+that `NuGet.Commands` can change. Each therefore keys its trust on the identity
+of the code it models:
+
+- **A₁:** the content hash of each SDK file in the restore cone.
+- **B₁:** the identity of the NuGet that would perform the restore. That is the
+  informational version (or content hash) of `NuGet.Commands.dll` in the SDK
+  that `dotnet` resolves for the project, honouring its `global.json`. B₁ takes
+  this identity as an input and commits only for identities on a checked-in
+  verified list.
+
+B₁ needs its own gate because the dgspec schema check is not enough. A NuGet
+release can change resolution behaviour while emitting the same `format: 1`
+document, and when A₂ produces the dgspec there is no A₁ file hash in the
+chain to catch it. An identity nobody has verified declines to `restore.rs`; it
+is never served on the assumption that it behaves like its predecessor.
+
+That puts the same requirement on the oracle: B₀ must run the NuGet it vouches
+for. Today it does not. `tools/nuget-oracle` links NuGet 7.6.0 from packages,
+while SDK 10.0.402 ships `NuGet.Commands` 7.9.0-rc.611 (and 9.0.200 ships
+6.13.0). Everything `resolver_diff` establishes is therefore established
+against 7.6.0, and stage 3 makes this identity explicit.
 
 ## Implementation plan
 
@@ -197,25 +213,38 @@ like its predecessor.
 **Implements:** *Why the boundary sits here* (A₀ then B₀ ≡ `restore.rs`).
 - New `tools/nuget-oracle` op `restoreDgSpec`: run `RunWithoutCommit` over a
   supplied dgspec against the real packages folder, returning per (project, TFM)
-  the package set and compile assets.
+  the package set and compile assets, plus the identity of the `NuGet.Commands`
+  that actually ran.
+- The op runs the NuGet of the SDK being calibrated. Either it loads the
+  `NuGet.*.dll` set from that SDK's directory, or the oracle is built against a
+  package version proved identical to it. Which of the two is decided here.
 
-**Correctness oracle:** on every corpus project, B₀ applied to A₀'s dgspec
-matches `restore.rs`'s scratch assets file per TFM, in both package set and
-compile assets. A mismatch here means the split itself drops information, and
-nothing later in the plan may proceed until it is explained.
+**Correctness oracle:**
+- Identity: the op's reported `NuGet.Commands` identity equals the SDK's, for
+  every SDK the corpus runs on.
+- On every corpus project, B₀ applied to A₀'s dgspec matches `restore.rs`'s
+  scratch assets file per TFM, in both package set and compile assets. A
+  mismatch here means the split itself drops information, and nothing later in
+  the plan may proceed until it is explained.
 
 ### Stage 4: B₁ consumes the typed dgspec
 
 **Dependencies:** stages 1, 3.
 **Implements:** the B₁ row.
-- Add `resolve_dgspec(spec, project, tfm)`. It is plumbing over
-  `resolve_offline`, with a typed decline for each field the resolver does not
-  model (pruning, project references, transitive pinning, download
-  dependencies, non-default warning policy).
+- Add `resolve_dgspec(nuget, spec, project, tfm)`. It is plumbing over
+  `resolve_offline`. `nuget` is the restoring NuGet's identity (see *Per-SDK
+  drift*), checked against the verified list. There is a typed decline for an
+  unverified identity, and one for each field the resolver does not model
+  (pruning, project references, transitive pinning, download dependencies,
+  non-default warning policy).
 
 **Correctness oracle:**
-- Certain-implies-exact against B₀, on generated dgspecs and on every corpus
-  dgspec.
+- Certain-implies-exact against B₀ running that same identity, on generated
+  dgspecs and on every corpus dgspec.
+- Absolute property: for any spec, an identity not on the verified list
+  declines.
+- The verified list is exactly the set of identities a B₀ run in CI has graded.
+  A test derives it from the oracle runs, so nothing can be added by hand.
 - A pinned census of B₁'s outcome per corpus project, giving decline counts by
   field. Expect pruning to decline nearly every `net10.0` project; the census
   is how stages 5–7 get ordered.
