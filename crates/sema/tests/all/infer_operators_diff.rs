@@ -1564,7 +1564,7 @@ pub(crate) const ARG_CHECK_HEADER: &str = "module Checks\n\
                                 let gib (a: int) (b: bool) = 1\n\
                                 let (+.) (a: int) (b: bool) = a\n";
 
-const ARG_CHECK_FNS: [&str; 14] = [
+const ARG_CHECK_FNS: [&str; 16] = [
     "inc",
     "incs",
     "opn",
@@ -1579,6 +1579,11 @@ const ARG_CHECK_FNS: [&str; 14] = [
     "(inc >> idf)",
     "(fo >> inc)",
     "(idf << incs)",
+    // Constrained by `equality` and `comparison`: whatever reaches them —
+    // through a pipe, a dropped branch, a composition — is checked only once
+    // the binding is solved, and a violation refuses the speculation.
+    "hash",
+    "(compare 1)",
 ];
 
 /// An expression over the parameters `ai: int`, `ss: string`, `xs: List<int>`,

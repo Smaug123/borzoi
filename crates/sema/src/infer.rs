@@ -4380,8 +4380,8 @@ impl<'a> Gen<'a> {
         self.trial = Some(TrialLog::default());
         let outcome = self.run_worklist(Fire::All);
         let log = self.trial.take().unwrap_or_default();
-        let speculative = self.constraint_verdict();
-        let outcome = if outcome.discharged == 0 || self.verified(&outcome) {
+        let speculative = self.probed_constraint_verdict(&outcome);
+        let outcome = if outcome.discharged == 0 || self.verified(&outcome, speculative) {
             self.table.commit(snapshot);
             outcome
         } else {
@@ -4409,18 +4409,34 @@ impl<'a> Gen<'a> {
     /// constrained instantiations ([`Self::constrained`]) in the table as it
     /// stands.
     fn constraint_verdict(&mut self) -> Verdict {
+        constraint_verdict_of(&mut self.table, self.env, &self.constrained)
+    }
+
+    /// [`Self::constraint_verdict`] once every relation the solve left
+    /// unapplied — the argument checks still pending and the check-mode
+    /// relations the walk dropped ([`Self::dropped`]) — is applied too, as
+    /// [`Self::verified`]'s probe applies them: a constrained instantiation
+    /// that only such a relation fixes is met there and nowhere else. The table
+    /// is left as it was.
+    fn probed_constraint_verdict(&mut self, outcome: &WorklistOutcome) -> Verdict {
+        let relations: Vec<(TyVid, TyVid)> = outcome
+            .args
+            .iter()
+            .map(|ac| (ac.arg, ac.dom))
+            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
+            .collect();
+        let env = self.env;
+        let constrained = &self.constrained;
         let mut verdict = Verdict::Holds;
-        for (v, req) in self.constrained.clone() {
-            let ty = self.table.resolve(&Ty::Var(v));
-            for (needed, wanted) in [
-                (Needs::Equality, req.equality),
-                (Needs::Comparison, req.comparison),
-            ] {
-                if wanted {
-                    verdict = worse(verdict, satisfies(self.env, &ty, needed));
-                }
+        let _ = self.table.probe(|t| -> Result<(), ()> {
+            for (a, b) in &relations {
+                // A relation that does not unify fails the speculation in
+                // `verified` on its own; the rest still decide the verdict.
+                let _ = t.unify(&Ty::Var(*a), &Ty::Var(*b));
             }
-        }
+            verdict = constraint_verdict_of(t, env, constrained);
+            Err(())
+        });
         verdict
     }
 
@@ -4461,7 +4477,10 @@ impl<'a> Gen<'a> {
     ///   after it ([`WorklistOutcome::late_member`]): FCS rejects a member
     ///   access on a receiver it does not know yet (FS0072), consistent or not;
     /// - every constrained instantiation ([`Self::constrained`]) to satisfy
-    ///   its constraint, or be open. A violation changes no type in itself, but
+    ///   its constraint, or be open, with the relations above applied
+    ///   (`constraints`, [`Self::probed_constraint_verdict`]): a branch that
+    ///   joins an open parameter to a function can be what fixes one. A
+    ///   violation changes no type in itself, but
     ///   FCS meets it inside an argument check (`UnifyOverallType`), undoes the
     ///   equality it was solving, and reports the error with the rest of that
     ///   unification never applied: `a |> hash` over a function-holding `a`
@@ -4478,14 +4497,11 @@ impl<'a> Gen<'a> {
     ///   depends on whether it knew that type at the use.
     ///
     /// The joint unification is a probe: the table is left as it was.
-    fn verified(&mut self, outcome: &WorklistOutcome) -> bool {
+    fn verified(&mut self, outcome: &WorklistOutcome, constraints: Verdict) -> bool {
         if self.eq_failures > 0 || outcome.failed > 0 || outcome.late_member {
             return false;
         }
-        if matches!(
-            self.constraint_verdict(),
-            Verdict::Fails | Verdict::Undecided
-        ) {
+        if matches!(constraints, Verdict::Fails | Verdict::Undecided) {
             return false;
         }
         let env = self.env;
@@ -5491,6 +5507,28 @@ fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
         }
         Ty::Named { .. } => Verdict::Undecided,
     }
+}
+
+/// The worst verdict ([`satisfies`]) over `constrained`, each variable with
+/// the constraints it carries, as `table` resolves them.
+fn constraint_verdict_of(
+    table: &mut InferTable,
+    env: &AssemblyEnv,
+    constrained: &[(TyVid, EqualityComparison)],
+) -> Verdict {
+    let mut verdict = Verdict::Holds;
+    for &(v, req) in constrained {
+        let ty = table.resolve(&Ty::Var(v));
+        for (needed, wanted) in [
+            (Needs::Equality, req.equality),
+            (Needs::Comparison, req.comparison),
+        ] {
+            if wanted {
+                verdict = worse(verdict, satisfies(env, &ty, needed));
+            }
+        }
+    }
+    verdict
 }
 
 /// The verdict of a type made of parts with verdicts `a` and `b`: any part

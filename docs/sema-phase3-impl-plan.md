@@ -488,7 +488,10 @@ signature says, and each constrained instantiation variable is:
   undoes the equality it was solving and reports the error with the rest of
   that unification never applied: `a |> hash` over an `int * (int -> int)`
   leaves the pipe's result `'a` in FCS. The grid found this; the design had
-  assumed types were the same either way;
+  assumed types were the same either way. The verdict is taken with the
+  relations the solve left unapplied applied too, as `verified`'s probe
+  applies them: a branch joining an open parameter to a function can be the
+  only thing that fixes a constrained instantiation;
 - **never generalised while open**: it is poisoned when it is made. The
   canonical renderings do not show `when`, so a scheme dropping
   `when 'a : equality` would pass every types oracle while hover showed it
@@ -503,8 +506,8 @@ fixture's own `eqC`/`cmpC`) × 34 operand sorts (every primitive, `unit`,
 `obj`, tuples and arrays with and without a function, BCL classes, an
 interface, a BCL struct, F# records and a class from the fixture — one with a
 function field and no equality — and in-file records plain, `NoEquality`,
-`NoComparison`, `CustomEquality`) × annotated, nested, piped, literal and
-half-open operands in synth, argument, tuple and branch positions, plus open
+`NoComparison`, `CustomEquality`) × annotated, nested, piped, literal,
+half-open and branch-joined operands in synth, argument, tuple and branch positions, plus open
 and rigid-`'T` operands. Its table of provable sorts is checked against FCS
 (a sort called provable never draws an error); each file FCS accepts over a
 provable sort must leave every binding complete and commit every synth row
