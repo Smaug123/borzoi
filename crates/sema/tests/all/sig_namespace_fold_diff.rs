@@ -203,6 +203,45 @@ const SHAPES: &[Shape] = &[
         imp: "type U = Ok\n",
         model: Model::Unmodelled,
     },
+    // Two declarations put `Ok` in bare scope, one of them unmodelled (FCS
+    // reads `type B = Ok` as a nullary case): neither may be the export.
+    Shape {
+        label: "duplicate_case_abbrev",
+        sig: "type A =\n    | Ok of int\n\ntype B = Ok\n",
+        imp: "type A =\n    | Ok of int\n\ntype B = Ok\n",
+        model: Model::Unmodelled,
+    },
+    Shape {
+        label: "duplicate_case_across_type_decls",
+        sig: "type A =\n    | Ok\n    | X\n\ntype C =\n    | Ok\n    | Y\n",
+        imp: "type A =\n    | Ok\n    | X\n\ntype C =\n    | Ok\n    | Y\n",
+        model: Model::Unmodelled,
+    },
+    Shape {
+        label: "duplicate_case_in_one_group",
+        sig: "type A =\n    | Ok\n    | X\n\nand C =\n    | Ok\n    | Y\n",
+        imp: "type A =\n    | Ok\n    | X\n\nand C =\n    | Ok\n    | Y\n",
+        model: Model::Unmodelled,
+    },
+    Shape {
+        label: "duplicate_case_and_exception",
+        sig: "type A =\n    | Ok of int\n\nexception Ok of string\n",
+        imp: "type A =\n    | Ok of int\n\nexception Ok of string\n",
+        model: Model::Unmodelled,
+    },
+    // The module-root analogues, read as `M.Ok`.
+    Shape {
+        label: "module_duplicate_case_abbrev",
+        sig: "module M =\n    type A =\n        | Ok of int\n\n    type B = Ok\n",
+        imp: "module M =\n    type A =\n        | Ok of int\n\n    type B = Ok\n",
+        model: Model::Precise,
+    },
+    Shape {
+        label: "module_case_and_val",
+        sig: "module M =\n    type A =\n        | Ok of int\n\n    val Ok : int\n",
+        imp: "module M =\n    type A =\n        | Ok of int\n\n    let Ok = 1\n",
+        model: Model::Precise,
+    },
     Shape {
         label: "enum",
         sig: "type U =\n    | Case1 = 0\n    | Ok = 1\n",
@@ -231,6 +270,7 @@ const PROBES: &str = concat!(
     "    let useListMap () = List.map id [ 1 ]\n",
     "    let useInt (x : int) = x\n",
     "    let useFailure () = Failure \"x\"\n",
+    "    let useModuleOk () = M.Ok\n",
 );
 
 /// Where the reader file sits relative to the pair, and how it reaches `N`.
@@ -547,4 +587,109 @@ fn the_implicit_namespace_open_is_traced() {
             o.opacity
         );
     }
+}
+
+/// One namespace-level declaration that puts `Ok` somewhere — a pairwise
+/// grid's alphabet. `precise` says whether it leaves the fold enumerable on
+/// its own.
+struct Fragment {
+    label: &'static str,
+    sig: &'static str,
+    imp: &'static str,
+    precise: bool,
+}
+
+const FRAGMENTS: &[Fragment] = &[
+    Fragment {
+        label: "union",
+        sig: "type A1 =\n    | Ok of int\n",
+        imp: "type A1 =\n    | Ok of int\n",
+        precise: true,
+    },
+    Fragment {
+        label: "rqa",
+        sig: "[<RequireQualifiedAccess>]\ntype A2 =\n    | Ok\n",
+        imp: "[<RequireQualifiedAccess>]\ntype A2 =\n    | Ok\n",
+        precise: true,
+    },
+    Fragment {
+        label: "abbrev_case",
+        sig: "type A3 = Ok\n",
+        imp: "type A3 = Ok\n",
+        precise: false,
+    },
+    Fragment {
+        label: "exception",
+        sig: "exception Ok of string\n",
+        imp: "exception Ok of string\n",
+        precise: false,
+    },
+    Fragment {
+        label: "private_repr",
+        sig: "type A5 =\n    private\n    | Ok\n",
+        imp: "type A5 =\n    private\n    | Ok\n",
+        precise: false,
+    },
+    Fragment {
+        label: "enum",
+        sig: "type A6 =\n    | Ok = 1\n",
+        imp: "type A6 =\n    | Ok = 1\n",
+        precise: false,
+    },
+    Fragment {
+        label: "record",
+        sig: "type A7 = { Ok : int }\n",
+        imp: "type A7 = { Ok : int }\n",
+        precise: true,
+    },
+    Fragment {
+        label: "opaque",
+        sig: "type A8\n",
+        imp: "type A8 =\n    | Ok\n",
+        precise: true,
+    },
+];
+
+/// Every ordered pair of distinct [`FRAGMENTS`] in one signatured namespace:
+/// the collision space a single-declaration table cannot reach (two
+/// declarations of one bare name, one of them unmodelled, is how a stale
+/// export became a wrong target). Graded exactly as the table is; a pair of
+/// precise fragments must keep the FSharp.Core names committed.
+#[test]
+fn pairwise_namespace_declarations_agree_with_fcs() {
+    let mut wrong = Vec::new();
+    let mut missing = Vec::new();
+    for a in FRAGMENTS {
+        for b in FRAGMENTS {
+            if a.label == b.label {
+                continue;
+            }
+            let label: &'static str = Box::leak(format!("{}_then_{}", a.label, b.label).into());
+            let sig: &'static str = Box::leak(format!("{}\n{}", a.sig, b.sig).into());
+            let imp: &'static str = Box::leak(format!("{}\n{}", a.imp, b.imp).into());
+            let shape = Shape {
+                label,
+                sig,
+                imp,
+                model: Model::Unmodelled,
+            };
+            for reader in [Reader::SameNamespaceAfter, Reader::OpenAfter] {
+                let mut c = grade_cell(&shape, reader);
+                wrong.append(&mut c.wrong);
+                if a.precise && b.precise {
+                    for needle in ["ref", "failwith"] {
+                        if !c.assembly.contains(&needle) {
+                            missing.push(format!("[{label} / {reader:?}]: {needle:?}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "wrong commits:\n{}", wrong.join("\n"));
+    assert!(
+        missing.is_empty(),
+        "must-commit obligations unmet:\n{}",
+        missing.join("\n")
+    );
 }

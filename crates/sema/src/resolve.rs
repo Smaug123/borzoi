@@ -903,6 +903,78 @@ fn collect_auto_open_type_containers(
     }
 }
 
+/// Append `decl` to `namespace`'s declarations, keeping first-seen order.
+fn push_namespace_decl(
+    namespace_decls: &mut Vec<(Vec<String>, Vec<SigDecl>)>,
+    namespace: &[String],
+    decl: SigDecl,
+) {
+    match namespace_decls.iter_mut().find(|(ns, _)| ns == namespace) {
+        Some((_, decls)) => decls.push(decl),
+        None => namespace_decls.push((namespace.to_vec(), vec![decl])),
+    }
+}
+
+/// The bare value names more than one of `decls` puts in scope: plain
+/// `val`s, the cases of a union without `[<RequireQualifiedAccess>]`, enum
+/// cases, a single-ident abbreviation target (FCS reads one that names no
+/// type as a nullary union case), and exception constructors. Counted
+/// syntactically, modelled or not, since a declaration the export walk skips
+/// still occupies its name.
+fn contested_bare_value_names(decls: &[SigDecl]) -> HashSet<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut contested: HashSet<String> = HashSet::new();
+    let mut note = |name: String| {
+        if !seen.insert(name.clone()) {
+            contested.insert(name);
+        }
+    };
+    for decl in decls {
+        match decl {
+            SigDecl::Val(vd) => {
+                if let Some(ident) = vd
+                    .val_sig()
+                    .filter(|vs| vs.active_pat_name().is_none())
+                    .and_then(|vs| vs.ident())
+                {
+                    note(id_text(&ident).to_string());
+                }
+            }
+            SigDecl::Types(types) => {
+                for defn in types.defns() {
+                    let rqa = attrs_require_qualified_access(defn.attributes());
+                    let idents: Vec<SyntaxToken> = match defn.repr() {
+                        Some(TypeDefnRepr::Union(_)) if rqa => Vec::new(),
+                        Some(TypeDefnRepr::Union(u)) => {
+                            u.cases().filter_map(|c| c.ident()).collect()
+                        }
+                        Some(TypeDefnRepr::Enum(e)) => {
+                            e.cases().filter_map(|c| c.ident()).collect()
+                        }
+                        Some(TypeDefnRepr::Abbrev(a)) => a
+                            .ty()
+                            .as_ref()
+                            .and_then(abbrev_target_single_ident)
+                            .into_iter()
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    for ident in idents {
+                        note(id_text(&ident).to_string());
+                    }
+                }
+            }
+            SigDecl::Exception(exn) => {
+                if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
+                    note(id_text(&ident).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    contested
+}
+
 fn collect_sig_container_exports(
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
@@ -917,6 +989,13 @@ fn collect_sig_container_exports(
     // decls through this one function, so scanning here is what keeps a shape
     // from being forgotten ([`model::SigScreen::auto_open_type_containers`]).
     collect_auto_open_type_containers(container, &decls, auto_open_type_containers);
+    // A bare name two of the container's declarations both put in value
+    // scope gets no bare identity: which one FCS binds turns on declaration
+    // order and kind, and one of them may be a declaration this walk does not
+    // model at all (an abbreviation FCS reads as a nullary case, a privately
+    // represented union, an exception). Its type-qualified paths are
+    // unaffected — `A.Ok` and `B.Ok` are distinct.
+    let contested = contested_bare_value_names(&decls);
     let decls = decls.into_iter();
     debug_assert!(
         access_floor.is_none_or(|f| f < container.len()),
@@ -935,6 +1014,7 @@ fn collect_sig_container_exports(
         defs.push(def);
         let mut path = container.to_vec();
         path.push(name.clone());
+        let qualified = qualified && !contested.contains(&name);
         exports.push(model::SigExport {
             name,
             qualified: qualified.then(|| path.clone()),
@@ -1062,6 +1142,9 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut value_paths = Vec::new();
     let mut bare_value_paths: Vec<Vec<String>> = Vec::new();
     let mut namespaces: HashSet<Vec<String>> = HashSet::new();
+    // Each namespace's own type and exception declarations, across all of
+    // its fragments in this file, in source order.
+    let mut namespace_decls: Vec<(Vec<String>, Vec<SigDecl>)> = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
     for fragment in sig.modules() {
@@ -1137,19 +1220,14 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         // their own exposed value paths (RQA-blind: an
                         // over-collected RQA case only defers more).
                         SigDecl::Types(types) => {
-                            // The exactly-modelled half: visible union/enum
-                            // cases get a signature identity at `ns.Case`
-                            // (and `ns.Type.Case`), exactly as under a module
-                            // root. The container walker also records an
-                            // `[<AutoOpen>]` type with the namespace as its
-                            // container.
-                            collect_sig_container_exports(
+                            // The exactly-modelled half (visible union/enum
+                            // cases at `ns.Case` and `ns.Type.Case`) is
+                            // collected once per namespace below, over all
+                            // of its type and exception declarations.
+                            push_namespace_decl(
+                                &mut namespace_decls,
                                 &ns,
-                                std::iter::once(SigDecl::Types(types.clone())),
-                                None,
-                                &mut defs,
-                                &mut exports,
-                                &mut auto_open_type_containers,
+                                SigDecl::Types(types.clone()),
                             );
                             for defn in types.defns() {
                                 // The bare value-space names the type puts in
@@ -1216,6 +1294,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 bare_value_paths.push(path.clone());
                                 value_paths.push(path);
                             }
+                            push_namespace_decl(&mut namespace_decls, &ns, SigDecl::Exception(exn));
                         }
                         _ => {}
                     }
@@ -1257,6 +1336,19 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                 }
             }
         }
+    }
+    // The namespace-direct surface, exactly as a module root's: the
+    // container walker also records an `[<AutoOpen>]` type with the
+    // namespace as its container.
+    for (ns, decls) in namespace_decls {
+        collect_sig_container_exports(
+            &ns,
+            decls.into_iter(),
+            None,
+            &mut defs,
+            &mut exports,
+            &mut auto_open_type_containers,
+        );
     }
     // The screen's exemption sets: exactly the paths the collected surface
     // carries an identity for, split by namespace (the case half exempts
