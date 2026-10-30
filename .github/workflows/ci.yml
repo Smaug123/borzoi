@@ -1011,7 +1011,7 @@ jobs:
     # Deliberately ungated by `changes`: the runtime path this exercises spans
     # cst, sema, assembly, msbuild, nuget and lsp together, so a filter narrow
     # enough to be worth having would be one wrong entry away from skipping the
-    # gate silently. The job is ~4 minutes.
+    # gate silently.
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1053,6 +1053,22 @@ jobs:
         # a project to "skipped", fails here even though it diverges nowhere.
         # The script header says how to regenerate the manifest.
         run: bash tools/ci/project-corpus-gate.sh
+
+      - name: Test corpus-diff crate, FCS-driven fixtures included
+        # No other job tests this crate. Its FCS-driven tests are the runner's
+        # own fixtures: small generated projects shaped to break its grading
+        # rather than the server (sibling projects sharing a file, a byte-order
+        # mark on line 1, the attribute and qualifier matrices). They are
+        # `#[ignore]`d only because they drive FCS, which this job builds for the
+        # step above, so every ignored test runs except the two that take a
+        # project from the environment: `project_corpus_resolution_diff` is the
+        # step above in a debug build (and would read the `BORZOI_PROJECT_LIST`
+        # this job sets), and `explain_token_at_position` is a hand-run trace.
+        run: |
+          nix develop --command cargo test -p borzoi-corpus-diff -- \
+            --include-ignored \
+            --skip project_corpus_resolution_diff \
+            --skip explain_token_at_position
 
       - name: Gate on whole-assembly projection losses
         # This sweep wants a populated package cache rather than a fixture,

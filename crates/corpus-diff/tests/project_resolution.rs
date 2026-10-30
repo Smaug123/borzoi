@@ -2072,6 +2072,36 @@ fn tiny_project_matches_fcs() {
     );
 }
 
+/// Concurrent callers each get a working oracle. The test harness runs this
+/// file's FCS-driven tests on parallel threads, and they all locate `fcs-dump`
+/// through [`fcs_dump_command`]; were that to rebuild `tools/fcs-dump` per call,
+/// one thread's build would rewrite the output directory under another's running
+/// oracle, which then dies unable to load `FSharp.Core`.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn concurrent_callers_each_get_a_working_oracle() {
+    const CALLERS: usize = 8;
+    let (_tmp, project) = tiny_project();
+    let start = std::sync::Barrier::new(CALLERS);
+    std::thread::scope(|s| {
+        let calls: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                s.spawn(|| {
+                    // A `LoadedProject` holds syntax trees, which are not `Sync`.
+                    let loaded = load_lsp_project(&project).expect("project should load");
+                    start.wait();
+                    invoke_fcs_uses_project(&loaded).map(|_| ())
+                })
+            })
+            .collect();
+        for call in calls {
+            call.join()
+                .expect("oracle thread panicked")
+                .expect("fcs-dump uses-project");
+        }
+    });
+}
+
 /// The attribute commit surface, end to end against the **general** symbol-use
 /// stream the corpus runner actually uses — not the attribute-specific oracle,
 /// which reports one record per attribute and so cannot see this question.
@@ -2580,10 +2610,9 @@ fn attribute_matrix() -> Vec<AttrCell> {
 /// The resident `uses-project-batch` child the generated sweep drives.
 ///
 /// One child for the whole matrix. `invoke_fcs_uses_project` spawns a one-shot
-/// per call and, without `BORZOI_FCS_DUMP`, builds `tools/fcs-dump` first — so
-/// a cell-per-invocation loop pays a `dotnet build` and a process start twenty
-/// times over, which is most of its wall clock and grows with every shape
-/// added. The batch op exists for exactly this loop.
+/// per call, so a cell-per-invocation loop pays a .NET start and an FCS load
+/// twenty times over, which is most of its wall clock and grows with every
+/// shape added. The batch op exists for exactly this loop.
 ///
 /// The request is the same project description the one-shot composes from
 /// `LoadedProject`: these cells carry no references, no `#if` symbols and no

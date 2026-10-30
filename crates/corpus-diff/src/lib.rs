@@ -12,7 +12,7 @@ use std::fmt::{self, Write as _};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borzoi_oracle_harness::fcs_position::LineIndex;
@@ -816,14 +816,36 @@ impl std::error::Error for FcsInvokeError {}
 ///
 /// `pub` so a differential that drives the **resident** oracle
 /// (`…-batch`) locates the binary exactly as the one-shot callers here do
-/// rather than re-deriving the path: without `BORZOI_FCS_DUMP` this builds
-/// `tools/fcs-dump` on *every* call, so a per-case loop that spawns one-shots
-/// pays a `dotnet build` per case.
+/// rather than re-deriving the path. Without `BORZOI_FCS_DUMP` the first call
+/// in the process builds `tools/fcs-dump` and later calls reuse the output.
 pub fn fcs_dump_command(subcommand: &str) -> Result<Command, FcsInvokeError> {
     if let Some(bin) = std::env::var_os("BORZOI_FCS_DUMP") {
         let mut c = Command::new(bin);
         c.arg(subcommand);
         return Ok(c);
+    }
+
+    let mut c = Command::new("dotnet");
+    c.arg(fcs_dump_built()?).arg(subcommand);
+    Ok(c)
+}
+
+/// The `fcs-dump.dll` of a `dotnet build` of `tools/fcs-dump` made by this
+/// process.
+///
+/// Built at most once per process. A build that has work to do rewrites its
+/// output directory, so a build per call would replace `fcs-dump.dll` and its
+/// dependencies under an oracle another thread had just started, which dies
+/// failing to load them. The lock is held across the build, so a caller arriving
+/// mid-build waits for it rather than starting a second; a failed build caches
+/// nothing, and the next caller tries again.
+fn fcs_dump_built() -> Result<PathBuf, FcsInvokeError> {
+    static BUILT: Mutex<Option<PathBuf>> = Mutex::new(None);
+    let mut built = BUILT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(dll) = built.as_ref() {
+        return Ok(dll.clone());
     }
 
     let project = workspace_root().join("tools").join("fcs-dump");
@@ -842,11 +864,9 @@ pub fn fcs_dump_command(subcommand: &str) -> Result<Command, FcsInvokeError> {
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         });
     }
-
-    let mut c = Command::new("dotnet");
-    c.arg(project.join("bin/Release/net10.0/fcs-dump.dll"))
-        .arg(subcommand);
-    Ok(c)
+    Ok(built
+        .insert(project.join("bin/Release/net10.0/fcs-dump.dll"))
+        .clone())
 }
 
 fn workspace_root() -> PathBuf {

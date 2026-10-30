@@ -221,7 +221,12 @@ real F# Compiler Service by *differential* tests living in `crates/cst/tests/all
 - **Whole-corpus sweep** — `parser_corpus_diff.rs` (and `lexfilter_corpus.rs` for
   the lex-filter) walk a real F# source tree (the `BORZOI_CORPUS` env var,
   pinned to the `fsharp-src` flake input under `nix develop`) and diff every
-  `.fs`/`.fsi`. These are `#[ignore]`d by default.
+  `.fs`/`.fsi`. These are `#[ignore]`d by default. `parser_corpus_diff` is a
+  gate (see "Before you push"); `lexfilter_corpus` is not. It asserts nothing,
+  printing a histogram of divergence buckets that points at the next LexFilter
+  arm worth porting, and its FCS side costs ~1.65 s per file, well over an hour
+  across the corpus. CI does not run it and it is not a pre-push step: run it
+  when you are porting LexFilter arms.
 - **Categorised parser report** — `fcs_divergence.rs` is an ignored report
   generator over the same corpus. It writes one file per bucket under
   `fcs-divergence/` (or `BORZOI_DIVERGENCE_OUT`): both reject,
@@ -257,7 +262,7 @@ nix develop -c cargo test -p borzoi-cst --test all parser_corpus_diff:: -- --ign
 BORZOI_DIVERGENCE_OUT=target/fcs-divergence \
 nix develop -c cargo test -p borzoi-cst --test all fcs_divergence:: -- --ignored --nocapture
 
-# Run the lex-filter corpus gate.
+# Print the lex-filter divergence histogram (not a gate; over an hour; not in CI).
 nix develop -c cargo test -p borzoi-cst --test all lexfilter_corpus:: -- --ignored --nocapture
 ```
 
@@ -378,6 +383,17 @@ nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored        
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s
 nix develop -c cargo test -p borzoi-msbuild --test sdk_chain_decline_attribution -- --ignored  # ~1 s
+```
+
+`borzoi-corpus-diff`'s FCS-driven fixture tests are `#[ignore]`d because they
+drive `fcs-dump`; they read no corpus. CI's `corpus-diff` job runs them, with
+the rest of the crate, on every pull request, since that crate grades the
+LSP's whole runtime path. Run them before pushing a change to `corpus-diff`,
+or one that could move what the LSP answers (~2 min):
+
+```sh
+nix develop -c cargo test -p borzoi-corpus-diff -- --include-ignored \
+  --skip project_corpus_resolution_diff --skip explain_token_at_position
 ```
 
 The cst and sema sweeps, `borzoi-assembly`'s reference-pack sweep (an
