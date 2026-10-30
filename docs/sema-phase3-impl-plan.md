@@ -107,20 +107,26 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-10-26, after unconstrained operators; 2 602 walked
-bindings, 38.2 % complete — 37.0 % before them, when infix operator application
-was the only observed reason of 477 and present in 606):
+corpus sample (2026-10-26, after assembly module values; 2 602 walked
+bindings, 37.9 % complete — 37.4 % before them, when a value not bound in the
+file was the only observed reason of 467 and present in 664):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| value not bound in this file (assembly / earlier file) | 487 | 666 |
-| method call on a receiver that is not an in-file value | 172 | 308 |
+| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 407 | 550 |
+| method call on a receiver that is not an in-file value | 161 | 271 |
 | `use`, `let rec` or `let!` inside an expression | 64 | 90 |
-| pattern annotation outside the modelled set | 51 | 331 |
+| pattern annotation outside the modelled set | 47 | 331 |
 | `match` | 47 | 149 |
-| constrained FSharp.Core operator (`+`, `=`, …) | 33 | 58 |
+| use of an in-file binder F# may reject for its attributes | 45 | 123 |
+| constrained assembly operator (`+`, `=`, …) | 37 | 65 |
 | `new` | 32 | 37 |
-| list or array expression | 29 | 78 |
+| assembly value with a constrained type parameter | 17 | 34 |
+| assembly value over a type the bridge does not carry (`'T list`, …) | 11 | 76 |
+
+The sample checks each file in isolation against FSharp.Core and the BCL
+alone, so most of the first row is a preceding file's value, which no
+per-file sample can resolve.
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -128,9 +134,11 @@ checking its body), and neither is any declaration after a syntax error in its
 file (recovery can spill into declarations that look intact).
 
 Two corollaries shaped the order of work. Infix operators were the first lever
-by a wide margin; with the unconstrained ones modelled, the next is a value
+by a wide margin; with the unconstrained ones modelled, the next was a value
 from an assembly or an earlier file — mostly the operands operators used to
-hide (`xs |> List.map f`), which the walk now reaches. And a rule that only
+hide (`xs |> List.map f`), which the walk now reaches. The assembly half of
+that has landed (below); what is left of the row is earlier files' values and
+assembly values the reading declines. And a rule that only
 fires on complete bindings — the guarded argument read-off, prototyped on
 branch `infer-arg-readoff` — measured **zero** gain on the corpus while
 bindings are this incomplete, so it waits until the blockers above are lower.
@@ -169,14 +177,15 @@ opened-then-reopened `Operators`).
 `OP a b`, checked by FCS exactly as one, so inference types it as one
 (`Gen::infer_infix`): the operator's value comes from whatever the resolver
 says its token names. An in-file definition is an applied value like any other
-(`let (+.) (a: int) (b: int) = …` makes `x +. 1` an `int`); FSharp.Core's own
-operator — by its module's assembly name and public-key token — has its IL
+(`let (+.) (a: int) (b: int) = …` makes `x +. 1` an `int`); an assembly's
+operator — FSharp.Core's, or since assembly module values (below) any F#
+assembly's — has its IL
 signature read as its F# type (`function_ty::module_function_scheme`) and
 instantiated, each type parameter a fresh scheme-instantiation variable. That
 reading is sound only with three facts the IL cannot carry, all now read off
 each module function's pickled val (`rebuild_module_member_list`): its curried
-argument groups (one IL parameter per group, else it declines — `||>`'s tupled
-group does), the F#-only constraints on its type parameters (any constraint
+argument groups (each group's size, which splits the IL parameters, so
+`||>`'s tupled first group reads as `'T1 * 'T2`), the F#-only constraints on its type parameters (any constraint
 declines: `+` is statically resolved, `=` needs `equality`, so instantiating
 either as a plain variable would claim a constraint is modelled that is not),
 and whether its type mentions a unit of measure (IL erases them), directly or
@@ -185,10 +194,9 @@ named head the type applies is cleared through the abbreviation chase, in
 whichever assembly declares it (`module_function_measures_diff`) — plus the
 val's own `[<CompilerMessage>]` and `[<RequiresExplicitTypeArguments>]`, which
 reject a use and live in the pickle alone (`MethodLike::val_facts`). The
-bridge carries only primitives, the function's type parameters, F# function
-types and `unit`, so `@` and `:=` (over `'T list` and `'T ref`, F# types under
-a compiled name) and `^` (obsolete as an error, which FCS types as `obj`)
-decline too. Every FSharp.Core `Operators` function the reading admits (14,
+bridge carries no generic named type, so `@` and `:=` (over `'T list` and
+`'T ref`, F# types under a compiled name) and `^` (obsolete as an error, which
+FCS types as `obj`) decline too. Every FSharp.Core `Operators` function the reading admits (14,
 `id` and `box` among them), bound as a value, has exactly the type FCS gives
 it. `infer_operators_diff` grades a generated grid — every operator ×
 operand kind (literal, annotated or open parameter, lambda, nested application,
@@ -197,25 +205,162 @@ ill-typed) × position (synth, under an annotation, as an argument, as a callee)
 agreements (all `&&` and `||` where the file opens `IntrinsicOperators`), 0
 divergences, 37.0 % → 38.2 % complete bindings.
 
-Two things limit what this commits, and neither is the operator rule:
+**`&&` and `||` resolve to nothing** unless `IntrinsicOperators` is opened
+explicitly: it is a module-shaped `[<AutoOpen>]` path, which the resolver does
+not fold (`AssemblyEnv::record_assembly_auto_opens`), so the token is
+`Deferred(UnboundName)` and the census records `Operator(Unresolved)`. Folding
+it is resolver work.
 
-- **`&&` and `||` resolve to nothing** unless `IntrinsicOperators` is opened
-  explicitly: it is a module-shaped `[<AutoOpen>]` path, which the resolver does
-  not fold (`AssemblyEnv::record_assembly_auto_opens`), so the token is
-  `Deferred(UnboundName)` and the census records `Operator(Unresolved)`.
-  Folding it is resolver work.
-- **`|>`, `<|`, `>>` and `<<` make their bindings complete but commit no
-  result.** Their results are fixed only through an argument whose domain is a
-  function type (`|>`'s `'T1 -> 'U`), and an argument check discharges against
-  a sealed primitive, a tuple of them, or a scheme-instantiation variable —
-  never a function type (`Gen::no_subsumption_domain`). Widening that is not a
-  matter of adding `Ty::Fun` to the set: FCS flexes an applied value's
-  non-sealed domains at its use (`MakeApplicableExprWithFlex`), so
-  `y |> fo` with `fo : obj -> int` leaves `y` generic where an equality would
-  make it `obj`, and an ill-typed operand recovers to `obj` in source order
-  (`"s" |> inc` types as `System.Object`). A sound rule needs at least a ground,
-  flex-free argument and every earlier argument check in the binding
-  discharged; it is the next slice.
+**Argument checks against a function type.** `|>`, `<|`, `>>` and `<<` fix
+their results only through an argument whose domain is a function type
+(`|>`'s `'T1 -> 'U`). FCS checks an argument against its parameter's type by
+an equality first and a coercion only if that fails (`UnifyOverallType`), and
+a function type admits no coercion but equality, so such a check discharges
+as `Eq(arg, dom)` (`Gen::function_domain`). Two things make that FCS's own
+relation, and both turned out to be holes in the checks that already fired,
+against sealed primitives and scheme-instantiation variables:
+
+- **The argument must have the type FCS gives it.** FCS loosens a value at
+  every use (`MakeApplicableExprWithFlex`): each parameter of a type that is
+  not sealed (`isSealedTy` — an interface, an unsealed class, `obj`) becomes a
+  fresh variable that is a subtype of it. So `y |> fo` with `fo : obj -> int`
+  leaves `y` generic, and `let g = fo` is `'a -> int` — which inference used to
+  publish as `obj -> int`. `Gen::value_use` now models the loosening wherever
+  the value's type is known at the use (a scheme, an earlier binder's ground
+  type, a settled local, a parameter's annotation); the fresh variables are
+  poisoned, and one bounded by anything but `obj` is a subtype constraint
+  nothing checks, so fixing it to a type undoes the binding's checks. Where
+  the type is not known at the use (an unannotated parameter), the use is
+  *undecided*, and must end up taking no unsealed parameter.
+- **The order FCS checks in must not matter.** FCS checks a body in source
+  order, keeps the first relation to fix a variable, and reports and recovers
+  a later conflicting one; it resolves a member on what it knows of the
+  receiver at the access (FS0072). The worklist keeps no order. A generated
+  grid of every ordered pair of uses of one parameter
+  (`infer_operators_diff::every_ordered_pair_of_uses_of_a_parameter_agrees_with_fcs`)
+  found 34 wrong commits on the existing rule: a dropped branch relation
+  before a direct application (`((if true then 1 else p), fs p, p)` made `p` a
+  `string`), a member access before the check that fixes its receiver
+  (`(p.Length, fs p)`), and an unfired pipe before a direct application
+  (`(p |> fs, fi p, p)` made `p` an `int`). Combined as the arguments of one
+  application instead of a tuple's elements, the same pairs found the same
+  classes: `(if true then p else 1) +. p` with `(+.) : int -> bool -> int`
+  published `bool -> int` where FCS fixes `p` to `int` at the branch.
+
+So `Gen::solve` is speculative: it fires every check whose gate holds under a
+snapshot, and keeps the result only when `Gen::verified` — no equality and no
+fired check failed; the relations it did not apply (pending checks and the
+check-mode relations the walk dropped) unify with it, all together; no member
+was resolved through a check that ends after it in the source; none of them
+touches a variable FCS constrains through a relation inference does not hold
+(`Gen::opaque`: an earlier binder's, a method call's argument outside it, a
+member access's result until its wake binds it); and the loosening holds.
+Then every relation is consistent as an equality, so
+FCS applies each one as an equality, in whatever order, and agrees. Otherwise
+the snapshot is rolled back and no check fires: each is undischarged and
+poisoned, which is silence. No check fires that would bind such a variable
+either (`Gen::arg_check_binds_only_current_vars`): an application gives an
+earlier binder's open variable a structure (`oldf x` makes it `d -> r`) whose
+grounding retypes the earlier binder, and `(System.String.IsNullOrEmpty(p),
+p |> inc, p)` or `arr.Length |> incs` would fix `p` or the member's result to
+what the pipe says, where FCS has fixed it from the method or the member.
+
+`infer_operators_diff` grades it: a grid of every function kind (sealed,
+generic, loosened to `obj` or to a bound, a lambda, partially applied,
+composed, ill-typed) × operand × shape (`|>`, `<|`, a chain, `>>`, `<<`, a
+composition as a value) × position, with a per-row obligation that the 185
+well-typed rows over a function inference must type commit their
+application; the ordered-pair grid, every pair of eight uses of a parameter
+over four functions, combined four ways (a tuple, the two arguments of a
+generic function, of an operator, and of a function whose parameters fix
+them too: 4 096 functions); and a generator of programs mixing every way an
+argument is related to a parameter, mostly rejected by FCS (800 files,
+24 636 commits, 12 054 FCS errors, no disagreement). Each part of the
+verification was checked by deleting it, and some test fails without it,
+except two kept as defence in depth: the failed-equality condition (no
+generated or hand-made program reaches a failed equality that matters) and
+the check on variables an application gave an earlier binder (every such
+structure carries a pending check on its domain, which the
+earlier-binder condition already rejects).
+
+Measured on the stride-13 corpus sample, nothing moves: 890 + 862 agreements,
+0 divergences, 973 / 2 602 complete bindings, the manifest unchanged. Real
+pipes run into assembly functions (`xs |> List.map f`), which are
+`NotInFileValue`, so the bindings they sit in are incomplete and fire no check;
+and the verification costs no agreement the old rule had on that sample.
+
+**Assembly module functions and values.** A use the resolver resolved to a
+referenced F# assembly's module member (`Resolution::Member` of a module: a
+bare `id` or an opened module's name at its token, a qualified `List.map` or
+`Microsoft.FSharp.Core.Operators.id` over the whole path, where the resolver
+keys a qualified member) is typed as FCS types a use of a value (`TcVal`):
+the member's IL signature read as its F# type, each type parameter
+instantiated afresh, and the value loosened at the use
+(`MakeApplicableExprWithFlex`) exactly as `Gen::value_use` loosens a
+generalised in-file binder (`Gen::scheme_use`, shared by both). That holds in
+every position — a bare value, applied, partially applied, piped, composed,
+passed as an argument, a parenthesised callee, a module-qualified callee (a
+value application, not a method call) — and for infix operators of any F#
+assembly. `module_function_scheme` splits the IL parameters by the pickled
+argument groups (`MethodLike::arg_groups`, `CurriedArgs::split`): a value has
+none (`let x = …`, and type functions such as `List.empty`), a group of one
+parameter is its type, a group of several their tuple
+(`let f (a, b) c = …`), and the sole empty group `unit`. It carries reference tuples, vectors (FSharp.Core's
+`[]`1` pickle head hides no measure) and non-generic named types: the type
+the reference's own scope resolves to (following forwarders), when it is the
+only type at its path and F# names it as the IL does — `Ty` keeps no
+assembly, so a type two assemblies declare declines on both sides; a generic named type
+(`'T list`, `'T option`, `seq<'T>`) declines, since FSharp.Core's are renamed
+and `Ty` carries one path. It also declines a val another assembly cannot
+access, and one whose module, or a module enclosing it, carries an
+error-level `[<Obsolete>]` or `[<CompilerMessage>]`, which FCS checks on the
+way to the val. A preceding file's value, an inaccessible val (the resolver records
+nothing) and a deferred name stay `NotInFileValue`; a member the reading
+declines records `AssemblyValue(gap)`. A first-class `reraise` is rejected
+only after inference (FS0417), which leaves its type standing, so it is typed.
+
+`infer_assembly_values_diff` grades it against both FCS oracles over a
+generated fixture assembly (`module_value_corpus`): 69 signature shapes
+(curried, generic, unit group, tupled group, tupled groups beside curried
+ones, tuple-typed parameter, function returned, function taken, `obj` taken,
+named types, arrays, values, type functions, inline, `[<CompiledName>]`,
+warning-level attributes, and the declines — constraints, measures, renamed
+and generic named types, `[<RequiresExplicitTypeArguments>]`, obsolete and
+compiler-message errors, an internal val, a literal) × 14 use forms × 6 positions × 3
+spellings, with a per-row obligation on every well-typed synth row whose FCS
+type is ground (3 753), a census check that each declined shape records
+its reason, and an ill-typed twin per shape; the pipe and use-order grids of
+`infer_operators_diff` with their functions relocated into the fixture, with
+the in-file grids' obligations unchanged; the argument-check generator
+relocated, with every commit the in-file program makes required of the
+relocated one; operators and active patterns outside FSharp.Core; and every
+FSharp.Core module member the reading admits (279), returned from a function.
+Each gate of the reading was checked by deleting it; some test fails without
+each, except five guards no input reaches (a leading receiver, which an
+augmentation already declines before it; agreement between the val's value
+flag, group count and groups, which come from one val; an empty group beside
+others, which F# never pickles; a path whose head is an in-file binder, which
+the resolver never records as a module member; and a named type renamed by
+`[<CompiledName>]`, whose IL name the env's source-name index already misses).
+Measured on the stride-13
+corpus sample: 890 + 862 → 899 + 870 agreements (17 added, none lost), 0
+divergences, 973 → 987 complete bindings; bridging every named type, unchecked,
+added nothing over that.
+
+A member access on an F# record, union or exception type publishes no
+receiver node: FCS reads a record field as a field get, under which its typed
+tree keeps no node at the receiver. This was a wrong commit before assembly
+values, through an annotation (`let b (v: R) = v.Q` published `v`), which the
+member-access grid of BCL receivers could not reach; a grid over F#-authored
+receiver kinds (record, union, class, struct record) now does.
+
+Opening any F# assembly module stops the static method-call engine committing
+(`System.String.IsNullOrEmpty(h)` commits in a file with no `open` and not in
+one that opens a fixture module with no augmentation), the extension-absence
+gate's conservatism; the relocated generator compares against an in-file
+baseline that opens such a module for that reason. And `let applyTo g x = g x`
+does not generalise (an applied unannotated parameter's use is undecided), so a
+function passed to an in-file higher-order function owes no commit.
 
 ### Remaining 3.x hard piles (census-priority order)
 

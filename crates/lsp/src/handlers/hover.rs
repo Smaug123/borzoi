@@ -12,7 +12,12 @@
 //! signature (`static member WriteLine: value: string -> unit`,
 //! `val mutable x: int`) via [`borzoi_assembly::format_member`], with the
 //! declaring type as context (prefixed `extension member,` / `required member,`
-//! for the C#-isms the F# signature has no keyword for). Both then show the
+//! for the C#-isms the F# signature has no keyword for). That signature is the
+//! member's IL, which erases units of measure, so it is shown only where the
+//! declaring entity's F# signature proves no measure was erased; otherwise the
+//! head names the member without its types
+//! ([`borzoi_assembly::format_member_untyped`]) and says why — as it does for an
+//! F# method whose curried argument groups were not read. Both then show the
 //! declaring assembly's identity and any `[<Obsolete>]` / `[<Experimental>]`
 //! marker — all declared metadata, needing no inference — and, when the
 //! assembly's PDB records a source position, a `Defined in <file>, line N` line
@@ -32,7 +37,8 @@ use std::sync::Arc;
 
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
-    format_entity_header, format_fsharp_name, format_member, join_quoted,
+    SignatureUnknown, format_entity_header, format_fsharp_name, format_member,
+    format_member_untyped, join_quoted,
 };
 use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
@@ -755,14 +761,45 @@ fn entity_qualifier(entity: &Entity) -> Option<&'static str> {
 /// `required member,` (`member_qualifier`) for facts the F# signature has no
 /// keyword for. Provenance comes from the *parent* entity — members carry no
 /// assembly identity of their own.
+///
+/// Where [`AssemblyEnv::member_types_keep_their_measures`] does not hold for the
+/// parent, the head withholds every type (`member Distance with get`) and a
+/// paragraph after the context line says why: the IL types may have lost a unit
+/// of measure the F# types carry. Likewise where the member is an F# method
+/// whose curried argument groups were not read
+/// ([`SignatureUnknown::ArgGroupsUnknown`]): its IL parameter list could be
+/// one tupled group or several curried ones; or an F# augmentation whose
+/// type parameters cannot be told from its target type's
+/// ([`SignatureUnknown::TargetTyparsUnknown`]).
 pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIndex) -> String {
     let entity = env.entity(parent);
     let member = env.member_at(parent, idx);
-    let head = code_span(&format_member(member, entity));
-    let context = match member_qualifier(member) {
+    // The signature is read off the member's IL, which erases units of measure:
+    // a member declared `float<m>` reads as `float`. It is shown only where the
+    // declaring entity's F# signature proves no measure was erased, and where
+    // the member's argument groups are known; elsewhere the head names the
+    // member without claiming a type.
+    let signature = if env.member_types_keep_their_measures(parent) {
+        format_member(member, entity).map_err(Withheld::Signature)
+    } else {
+        Err(Withheld::Measures)
+    };
+    let head = code_span(&match &signature {
+        Ok(signature) => signature.clone(),
+        Err(_) => format_member_untyped(member, entity),
+    });
+    let mut context = match member_qualifier(member) {
         Some(qualifier) => format!("{qualifier}, in {}", code_span(&entity_fqn(env, parent))),
         None => format!("in {}", code_span(&entity_fqn(env, parent))),
     };
+    if let Err(why) = signature {
+        context.push_str("\n\n");
+        context.push_str(match why {
+            Withheld::Measures => TYPES_WITHHELD,
+            Withheld::Signature(SignatureUnknown::ArgGroupsUnknown) => GROUPS_WITHHELD,
+            Withheld::Signature(SignatureUnknown::TargetTyparsUnknown) => TYPARS_WITHHELD,
+        });
+    }
     assemble_body(
         head,
         Some(context),
@@ -771,6 +808,30 @@ pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIn
         member_experimental(member),
     )
 }
+
+/// Why a member hover withholds its types.
+enum Withheld {
+    /// [`AssemblyEnv::member_types_keep_their_measures`] does not hold.
+    Measures,
+    /// [`format_member`] has no faithful rendering.
+    Signature(SignatureUnknown),
+}
+
+/// The paragraph a member hover carries in place of its types, when
+/// [`AssemblyEnv::member_types_keep_their_measures`] cannot show that the
+/// compiled signature is the F# one.
+const TYPES_WITHHELD: &str = "Types not shown: they are read from the compiled \
+    signature, which drops units of measure, and this member's F# type may carry one.";
+
+/// The paragraph a member hover carries in place of its types, when the
+/// member's curried argument groups are unknown.
+const GROUPS_WITHHELD: &str = "Types not shown: the compiled signature does not \
+    say how this F# member's parameters group into curried arguments.";
+
+/// The paragraph for [`SignatureUnknown::TargetTyparsUnknown`].
+const TYPARS_WITHHELD: &str = "Types not shown: the compiled signature does not \
+    say which of this extension member's type parameters are its own and which \
+    are those of the type it extends.";
 
 /// Join the head line with an optional context line (`in <declaring type>` for
 /// members), the provenance line, and any obsolete/experimental banners into a
@@ -876,7 +937,9 @@ fn member_qualifier(member: &Member) -> Option<&'static str> {
         // Either extension channel: the CLR `[Extension]` / F#-native *instance*
         // surface flag, or the F#-native augmentation flag (which alone carries a
         // `type T with static member …`).
-        Member::Method(m) if m.is_extension_method || m.augmentation == Augmentation::Certain => {
+        Member::Method(m)
+            if m.is_extension_method || matches!(m.augmentation, Augmentation::Certain { .. }) =>
+        {
             Some("extension member")
         }
         Member::Field(f) if f.is_required => Some("required member"),
@@ -1131,7 +1194,7 @@ mod tests {
     };
 
     fn method(is_extension_method: bool) -> Member {
-        Member::Method(MethodLike {
+        Member::Method(Box::new(MethodLike {
             val_facts: borzoi_assembly::ValFacts::NotFSharp,
             definition_range: None,
             name: "M".to_string(),
@@ -1143,6 +1206,7 @@ mod tests {
             },
             augmentation: Augmentation::No,
             arg_group_count: Some(1),
+            arg_groups: borzoi_assembly::ArgGroups::NotFSharp,
             is_static: true,
             is_virtual: false,
             is_abstract: false,
@@ -1164,7 +1228,9 @@ mod tests {
             implements: Vec::new(),
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
-        })
+            drops_optional_modifier: false,
+            has_other_method_impl: false,
+        }))
     }
 
     fn field(is_required: bool) -> Member {
@@ -1201,6 +1267,8 @@ mod tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            drops_optional_modifier: false,
+            accessor_slots: Vec::new(),
         })
     }
 

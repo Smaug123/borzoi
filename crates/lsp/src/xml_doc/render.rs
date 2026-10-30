@@ -14,7 +14,7 @@
 //! rendering says so in place, and the report records it, so an incomplete
 //! documentation is never presented as a complete one.
 
-use super::markdown::{Block, Inline};
+use super::markdown::{Block, Inline, blank_label_text};
 use super::tree::{DocElement, DocNode};
 
 /// What rendering one tree had to fall back on.
@@ -800,9 +800,10 @@ fn flatten(blocks: &[Block], out: &mut String) {
                         | Inline::Emphasis(t) => out.push_str(t),
                         // A link flattened into plain text keeps where it
                         // led: `<b><a href="u">BYTE</a></b>` is `BYTE (u)`.
-                        Inline::Link { text, url } if text.trim().is_empty() || text == url => {
-                            out.push_str(url);
+                        Inline::Link { text, url } if text.trim().is_empty() => {
+                            out.push_str(&blank_label_text(text, url));
                         }
+                        Inline::Link { text, url } if text == url => out.push_str(url),
                         Inline::Link { text, url } => {
                             out.push_str(text);
                             out.push_str(" (");
@@ -1241,6 +1242,31 @@ mod tests {
         };
         assert_eq!(summary("first<b> </b>second"), "first second");
         assert_eq!(summary("a<c> b </c>c"), "a `b` c");
+    }
+
+    /// Found by proptest: a link labelled only by whitespace shows its
+    /// destination in place of the label, and the label's whitespace still
+    /// separates words on both sides — at top level, and flattened into a
+    /// code span — whether the destination is printable, unprintable or
+    /// empty.
+    #[test]
+    fn a_whitespace_label_still_separates_words() {
+        let summary = |inner: &str| {
+            markdown_of(&format!(
+                r#"<member name="T:X"><summary>{inner}</summary></member>"#
+            ))
+        };
+        assert_eq!(summary(r#"a<a href="u"> </a>b"#), "a [u](<u>) b");
+        assert_eq!(summary(r#"a<a href="x y"> </a>b"#), "a x y b");
+        assert_eq!(summary(r#"a<a href=""> </a>b"#), "a b");
+        assert_eq!(summary(r#"<c>a<a href="u"> </a>b</c>"#), "`a u b`");
+        assert_eq!(summary(r#"<c>a<a href=""> </a>b</c>"#), "`a b`");
+        // A nameless `<paramref>` keeps its content's edges inside the span:
+        // the break is the code's trailing space.
+        assert_eq!(
+            summary(r#"<paramref>a<seealso href=""> </seealso></paramref>b"#),
+            "` a  `b"
+        );
     }
 
     /// Found by review: nested references rendered their content twice per
@@ -1771,6 +1797,97 @@ mod tests {
                 "{word:?} joins separated text in:\n{printed}"
             );
         }
+    }
+
+    /// [`separated_text_never_fuses`] over the shape random generation reaches
+    /// only by luck: whitespace-only content between two words, in every tag
+    /// with each attribute over a few values, bare and inside each inline
+    /// wrapper (around the words, or around one of them). An element whose
+    /// attribute replaces its content — a link labelled by its destination —
+    /// must keep that whitespace as a word break, on both sides of what the
+    /// attribute shows: the values carry a token of their own, which may
+    /// share a word with neither neighbour.
+    #[test]
+    fn whitespace_content_separates_in_every_tag_and_wrapper() {
+        const ATTR_TOKEN: usize = 1000;
+        let token = format!("§{ATTR_TOKEN}§");
+        let values = [
+            String::new(),
+            "x y".into(),
+            token.clone(),
+            format!("x {token}"),
+            format!("T:{token}"),
+        ];
+        let mut inners = Vec::new();
+        for name in all_names() {
+            inners.push(element(name, Vec::new(), vec![DocNode::Text(" ".into())]));
+            for attr in ATTRS {
+                for value in &values {
+                    inners.push(element(
+                        name,
+                        vec![(attr, value.clone())],
+                        vec![DocNode::Text(" ".into())],
+                    ));
+                }
+            }
+        }
+        let mut wrappers: Vec<DocElement> = [
+            "c",
+            "tt",
+            "code",
+            "b",
+            "strong",
+            "i",
+            "em",
+            "u",
+            "sup",
+            "h1",
+            "paramref",
+            "typeparamref",
+            "see",
+            "span",
+        ]
+        .into_iter()
+        .map(|n| element(n, Vec::new(), Vec::new()))
+        .collect();
+        wrappers.push(element("a", vec![("href", "u".into())], Vec::new()));
+        wrappers.push(element("see", vec![("cref", "T:A".into())], Vec::new()));
+        wrappers.push(element("seealso", vec![("href", "u".into())], Vec::new()));
+        let wrap = |w: &DocElement, children: Vec<DocNode>| {
+            DocNode::Element(DocElement {
+                children,
+                ..w.clone()
+            })
+        };
+        let word = |w: &str| DocNode::Text(w.into());
+        let mut attribute_shown = 0;
+        for inner in inners {
+            let inner = DocNode::Element(inner);
+            let mut shapes = vec![vec![word("a"), inner.clone(), word("b")]];
+            for w in &wrappers {
+                shapes.push(vec![wrap(w, vec![word("a"), inner.clone(), word("b")])]);
+                shapes.push(vec![wrap(w, vec![word("a"), inner.clone()]), word("b")]);
+                shapes.push(vec![word("a"), wrap(w, vec![inner.clone(), word("b")])]);
+            }
+            for mut nodes in shapes {
+                let source = format!("{nodes:?}");
+                let mut contexts = Vec::new();
+                tokenise(&mut nodes, &mut 0, &mut 0, &mut contexts, true);
+                assert!(contexts.len() < ATTR_TOKEN);
+                contexts.resize(ATTR_TOKEN, usize::MAX);
+                contexts.push(usize::MAX - 1);
+                let (blocks, _) = render_content(&nodes);
+                let printed = to_markdown(&blocks);
+                let shown = text_and_urls_of(&parse_back(&printed));
+                assert_no_fusion(&shown, &contexts, &format!("{source}\n{printed}"));
+                attribute_shown += usize::from(shown.contains(&token));
+            }
+        }
+        // Links, references and names do show their attribute's token.
+        assert!(
+            attribute_shown > 1000,
+            "only {attribute_shown} shapes show an attribute"
+        );
     }
 
     /// Whether `needle` is a subsequence of `hay`.

@@ -39,9 +39,9 @@
 //! [`TypeRef`]), so it renders inner `?`s only.
 
 use crate::model::{
-    ConstantValue, Entity, EntityKind, Event, Field, IndexParameter, Member, MethodLike,
-    Nullability, NullableType, ParamDefault, Parameter, Primitive, Property, TypeParameter,
-    TypeRef,
+    ArgGroups, Augmentation, ConstantValue, Entity, EntityKind, Event, Field, IndexParameter,
+    Member, MethodLike, Nullability, NullableType, ParamDefault, Parameter, Primitive, Property,
+    TypeParameter, TypeRef,
 };
 
 /// The generic parameters in scope when rendering a type, so that
@@ -310,12 +310,40 @@ pub fn format_nullable_type(nt: &NullableType, scope: &TyparScope) -> String {
     render_nullable(nt, scope).0
 }
 
+/// Why [`format_member`] cannot render a member's signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureUnknown {
+    /// An F# method of two or more parameters whose argument groups were not
+    /// read ([`ArgGroups::Unknowable`]): the IL parameter list could be one
+    /// tupled group or several curried ones, and the two are different types.
+    ArgGroupsUnknown,
+    /// An F# augmentation whose target type's arity was not read
+    /// ([`Augmentation::Certain`]'s `target_typars`): its method's generic
+    /// parameters begin with the target's, and which of them are the member's
+    /// own is unknown.
+    TargetTyparsUnknown,
+}
+
 /// Render a member as a one-line F# signature, e.g.
 /// `static member WriteLine: value: string -> unit`, `member Count: int with
 /// get`, `val mutable x: int`, `new: value: string -> Container`. `owner`
 /// supplies the type-parameter scope (so `'T` resolves) and selects the keyword
-/// family: a [`EntityKind::Module`] owner renders `val …` (F# functions/values);
-/// any other renders `member` / `static member` / `abstract member` / `new`.
+/// family: a [`EntityKind::Module`] owner renders `val …` (F# functions/values)
+/// — except an F# augmentation, which F# shows as the `member` it declares —
+/// and any other renders `member` / `static member` / `abstract member` /
+/// `new`.
+///
+/// A method's parameters are shown in its F# argument groups
+/// ([`MethodLike::arg_groups`]): curried groups joined by `->`, each group's
+/// arguments tupled with `*` (`val f: a: int -> b: int * c: int -> int`), and
+/// named as the F# signature names them. A function-typed result is
+/// parenthesised, as the F# compiler shows it, so it does not read as further
+/// groups (`val f: a: int -> (int -> int)`); so is a function-typed module
+/// value (`val v: (int -> int)`). An F# method whose groups are unknown and
+/// which has two or more parameters has no faithful rendering, and is
+/// [`SignatureUnknown::ArgGroupsUnknown`]. An augmentation's type-parameter
+/// list is its own, without its target type's
+/// ([`SignatureUnknown::TargetTyparsUnknown`] when they cannot be told apart).
 ///
 /// This is the F# *signature* view. Optional parameters are distinguished by
 /// dialect — F# `?name: T` vs a .NET `[<Optional>] name: T` (C# default), whose
@@ -326,12 +354,58 @@ pub fn format_nullable_type(nt: &NullableType, scope: &TyparScope) -> String {
 /// faithful F# signature syntax is still not surfaced: the member-level
 /// `required` (C# 11) and `extension` flags, which the hover handler puts on the
 /// context line instead. See `docs/hover-signature-plan.md` for the follow-ups.
-pub fn format_member(member: &Member, owner: &Entity) -> String {
+pub fn format_member(member: &Member, owner: &Entity) -> Result<String, SignatureUnknown> {
     match member {
         Member::Method(m) => format_method(m, owner),
-        Member::Field(f) => format_field(f, owner),
-        Member::Property(p) => format_property(p, owner),
-        Member::Event(e) => format_event(e, owner),
+        Member::Field(f) => Ok(format_field(f, owner)),
+        Member::Property(p) => Ok(format_property(p, owner)),
+        Member::Event(e) => Ok(format_event(e, owner)),
+    }
+}
+
+/// [`format_member`] with **every type withheld**: the keyword, modifiers and
+/// name alone — `member Count with get`, `val mutable x`, `static member Parse`,
+/// `new`, `[<CLIEvent>] member Changed`.
+///
+/// For a member whose IL signature is not known to be its F# type. IL erases
+/// units of measure, so an F# member declared `float<m>` has a `float64`
+/// signature, and a measure type parameter (`member G<[<Measure>] 'u>`) has no
+/// generic parameter at all: the parameter types, the result type and the
+/// type-parameter list are all suspect, so none is rendered. What remains is
+/// read off the member's shape rather than its signature, and holds either way.
+pub fn format_member_untyped(member: &Member, owner: &Entity) -> String {
+    let module = owner.kind == EntityKind::Module;
+    match member {
+        Member::Method(m) => {
+            if m.is_constructor {
+                return "new".to_string();
+            }
+            let name = format_fsharp_value_name(m.source_name.as_deref().unwrap_or(&m.name));
+            match m.module_value {
+                Some(mv) if mv.is_mutable => format!("val mutable {name}"),
+                _ => format!("{} {name}", method_keyword(m, owner)),
+            }
+        }
+        Member::Field(f) => format!("{}{}", field_prefix(f), format_fsharp_name(&f.name)),
+        Member::Property(p) if module => {
+            let mutable = if p.has_setter { "mutable " } else { "" };
+            format!("val {mutable}{}", format_fsharp_value_name(&p.name))
+        }
+        Member::Property(p) => format!(
+            "{} {}{}",
+            property_keyword(p),
+            format_fsharp_name(&p.name),
+            property_accessors(p)
+        ),
+        Member::Event(e) => format!(
+            "[<CLIEvent>] {} {}",
+            if e.is_static {
+                "static member"
+            } else {
+                "member"
+            },
+            format_fsharp_name(&e.name)
+        ),
     }
 }
 
@@ -385,18 +459,21 @@ pub fn format_entity_header(entity: &Entity) -> String {
     )
 }
 
-fn format_method(m: &MethodLike, owner: &Entity) -> String {
+fn format_method(m: &MethodLike, owner: &Entity) -> Result<String, SignatureUnknown> {
     let scope = TyparScope::new(&owner.generic_parameters, &m.generic_parameters);
-    let params = format_params(&m.signature.parameters, &scope);
+    let params = format_arg_groups(&method_arg_groups(m)?, &scope);
 
     // A constructor returns its declaring type, not the `void` the IL records.
     if m.is_constructor {
-        return format!("new: {params} -> {}", owner_name_with_typars(owner));
+        return Ok(format!(
+            "new: {params} -> {}",
+            owner_name_with_typars(owner)
+        ));
     }
 
     let keyword = method_keyword(m, owner);
     let name = format_fsharp_value_name(m.source_name.as_deref().unwrap_or(&m.name));
-    let typars = format_typar_list(&m.generic_parameters);
+    let typars = format_typar_list(own_typars(m)?);
     let ret = format_return(
         &m.signature.return_type,
         m.signature.return_nullability,
@@ -409,7 +486,7 @@ fn format_method(m: &MethodLike, owner: &Entity) -> String {
     // This covers *non-generic* values, which F# emits as property getters.
     if let Some(mv) = m.module_value {
         let mutable = if mv.is_mutable { "mutable " } else { "" };
-        return format!("{keyword} {mutable}{name}{typars}: {ret}");
+        return Ok(format!("{keyword} {mutable}{name}{typars}: {ret}"));
     }
     // A *generic* module value (`let empty<'T> = …`) is emitted as a 0-parameter
     // generic *method*, not a property, so the rebrand above never tags it — yet
@@ -425,18 +502,120 @@ fn format_method(m: &MethodLike, owner: &Entity) -> String {
         && m.signature.parameters.is_empty()
         && m.is_module_value_binding
     {
-        return format!("{keyword} {name}{typars}: {ret}");
+        return Ok(format!("{keyword} {name}{typars}: {ret}"));
     }
     // Otherwise a genuine function/method. A 0-parameter module function
-    // (`let f () = …`) is `val f: unit -> T` — `format_params` yields `unit` for
-    // the empty list — no longer mis-collapsed to a value by the old heuristic.
-    format!("{keyword} {name}{typars}: {params} -> {ret}")
+    // (`let f () = …`) is `val f: unit -> T`: its one group is empty, which
+    // `format_arg_groups` renders `unit`.
+    Ok(format!("{keyword} {name}{typars}: {params} -> {ret}"))
+}
+
+/// The type parameters a method declares itself. An augmentation's module
+/// method is generic over its target type's parameters first, and those are
+/// the type's, not the member's (`type G<'t> with member x.M<'u>` is
+/// `member M<'u>`).
+fn own_typars(m: &MethodLike) -> Result<&[TypeParameter], SignatureUnknown> {
+    match m.augmentation {
+        Augmentation::Certain { target_typars } => target_typars
+            .and_then(|n| m.generic_parameters.get(n..))
+            .ok_or(SignatureUnknown::TargetTyparsUnknown),
+        Augmentation::No | Augmentation::Possible => Ok(&m.generic_parameters),
+    }
+}
+
+/// One argument as a signature shows it: its IL parameter (type, optional and
+/// `[<ParamArray>]` markers) under the name the F# signature gives it.
+struct ShownArg<'a> {
+    param: &'a Parameter,
+    name: Option<&'a str>,
+}
+
+/// A method's parameters in its F# argument groups ([`MethodLike::arg_groups`]).
+///
+/// A non-F# method's parameters are one group, named as IL names them. A read
+/// F# method's are split as its pickle groups them and named as the pickle
+/// does; an instance augmentation's receiver, the first IL parameter, is not
+/// an argument and is left out. An F# method whose groups are unknown is one
+/// group only when that is the one possible reading: it has at most one
+/// parameter (a curried function of more groups compiles to at least as many
+/// parameters, since a `()` group compiles to none only when it is the sole
+/// group), or it is a constructor (F# refuses a curried `new`).
+fn method_arg_groups(m: &MethodLike) -> Result<Vec<Vec<ShownArg<'_>>>, SignatureUnknown> {
+    let params = &m.signature.parameters;
+    let il_named = || {
+        vec![
+            params
+                .iter()
+                .map(|param| ShownArg {
+                    param,
+                    name: param.name.as_deref(),
+                })
+                .collect(),
+        ]
+    };
+    match &m.arg_groups {
+        ArgGroups::NotFSharp => Ok(il_named()),
+        ArgGroups::Unknowable if params.len() <= 1 || m.is_constructor => Ok(il_named()),
+        ArgGroups::Unknowable => Err(SignatureUnknown::ArgGroupsUnknown),
+        ArgGroups::Read(curried) => {
+            let split = curried
+                .split(params)
+                .ok_or(SignatureUnknown::ArgGroupsUnknown)?;
+            Ok(split
+                .groups
+                .iter()
+                .zip(&curried.groups)
+                .map(|(params, group)| {
+                    params
+                        .iter()
+                        .zip(&group.args)
+                        .map(|(param, arg)| ShownArg {
+                            param,
+                            name: arg.name.as_deref(),
+                        })
+                        .collect()
+                })
+                .collect())
+        }
+    }
+}
+
+/// The argument groups as an F# domain: `a: int -> b: string * c: float`, an
+/// empty group as `unit`.
+fn format_arg_groups(groups: &[Vec<ShownArg<'_>>], scope: &TyparScope) -> String {
+    groups
+        .iter()
+        .map(|group| {
+            if group.is_empty() {
+                "unit".to_string()
+            } else {
+                group
+                    .iter()
+                    .map(|arg| format_param(arg.param, arg.name, scope))
+                    .collect::<Vec<_>>()
+                    .join(" * ")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 /// `val` for a module-level binding, otherwise the `member` family with its
 /// modifiers — `static` and `abstract` combine (a static-abstract interface
 /// member, IWSAM, is `static abstract member`, not just `static member`).
+///
+/// An F# augmentation (`type T with member …`) compiles to a static of its
+/// module but is declared, called and shown by F# as a member of `T`: an
+/// instance one as `member`, a static one as `static member`.
 fn method_keyword(m: &MethodLike, owner: &Entity) -> String {
+    if matches!(m.augmentation, Augmentation::Certain { .. }) {
+        return if m.is_extension_method {
+            "member"
+        } else {
+            "static member"
+        }
+        .to_string();
+    }
     if owner.kind == EntityKind::Module {
         return "val".to_string();
     }
@@ -451,29 +630,15 @@ fn method_keyword(m: &MethodLike, owner: &Entity) -> String {
     parts.join(" ")
 }
 
-/// The parameters as an F# domain: `a: int * b: string`, or `unit` when empty.
-/// A nameless parameter renders as its bare type. (IL records tupled
-/// parameters; the source-level currying of an F# function isn't recoverable
-/// from metadata, so this is the honest tupled view.)
-fn format_params(params: &[Parameter], scope: &TyparScope) -> String {
-    if params.is_empty() {
-        return "unit".to_string();
-    }
-    params
-        .iter()
-        .map(|p| format_param(p, scope))
-        .collect::<Vec<_>>()
-        .join(" * ")
-}
-
 /// One parameter with its optional/default form folded in: F# `?name: T` for an
 /// `[<OptionalArgument>]` parameter (unwrapping the `FSharpOption<T>` it is typed
 /// as), `name: T = <value>` for a C# default, `[<Optional>] name: T` for a
 /// value-less .NET / COM optional, else `name: T`. A `params T[]` parameter
 /// additionally gets a leading `[<ParamArray>]` — an *orthogonal* marker that
 /// composes with any of the above (`[<ParamArray>] ?name: T[]`). A nameless
-/// parameter drops the `name:`.
-fn format_param(p: &Parameter, scope: &TyparScope) -> String {
+/// parameter drops the `name:`. `name` is the parameter's name as the
+/// signature shows it, which for an F# method is the pickle's rather than IL's.
+fn format_param(p: &Parameter, name: Option<&str>, scope: &TyparScope) -> String {
     // `[<ParamArray>]` (C#'s `params`) is *orthogonal* to the optional/default
     // forms, not exclusive with them: F# lets a params array also be `[<Optional>]`
     // or an F# `?optional`, and the compiler then emits `ParamArrayAttribute`
@@ -497,11 +662,7 @@ fn format_param(p: &Parameter, scope: &TyparScope) -> String {
                 nullability: p.nullability,
             };
             let inner = fsharp_option_inner(&p.ty).unwrap_or(&fallback);
-            prefix_named(
-                "?",
-                &wrap_nullable(Prec::Postfix, inner, scope),
-                p.name.as_deref(),
-            )
+            prefix_named("?", &wrap_nullable(Prec::Postfix, inner, scope), name)
         }
         // A C# default value renders inline (`name: T = 5`); the `= value`
         // already marks it a .NET default, so the `[<Optional>]` prefix is
@@ -509,18 +670,16 @@ fn format_param(p: &Parameter, scope: &TyparScope) -> String {
         ParamDefault::Optional(Some(value)) => {
             let ty = format_param_type(p, scope);
             let value = render_constant(value);
-            match &p.name {
+            match name {
                 Some(name) => format!("{}: {ty} = {value}", format_fsharp_name(name)),
                 None => format!("{ty} = {value}"),
             }
         }
         // A value-less `[Optional]` / COM optional keeps the attribute marker.
-        ParamDefault::Optional(None) => prefix_named(
-            "[<Optional>] ",
-            &format_param_type(p, scope),
-            p.name.as_deref(),
-        ),
-        ParamDefault::None => prefix_named("", &format_param_type(p, scope), p.name.as_deref()),
+        ParamDefault::Optional(None) => {
+            prefix_named("[<Optional>] ", &format_param_type(p, scope), name)
+        }
+        ParamDefault::None => prefix_named("", &format_param_type(p, scope), name),
     };
     format!("{param_array}{rendered}")
 }
@@ -633,10 +792,16 @@ fn format_param_type(p: &Parameter, scope: &TyparScope) -> String {
 /// `ByRef` (unlike a byref *parameter*, which the projector strips); the
 /// annotation lands on the referent (`byref<string?>`), which
 /// [`render_nullable`] handles.
+///
+/// A function type is parenthesised, as the F# compiler lays out a result
+/// (`NicePrint.layoutReturnType`): after a method's argument groups, a bare
+/// `int -> int` would read as one group more than the method has; and a
+/// module value of function type reads `val v: (int -> int)`.
 fn format_return(ret: &TypeRef, nullability: Nullability, scope: &TyparScope) -> String {
     match ret {
         TypeRef::Primitive(Primitive::Void) => "unit".to_string(),
-        other => format_nullable_type(
+        other => wrap_nullable(
+            Prec::Postfix,
             &NullableType {
                 ty: other.clone(),
                 nullability,
@@ -668,6 +833,23 @@ fn owner_name_with_typars(owner: &Entity) -> String {
 
 fn format_field(f: &Field, owner: &Entity) -> String {
     let scope = TyparScope::new(&owner.generic_parameters, &[]);
+    format!(
+        "{}{}: {}",
+        field_prefix(f),
+        format_fsharp_name(&f.name),
+        format_nullable_type(
+            &NullableType {
+                ty: f.ty.clone(),
+                nullability: f.nullability,
+            },
+            &scope
+        )
+    )
+}
+
+/// A field's attributes, modifiers and `val` keyword, up to its name:
+/// `[<Literal>] static val `, `val mutable `.
+fn field_prefix(f: &Field) -> String {
     // A `[<Literal>]` const (C# `const`, F# `[<Literal>]`, an enum case) is a
     // compile-time constant — marked, and never `mutable` even though
     // `is_init_only` is false (the CLR uses the `Literal` flag, not `initonly`).
@@ -691,17 +873,26 @@ fn format_field(f: &Field, owner: &Entity) -> String {
     } else {
         ""
     };
-    format!(
-        "{literal}{volatile}{static_}val {mutable}{}: {}",
-        format_fsharp_name(&f.name),
-        format_nullable_type(
-            &NullableType {
-                ty: f.ty.clone(),
-                nullability: f.nullability,
-            },
-            &scope
-        )
-    )
+    format!("{literal}{volatile}{static_}val {mutable}")
+}
+
+/// `static member` or `member`, for a non-module property.
+fn property_keyword(p: &Property) -> &'static str {
+    if p.is_static {
+        "static member"
+    } else {
+        "member"
+    }
+}
+
+/// The ` with get, set` suffix naming a property's accessors.
+fn property_accessors(p: &Property) -> &'static str {
+    match (p.has_getter, p.has_setter) {
+        (true, true) => " with get, set",
+        (true, false) => " with get",
+        (false, true) => " with set",
+        (false, false) => "",
+    }
 }
 
 fn format_property(p: &Property, owner: &Entity) -> String {
@@ -721,17 +912,8 @@ fn format_property(p: &Property, owner: &Entity) -> String {
         return format!("val {mutable}{}: {ty}", format_fsharp_value_name(&p.name));
     }
 
-    let keyword = if p.is_static {
-        "static member"
-    } else {
-        "member"
-    };
-    let accessors = match (p.has_getter, p.has_setter) {
-        (true, true) => " with get, set",
-        (true, false) => " with get",
-        (false, true) => " with set",
-        (false, false) => "",
-    };
+    let keyword = property_keyword(p);
+    let accessors = property_accessors(p);
     // An indexer (`this[i]`) carries its index dimension before the element
     // type, exactly like a method's parameters: `member Item: i: int -> 'T`.
     // Multiple indices tuple with `*` (`x: int * y: int -> 'T`). An ordinary

@@ -1158,7 +1158,7 @@ impl AssemblyEnv {
             env.assembly_forwarders.push(
                 type_forwarders
                     .into_iter()
-                    .map(|f| ((f.namespace, f.name), f.assembly))
+                    .map(|f| ((f.namespace, f.name), f.assembly.name))
                     .collect(),
             );
             // Register the DLL's identity so a referenced-CCU name is counted per
@@ -1469,7 +1469,7 @@ impl AssemblyEnv {
             env.assembly_forwarders.push(
                 view.type_forwarders()?
                     .into_iter()
-                    .map(|f| ((f.namespace, f.name), f.assembly))
+                    .map(|f| ((f.namespace, f.name), f.assembly.name))
                     .collect(),
             );
             tagged.extend(roots.into_iter().map(move |r| {
@@ -4413,11 +4413,11 @@ impl AssemblyEnv {
     /// Whether the IL signatures of the members `handle` **declares** are those
     /// members' F# types as far as units of measure go — no measure was erased
     /// from any of them. Only then may a member's IL type be published as the
-    /// type of an access: `float<m>` compiles to `float64`, and FCS types the
-    /// access `float<m>`.
+    /// type of an access, or rendered as the member's signature: `float<m>`
+    /// compiles to `float64`, and FCS types the access `float<m>`.
     ///
     /// `true` for an entity of a non-F# assembly ([`MemberMeasures::NotFSharp`]),
-    /// and for an F# type whose pickle found no measure directly
+    /// and for an F# type or module whose pickle found no measure directly
     /// ([`MemberMeasures::NoDirectMeasure`]) when every named head it lists is
     /// cleared — it resolves to a type that is not an abbreviation, or to an
     /// abbreviation whose decoded target hides none in turn. Everything else is
@@ -4447,6 +4447,34 @@ impl AssemblyEnv {
             .expect("measure verdict cache poisoned")
             .insert(handle, verdict);
         verdict
+    }
+
+    /// The type a signature's reference to `namespace.name` denotes, read
+    /// through the reference's own resolution scope — the assembly called
+    /// `scope`, following its type forwarders — when it is also the **only**
+    /// type the env holds at that path. `Ty` names a type by its path alone,
+    /// so a type another assembly declares at the same path would have that
+    /// path's members resolved against whichever one a lookup finds; such a
+    /// path declines, as does a reference whose scope resolves nothing or a
+    /// path with a dropped type. A module of the same source name (a type's
+    /// companion) is not a type and does not count, nor does a generic type of
+    /// the same name (`IComparable<'T>` beside `IComparable`), which `Ty` tells
+    /// apart by its arguments.
+    pub(crate) fn sole_type_referenced(
+        &self,
+        scope: &str,
+        namespace: &[String],
+        name: &str,
+    ) -> Option<EntityHandle> {
+        let mut path = namespace.to_vec();
+        path.push(name.to_owned());
+        let target = self.forwarded_target_at_path(scope, &path, ABBREV_CHASE_FUEL)?;
+        let mut types = self
+            .types_named(namespace, name)
+            .iter()
+            .filter(|&&h| !self.is_module(h) && self.entity(h).generic_parameters.is_empty());
+        let sole = matches!((types.next(), types.next()), (Some(&h), None) if h == target);
+        (sole && self.lookup_type_if_certain(namespace, name, 0) == Some(target)).then_some(target)
     }
 
     /// Whether the named type `head`, mentioned by a signature in `from`'s
@@ -4788,7 +4816,7 @@ impl AssemblyEnv {
             return ExtensionKind::Ordinary;
         };
         match mm.augmentation {
-            Augmentation::Certain => return ExtensionKind::Augmentation(Certainty::Certain),
+            Augmentation::Certain { .. } => return ExtensionKind::Augmentation(Certainty::Certain),
             Augmentation::Possible => return ExtensionKind::Augmentation(Certainty::Possible),
             Augmentation::No => {}
         }
@@ -5704,7 +5732,7 @@ impl AssemblyEnv {
                 Member::Method(mm)
                     if member_is_public(m) && !member_is_static(m) && member_name(m) == name =>
                 {
-                    Some((owner, MemberIndex::new(idx), mm))
+                    Some((owner, MemberIndex::new(idx), &**mm))
                 }
                 _ => None,
             })
@@ -6539,6 +6567,7 @@ mod from_views_tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
+            metadata_arity_suffix: Some(0),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -6929,6 +6958,8 @@ mod from_views_tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            drops_optional_modifier: false,
+            accessor_slots: Vec::new(),
         })
     }
 
@@ -7536,7 +7567,7 @@ mod from_views_tests {
         borzoi_assembly::TypeForwarder {
             namespace: ns.to_string(),
             name: name.to_string(),
-            assembly: to.to_string(),
+            assembly: ident(to),
         }
     }
 

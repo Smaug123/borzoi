@@ -41,7 +41,7 @@ fn names(entities: &[Entity]) -> Vec<&str> {
 
 fn methods(e: &Entity) -> impl Iterator<Item = &MethodLike> {
     e.members.iter().filter_map(|m| match m {
-        Member::Method(m) => Some(m),
+        Member::Method(m) => Some(&**m),
         _ => None,
     })
 }
