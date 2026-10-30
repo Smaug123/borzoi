@@ -262,14 +262,9 @@ const OPS: &[Op] = &[
             Expect::Declined(OperatorGap::Signature),
         )
     },
-    // Statically resolved: declined.
-    op(
-        "+",
-        Sort::Int,
-        Sort::Int,
-        Sort::Int,
-        Expect::Declined(OperatorGap::Constrained),
-    ),
+    // Statically resolved, by F#'s built-in rule over its operands' types
+    // where they are known (`infer_builtin_operators_diff` grades the rule).
+    op("+", Sort::Int, Sort::Int, Sort::Int, Expect::Typed),
     // `equality`- and `comparison`-constrained: typed, each instantiation
     // checked once the binding is solved.
     op("=", Sort::Int, Sort::Int, Sort::Bool, Expect::Typed),
@@ -706,12 +701,14 @@ fn ill_typed_operator_grid_commits_only_what_fcs_kept() {
     // graded.
     for spelling in &ungradable {
         assert!(
-            OPS.iter().any(|o| o.spelling == *spelling
-                && o.expect == Expect::Declined(OperatorGap::Constrained)),
+            STATICALLY_RESOLVED.contains(spelling),
             "`{spelling}`'s ill-typed file could not be graded"
         );
     }
 }
+
+/// The operators of [`OPS`] whose constraint F# resolves statically.
+const STATICALLY_RESOLVED: &[&str] = &["+"];
 
 /// A shadowed operator is the shadow's, never FSharp.Core's. Each shadow gives
 /// `&&` (whose FSharp.Core result is `bool`) and `|>` an `int`/`string`
@@ -1564,7 +1561,7 @@ pub(crate) const ARG_CHECK_HEADER: &str = "module Checks\n\
                                 let gib (a: int) (b: bool) = 1\n\
                                 let (+.) (a: int) (b: bool) = a\n";
 
-const ARG_CHECK_FNS: [&str; 16] = [
+const ARG_CHECK_FNS: [&str; 17] = [
     "inc",
     "incs",
     "opn",
@@ -1584,6 +1581,10 @@ const ARG_CHECK_FNS: [&str; 16] = [
     // the binding is solved, and a violation refuses the speculation.
     "hash",
     "(compare 1)",
+    // Statically resolved: applied by name it is typed by F#'s built-in rule
+    // where its operand's type is known; piped or composed it is a value, and
+    // declines.
+    "int",
 ];
 
 /// An expression over the parameters `ai: int`, `ss: string`, `xs: List<int>`,
@@ -1640,7 +1641,7 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
         // generic, and with parameters of their own that fix each argument.
         14 | 15 => {
             let y = arg_check_expr(rng, depth - 1);
-            match rng.below(6) {
+            match rng.below(9) {
                 0 => format!("(two {x} {y})"),
                 1 => format!("({x} +? {y})"),
                 2 => format!("(gib {x} {y})"),
@@ -1648,6 +1649,11 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
                 // binding is solved, and a violation refuses its speculation.
                 3 => format!("({x} = {y})"),
                 4 => format!("(compare {x} {y})"),
+                // Statically resolved, by a rule FCS applies where it knows
+                // the operands' types: typed only when they are known there.
+                5 => format!("({x} + {y})"),
+                6 => format!("({x} <<< {y})"),
+                7 => format!("(-{x} * int {y})"),
                 _ => format!("({x} +. {y})"),
             }
         }

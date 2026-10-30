@@ -1127,12 +1127,29 @@ impl Gen<'_> {
                     format!("({s}).Length")
                 }
             }
-            7 if t == T::Int => {
-                if self.rng.chance(50) {
-                    format!("(mono {})", self.expr(T::Bool, depth - 1))
-                } else {
-                    format!("(monos {})", self.expr(T::Str, depth - 1))
+            7 if t == T::Int => match self.rng.below(5) {
+                0 | 1 => format!("(mono {})", self.expr(T::Bool, depth - 1)),
+                2 | 3 => format!("(monos {})", self.expr(T::Str, depth - 1)),
+                // Statically resolved, typed where FCS knows the operands'
+                // types: an operator, and a conversion from a string. Not
+                // under a coercion: FCS unifies the result's type variable
+                // with the type expected there before it solves the
+                // constraint, so `let (x: obj) = s + s` is rejected.
+                _ if self.under_coercion => self.literal(t),
+                _ => {
+                    if self.rng.chance(50) {
+                        let a = self.expr(T::Int, depth - 1);
+                        let b = self.expr(T::Int, depth - 1);
+                        format!("({a} + {b})")
+                    } else {
+                        format!("(int {})", self.expr(T::Str, depth - 1))
+                    }
                 }
+            },
+            7 if t == T::Str && !self.under_coercion => {
+                let a = self.expr(T::Str, depth - 1);
+                let b = self.expr(T::Str, depth - 1);
+                format!("({a} + {b})")
             }
             8 if t == T::Pair => {
                 let a = self.expr(T::Int, depth - 1);
