@@ -36,7 +36,7 @@ use super::model::{
 };
 use super::signature::{
     CustomMod, DecodedMethodSig, ImageTables, ModifiedType, RetType, TypeScope, TypeSig,
-    decode_field_sig, decode_method_sig, decode_property_sig,
+    decode_field_sig, decode_method_sig, decode_property_index_params, decode_property_sig,
 };
 use super::tables::{Coded, Tables, table};
 use super::typedefs::{
@@ -547,10 +547,24 @@ fn apply_method_impls(
         let decl = row.coded(2); // MethodDeclaration (MethodDefOrRef)
 
         // The body must be a MethodDef in this module to correspond to a Method
-        // we built; a MemberRef body (a forwarded/imported impl) we cannot place.
+        // we built. A MemberRef body may still name one of `Class`'s own
+        // methods (by name and signature), which this reader does not resolve:
+        // every method of `Class` with its name is marked as named by a row it
+        // cannot surface. (A body owned by another type cannot load; see
+        // below.)
         let Some(body_tok) = tables.decode_coded(Coded::MethodDefOrRef, body)? else {
             continue;
         };
+        if body_tok.table == table::MEMBER_REF {
+            let mr = tables.row(table::MEMBER_REF, body_tok.rid - 1)?;
+            let name = mr.string(1)?; // Name
+            if let Some(tm) = out.get_mut(class_idx as usize) {
+                for m in tm.methods.iter_mut().filter(|m| m.name == name) {
+                    m.has_other_method_impl = true;
+                }
+            }
+            continue;
+        }
         if body_tok.table != table::METHOD_DEF {
             continue;
         }
@@ -568,14 +582,28 @@ fn apply_method_impls(
         if ti != class_idx {
             continue;
         }
+        // From here on the row names a method we built as its body, so a row
+        // that contributes nothing to it is still recorded as *there*: a
+        // consumer deciding what the method overrides must not mistake "a
+        // `MethodImpl` we did not surface" for "no `MethodImpl`".
+        let mark_other = |out: &mut [TypeMembers]| {
+            if let Some(m) = out
+                .get_mut(ti as usize)
+                .and_then(|tm| tm.methods.get_mut(mi as usize))
+            {
+                m.has_other_method_impl = true;
+            }
+        };
 
         let Some((iface_coded, member, classification)) =
             resolve_method_decl(md, tables, image_tables, method_starts, out, decl)?
         else {
+            mark_other(out);
             continue;
         };
         // An undecodable declaration parent cannot be classified at all.
         let Ok(decl_sig) = decode_type_def_or_ref(md, tables, image_tables, iface_coded) else {
+            mark_other(out);
             continue;
         };
         let ctx = match expanded.entry(ti) {
@@ -590,6 +618,7 @@ fn apply_method_impls(
         };
         let verdict = classify_decl_parent(md, tables, ctx, &decl_sig)?;
         if matches!(verdict, DeclParent::AncestorClass | DeclParent::NotAnImpl) {
+            mark_other(out);
             continue;
         }
 
@@ -610,6 +639,7 @@ fn apply_method_impls(
         // an explicit impl. (An *abstract* virtual body is fine: DIM
         // reabstraction and VB `MustOverride … Implements` both emit one.)
         if !(m.is_virtual || m.is_static) || m.is_rt_special_name {
+            m.has_other_method_impl = true;
             continue;
         }
 
@@ -1612,11 +1642,12 @@ fn build_method(
         generic_params,
         signature,
         attributes: attrs.take(table::METHOD_DEF, rid),
-        // Both filled by `apply_method_impls` after all type member runs are
+        // All filled by `apply_method_impls` after all type member runs are
         // built; the `MethodImpl` table is keyed by `MethodDef` rid, so it is
         // resolved in one post-pass rather than per-method here.
         implements: Vec::new(),
         unclassified_impls: Vec::new(),
+        has_other_method_impl: false,
     })
 }
 
@@ -1722,10 +1753,12 @@ fn build_property(
     let row = tables.row(table::PROPERTY, rid - 1)?;
     let name = row.string(1)?.to_string(); // Name
     let signature = decode_property_sig(row.blob(2)?, image_tables); // Type
+    let index_parameters = decode_property_index_params(row.blob(2)?, image_tables);
     let acc = semantics.properties.get(&rid);
     Ok(Property {
         name,
         signature,
+        index_parameters,
         getter: acc
             .and_then(|a| a.getter)
             .and_then(|r| accessor_method_id(r, m_range)),

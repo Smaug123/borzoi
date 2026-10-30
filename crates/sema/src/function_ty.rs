@@ -1,10 +1,12 @@
-//! The F# type of a referenced F# module function, read off its IL signature.
+//! The F# type of a referenced F# module function or value, read off its IL
+//! signature.
 //!
-//! An F# module function compiles to a static method whose IL signature erases
+//! An F# module function compiles to a static method (a value to a static
+//! property, or a generic method for a type function) whose IL signature erases
 //! four things its F# type has: how the parameters group into curried
 //! arguments, the F#-only constraints on its type parameters, any unit of
 //! measure, and (in the return position) `unit`. The signature pickle supplies
-//! the first three per method — [`MethodLike::arg_group_count`], each
+//! the first three per method — [`MethodLike::arg_groups`], each
 //! parameter's [`FSharpConstraints`](borzoi_assembly::FSharpConstraints), and
 //! [`MethodLike::val_facts`] — and the fourth is a fixed rule. With them the IL
 //! signature *is* the F# type, so [`module_function_scheme`] rebuilds that type
@@ -21,26 +23,33 @@
 //!
 //! A use F# rejects is a gap too, since FCS then types the use as its error
 //! type rather than by the signature: an `[<Obsolete(_, true)>]` (`^` types as
-//! `System.Object`), an error-level `[<CompilerMessage>]`, or a
-//! `[<RequiresExplicitTypeArguments>]` written without them.
+//! `System.Object`), an error-level `[<CompilerMessage>]`, a
+//! `[<RequiresExplicitTypeArguments>]` written without them, or a val another
+//! assembly cannot access.
 //!
-//! The types it carries over are deliberately few: primitives, the function's
-//! own type parameters, F# function types and `unit`. Every other named type
-//! is a gap, since bridging one soundly needs the checks
-//! `Gen::applied_annotation_ty` makes of an annotation head (a compiled name
-//! that is not the F# source name, a constrained head, an abbreviation), and no
-//! caller needs one yet. A nullable-reference annotation is a gap too: `Ty`
-//! cannot carry F#'s `| null`.
+//! The types it carries over are: primitives, the function's own type
+//! parameters, F# function types, reference tuples (`System.Tuple` of two to
+//! seven elements), vectors, `unit`, and named types the env resolves to one
+//! entity — non-generic, or generic and applied to arguments it carries in
+//! turn (`'T list`, `Result<int, string>`, `seq<'T>`, a user's generic
+//! record). A named type is carried by its compiled path, which is how FCS's
+//! canonical renderer names it, so it must be the only type that path could be
+//! read back as, and F# must name it as the IL does — or, for FSharp.Core's
+//! renamed generics (`FSharpList` is `list`), be FSharp.Core's own, whose F#
+//! name [`Ty::render_fsharp`] shows. A generic type constraining any of its
+//! type parameters is a gap, since nothing checks its arguments against the
+//! constraint. A nullable-reference annotation is a gap too: `Ty` cannot carry
+//! F#'s `| null`.
 
 use borzoi_assembly::{
-    AssemblyIdentity, Augmentation, EntityKind, MethodLike, Nullability, ParamDefault, Primitive,
-    TypeRef, ValFacts, ValMeasures,
+    Access, ArgGroups, AssemblyIdentity, Augmentation, EntityKind, MethodLike, Nullability,
+    ParamDefault, Primitive, TypeRef, ValFacts, ValMeasures,
 };
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
-use crate::infer::constrained_parameter;
+use crate::infer::{constrained_parameter, rejected_by_attributes};
 use crate::member_ty::primitive_to_ty;
-use crate::ty::Ty;
+use crate::ty::{FSHARP_CORE_RENAMED, Ty};
 
 /// FSharp.Core's public-key token.
 const FSHARP_CORE_PUBLIC_KEY_TOKEN: [u8; 8] = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a];
@@ -50,49 +59,55 @@ const UNIT: &str = "Microsoft.FSharp.Core.Unit";
 
 /// Whether `id` is FSharp.Core: its name *and* its public-key token, so that
 /// an assembly that merely calls itself `FSharp.Core` is not believed.
-pub(crate) fn is_fsharp_core(id: &AssemblyIdentity) -> bool {
+fn is_fsharp_core(id: &AssemblyIdentity) -> bool {
     id.name == "FSharp.Core" && id.public_key_token == Some(FSHARP_CORE_PUBLIC_KEY_TOKEN)
 }
 
 /// Why a method's IL signature cannot be read as its F# type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FunctionTyGap {
-    /// Not a plain function of an F# module: a member of a type, a
-    /// constructor, a value binding, an extension or augmentation member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FunctionTyGap {
+    /// Not a plain function or value of an F# module: a member of a type, a
+    /// constructor, an extension or augmentation member.
     NotAFunction,
     /// The F# compiler rejects a use: `[<Obsolete(_, true)>]`, an error-level
-    /// `[<CompilerMessage>]`, or `[<RequiresExplicitTypeArguments>]`.
+    /// `[<CompilerMessage>]`, `[<RequiresExplicitTypeArguments>]`, or a val
+    /// another assembly cannot access.
     Rejected,
     /// An F# method whose val the signature pickle did not describe, so neither
     /// its use-checked attributes nor its units of measure are known.
     Unread,
-    /// A type parameter is constrained — by IL, by an F#-only constraint, or by
-    /// one the pickle was not read for.
+    /// A type parameter — the function's own, or one of a generic type its
+    /// signature applies — is constrained: by IL, by an F#-only constraint, or
+    /// by one the pickle was not read for.
     Constrained,
     /// The F# type mentions a unit of measure the IL erased, or names a type
     /// not proven free of one.
     Measures,
-    /// The parameters do not map one-to-one onto curried argument groups: a
-    /// tupled group, a group count the pickle did not supply, an optional or
-    /// `params` parameter.
+    /// The parameters do not map onto argument groups in a way that is read:
+    /// groups the pickle did not supply or that do not account for the
+    /// parameters, a byref, an optional or a `params` parameter.
     Groups,
     /// A parameter or the return has a type this bridge does not carry.
     Type,
 }
 
-/// The F# type of `method`, a function of the F# module `handle` in `env` — as
-/// a scheme: curried over its argument groups, with each of its type parameters
-/// as the [`Ty::Param`] of its index, ready for instantiation.
+/// The F# type of `method`, a function or value of the F# module `handle` in
+/// `env` — as a scheme: curried over its argument groups, with each of its
+/// type parameters as the [`Ty::Param`] of its index, ready for instantiation.
 ///
-/// The curried shape is read off the IL parameters only when there is exactly
-/// one per argument group. That is sound because F# pickles an empty argument
-/// group only as a function's *only* one (`let f () = …`, which compiles to no
-/// parameters at all and so fails the count): any other `()` group is one
-/// unit-typed parameter (`SynInfo.AdjustArgsForUnitElimination` in the F#
-/// compiler), and a module holds no property getter, the one other shape with
-/// an empty group. So with as many parameters as groups, no group is empty and
-/// none holds two. A tupled group (`||>`'s `'T1 * 'T2`) fails the count and
-/// declines.
+/// The argument groups are the val's pickled ones ([`curried_domains`]): a
+/// module *value* (`let x = …`, or a type function such as `List.empty`,
+/// which compiles to a generic method) has none, and its type is the return
+/// type; a function has one domain per group, the tuple of a group's
+/// parameters where it has several (`let f (a, b) c = …` is
+/// `a * b -> c -> …`), and `unit` for the sole empty group (`let f () = …`).
+/// F# pickles an empty group only as a function's sole one, and any other
+/// `()` group is one unit-typed parameter
+/// (`SynInfo.AdjustArgsForUnitElimination` in the F# compiler).
+///
+/// A function whose F# result is a function returns that function type in
+/// the IL, so `let f x = fun y -> …` (one group) reads as `'a -> 'b -> 'c`,
+/// which is its F# type.
 pub(crate) fn module_function_scheme(
     env: &AssemblyEnv,
     handle: EntityHandle,
@@ -102,14 +117,24 @@ pub(crate) fn module_function_scheme(
     if module.kind != EntityKind::Module
         || !method.is_static
         || method.is_constructor
-        || method.module_value.is_some()
-        || method.is_module_value_binding
         || method.is_extension_method
         || method.augmentation != Augmentation::No
     {
         return Err(FunctionTyGap::NotAFunction);
     }
-    if method.obsolete.as_ref().is_some_and(|o| o.is_error) {
+    // Another assembly's non-public val is not accessible here (FS1094), and
+    // an obsolete-as-error one is rejected at the use.
+    if method.access != Access::Public || method.obsolete.as_ref().is_some_and(|o| o.is_error) {
+        return Err(FunctionTyGap::Rejected);
+    }
+    // So is any use through a module that carries an error-level
+    // `[<Obsolete>]` or `[<CompilerMessage>]`, on itself or on a module
+    // enclosing it: FCS checks each entity on the way to the val. A module
+    // the env cannot place has enclosing entities it cannot check.
+    let chain = env
+        .enclosing_chain_from_root(handle)
+        .ok_or(FunctionTyGap::Unread)?;
+    if chain.iter().any(|&h| rejected_by_attributes(env.entity(h))) {
         return Err(FunctionTyGap::Rejected);
     }
     match &method.val_facts {
@@ -140,11 +165,9 @@ pub(crate) fn module_function_scheme(
         return Err(FunctionTyGap::Constrained);
     }
     let params = &method.signature.parameters;
-    if params.is_empty()
-        || method.arg_group_count != Some(params.len())
-        || params
-            .iter()
-            .any(|p| p.is_byref || p.is_out || p.is_param_array || p.default != ParamDefault::None)
+    if params
+        .iter()
+        .any(|p| p.is_byref || p.is_out || p.is_param_array || p.default != ParamDefault::None)
     {
         return Err(FunctionTyGap::Groups);
     }
@@ -156,21 +179,68 @@ pub(crate) fn module_function_scheme(
         return Err(FunctionTyGap::Type);
     }
     let bridge = Bridge {
+        env,
         declaring: &module.assembly,
         typars: method.generic_parameters.len(),
     };
-    let mut ty = match &method.signature.return_type {
+    let ret = match &method.signature.return_type {
         // An F# function returning `unit` compiles to a `void` method.
         TypeRef::Primitive(Primitive::Void) => Ty::named(UNIT),
         ret => bridge.ty(ret)?,
     };
-    for p in params.iter().rev() {
-        ty = Ty::Fun {
-            arg: Box::new(bridge.ty(&p.ty)?),
-            ret: Box::new(ty),
-        };
+    let params = params
+        .iter()
+        .map(|p| bridge.ty(&p.ty))
+        .collect::<Result<Vec<_>, _>>()?;
+    let domains = curried_domains(method, &params)?;
+    Ok(domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
+        arg: Box::new(arg),
+        ret: Box::new(ret),
+    }))
+}
+
+/// The curried domains of `method`'s F# type, from its bridged IL parameter
+/// types `params` split by the val's pickled argument groups
+/// ([`MethodLike::arg_groups`], [`CurriedArgs::split`](borzoi_assembly::CurriedArgs::split)): a group of one
+/// argument is that argument's type, a group of several the tuple of theirs,
+/// and the empty group `unit`. Groups that are not read, a leading receiver
+/// (an augmentation, which is not a module function), groups that do not
+/// account for exactly the parameters there are, and an empty group beside
+/// others (F# pickles one only as a function's sole group) are all a
+/// [`FunctionTyGap::Groups`]. A value has no group, and a function at least
+/// one, which the pickle's value flag must agree with.
+fn curried_domains(method: &MethodLike, params: &[Ty]) -> Result<Vec<Ty>, FunctionTyGap> {
+    let ArgGroups::Read(curried) = &method.arg_groups else {
+        return Err(FunctionTyGap::Groups);
+    };
+    if curried.leading_receiver
+        || method.is_module_value_binding != curried.groups.is_empty()
+        || method.arg_group_count != Some(curried.groups.len())
+    {
+        return Err(FunctionTyGap::Groups);
     }
-    Ok(ty)
+    let split = curried.split(params).ok_or(FunctionTyGap::Groups)?;
+    let sole = split.groups.len() == 1;
+    split
+        .groups
+        .iter()
+        .map(|group| match group {
+            [] if sole => Ok(Ty::named(UNIT)),
+            [] => Err(FunctionTyGap::Groups),
+            [one] => Ok(one.clone()),
+            many => Ok(Ty::Tuple(many.to_vec())),
+        })
+        .collect()
+}
+
+/// Whether a reference names one of the assemblies that hold, or forward to,
+/// the core library's `System` types: a `System.Tuple` from anywhere else is
+/// not F#'s tuple.
+fn is_core_library(id: &AssemblyIdentity) -> bool {
+    matches!(
+        id.name.as_str(),
+        "System.Runtime" | "netstandard" | "mscorlib" | "System.Private.CoreLib"
+    )
 }
 
 /// Whether a namespace is FSharp.Core's `Microsoft.FSharp.Core`.
@@ -185,6 +255,7 @@ fn is_fsharp_core_namespace(namespace: &[String]) -> bool {
 /// assembly a same-assembly reference names, and how many method type
 /// parameters a [`TypeRef::Var`] may index.
 struct Bridge<'a> {
+    env: &'a AssemblyEnv,
     declaring: &'a AssemblyIdentity,
     typars: usize,
 }
@@ -208,7 +279,8 @@ impl Bridge<'_> {
                 type_args,
                 segment_arities,
             } if is_fsharp_core(assembly.as_ref().unwrap_or(self.declaring))
-                && is_fsharp_core_namespace(namespace) =>
+                && is_fsharp_core_namespace(namespace)
+                && (type_args.is_empty() || name == "FSharpFunc") =>
             {
                 if type_args
                     .iter()
@@ -229,11 +301,197 @@ impl Bridge<'_> {
                     _ => Err(FunctionTyGap::Type),
                 }
             }
+            // F#'s reference tuple is the core library's `System.Tuple`, up to
+            // the seven elements that need no nested `TRest`.
+            TypeRef::Named {
+                assembly: Some(assembly),
+                namespace,
+                name,
+                type_args,
+                segment_arities,
+            } if is_core_library(assembly)
+                && namespace.len() == 1
+                && namespace[0] == "System"
+                && name == "Tuple"
+                && (2..=7).contains(&type_args.len())
+                && segment_arities.as_slice() == [type_args.len()] =>
+            {
+                if type_args
+                    .iter()
+                    .any(|a| a.nullability == Nullability::Annotated)
+                {
+                    return Err(FunctionTyGap::Type);
+                }
+                Ok(Ty::Tuple(
+                    type_args
+                        .iter()
+                        .map(|a| self.ty(&a.ty))
+                        .collect::<Result<_, _>>()?,
+                ))
+            }
+            // A generic, top-level named type applied to its arguments, by its
+            // compiled path, which is how FCS renders it: see
+            // [`Bridge::generic_path`].
+            TypeRef::Named {
+                assembly,
+                namespace,
+                name,
+                type_args,
+                segment_arities,
+            } if !type_args.is_empty()
+                && segment_arities.as_slice() == [type_args.len()]
+                && !name.contains('/') =>
+            {
+                if type_args
+                    .iter()
+                    .any(|a| a.nullability == Nullability::Annotated)
+                {
+                    return Err(FunctionTyGap::Type);
+                }
+                let scope = assembly.as_ref().unwrap_or(self.declaring);
+                let handle = self
+                    .env
+                    .sole_generic_type_referenced(&scope.name, namespace, name, type_args.len())
+                    .ok_or(FunctionTyGap::Type)?;
+                let path = self.generic_path(handle)?;
+                let args = type_args
+                    .iter()
+                    .map(|a| self.ty(&a.ty))
+                    .collect::<Result<_, _>>()?;
+                Ok(Ty::Named { path, args })
+            }
+            // A non-generic, top-level named type, by the path FCS renders
+            // it under — which is the IL's only when the type the reference's
+            // scope resolves to is the only one the env holds at that path
+            // (`Ty` keeps no assembly, so another's would be read in its
+            // place) and F# names it so too: not renamed by a
+            // `[<CompiledName>]` (FCS renders the compiled name, hover the
+            // source one, and `Ty` carries one path), and not a module, an
+            // abbreviation or a measure, which no IL signature names. A
+            // byref-like type is not one F# lets a function value take.
+            TypeRef::Named {
+                assembly,
+                namespace,
+                name,
+                type_args,
+                segment_arities,
+            } if type_args.is_empty()
+                && segment_arities.as_slice() == [0]
+                && !name.contains('/') =>
+            {
+                let scope = assembly.as_ref().unwrap_or(self.declaring);
+                let handle = self
+                    .env
+                    .sole_type_referenced(&scope.name, namespace, name)
+                    .ok_or(FunctionTyGap::Type)?;
+                let entity = self.env.entity(handle);
+                let mut path = namespace.clone();
+                path.push(name.clone());
+                // The env indexes types by source name, so the entity found
+                // must also carry the IL name as its compiled one: a type whose
+                // source name is another's IL name is not the type referenced.
+                if entity.name != *name
+                    || entity.namespace != *namespace
+                    || entity.source_name.is_some()
+                    || entity.is_byref_like
+                    || !entity.generic_parameters.is_empty()
+                    || matches!(
+                        entity.kind,
+                        EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
+                    )
+                    || self.env.entity_full_name(handle) != path.join(".")
+                {
+                    return Err(FunctionTyGap::Type);
+                }
+                Ok(Ty::named_path(path))
+            }
+            // A vector `T[]`. A multidimensional or bounded array declines.
+            TypeRef::Array {
+                element,
+                rank: 1,
+                sizes,
+                lower_bounds,
+            } if sizes.is_empty() && lower_bounds.is_empty() => {
+                if element.nullability == Nullability::Annotated {
+                    return Err(FunctionTyGap::Type);
+                }
+                Ok(Ty::Array {
+                    elem: Box::new(self.ty(&element.ty)?),
+                    rank: 1,
+                })
+            }
             TypeRef::Named { .. }
             | TypeRef::Var { .. }
             | TypeRef::Array { .. }
             | TypeRef::Ptr(_)
             | TypeRef::ByRef { .. } => Err(FunctionTyGap::Type),
         }
+    }
+
+    /// The compiled path of the generic type `handle` a signature applies,
+    /// which is FCS's canonical rendering of it and so what [`Ty::Named`]
+    /// carries, when an instantiation of it may be read as written:
+    ///
+    /// - it is a type F# applies as written: not a module, an abbreviation, a
+    ///   measure or byref-like, and not one of the heads FCS renders
+    ///   structurally (`System.Tuple` and `System.ValueTuple`, and
+    ///   `FSharpFunc`, which the FSharp.Core arm reads);
+    /// - F# names it as the IL does — or it is one of FSharp.Core's renamed
+    ///   generics ([`FSHARP_CORE_RENAMED`]), which [`Ty::render_fsharp`] shows
+    ///   by their F# name, and the entity is FSharp.Core's own with that
+    ///   source name;
+    /// - none of its type parameters is constrained ([`constrained_parameter`]):
+    ///   nothing here checks an argument against a constraint, and an IL
+    ///   signature can apply a type to an argument F# would reject (an
+    ///   assembly built without its pickle, or a C# one).
+    ///
+    /// A type with a measure parameter never gets here: IL erases the
+    /// parameter, and the val's measure check declines first.
+    fn generic_path(&self, handle: EntityHandle) -> Result<Vec<String>, FunctionTyGap> {
+        let entity = self.env.entity(handle);
+        if entity.is_byref_like
+            || matches!(
+                entity.kind,
+                EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
+            )
+        {
+            return Err(FunctionTyGap::Type);
+        }
+        let mut path = entity.namespace.clone();
+        path.push(entity.name.clone());
+        if matches!(
+            path.iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            ["System", "Tuple"]
+                | ["System", "ValueTuple"]
+                | ["Microsoft", "FSharp", "Core", "FSharpFunc"]
+        ) {
+            return Err(FunctionTyGap::Type);
+        }
+        let namespace = entity.namespace.join(".");
+        let source = match &entity.source_name {
+            None => entity.name.as_str(),
+            Some(source)
+                if is_fsharp_core(&entity.assembly)
+                    && FSHARP_CORE_RENAMED.iter().any(|&(ns, compiled, src, _)| {
+                        ns == namespace && compiled == entity.name && src == source
+                    }) =>
+            {
+                source.as_str()
+            }
+            Some(_) => return Err(FunctionTyGap::Type),
+        };
+        // Top-level: its full name is its namespace and its F# name.
+        let mut full = entity.namespace.clone();
+        full.push(source.to_owned());
+        if self.env.entity_full_name(handle) != full.join(".") {
+            return Err(FunctionTyGap::Type);
+        }
+        if entity.generic_parameters.iter().any(constrained_parameter) {
+            return Err(FunctionTyGap::Constrained);
+        }
+        Ok(path)
     }
 }

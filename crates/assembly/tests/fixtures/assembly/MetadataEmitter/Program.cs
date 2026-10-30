@@ -22,6 +22,7 @@ internal static class Program
             "mixed_good_and_bad_member" => EmitMixedGoodAndBadMember(),
             "currentmodule_typeref_base" => EmitCurrentModuleTypeRefBase(),
             "linked_file_resource" => EmitLinkedFileResource(),
+            "manifest_cultures_and_forwarder" => EmitManifestCulturesAndForwarder(),
             "param_custom_modifier" => EmitParamCustomModifier(),
             "return_custom_modifier" => EmitReturnCustomModifier(),
             "param_optional_modifier" => EmitParamOptionalModifier(),
@@ -50,6 +51,7 @@ internal static class Program
             "default_member_null_ctor_arg" => EmitDefaultMemberNullCtorArg(),
             "property_generic_accessor" => EmitPropertyGenericGetter(),
             "property_init_only_setter" => EmitPropertyInitOnlySetter(),
+            "property_index_modopt" => EmitPropertyIndexModopt(),
             "method_init_marker_void" => EmitMethodInitMarkerVoid(),
             "method_modopt_void" => EmitMethodModoptVoid(),
             "event_other_accessor" => EmitEventOtherAccessor(),
@@ -57,7 +59,9 @@ internal static class Program
             "event_modreq_accessor" => EmitEventModreqAccessor(),
             "event_generic_accessor" => EmitEventGenericAccessor(),
             "generic_arity_mismatch" => EmitGenericArityMismatch(),
+            "type_name_arity_mismatch" => EmitTypeNameArityMismatch(),
             "methodimpl_unmangled_body" => EmitMethodImplUnmangledBody(),
+            "methodimpl_member_ref_body" => EmitMethodImplMemberRefBody(),
             "methodimpl_multi_decl" => EmitMethodImplMultiDecl(),
             "methodimpl_external_iface_unmangled" => EmitMethodImplExternalIfaceUnmangled(),
             "methodimpl_dup_typeref" => EmitMethodImplDupTypeRef(),
@@ -653,6 +657,57 @@ internal static class Program
         return Finish(mb);
     }
 
+    // An assembly whose own manifest names culture `fr`, referencing a
+    // culture-neutral `Plain`, a `de`-qualified `Localised`, and a
+    // strong-named `Target` at 4.2.0.0 that a forwarder for `N.Moved` points
+    // at — the identities a binder matches beyond simple name.
+    private static BlobBuilder EmitManifestCulturesAndForwarder()
+    {
+        var mb = new MetadataBuilder();
+        mb.AddModule(
+            generation: 0,
+            moduleName: mb.GetOrAddString("CultureFixture.dll"),
+            mvid: mb.GetOrAddGuid(MvidFor("culture")),
+            encId: default,
+            encBaseId: default);
+        mb.AddAssembly(
+            name: mb.GetOrAddString("CultureFixture"),
+            version: new Version(1, 0, 0, 0),
+            culture: mb.GetOrAddString("fr"),
+            publicKey: default,
+            flags: 0,
+            hashAlgorithm: AssemblyHashAlgorithm.None);
+        mb.AddAssemblyReference(
+            mb.GetOrAddString("Plain"),
+            new Version(1, 0, 0, 0),
+            culture: default,
+            publicKeyOrToken: default,
+            flags: 0,
+            hashValue: default);
+        mb.AddAssemblyReference(
+            mb.GetOrAddString("Localised"),
+            new Version(1, 0, 0, 0),
+            culture: mb.GetOrAddString("de"),
+            publicKeyOrToken: default,
+            flags: 0,
+            hashValue: default);
+        AssemblyReferenceHandle target = mb.AddAssemblyReference(
+            mb.GetOrAddString("Target"),
+            new Version(4, 2, 0, 0),
+            culture: default,
+            publicKeyOrToken: mb.GetOrAddBlob(new byte[] { 0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a }),
+            flags: 0,
+            hashValue: default);
+        mb.AddExportedType(
+            (TypeAttributes)0x00200000, // `Forwarder` (II.23.1.15), which the enum does not name
+            mb.GetOrAddString("N"),
+            mb.GetOrAddString("Moved"),
+            target,
+            typeDefinitionId: 0);
+        AddModuleType(mb);
+        return Finish(mb);
+    }
+
     // ----- Custom-attribute blob shapes --------------------------------------
     //
     // the reader decodes the CA blob into a `DecodedAttribute` model
@@ -1099,6 +1154,43 @@ internal static class Program
         });
     }
 
+    // `int this[int] { get; }` whose `PropertySig` index parameter carries
+    // `modopt(IsConst)` while its getter's parameter does not: the accessor
+    // need not repeat a modifier the property signature carries.
+    private static BlobBuilder EmitPropertyIndexModopt()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "PropertyIndexModoptFixture", "propidx");
+        TypeReferenceHandle isConst = AddIsConst(mb);
+
+        // int32 get_Item(int32) : HASTHIS, 1 param, ret I4, I4.
+        var getterSig = new BlobBuilder();
+        getterSig.WriteByte(HASTHIS);
+        getterSig.WriteByte(0x01);
+        getterSig.WriteByte(ELEMENT_TYPE_I4);
+        getterSig.WriteByte(ELEMENT_TYPE_I4);
+        MethodDefinitionHandle getter = mb.AddMethodDefinition(
+            AccessorFlags, MethodImplAttributes.IL, mb.GetOrAddString("get_Item"),
+            mb.GetOrAddBlob(getterSig), bodyOffset: -1, MetadataTokens.ParameterHandle(1));
+
+        // PROPERTY|HASTHIS, 1 index param, I4, modopt(IsConst) I4.
+        var propSig = new BlobBuilder();
+        propSig.WriteByte(CALLCONV_PROPERTY | HASTHIS);
+        propSig.WriteByte(0x01);
+        propSig.WriteByte(ELEMENT_TYPE_I4);
+        propSig.WriteByte(ELEMENT_TYPE_CMOD_OPT);
+        WriteTypeToken(propSig, isConst);
+        propSig.WriteByte(ELEMENT_TYPE_I4);
+        PropertyDefinitionHandle prop = mb.AddProperty(
+            PropertyAttributes.None, mb.GetOrAddString("Item"), mb.GetOrAddBlob(propSig));
+
+        return FinishWithHostInterface(mb, host =>
+        {
+            mb.AddPropertyMap(host, prop);
+            mb.AddMethodSemantics(prop, MethodSemanticsAttributes.Getter, getter);
+        });
+    }
+
     // `int P { init; }` — a setter whose return type carries
     // `modreq(IsExternalInit)`, the C# `init` encoding. The projector recognises
     // this specific `modreq(IsExternalInit) void` shape and projects the setter
@@ -1371,6 +1463,34 @@ internal static class Program
             widget,
             MetadataTokens.MethodDefinitionHandle(2),
             MetadataTokens.MethodDefinitionHandle(1));
+        return Finish(mb);
+    }
+
+    // `methodimpl_unmangled_body` with the row's body spelled as a `MemberRef`
+    // to `Widget::Impl` rather than its `MethodDef` — legal, and loadable.
+    private static BlobBuilder EmitMethodImplMemberRefBody()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "MethodImplMemberRefFixture", "mimref");
+
+        BlobHandle voidSig = InstanceVoidSig(mb);
+        mb.AddMethodDefinition(
+            AbstractPublic, MethodImplAttributes.IL, mb.GetOrAddString("M"),
+            voidSig, bodyOffset: -1, MetadataTokens.ParameterHandle(1));
+        mb.AddMethodDefinition(
+            AbstractPublic, MethodImplAttributes.IL, mb.GetOrAddString("Impl"),
+            voidSig, bodyOffset: -1, MetadataTokens.ParameterHandle(1));
+
+        AddModuleType(mb);
+        TypeDefinitionHandle ifoo = mb.AddTypeDefinition(
+            PublicInterface, default, mb.GetOrAddString("IFoo"), baseType: default,
+            MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
+        TypeDefinitionHandle widget = mb.AddTypeDefinition(
+            PublicAbstractClass, default, mb.GetOrAddString("Widget"), baseType: default,
+            MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(2));
+        mb.AddInterfaceImplementation(widget, ifoo);
+        MemberReferenceHandle body = mb.AddMemberReference(widget, mb.GetOrAddString("Impl"), voidSig);
+        mb.AddMethodImplementation(widget, body, MetadataTokens.MethodDefinitionHandle(1));
         return Finish(mb);
     }
 
@@ -2666,6 +2786,36 @@ internal static class Program
         mb.AddGenericParameter(method, GenericParameterAttributes.None, mb.GetOrAddString("T"), 0);
 
         return FinishWithHostInterface(mb, _ => { });
+    }
+
+    // A public class named `C`2` declaring one generic parameter — what F#'s
+    // `[<CompiledName("C`2")>] type D<'T>` writes: the name's suffix is not
+    // the parameter count.
+    private static BlobBuilder EmitTypeNameArityMismatch()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "TypeNameArityFixture", "tnarity");
+        AddModuleType(mb);
+        TypeDefinitionHandle c = mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract,
+            mb.GetOrAddString("N"),
+            mb.GetOrAddString("C`2"),
+            baseType: default,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+        mb.AddGenericParameter(c, GenericParameterAttributes.None, mb.GetOrAddString("T"), 0);
+        // Spellings of no suffix at all: `Foo`0`, `Bar`01`.
+        foreach (var name in new[] { "Foo`0", "Bar`01" })
+        {
+            mb.AddTypeDefinition(
+                TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract,
+                mb.GetOrAddString("N"),
+                mb.GetOrAddString(name),
+                baseType: default,
+                fieldList: MetadataTokens.FieldDefinitionHandle(1),
+                methodList: MetadataTokens.MethodDefinitionHandle(1));
+        }
+        return Finish(mb);
     }
 
     // `[IsUnmanagedAttribute]` on a typar that lacks the value-type special

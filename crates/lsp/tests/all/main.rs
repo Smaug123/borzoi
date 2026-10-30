@@ -29,6 +29,8 @@ mod handlers_references_corpus_diff;
 mod handlers_references_diff;
 mod handlers_semantic_tokens;
 mod handlers_workspace_symbol;
+mod hover_curried_signatures;
+mod hover_measure_labels;
 mod ifdef_diagnostics_integration;
 mod incremental_state_machine;
 mod lsp_integration;

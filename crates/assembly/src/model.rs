@@ -473,8 +473,8 @@ pub enum ValFacts {
     /// the IL row carries).
     NotFSharp,
     /// The host signature pickle described the method's val. Boxed: the facts
-    /// are consulted only when a consumer reads a signature as an F# type, and
-    /// inline they would tip [`Member`] over clippy's large-variant threshold.
+    /// are consulted only when a consumer reads a signature as an F# type, so
+    /// they are kept out of every [`MethodLike`] that never needs them.
     Read(Box<ReadValFacts>),
     /// Nothing may be concluded: an F#-authored method the pickle did not
     /// describe (a member of a type, an augmentation, a val the merge could not
@@ -706,8 +706,9 @@ pub struct TypeForwarder {
     /// The metadata type name — backtick-mangled for generics
     /// (`IEnumerable`1`).
     pub name: String,
-    /// Simple name of the assembly the type forwards to.
-    pub assembly: String,
+    /// The assembly the type forwards to, as the forwarder's `AssemblyRef`
+    /// names it: a binder matches this whole identity, not only the name.
+    pub assembly: AssemblyIdentity,
 }
 
 /// Assembly-level projection degradations. Whole-type drops and F# overlay
@@ -919,6 +920,16 @@ pub struct Entity {
     /// `FSharp.Core` itself and consumed by name elsewhere in FCS), so
     /// the well-known-attribute sync test does not cover it.
     pub is_require_qualified_access: bool,
+    /// The backtick arity suffix of the `TypeDef` name this entity was read
+    /// from, as written (`C`2` → `Some(2)`, `Enumerator` → `Some(0)`):
+    /// [`Self::name`] has it stripped, and it need not equal the number of
+    /// type parameters the entity introduces (F#'s `[<CompiledName("C`2")>]`
+    /// on a one-parameter type). `None` for an entity no `TypeDef` row stands
+    /// behind: an F# abbreviation or exception-abbreviation marker from the
+    /// pickle. A consumer binding metadata names matches this, not the
+    /// parameter count.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub metadata_arity_suffix: Option<usize>,
     /// `true` when the entity carries
     /// `[Microsoft.FSharp.Core.NoEqualityAttribute]`. F# emits this to
     /// suppress the auto-derived `Equals` / `GetHashCode` (and the
@@ -1160,7 +1171,16 @@ pub enum Augmentation {
     /// The host signature pickle says so — the claiming val carries
     /// `ValFlags.IsExtensionMember` together with `MemberInfo` (FCS's
     /// `vref.IsMember`), instance or static. Authoritative: hide it.
-    Certain,
+    Certain {
+        /// How many type parameters the augmented type has. The module method
+        /// an augmentation compiles to is generic over the type's parameters
+        /// first and its own after them (`type G<'t> with member x.M<'u>`
+        /// compiles to `M<t, u>`), and F# splits them at this count (FCS's
+        /// `PartitionValTypars`, at the apparent parent's arity). `None` when
+        /// the val's reference to the type does not give its arity, or when a
+        /// type parameter is a unit of measure, which IL erases.
+        target_typars: Option<usize>,
+    },
     /// Only the IL name mangling (`Type.Member`) says so, on an image whose pickle
     /// did not decode or is not authoritative — indistinguishable from a dotted
     /// `[<CompiledName>]`. Defer: keep the name in scope (so it still shadows by
@@ -1312,7 +1332,8 @@ pub struct CompilerFeatureRequired {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Member {
-    Method(MethodLike),
+    /// Boxed: a [`MethodLike`] is well over the size of the other variants.
+    Method(Box<MethodLike>),
     Field(Field),
     Property(Property),
     Event(Event),
@@ -1364,6 +1385,108 @@ pub struct FsharpSourceRange {
     pub end_column: u32,
 }
 
+/// How a method's IL parameter list groups into F# curried arguments.
+///
+/// An F# `let f a b` and `let f (a, b)` both compile to a two-parameter
+/// method, and so do `member x.M a b` and `member x.M(a, b)`: the flattened IL
+/// signature cannot tell a curried function from a tupled one. The F# signature
+/// pickle can, through the val's `ValReprInfo`, which is what the F# compiler
+/// reads back when it shows or checks the member.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ArgGroups {
+    /// The declaring assembly is not F#-authored. C# and VB cannot curry, so
+    /// the IL parameter list is the one argument group, named as IL names it.
+    NotFSharp,
+    /// Read from the val's `ValReprInfo` in the host signature pickle.
+    Read(Box<CurriedArgs>),
+    /// An F#-authored method whose val the pickle merge did not read, or read
+    /// ambiguously: no host pickle, a decode failure, a foreign CCU, or a
+    /// member that cannot be told apart from a sibling of another shape. Any
+    /// split of two or more IL parameters into groups is a guess.
+    Unknowable,
+}
+
+impl ArgGroups {
+    /// The number of argument groups a caller writes, when known: one for a
+    /// non-F# method, the pickle's count for a read one.
+    pub fn count(&self) -> Option<usize> {
+        match self {
+            ArgGroups::NotFSharp => Some(1),
+            ArgGroups::Read(args) => Some(args.groups.len()),
+            ArgGroups::Unknowable => None,
+        }
+    }
+}
+
+/// An F# method's argument groups as its pickled `ValReprInfo` records them,
+/// as a **caller** writes them: an intrinsic instance member's `this` group,
+/// which the definition's `ValReprInfo` counts, is not one of them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CurriedArgs {
+    /// Whether the method's first IL parameter is the receiver rather than an
+    /// argument: an instance augmentation (`type T with member x.M a b`)
+    /// compiles to a static of its module that takes the `T` first.
+    pub leading_receiver: bool,
+    /// The argument groups, in order. An empty group is a `()` argument that
+    /// compiled to no parameter at all, which F# does only for a function's
+    /// sole group (`let f () = …`); a value binding has no groups.
+    pub groups: Vec<ArgGroup>,
+}
+
+/// One curried argument group: its arguments, tupled.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ArgGroup {
+    pub args: Vec<CurriedArg>,
+}
+
+/// One argument of a curried group, as the pickle names it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CurriedArg {
+    /// The F# source name, or `None` for an argument F# shows unnamed: a
+    /// wildcard (`_: int`), a `()` in a later group, or one element of a
+    /// tuple-typed parameter (`(p: int * string)` compiles to two unnamed
+    /// arguments). The IL names those `_arg1`, `unitVar1` and `p_0`, which F#
+    /// never shows.
+    pub name: Option<String>,
+}
+
+impl CurriedArgs {
+    /// Pair `params`, a method's IL parameters, with these groups: the
+    /// receiver, when [`Self::leading_receiver`] says the first one is, and
+    /// then one slice per group. `None` when the groups do not account for
+    /// exactly the parameters there are.
+    pub fn split<'a, T>(&self, params: &'a [T]) -> Option<SplitParams<'a, T>> {
+        let (receiver, mut rest) = if self.leading_receiver {
+            let (first, rest) = params.split_first()?;
+            (Some(first), rest)
+        } else {
+            (None, params)
+        };
+        let mut groups = Vec::with_capacity(self.groups.len());
+        for group in &self.groups {
+            if group.args.len() > rest.len() {
+                return None;
+            }
+            let (taken, left) = rest.split_at(group.args.len());
+            groups.push(taken);
+            rest = left;
+        }
+        rest.is_empty().then_some(SplitParams { receiver, groups })
+    }
+}
+
+/// A method's IL parameters split by [`CurriedArgs::split`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitParams<'a, T> {
+    pub receiver: Option<&'a T>,
+    /// One slice per argument group, each as long as its group.
+    pub groups: Vec<&'a [T]>,
+}
+
 /// A method, constructor, or operator. The `is_constructor` flag
 /// distinguishes the `.ctor` / `.cctor` cases from regular methods so
 /// callers don't have to string-compare names.
@@ -1385,7 +1508,19 @@ pub struct MethodLike {
     /// the group is a provably single argument group (or takes ≤ 1 parameter),
     /// otherwise FCS's FS0816 curried-overload rule may type the call `obj`.
     /// See `docs/completed/ov-6.1-curry-detection-plan.md`.
+    ///
+    /// [`Self::arg_groups`] is the finer fact (each group's arguments), and
+    /// this count never contradicts it: where both are known they agree.
+    /// Either can be known without the other. A type member's groups are read
+    /// for display while this stays `None`, so the overload engine's
+    /// curried-member gate is unchanged by them; and a module method whose
+    /// claimants agree on the count but name their arguments differently keeps
+    /// this count while its groups are unknown.
     pub arg_group_count: Option<usize>,
+    /// How the IL parameters group into F# curried arguments, with each
+    /// argument's F# name ([`ArgGroups`]). What a signature renderer needs to
+    /// show `val f: a: int -> b: int -> int` rather than the tupled IL view.
+    pub arg_groups: ArgGroups,
     pub is_static: bool,
     pub is_virtual: bool,
     pub is_abstract: bool,
@@ -1466,8 +1601,8 @@ pub struct MethodLike {
     /// lives in the module's `.cctor`), so the getter carries no sequence
     /// point and this pickled range is the only — and FCS's own — source
     /// location for the binding.
-    /// Boxed: the range is consulted only at navigation time, and inline it
-    /// would tip [`Member`] over clippy's large-variant threshold.
+    /// Boxed: the range is consulted only at navigation time, so it is kept
+    /// out of every [`MethodLike`] that is never navigated to.
     pub definition_range: Option<Box<FsharpSourceRange>>,
     /// Formal method type parameters (the `M0`/`M1`/... typars referenced
     /// from the signature via `TypeRef::Var { is_method: true, .. }`).
@@ -1590,6 +1725,48 @@ pub struct MethodLike {
     /// MethodDef is then unprovable. Where it is `None`, [`crate::doc_id`]
     /// computes the ID from the signature.
     pub xml_doc_sig: Option<String>,
+    /// Whether some `MethodImpl` row names this method as its body without
+    /// contributing to [`Self::implements`] or [`Self::unclassified_impls`]: a
+    /// redirection to an ancestor *class* method — C# emits one for a
+    /// covariant-return override, which is `newslot` and so does not read as
+    /// an override from its flags alone — or a row whose declaration could
+    /// not be classified. A consumer deciding what this method overrides or
+    /// implements must treat that as unknown when this is set.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub has_other_method_impl: bool,
+    /// The projection ignored an optional custom modifier (`modopt`) somewhere
+    /// in this member's signature, as ECMA-335 II.7.1.1 permits. Roslyn's
+    /// runtime signature comparers do not ignore one, so a consumer
+    /// reproducing those comparisons cannot tell this signature from the same
+    /// one without it (#339).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub drops_optional_modifier: bool,
+}
+
+/// The vtable facts of one property or event accessor. C# reads a property
+/// (or event) as an override when any of its accessors is one, and the
+/// accessors need not agree, so a consumer deciding what a property
+/// overrides needs each accessor's flags rather than a summary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AccessorSlot {
+    /// The accessor method's metadata name, verbatim. Conventionally
+    /// `get_P`/`set_P`, `add_E`/`remove_E`, but metadata need not follow
+    /// the convention, and what implements an accessor implements *this*
+    /// method, whatever it is called. Empty in a projection that predates it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub name: String,
+    /// `virtual` (`MethodAttributes` 0x0040).
+    pub is_virtual: bool,
+    /// `newslot` (`MethodAttributes` 0x0100): a fresh vtable slot, not an
+    /// override of a base one.
+    pub is_newslot: bool,
+    /// `abstract` (`MethodAttributes` 0x0400).
+    pub is_abstract: bool,
+    /// `final` (`MethodAttributes` 0x0020).
+    pub is_final: bool,
+    /// As [`MethodLike::has_other_method_impl`], for this accessor.
+    pub has_other_method_impl: bool,
 }
 
 /// One in-assembly-undecidable `MethodImpl` row: the declaration's parent
@@ -1973,6 +2150,17 @@ pub struct Property {
     /// each accessor separately, the setter with its value argument
     /// (`P:N.Widget.Count(System.Int32)`), so a settable property has two keys.
     pub setter_xml_doc_sig: Option<String>,
+    /// The vtable facts of each distinct accessor, getter first then setter
+    /// (an absent one omitted).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub accessor_slots: Vec<AccessorSlot>,
+    /// The projection ignored an optional custom modifier (`modopt`) somewhere
+    /// in this member's signature, as ECMA-335 II.7.1.1 permits. Roslyn's
+    /// runtime signature comparers do not ignore one, so a consumer
+    /// reproducing those comparisons cannot tell this signature from the same
+    /// one without it (#339).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub drops_optional_modifier: bool,
 }
 
 /// An event, projected to the LSP-shaped surface rather than the raw
@@ -2029,6 +2217,10 @@ pub struct Event {
     /// (`P:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.Invalidate`).
     /// See [`MethodLike::xml_doc_sig`].
     pub xml_doc_sig: Option<String>,
+    /// The vtable facts of each distinct accessor: `add`, `remove`, then
+    /// `fire` when present.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub accessor_slots: Vec<AccessorSlot>,
 }
 
 /// A custom attribute the importer didn't classify into a typed field on

@@ -336,7 +336,7 @@ fn fsharp_core_method(bytes: &[u8], entity: &str, source: &str) -> MethodLike {
                     .eq(["Microsoft", "FSharp", "Core"])
         })
         .unwrap_or_else(|| panic!("entity Microsoft.FSharp.Core.{entity} not found"));
-    e.members
+    *e.members
         .iter()
         .find_map(|m| match m {
             Member::Method(m) if m.source_name.as_deref() == Some(source) => Some(m.clone()),

@@ -26,13 +26,21 @@
 //!   field, a class `val` field, a property, an instance and a static method
 //!   with and without an argument, an interface's abstract property, and a
 //!   property inherited from a base class — every member kind the wake reads
-//!   a type off.
+//!   a type off — and the module bindings a hover renders from IL too: a
+//!   module value, a mutable one, a function returning the shape, and one
+//!   taking it as its parameter.
 //!
 //! [`EXTRA_SITES`] adds the cells that are not a shape × carrier product: a
 //! measure-*generic* method (whose IL has no generic parameter, so a
 //! generic-method guard does not fire), a member reached *through* a
-//! measure-parameterised receiver, and an overload pair that differs only in a
-//! measure, which FCS rejects for an unannotated argument.
+//! measure-parameterised receiver, an overload pair that differs only in a
+//! measure, which FCS rejects for an unannotated argument, and a method whose
+//! only measure is in its parameter.
+//!
+//! Two consumers read the universe: the sema crate's inference differential
+//! (`infer_measure_erasure_diff`), and the LSP crate's hover differential
+//! (`crates/lsp/tests/all/hover_measure_labels.rs`), which includes this file
+//! by path.
 
 /// The assembly name the fixture project emits.
 pub const FIXTURE_ASM: &str = "SemaMeasureFixture";
@@ -180,6 +188,15 @@ pub struct Carrier {
     /// The access, with `{v}` for the receiver binding and `{t}` for the type
     /// name.
     pub access: &'static str,
+    /// The IL erasure of the access's type, in `Ty::render`'s currency, with
+    /// `{e}` for the shape's own erasure: `{e}` where the access is typed as the
+    /// shape, `{e} -> System.Int32` for an unapplied function taking it.
+    pub erased: &'static str,
+    /// Whether inference types this carrier's accesses today, so that its
+    /// measure-free controls must commit. A carrier it does not reach still
+    /// grades soundness (nothing it publishes there may be wrong) and the cells'
+    /// own claims.
+    pub inferred: bool,
 }
 
 /// The member kinds the wake types. See the module docs.
@@ -189,72 +206,96 @@ pub const CARRIERS: &[Carrier] = &[
         decl: "type {t} = { F : {s} }",
         needs_receiver: true,
         access: "{v}.F",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "struct record field",
         decl: "[<Struct>]\ntype {t} = { F : {s} }",
         needs_receiver: true,
         access: "{v}.F",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "record member property",
         decl: "type {t} =\n    { N : int }\n    member _.P : {s} = Unchecked.defaultof<{s}>",
         needs_receiver: true,
         access: "{v}.P",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "union member property",
         decl: "type {t} =\n    | A\n    | B\n    member _.P : {s} = Unchecked.defaultof<{s}>",
         needs_receiver: true,
         access: "{v}.P",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "class val field",
         decl: "type {t}() =\n    [<DefaultValue(false)>] val mutable Fld : {s}",
         needs_receiver: true,
         access: "{v}.Fld",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "class property",
         decl: "type {t}() =\n    member _.P : {s} = Unchecked.defaultof<{s}>",
         needs_receiver: true,
         access: "{v}.P",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "class auto-property",
         decl: "type {t}() =\n    member val AP : {s} = Unchecked.defaultof<{s}> with get, set",
         needs_receiver: true,
         access: "{v}.AP",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "instance method, unit",
         decl: "type {t}() =\n    member _.M() : {s} = Unchecked.defaultof<{s}>",
         needs_receiver: true,
         access: "{v}.M()",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "instance method, one argument",
         decl: "type {t}() =\n    member _.M1(x : int) : {s} = Unchecked.defaultof<{s}>",
         needs_receiver: true,
         access: "{v}.M1(1)",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "static method, unit",
         decl: "type {t}() =\n    static member SM() : {s} = Unchecked.defaultof<{s}>",
         needs_receiver: false,
         access: "{t}.SM()",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "static method, one argument",
         decl: "type {t}() =\n    static member SM1(x : int) : {s} = Unchecked.defaultof<{s}>",
         needs_receiver: false,
         access: "{t}.SM1(1)",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "interface abstract property",
         decl: "type {t} =\n    abstract P : {s}",
         needs_receiver: true,
         access: "{v}.P",
+        erased: "{e}",
+        inferred: true,
     },
     Carrier {
         label: "inherited class property",
@@ -262,6 +303,55 @@ pub const CARRIERS: &[Carrier] = &[
                type {t}() =\n    inherit {t}Base()",
         needs_receiver: true,
         access: "{v}.P",
+        erased: "{e}",
+        inferred: true,
+    },
+    // Module bindings: a module value compiles to a static property, a function
+    // to a static method, both on the module's class.
+    Carrier {
+        label: "module value",
+        decl: "module {t} =\n    let V : {s} = Unchecked.defaultof<{s}>",
+        needs_receiver: false,
+        access: "{t}.V",
+        erased: "{e}",
+        inferred: false,
+    },
+    Carrier {
+        label: "module mutable value",
+        decl: "module {t} =\n    let mutable MV : {s} = Unchecked.defaultof<{s}>",
+        needs_receiver: false,
+        access: "{t}.MV",
+        erased: "{e}",
+        inferred: false,
+    },
+    Carrier {
+        label: "module function, unit",
+        decl: "module {t} =\n    let F () : {s} = Unchecked.defaultof<{s}>",
+        needs_receiver: false,
+        access: "{t}.F ()",
+        erased: "{e}",
+        inferred: false,
+    },
+    Carrier {
+        label: "module function, one argument",
+        decl: "module {t} =\n    let F1 (x : int) : {s} = Unchecked.defaultof<{s}>",
+        needs_receiver: false,
+        access: "{t}.F1 1",
+        erased: "{e}",
+        inferred: false,
+    },
+    // The shape in *parameter* position, read through an unapplied access whose
+    // type is the whole function: an IL parameter type erases a measure as
+    // surely as a return type does. (FCS types an unapplied *method* at its
+    // range by the call it elaborates to, so only a module function's unapplied
+    // access carries the parameter type.)
+    Carrier {
+        label: "module function, shape parameter",
+        decl: "module {t} =\n    let G (x : {s}) : int = 0",
+        needs_receiver: false,
+        access: "{t}.G",
+        erased: "{e} -> System.Int32",
+        inferred: false,
     },
 ];
 
@@ -358,6 +448,17 @@ pub const EXTRA_SITES: &[ExtraSite] = &[
             measure_bearing: false,
         },
     },
+    // A method whose only measure is in its parameter, on a type with no other
+    // member: the access is a measure-free `int`, so only the argument's type
+    // says the parameter was erased.
+    ExtraSite {
+        label: "static method whose only measure is its parameter's",
+        receiver: None,
+        access: "ParamOnly.SP(1.0<m>)",
+        expect: Expect::Accepts {
+            measure_bearing: false,
+        },
+    },
 ];
 
 /// One probe site.
@@ -369,12 +470,15 @@ pub struct Site {
     /// Half-open byte range of the access expression in the probe.
     pub access: (usize, usize),
     pub expect: Expect,
-    /// The IL erasure of the member's type, when the site is a shape × carrier
+    /// The IL erasure of the access's type, when the site is a shape × carrier
     /// cell — the string a measure-blind reader would publish.
-    pub erased: Option<&'static str>,
+    pub erased: Option<String>,
     /// Whether the site is a measure-free shape × carrier cell: the control that
     /// proves its carrier is reached at all.
     pub is_control: bool,
+    /// Whether inference reaches the site's carrier ([`Carrier::inferred`]);
+    /// always `true` for an extra cell.
+    pub inferred: bool,
     /// The line's source text.
     pub text: String,
 }
@@ -430,7 +534,10 @@ pub fn fixture_source() -> String {
          \x20   static member SG1<[<Measure>] 'u>(x : float<'u>) : float<'u> = x\n\
          \x20   member _.Vec : Vec<m> = Unchecked.defaultof<Vec<m>>\n\
          \x20   member _.O(x : float<m>) : int = 0\n\
-         \x20   member _.O(x : string) : string = x\n",
+         \x20   member _.O(x : string) : string = x\n\
+         \n\
+         type ParamOnly() =\n\
+         \x20   static member SP(x : float<m>) : int = 0\n",
     );
     out
 }
@@ -442,8 +549,9 @@ pub fn corpus() -> Corpus {
         receiver: Option<String>,
         access: String,
         expect: Expect,
-        erased: Option<&'static str>,
+        erased: Option<String>,
         is_control: bool,
+        inferred: bool,
     }
     let mut rows = Vec::new();
     for (i, shape) in SHAPES.iter().enumerate() {
@@ -456,8 +564,9 @@ pub fn corpus() -> Corpus {
                 expect: Expect::Accepts {
                     measure_bearing: shape.measure_bearing,
                 },
-                erased: Some(shape.erased),
+                erased: Some(carrier.erased.replace("{e}", shape.erased)),
                 is_control: !shape.measure_bearing,
+                inferred: carrier.inferred,
             });
         }
     }
@@ -469,6 +578,7 @@ pub fn corpus() -> Corpus {
             expect: extra.expect,
             erased: None,
             is_control: false,
+            inferred: true,
         });
     }
 
@@ -497,8 +607,9 @@ pub fn corpus() -> Corpus {
             label: row.label.clone(),
             access: (start, start + expr.len()),
             expect: row.expect,
-            erased: row.erased,
+            erased: row.erased.clone(),
             is_control: row.is_control,
+            inferred: row.inferred,
             text: text.clone(),
         });
         probe.push_str(&text);

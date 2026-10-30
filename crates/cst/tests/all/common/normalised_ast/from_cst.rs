@@ -128,6 +128,45 @@ pub fn normalise_parse(parse: &Parse) -> NormalisedRoot {
     }
 }
 
+/// One module/namespace's header — [`normalise_module`] with `decls` left
+/// empty. A recovered-tree comparison grades a header and each of its
+/// declarations as separate units, so a damaged declaration does not take the
+/// header (or its siblings) down with it.
+pub fn impl_module_header(m: &ModuleOrNamespace) -> NormalisedModule {
+    let mut local = 0u32;
+    NormalisedModule {
+        kind: module_kind(m),
+        is_rec: m.is_rec(),
+        attributes: normalise_attribute_lists(m.attributes(), &mut local),
+        access: cst_access(m.syntax()),
+        decls: Vec::new(),
+    }
+}
+
+/// The signature-file counterpart of [`impl_module_header`].
+pub fn sig_module_header(m: &ModuleOrNamespace) -> NormalisedSigModule {
+    let mut local = 0u32;
+    NormalisedSigModule {
+        kind: module_kind(m),
+        is_rec: m.is_rec(),
+        attributes: normalise_attribute_lists(m.attributes(), &mut local),
+        access: cst_access(m.syntax()),
+        decls: Vec::new(),
+    }
+}
+
+/// One declaration as a recovered-tree comparison unit: [`normalise_decl`],
+/// except that a nested module projects its header alone (`decls` empty) — its
+/// body declarations are units of their own.
+pub fn impl_decl_unit(d: &ModuleDecl) -> NormalisedDecl {
+    normalise_decl_with(d, false)
+}
+
+/// The signature-file counterpart of [`impl_decl_unit`].
+pub fn sig_decl_unit(d: &SigDecl) -> NormalisedSigDecl {
+    normalise_sig_decl_with(d, false)
+}
+
 fn normalise_impl_file(file: &ImplFile) -> NormalisedImplFile {
     NormalisedImplFile {
         warn_directives: normalise_warn_directives(file.syntax()),
@@ -181,6 +220,12 @@ fn normalise_sig_module(m: &ModuleOrNamespace) -> NormalisedSigModule {
 /// adds nested modules + abbreviations (reusing the impl-side projections);
 /// 10.12a adds `val` (reusing the shared `VAL_SIG` carrier).
 fn normalise_sig_decl(d: &SigDecl) -> NormalisedSigDecl {
+    normalise_sig_decl_with(d, true)
+}
+
+/// [`normalise_sig_decl`], projecting a nested module's body only when
+/// `recurse` (see [`sig_decl_unit`]).
+fn normalise_sig_decl_with(d: &SigDecl, recurse: bool) -> NormalisedSigDecl {
     match d {
         SigDecl::Open(o) => NormalisedSigDecl::Open {
             target: normalise_open_target(o),
@@ -258,11 +303,14 @@ fn normalise_sig_decl(d: &SigDecl) -> NormalisedSigDecl {
                 is_rec: nm.is_rec(),
                 attributes,
                 access: cst_access(nm.syntax()),
-                decls: nm
-                    .sig_decls()
-                    .filter(|d| !is_light_sig_hash_directive(d))
-                    .map(|d| normalise_sig_decl(&d))
-                    .collect(),
+                decls: if recurse {
+                    nm.sig_decls()
+                        .filter(|d| !is_light_sig_hash_directive(d))
+                        .map(|d| normalise_sig_decl(&d))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             }
         }
         SigDecl::ModuleAbbrev(a) => {
@@ -361,6 +409,12 @@ fn normalise_module(m: &ModuleOrNamespace) -> NormalisedModule {
 /// including an `and`-chain (one `ModuleDecl::Let` with several bindings)
 /// and any nested/sibling lambdas in a binding RHS.
 fn normalise_decl(d: &ModuleDecl) -> NormalisedDecl {
+    normalise_decl_with(d, true)
+}
+
+/// [`normalise_decl`], projecting a nested module's body only when `recurse`
+/// (see [`impl_decl_unit`]).
+fn normalise_decl_with(d: &ModuleDecl, recurse: bool) -> NormalisedDecl {
     let mut counter = 0u32;
     match d {
         ModuleDecl::Expr(e) => {
@@ -449,11 +503,14 @@ fn normalise_decl(d: &ModuleDecl) -> NormalisedDecl {
                 is_rec: nm.is_rec(),
                 attributes,
                 access: cst_access(nm.syntax()),
-                decls: nm
-                    .decls()
-                    .filter(|d| !is_light_hash_directive(d))
-                    .map(|d| normalise_decl(&d))
-                    .collect(),
+                decls: if recurse {
+                    nm.decls()
+                        .filter(|d| !is_light_hash_directive(d))
+                        .map(|d| normalise_decl(&d))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             }
         }
         ModuleDecl::ModuleAbbrev(a) => {

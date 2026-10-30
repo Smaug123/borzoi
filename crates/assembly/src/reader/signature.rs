@@ -603,3 +603,27 @@ pub(crate) fn decode_property_sig(
     c.read_compressed_u32().ok_or(SigError::Truncated)?; // index-parameter count
     decode(&mut c, tables, 0)
 }
+
+/// Decode the index parameters of a `PropertySig` (II.23.2.5): the `Param`s
+/// after the property's type, each with its custom modifiers. A property's
+/// accessors carry the parameters the model projects, but need not repeat a
+/// modifier the `PropertySig` carries.
+pub(crate) fn decode_property_index_params(
+    blob: &[u8],
+    tables: &ImageTables,
+) -> Result<Vec<ModifiedType>, SigError> {
+    let mut c = Cursor::new(blob);
+    let first = c.read_u8().ok_or(SigError::Truncated)?;
+    if first & conv::CONV_MASK != conv::PROPERTY {
+        return Err(SigError::BadToken);
+    }
+    let count = c.read_compressed_u32().ok_or(SigError::Truncated)?;
+    decode(&mut c, tables, 0)?;
+    // `count` is attacker-controlled; never pre-allocate from it. Each
+    // parameter consumes >= 1 byte, so the loop is bounded by the blob length.
+    let mut params = Vec::new();
+    for _ in 0..count {
+        params.push(decode(&mut c, tables, 0)?);
+    }
+    Ok(params)
+}
