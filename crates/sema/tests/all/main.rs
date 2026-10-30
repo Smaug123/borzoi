@@ -20,6 +20,7 @@ mod explicit_impl_unreachable;
 mod extension_shadow_diff;
 mod extension_visibility_matrix;
 mod fcs_dump_refs_absolute;
+mod fcs_dump_tolerance;
 mod fsharp_member_diff;
 mod implicit_namespace_matrix;
 mod infer_annotation_entity_diff;

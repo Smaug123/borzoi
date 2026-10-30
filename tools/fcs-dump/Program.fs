@@ -728,8 +728,9 @@ let rec private renderTypeWith
     // unwrapping we'd render `obj` instead of `System.Object`, which the
     // Rust side never emits. Strip every layer of abbreviation before
     // continuing — this is also what F#'s display contexts do internally
-    // for cross-language consumption.
-    if t.IsAbbreviation then
+    // for cross-language consumption. A measure abbreviation is its own
+    // `AbbreviatedType`, so it is not chased (see [`renderTypeCanonical`]).
+    if t.IsAbbreviation && not t.IsMeasureType then
         renderTypeWith headName typeTypars methodTypars t.AbbreviatedType
     elif t.IsGenericParameter then
         // FCS exposes the parameter as a named typar (e.g. `'T`); the Rust
@@ -941,7 +942,7 @@ let rec private renderAbbreviationTargetLogical
 /// typars, arrays); byref-wrapping is unwrapped before this is called so
 /// a `ref string` parameter looks like its referent.
 let rec private fcsTypeIsAnnotable (t: FSharpType) : bool =
-    if t.IsAbbreviation then
+    if t.IsAbbreviation && not t.IsMeasureType then
         // See through F# type abbreviations (`int` = `System.Int32`,
         // `string` = `System.String`): annotability is a property of the
         // *underlying* type. Without this an inner abbreviation like the `int`
@@ -1010,7 +1011,7 @@ and private walkFcsType
     (methodTypars: System.Collections.Generic.IList<FSharpGenericParameter>)
     (t: FSharpType) =
     let body =
-        if t.IsAbbreviation then
+        if t.IsAbbreviation && not t.IsMeasureType then
             walkFcsType false typeTypars methodTypars t.AbbreviatedType
         elif t.IsGenericParameter then
             let tp = t.GenericParameter
@@ -6310,8 +6311,14 @@ let private renderTypeCanonical (t: FSharpType) : string =
     // `System.Int32 * System.String[]` — a well-formed canonical string denoting
     // a *different* type. `an_alias_and_its_expansion_render_identically` is the
     // property that holds this.
+    //
+    // A unit-of-measure abbreviation (`[<Measure>] type sqrm = m^2`) is not
+    // stripped: FCS reports it as an abbreviation whose `AbbreviatedType` is the
+    // measure itself (`stripTyEqns` reduces only a type application), so the
+    // chase would never end. Every other abbreviation-chasing site in this file
+    // carries the same guard.
     let rec strip (t: FSharpType) : FSharpType =
-        if t.IsAbbreviation then strip t.AbbreviatedType else t
+        if t.IsAbbreviation && not t.IsMeasureType then strip t.AbbreviatedType else t
     // Whether `t` must be parenthesised where ` * `, `[]` or a tuple join would
     // otherwise regroup it. A *struct* tuple renders in application form
     // (`System.ValueTuple<…>`), so it needs no parens.
@@ -6334,7 +6341,7 @@ let private renderTypeCanonical (t: FSharpType) : string =
         // dispatching — the same first step [`renderTypeInScope`] takes, hoisted
         // here so every branch below sees the stripped type rather than only the
         // fallthrough.
-        if t.IsAbbreviation then
+        if t.IsAbbreviation && not t.IsMeasureType then
             go (strip t)
         elif t.IsTupleType && not t.IsStructTupleType then
             // A tuple or function element is parenthesised so the flat ` * ` join
@@ -6430,12 +6437,81 @@ let private renderTypeCanonical (t: FSharpType) : string =
             try renderType t with _ -> renderExprType t
     go t
 
+/// A leaf declaration whose typed tree FCS could not convert to the public
+/// [`FSharpExpr`] view, reported alongside a per-declaration dump instead of
+/// sinking the whole file.
+///
+/// The conversion is not total over a file that checked with errors. It
+/// re-solves each call's witness arguments (`GetWitnessArgs`), and a call whose
+/// type arguments violate a constraint — `g = g` with `g : int -> int`, a
+/// `[<NoEquality>]` record compared — throws the solver's error again as a
+/// `ReportedError`; a pattern match FCS recovered from throws `"error
+/// recovery"`. Either aborts every node of that declaration, and only that one:
+/// conversion runs per binding body.
+///
+/// `Range` spans the binder's declaration location through its body's range (an
+/// `InitAction`, its own range): a span inside the source declaration, not its
+/// extent — what precedes the name lies outside it, and a body opening with a
+/// local `let` reports only that binding — from which a consumer finds the
+/// declaration. `InFile` is `false` when no part of that range is a real
+/// location in this file; such a declaration cannot be localised, and a
+/// consumer must treat the whole file as ungraded.
+type private UnconvertedDeclaration =
+    { Range: range
+      InFile: bool
+      Name: string
+      Message: string }
+
+/// Run `convert` over each leaf declaration of `impl` — a value, function or
+/// member binding, or a module-level `do`, with nested modules flattened — in
+/// source order, keeping what each converted declaration produced and recording
+/// each one whose conversion threw as an [`UnconvertedDeclaration`].
+///
+/// A declaration's output is kept whole or not at all: `convert` must return
+/// everything it found rather than emit as it walks, or a declaration that
+/// throws half-way through would leave a partial set of records indistinguishable
+/// from a complete one.
+let private convertPerDeclaration
+    (impl: FSharpImplementationFileContents)
+    (convert: FSharpImplementationFileDeclaration -> 'T list)
+    : 'T list * UnconvertedDeclaration list =
+    let inThisFile (r: range) =
+        r.FileName = impl.FileName
+        && not (r.StartLine = r.EndLine && r.StartColumn = r.EndColumn)
+    let unconverted (d: FSharpImplementationFileDeclaration) (ex: exn) =
+        let candidates, name =
+            match d with
+            | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(mfv, _, body) ->
+                let decl = try [ mfv.DeclarationLocation ] with _ -> []
+                decl @ [ body.Range ], (try mfv.LogicalName with _ -> "")
+            | FSharpImplementationFileDeclaration.InitAction e -> [ e.Range ], ""
+            | FSharpImplementationFileDeclaration.Entity(e, _) -> [ e.DeclarationLocation ], e.DisplayName
+        let located = candidates |> List.filter inThisFile
+        match located with
+        | [] ->
+            { Range = List.head candidates; InFile = false; Name = name; Message = ex.Message }
+        | r :: rest ->
+            { Range = List.fold Range.unionRanges r rest; InFile = true; Name = name; Message = ex.Message }
+    let rec walk (d: FSharpImplementationFileDeclaration) : 'T list * UnconvertedDeclaration list =
+        match d with
+        | FSharpImplementationFileDeclaration.Entity(_, sub) ->
+            let parts = List.map walk sub
+            List.collect fst parts, List.collect snd parts
+        | _ ->
+            match (try Ok(convert d) with ex -> Error ex) with
+            | Ok xs -> xs, []
+            | Error ex -> [], [ unconverted d ex ]
+    let parts = List.map walk impl.Declarations
+    List.collect fst parts, List.collect snd parts
+
 /// Walk one implementation file's typed tree, emitting `{ Range, Kind, Type,
 /// TypeCanon }` for every expression node carrying a real source location in
-/// *this* file. `canonical` controls whether the (exception-prone) `TypeCanon`
-/// field is computed: the single-file `types` oracle needs it for the inference
-/// differential; the whole-corpus `types-census-batch` does not and passes
-/// `false` to avoid the per-node exception cost.
+/// *this* file, and the declarations whose typed tree could not be converted
+/// (see [`convertPerDeclaration`]). `canonical` controls whether the
+/// (exception-prone) `TypeCanon` field is computed: the single-file `types`
+/// oracle needs it for the inference differential; the whole-corpus
+/// `types-census-batch` does not and passes `false` to avoid the per-node
+/// exception cost.
 ///
 /// Two filters keep the population hover-faithful rather than tree-faithful:
 ///   * Compiler-synthesised nodes (range in another file, or zero-width) are
@@ -6447,31 +6523,38 @@ let private renderTypeCanonical (t: FSharpType) : string =
 ///     stack of same-range lambdas/applications) down to the single source
 ///     expression, so the census counts source spans, not IL-shaped artifacts.
 let private collectExprTypes (canonical: bool) (impl: FSharpImplementationFileContents) =
-    let acc = ResizeArray<_>()
-    let seen = System.Collections.Generic.HashSet<struct (int * int * int * int)>()
-    let emit (e: FSharpExpr) =
+    let node (e: FSharpExpr) =
         let r = e.Range
         let zeroWidth = r.StartLine = r.EndLine && r.StartColumn = r.EndColumn
         if r.FileName = impl.FileName && not zeroWidth then
-            let key = struct (r.StartLine, r.StartColumn, r.EndLine, r.EndColumn)
-            if seen.Add(key) then
-                let canon = if canonical then renderTypeCanonical e.Type else ""
-                acc.Add(
-                    {| Range = r
-                       Kind = classifyExpr e
-                       Type = renderExprType e.Type
-                       TypeCanon = canon |})
-    let rec walkExpr (e: FSharpExpr) =
-        emit e
-        for sub in e.ImmediateSubExpressions do
-            walkExpr sub
-    let rec walkDecl (d: FSharpImplementationFileDeclaration) =
+            Some(struct (r.StartLine, r.StartColumn, r.EndLine, r.EndColumn), e)
+        else
+            None
+    // Pre-order, so the first node at a range is the outermost one. Only the
+    // ranges are gathered here: rendering waits until the declaration has
+    // converted whole.
+    let convert (d: FSharpImplementationFileDeclaration) =
+        let found = ResizeArray<_>()
+        let rec walkExpr (e: FSharpExpr) =
+            node e |> Option.iter found.Add
+            for sub in e.ImmediateSubExpressions do
+                walkExpr sub
         match d with
-        | FSharpImplementationFileDeclaration.Entity(_, sub) -> List.iter walkDecl sub
         | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(_, _, body) -> walkExpr body
         | FSharpImplementationFileDeclaration.InitAction e -> walkExpr e
-    List.iter walkDecl impl.Declarations
-    acc.ToArray()
+        | FSharpImplementationFileDeclaration.Entity _ -> ()
+        List.ofSeq found
+    let nodes, unconverted = convertPerDeclaration impl convert
+    let seen = System.Collections.Generic.HashSet<struct (int * int * int * int)>()
+    let exprs =
+        [| for (key, e) in nodes do
+               if seen.Add(key) then
+                   let canon = if canonical then renderTypeCanonical e.Type else ""
+                   {| Range = e.Range
+                      Kind = classifyExpr e
+                      Type = renderExprType e.Type
+                      TypeCanon = canon |} |]
+    exprs, Array.ofList unconverted
 
 /// Type-check a single file *as a script* with `keepAssemblyContents = true`
 /// (so the elaborated typed tree is retained) and return its
@@ -6546,10 +6629,11 @@ let private checkScriptImplFile (label: string) (absolute: string) : FSharpImple
 /// oracle for the `sema` type-inference layer (Phase 3) and the type census.
 let private dumpTypes (absolute: string) =
     let impl, diags = checkScriptImplFileWithDiags "types" absolute
-    let exprs = collectExprTypes true impl
+    let exprs, unconverted = collectExprTypes true impl
     // The typed tree omits an expression FCS could not check, so a consumer
     // asserting "every type we produced, FCS confirms" needs to know which lines
-    // errored before it can read a missing node as a disagreement.
+    // errored — and which declarations went unconverted — before it can read a
+    // missing node as a disagreement.
     let errors =
         diags
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
@@ -6557,7 +6641,7 @@ let private dumpTypes (absolute: string) =
             {| Line = d.StartLine
                Code = d.ErrorNumber
                Message = d.Message |})
-    let payload = {| File = absolute; Exprs = exprs; Errors = errors |}
+    let payload = {| File = absolute; Exprs = exprs; Errors = errors; Unconverted = unconverted |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
     Console.Out.WriteLine()
@@ -6573,8 +6657,7 @@ let private dumpTypes (absolute: string) =
 /// directly. `Range` is the binder's declaration location, matching the
 /// `sema` resolver's `Def::range`, so the two are keyed the same way.
 let private collectBinderTypes (impl: FSharpImplementationFileContents) =
-    let acc = ResizeArray<_>()
-    let emit (mfv: FSharpMemberOrFunctionOrValue) =
+    let record (mfv: FSharpMemberOrFunctionOrValue) =
         // `.DeclarationLocation` / `.FullType` can throw on a broken symbol;
         // stay tolerant (skip it) rather than fail the whole dump.
         try
@@ -6582,48 +6665,58 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
             let zeroWidth = r.StartLine = r.EndLine && r.StartColumn = r.EndColumn
             if r.FileName = impl.FileName && not zeroWidth then
                 let canon = try renderTypeCanonical mfv.FullType with _ -> ""
-                acc.Add(
+                Some
                     {| Range = r
                        Name = mfv.LogicalName
-                       TypeCanon = canon |})
-        with _ -> ()
+                       TypeCanon = canon |}
+            else
+                None
+        with _ -> None
     // An expression-level `let … in` (and `let rec … in`) binds a local value
     // that is a binder in its own right, with a declaration range in this file —
     // but it lives inside a declaration's *body*, not in the declaration list, so
     // the body is walked for it. Compiler-generated locals (a pattern's
     // `patternInput`, a match temporary) are not source binders and are skipped:
     // one can share a source range with a real binder of a different type.
-    let emitLocal (v: FSharpMemberOrFunctionOrValue) =
+    let local (v: FSharpMemberOrFunctionOrValue) =
         let generated = try v.IsCompilerGenerated with _ -> true
-        if not generated then emit v
-    let rec walkLocals (e: FSharpExpr) =
-        match e with
-        | Let((v, _, _), _) -> emitLocal v
-        | LetRec(binds, _) -> for (v, _, _) in binds do emitLocal v
-        | _ -> ()
-        for sub in e.ImmediateSubExpressions do
-            walkLocals sub
-    let rec walkDecl (d: FSharpImplementationFileDeclaration) =
+        if generated then None else record v
+    // A declaration's binders are gathered whole before any is kept: walking the
+    // body converts it, which can throw (see [`convertPerDeclaration`]), and the
+    // binder and its parameters must then go unreported with it rather than
+    // stand as a partial answer for a declaration the dump did not finish.
+    let convert (d: FSharpImplementationFileDeclaration) =
+        let found = ResizeArray<_>()
+        let rec walkLocals (e: FSharpExpr) =
+            match e with
+            | Let((v, _, _), _) -> local v |> Option.iter found.Add
+            | LetRec(binds, _) ->
+                for (v, _, _) in binds do
+                    local v |> Option.iter found.Add
+            | _ -> ()
+            for sub in e.ImmediateSubExpressions do
+                walkLocals sub
         match d with
-        | FSharpImplementationFileDeclaration.Entity(_, sub) -> List.iter walkDecl sub
         | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(mfv, curriedArgs, body) ->
-            emit mfv
+            record mfv |> Option.iter found.Add
             // The curried parameter groups (`[[a]; [b]]` for `let f a b`,
             // `[[a; b]]` for a tupled `let f (a, b)`): each parameter is itself a
             // binder with its own declaration range and type.
             for group in curriedArgs do
                 for p in group do
-                    emit p
+                    record p |> Option.iter found.Add
             walkLocals body
         | FSharpImplementationFileDeclaration.InitAction e -> walkLocals e
-    List.iter walkDecl impl.Declarations
-    acc.ToArray()
+        | FSharpImplementationFileDeclaration.Entity _ -> ()
+        List.ofSeq found
+    let binders, unconverted = convertPerDeclaration impl convert
+    Array.ofList binders, Array.ofList unconverted
 
 /// Dump every binder's inferred type for a single file — the Phase-3
 /// binder-type oracle (see [`collectBinderTypes`]).
 let private dumpBinderTypes (absolute: string) =
     let impl, diags = checkScriptImplFileWithDiags "binder-types" absolute
-    let binders = collectBinderTypes impl
+    let binders, unconverted = collectBinderTypes impl
     // FCS error-recovers an annotation it rejects — `System.Nullable<string>` and
     // an IL-only name both come back as a binder typed `System.Object` — so the
     // binder record alone cannot distinguish "FCS says this type" from "FCS says
@@ -6636,7 +6729,7 @@ let private dumpBinderTypes (absolute: string) =
             {| Line = d.StartLine
                Code = d.ErrorNumber
                Message = d.Message |})
-    let payload = {| File = absolute; Binders = binders; Errors = errors |}
+    let payload = {| File = absolute; Binders = binders; Errors = errors; Unconverted = unconverted |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
     Console.Out.WriteLine()
@@ -6928,13 +7021,19 @@ let private fileBatchCore () =
                 let attrs = collectAttrRecords parseResults.ParseTree checkResults
                 JsonSerializer.Serialize({| Attrs = attrs; Errors = errorLines () |}, compact)
             | "types" ->
-                let exprs = collectExprTypes true (implFile ())
+                let exprs, unconverted = collectExprTypes true (implFile ())
                 JsonSerializer.Serialize(
-                    {| File = absolute; Exprs = exprs; Errors = errorLines () |}, compact)
+                    {| File = absolute
+                       Exprs = exprs
+                       Errors = errorLines ()
+                       Unconverted = unconverted |}, compact)
             | "binder-types" ->
-                let binders = collectBinderTypes (implFile ())
+                let binders, unconverted = collectBinderTypes (implFile ())
                 JsonSerializer.Serialize(
-                    {| File = absolute; Binders = binders; Errors = errorLines () |}, compact)
+                    {| File = absolute
+                       Binders = binders
+                       Errors = errorLines ()
+                       Unconverted = unconverted |}, compact)
             | "overloads" ->
                 let calls = collectOverloads (implFile ())
                 JsonSerializer.Serialize({| File = absolute; Calls = calls; Errors = errorLines () |}, compact)
@@ -6974,7 +7073,8 @@ let private fileBatch () =
 /// [`dumpUsesCensusBatchCore`]. Reads source paths from stdin, one per line, and
 /// for each type-checks it *in isolation* (reusing the SDK reference set
 /// harvested once) with `keepAssemblyContents`, then emits one compact JSON line
-/// `{ Path, Ok, Error, Exprs: [{ Range, Kind, Type }] }`.
+/// `{ Path, Ok, Error, Exprs: [{ Range, Kind, Type }] }`, plus `Unconverted` (see
+/// [`UnconvertedDeclaration`]) when the check succeeded.
 ///
 /// NEVER aborts on a type error: a file checked without its siblings still yields
 /// a (partial) elaborated tree for the parts FCS could check, exactly the
@@ -7037,9 +7137,13 @@ let private dumpTypesCensusBatchCore () =
                         | FSharpCheckFileAnswer.Succeeded r ->
                             match r.ImplementationFile with
                             | Some impl ->
-                                let exprs = collectExprTypes false impl
+                                let exprs, unconverted = collectExprTypes false impl
                                 JsonSerializer.Serialize(
-                                    {| Path = path; Ok = true; Error = ""; Exprs = exprs |}, options)
+                                    {| Path = path
+                                       Ok = true
+                                       Error = ""
+                                       Exprs = exprs
+                                       Unconverted = unconverted |}, options)
                             | None ->
                                 JsonSerializer.Serialize(
                                     {| Path = path

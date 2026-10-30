@@ -2365,6 +2365,216 @@ struct TypesDump {
     /// [`parse_fcs_types`], which makes no such claim, ignores it.
     #[serde(rename = "Errors")]
     errors: Option<Vec<RawError>>,
+    /// The declarations whose typed tree fcs-dump could not convert, and so
+    /// reported nothing for. `Option` for the reason [`Self::errors`] is: a
+    /// binary predating the field must not read as "every declaration
+    /// converted".
+    #[serde(rename = "Unconverted")]
+    unconverted: Option<Vec<RawUnconverted>>,
+}
+
+/// One entry of a per-declaration dump's `Unconverted` list (fcs-dump's
+/// `UnconvertedDeclaration`).
+#[derive(Deserialize)]
+struct RawUnconverted {
+    #[serde(rename = "Range")]
+    range: FcsRange,
+    #[serde(rename = "InFile")]
+    in_file: bool,
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Message")]
+    message: String,
+}
+
+/// A declaration whose typed tree FCS could not convert to its public
+/// expression view, so a per-declaration dump (`types`, `binder-types`)
+/// reports **no** node or binder inside it — not even the ones FCS did type.
+///
+/// The conversion re-solves each call's witnesses, and a call whose type
+/// arguments violate a constraint (`g = g` with `g : int -> int`) throws there;
+/// so does a pattern match FCS recovered from. An absent node inside such a
+/// declaration is therefore no evidence of anything: a consumer must treat the
+/// whole declaration as ungraded, never as agreement and never as a
+/// disagreement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FcsUnconverted {
+    /// FCS's half-open byte range for the declaration: the binder's name through
+    /// its body's range. Neither end is the declaration's: what precedes the
+    /// name (`this` in `member this.M`) lies outside it, and a body that opens
+    /// with a local `let` reports only that first binding. A consumer widens it
+    /// to the source declaration that contains it.
+    At {
+        start: usize,
+        end: usize,
+        name: String,
+        message: String,
+    },
+    /// fcs-dump could not place the declaration in this file, so nothing in the
+    /// file can be shown to lie outside it.
+    Unlocated { name: String, message: String },
+}
+
+/// A per-declaration dump read in full: the type map, every error FCS
+/// reported, and the declarations it could not convert. The currency for a
+/// consumer that must read a *missing* node as evidence — see
+/// [`FcsUnconverted`] for why the errors alone do not license that.
+#[derive(Debug, Clone)]
+pub struct FcsTypedDump {
+    pub types: FcsTypeMap,
+    pub errors: Vec<FcsCheckError>,
+    pub unconverted: Vec<FcsUnconverted>,
+}
+
+fn normalise_unconverted(raw: Vec<RawUnconverted>, idx: &LineIndex) -> Vec<FcsUnconverted> {
+    raw.into_iter()
+        .map(|u| {
+            if u.in_file {
+                FcsUnconverted::At {
+                    start: idx.offset(u.range.start.line, u.range.start.col),
+                    end: idx.offset(u.range.end.line, u.range.end.col),
+                    name: u.name,
+                    message: u.message,
+                }
+            } else {
+                FcsUnconverted::Unlocated {
+                    name: u.name,
+                    message: u.message,
+                }
+            }
+        })
+        .collect()
+}
+
+/// The source region an unconverted FCS declaration spanning `[start, end)`
+/// stands for: everything that could belong to it.
+///
+/// FCS's range is a binding's name through its body's range, and both fall
+/// short of the declaration: the name misses what sits before it (`this` in
+/// `member this.M`, a pattern `let`'s other binders), and a body that opens
+/// with a local `let` reports only that first binding. So the region widens to
+/// the outermost `let` declaration around it; failing that, the member
+/// definition; failing that, the type definition (a class's `let`s and `do`s
+/// convert as its constructor); failing that, the module-level expression.
+/// Widening only loses grading; it can never let a commit in the declaration be
+/// graded.
+pub fn unconverted_region(
+    file: Option<&borzoi_cst::syntax::ImplFile>,
+    start: usize,
+    end: usize,
+) -> (usize, usize) {
+    use borzoi_cst::syntax::{AstNode, SyntaxKind};
+    let Some(file) = file else {
+        return (start, end);
+    };
+    let range = rowan::TextRange::new((start as u32).into(), (end as u32).into());
+    let ancestors: Vec<_> = match file.syntax().covering_element(range) {
+        rowan::NodeOrToken::Node(n) => n.ancestors().collect(),
+        rowan::NodeOrToken::Token(t) => t.parent_ancestors().collect(),
+    };
+    let region = ancestors
+        .iter()
+        .rfind(|n| n.kind() == SyntaxKind::LET_DECL)
+        .or_else(|| {
+            ancestors
+                .iter()
+                .find(|n| n.kind() == SyntaxKind::MEMBER_DEFN)
+        })
+        .or_else(|| ancestors.iter().find(|n| n.kind() == SyntaxKind::TYPE_DEFN))
+        .or_else(|| ancestors.iter().find(|n| n.kind() == SyntaxKind::EXPR_DECL));
+    match region {
+        Some(n) => {
+            let r = n.text_range();
+            (
+                (u32::from(r.start()) as usize).min(start),
+                (u32::from(r.end()) as usize).max(end),
+            )
+        }
+        None => (start, end),
+    }
+}
+
+/// The source regions of `unconverted`'s declarations in `file`
+/// ([`unconverted_region`]): where a grader must record a commit as ungraded.
+/// `None` when one of them could not be placed in the file, so that no commit
+/// in it can be shown to lie outside an unconverted declaration.
+pub fn ungraded_regions(
+    file: Option<&borzoi_cst::syntax::ImplFile>,
+    unconverted: &[FcsUnconverted],
+) -> Option<Vec<(usize, usize)>> {
+    unconverted
+        .iter()
+        .map(|u| match u {
+            FcsUnconverted::At { start, end, .. } => Some(unconverted_region(file, *start, *end)),
+            FcsUnconverted::Unlocated { .. } => None,
+        })
+        .collect()
+}
+
+/// Both per-declaration dumps of one file, read for a grader that takes a
+/// missing node as evidence: FCS's expression and binder types, its errors,
+/// and the regions of the declarations it could not convert
+/// ([`ungraded_regions`]), inside which nothing may be graded either way.
+#[derive(Debug, Clone)]
+pub struct GradedDumps {
+    pub types: FcsTypeMap,
+    pub binders: FcsTypeMap,
+    pub errors: Vec<FcsCheckError>,
+    pub ungraded: Vec<(usize, usize)>,
+}
+
+impl GradedDumps {
+    /// Read the `types` and `binder-types` payloads of `source`, parsed as
+    /// `file`. `None` when an unconverted declaration could not be placed in
+    /// the file, so nothing in it can be graded.
+    pub fn read(
+        types_json: &str,
+        binders_json: &str,
+        source: &str,
+        file: Option<&borzoi_cst::syntax::ImplFile>,
+    ) -> Option<GradedDumps> {
+        let types = parse_fcs_types_dump(types_json, source);
+        let binders = parse_fcs_binder_types_dump(binders_json, source);
+        let mut unconverted = types.unconverted;
+        for u in binders.unconverted {
+            if !unconverted.contains(&u) {
+                unconverted.push(u);
+            }
+        }
+        Some(GradedDumps {
+            ungraded: ungraded_regions(file, &unconverted)?,
+            types: types.types,
+            binders: binders.types,
+            errors: types.errors,
+        })
+    }
+
+    /// Whether `[start, end)` overlaps a declaration FCS could not convert.
+    pub fn is_ungraded(&self, (start, end): (usize, usize)) -> bool {
+        self.ungraded.iter().any(|&(u0, u1)| start < u1 && u0 < end)
+    }
+}
+
+/// Refuse a dump with unconverted declarations on behalf of a caller that reads
+/// it as a complete account of the file. Such a caller would take every node
+/// missing from those declarations as FCS's answer; it must use
+/// [`parse_fcs_types_dump`] / [`parse_fcs_binder_types_dump`] and account for
+/// them instead.
+fn refuse_unconverted(op: &str, unconverted: &Option<Vec<RawUnconverted>>) {
+    if let Some(u) = unconverted
+        && !u.is_empty()
+    {
+        let names: Vec<String> = u
+            .iter()
+            .map(|u| format!("`{}` ({})", u.name, u.message.lines().next().unwrap_or("")))
+            .collect();
+        panic!(
+            "fcs-dump {op} could not convert {} declaration(s): {}. This caller reads \
+             the dump as complete; use the `*_dump` parser, which reports them.",
+            u.len(),
+            names.join("; ")
+        );
+    }
 }
 
 #[derive(Deserialize)]
@@ -2382,7 +2592,9 @@ struct RawTypedExpr {
 /// `source` must be the exact text of the checked file (offsets index into it).
 /// fcs-dump de-duplicates nodes by range, so each range appears at most once.
 pub fn parse_fcs_types(json: &str, source: &str) -> FcsTypeMap {
-    parse_types_dump(json, source).0
+    let (types, _, unconverted) = parse_types_dump(json, source);
+    refuse_unconverted("types", &unconverted);
+    types
 }
 
 /// [`parse_fcs_types`] plus the errors FCS reported. A consumer that reads a
@@ -2390,7 +2602,8 @@ pub fn parse_fcs_types(json: &str, source: &str) -> FcsTypeMap {
 /// enclosing expression on a line that failed to check, so the absence is
 /// evidence only where the line checked cleanly.
 pub fn parse_fcs_types_with_errors(json: &str, source: &str) -> (FcsTypeMap, Vec<FcsCheckError>) {
-    let (types, errors) = parse_types_dump(json, source);
+    let (types, errors, unconverted) = parse_types_dump(json, source);
+    refuse_unconverted("types", &unconverted);
     let errors = errors.expect(
         "the `types` payload carries no `Errors` field — the oracle predates it \
          (check BORZOI_FCS_DUMP), and a caller reading a missing node as a \
@@ -2402,9 +2615,55 @@ pub fn parse_fcs_types_with_errors(json: &str, source: &str) -> (FcsTypeMap, Vec
 /// The `types` map: an expression's half-open byte range to FCS's canonical type.
 pub type FcsTypeMap = std::collections::HashMap<(usize, usize), String>;
 
-/// The shared body: the type map, and the errors *if the oracle reported the
-/// field at all*.
-fn parse_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<FcsCheckError>>) {
+/// The `types` dump in full, unconverted declarations included. Refuses a
+/// payload missing `Errors` or `Unconverted`: a consumer of this form reads
+/// missing nodes as evidence, and an oracle predating either field cannot say
+/// where that is sound.
+pub fn parse_fcs_types_dump(json: &str, source: &str) -> FcsTypedDump {
+    let (types, errors, unconverted) = parse_types_dump(json, source);
+    full_dump("types", types, errors, unconverted, source)
+}
+
+/// The `binder-types` dump in full; see [`parse_fcs_types_dump`].
+pub fn parse_fcs_binder_types_dump(json: &str, source: &str) -> FcsTypedDump {
+    let (types, errors, unconverted) = parse_binder_types_dump(json, source);
+    full_dump("binder-types", types, errors, unconverted, source)
+}
+
+fn full_dump(
+    op: &str,
+    types: FcsTypeMap,
+    errors: Option<Vec<FcsCheckError>>,
+    unconverted: Option<Vec<RawUnconverted>>,
+    source: &str,
+) -> FcsTypedDump {
+    let errors = errors.unwrap_or_else(|| {
+        panic!("the `{op}` payload carries no `Errors` field (check BORZOI_FCS_DUMP)")
+    });
+    let unconverted = unconverted.unwrap_or_else(|| {
+        panic!(
+            "the `{op}` payload carries no `Unconverted` field — the oracle predates \
+             it (check BORZOI_FCS_DUMP), and a declaration it could not convert would \
+             read as one with no nodes"
+        )
+    });
+    FcsTypedDump {
+        types,
+        errors,
+        unconverted: normalise_unconverted(unconverted, &LineIndex::new(source)),
+    }
+}
+
+/// A dump's three parts, each `None` when the oracle did not report the field.
+type RawTypedParts = (
+    FcsTypeMap,
+    Option<Vec<FcsCheckError>>,
+    Option<Vec<RawUnconverted>>,
+);
+
+/// The shared body: the type map, the errors, and the unconverted declarations,
+/// each *if the oracle reported the field at all*.
+fn parse_types_dump(json: &str, source: &str) -> RawTypedParts {
     let dump: TypesDump = serde_json::from_str(json).expect("fcs-dump types JSON shape");
     let idx = LineIndex::new(source);
     let types = dump
@@ -2426,7 +2685,7 @@ fn parse_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<FcsChec
             })
             .collect()
     });
-    (types, errors)
+    (types, errors, dump.unconverted)
 }
 
 #[derive(Deserialize)]
@@ -2443,6 +2702,9 @@ struct BinderTypesDump {
     /// [`parse_fcs_binder_types`], which makes no such claim, ignores it.
     #[serde(rename = "Errors")]
     errors: Option<Vec<RawError>>,
+    /// As [`TypesDump::unconverted`].
+    #[serde(rename = "Unconverted")]
+    unconverted: Option<Vec<RawUnconverted>>,
 }
 
 #[derive(Deserialize)]
@@ -2463,7 +2725,9 @@ struct RawBinder {
 /// resolver's [`borzoi_sema::Def`]`::range`, so our `def_type` map keys
 /// (a `DefId` → its `Def::range`) line up with this map's keys.
 pub fn parse_fcs_binder_types(json: &str, source: &str) -> FcsTypeMap {
-    parse_binder_types_dump(json, source).0
+    let (types, _, unconverted) = parse_binder_types_dump(json, source);
+    refuse_unconverted("binder-types", &unconverted);
+    types
 }
 
 /// [`parse_fcs_binder_types`] plus the errors FCS reported. A consumer that reads
@@ -2475,7 +2739,8 @@ pub fn parse_fcs_binder_types_with_errors(
     json: &str,
     source: &str,
 ) -> (FcsTypeMap, Vec<FcsCheckError>) {
-    let (types, errors) = parse_binder_types_dump(json, source);
+    let (types, errors, unconverted) = parse_binder_types_dump(json, source);
+    refuse_unconverted("binder-types", &unconverted);
     let errors = errors.expect(
         "the `binder-types` payload carries no `Errors` field — the oracle predates it \
          (check BORZOI_FCS_DUMP), and a caller that must not commit on an annotation \
@@ -2484,9 +2749,9 @@ pub fn parse_fcs_binder_types_with_errors(
     (types, errors)
 }
 
-/// The shared body: the binder-type map, and the errors *if the oracle reported
-/// the field at all*.
-fn parse_binder_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<FcsCheckError>>) {
+/// The shared body: the binder-type map, the errors, and the unconverted
+/// declarations, each *if the oracle reported the field at all*.
+fn parse_binder_types_dump(json: &str, source: &str) -> RawTypedParts {
     let dump: BinderTypesDump =
         serde_json::from_str(json).expect("fcs-dump binder-types JSON shape");
     let idx = LineIndex::new(source);
@@ -2509,7 +2774,7 @@ fn parse_binder_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<
             })
             .collect()
     });
-    (types, errors)
+    (types, errors, dump.unconverted)
 }
 
 // ============================================================================

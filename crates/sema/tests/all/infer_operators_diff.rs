@@ -44,8 +44,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::common::{
-    full_bcl_env, invoke_fcs_dump, invoke_fcs_dump_with_refs, module_value_fixture_env,
-    module_value_fixture_refs, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
+    GradedDumps, full_bcl_env, invoke_fcs_dump, invoke_fcs_dump_with_refs,
+    module_value_fixture_env, module_value_fixture_refs, parse_fcs_binder_types_with_errors,
     temp_fs_file, try_invoke_fcs_dump_with_refs,
 };
 use borzoi_cst::parser::parse;
@@ -443,6 +443,8 @@ pub(crate) struct Checked {
     pub(crate) committed_rows: std::collections::HashSet<(usize, usize)>,
     /// FCS errors on the file.
     pub(crate) errors: usize,
+    /// Commits inside a declaration FCS could not convert: not graded.
+    pub(crate) ungraded: usize,
     /// Every incompleteness reason any binding recorded.
     pub(crate) reasons: Vec<Incomplete>,
     /// FCS's expression types, by range.
@@ -452,9 +454,11 @@ pub(crate) struct Checked {
     pub(crate) commits: Vec<(usize, usize, &'static str, String)>,
 }
 
-/// Resolve, infer and diff `src` against both oracles. `None` when FCS cannot
-/// produce a typed tree for the file (it throws materialising some rejected
-/// operators), which the ill-typed family counts rather than grades.
+/// Resolve, infer and diff `src` against both oracles. A commit inside a
+/// declaration FCS could not convert (a rejected constraint, re-raised while
+/// materialising it) is not graded; `None` when FCS cannot produce a typed
+/// tree for the file at all, which the ill-typed family counts rather than
+/// grades.
 fn check(label: &str, src: &str, rows: &[Row], expect_clean: bool) -> Option<Checked> {
     check_in(Defs::InFile, label, src, rows, expect_clean)
 }
@@ -490,8 +494,8 @@ pub(crate) fn check_in(
     let jsons = oracle("types").zip(oracle("binder-types"));
     let _ = std::fs::remove_file(&path);
     let (types_json, binders_json) = jsons?;
-    let (fcs_types, errors) = parse_fcs_types_with_errors(&types_json, src);
-    let (fcs_binders, _) = parse_fcs_binder_types_with_errors(&binders_json, src);
+    let dumps = GradedDumps::read(&types_json, &binders_json, src, Some(&file))?;
+    let errors = &dumps.errors;
     if expect_clean {
         assert!(
             errors.is_empty(),
@@ -524,8 +528,12 @@ pub(crate) fn check_in(
             u32::from(range.start()) as usize,
             u32::from(range.end()) as usize,
         );
+        if dumps.is_ungraded(key) {
+            c.ungraded += 1;
+            continue;
+        }
         let ours = ty.render();
-        match fcs_types.get(&key) {
+        match dumps.types.get(&key) {
             None => wrong.push(format!(
                 "`{}` at {key:?} typed `{ours}`, but FCS has no node there: {}",
                 &src[key.0..key.1],
@@ -551,8 +559,12 @@ pub(crate) fn check_in(
             u32::from(def.range.start()) as usize,
             u32::from(def.range.end()) as usize,
         );
+        if dumps.is_ungraded(key) {
+            c.ungraded += 1;
+            continue;
+        }
         let ours = ty.render();
-        match fcs_binders.get(&key) {
+        match dumps.binders.get(&key) {
             None => wrong.push(format!(
                 "binder `{}` typed `{ours}`, but FCS has no binder there: {}",
                 def.name,
@@ -574,7 +586,7 @@ pub(crate) fn check_in(
         wrong.len(),
         wrong.join("\n")
     );
-    c.fcs_types = fcs_types;
+    c.fcs_types = dumps.types;
     Some(c)
 }
 
