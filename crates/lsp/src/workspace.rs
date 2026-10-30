@@ -92,12 +92,22 @@ fn is_script_path(file: &Path) -> bool {
 /// Lazy cache mapping owning-`.fsproj` path → evaluated [`ParsedProject`]
 /// (or `None` if evaluation failed). One instance lives in the LSP server
 /// state; it grows as the user opens files from new projects.
+/// A generation of [`Workspace`]'s project-evaluation cache; see
+/// [`Workspace::projects_generation`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProjectsGeneration(u64);
+
 pub struct Workspace {
     /// Keyed by the canonicalised project path. The value is `None`
     /// when evaluation failed for any reason (IO, malformed XML,
     /// reserved-property collision in `extra_properties`) — caching
     /// the failure means we don't re-attempt on every keystroke.
     projects: HashMap<PathBuf, Option<EvaluatedProject>>,
+    /// Bumped by every [`Self::invalidate_projects`], so a caller that read
+    /// several evaluations across a span of time can tell whether they all
+    /// came from one generation of the cache — see
+    /// [`Self::projects_generation`].
+    projects_generation: ProjectsGeneration,
     /// SDK-resolution environment used to build a [`SdkDiscovery`] per
     /// project on first evaluation. Held by value so tests can supply
     /// a hermetic env without mutating the host's environment.
@@ -269,6 +279,7 @@ impl Workspace {
     ) -> Self {
         Self {
             projects: HashMap::new(),
+            projects_generation: ProjectsGeneration(0),
             env,
             extra_build_properties,
         }
@@ -312,6 +323,18 @@ impl Workspace {
     /// cache refills lazily on the next lookup.
     pub fn invalidate_projects(&mut self) {
         self.projects.clear();
+        self.projects_generation.0 += 1;
+    }
+
+    /// Which generation of the project-evaluation cache lookups are served
+    /// from now. Two lookups observed under one generation read the same
+    /// on-disk project state — the cache is the only path to an evaluation,
+    /// and a generation ends only when [`Self::invalidate_projects`] drops
+    /// every entry — so a consumer accumulating facts across many lookups
+    /// (the stepped `workspace/diagnostic` sweep) checks it to know its facts
+    /// are mutually consistent.
+    pub fn projects_generation(&self) -> ProjectsGeneration {
+        self.projects_generation
     }
 
     /// The target framework the project at `project_path` was evaluated

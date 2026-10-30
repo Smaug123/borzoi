@@ -20,9 +20,35 @@
 //! precedence and the trustworthiness gate, and
 //! `docs/workspace-index-plan.md` for why this is the sweep-local fix rather
 //! than a workspace-wide ownership index.
+//!
+//! # Stepping
+//!
+//! The sweep's cost is proportional to everything under the client's roots,
+//! which the server does not choose: a root one directory too high has meant
+//! fourteen thousand projects and a quarter of an hour. So the sweep is a
+//! [`Sweep`] value advanced one unit at a time by [`Sweep::step`] — one
+//! directory read, one project evaluated, or one file diagnosed — and the
+//! dispatch loop (`crate::server::run_with_fetcher`) looks at the connection
+//! between units. An interactive request waits for at most one unit, a
+//! `$/cancelRequest` or a newer sweep ends this one, and a hang-up or `exit`
+//! abandons it. Nothing bounds the sweep's *total* run time; what is bounded is
+//! how long it can hold anything else up.
+//!
+//! **What a report means when other messages interleave.** Which files are
+//! reported, and which project each linked file is diagnosed under, come from
+//! one generation of the project evaluations: a structural change mid-sweep
+//! (one that invalidates them) starts the sweep over. Each item is computed
+//! against the state at the moment its file is diagnosed, which is never
+//! earlier than the request's arrival. An edit landing mid-sweep can
+//! therefore stale an item already computed, exactly as an edit landing just
+//! after a monolithic sweep's reply would; the convergence mechanism is the
+//! same in both cases: the per-item `result_id` (the next pull compares it
+//! against the current input) and the `workspace/diagnostic/refresh` a watched
+//! change owes, which the loop holds until this sweep has replied so that it
+//! cannot overtake the report it invalidates.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use lsp_types::{
     WorkspaceDiagnosticParams, WorkspaceDiagnosticReport, WorkspaceDiagnosticReportResult,
@@ -34,158 +60,295 @@ use crate::handlers::preferred_uri;
 use crate::paths::{lexically_normalize, path_dedup_key};
 use crate::pull::{workspace_entry, workspace_unchanged};
 use crate::server::State;
+use crate::workspace::ProjectsGeneration;
 
-/// Run the workspace-diagnostic handler. Enumerates every `.fsproj` under the
-/// client's workspace roots plus the source files in their `<Compile>` lists,
-/// and returns one report per file (including clean ones, so the client can
-/// clear stale diagnostics). A source file whose `(source, symbols, lang)`
-/// still matches the client's `previous_result_ids` entry comes back as
-/// `Unchanged`, skipping the lex/parse — the project-wide payoff of
-/// `result_id` caching.
-/// With no roots configured (an unusual client, or pre-`initialize`) the report
-/// is empty.
-pub fn handle(
-    state: &mut State,
-    params: WorkspaceDiagnosticParams,
-) -> WorkspaceDiagnosticReportResult {
-    let roots = state.workspace_roots().to_vec();
-    let projects = discover_fsprojs(&roots);
-    let (files, linking) = enumerate_files(state, &projects);
-
-    // What the client last received for each URI, so unchanged files can answer
-    // `Unchanged` rather than being re-lexed. Borrows `params`, which is
-    // disjoint from the `&mut state` the loop uses.
-    let previous: HashMap<&str, &str> = params
-        .previous_result_ids
-        .iter()
-        .map(|p| (p.uri.as_str(), p.value.as_str()))
-        .collect();
-
-    let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for path in files {
-        // One report per physical file: a file linked into several projects (or
-        // spelled with different case on a case-insensitive platform) is
-        // reported once. Dedup on the platform-aware path key *before* building a
-        // URI, so two case-variant spellings can't slip through as two
-        // differently-cased `file://` URIs.
-        let dedup_key = path_dedup_key(&path);
-        if !seen.insert(dedup_key.clone()) {
-            continue;
-        }
-        let Some(uri) = preferred_uri(&path, &state.docs) else {
-            continue;
-        };
-        let prev = previous.get(uri.as_str()).copied();
-        // `diagnose_file` is the same per-file logic `textDocument/diagnostic`
-        // uses, so the two pulls agree on any one file (cacheability, the
-        // result-id rule, and the unreadable→empty-`Full` rule) — except that
-        // this sweep passes the project it enumerated the file from, so a
-        // non-ancestor linked file gets that project's defines where the
-        // document pull, which has no such hint, degrades to the implicit set
-        // (see `diagnose_file`).
-        let entry = match diagnose_file(
-            state,
-            &uri,
-            prev,
-            linking.get(&dedup_key).map(PathBuf::as_path),
-        ) {
-            FileOutcome::Unchanged(result_id) => workspace_unchanged(uri, result_id),
-            FileOutcome::Full { groups, result_id } => workspace_entry(uri, groups, result_id),
-        };
-        items.push(entry);
-    }
-
-    WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items })
+/// A `workspace/diagnostic` sweep in progress. Enumerates every `.fsproj`
+/// under the client's workspace roots plus the source files in their
+/// `<Compile>` lists, and ends with one report per file (including clean ones,
+/// so the client can clear stale diagnostics). A source file whose
+/// `(source, symbols, lang)` still matches the client's `previous_result_ids`
+/// entry comes back as `Unchanged`, skipping the lex/parse — the project-wide
+/// payoff of `result_id` caching. With no roots configured (an unusual client,
+/// or pre-`initialize`) the report is empty.
+///
+/// Holds paths and accumulated results only, never a borrow of [`State`], so
+/// the state may change between steps (see the module docs for what that
+/// means for the report).
+pub struct Sweep {
+    /// What the client last received for each URI, so unchanged files can
+    /// answer `Unchanged` rather than being re-lexed.
+    previous: HashMap<String, String>,
+    /// The project-evaluation generation every fact in `phase` was read
+    /// under. The file list and the ownership map are derived from project
+    /// evaluations, so once the generation moves they describe a tree that no
+    /// longer exists, and diagnosing the files under the new evaluations would
+    /// mix the two; the sweep starts over instead.
+    generation: ProjectsGeneration,
+    phase: Phase,
 }
 
-/// The files to diagnose: each discovered `.fsproj` itself, plus every
-/// `<Compile>` item across all of them, lexically normalised and sorted for a
-/// deterministic report order. Exact-duplicate paths are collapsed here; the
-/// caller additionally de-dups case-insensitively (per platform) on the path
-/// key, so this only needs to guarantee a stable order.
+/// The sweep's three passes, in order. Each pass's input is fully known before
+/// it starts, so the report's order is a function of the tree alone, not of
+/// how the steps interleaved with anything else.
+enum Phase {
+    /// Walking the roots for project files.
+    Discover {
+        /// Directories still to read.
+        pending: Vec<PathBuf>,
+        visited: HashSet<PathBuf>,
+        found: Vec<PathBuf>,
+    },
+    /// Evaluating each project (sorted, de-duplicated) for its `<Compile>`
+    /// list. See [`enumerate_project`] for `files` and `linking`.
+    Enumerate {
+        projects: std::vec::IntoIter<PathBuf>,
+        files: Vec<PathBuf>,
+        linking: HashMap<String, PathBuf>,
+    },
+    /// Diagnosing each file (sorted, de-duplicated).
+    Diagnose {
+        files: std::vec::IntoIter<PathBuf>,
+        linking: HashMap<String, PathBuf>,
+        /// The [`path_dedup_key`]s already reported.
+        seen: HashSet<String>,
+        items: Vec<WorkspaceDocumentDiagnosticReport>,
+    },
+}
+
+/// The outcome of one [`Sweep::step`].
+pub enum Step {
+    /// More work remains.
+    Pending(Sweep),
+    Done(WorkspaceDiagnosticReportResult),
+}
+
+impl Sweep {
+    /// Start a sweep over the roots `state` holds now; a root change later in
+    /// the sweep does not move it.
+    pub fn new(state: &State, params: WorkspaceDiagnosticParams) -> Self {
+        Self::start(
+            state,
+            params
+                .previous_result_ids
+                .into_iter()
+                .map(|p| (p.uri.as_str().to_owned(), p.value))
+                .collect(),
+        )
+    }
+
+    fn start(state: &State, previous: HashMap<String, String>) -> Self {
+        Sweep {
+            previous,
+            generation: state.workspace.projects_generation(),
+            phase: Phase::Discover {
+                pending: state.workspace_roots().to_vec(),
+                visited: HashSet::new(),
+                found: Vec::new(),
+            },
+        }
+    }
+
+    /// Do one unit of work: read one directory, evaluate one project, or
+    /// diagnose one file. A step that finds its pass exhausted does only the
+    /// in-memory hand-off to the next pass, and one that finds the project
+    /// evaluations invalidated since the sweep began only starts it over.
+    ///
+    /// Starting over has no bound of its own: a client that keeps reporting
+    /// structural changes keeps the sweep from finishing, exactly as it would
+    /// keep a client that re-pulls on every refresh from settling.
+    pub fn step(self, state: &mut State) -> Step {
+        if state.workspace.projects_generation() != self.generation {
+            return Step::Pending(Sweep::start(state, self.previous));
+        }
+        let Sweep {
+            previous,
+            generation,
+            phase,
+        } = self;
+        let phase = match phase {
+            Phase::Discover {
+                mut pending,
+                mut visited,
+                mut found,
+            } => match pending.pop() {
+                Some(dir) => {
+                    if visited.insert(dir.clone()) {
+                        discover_in(&dir, &mut pending, &mut found);
+                    }
+                    Phase::Discover {
+                        pending,
+                        visited,
+                        found,
+                    }
+                }
+                None => {
+                    found.sort();
+                    found.dedup();
+                    Phase::Enumerate {
+                        projects: found.into_iter(),
+                        files: Vec::new(),
+                        linking: HashMap::new(),
+                    }
+                }
+            },
+            Phase::Enumerate {
+                mut projects,
+                mut files,
+                mut linking,
+            } => match projects.next() {
+                Some(project) => {
+                    enumerate_project(state, &project, &mut files, &mut linking);
+                    Phase::Enumerate {
+                        projects,
+                        files,
+                        linking,
+                    }
+                }
+                None => {
+                    // Sorted for a deterministic report order. Exact-duplicate
+                    // paths are collapsed here; the diagnose pass additionally
+                    // de-dups case-insensitively (per platform) on the path key.
+                    files.sort();
+                    files.dedup();
+                    Phase::Diagnose {
+                        files: files.into_iter(),
+                        linking,
+                        seen: HashSet::new(),
+                        items: Vec::new(),
+                    }
+                }
+            },
+            Phase::Diagnose {
+                mut files,
+                linking,
+                mut seen,
+                mut items,
+            } => match files.next() {
+                Some(path) => {
+                    items.extend(diagnose(state, &previous, &linking, &mut seen, &path));
+                    Phase::Diagnose {
+                        files,
+                        linking,
+                        seen,
+                        items,
+                    }
+                }
+                None => {
+                    return Step::Done(WorkspaceDiagnosticReportResult::Report(
+                        WorkspaceDiagnosticReport { items },
+                    ));
+                }
+            },
+        };
+        Step::Pending(Sweep {
+            previous,
+            generation,
+            phase,
+        })
+    }
+}
+
+/// The report entry for one enumerated file, or `None` when it is a duplicate
+/// of a file already reported or has no URI.
+fn diagnose(
+    state: &mut State,
+    previous: &HashMap<String, String>,
+    linking: &HashMap<String, PathBuf>,
+    seen: &mut HashSet<String>,
+    path: &Path,
+) -> Option<WorkspaceDocumentDiagnosticReport> {
+    // One report per physical file: a file linked into several projects (or
+    // spelled with different case on a case-insensitive platform) is reported
+    // once. Dedup on the platform-aware path key *before* building a URI, so
+    // two case-variant spellings can't slip through as two differently-cased
+    // `file://` URIs.
+    let dedup_key = path_dedup_key(path);
+    if !seen.insert(dedup_key.clone()) {
+        return None;
+    }
+    let uri = preferred_uri(path, &state.docs)?;
+    let prev = previous.get(uri.as_str()).map(String::as_str);
+    // `diagnose_file` is the same per-file logic `textDocument/diagnostic`
+    // uses, so the two pulls agree on any one file (cacheability, the
+    // result-id rule, and the unreadable→empty-`Full` rule) — except that this
+    // sweep passes the project it enumerated the file from, so a non-ancestor
+    // linked file gets that project's defines where the document pull, which
+    // has no such hint, degrades to the implicit set (see `diagnose_file`).
+    let linked = linking.get(&dedup_key).map(PathBuf::as_path);
+    Some(match diagnose_file(state, &uri, prev, linked) {
+        FileOutcome::Unchanged(result_id) => workspace_unchanged(uri, result_id),
+        FileOutcome::Full { groups, result_id } => workspace_entry(uri, groups, result_id),
+    })
+}
+
+/// Add `project` and its `<Compile>` items, lexically normalised, to `files`.
 ///
-/// The second return value maps each enumerated source file — keyed by
-/// [`path_dedup_key`], the same platform-aware key the report dedup uses, so
-/// case-variant spellings of one physical file share a single owner — to the
-/// project it was read out of, for the linked-file symbol refinement
+/// `linking` maps each enumerated source file — keyed by [`path_dedup_key`],
+/// the same platform-aware key the report dedup uses, so case-variant
+/// spellings of one physical file share a single owner — to the project it was
+/// read out of, for the linked-file symbol refinement
 /// (`Workspace::symbols_for_linked`). Only a project whose `<Compile>` list is
 /// trustworthy (`!items_uncertain`) is recorded — an uncertain list may retain
 /// an item MSBuild would have removed, so it proves nothing about ownership
 /// (the same gate `Workspace::membership` applies; the consumer re-checks, so
 /// this is a filter, not the soundness boundary). When several such projects
-/// list one file, the first in the (sorted) project order wins,
-/// deterministically — regardless of which spelling survives as the report
-/// path.
-fn enumerate_files(
+/// list one file, the first to be enumerated wins; the enumerate pass visits
+/// projects in sorted order, so that is deterministic — regardless of which
+/// spelling survives as the report path.
+fn enumerate_project(
     state: &mut State,
-    projects: &[PathBuf],
-) -> (Vec<PathBuf>, HashMap<String, PathBuf>) {
-    let mut files: Vec<PathBuf> = Vec::new();
-    let mut linking: HashMap<String, PathBuf> = HashMap::new();
-    for proj in projects {
-        files.push(lexically_normalize(proj));
-        if let Some(parsed) = state.workspace.project(proj) {
-            let trustworthy = !parsed.items_uncertain;
-            for item in &parsed.items {
-                let file = lexically_normalize(&item.include);
-                if trustworthy {
-                    linking
-                        .entry(path_dedup_key(&file))
-                        .or_insert_with(|| proj.clone());
-                }
-                files.push(file);
+    project: &Path,
+    files: &mut Vec<PathBuf>,
+    linking: &mut HashMap<String, PathBuf>,
+) {
+    files.push(lexically_normalize(project));
+    if let Some(parsed) = state.workspace.project(project) {
+        let trustworthy = !parsed.items_uncertain;
+        for item in &parsed.items {
+            let file = lexically_normalize(&item.include);
+            if trustworthy {
+                linking
+                    .entry(path_dedup_key(&file))
+                    .or_insert_with(|| project.to_path_buf());
             }
+            files.push(file);
         }
     }
-    files.sort();
-    files.dedup();
-    (files, linking)
 }
 
-/// Recursively find every `*.fsproj` under `roots`, skipping build-output and
-/// VCS directories and never following symlinks (so the walk cannot cycle).
-/// Sorted and de-duplicated for deterministic enumeration.
-fn discover_fsprojs(roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    let mut stack: Vec<PathBuf> = roots.to_vec();
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    while let Some(dir) = stack.pop() {
-        if !visited.insert(dir.clone()) {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+/// Read one directory of the walk for `*.fsproj` files: project files go to
+/// `found`, subdirectories worth walking to `pending`. Build-output and VCS
+/// directories are skipped, and symlinks are never followed (so the walk
+/// cannot cycle).
+fn discover_in(dir: &Path, pending: &mut Vec<PathBuf>, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let path = entry.path();
-            // `file_type` reports a symlink *as* a symlink (not its target), so
-            // both `is_dir()` and `is_file()` are false for links — we never
-            // follow them, which also means the walk cannot loop.
-            if file_type.is_dir() {
-                let skip = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(is_skipped_dir);
-                if !skip {
-                    stack.push(path);
-                }
-            } else if file_type.is_file()
-                && path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("fsproj"))
-            {
-                out.push(path);
+        let path = entry.path();
+        // `file_type` reports a symlink *as* a symlink (not its target), so
+        // both `is_dir()` and `is_file()` are false for links — we never follow
+        // them, which also means the walk cannot loop.
+        if file_type.is_dir() {
+            let skip = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_skipped_dir);
+            if !skip {
+                pending.push(path);
             }
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("fsproj"))
+        {
+            found.push(path);
         }
     }
-    out.sort();
-    out.dedup();
-    out
 }
 
 /// Directory names not worth walking for `.fsproj` files: build outputs and
@@ -203,6 +366,36 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::server::State;
+
+    /// Run a sweep to completion, as the dispatch loop does when nothing
+    /// interleaves.
+    fn handle(
+        state: &mut State,
+        params: WorkspaceDiagnosticParams,
+    ) -> WorkspaceDiagnosticReportResult {
+        let mut sweep = Sweep::new(state, params);
+        loop {
+            match sweep.step(state) {
+                Step::Pending(next) => sweep = next,
+                Step::Done(report) => return report,
+            }
+        }
+    }
+
+    /// The discover pass alone, run to completion.
+    fn discover_fsprojs(roots: &[PathBuf]) -> Vec<PathBuf> {
+        let mut pending = roots.to_vec();
+        let mut visited = HashSet::new();
+        let mut found = Vec::new();
+        while let Some(dir) = pending.pop() {
+            if visited.insert(dir.clone()) {
+                discover_in(&dir, &mut pending, &mut found);
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
 
     fn params() -> WorkspaceDiagnosticParams {
         WorkspaceDiagnosticParams {
@@ -719,5 +912,285 @@ mod tests {
         // Even echoing every id, the fsproj stays Full (always recomputed).
         let second = handle(&mut state, params_with(previous_ids(&first)));
         assert_eq!(entry_kind(&second, "App.fsproj"), Some("full"));
+    }
+
+    /// The sweep as one synchronous pass, the shape it had before it was
+    /// stepped: the oracle that splitting it into steps moved nothing.
+    mod reference {
+        use super::*;
+
+        pub fn handle(
+            state: &mut State,
+            params: WorkspaceDiagnosticParams,
+        ) -> WorkspaceDiagnosticReportResult {
+            let roots = state.workspace_roots().to_vec();
+            let projects = discover_fsprojs(&roots);
+            let (files, linking) = enumerate_files(state, &projects);
+            let previous: HashMap<&str, &str> = params
+                .previous_result_ids
+                .iter()
+                .map(|p| (p.uri.as_str(), p.value.as_str()))
+                .collect();
+            let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for path in files {
+                let dedup_key = path_dedup_key(&path);
+                if !seen.insert(dedup_key.clone()) {
+                    continue;
+                }
+                let Some(uri) = preferred_uri(&path, &state.docs) else {
+                    continue;
+                };
+                let prev = previous.get(uri.as_str()).copied();
+                let entry = match diagnose_file(
+                    state,
+                    &uri,
+                    prev,
+                    linking.get(&dedup_key).map(PathBuf::as_path),
+                ) {
+                    FileOutcome::Unchanged(result_id) => workspace_unchanged(uri, result_id),
+                    FileOutcome::Full { groups, result_id } => {
+                        workspace_entry(uri, groups, result_id)
+                    }
+                };
+                items.push(entry);
+            }
+            WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items })
+        }
+
+        fn enumerate_files(
+            state: &mut State,
+            projects: &[PathBuf],
+        ) -> (Vec<PathBuf>, HashMap<String, PathBuf>) {
+            let mut files: Vec<PathBuf> = Vec::new();
+            let mut linking: HashMap<String, PathBuf> = HashMap::new();
+            for proj in projects {
+                files.push(lexically_normalize(proj));
+                if let Some(parsed) = state.workspace.project(proj) {
+                    let trustworthy = !parsed.items_uncertain;
+                    for item in &parsed.items {
+                        let file = lexically_normalize(&item.include);
+                        if trustworthy {
+                            linking
+                                .entry(path_dedup_key(&file))
+                                .or_insert_with(|| proj.clone());
+                        }
+                        files.push(file);
+                    }
+                }
+            }
+            files.sort();
+            files.dedup();
+            (files, linking)
+        }
+
+        fn discover_fsprojs(roots: &[PathBuf]) -> Vec<PathBuf> {
+            let mut out: Vec<PathBuf> = Vec::new();
+            let mut stack: Vec<PathBuf> = roots.to_vec();
+            let mut visited: HashSet<PathBuf> = HashSet::new();
+            while let Some(dir) = stack.pop() {
+                if !visited.insert(dir.clone()) {
+                    continue;
+                }
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let Ok(file_type) = entry.file_type() else {
+                        continue;
+                    };
+                    let path = entry.path();
+                    if file_type.is_dir() {
+                        let skip = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                            matches!(n, "bin" | "obj" | ".git" | ".direnv" | "node_modules")
+                        });
+                        if !skip {
+                            stack.push(path);
+                        }
+                    } else if file_type.is_file()
+                        && path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .is_some_and(|e| e.eq_ignore_ascii_case("fsproj"))
+                    {
+                        out.push(path);
+                    }
+                }
+            }
+            out.sort();
+            out.dedup();
+            out
+        }
+    }
+
+    /// Directories a generated tree may use, relative to the root. `bin` and
+    /// `obj` exercise the skip list.
+    const TREE_DIRS: &[&str] = &["", "A", "C", "A/B", "a", "Shared", "bin", "obj/X"];
+    /// The [`TREE_DIRS`] a project may sit in. Kept to a few, siblings among
+    /// them (`A`, `C`), so that two projects linking one file from outside
+    /// its ancestor chain — the case where the first-listed owner donates the
+    /// defines — is common rather than a rare draw.
+    const TREE_PROJECT_DIRS: &[usize] = &[0, 1, 2, 3, 6];
+    /// `Shared`, in [`TREE_DIRS`], and `../Shared/X.fs`, in [`TREE_INCLUDES`]:
+    /// the generator leans on both for the same reason.
+    const SHARED_DIR: usize = 5;
+    const SHARED_LINK: usize = 4;
+    /// `<Compile Include>` spellings a generated project may list: siblings,
+    /// a case variant, a subdirectory, links out of the project's directory,
+    /// and a file that is never written.
+    const TREE_INCLUDES: &[&str] = &[
+        "X.fs",
+        "x.fs",
+        "Y.fs",
+        "B/Y.fs",
+        "../Shared/X.fs",
+        "../X.fs",
+        "Missing.fs",
+    ];
+    const TREE_SOURCES: &[&str] = &["X.fs", "x.fs", "Y.fs"];
+    /// Clean, structurally broken, and define-dependent source text.
+    const TREE_TEXTS: &[&str] = &["let x = 1\n", "#endif\n", NEEDS_FOO];
+
+    #[derive(Debug, Clone)]
+    struct TreeProject {
+        dir: usize,
+        name: &'static str,
+        defines_foo: bool,
+        includes: Vec<usize>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Tree {
+        projects: Vec<TreeProject>,
+        /// `(dir, name, text)`.
+        sources: Vec<(usize, usize, usize)>,
+    }
+
+    fn tree_strategy() -> impl proptest::strategy::Strategy<Value = Tree> {
+        use proptest::prelude::*;
+        let project = (
+            prop::sample::select(TREE_PROJECT_DIRS),
+            prop::sample::select(vec!["P", "Q", "p"]),
+            any::<bool>(),
+            prop::collection::vec(
+                prop_oneof![1 => Just(SHARED_LINK), 2 => 0..TREE_INCLUDES.len()],
+                0..4,
+            ),
+        )
+            .prop_map(|(dir, name, defines_foo, includes)| TreeProject {
+                dir,
+                name,
+                defines_foo,
+                includes,
+            });
+        let source = (
+            prop_oneof![1 => Just(SHARED_DIR), 2 => 0..TREE_DIRS.len()],
+            0..TREE_SOURCES.len(),
+            0..TREE_TEXTS.len(),
+        );
+        (
+            prop::collection::vec(project, 0..5),
+            prop::collection::vec(source, 0..6),
+        )
+            .prop_map(|(projects, sources)| Tree { projects, sources })
+    }
+
+    fn write_tree(root: &std::path::Path, tree: &Tree) {
+        for dir in TREE_DIRS {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for &(dir, name, text) in &tree.sources {
+            fs::write(
+                root.join(TREE_DIRS[dir]).join(TREE_SOURCES[name]),
+                TREE_TEXTS[text],
+            )
+            .unwrap();
+        }
+        for p in &tree.projects {
+            let defines = if p.defines_foo {
+                "<PropertyGroup><DefineConstants>FOO</DefineConstants></PropertyGroup>"
+            } else {
+                ""
+            };
+            let items: String = p
+                .includes
+                .iter()
+                .map(|&i| format!("<Compile Include=\"{}\" />", TREE_INCLUDES[i]))
+                .collect();
+            fs::write(
+                root.join(TREE_DIRS[p.dir])
+                    .join(format!("{}.fsproj", p.name)),
+                format!("<Project>{defines}<ItemGroup>{items}</ItemGroup></Project>"),
+            )
+            .unwrap();
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        /// Stepping the sweep reports exactly what the single synchronous pass
+        /// does, on a cold sweep and on the warm follow-up that echoes the
+        /// first one's result ids.
+        #[test]
+        fn stepped_sweep_matches_the_synchronous_pass(tree in tree_strategy()) {
+            let tmp = TempDir::new().unwrap();
+            write_tree(tmp.path(), &tree);
+            let mut stepped = State::default();
+            stepped.set_workspace_roots(vec![tmp.path().to_path_buf()]);
+            let mut synchronous = State::default();
+            synchronous.set_workspace_roots(vec![tmp.path().to_path_buf()]);
+
+            let cold = handle(&mut stepped, params());
+            proptest::prop_assert_eq!(&cold, &reference::handle(&mut synchronous, params()));
+            let warm = handle(&mut stepped, params_with(previous_ids(&cold)));
+            proptest::prop_assert_eq!(
+                &warm,
+                &reference::handle(&mut synchronous, params_with(previous_ids(&cold)))
+            );
+        }
+
+        /// A structural change landing at any step of a sweep yields the report
+        /// a sweep started after it would: the sweep never combines a file
+        /// list or an ownership map read from one set of project evaluations
+        /// with diagnoses run under another.
+        #[test]
+        fn a_structural_change_mid_sweep_reports_the_new_tree(
+            before in tree_strategy(),
+            after in tree_strategy(),
+            at in 0usize..48,
+        ) {
+            let tmp = TempDir::new().unwrap();
+            write_tree(tmp.path(), &before);
+            let mut state = State::default();
+            state.set_workspace_roots(vec![tmp.path().to_path_buf()]);
+            let mut sweep = Sweep::new(&state, params());
+            for _ in 0..at {
+                match sweep.step(&mut state) {
+                    Step::Pending(next) => sweep = next,
+                    // Finished before the change: nothing was in flight.
+                    Step::Done(_) => return Ok(()),
+                }
+            }
+
+            fs::remove_dir_all(tmp.path()).unwrap();
+            fs::create_dir(tmp.path()).unwrap();
+            write_tree(tmp.path(), &after);
+            let changed = tmp.path().join("P.fsproj");
+            state.apply_watched_changes(&[lsp_types::FileEvent {
+                uri: <lsp_types::Uri as crate::uri::UriExt>::from_file_path(&changed).unwrap(),
+                typ: lsp_types::FileChangeType::CHANGED,
+            }]);
+            let report = loop {
+                match sweep.step(&mut state) {
+                    Step::Pending(next) => sweep = next,
+                    Step::Done(report) => break report,
+                }
+            };
+
+            let mut fresh = State::default();
+            fresh.set_workspace_roots(vec![tmp.path().to_path_buf()]);
+            proptest::prop_assert_eq!(report, handle(&mut fresh, params()));
+        }
     }
 }

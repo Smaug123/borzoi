@@ -8,8 +8,27 @@
 -- and you've trusted it (`:trust` on the prompt). If you don't want 'exrc'
 -- on globally, run `:luafile .nvim.lua` after launching nvim here.
 
-local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h")
-local bin = root .. "/result/bin/borzoi"
+local borzoi_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h")
+local bin = borzoi_dir .. "/result/bin/borzoi"
+
+-- The workspace root the server sees is the edited file's own project, not
+-- this checkout: `workspace/diagnostic` sweeps every `.fsproj` under the root,
+-- and this checkout's worktrees hold thousands of them. Nearest solution file
+-- first, then the enclosing repository, then the file's own directory.
+local function project_root(buf)
+  local root = vim.fs.root(buf, {
+    function(name) return name:match("%.slnx?$") ~= nil end,
+    ".git",
+  })
+  if root then
+    return root
+  end
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name ~= "" then
+    return vim.fn.fnamemodify(name, ":p:h")
+  end
+  return nil
+end
 
 vim.filetype.add({
   extension = {
@@ -30,7 +49,7 @@ local function start_lsp(buf)
   vim.lsp.start({
     name = "borzoi",
     cmd = { bin },
-    root_dir = root,
+    root_dir = project_root(buf),
     -- Neovim debounces the `didChange` notification by `debounce_text_changes`
     -- ms (default 150) before the server even sees an edit, and the semantic-
     -- token refresh only fires after that lands. borzoi folds a keystroke in

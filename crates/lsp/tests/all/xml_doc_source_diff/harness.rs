@@ -117,9 +117,25 @@ fn oracle() -> &'static Mutex<BatchChild> {
 
 /// Type-check `paths` (Compile order) as one project under `defines`.
 pub fn fcs_check(paths: &[PathBuf], defines: &[&str]) -> Vec<OracleFile> {
+    fcs_check_with(paths, defines, &[], false, None)
+}
+
+/// [`fcs_check`] with a reference set: `refs` beside the SDK's own, or — when
+/// `exclusive` — as the whole set (`--noframework`), and a pinned
+/// `<LangVersion>`.
+pub fn fcs_check_with(
+    paths: &[PathBuf],
+    defines: &[&str],
+    refs: &[&std::path::Path],
+    exclusive: bool,
+    lang_version: Option<&str>,
+) -> Vec<OracleFile> {
     let request = serde_json::json!({
         "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "defines": defines,
+        "refs": refs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "exclusiveRefs": exclusive,
+        "langversion": lang_version,
     })
     .to_string();
     let line = oracle()
@@ -186,10 +202,12 @@ impl OurProject {
     }
 
     /// The binder `res` (an occurrence in file `from`) names.
-    fn def_of(&self, from: usize, res: Resolution) -> Option<&Def> {
+    /// The binder `res` (an occurrence in file `from`) names, and the file it
+    /// is declared in.
+    fn def_of(&self, from: usize, res: Resolution) -> Option<(usize, &Def)> {
         match res {
-            Resolution::Local(id) => Some(self.resolved.file(from).def(id)),
-            Resolution::Item(_) => self.resolved.item_def(res).map(|(_, d)| d),
+            Resolution::Local(id) => Some((from, self.resolved.file(from).def(id))),
+            Resolution::Item(_) => self.resolved.item_def(res),
             _ => None,
         }
     }
@@ -226,6 +244,9 @@ pub struct Graded {
     pub name: String,
     pub def_kind: DefKind,
     pub is_definition: bool,
+    /// The file the binder is declared in (another than [`Self::file`] for a
+    /// cross-file use).
+    pub declared_in: Option<usize>,
     /// FCS checked the occurrence's file with no error, so its silence or its
     /// disagreement at a site is semantics, not recovery.
     pub fcs_clean: bool,
@@ -272,7 +293,7 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
             .collect();
         occurrences.sort_by_key(|(r, _)| (r.start(), r.end()));
         for (range, res) in occurrences {
-            let Some(def) = ours.def_of(i, res) else {
+            let Some((declared_in, def)) = ours.def_of(i, res) else {
                 continue;
             };
             let Some(doc) = docs.doc(i, range, res) else {
@@ -293,7 +314,7 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
                     .filter(|u| offset(u.range.start) >= key.0)
                     .collect(),
             };
-            let is_definition = def.range == range;
+            let is_definition = declared_in == i && def.range == range;
             let (verdict, fcs_lines) = judge(&doc, &candidates);
             let render = match &doc {
                 SourceDoc::Attached(lines) => Some(member_element(lines).map(|_| ())),
@@ -310,6 +331,7 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
                 name: def.name.clone(),
                 def_kind: def.kind,
                 is_definition,
+                declared_in: Some(declared_in),
                 fcs_clean: !oracle_file.has_errors(),
                 verdict,
                 ours: ours_lines,
