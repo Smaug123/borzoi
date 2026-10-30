@@ -14,18 +14,25 @@
 
   <ItemGroup>
     <!-- The libraries whose behaviour crates/nuget reimplements; this tool
-         exists so the differential tests can ask them directly. -->
-    <PackageReference Include="NuGet.Versioning" Version="7.6.0" />
-    <PackageReference Include="NuGet.Frameworks" Version="7.6.0" />
-    <PackageReference Include="NuGet.Packaging" Version="7.6.0" />
-    <!-- The genuine restore, for the end-to-end `restore` op: NuGet.Commands
-         supplies RestoreRunner and both dependency resolvers (the legacy
-         walker lives in NuGet.DependencyResolver.Core); NuGet.Protocol the
-         local-folder feed. 7.6.0 is the NuGet the .NET 10.0.301 SDK bundles,
-         so the op runs the same resolvers `dotnet restore` does. -->
-    <PackageReference Include="NuGet.Commands" Version="7.6.0" />
-    <PackageReference Include="NuGet.DependencyResolver.Core" Version="7.6.0" />
-    <PackageReference Include="NuGet.Protocol" Version="7.6.0" />
+         exists so the differential tests can ask them directly. NuGet.Commands
+         supplies RestoreRunner and both dependency resolvers (the legacy walker
+         lives in NuGet.DependencyResolver.Core); NuGet.Protocol the local-folder
+         feed.
+
+         These are *compile-time* references only: ExcludeAssets="runtime"
+         keeps every NuGet assembly (and, since include flags flow down the
+         graph, every dependency reached only through them) out of the output
+         directory and the deps.json, and Program.fs loads the set from the .NET
+         SDK directory named on its command line instead. So no NuGet assembly the oracle
+         could execute exists beside it, and the one it runs is the SDK's. The
+         version here is a floor: it must not exceed the assembly version of
+         any SDK the oracle is pointed at, or the load is refused. -->
+    <PackageReference Include="NuGet.Versioning" Version="7.6.0" ExcludeAssets="runtime" />
+    <PackageReference Include="NuGet.Frameworks" Version="7.6.0" ExcludeAssets="runtime" />
+    <PackageReference Include="NuGet.Packaging" Version="7.6.0" ExcludeAssets="runtime" />
+    <PackageReference Include="NuGet.Commands" Version="7.6.0" ExcludeAssets="runtime" />
+    <PackageReference Include="NuGet.DependencyResolver.Core" Version="7.6.0" ExcludeAssets="runtime" />
+    <PackageReference Include="NuGet.Protocol" Version="7.6.0" ExcludeAssets="runtime" />
   </ItemGroup>
 
 </Project>
