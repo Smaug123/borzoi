@@ -166,10 +166,16 @@ chain to catch it. An identity nobody has verified declines to `restore.rs`; it
 is never served on the assumption that it behaves like its predecessor.
 
 That puts the same requirement on the oracle: B₀ must run the NuGet it vouches
-for. Today it does not. `tools/nuget-oracle` links NuGet 7.6.0 from packages,
-while SDK 10.0.402 ships `NuGet.Commands` 7.9.0-rc.611 (and 9.0.200 ships
-6.13.0). Everything `resolver_diff` establishes is therefore established
-against 7.6.0, and stage 3 makes this identity explicit.
+for. `tools/nuget-oracle` does: it loads the `NuGet.*` set from the directory
+of the SDK `dotnet` resolves, and its `restore` op reports the
+`NuGet.Commands` that ran (`oracle_identity.rs` pins it to the SDK's file). A
+package reference could not do this, because SDKs bundle unpublished release
+candidates: the devshell's SDK 10.0.401 ships
+`7.9.0-rc.42413+e34a38d2…`, while nuget.org's `7.9.0` is a different commit.
+Moving the oracle from the 7.6.0 packages to that build moved none of the
+321,768 distinct answers the `borzoi-nuget` suite and both soaks asked of it
+(9,572 of them restores), so `resolver_diff`'s verdicts stand under the
+identity CI grades.
 
 ## Implementation plan
 
@@ -215,9 +221,8 @@ against 7.6.0, and stage 3 makes this identity explicit.
   supplied dgspec against the real packages folder, returning per (project, TFM)
   the package set and compile assets, plus the identity of the `NuGet.Commands`
   that actually ran.
-- The op runs the NuGet of the SDK being calibrated. Either it loads the
-  `NuGet.*.dll` set from that SDK's directory, or the oracle is built against a
-  package version proved identical to it. Which of the two is decided here.
+- The op runs the NuGet of the SDK being calibrated, loaded from that SDK's
+  directory, as the existing `restore` op already does (see *Per-SDK drift*).
 
 **Correctness oracle:**
 - Identity: the op's reported `NuGet.Commands` identity equals the SDK's, for
