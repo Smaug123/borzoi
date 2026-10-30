@@ -4,10 +4,14 @@
 > version/range/framework models, cache + `.nuspec` reading, the offline
 > resolver, and compile-asset selection (slices 1–3, 5–7) — together with the
 > msbuild-side direct `PackageReference`/`FrameworkReference` capture (4a) and
-> inline Central Package Management (4b). Outstanding: the **4b remainder**
-> (making the real `Microsoft.NET.Sdk` import chain yield a *certain*
-> dependency set) and **slice 8** (wiring the resolver into the LSP). Detail
-> below the landed list is *only* on what remains.
+> inline Central Package Management (4b), and the 4b remainder
+> ([`sdk-chain-exactness-plan.md`](completed/sdk-chain-exactness-plan.md)).
+> The assets-absent case is served by running the real `dotnet restore`
+> ([`restore.rs`](../crates/lsp/src/restore.rs)). **Slice 8** (wiring the
+> resolver into the LSP) is superseded by
+> [`nuget-dgspec-boundary-plan.md`](nuget-dgspec-boundary-plan.md), which
+> splits restore at the dependency-graph spec and feeds the resolver real
+> restore inputs.
 >
 > Motivation: the LSP is blind until `dotnet restore` has written
 > `obj/project.assets.json` ([`project_assets/`](../crates/lsp/src/project_assets/)
@@ -130,38 +134,13 @@ passes explicit cache roots and typed direct package inputs into the resolver.
 
 ## Still to do
 
-### Slice 4b remainder — SDK-chain exactness
-
-The inline-CPM envelope resolves projects whose dependency set the msbuild
-evaluator can pin down, but a real `<Project Sdk="Microsoft.NET.Sdk">` project
-still holds `package_references_uncertain` wherever the SDK import chain leans on
-inputs we cannot reduce: hook-point imports gated on undefined properties
-(`AlternateCommonProps`, `CustomBeforeDirectoryBuildProps`, …), workload-locator
-SDK resolution, `<Choose>`, and unmodelled property functions. The
-property-expression prerequisite — a general `$(…)` expression parser with a
-pinned evaluator, aimed first at `Microsoft.FSharp.Core.NetSdk.props` — has
-landed (all stages) via
-[`property-expression-plan.md`](completed/property-expression-plan.md). The
-remaining work — workload-locator SDK resolution, `<Choose>`, exact
-undefined-property reads, ending with the five `#[ignore]`d `sdk_style_*`
-fixtures un-ignored against `dotnet msbuild -getItem` — is planned in
-[`sdk-chain-exactness-plan.md`](completed/sdk-chain-exactness-plan.md).
-
-### Slice 8 — LSP integration
-
-Wire the resolver into [`semantic.rs`](../crates/lsp/src/semantic.rs)'s
-`build_assembly_env` behind the assets-file-first policy: assets file present
-and fresh → today's path; absent/stale → in-house resolve; resolver declines →
-today's empty env + the `dotnet restore` diagnostic. Then the end-to-end corpus
-differential — for corpus projects that *do* have a real
-`obj/project.assets.json`, run the in-house resolver on the same inputs and
-require the identical `(package, version, compile assets)` set per TFM — and
-soften the restore diagnostic when the in-house path succeeded.
-
-**Gated on the 4b remainder:** until the msbuild evaluation yields a *certain*
-`PackageReference` set for a real SDK project, the in-house path would decline at
-the first step and the end-to-end differential could not run. The LSP crate does
-not yet depend on `borzoi-nuget`.
+Slice 8 (LSP integration) is superseded by
+[`nuget-dgspec-boundary-plan.md`](nuget-dgspec-boundary-plan.md): the resolver
+consumes a real dependency-graph spec rather than direct requirements from the
+msbuild evaluation, and the runtime path waits on a spawn-free producer of that
+spec. Until then the assets-absent case is served by
+[`restore.rs`](../crates/lsp/src/restore.rs), and the LSP crate does not depend
+on `borzoi-nuget`.
 
 Optional later: `packages.lock.json` fast path (trust the lock, skip resolution,
-go straight to asset selection).
+go straight to asset selection). `restore.rs` declines a lock-file project today.

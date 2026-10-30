@@ -359,12 +359,13 @@ pub enum Nullability {
 /// A consumer applying type arguments to a generic head needs this: F# rejects
 /// `Map<(int -> int), int>` for the key's `comparison` constraint and recovers
 /// the annotated binder's type to `System.Object`, so a consumer that read the
-/// IL flags alone would publish a type FCS positively disagrees with. Since
-/// nothing here *checks* a constraint against an argument, the only sound use
-/// is to decline whenever one is present — hence a knowability signal rather
-/// than the constraint list.
+/// IL flags alone would publish a type FCS positively disagrees with. A
+/// consumer can check only the two constraints that never unify anything,
+/// `equality` and `comparison`, so those are recorded
+/// ([`Self::Supports`]); every other constraint is a presence signal
+/// ([`Self::Present`]), on which the only sound use is to decline.
 ///
-/// The three readings are kept apart because they are three different facts,
+/// The readings are kept apart because they are different facts,
 /// exactly as [`UnionCases::Unknowable`] is kept apart from an empty
 /// [`UnionCases::Known`]: "provably none" licenses a conclusion, "we did not
 /// read them" licenses nothing, and collapsing the two is how an unread pickle
@@ -389,9 +390,14 @@ pub enum FSharpConstraints {
     /// contract this field keeps is agreement with the F# compiler, and the two
     /// sides read the same artefact.
     Free,
+    /// The pickle described this type parameter, and its F#-only constraints
+    /// are `equality`, `comparison`, or both — nothing else. Which of the two
+    /// it lists is recorded, at least one of them.
+    Supports(EqualityComparison),
     /// The pickle described this type parameter and it carries at least one
-    /// F#-only constraint. Which one is not recorded: no consumer can check a
-    /// constraint, so presence is the whole of the usable fact.
+    /// F#-only constraint other than `equality` and `comparison`. Which one is
+    /// not recorded: no consumer can check one, so presence is the whole of the
+    /// usable fact.
     Present,
     /// Nothing may be concluded. The assembly is F#-authored but its host
     /// pickle did not describe this type parameter — no signature resource, a
@@ -399,6 +405,19 @@ pub enum FSharpConstraints {
     /// typar erased from IL (so positions do not correspond), or an
     /// FQN whose ECMA row is ambiguous.
     Unknowable,
+}
+
+/// Which of F#'s `equality` and `comparison` constraints a type parameter
+/// carries ([`FSharpConstraints::Supports`]), as its pickle lists them. FCS
+/// checks each against an argument independently (`SolveTypeSupportsEquality`,
+/// `SolveTypeSupportsComparison`), so the two are recorded separately rather
+/// than read as a ladder. F# drops an `equality` written beside `comparison`,
+/// which entails it, so such a typar pickles as `comparison` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EqualityComparison {
+    pub equality: bool,
+    pub comparison: bool,
 }
 
 /// What is known about **units of measure** in the F# types an entity's members

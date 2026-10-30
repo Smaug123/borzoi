@@ -37,8 +37,7 @@
 use std::collections::HashSet;
 
 use crate::common::{
-    full_bcl_env, invoke_fcs_dump, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
-    temp_fs_file, try_invoke_fcs_dump,
+    GradedDumps, full_bcl_env, invoke_fcs_dump, temp_fs_file, try_invoke_fcs_dump,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{
@@ -152,8 +151,10 @@ fn check_parsed(
     let jsons = oracle("types").zip(oracle("binder-types"));
     let _ = std::fs::remove_file(&path);
     let (types_json, binders_json) = jsons?;
-    let (fcs_types, errors) = parse_fcs_types_with_errors(&types_json, source);
-    let (fcs_binders, _) = parse_fcs_binder_types_with_errors(&binders_json, source);
+    // A declaration FCS could not convert reports no node at all, so nothing
+    // inside it is graded.
+    let dumps = GradedDumps::read(&types_json, &binders_json, source, Some(&file))?;
+    let (fcs_types, fcs_binders, errors) = (&dumps.types, &dumps.binders, &dumps.errors);
     if expect_clean {
         assert!(
             errors.is_empty(),
@@ -201,6 +202,9 @@ fn check_parsed(
             u32::from(range.start()) as usize,
             u32::from(range.end()) as usize,
         );
+        if dumps.is_ungraded(key) {
+            continue;
+        }
         let ours = ty.render();
         let theirs = fcs_types.get(&key).unwrap_or_else(|| {
             panic!(
@@ -225,7 +229,7 @@ fn check_parsed(
             u32::from(def.range.start()) as usize,
             u32::from(def.range.end()) as usize,
         );
-        if binders_in.as_ref().is_some_and(|r| !r.contains(&key.0)) {
+        if binders_in.as_ref().is_some_and(|r| !r.contains(&key.0)) || dumps.is_ungraded(key) {
             continue;
         }
         let ours = ty.render();
@@ -239,6 +243,11 @@ fn check_parsed(
         assert_eq!(
             &ours, theirs,
             "binder type mismatch for `{}` at {key:?}\n{source}",
+            def.name
+        );
+        assert!(
+            !dumps.hides_constraint(key, &ours),
+            "binder `{}` typed `{ours}`, which FCS constrains\n{source}",
             def.name
         );
         c.binders += 1;
