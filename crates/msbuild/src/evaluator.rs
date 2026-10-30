@@ -4925,13 +4925,20 @@ fn collect_import_writes(
 }
 
 /// [`possible_import_writes`] for one file already resolved to `path`.
+///
+/// A file the walk has already imported under no undecided gate is a
+/// duplicate here in every build — MSBuild skips it whatever this import's
+/// own gate says — so it contributes nothing.
 fn collect_possible_file_writes(
     path: &Path,
     state: &State<'_>,
     depth: usize,
     names: &mut HiddenWrites,
 ) -> Option<()> {
-    if !path.exists() || !names.scanned.insert(import_dedup_key(path)) {
+    let key = import_dedup_key(path);
+    let certainly_imported =
+        state.imports_seen.contains(&key) && !state.maybe_imported.contains_key(&key);
+    if !path.exists() || certainly_imported || !names.scanned.insert(key) {
         return Some(());
     }
     if names.scanned.len() > MAX_HIDDEN_IMPORT_FILES {

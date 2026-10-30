@@ -125,7 +125,9 @@ enum Construct {
     RespeltPropertyName,
     RespeltCondition,
     /// An import whose gate reads a property the walk declined to model, so
-    /// the walk cannot know whether the real build brings the file in.
+    /// the walk cannot know whether the real build brings the file in. Not a
+    /// known decline: the document stays bound to the must-commit obligation,
+    /// less what [`undecided_import_exemption`] says the import may decline.
     ImportUndecided,
 }
 
@@ -142,11 +144,6 @@ const KNOWN_DECLINES: &[(Construct, &str)] = &[
          `collect_element_text` cannot tell a CDATA space from insignificant \
          literal whitespace and declines any body holding CDATA. The decline \
          cascades to every condition and body that reads the property.",
-    ),
-    (
-        Construct::ImportUndecided,
-        "the gate reads a CDATA-declined value, so every property the import \
-         could write is unpinned, by design (`undecided_gate_root`).",
     ),
     (
         Construct::CompileRemove,
@@ -493,18 +490,26 @@ impl Gen<'_> {
 
     fn import(&mut self) -> String {
         self.mark(Construct::Import);
-        if self.known_declines && self.chance(3) {
+        // Not a known decline, so obligation-bound documents get some too —
+        // fewer, since each excuses the names it may hide.
+        if self.chance(if self.known_declines { 3 } else { 8 }) {
             // A gate on a value the walk declines (CDATA), either way round,
             // so the import is skipped by the walk and followed by MSBuild or
             // the reverse.
             self.mark(Construct::ImportUndecided);
-            self.mark(Construct::XmlCdata);
             self.mark(Construct::ImportConditioned);
             let file = if self.chance(2) { "a.props" } else { "b.props" };
             let test = if self.chance(2) { "x" } else { "" };
+            // Half the time the file is already imported, certainly: MSBuild
+            // skips the duplicate whatever its gate says.
+            let certain = if self.chance(2) {
+                format!("  <Import Project=\"{file}\" />\n")
+            } else {
+                String::new()
+            };
             let r = self.reference("Alpha");
             return format!(
-                "  <PropertyGroup>\n    <Alpha><![CDATA[x]]></Alpha>\n  </PropertyGroup>\n  \
+                "{certain}  <PropertyGroup>\n    <Alpha><![CDATA[x]]></Alpha>\n  </PropertyGroup>\n  \
                  <Import Project=\"{file}\" Condition=\"'{r}' == '{test}'\" />\n"
             );
         }
@@ -564,6 +569,10 @@ struct Case {
     /// `(relative path, contents)` for every file besides the entry project.
     files: Vec<(String, String)>,
     constructs: BTreeSet<Construct>,
+    /// For a document with an undecided import: the lowercased names the
+    /// obligation excuses, and with them the Compile list. See
+    /// [`undecided_import_exemption`].
+    exempt: Option<BTreeSet<String>>,
 }
 
 fn generate(rng: &mut SplitMix64, known_declines: bool) -> Case {
@@ -583,6 +592,9 @@ fn generate(rng: &mut SplitMix64, known_declines: bool) -> Case {
         files.push((name.to_string(), g.project(0, false)));
     }
     let constructs = g.used;
+    let exempt = constructs
+        .contains(&Construct::ImportUndecided)
+        .then(|| undecided_import_exemption(&xml, &files));
     for source in SOURCES {
         files.push((source.to_string(), "module M\n".to_string()));
     }
@@ -590,6 +602,181 @@ fn generate(rng: &mut SplitMix64, known_declines: bool) -> Case {
         xml,
         files,
         constructs,
+        exempt,
+    }
+}
+
+/// The `$(…)` names `text` reads, lowercased.
+fn references(text: &str) -> BTreeSet<String> {
+    text.split("$(")
+        .skip(1)
+        .filter_map(|rest| rest.split_once(')'))
+        .map(|(name, _)| name.to_ascii_lowercase())
+        .collect()
+}
+
+/// Every name a node's own `Condition` and those of its enclosing elements
+/// read: the `PropertyGroup`, each `When`, and for a `When` or `Otherwise`
+/// every `When` before it — the first true arm wins — since all of those
+/// decide whether the node runs.
+fn gating_references(node: roxmltree::Node<'_, '_>) -> BTreeSet<String> {
+    let mut refs = BTreeSet::new();
+    for ancestor in node.ancestors().filter(roxmltree::Node::is_element) {
+        refs.extend(references(ancestor.attribute("Condition").unwrap_or("")));
+        if matches!(ancestor.tag_name().name(), "When" | "Otherwise") {
+            for when in ancestor.prev_siblings().filter(roxmltree::Node::is_element) {
+                refs.extend(references(when.attribute("Condition").unwrap_or("")));
+            }
+        }
+    }
+    refs
+}
+
+/// One property write: its name, and every name its value or its running reads.
+struct Write {
+    name: String,
+    reads: BTreeSet<String>,
+}
+
+fn writes_in(root: roxmltree::Node<'_, '_>) -> Vec<Write> {
+    root.descendants()
+        .filter(|n| {
+            n.is_element()
+                && n.parent_element()
+                    .is_some_and(|p| p.tag_name().name() == "PropertyGroup")
+        })
+        .map(|n| {
+            let text: String = n.descendants().filter_map(|d| d.text()).collect();
+            let mut reads = gating_references(n);
+            reads.extend(references(&text));
+            Write {
+                name: n.tag_name().name().to_ascii_lowercase(),
+                reads,
+            }
+        })
+        .collect()
+}
+
+/// What a document's undecided import may legitimately make the evaluator
+/// decline: the names the obligation then excuses. Everything else stays bound.
+///
+/// The walk does not know `Alpha` (CDATA), so an import gated on it — or on
+/// anything that reads it — is undecided. Such an import may bring in or leave
+/// out what its file writes or opts out, unless the file was already imported
+/// certainly: MSBuild skips the duplicate whatever its gate says. From the
+/// first undecided import on, the walk is opaque, so any later read of a name
+/// may decline (an undefined read is no longer provably undefined), and any
+/// later import that reads one is undecided too. An undecided import whose
+/// *path* reads a name may be of any file at all, so it excuses every name
+/// defined before it, globals included. Every write that reads an
+/// excused name is excused in turn. The Compile list is excused outright: an
+/// undecided import in a user file declines it by design.
+///
+/// Generous where the walk's own knowledge would be needed (which conditional
+/// writes ran), so the exemption over-excuses rather than demand a commit the
+/// walk has no way to make.
+fn undecided_import_exemption(xml: &str, files: &[(String, String)]) -> BTreeSet<String> {
+    let entry = roxmltree::Document::parse(xml).expect("the generator writes well-formed XML");
+    let imported: Vec<(String, roxmltree::Document<'_>)> = files
+        .iter()
+        .map(|(name, contents)| {
+            let doc = roxmltree::Document::parse(contents).expect("well-formed import");
+            (name.clone(), doc)
+        })
+        .collect();
+    let file_writes = |file: &str| -> Vec<Write> {
+        imported
+            .iter()
+            .filter(|(name, _)| name == file)
+            .flat_map(|(_, doc)| writes_in(doc.root_element()))
+            .collect()
+    };
+    let file_opt_outs = |file: &str| -> BTreeSet<String> {
+        imported
+            .iter()
+            .filter(|(name, _)| name == file)
+            .filter_map(|(_, doc)| doc.root_element().attribute("TreatAsLocalProperty"))
+            .flat_map(|names| names.split(';').map(|n| n.trim().to_ascii_lowercase()))
+            .collect()
+    };
+    // The entry's top-level constructs in order; an import stands for the
+    // file(s) it may name.
+    let top: Vec<roxmltree::Node<'_, '_>> = entry
+        .root_element()
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .collect();
+    let import_files = |node: roxmltree::Node<'_, '_>| -> Vec<String> {
+        let project = node.attribute("Project").unwrap_or("");
+        if project.contains("$(") {
+            vec!["a.props".to_string(), "b.props".to_string()]
+        } else {
+            vec![project.to_string()]
+        }
+    };
+    let import_reads = |node: roxmltree::Node<'_, '_>| -> BTreeSet<String> {
+        let mut reads = references(node.attribute("Condition").unwrap_or(""));
+        reads.extend(references(node.attribute("Project").unwrap_or("")));
+        reads
+    };
+
+    let mut exempt: BTreeSet<String> = BTreeSet::from(["alpha".to_string()]);
+    loop {
+        let before = exempt.len();
+        let mut opaque = false;
+        // Files imported under no undecided gate before any undecided import
+        // of them: a later import of one is a duplicate in every build.
+        let mut certain: BTreeSet<String> = BTreeSet::new();
+        let mut maybe: BTreeSet<String> = BTreeSet::new();
+        // Names some write before this point defines, or a global may.
+        let mut defined: BTreeSet<String> = BTreeSet::from(["configuration".to_string()]);
+        for node in &top {
+            match node.tag_name().name() {
+                "Import" => {
+                    let reads = import_reads(*node);
+                    let undecided = (opaque && !reads.is_empty()) || !reads.is_disjoint(&exempt);
+                    if undecided && node.attribute("Project").unwrap_or("").contains("$(") {
+                        exempt.extend(defined.iter().cloned());
+                    }
+                    for file in import_files(*node) {
+                        if certain.contains(&file) {
+                            continue;
+                        }
+                        let writes = file_writes(&file);
+                        defined.extend(writes.iter().map(|w| w.name.clone()));
+                        for write in &writes {
+                            // Read here, behind this import's gate.
+                            if (opaque && !write.reads.is_empty())
+                                || !write.reads.is_disjoint(&exempt)
+                                || !reads.is_disjoint(&exempt)
+                            {
+                                exempt.insert(write.name.clone());
+                            }
+                        }
+                        if undecided {
+                            exempt.extend(writes.into_iter().map(|w| w.name));
+                            exempt.extend(file_opt_outs(&file));
+                            maybe.insert(file);
+                        } else if node.attribute("Condition").is_none() && !maybe.contains(&file) {
+                            certain.insert(file);
+                        }
+                    }
+                    opaque |= undecided;
+                }
+                _ => {
+                    for write in writes_in(*node) {
+                        if (opaque && !write.reads.is_empty()) || !write.reads.is_disjoint(&exempt)
+                        {
+                            exempt.insert(write.name.clone());
+                        }
+                        defined.insert(write.name);
+                    }
+                }
+            }
+        }
+        if exempt.len() == before {
+            return exempt;
+        }
     }
 }
 
@@ -680,6 +867,11 @@ fn check(oracle: &mut Oracle, dir: &Path, case: &Case, globals: &[(String, Strin
         .collect();
 
     let mut outcome = Outcome::default();
+    let excused = |name: &str| {
+        case.exempt
+            .as_ref()
+            .is_some_and(|exempt| exempt.contains(&name.to_ascii_lowercase()))
+    };
     for name in NAMES {
         let their_value = &theirs[*name];
         let untrusted = parsed.property_provenance_untrusted(name);
@@ -697,6 +889,7 @@ fn check(oracle: &mut Oracle, dir: &Path, case: &Case, globals: &[(String, Strin
                     ));
                 }
             }
+            Some(_) if excused(name) => {}
             Some(_) => outcome.shortfalls.push((
                 format!("$({name}) untrusted"),
                 format!(
@@ -709,6 +902,7 @@ fn check(oracle: &mut Oracle, dir: &Path, case: &Case, globals: &[(String, Strin
             // table by design: it is an input, not something the document
             // computed.
             None if their_value.is_empty()
+                || excused(name)
                 || globals.iter().any(|(k, _)| k.eq_ignore_ascii_case(name)) => {}
             None => outcome.shortfalls.push((
                 format!("$({name}) absent"),
@@ -727,7 +921,9 @@ fn check(oracle: &mut Oracle, dir: &Path, case: &Case, globals: &[(String, Strin
         .filter(|i| i.kind == ItemKind::Compile)
         .map(|i| lexical(&i.include))
         .collect();
-    if parsed.items_uncertain {
+    if parsed.items_uncertain && case.exempt.is_some() {
+        // Declined by design: see `undecided_import_exemption`.
+    } else if parsed.items_uncertain {
         let cause = parsed
             .compile_item_uncertainties
             .first()
@@ -975,6 +1171,16 @@ fn undecided_imports_hide_no_property_writes() {
             "Dir",
             "mid",
         ),
+        // …and when the later import is itself behind an undecided gate the
+        // walk skips, the earlier import being undecided is what keeps the file
+        // in play: MSBuild may run this one instead.
+        (
+            "a skipped import of a file an undecided gate followed",
+            "  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == ''\" />\n  <PropertyGroup>\n    <Dir>mid</Dir>\n  </PropertyGroup>\n  <Import Project=\"b.props\" Condition=\"'$(Alpha)' == 'x'\" />\n",
+            &[("b.props", WRITES_DIR)],
+            "Dir",
+            "after",
+        ),
         // An import's `TreatAsLocalProperty` outlives it, so whether a later
         // write to a global lands depends on whether the import ran.
         (
@@ -1038,6 +1244,7 @@ fn undecided_imports_hide_no_property_writes() {
                 .map(|(f, c)| ((*f).to_string(), (*c).to_string()))
                 .collect(),
             constructs: BTreeSet::new(),
+            exempt: None,
         };
         let theirs = oracle
             .project(
@@ -1179,6 +1386,38 @@ fn undecided_imports_reach_only_what_they_can() {
         a.untrusted_properties, b.untrusted_properties,
         "the pure parser read an import's contents"
     );
+
+    // A file the walk has certainly imported is a duplicate the second time,
+    // in every build, so naming it again behind an undecided gate hides
+    // nothing — whichever way the walk took that gate.
+    for (direction, gate) in [
+        ("skipped", "'$(Alpha)' == 'x'"),
+        ("followed", "'$(Alpha)' == ''"),
+    ] {
+        let dir = root.join(format!("certain-duplicate-{direction}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Common.props"),
+            "<Project>\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <DefineConstants>COMMON</DefineConstants>\n  </PropertyGroup>\n</Project>\n",
+        )
+        .unwrap();
+        let parsed = parse_at(
+            &dir,
+            &format!(
+                "<Project>\n  <Import Project=\"Common.props\" />\n{cdata_alpha}  <Import Project=\"Common.props\" Condition=\"{gate}\" />\n</Project>\n"
+            ),
+            &[],
+        );
+        assert!(
+            !parsed.property_provenance_untrusted("TargetFramework"),
+            "{direction}: a duplicate of a certain import made $(TargetFramework) untrusted"
+        );
+        assert!(
+            !parsed.define_constants_uncertain,
+            "{direction}: a duplicate of a certain import made the defines {:?} uncertain",
+            parsed.define_constants
+        );
+    }
 
     // Content that imports the same files over and over is scanned once per
     // file: a chain nine deep with five repeats at each level is 5^8 reads
