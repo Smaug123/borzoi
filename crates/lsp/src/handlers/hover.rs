@@ -56,7 +56,7 @@ use crate::handlers::definition_availability::{
     Analysis, classify, classify_signature, explanation_range,
 };
 use crate::handlers::{
-    range_to_lsp, smallest_inferred_type_with_range, smallest_member_resolution_with_range,
+    innermost_inferred_type_with_range, range_to_lsp, smallest_member_resolution_with_range,
     smallest_resolution_with_range,
 };
 use crate::paths::{lexically_normalize, paths_equal};
@@ -350,8 +350,8 @@ fn project_hover(
 
     // Fallback: an inferred expression type (a literal or a tuple), where no
     // name resolution surfaced a hover.
-    let (range, ty) = smallest_inferred_type_with_range(&inferred, byte)?;
     let root = impl_file.syntax();
+    let (range, ty) = innermost_inferred_type_with_range(&inferred, root, byte)?;
     Some(make_hover(
         literal_hover_body(text, root, range, ty),
         text,
@@ -392,7 +392,7 @@ fn single_file_hover(
 
     // Fallback: inferred expression type (a literal or a tuple) — works on an
     // orphan buffer from the single-file resolution we just computed.
-    let (range, ty) = smallest_inferred_type_with_range(&inferred, byte)?;
+    let (range, ty) = innermost_inferred_type_with_range(&inferred, file.syntax(), byte)?;
     Some(make_hover(
         literal_hover_body(text, file.syntax(), range, ty),
         text,
