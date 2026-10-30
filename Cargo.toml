@@ -26,6 +26,7 @@ borzoi = { path = "crates/lsp" }
 borzoi-assembly = { path = "crates/assembly" }
 borzoi-cst = { path = "crates/cst" }
 borzoi-msbuild = { path = "crates/msbuild" }
+borzoi-nuget = { path = "crates/nuget" }
 borzoi-oracle-harness = { path = "crates/oracle-harness" }
 borzoi-sema = { path = "crates/sema" }
 borzoi-spawn = { path = "crates/spawn" }

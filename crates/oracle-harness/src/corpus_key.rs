@@ -8,8 +8,8 @@
 //! decodes it, and [`sort_by_corpus_key`] gives the file order every host
 //! agrees on, so a strided sample picks the same files everywhere.
 //!
-//! Lines are 1-based; columns are 1-based and count characters
-//! ([`Positions`]).
+//! Lines are 1-based; columns are 1-based and count characters from the start
+//! of the line as an editor or FCS shows it ([`Positions`]).
 
 use std::path::{Path, PathBuf};
 
@@ -80,25 +80,34 @@ pub fn sort_by_corpus_key(root: &Path, files: &mut [PathBuf]) {
 /// Byte offsets to `line:col` positions in one source text.
 pub struct Positions<'a> {
     source: &'a str,
-    /// Byte offset of the start of each line (`starts[0]` is line 1).
+    /// Byte offset of the start of each line (`starts[0]` is line 1). Line 1
+    /// starts after a leading byte-order mark, which neither an editor nor FCS
+    /// counts as a column, so an entry on line 1 reads the same with or
+    /// without one.
     starts: Vec<usize>,
 }
 
 impl<'a> Positions<'a> {
     pub fn new(source: &'a str) -> Self {
-        let mut starts = vec![0];
+        let line_one = if source.starts_with('\u{feff}') {
+            '\u{feff}'.len_utf8()
+        } else {
+            0
+        };
+        let mut starts = vec![line_one];
         starts.extend(source.match_indices('\n').map(|(i, _)| i + 1));
         Positions { source, starts }
     }
 
     /// `line:col` of byte `offset` (1-based; the column counts characters).
+    /// An offset inside a leading byte-order mark is line 1, column 1.
     pub fn at(&self, offset: usize) -> String {
-        let line = self.starts.partition_point(|&s| s <= offset);
+        let line = self.starts.partition_point(|&s| s <= offset).max(1);
         let start = self.starts[line - 1];
-        let col = self
-            .source
-            .get(start..offset)
-            .map_or(offset - start, |s| s.chars().count());
+        let col = match self.source.get(start..offset) {
+            Some(s) => s.chars().count(),
+            None => offset.saturating_sub(start),
+        };
         format!("{line}:{}", col + 1)
     }
 }
@@ -154,5 +163,16 @@ mod tests {
         // `é` is two bytes and one character.
         assert_eq!(p.at(5), "2:2");
         assert_eq!(p.at(7), "3:1");
+    }
+
+    /// A byte-order mark is no column: FCS strips it before counting, and an
+    /// editor does not show it.
+    #[test]
+    fn line_one_columns_count_from_after_a_byte_order_mark() {
+        let p = Positions::new("\u{feff}ab\ncd");
+        assert_eq!(p.at(0), "1:1");
+        assert_eq!(p.at(3), "1:1");
+        assert_eq!(p.at(4), "1:2");
+        assert_eq!(p.at(6), "2:1");
     }
 }

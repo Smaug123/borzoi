@@ -165,6 +165,10 @@ struct TypesDump {
     exprs: Vec<RawExpr>,
     #[serde(rename = "Errors")]
     errors: Vec<RawError>,
+    /// Declarations fcs-dump could not convert, and so reported no node in.
+    /// The probe reads a missing node as FCS's answer, so it must have none.
+    #[serde(rename = "Unconverted")]
+    unconverted: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -213,6 +217,11 @@ fn fcs_types(probe: &str) -> (HashMap<Span, String>, Vec<usize>) {
     let out = BoundedCommand::new(cmd).run_ok("fcs-dump types (measure probe)");
     let json = String::from_utf8(out.stdout).expect("fcs-dump stdout is UTF-8");
     let dump: TypesDump = serde_json::from_str(&json).expect("fcs-dump types JSON shape");
+    assert!(
+        dump.unconverted.is_empty(),
+        "fcs-dump could not convert part of the measure probe: {:?}",
+        dump.unconverted
+    );
     let idx = LineIndex::new(probe);
     let types = dump
         .exprs

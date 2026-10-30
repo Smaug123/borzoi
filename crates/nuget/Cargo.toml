@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 roxmltree.workspace = true
+# The dependency-graph spec is JSON (`dgspec`). `serde_json` tokenises it; the
+# tree it builds is our own, so a repeated key stays visible.
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 # The resident `nuget-oracle` driver (`BatchChild`) and the bounded one-shot
@@ -14,6 +18,4 @@ roxmltree.workspace = true
 # process-global spawn lock.
 borzoi-oracle-harness.workspace = true
 proptest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true

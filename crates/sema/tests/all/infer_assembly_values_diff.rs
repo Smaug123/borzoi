@@ -607,7 +607,8 @@ fn an_assembly_operator_outside_fsharp_core_is_an_application_of_its_signature()
          let r7 () = {NS}.{OPS_MODULE}.(|Pos|_|) 3\n\
          let r8 () = (|Even|Odd|)\n\
          let r9 () = match 3 with Even -> 1 | Odd -> 2\n\
-         let r10 () = optVal +? 2\n"
+         let r10 () = optVal +? 2\n\
+         let r11 () = \"s\" =? \"t\"\n"
     );
     let at = |needle: &str| {
         let start = src.find(needle).expect("the row");
@@ -619,6 +620,7 @@ fn an_assembly_operator_outside_fsharp_core_is_an_application_of_its_signature()
         at("p +++ 1"),
         at("p |>> strLen"),
         at("optVal +? 2"),
+        at("1 =~ 2"),
     ];
     let rows: Vec<Row> = must
         .iter()
@@ -1012,9 +1014,13 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
             borzoi_sema::test_support::module_function_schemes(env, handle)
                 .into_iter()
                 .collect();
+        let constrained = borzoi_sema::test_support::module_function_constrained(env, handle);
         for (name, ty) in borzoi_sema::test_support::module_function_types(env, handle) {
             let n = rows.len();
-            let unloosened = schemes.get(&name).is_some_and(takes_only_surely_sealed);
+            // A value whose type parameter carries `equality` or `comparison`
+            // is read but not generalised over: no scheme says `when`.
+            let unloosened = schemes.get(&name).is_some_and(takes_only_surely_sealed)
+                && !constrained.contains(&name);
             let spelled = format!("{path}.``{name}``");
             src.push_str(&format!("let v{n} = {spelled}\n"));
             let w = format!("w{n}");

@@ -395,53 +395,7 @@ pub fn invoke_fcs_dump_census(paths: &[PathBuf]) -> String {
     String::from_utf8(out.stdout).expect("fcs-dump stdout is UTF-8")
 }
 
-/// Lookup byte offset for an FCS `(line, col)` position. FCS uses 1-based lines
-/// and 0-based columns counting **UTF-16 code units**, so `col` is walked a char
-/// at a time accumulating UTF-16 units. (Ported verbatim from the sema harness.)
-pub struct LineIndex<'a> {
-    source: &'a str,
-    starts: Vec<usize>,
-}
-
-impl<'a> LineIndex<'a> {
-    pub fn new(source: &'a str) -> Self {
-        let mut starts = vec![0, 0];
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push(i + 1);
-            }
-        }
-        Self { source, starts }
-    }
-
-    pub fn offset(&self, line: u32, col: u32) -> usize {
-        let line = line as usize;
-        let col = col as usize;
-        if line >= self.starts.len() {
-            return self.source.len();
-        }
-        let base = self.starts[line];
-        let line_end = self
-            .starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-        let mut units = 0usize;
-        let mut byte_pos = base;
-        for ch in self.source[base..line_end].chars() {
-            if units >= col {
-                break;
-            }
-            let next_units = units + ch.len_utf16();
-            if next_units > col {
-                break;
-            }
-            units = next_units;
-            byte_pos += ch.len_utf8();
-        }
-        byte_pos.min(self.source.len())
-    }
-}
+pub use borzoi_oracle_harness::fcs_position::LineIndex;
 
 #[derive(Deserialize)]
 struct RawUse {
@@ -1087,4 +1041,22 @@ pub fn doc_key_env_of(
         )
         .collect();
     borzoi_sema::AssemblyEnv::from_assemblies_with_projection_knowability(inputs)
+}
+
+/// `path`'s key in a corpus manifest: its repository's directory name and its
+/// path inside it, so the key is the same wherever the corpus is materialised.
+pub fn checkout_key(path: &Path) -> String {
+    let root = path
+        .ancestors()
+        .find(|d| d.join(".git").exists())
+        .unwrap_or_else(|| panic!("{} is not inside a checkout", path.display()));
+    let name = root.file_name().unwrap().to_string_lossy();
+    let rel = path.strip_prefix(root).unwrap();
+    format!(
+        "{name}/{}",
+        rel.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    )
 }

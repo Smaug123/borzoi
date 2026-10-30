@@ -215,7 +215,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | manifest | entries |
 |---|---|
 | `resolve_corpus_diff` | one per sampled file (compared or skipped and why; whether FCS's check errored; its match count; its count of graded uses FCS resolves outside the file) and one per gap, alt-binder or divergence use. Matches are counted per file rather than listed — ~22k of them — which loses no movement, since every non-match use is listed by key. External-target uses (~18k) are counted likewise: any of them not declined is a divergence, which fails first. |
-| `infer_corpus_diff` | one per sampled file, and one per commit (agree or error-recovered, with both types when they differ). |
+| `infer_corpus_diff` | one per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
 | `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside; and, per file, the request handlers' probe counts for the plain and the perturbed copy, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). |
@@ -695,14 +695,17 @@ available at all: a tier is fixed where the decline *site* is built, not where
 the cause is named, so which tiers a cause can speak from is not a function of
 the cause. `DeclineCensus::pairs` carries the three shapes that defeat it.
 
-`decline_census.unattributed` is the census's own honesty check, and it is a
-count rather than a residual. A decline site is a claim and its absence is not:
-many deferrals have no causing guard at all — a dotted path's tail segments
-defer because member resolution is a later phase — so the census attributes
-what the ladder and its pre-walk gates do and reports the rest as unattributed.
-Read `unattributed` against `attributed`; a *rise* in the ratio means a new
-decline path appeared that no guard accounts for, which is worth looking at even
-though nothing failed.
+`decline_census.unattributed` counts the declines no guard recorded a site
+for, and it is a count rather than a residual. A decline site is a claim and its
+absence is not: many deferrals have no causing guard at all — a dotted path's
+tail segments defer because member resolution is a later phase — so the census
+attributes what the ladder, its pre-walk gates and the bare-name scope guards
+do, and splits the rest by `by_shape`: the model the resolver lacks where the
+record sits (`member_access_on_value`, `qualifier`, `type_parameter`, … —
+`borzoi_corpus_diff::deferral_shape`). What neither a site nor a shape explains
+is `decline_census.unexplained`, the census's own honesty check. A *rise* in it
+means a decline path appeared that the census cannot name, which is worth
+looking at even though nothing failed.
 
 `uses.attribute_commits_compared` is a **coverage** number, not a quality one:
 how many of the compared uses were answered out of name resolution's attribute

@@ -15,8 +15,8 @@ use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, ExportDecl, ExportedItem, ItemId, OpenTrace,
-    ProjectItems, Resolution, SlotClass,
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem, ItemId,
+    OpenTrace, ProjectItems, Resolution, SlotClass,
 };
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
@@ -101,6 +101,13 @@ pub(super) struct ScopeEntry {
     /// clean program an applied head is never the literal. `false` for cases,
     /// parameters, and locals.
     pub(super) maybe_constant_pattern: bool,
+    /// For an [opened](Self::from_open) entry that **declines** — a
+    /// [`Resolution::Deferred`] the open put in scope to shadow by position
+    /// while naming nothing — why it declines. A bare use that lands on it
+    /// records this as its decline site
+    /// ([`ResolvedFile::decline_site`](super::model::ResolvedFile::decline_site)).
+    /// `None` for every entry that commits.
+    pub(super) decline: Option<DeclineCause>,
 }
 
 impl ScopeEntry {
@@ -120,6 +127,7 @@ impl ScopeEntry {
             opened_case: false,
             opened_ap_shape: None,
             maybe_constant_pattern: false,
+            decline: None,
         }
     }
 
@@ -127,7 +135,48 @@ impl ScopeEntry {
     /// with the current [`open_generation`](Resolver::open_generation) so a later
     /// unmodelled open can shadow it (see [`Self::generation`]), and with the
     /// open's source offset (see [`Self::open_pos`]).
+    ///
+    /// `resolution` is what it commits; an opened entry that declines is made
+    /// with [`Self::opened_declined`], which names why.
     pub(super) fn opened(
+        name: String,
+        resolution: Resolution,
+        generation: usize,
+        open_pos: u32,
+    ) -> Self {
+        debug_assert!(
+            !matches!(resolution, Resolution::Deferred(_)),
+            "opened entry {name:?} declines without naming why: use `opened_declined`"
+        );
+        ScopeEntry::opened_unchecked(name, resolution, generation, open_pos)
+    }
+
+    /// An opened entry that **declines** for `cause`: in scope, shadowing by
+    /// position, naming nothing.
+    pub(super) fn opened_declined(
+        name: String,
+        cause: DeclineCause,
+        generation: usize,
+        open_pos: u32,
+    ) -> Self {
+        let mut entry = ScopeEntry::opened_unchecked(
+            name,
+            Resolution::Deferred(DeferredReason::UnboundName),
+            generation,
+            open_pos,
+        );
+        entry.decline = Some(cause);
+        entry
+    }
+
+    /// Withdraw what this entry commits, for `cause`: it stays in scope,
+    /// shadowing by position, and names nothing.
+    pub(super) fn withdraw(&mut self, cause: DeclineCause) {
+        self.resolution = Resolution::Deferred(DeferredReason::UnboundName);
+        self.decline = Some(cause);
+    }
+
+    fn opened_unchecked(
         name: String,
         resolution: Resolution,
         generation: usize,
@@ -143,6 +192,7 @@ impl ScopeEntry {
             opened_case: false,
             opened_ap_shape: None,
             maybe_constant_pattern: false,
+            decline: None,
         }
     }
 
@@ -154,6 +204,10 @@ impl ScopeEntry {
         generation: usize,
         open_pos: u32,
     ) -> Self {
+        debug_assert!(
+            !matches!(resolution, Resolution::Deferred(_)),
+            "opened entry {name:?} declines without naming why: use `opened_declined`"
+        );
         ScopeEntry {
             name,
             resolution,
@@ -164,6 +218,7 @@ impl ScopeEntry {
             opened_case: false,
             opened_ap_shape: None,
             maybe_constant_pattern: false,
+            decline: None,
         }
     }
 }

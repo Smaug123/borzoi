@@ -18,8 +18,9 @@
 
 use borzoi_assembly::pdb::{PortablePdb, embedded_portable_pdb};
 use borzoi_assembly::{
-    Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, FSharpConstraints, Member,
-    MethodLike, NamedTypeHead, ParamDefault, ReadValFacts, ValFacts, ValMeasures,
+    Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, EqualityComparison,
+    FSharpConstraints, Member, MethodLike, NamedTypeHead, ParamDefault, ReadValFacts, ValFacts,
+    ValMeasures,
 };
 
 use crate::common::ensure_fsharp_core_dll;
@@ -549,6 +550,18 @@ fn fsharp_core_member_list_pass_leaves_no_skips() {
 /// signal *usable*: a projection coarse enough to mark all of FSharp.Core
 /// unknowable would be sound and useless, since these two are exactly the heads
 /// a generic-application bridge must be able to commit on.
+/// The reading of a typar whose only F#-only constraint is `equality`.
+const EQUALITY: FSharpConstraints = FSharpConstraints::Supports(EqualityComparison {
+    equality: true,
+    comparison: false,
+});
+
+/// The reading of a typar whose only F#-only constraint is `comparison`.
+const COMPARISON: FSharpConstraints = FSharpConstraints::Supports(EqualityComparison {
+    equality: false,
+    comparison: true,
+});
+
 #[test]
 fn fsharp_core_typar_constraints_separate_map_from_option() {
     let entities = load();
@@ -562,7 +575,7 @@ fn fsharp_core_typar_constraints_separate_map_from_option() {
 
     assert_eq!(
         constraints(&["Microsoft", "FSharp", "Collections"], "FSharpMap"),
-        vec![FSharpConstraints::Present, FSharpConstraints::Free],
+        vec![COMPARISON, FSharpConstraints::Free],
         "Map's key carries `comparison` (pickle-only) and its value carries nothing"
     );
     // `Set` is the case that decides whether the key may be the name alone.
@@ -573,7 +586,7 @@ fn fsharp_core_typar_constraints_separate_map_from_option() {
     // entity's pickled typar count is its CLR arity.
     assert_eq!(
         constraints(&["Microsoft", "FSharp", "Collections"], "FSharpSet"),
-        vec![FSharpConstraints::Present],
+        vec![COMPARISON],
         "Set's element carries `comparison`"
     );
     assert_eq!(
@@ -660,19 +673,29 @@ fn a_module_functions_constraints_and_measures_come_from_its_val() {
     let equality = only(operators, "op_Equality");
     assert_eq!(
         readings(&equality),
-        vec![FSharpConstraints::Present],
+        vec![EQUALITY],
         "`=` requires `equality`, which has no IL encoding"
     );
     assert_eq!(
         readings(&only(operators, "op_Addition")),
         vec![FSharpConstraints::Present; 3],
-        "`+` is SRTP over all three of its parameters"
+        "`+` is SRTP over all three of its parameters: presence alone"
+    );
+    assert_eq!(
+        readings(&only(operators, "Compare")),
+        vec![COMPARISON],
+        "`compare` requires `comparison`, and pickles no `equality` beside it"
+    );
+    assert_eq!(
+        readings(&only(operators, "Unbox")),
+        vec![FSharpConstraints::Free],
+        "`unbox` constrains nothing"
     );
 
     let pervasives = entity(&entities, &core, "ExtraTopLevelOperators");
     assert_eq!(
         readings(&only(pervasives, "CreateDictionary")),
-        vec![FSharpConstraints::Present, FSharpConstraints::Free],
+        vec![EQUALITY, FSharpConstraints::Free],
         "`dict`'s key requires `equality` and its value nothing"
     );
     let list_module = entity(
@@ -682,7 +705,7 @@ fn a_module_functions_constraints_and_measures_come_from_its_val() {
     );
     assert_eq!(
         readings(method_by_source(list_module, "sortBy")),
-        vec![FSharpConstraints::Free, FSharpConstraints::Present],
+        vec![FSharpConstraints::Free, COMPARISON],
         "`List.sortBy`'s element is free and its key requires `comparison`"
     );
 

@@ -5012,8 +5012,8 @@ mod tests {
     ///
     /// The fixture's pairs are what make the readable half discriminating: each
     /// constrained type has an unconstrained twin of identical shape and
-    /// identical IL, so `Present` beside `Free` can only have come from the
-    /// pickle.
+    /// identical IL, so a constrained reading beside `Free` can only have come
+    /// from the pickle.
     ///
     /// The unreadable case is simulated as the extension-index test above does
     /// it: renaming the manifest identity makes the host signature resource
@@ -5042,10 +5042,16 @@ mod tests {
                 .collect()
         }
 
+        /// The reading of a typar constrained to `comparison` alone.
+        const COMPARISON: FSharpConstraints =
+            FSharpConstraints::Supports(crate::model::EqualityComparison {
+                equality: false,
+                comparison: true,
+            });
         let (shipped, _) = view.enumerate_with_skips_impl().expect("enumerate shipped");
         assert_eq!(
             typars_of(&shipped, "Constrained"),
-            vec![FSharpConstraints::Present],
+            vec![COMPARISON],
             "the pickle says this typar carries `comparison` — a fact no IL-derived \
              field can carry"
         );
@@ -5057,7 +5063,7 @@ mod tests {
         );
         assert_eq!(
             typars_of(&shipped, "ConstrainedKey"),
-            vec![FSharpConstraints::Present, FSharpConstraints::Free],
+            vec![COMPARISON, FSharpConstraints::Free],
             "the reading is per position, not one verdict for the whole entity"
         );
         // An abbreviation has no ECMA row: it arrives as a synthesised name-only
@@ -5065,7 +5071,7 @@ mod tests {
         // alias still has to answer.
         assert_eq!(
             typars_of(&shipped, "ConstrainedAlias"),
-            vec![FSharpConstraints::Present],
+            vec![COMPARISON],
             "an abbreviation marker carries its own pickled reading"
         );
         assert_eq!(
@@ -5098,7 +5104,7 @@ mod tests {
         }
         assert_eq!(
             readings(function_of(&shipped, "constrainedFn")),
-            vec![FSharpConstraints::Present],
+            vec![COMPARISON],
             "the val's type carries `comparison`"
         );
         assert_eq!(
@@ -5108,8 +5114,37 @@ mod tests {
         );
         assert_eq!(
             readings(function_of(&shipped, "keyedFn")),
-            vec![FSharpConstraints::Present, FSharpConstraints::Free],
+            vec![COMPARISON, FSharpConstraints::Free],
             "the val's reading is per position"
+        );
+        let supports = |equality, comparison| {
+            vec![FSharpConstraints::Supports(
+                crate::model::EqualityComparison {
+                    equality,
+                    comparison,
+                },
+            )]
+        };
+        assert_eq!(
+            readings(function_of(&shipped, "equatableFn")),
+            supports(true, false),
+            "`equality` alone is recorded as such"
+        );
+        assert_eq!(
+            readings(function_of(&shipped, "bothFn")),
+            supports(false, true),
+            "both, written together, pickle as `comparison` alone: F# keeps the \
+             stronger of two constraints one entails"
+        );
+        assert_eq!(
+            readings(function_of(&shipped, "nullFn")),
+            vec![FSharpConstraints::Present],
+            "any other constraint is presence alone"
+        );
+        assert_eq!(
+            readings(function_of(&shipped, "mixedFn")),
+            vec![FSharpConstraints::Present],
+            "…even beside `comparison`, which must not then read as the whole list"
         );
         let measures = |name: &str| match &function_of(&shipped, name).val_facts {
             crate::model::ValFacts::Read(facts) => {

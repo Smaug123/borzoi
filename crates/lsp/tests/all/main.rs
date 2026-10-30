@@ -41,6 +41,7 @@ mod project_assets_integration;
 mod project_deferral_e2e;
 mod reference_set_msbuild_diff;
 mod resolve_real_project_diff;
+mod restore_graph;
 mod restore_hostile_config_matrix;
 mod restore_on_demand_e2e;
 mod restore_to_scratch_diff;
@@ -49,6 +50,7 @@ mod sdk_resolution_exactness_diff;
 mod sdk_resolution_oracle;
 mod sdk_resolution_override_classification;
 mod watched_assembly_refresh_e2e;
+mod workspace_diagnostic_sweep;
 mod xml_doc_shipped_sweep;
 mod xml_doc_source_diff;
 

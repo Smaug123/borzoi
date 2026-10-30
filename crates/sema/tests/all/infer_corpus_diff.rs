@@ -26,6 +26,11 @@
 //!   that carry no diagnostic of their own, which is why the unit is the
 //!   declaration and not the line. Not gated to zero: a commit there is only
 //!   as wrong as FCS's recovery is right.
+//! * **unconverted** — the commit sits in a declaration whose typed tree
+//!   fcs-dump could not convert ([`FcsUnconverted`]: a constraint violation
+//!   re-raised while solving witnesses, a recovered pattern match), so FCS
+//!   reported no node there at all. Ungraded, and recorded as such: it is
+//!   neither an agreement nor a disagreement, whatever FCS's errors say.
 //!
 //! # The manifest
 //!
@@ -74,9 +79,9 @@
 //! measurement, not a gate.
 //!
 //! Deferring is never graded. A file our parser rejects is skipped (as in
-//! `resolve_corpus_diff`), and so is one FCS's batch handler could not check —
-//! almost always FCS throwing "error recovery at …" while materialising the typed
-//! tree of a file that does not check in isolation. Those are printed.
+//! `resolve_corpus_diff`), and so is one FCS's batch handler could not check,
+//! or one with an unconverted declaration fcs-dump could not place in the file.
+//! Those are printed.
 //!
 //! # The reference set
 //!
@@ -116,8 +121,8 @@ use crate::common::corpus_manifest::{
     Positions, check_manifest, corpus_relative, regenerate_ignored,
 };
 use crate::common::{
-    FcsCheckError, LineIndex, env_usize_or, parse_fcs_binder_types_with_errors,
-    parse_fcs_types_with_errors, try_invoke_fcs_dump,
+    FcsCheckError, FcsUnconverted, LineIndex, env_usize_or, parse_fcs_binder_types_dump,
+    parse_fcs_types_dump, try_invoke_fcs_dump, ungraded_regions,
 };
 use serde::Deserialize;
 
@@ -154,6 +159,12 @@ struct Tally {
     fcs_failed: Vec<(PathBuf, String)>,
     agree_exprs: usize,
     agree_binders: usize,
+    /// Declarations fcs-dump could not convert, in compared files.
+    unconverted_decls: usize,
+    /// Commits inside those declarations: ungraded.
+    unconverted_commits: usize,
+    /// Files skipped because an unconverted declaration could not be placed.
+    unlocated_unconverted: usize,
     divergences: Vec<Site>,
     error_lines: Vec<Site>,
     /// Per FCS node kind: `(nodes on clean lines, of which we committed)`.
@@ -168,8 +179,8 @@ struct Tally {
     any_blocker: BTreeMap<String, usize>,
 }
 
-/// The `types` payload's node kinds, which [`parse_fcs_types_with_errors`]
-/// drops: the coverage table's axis.
+/// The `types` payload's node kinds, which [`parse_fcs_types_dump`] drops: the
+/// coverage table's axis.
 #[derive(Deserialize)]
 struct KindDump {
     #[serde(rename = "Exprs")]
@@ -292,9 +303,19 @@ fn enclosing_decl(file: &ImplFile, start: usize, end: usize) -> (usize, usize) {
     }
 }
 
+/// The fcs-dump projection `compare_file` grades against, by op name: the
+/// resident oracle in the sweep, a doctored one in the tests that need FCS to
+/// say something it will not say of a real file.
+type Oracle<'a> = &'a dyn Fn(&str, &Path) -> Result<String, String>;
+
 /// Compare one corpus file, folding its outcome into `tally`. `rel` is the
 /// file's name in manifest entries.
 fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
+    compare_file_with(path, rel, tally, &try_invoke_fcs_dump);
+}
+
+/// [`compare_file`] against `oracle`.
+fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracle) {
     let entry = |status: &str| format!("{rel} {status}");
     let Ok(raw) = std::fs::read_to_string(path) else {
         tally.lock().unwrap().manifest.push(entry("unreadable"));
@@ -388,10 +409,7 @@ fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
             }
         }
     }
-    let (types_json, binders_json) = match (
-        try_invoke_fcs_dump("types", path),
-        try_invoke_fcs_dump("binder-types", path),
-    ) {
+    let (types_json, binders_json) = match (oracle("types", path), oracle("binder-types", path)) {
         (Ok(t), Ok(b)) => (t, b),
         (Err(e), _) | (_, Err(e)) => {
             let mut t = tally.lock().unwrap();
@@ -400,8 +418,30 @@ fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
             return;
         }
     };
-    let (fcs_types, errors) = parse_fcs_types_with_errors(&types_json, &source);
-    let (fcs_binders, _) = parse_fcs_binder_types_with_errors(&binders_json, &source);
+    let types_dump = parse_fcs_types_dump(&types_json, &source);
+    let binders_dump = parse_fcs_binder_types_dump(&binders_json, &source);
+    let (fcs_types, errors) = (types_dump.types, types_dump.errors);
+    let fcs_binders = binders_dump.types;
+    let binder_constraints = binders_dump.typar_constraints;
+    // The two ops convert the same declarations, but each reports its own
+    // failures; a declaration either could not convert is ungraded for both.
+    let mut unconverted = types_dump.unconverted;
+    for u in binders_dump.unconverted {
+        if !unconverted.contains(&u) {
+            unconverted.push(u);
+        }
+    }
+    if unconverted
+        .iter()
+        .any(|u| matches!(u, FcsUnconverted::Unlocated { .. }))
+    {
+        let mut t = tally.lock().unwrap();
+        t.unlocated_unconverted += 1;
+        t.manifest.push(entry("unconverted-unlocated"));
+        return;
+    }
+    let ungraded = ungraded_regions(file_for_decls.as_ref(), &unconverted)
+        .expect("an unlocated declaration skipped the file above");
     let lines = Lines::new(&source);
     let kinds: KindDump = serde_json::from_str(&types_json).expect("fcs-dump types JSON shape");
     let idx = LineIndex::new(&source);
@@ -411,7 +451,20 @@ fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
     let positions = Positions::new(&source);
     let mut t = tally.lock().unwrap();
     t.files_compared += 1;
+    t.unconverted_decls += unconverted.len();
     t.manifest.push(entry("compared"));
+    for u in &unconverted {
+        if let FcsUnconverted::At {
+            start, end, name, ..
+        } = u
+        {
+            t.manifest.push(format!(
+                "{rel}:{}-{} unconverted-decl {name:?}",
+                positions.at(*start),
+                positions.at(*end)
+            ));
+        }
+    }
     for node in &kinds.exprs {
         let start = idx.offset(node.range.start.line, node.range.start.col);
         let end = idx.offset(node.range.end.line, node.range.end.col);
@@ -431,7 +484,19 @@ fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
         for ((s, e), ours) in commits {
             let theirs = fcs.get(&(*s, *e));
             let key = format!("{rel}:{}-{} {kind}", positions.at(*s), positions.at(*e));
-            if theirs == Some(ours) {
+            if ungraded.iter().any(|(u0, u1)| s < u1 && u0 < e) {
+                t.unconverted_commits += 1;
+                t.manifest.push(format!("{key} unconverted ours={ours:?}"));
+                continue;
+            }
+            // A generic binder type agrees only if FCS constrains none of its
+            // type parameters: the rendering cannot show a constraint.
+            let hides = kind == "binder"
+                && ours.contains('\'')
+                && binder_constraints
+                    .get(&(*s, *e))
+                    .is_some_and(|k| !k.is_empty());
+            if theirs == Some(ours) && !hides {
                 if kind == "expr" {
                     t.agree_exprs += 1;
                 } else {
@@ -440,10 +505,17 @@ fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
                 t.manifest.push(format!("{key} agree"));
                 continue;
             }
-            let disagreement = format!(
-                "ours={ours:?} fcs={}",
-                theirs.map_or("<no node>".to_string(), |f| format!("{f:?}"))
-            );
+            let disagreement = if hides {
+                format!(
+                    "ours={ours:?} hides constraints {:?}",
+                    binder_constraints[&(*s, *e)]
+                )
+            } else {
+                format!(
+                    "ours={ours:?} fcs={}",
+                    theirs.map_or("<no node>".to_string(), |f| format!("{f:?}"))
+                )
+            };
             let site = Site {
                 path: path.to_path_buf(),
                 kind,
@@ -546,17 +618,21 @@ fn inferred_types_match_fcs_over_corpus() {
 
     eprintln!(
         "infer-diff: {} files compared | {} expr + {} binder agree | {} diverge | {} in \
-         error-recovered declarations | {} our-parse-errors | {} line-directive files | {} \
-         our-panics | {} fcs-failed",
+         error-recovered declarations | {} in {} unconverted declarations | {} \
+         our-parse-errors | {} line-directive files | {} our-panics | {} fcs-failed | {} \
+         unlocated-unconverted",
         t.files_compared,
         t.agree_exprs,
         t.agree_binders,
         t.divergences.len(),
         t.error_lines.len(),
+        t.unconverted_commits,
+        t.unconverted_decls,
         t.our_parse_errors,
         t.line_directives,
         t.our_panics,
         t.fcs_failed.len(),
+        t.unlocated_unconverted,
     );
     for (p, e) in &t.fcs_failed {
         eprintln!(
@@ -721,4 +797,102 @@ fn a_line_directive_file_is_skipped_not_compared() {
     assert_eq!((t.line_directives, t.files_compared), (1, 0), "{t:?}");
     assert!(has_line_directive("# 7 \"x.fs\"\n"));
     assert!(!has_line_directive("#if DEBUG\n#endif\n"));
+}
+
+/// The constraint-violating shape fcs-dump cannot convert: `g = g` with
+/// `g : int -> int` re-raises FS0001 while FCS solves the `=`'s witnesses.
+/// `bad` (lines 4–7) holds commits of ours inside that declaration — on line 6
+/// too, past the first local, where FCS's range for the declaration stops —
+/// and the declarations around it are ordinary.
+const UNCONVERTED_SRC: &str = "module M\nlet a = 1\nlet g (x: int) = x + 1\nlet bad =\n    let one = 1\n    let two = \"two\"\n    g = g\nlet c = \"s\"\n";
+
+/// Run [`compare_file_with`] over `src`, with every oracle payload passed
+/// through `doctor` first.
+fn compare_doctored(name: &str, src: &str, doctor: &dyn Fn(&mut serde_json::Value)) -> Tally {
+    let path = crate::common::temp_fs_file(name, src);
+    let tally = Mutex::new(Tally::default());
+    let oracle = |op: &str, p: &Path| {
+        let json = try_invoke_fcs_dump(op, p)?;
+        let mut v: serde_json::Value = serde_json::from_str(&json).expect("oracle JSON");
+        doctor(&mut v);
+        Ok(v.to_string())
+    };
+    compare_file_with(&path, "case.fs", &tally, &oracle);
+    let _ = std::fs::remove_file(&path);
+    tally.into_inner().unwrap()
+}
+
+/// The manifest entries for commits on 1-based `line` of `case.fs`.
+fn commits_on_line(t: &Tally, line: u32) -> Vec<&String> {
+    let prefix = format!("case.fs:{line}:");
+    t.manifest
+        .iter()
+        .filter(|m| m.starts_with(&prefix) && !m.contains("unconverted-decl"))
+        .collect()
+}
+
+/// A declaration fcs-dump could not convert costs only itself: the file is
+/// compared, the declarations around it are graded, and every commit of ours
+/// inside it is recorded as ungraded — not agreement, not disagreement.
+#[test]
+fn an_unconverted_declaration_is_ungraded_and_the_rest_of_the_file_graded() {
+    let t = compare_doctored("infer_corpus_unconverted", UNCONVERTED_SRC, &|_| {});
+    assert_eq!((t.files_compared, t.unconverted_decls), (1, 1), "{t:#?}");
+    let bad: Vec<&String> = (4..=7).flat_map(|l| commits_on_line(&t, l)).collect();
+    assert!(
+        !commits_on_line(&t, 5).is_empty() && !commits_on_line(&t, 6).is_empty(),
+        "the fixture must commit on both locals of `bad`: {t:#?}"
+    );
+    assert!(
+        bad.iter().all(|m| m.contains(" unconverted ")),
+        "every commit in `bad` is ungraded: {bad:#?}"
+    );
+    assert_eq!(t.unconverted_commits, bad.len());
+    assert!(
+        t.divergences.is_empty() && t.error_lines.is_empty(),
+        "{t:#?}"
+    );
+    for line in [2, 8] {
+        let graded = commits_on_line(&t, line);
+        assert!(
+            !graded.is_empty() && graded.iter().all(|m| m.ends_with(" agree")),
+            "line {line} is graded as usual: {graded:#?}"
+        );
+    }
+}
+
+/// The ungraded verdict rests on the unconverted record alone, not on FCS also
+/// having reported an error there: with the errors stripped from the payload,
+/// a commit in `bad` with no FCS node would otherwise read as a divergence.
+#[test]
+fn an_unconverted_declaration_is_ungraded_without_an_error_beside_it() {
+    let t = compare_doctored("infer_corpus_unconverted_noerr", UNCONVERTED_SRC, &|v| {
+        v["Errors"] = serde_json::json!([]);
+    });
+    assert!(t.divergences.is_empty(), "{:#?}", t.divergences);
+    assert!(t.unconverted_commits > 0, "{t:#?}");
+}
+
+/// An unconverted declaration fcs-dump could not place in the file leaves no
+/// commit provably outside it, so the file is skipped, not compared.
+#[test]
+fn an_unlocated_unconverted_declaration_skips_the_file() {
+    let t = compare_doctored("infer_corpus_unlocated", UNCONVERTED_SRC, &|v| {
+        for u in v["Unconverted"].as_array_mut().expect("Unconverted list") {
+            u["InFile"] = serde_json::json!(false);
+        }
+    });
+    assert_eq!(
+        (
+            t.files_compared,
+            t.unlocated_unconverted,
+            t.agree_exprs + t.agree_binders
+        ),
+        (0, 1, 0),
+        "{t:#?}"
+    );
+    assert_eq!(
+        t.manifest,
+        vec!["case.fs unconverted-unlocated".to_string()]
+    );
 }

@@ -173,9 +173,12 @@ member of an F#-compiled assembly (below), all show no documentation, and are di
   lines FCS attaches to the declaration — its lexer's grab points and the
   parser's grab token, both reproduced and pinned by the
   `xml_doc_source_diff` differential — elaborated by FCS's implicit-`<summary>`
-  rule into the `<member>` element fsc would write. What declines: an
-  implementation-file use of a signed symbol whose implementation doc is blank
-  (FCS shows the `.fsi`'s, which is not located yet), a `(*)` inside a block
+  rule into the `<member>` element fsc would write. A symbol a signature
+  constrains shows the `.fsi`'s doc where FCS does — when the implementation's
+  is blank, and at uses in other files — through the declaration FCS's
+  signature conformance pairs it with (`xml_doc::pairing`). What declines: a
+  signed symbol names cannot pair (an overloaded member, a dispatch slot, an
+  active pattern), a `(*)` inside a block
   comment or a `#line` before the declaration, a lone carriage return after a
   `///` line, a file with parse errors, an orphan buffer (single-file hover
   renders no documentation), and the type occurrences where FCS binds
@@ -185,7 +188,7 @@ member of an F#-compiled assembly (below), all show no documentation, and are di
   constructor overload resolution picks and shows its doc — almost always
   empty (all 47 in the gated corpus sample). A named argument's label is no
   hover site: resolution leaves it unresolved, as it names the callee's
-  parameter. The signature fallback is #319.
+  parameter.
 - **An F#-compiled assembly's members show nothing** — FSharp.Core's
   included; its types and modules do. fsc keys a member from its F#
   signature, not its IL: a measure type parameter counts towards the generic

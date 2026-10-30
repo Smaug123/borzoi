@@ -26,7 +26,7 @@ use borzoi_assembly::{
 };
 
 use crate::def::SemanticClass;
-use crate::resolve::ActivePatternShape;
+use crate::resolve::{ActivePatternShape, DeclineCause};
 
 mod il_types;
 pub use il_types::IlTypeDefinition;
@@ -364,8 +364,9 @@ pub enum OpenFoldTarget {
     /// cases and active-pattern tags (no member exists to point at), nested
     /// type names (FCS's unqualified constructor slot — modelled only as a
     /// contestant), an auto-open *type*'s statics, an overload set, a
-    /// cross-assembly collision.
-    Opaque,
+    /// cross-assembly collision. Carries why, for the decline census
+    /// ([`crate::ResolvedFile::decline_site`]) at the use the entry declines.
+    Opaque(DeclineCause),
 }
 
 /// Which lookup namespace an [`OpenFoldName`] occupies. F# separates the
@@ -2825,6 +2826,16 @@ impl AssemblyEnv {
         index.uncertain || index.names.contains(name)
     }
 
+    /// Whether such a surface **provably** supplies a value named `name`:
+    /// [`Self::assembly_bare_value_surface_could_supply`] without its name-blind
+    /// arm. For the decline census, which may name only a cause it can show.
+    pub(crate) fn assembly_bare_value_surface_supplies(&self, name: &str) -> bool {
+        let index = self
+            .bare_value_index
+            .get_or_init(|| self.build_bare_value_index());
+        !index.uncertain && index.names.contains(name)
+    }
+
     /// Build [`Self::bare_value_index`]: fold every container F# opens without a
     /// source `open` whose identity is fixed by the closure, and collect the value
     /// names they contribute.
@@ -3522,7 +3533,8 @@ impl AssemblyEnv {
                     && self.value_may_be_constant_pattern(&later.target)
             });
             if shadowed {
-                out.entries[i].target = OpenFoldTarget::Opaque;
+                out.entries[i].target =
+                    OpenFoldTarget::Opaque(DeclineCause::OpenedExceptionShadowed);
             }
         }
     }
@@ -3547,7 +3559,7 @@ impl AssemblyEnv {
             },
             // No member to inspect (an opaque overload set, an entity): assume
             // the worst — an opaque case merely defers, never a wrong target.
-            OpenFoldTarget::Entity(_) | OpenFoldTarget::Opaque => true,
+            OpenFoldTarget::Entity(_) | OpenFoldTarget::Opaque(_) => true,
         }
     }
 
@@ -3667,7 +3679,7 @@ impl AssemblyEnv {
                 // §8's option B, its own slice.
                 for e in &mut out.entries {
                     if matches!(e.target, OpenFoldTarget::Entity(_)) {
-                        e.target = OpenFoldTarget::Opaque;
+                        e.target = OpenFoldTarget::Opaque(DeclineCause::OpenedExceptionShadowed);
                     }
                 }
                 out
@@ -3744,7 +3756,7 @@ impl AssemblyEnv {
                 // later opaque entry here would mask the definite one (round 20).
                 out.entries.push(OpenFoldName {
                     name: child_name(c),
-                    target: OpenFoldTarget::Opaque,
+                    target: OpenFoldTarget::Opaque(DeclineCause::OpenedTypeName),
                     space: OpenFoldSpace::Value,
                     is_case: false,
                     ap_shape: None,
@@ -3771,7 +3783,9 @@ impl AssemblyEnv {
                         for case in cases {
                             out.entries.push(OpenFoldName {
                                 name: case.clone(),
-                                target: OpenFoldTarget::Opaque,
+                                target: OpenFoldTarget::Opaque(
+                                    DeclineCause::AssemblyCaseUntargeted,
+                                ),
                                 space: OpenFoldSpace::Both,
                                 is_case: true,
                                 ap_shape: None,
@@ -3878,7 +3892,9 @@ impl AssemblyEnv {
                         for tag in tags {
                             out.entries.push(OpenFoldName {
                                 name: tag.to_string(),
-                                target: OpenFoldTarget::Opaque,
+                                target: OpenFoldTarget::Opaque(
+                                    DeclineCause::AssemblyCaseUntargeted,
+                                ),
                                 space: OpenFoldSpace::Pattern,
                                 is_case: true,
                                 ap_shape: Some(shape),
@@ -3894,7 +3910,7 @@ impl AssemblyEnv {
                     parent: handle,
                     idx,
                 },
-                None => OpenFoldTarget::Opaque,
+                None => OpenFoldTarget::Opaque(DeclineCause::OpenedOverloadSet),
             };
             let constant_pattern = self.value_may_be_constant_pattern(&target);
             out.entries.push(OpenFoldName {
@@ -4922,6 +4938,20 @@ impl AssemblyEnv {
             }
         }
         found
+    }
+
+    /// Whether the assembly called `assembly` names the type `handle`: it
+    /// declares it, or forwards its path there ([`Self::forwarded_target_at_path`]).
+    /// Only a non-generic top-level type is asked about; any other answers
+    /// `false`.
+    pub(crate) fn assembly_names_type(&self, assembly: &str, handle: EntityHandle) -> bool {
+        let entity = self.entity(handle);
+        if !self.top_level_types.contains(&handle) || !entity.generic_parameters.is_empty() {
+            return false;
+        }
+        let mut path = entity.namespace.clone();
+        path.push(entity.name.clone());
+        self.forwarded_target_at_path(assembly, &path, ABBREV_CHASE_FUEL) == Some(handle)
     }
 
     /// Whether the **top-level rooting FQN above `handle`** is exported by

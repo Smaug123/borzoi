@@ -170,9 +170,10 @@
 //! [`Gen::slot_binder_reunify`] emits `Eq(slot, binder_var)` per simple parameter
 //! (F# has one variable for the parameter — the decoupling only exists to fence
 //! off *unmodelled* constraints, and every unmodelled shape already sets
-//! incomplete). A parameter's binder var can then be ground (or a `Param`), so the
-//! "params are never published standalone" invariant becomes **explicit**:
-//! [`Gen::finish`] skips [`Gen::param_defs`] in `def_types`. Parameter uses in
+//! incomplete). A parameter's binder var can then be ground (or a `Param`), but
+//! [`Gen::finish`] never publishes a parameter from it: it publishes the
+//! parameter's annotation, or its ground slot in a published function type, and
+//! nothing for a generic one. Parameter uses in
 //! synth positions may now emit (`let f x = if x then (1, x) else (2, x)` types the
 //! tuple's `x` as `bool`), sound on a complete binding.
 //!
@@ -463,7 +464,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use borzoi_assembly::{EntityKind, FSharpConstraints, Member, Primitive, TypeRef};
+use borzoi_assembly::{
+    EntityKind, EqualityComparison, FSharpConstraints, Member, MemberMeasures, Primitive, TypeRef,
+};
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
     ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat,
@@ -473,7 +476,9 @@ use rowan::{TextRange, TextSize};
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::DefId;
-use crate::function_ty::{FunctionTyGap, module_function_scheme};
+use crate::function_ty::{
+    Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, builtin_operator, module_function_scheme,
+};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -671,6 +676,44 @@ pub enum Incomplete {
     RejectedUse,
     /// An infix application whose operator inference does not type, and why.
     Operator(OperatorGap),
+    /// A use whose type parameter carries `equality` or `comparison`, solved
+    /// to a type that does not satisfy it or is not known to.
+    Constraint(ConstraintGap),
+    /// An application of one of FSharp.Core's statically resolved operators
+    /// or conversion functions whose solution F# builds in (`a + b`, `-a`,
+    /// `int a`), not typed, and why.
+    Builtin(BuiltinGap),
+}
+
+/// Why an application of a statically resolved operator or conversion was
+/// not typed: the census's split of [`Incomplete::Builtin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BuiltinGap {
+    /// An operand's type is not known where the operator is applied. FCS
+    /// then leaves the constraint pending, and may solve it later by weak
+    /// resolution — which defaults an operand to `int` — so what it settles
+    /// on is not knowable from here.
+    OpenOperand,
+    /// The operand types are known and F# provably rejects them (FS0001):
+    /// two different types, one of which the operator's rule solves over.
+    Violated,
+    /// The operand types are known but are not on the closed list the rule
+    /// is modelled over: a type whose own operator members, enum underlying
+    /// type or unit of measure would decide it.
+    Undecided,
+}
+
+/// Why a constrained instantiation left its binding incomplete: the
+/// census's split of [`Incomplete::Constraint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ConstraintGap {
+    /// The type provably does not satisfy the constraint (a function type
+    /// compared, `obj` ordered): F# rejects the use with FS0001.
+    Violated,
+    /// The type is not on the closed list of those known to satisfy it, nor
+    /// provably outside it: an in-file type, an F# generic, a type whose
+    /// interfaces would decide comparison.
+    Undecided,
 }
 
 /// Why an infix operator was not typed: the census's split of
@@ -1094,14 +1137,16 @@ struct Gen<'a> {
     /// that parameter finds its slot. On a *complete* binding the slot is
     /// reunified with the binder var ([`Self::slot_binder_reunify`]).
     param_slots: HashMap<DefId, TyVid>,
+    /// Each parameter of a function whose type [`Self::function_type`] built,
+    /// with that function: a parameter's type is published only where its
+    /// function's is ([`Self::finish`]).
+    param_owner: HashMap<DefId, DefId>,
     /// **Per-binding**: the body of the function binding being walked, for
     /// [`Self::is_first_occurrence`]. `None` outside a function binding.
     cur_body: Option<SyntaxNode>,
-    /// Every parameter `DefId` collected during [`Self::param_var`]. A parameter's
-    /// type is never published standalone (D5): [`Self::finish`] skips these in
-    /// `def_types`. Before 3.2c-2c this was *emergent* (a parameter's binder var
-    /// was never ground); the slot=binder reunification on complete bindings can
-    /// now ground it, so the exclusion is made **explicit**.
+    /// Every parameter `DefId` collected during [`Self::param_var`].
+    /// [`Self::finish`] publishes each from its annotation or its slot in a
+    /// published function type, never from its binder variable.
     param_defs: HashSet<DefId>,
     /// Generalised binders' schemes, keyed by `DefId` (Stage 3.2c-2c). The scheme
     /// body has open variables replaced by [`Ty::Param`]s (numbered by first
@@ -1155,6 +1200,13 @@ struct Gen<'a> {
     /// is checked against union-find **roots** ([`Self::is_scheme_inst_root`]), so
     /// a var unioned with an instantiation var still counts.
     scheme_inst_vars: HashSet<TyVid>,
+    /// The current binding's instantiation variables whose type parameter
+    /// carries `equality` or `comparison`, and which
+    /// ([`Self::constrained_scheme_use`]). Each is poisoned when it is made, so
+    /// none generalises while open — no scheme here can say `when` — and
+    /// [`Self::check_constraints`] checks what each is solved to once the
+    /// binding is solved.
+    constrained: Vec<(TyVid, EqualityComparison)>,
     /// The file's in-scope instance-extension-member surface (OV-6): the
     /// extension-absence gate the method-call wake consults before committing an
     /// overload. Computed once in [`infer_file`] from the file and the env.
@@ -1255,6 +1307,7 @@ impl<'a> Gen<'a> {
             guard_stack: Vec::new(),
             guard_on_member: HashMap::new(),
             param_slots: HashMap::new(),
+            param_owner: HashMap::new(),
             param_defs: HashSet::new(),
             def_schemes: HashMap::new(),
             complete: true,
@@ -1264,6 +1317,7 @@ impl<'a> Gen<'a> {
             member_resolutions: HashMap::new(),
             cur_mark: 0,
             scheme_inst_vars: HashSet::new(),
+            constrained: Vec::new(),
             rejected_defs: HashSet::new(),
             dropped: Vec::new(),
             eq_failures: 0,
@@ -1337,6 +1391,7 @@ impl<'a> Gen<'a> {
         self.bounded_flex.clear();
         self.undecided_uses.clear();
         self.opaque.clear();
+        self.constrained.clear();
         mark
     }
 
@@ -2895,6 +2950,11 @@ impl<'a> Gen<'a> {
             unparenthesize(func.clone()),
             Some(Expr::LongIdent(li)) if self.module_value_path(&li).is_some()
         );
+        // Asked first: a prefix operator (`-a`) is a bare `LONG_IDENT_EXPR`
+        // callee, which is otherwise read as a member access.
+        if let Some(r) = self.builtin_application(&func, &arg) {
+            return r;
+        }
         if !module_value && is_member_access_callee(&func) {
             return self.infer_method_call(&func, &arg);
         }
@@ -2968,6 +3028,122 @@ impl<'a> Gen<'a> {
         };
         let tf = self.operator_value(&op)?;
         Some(self.apply(tf, &lhs))
+    }
+
+    /// The application of `func` to `arg` when it is a use of one of
+    /// FSharp.Core's operators or conversion functions whose solution F#
+    /// builds in ([`builtin_operator`]), as [`Self::infer_app`] returns it;
+    /// `None` when it is not one. Three shapes are: `a OP b` with a binary
+    /// one (`+`, `&&&`, `<<<`), and a unary one applied to its operand by name
+    /// (`int a`, `Operators.int a`) or as a prefix operator (`-a`). Any other
+    /// use — the operator as a value (`(+) a b`, `List.map int`, `a |> int`)
+    /// — is not, and declines as a constrained signature
+    /// ([`Self::assembly_value_use`]).
+    ///
+    /// FCS solves the operator's constraint where it checks the application,
+    /// from its operands' types as it knows them there; one it does not know
+    /// yet leaves the constraint to be solved later, by weak resolution if
+    /// nothing else fixes it, which may default it to `int`
+    /// (`IsBinaryOpOtherArgType`). So the operands are walked as the
+    /// arguments they are, the binding settled ([`Self::settle`], which
+    /// applies only what FCS has applied by this point in source order), and
+    /// the operand types read there: the application is typed when every one
+    /// is known and on the rule's list ([`builtin_verdict`]), and otherwise
+    /// the binding is incomplete with the reason and the application untyped —
+    /// but for a conversion whose operand is not known, or not modelled,
+    /// whose result its signature fixes.
+    fn builtin_application(&mut self, func: &Expr, arg: &Expr) -> Option<Option<TyVid>> {
+        let (builtin, operands) = match func {
+            Expr::App(inner) if inner.is_infix() => {
+                let (op, lhs) = (inner.func()?, inner.arg()?);
+                let builtin = self.builtin_callee(&op)?;
+                if !matches!(
+                    builtin,
+                    Builtin::Arith(_) | Builtin::Bitwise | Builtin::Shift
+                ) {
+                    return None;
+                }
+                (builtin, vec![lhs, arg.clone()])
+            }
+            Expr::Ident(_) | Expr::LongIdent(_) => {
+                let builtin = self.builtin_callee(func)?;
+                if !matches!(builtin, Builtin::Negate | Builtin::Convert { .. }) {
+                    return None;
+                }
+                (builtin, vec![arg.clone()])
+            }
+            _ => return None,
+        };
+        let mut vars = Vec::new();
+        let mut walked = true;
+        for operand in &operands {
+            let d = self.table.fresh();
+            match self.infer_expr(operand, Some(d)) {
+                Some(v) => vars.push(v),
+                // The operand's own walk recorded why it is not typed.
+                None => walked = false,
+            }
+        }
+        let verdict = if walked {
+            self.settle();
+            let tys: Vec<Ty> = vars
+                .iter()
+                .map(|v| self.table.resolve(&Ty::Var(*v)))
+                .collect();
+            let verdict = builtin_verdict(&builtin, &tys);
+            if let Err(gap) = verdict {
+                self.mark_incomplete(Incomplete::Builtin(gap));
+            }
+            Some(verdict)
+        } else {
+            // The operand's own walk recorded why it is not typed.
+            None
+        };
+        let result = match (verdict, &builtin) {
+            (Some(Ok(result)), _) => result,
+            // A conversion's signature fixes its result (`^T -> int`), and FCS
+            // unifies that with the application's type before it checks the
+            // operand, so the application is `int` whatever the operand turns
+            // out to be, or whenever it is solved. Only a known operand the
+            // rule rejects, or may, is left untyped.
+            (None | Some(Err(BuiltinGap::OpenOperand)), Builtin::Convert { target }) => {
+                target.clone()
+            }
+            _ => return Some(None),
+        };
+        let r = self.table.fresh();
+        self.eq(Ty::Var(r), result);
+        Some(Some(r))
+    }
+
+    /// The [`Builtin`] the callee `e` names, if it names one: a bare name or
+    /// operator token, or a module-qualified path, that the resolver resolved
+    /// to the referenced assembly's member [`builtin_operator`] reads as one.
+    /// A shadowing definition, in this file or an opened module, is what the
+    /// resolver names instead, and is not one.
+    fn builtin_callee(&self, e: &Expr) -> Option<Builtin> {
+        let at = match e {
+            Expr::Ident(ident) => ident.ident()?.text_range(),
+            Expr::LongIdent(li) => {
+                let long_ident = li.long_ident()?;
+                if long_ident.active_pat_names().next().is_some() {
+                    return None;
+                }
+                let mut idents = long_ident.idents();
+                match (idents.next(), idents.next()) {
+                    (Some(tok), None) => tok.text_range(),
+                    _ => self.module_value_path(li)?,
+                }
+            }
+            _ => return None,
+        };
+        let Some(Resolution::Member { parent, idx }) = self.resolved.resolution_at(at) else {
+            return None;
+        };
+        let Member::Method(m) = self.env.member_at(parent, idx) else {
+            return None;
+        };
+        builtin_operator(self.env, parent, m)
     }
 
     /// The type variable of an infix operator's value, as [`Self::infer_callee`]
@@ -3052,7 +3228,29 @@ impl<'a> Gen<'a> {
             _ => Err(FunctionTyGap::NotAFunction),
         }
         .map_err(Incomplete::AssemblyValue)?;
-        Ok(self.scheme_use(&scheme))
+        Ok(self.constrained_scheme_use(&scheme))
+    }
+
+    /// [`Self::scheme_use`] over a module function's reading: each type
+    /// parameter carrying `equality` or `comparison` instantiates to a variable
+    /// recorded with its constraint ([`Self::constrained`]) and poisoned, so it
+    /// is checked once the binding is solved and never generalised while open.
+    fn constrained_scheme_use(&mut self, scheme: &ModuleFunctionScheme) -> TyVid {
+        let mut fresh: HashMap<u32, TyVid> = HashMap::new();
+        let body = self.instantiate_rec(&scheme.ty, &mut fresh);
+        for (i, req) in scheme.requirements.iter().enumerate() {
+            let Some(req) = req else { continue };
+            // A type parameter the type does not mention has no variable to
+            // check; FCS solves it by default, which nothing reads.
+            if let Some(&v) = u32::try_from(i).ok().and_then(|i| fresh.get(&i)) {
+                self.constrained.push((v, *req));
+                self.poison.push(v);
+            }
+        }
+        let ty = self.loosened(&body).unwrap_or(body);
+        let uv = self.table.fresh();
+        self.eq(Ty::Var(uv), ty);
+        uv
     }
 
     /// The type variable of a use of a value whose type is `scheme`: the
@@ -3999,6 +4197,11 @@ impl<'a> Gen<'a> {
         }
         let fv = self.def_var(f_def);
         self.eq(Ty::Var(fv), fun_ty);
+        // This binding's parameters are this head's: `begin_binding` cleared
+        // the list, and a local function is not walked.
+        for &(param, _) in &self.cur_params {
+            self.param_owner.insert(param, f_def);
+        }
         Some(f_def)
     }
 
@@ -4188,7 +4391,7 @@ impl<'a> Gen<'a> {
     /// The variable a named binder's type is read from at `site`, registering
     /// the binder as that site requires. A parameter gets a fresh private slot,
     /// recorded for condition typing and the slot=binder reunification, and is
-    /// never published standalone. A local is published only if no emission
+    /// published from that slot ([`Self::finish`]). A local is published only if no emission
     /// barrier discards it ([`Self::local_emits`]).
     fn register_binder(&mut self, def: DefId, site: BinderSite) -> TyVid {
         match site {
@@ -4331,7 +4534,8 @@ impl<'a> Gen<'a> {
         self.trial = Some(TrialLog::default());
         let outcome = self.run_worklist(Fire::All);
         let log = self.trial.take().unwrap_or_default();
-        let outcome = if outcome.discharged == 0 || self.verified(&outcome) {
+        let speculative = self.probed_constraint_verdict(&outcome);
+        let outcome = if outcome.discharged == 0 || self.verified(&outcome, speculative) {
             self.table.commit(snapshot);
             outcome
         } else {
@@ -4352,6 +4556,64 @@ impl<'a> Gen<'a> {
         for ac in outcome.args {
             self.poison_arg_check(ac);
         }
+        self.check_constraints(speculative);
+    }
+
+    /// The worst verdict ([`satisfies`]) over the current binding's
+    /// constrained instantiations ([`Self::constrained`]) in the table as it
+    /// stands.
+    fn constraint_verdict(&mut self) -> Verdict {
+        constraint_verdict_of(&mut self.table, self.env, &self.constrained)
+    }
+
+    /// [`Self::constraint_verdict`] once every relation the solve left
+    /// unapplied — the argument checks still pending and the check-mode
+    /// relations the walk dropped ([`Self::dropped`]) — is applied too, as
+    /// [`Self::verified`]'s probe applies them: a constrained instantiation
+    /// that only such a relation fixes is met there and nowhere else. The table
+    /// is left as it was.
+    fn probed_constraint_verdict(&mut self, outcome: &WorklistOutcome) -> Verdict {
+        let relations: Vec<(TyVid, TyVid)> = outcome
+            .args
+            .iter()
+            .map(|ac| (ac.arg, ac.dom))
+            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
+            .collect();
+        let env = self.env;
+        let constrained = &self.constrained;
+        let mut verdict = Verdict::Holds;
+        let _ = self.table.probe(|t| -> Result<(), ()> {
+            for (a, b) in &relations {
+                // A relation that does not unify fails the speculation in
+                // `verified` on its own; the rest still decide the verdict.
+                let _ = t.unify(&Ty::Var(*a), &Ty::Var(*b));
+            }
+            verdict = constraint_verdict_of(t, env, constrained);
+            Err(())
+        });
+        verdict
+    }
+
+    /// Record in the census what the binding just solved did to its
+    /// constrained instantiations ([`Self::constrained`]): the worse of
+    /// `speculative`, their verdict under the speculative solve, and their
+    /// verdict now.
+    ///
+    /// The check is over a whole substitution, so the order FCS meets the uses
+    /// in cannot matter to it. A violation, or a type not known either way,
+    /// marks the binding incomplete — it is not the program FCS accepts, or not
+    /// one known to be — and [`Self::verified`] has already refused the
+    /// speculative solve that produced it. A variable left open needs nothing
+    /// here: it was poisoned when it was made, so it does not generalise.
+    fn check_constraints(&mut self, speculative: Verdict) {
+        match worse(speculative, self.constraint_verdict()) {
+            Verdict::Holds | Verdict::Open => {}
+            Verdict::Fails => self.mark_incomplete(Incomplete::Constraint(ConstraintGap::Violated)),
+            Verdict::Undecided => {
+                self.mark_incomplete(Incomplete::Constraint(ConstraintGap::Undecided))
+            }
+        }
+        self.constrained.clear();
     }
 
     /// Whether a speculative solve's argument checks may be kept
@@ -4368,6 +4630,16 @@ impl<'a> Gen<'a> {
     /// - no member to have been resolved through a check FCS applies only
     ///   after it ([`WorklistOutcome::late_member`]): FCS rejects a member
     ///   access on a receiver it does not know yet (FS0072), consistent or not;
+    /// - every constrained instantiation ([`Self::constrained`]) to satisfy
+    ///   its constraint, or be open, with the relations above applied
+    ///   (`constraints`, [`Self::probed_constraint_verdict`]): a branch that
+    ///   joins an open parameter to a function can be what fixes one. A
+    ///   violation changes no type in itself, but
+    ///   FCS meets it inside an argument check (`UnifyOverallType`), undoes the
+    ///   equality it was solving, and reports the error with the rest of that
+    ///   unification never applied: `a |> hash` over a function-holding `a`
+    ///   leaves the pipe's result `'a`. A type not known to satisfy it may be
+    ///   such a violation;
     ///
     /// and, in the result with every relation applied, each value use
     /// loosened as FCS loosens it:
@@ -4379,8 +4651,11 @@ impl<'a> Gen<'a> {
     ///   depends on whether it knew that type at the use.
     ///
     /// The joint unification is a probe: the table is left as it was.
-    fn verified(&mut self, outcome: &WorklistOutcome) -> bool {
+    fn verified(&mut self, outcome: &WorklistOutcome, constraints: Verdict) -> bool {
         if self.eq_failures > 0 || outcome.failed > 0 || outcome.late_member {
+            return false;
+        }
+        if matches!(constraints, Verdict::Fails | Verdict::Undecided) {
             return false;
         }
         let env = self.env;
@@ -5142,11 +5417,10 @@ impl<'a> Gen<'a> {
         }
         let mut def_types = HashMap::new();
         for (def, var) in def_vars {
-            // A **parameter** is never published standalone (D5). Before 3.2c-2c
-            // this held emergently (a parameter's binder var was never ground);
-            // the slot=binder reunification on a complete binding can now ground it
-            // (or make it a `Param`), so the exclusion is made **explicit** — the
-            // parameter's type lives solely *inside* the function's `Ty::Fun`.
+            // A **parameter** is published below, from what fixes it, never
+            // from its binder variable: on an incomplete binding that variable
+            // is decoupled from the function type's slot, and can be grounded
+            // by a use the binding's unmodelled constraints contradict.
             if self.param_defs.contains(&def) {
                 continue;
             }
@@ -5166,6 +5440,36 @@ impl<'a> Gen<'a> {
             // (3.2b-1 values via their RHS, 3.2c-2b monomorphic functions via
             // `Ty::Fun`); an open variable stays silent (D5).
             let ty = self.table.resolve(&Ty::Var(var));
+            if ty.is_ground() {
+                def_types.insert(def, ty);
+            }
+        }
+        // A parameter's type, where it is known for certain:
+        //
+        // - its annotation, exact in F# — subsumption applies at a call, never
+        //   at the binder — and kept on the binder even where FCS rejects the
+        //   body (`let f (c: int) = if c then …` leaves `c : int`);
+        // - otherwise its slot in a function type published above, whose
+        //   domains are the parameters' types, when the slot is ground. A
+        //   slot is the type itself, or an element of a tuple parameter's.
+        //
+        // A generic parameter is not published: FCS renders a parameter's type
+        // renumbered on its own (`'a` for the second of `'a -> 'b -> 'a`),
+        // where hover would name it as its function does.
+        for &def in &self.param_defs {
+            if let Some(ann) = self.param_annotations.get(&def) {
+                def_types.insert(def, ann.clone());
+                continue;
+            }
+            let (Some(owner), Some(&slot)) =
+                (self.param_owner.get(&def), self.param_slots.get(&def))
+            else {
+                continue;
+            };
+            if !def_types.contains_key(owner) {
+                continue;
+            }
+            let ty = self.table.resolve(&Ty::Var(slot));
             if ty.is_ground() {
                 def_types.insert(def, ty);
             }
@@ -5293,6 +5597,283 @@ pub(crate) fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool 
         || p.is_unmanaged
         || !p.type_constraints.is_empty()
         || p.fsharp_constraints != FSharpConstraints::Free
+}
+
+/// The primitive types F#'s built-in operator rules distinguish
+/// (ConstraintSolver.fs: `isSignedIntegerTy`, `isUnsignedIntegerTy`,
+/// `isFpTy`, `isDecimalTy`, `isCharTy`, `isStringTy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuiltinKind {
+    /// `sbyte`, `int16`, `int`, `int64`, `nativeint`.
+    Signed,
+    /// `byte`, `uint16`, `uint32`, `uint64`, `unativeint`.
+    Unsigned,
+    /// `float32`, `float`.
+    Float,
+    Decimal,
+    Char,
+    String,
+}
+
+impl BuiltinKind {
+    /// An integer, signed or not (`IsIntegerOrIntegerEnumTy`, enums aside).
+    fn integer(self) -> bool {
+        matches!(self, BuiltinKind::Signed | BuiltinKind::Unsigned)
+    }
+
+    /// A number (`IsNumericOrIntegralEnumType`, enums aside).
+    fn numeric(self) -> bool {
+        self.integer() || matches!(self, BuiltinKind::Float | BuiltinKind::Decimal)
+    }
+}
+
+/// The [`BuiltinKind`] of `ty`, if it is one: exactly the type, with no
+/// argument. An enum, a measure-annotated number and every other type are
+/// not, and a rule over them is not modelled.
+fn builtin_kind(ty: &Ty) -> Option<BuiltinKind> {
+    let Ty::Named { path, args } = ty else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let kind = match path.as_slice() {
+        ["System", "SByte" | "Int16" | "Int32" | "Int64" | "IntPtr"] => BuiltinKind::Signed,
+        [
+            "System",
+            "Byte" | "UInt16" | "UInt32" | "UInt64" | "UIntPtr",
+        ] => BuiltinKind::Unsigned,
+        ["System", "Single" | "Double"] => BuiltinKind::Float,
+        ["System", "Decimal"] => BuiltinKind::Decimal,
+        ["System", "Char"] => BuiltinKind::Char,
+        ["System", "String"] => BuiltinKind::String,
+        _ => return None,
+    };
+    Some(kind)
+}
+
+/// Whether `ty` is a type a FSharp.Core conversion function may return: a
+/// number or `char`.
+pub(crate) fn is_conversion_target(ty: &Ty) -> bool {
+    builtin_kind(ty).is_some_and(|k| k.numeric() || k == BuiltinKind::Char)
+}
+
+/// The type of an application of `builtin` to operands of types `operands`
+/// (as many as it takes), by F#'s built-in rule for it, or why it is not
+/// typed. Read off `SolveMemberConstraint` (ConstraintSolver.fs), over the
+/// types [`builtin_kind`] names and nothing else:
+///
+/// - `+ - * / %`: two operands of one type, the result that type — a number,
+///   or for `+` also `char` and `string`, for `-` also `char`. (`decimal`'s
+///   own operator members solve it where the rule steps aside, to the same
+///   type.)
+/// - `&&& ||| ^^^`: two operands of one integer type, the result that type.
+/// - `<<< >>>`: an integer and an `int`, the result the integer's type.
+/// - `~-`: a signed integer, a float or `decimal`, the result its type.
+/// - a conversion: a number, `char` or `string`, the result its target.
+///
+/// An operand not yet known is [`BuiltinGap::OpenOperand`]. Two different
+/// operand types of which the rule takes one is [`BuiltinGap::Violated`]:
+/// the rule fires and equates them (`SolveTypeEqualsTypeKeepAbbrevs`), which
+/// fails. Anything else off the list is [`BuiltinGap::Undecided`] — another
+/// type's own operator members (`DateTime - DateTime`), an enum, a unit of
+/// measure.
+fn builtin_verdict(builtin: &Builtin, operands: &[Ty]) -> Result<Ty, BuiltinGap> {
+    if !operands.iter().all(Ty::is_ground) {
+        return Err(BuiltinGap::OpenOperand);
+    }
+    let kinds: Vec<Option<BuiltinKind>> = operands.iter().map(builtin_kind).collect();
+    let binary = |admits: &dyn Fn(BuiltinKind) -> bool| match (operands, kinds.as_slice()) {
+        ([a, b], [Some(ka), Some(kb)]) if a == b && admits(*ka) => {
+            debug_assert_eq!(ka, kb);
+            Ok(a.clone())
+        }
+        ([a, b], [Some(ka), Some(kb)])
+            if a != b
+                && (admits(*ka) || admits(*kb))
+                && *ka != BuiltinKind::Decimal
+                && *kb != BuiltinKind::Decimal =>
+        {
+            Err(BuiltinGap::Violated)
+        }
+        _ => Err(BuiltinGap::Undecided),
+    };
+    match builtin {
+        Builtin::Arith(Arith::Add) => {
+            binary(&|k| k.numeric() || matches!(k, BuiltinKind::Char | BuiltinKind::String))
+        }
+        Builtin::Arith(Arith::Sub) => binary(&|k| k.numeric() || k == BuiltinKind::Char),
+        Builtin::Arith(Arith::Mul | Arith::Div | Arith::Mod) => binary(&BuiltinKind::numeric),
+        // `&&&`'s operands share its one type parameter, so FCS checks the
+        // right operand against the left's type once it knows it, and there
+        // inserts F#'s widening of an `int` (to `int64`, `nativeint` or
+        // `float`): such a pair is not rejected. `+`'s three type
+        // parameters are independent, so nothing is expected of its right
+        // operand and nothing is widened.
+        Builtin::Bitwise
+            if operands.get(1) == Some(&Ty::named("System.Int32"))
+                && operands.first().is_some_and(|a| {
+                    [
+                        Ty::named("System.Int64"),
+                        Ty::named("System.IntPtr"),
+                        Ty::named("System.Double"),
+                    ]
+                    .contains(a)
+                }) =>
+        {
+            Err(BuiltinGap::Undecided)
+        }
+        Builtin::Bitwise => binary(&BuiltinKind::integer),
+        Builtin::Shift => match (operands, kinds.as_slice()) {
+            ([a, b], [Some(ka), _]) if ka.integer() && *b == Ty::named("System.Int32") => {
+                Ok(a.clone())
+            }
+            ([_, _], [Some(ka), Some(kb)]) if ka.integer() && *kb != BuiltinKind::Decimal => {
+                Err(BuiltinGap::Violated)
+            }
+            _ => Err(BuiltinGap::Undecided),
+        },
+        Builtin::Negate => match (operands, kinds.as_slice()) {
+            ([a], [Some(BuiltinKind::Signed | BuiltinKind::Float | BuiltinKind::Decimal)]) => {
+                Ok(a.clone())
+            }
+            _ => Err(BuiltinGap::Undecided),
+        },
+        Builtin::Convert { target } => match kinds.as_slice() {
+            [Some(k)] if k.numeric() || matches!(k, BuiltinKind::Char | BuiltinKind::String) => {
+                Ok(target.clone())
+            }
+            _ => Err(BuiltinGap::Undecided),
+        },
+    }
+}
+
+/// One of the two constraints [`satisfies`] decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Needs {
+    Equality,
+    Comparison,
+}
+
+/// What is known of a type against `equality` or `comparison`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// It satisfies the constraint.
+    Holds,
+    /// It provably does not: F# reports FS0001.
+    Fails,
+    /// It is on neither list.
+    Undecided,
+    /// It still holds a type variable, and nothing else decides it.
+    Open,
+}
+
+/// Whether `ty` satisfies `needs`, by a **closed** list read off FCS's
+/// `SolveTypeSupportsEquality` / `SolveTypeSupportsComparison`
+/// (ConstraintSolver.fs):
+///
+/// - a function type fails both (`SpecialNotEquatableHeadType`; and
+///   `FSharpFunc` implements no `IComparable`);
+/// - a tuple or an array satisfies either exactly when its elements do
+///   (`SpecialComparableHeadType`); so do `nativeint` and `unativeint`, which
+///   have no elements;
+/// - the sealed primitives and `string` satisfy both: none carries
+///   `[<NoEquality>]` or `[<NoComparison>]`, and each implements
+///   `IComparable`; `unit` satisfies equality;
+/// - `obj` satisfies equality (`Object.Equals`) and fails comparison;
+/// - a non-generic type of an assembly that is not F#-authored satisfies
+///   equality unless it carries `[<NoEquality>]`: FCS reads it through IL, so it
+///   is no F# structural type that could lack generated equality.
+///
+/// Everything else is [`Verdict::Undecided`]: an F# record, union or struct
+/// (its equality is derived from its fields and attributes), a generic type
+/// (its parameters may be `EqualityConditionalOn`), and comparison on any
+/// other named type (it turns on the interface hierarchy). A type parameter
+/// left in the type is [`Verdict::Open`] when nothing else decides.
+fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
+    match ty {
+        Ty::Var(_) => Verdict::Open,
+        // A rigid type parameter, which satisfies a constraint only if it
+        // declares it. None reaches a binding's table today (an annotation
+        // naming a type parameter declines), so this is the reading that stays
+        // sound if one does.
+        Ty::Param(_) => Verdict::Undecided,
+        Ty::Fun { .. } => Verdict::Fails,
+        Ty::Tuple(elems) => elems.iter().fold(Verdict::Holds, |acc, e| {
+            worse(acc, satisfies(env, e, needs))
+        }),
+        Ty::Array { elem, .. } => satisfies(env, elem, needs),
+        Ty::Named { path, args } if args.is_empty() => {
+            if is_sealed_primitive(path) {
+                if needs == Needs::Comparison && *ty == Ty::named(UNIT) {
+                    return Verdict::Undecided;
+                }
+                return Verdict::Holds;
+            }
+            if *ty == Ty::named(OBJECT) {
+                return match needs {
+                    Needs::Equality => Verdict::Holds,
+                    Needs::Comparison => Verdict::Fails,
+                };
+            }
+            if needs == Needs::Comparison {
+                return Verdict::Undecided;
+            }
+            let Some((name, namespace)) = path.split_last() else {
+                return Verdict::Undecided;
+            };
+            match env.lookup_type_if_certain(namespace, name, 0) {
+                Some(handle) => {
+                    let entity = env.entity(handle);
+                    if entity.member_measures == MemberMeasures::NotFSharp
+                        && entity.generic_parameters.is_empty()
+                        && !entity.is_no_equality
+                    {
+                        Verdict::Holds
+                    } else {
+                        Verdict::Undecided
+                    }
+                }
+                None => Verdict::Undecided,
+            }
+        }
+        Ty::Named { .. } => Verdict::Undecided,
+    }
+}
+
+/// The worst verdict ([`satisfies`]) over `constrained`, each variable with
+/// the constraints it carries, as `table` resolves them.
+fn constraint_verdict_of(
+    table: &mut InferTable,
+    env: &AssemblyEnv,
+    constrained: &[(TyVid, EqualityComparison)],
+) -> Verdict {
+    let mut verdict = Verdict::Holds;
+    for &(v, req) in constrained {
+        let ty = table.resolve(&Ty::Var(v));
+        for (needed, wanted) in [
+            (Needs::Equality, req.equality),
+            (Needs::Comparison, req.comparison),
+        ] {
+            if wanted {
+                verdict = worse(verdict, satisfies(env, &ty, needed));
+            }
+        }
+    }
+    verdict
+}
+
+/// The verdict of a type made of parts with verdicts `a` and `b`: any part
+/// failing fails it, then any undecided, then any open.
+fn worse(a: Verdict, b: Verdict) -> Verdict {
+    let rank = |v| match v {
+        Verdict::Fails => 3,
+        Verdict::Undecided => 2,
+        Verdict::Open => 1,
+        Verdict::Holds => 0,
+    };
+    if rank(b) > rank(a) { b } else { a }
 }
 
 /// The highest array rank F# accepts in an annotation.
@@ -6021,17 +6602,17 @@ mod tests {
     #[test]
     fn monomorphic_function_types_via_condition() {
         // `c` is grounded to bool by the condition; the body returns int; so the
-        // function is `bool -> int`, published on `f`. The parameter `c` is *not*
-        // published on its own — its type lives inside the function type.
+        // function is `bool -> int`, published on `f`, and `c` publishes its
+        // slot in that type.
         let types = def_types("module M\nlet f c = if c then 1 else 2\n");
         assert_eq!(
             types.get("f").map(String::as_str),
             Some("System.Boolean -> System.Int32")
         );
         assert_eq!(
-            types.get("c"),
-            None,
-            "parameter types are not published standalone"
+            types.get("c").map(String::as_str),
+            Some("System.Boolean"),
+            "a parameter publishes its slot in the published function type"
         );
     }
 
@@ -6075,18 +6656,17 @@ mod tests {
         // Stage R2-b: a table-annotated parameter `(c: bool)` grounds its slot
         // *and* binder from the annotation (a parameter annotation is exact in
         // F# — subsumption applies at call sites, not the binder), so the
-        // function types `bool -> int`. The parameter is still never published
-        // standalone. (Flipped from the pre-R2-b
-        // `annotated_parameter_defers_function_and_param`.)
+        // function types `bool -> int`, and the parameter publishes its
+        // annotation.
         let types = def_types("module M\nlet f (c: bool) = if c then 1 else 2\n");
         assert_eq!(
             types.get("f").map(String::as_str),
             Some("System.Boolean -> System.Int32")
         );
         assert_eq!(
-            types.get("c"),
-            None,
-            "parameters are never published standalone"
+            types.get("c").map(String::as_str),
+            Some("System.Boolean"),
+            "an annotated parameter publishes its annotation"
         );
     }
 
@@ -6173,7 +6753,11 @@ mod tests {
             types.get("h").map(String::as_str),
             Some("System.Int32 -> System.Int32")
         );
-        assert_eq!(types.get("x"), None, "parameters stay unpublished");
+        assert_eq!(
+            types.get("x").map(String::as_str),
+            Some("System.Int32"),
+            "the parameter publishes its slot"
+        );
     }
 
     #[test]
@@ -6394,8 +6978,7 @@ mod tests {
         /// else <b>` is `bool -> <that primitive>`: the condition grounds the
         /// parameter to `bool` (inside the function type) and the then-branch's
         /// literal is the return, for every suffix/value — the curried function
-        /// type is built consistently. The parameter `c` is not published on its
-        /// own.
+        /// type is built consistently. The parameter `c` publishes `bool`.
         #[test]
         fn condition_grounded_function_is_bool_to_literal(
             // Bounded to the byte range so every suffix (incl. `uy`) is in range.
@@ -6412,7 +6995,7 @@ mod tests {
                 Some(want.as_str()),
                 "src={:?}", src
             );
-            proptest::prop_assert_eq!(types.get("c"), None);
+            proptest::prop_assert_eq!(types.get("c").map(String::as_str), Some("System.Boolean"));
         }
     }
 
@@ -6903,7 +7486,8 @@ mod tests {
         // is never retyped to `int` through the annotation-vs-application
         // conflict, and its synth-mode tuple use reads off `string` (FCS
         // agrees). `h` still emits (`string -> string * int` — the result is
-        // fixed by `f`'s own shape), and the params are never published.
+        // fixed by `f`'s own shape), and each parameter publishes its
+        // annotation, which FCS keeps on the binder.
         let src = "module M\nlet f (x: int) = x\nlet h (y: string) = (y, f y)\n";
         let types = def_types(src);
         assert_eq!(
@@ -6915,11 +7499,11 @@ mod tests {
             Some("System.String -> System.String * System.Int32")
         );
         assert_eq!(
-            types.get("y"),
-            None,
-            "the annotated param is never published standalone"
+            types.get("y").map(String::as_str),
+            Some("System.String"),
+            "the annotated param publishes its annotation"
         );
-        assert_eq!(types.get("x"), None);
+        assert_eq!(types.get("x").map(String::as_str), Some("System.Int32"));
         // The precise leak check: the tuple's `y` element must read off the
         // annotation's `string`, not the wake's `int`. (An `Int32` render does
         // legitimately appear elsewhere — `f`'s body use of `x` — so the

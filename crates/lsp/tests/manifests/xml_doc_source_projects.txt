@@ -1,0 +1,97 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi --test all xml_doc_source_diff::project::pinned -- --ignored
+TypeEquality/TypeEquality/Teq.fs declined NoDeclaration fcs-none x10
+TypeEquality/TypeEquality/TypeEquality.fsproj oracle-errors=0 agree-doc=133 cross-file-doc=0 agree-none=323
+WoofWare.Expect/WoofWare.Expect/Domain.fs declined ArityMismatch fcs-none x7
+WoofWare.Expect/WoofWare.Expect/Domain.fs declined QualifierArityMismatch fcs-none x7
+WoofWare.Expect/WoofWare.Expect/Dot.fs:51:15 IFileSystem Type use declined ConstructorCall fcs-doc
+WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj oracle-errors=0 agree-doc=211 cross-file-doc=8 agree-none=1702
+WoofWare.Incremental/WoofWare.Incremental/Incremental.fs declined ConstructorCall fcs-none x3
+WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined ArityMismatch fcs-none x14
+WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined QualifierArityMismatch fcs-none x14
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs declined QualifierArityMismatch fcs-none x10
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:27:39 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:30:50 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:35:11 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:36:11 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:39:43 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:40:11 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:56:11 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:57:11 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:58:11 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:78:9 Sequence Type use declined ArityMismatch fcs-doc
+WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined ArityMismatch fcs-none
+WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined QualifierArityMismatch fcs-none
+WoofWare.Incremental/WoofWare.Incremental/Types.fs declined ConstructorCall fcs-none x7
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj oracle-errors=0 agree-doc=167 cross-file-doc=3 agree-none=6339
+WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj oracle-errors=0 agree-doc=98 cross-file-doc=8 agree-none=758
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:156:11 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:157:11 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:158:11 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:160:11 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:162:11 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:172:11 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:174:11 Abstract UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:175:11 Il UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MemberReference.fs declined QualifierArityMismatch fcs-none x2
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs declined QualifierArityMismatch fcs-none x2
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1000:17 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1000:17 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1011:17 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1011:17 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1013:17 Abstract UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1013:17 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1024:24 Il UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1024:24 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1035:25 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:1035:25 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:230:11 Il UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:230:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:231:11 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:231:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:232:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:232:11 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:233:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:233:11 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:234:11 Abstract UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:234:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:242:11 Il UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:242:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:242:34 Il UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:242:34 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:243:11 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:243:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:243:38 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:243:38 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:244:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:244:11 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:244:33 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:244:33 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:245:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:245:11 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:245:44 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:245:44 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:246:11 Abstract UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:246:11 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:246:34 Abstract UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:246:34 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:998:17 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/MethodInfo.fs:998:17 MethodBody Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeConcretisation.fs declined QualifierArityMismatch fcs-none x2
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeConcretisation.fs:1117:17 Il UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeConcretisation.fs:1118:42 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeConcretisation.fs:1119:37 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeConcretisation.fs:1120:48 RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeConcretisation.fs:1121:38 Abstract UnionCase use declined QualifierArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs declined QualifierArityMismatch fcs-none x6
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:27:11 MethodReturnType Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:28:11 MethodReturnType Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:39:11 MethodReturnType Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:39:43 MethodReturnType Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:40:11 MethodReturnType Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:42:20 MethodReturnType Type use declined ArityMismatch fcs-doc
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeInfo.fs declined ConstructorCall fcs-none
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj oracle-errors=0 agree-doc=1213 cross-file-doc=222 agree-none=8260
+WoofWare.WeakHashTable/WoofWare.WeakHashTable/WeakHashTable.fs:84:15 WeakHashTableCrate Type use declined ConstructorCall fcs-doc
+WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj oracle-errors=0 agree-doc=52 cross-file-doc=0 agree-none=339

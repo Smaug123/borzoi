@@ -15,6 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use borzoi_oracle_harness::fcs_position::LineIndex;
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
 use borzoi::handlers::{served_resolution_with_range, smallest_resolution_with_range};
@@ -31,10 +32,13 @@ use borzoi_sema::test_support::{
     assembly_full_name_agrees, certified_expected as certified_structural, logical_full_name,
 };
 use borzoi_sema::{
-    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, DeferredReason, InferredFile,
-    OpenOpacity, Resolution, ResolvedFile, ResolvedProject, infer_file,
+    AssemblyEnv, DeclineCause, DeclineTier, Def, DeferredReason, InferredFile, OpenOpacity,
+    Resolution, ResolvedFile, ResolvedProject, infer_file,
 };
 
+use crate::deferral_shape::{DeferralCause, DeferralShape};
+
+pub mod deferral_shape;
 pub mod handler_diff;
 pub mod lsp_client;
 pub mod manifest;
@@ -1271,25 +1275,32 @@ pub fn write_json_report_line(path: &Path, summary: &CorpusSummary) -> std::io::
 ///
 /// `unattributed` is not a residual to be inferred. A decline site is a claim
 /// and its absence is not, so the count of declines no guard accounted for is
-/// carried explicitly — it is the number that says how much of the census is
-/// actually working, and driving it down is empirical rather than a matter of
-/// finding uncovered call sites by inspection.
+/// carried explicitly. Those are then split by
+/// [`DeferralShape`] — the model the resolver
+/// lacks where they sit — and what no shape explains either is carried as
+/// `unexplained`: the number that says how much of the census is actually
+/// working, and driving it down is empirical rather than a matter of finding
+/// uncovered call sites by inspection. `unattributed` is always the shaped
+/// declines plus `unexplained`.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct DeclineCensus {
     by_cause: BTreeMap<&'static str, usize>,
     by_tier: BTreeMap<&'static str, usize>,
     by_pair: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
+    by_shape: BTreeMap<&'static str, usize>,
     /// Declines with no recorded site.
     pub unattributed: usize,
     /// Declines with one — the denominator `unattributed` is read against.
     pub attributed: usize,
+    /// Declines with neither a site nor a shape.
+    pub unexplained: usize,
 }
 
 impl DeclineCensus {
-    /// Record one decline, attributed or not.
-    pub fn observe(&mut self, site: Option<DeclineSite>) {
-        match site {
-            Some(site) => {
+    /// Record one decline, by what it is attributed to.
+    pub fn observe(&mut self, cause: DeferralCause) {
+        match cause {
+            DeferralCause::Guard(site) => {
                 self.attributed += 1;
                 *self.by_cause.entry(site.cause.label()).or_default() += 1;
                 *self.by_tier.entry(site.tier.label()).or_default() += 1;
@@ -1300,8 +1311,29 @@ impl DeclineCensus {
                     .entry(site.tier.label())
                     .or_default() += 1;
             }
-            None => self.unattributed += 1,
+            DeferralCause::Shape(shape) => {
+                self.unattributed += 1;
+                *self.by_shape.entry(shape.label()).or_default() += 1;
+            }
+            DeferralCause::Unexplained => {
+                self.unattributed += 1;
+                self.unexplained += 1;
+            }
         }
+    }
+
+    /// Every shape with its count, including the zeros — see
+    /// [`Self::causes`].
+    pub fn shapes(&self) -> BTreeMap<&'static str, usize> {
+        DeferralShape::ALL
+            .iter()
+            .map(|s| {
+                (
+                    s.label(),
+                    self.by_shape.get(s.label()).copied().unwrap_or(0),
+                )
+            })
+            .collect()
     }
 
     fn add_assign(&mut self, other: &DeclineCensus) {
@@ -1317,8 +1349,12 @@ impl DeclineCensus {
                 *into.entry(tier).or_default() += v;
             }
         }
+        for (k, v) in &other.by_shape {
+            *self.by_shape.entry(k).or_default() += v;
+        }
         self.unattributed += other.unattributed;
         self.attributed += other.attributed;
+        self.unexplained += other.unexplained;
     }
 
     /// Every cause with its count, **including the zeros** — see the type docs.
@@ -1488,14 +1524,14 @@ impl Comparison {
         match item.outcome {
             ItemOutcome::Match(Graded::Project, _) => self.matches += 1,
             ItemOutcome::Match(Graded::Assembly, _) => self.assembly_matches += 1,
-            ItemOutcome::Deferral { graded, site, .. } => match graded {
+            ItemOutcome::Deferral { graded, cause, .. } => match graded {
                 Graded::Project => {
                     self.deferrals += 1;
-                    self.project_decline_census.observe(site);
+                    self.project_decline_census.observe(cause);
                 }
                 Graded::Assembly => {
                     self.assembly_deferrals += 1;
-                    self.assembly_decline_census.observe(site);
+                    self.assembly_decline_census.observe(cause);
                 }
             },
             // Counted by the detailed lists' lengths.
@@ -1672,12 +1708,12 @@ pub enum SetAside {
 pub enum ItemOutcome {
     /// The served answer names the oracle's declaration.
     Match(Graded, AnswerSurface),
-    /// The LSP served no claim at the record's cursor. `site` is the guard that
-    /// declined at the record's own range, if one recorded itself.
+    /// The LSP served no claim at the record's cursor. `cause` is what it is
+    /// attributed to ([`DeferralCause`]): the guard at the record's range, else a shape.
     Deferral {
         graded: Graded,
         served: ServedDecline,
-        site: Option<DeclineSite>,
+        cause: DeferralCause,
     },
     /// The served answer names something else. Each also has a detailed entry
     /// in [`Comparison::divergences`] or [`Comparison::assembly_divergences`].
@@ -1947,11 +1983,13 @@ impl CorpusSummary {
             };
             writeln!(
                 out,
-                "project-corpus-diff {which} declines: {} attributed | {} unattributed | {} | tiers {}",
+                "project-corpus-diff {which} declines: {} attributed | {} unattributed ({} unexplained) | {} | tiers {} | shapes {}",
                 census.attributed,
                 census.unattributed,
+                census.unexplained,
                 nonzero(census.causes()),
                 nonzero(census.tiers()),
+                nonzero(census.shapes()),
             )
             .expect("write String");
         }
@@ -2823,6 +2861,11 @@ struct CorpusDeclineCensus {
     /// The pairs the two marginals above cannot reconstruct — see
     /// [`DeclineCensus::pairs`].
     by_pair: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
+    /// What the `unattributed` declines are waiting on, every
+    /// [`DeferralShape`] including the zeros.
+    by_shape: BTreeMap<&'static str, usize>,
+    /// The `unattributed` declines no shape explains either.
+    unexplained: usize,
 }
 
 /// The census on the axis the deferral totals already have. A merged census
@@ -2842,6 +2885,8 @@ impl CorpusDeclineCensus {
             by_cause: census.causes(),
             by_tier: census.tiers(),
             by_pair: census.pairs(),
+            by_shape: census.shapes(),
+            unexplained: census.unexplained,
         }
     }
 }
@@ -3606,7 +3651,7 @@ fn grade_use(
             return ItemOutcome::Deferral {
                 graded,
                 served,
-                site: rf.decline_site(range),
+                cause: DeferralCause::of(loaded.parses.files[file_idx].file.syntax(), rf, range),
             };
         }
         ServedAnswer::Committed(res, surface) => {
@@ -3676,7 +3721,7 @@ fn served_answer_agrees(
         }
         (Resolution::Entity(_) | Resolution::Member { .. }, Err(expected)) => {
             let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-            canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly)
+            assembly_names_agree(&loaded.assembly_env, res, &actual, expected)
                 && assembly_full_name_agrees_for(
                     &loaded.assembly_env,
                     res,
@@ -4015,6 +4060,37 @@ fn canonical_assembly(name: &str) -> &str {
     }
 }
 
+/// Whether the oracle's assembly `expected` names the entity our answer `res`
+/// lives in (`actual`): the same name, up to [`canonical_assembly`], or a
+/// facade whose type forwarders send the answer's declaring type to it
+/// ([`assembly_names_type`](borzoi_sema::test_support::assembly_names_type)).
+///
+/// FCS names a type by the assembly it reached it through. A corelib type
+/// FSharp.Core's references introduce — `string`, and `System.String` in an
+/// annotation — is named through the `netstandard` facade FSharp.Core
+/// compiles against, so `name.Length` is `netstandard`'s, while the same
+/// member on a `String` reached by `open System` is `System.Runtime`'s. One
+/// entity, two names; the forwarder table is what proves it the same entity,
+/// and the full name must still agree.
+fn assembly_names_agree(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &AssemblyDecl,
+    expected: &AssemblyDecl,
+) -> bool {
+    if canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly) {
+        return true;
+    }
+    let declaring = match res {
+        Resolution::Entity(handle) | Resolution::Member { parent: handle, .. } => handle,
+        Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => return false,
+    };
+    borzoi_sema::test_support::assembly_names_type(env, &expected.assembly, declaring)
+}
+
 /// [`assembly_full_name_agrees`] against the oracle's rendered name **or** the
 /// structural one our own resolution certifies — see [`certified_expected`].
 ///
@@ -4052,7 +4128,7 @@ fn assembly_resolution_confirms_decl(
     expected: &AssemblyDecl,
 ) -> bool {
     let actual = assembly_resolution_decl(env, res);
-    if canonical_assembly(&actual.assembly) != canonical_assembly(&expected.assembly) {
+    if !assembly_names_agree(env, res, &actual, expected) {
         return false;
     }
     // The oracle's rendered name and the structural one it certifies are both
@@ -4357,52 +4433,6 @@ fn range_pair(range: TextRange) -> (usize, usize) {
         u32::from(range.start()) as usize,
         u32::from(range.end()) as usize,
     )
-}
-
-struct LineIndex<'a> {
-    source: &'a str,
-    starts: Vec<usize>,
-}
-
-impl<'a> LineIndex<'a> {
-    fn new(source: &'a str) -> Self {
-        let mut starts = vec![0, 0];
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push(i + 1);
-            }
-        }
-        Self { source, starts }
-    }
-
-    fn offset(&self, line: u32, col: u32) -> usize {
-        let line = line as usize;
-        let col = col as usize;
-        if line >= self.starts.len() {
-            return self.source.len();
-        }
-        let base = self.starts[line];
-        let line_end = self
-            .starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-
-        let mut units = 0usize;
-        let mut byte_pos = base;
-        for ch in self.source[base..line_end].chars() {
-            if units >= col {
-                break;
-            }
-            let next_units = units + ch.len_utf16();
-            if next_units > col {
-                break;
-            }
-            units = next_units;
-            byte_pos += ch.len_utf8();
-        }
-        byte_pos.min(self.source.len())
-    }
 }
 
 /// Recursively collect `.fsproj` candidates for the ignored corpus runner.
@@ -5020,7 +5050,7 @@ fn collect_fsprojs_into(dir: &Path, collection: &mut FsprojCollection) {
 mod tests {
     use super::*;
     use borzoi_assembly::{EntityKind, UnionCases};
-    use borzoi_sema::EntityHandle;
+    use borzoi_sema::{DeclineSite, EntityHandle};
     use proptest::prelude::*;
     use std::ffi::OsString;
 
@@ -5242,7 +5272,7 @@ mod tests {
         ])
     }
 
-    fn fixture_entity(
+    pub(crate) fn fixture_entity(
         name: &str,
         kind: EntityKind,
         arity: usize,
@@ -5940,6 +5970,50 @@ mod tests {
         assert_eq!(
             parsed[0].uses[0].decl,
             UseDecl::OutsideProject(PathBuf::from(foreign))
+        );
+    }
+
+    /// FCS reads a source with its byte-order mark stripped, so a line-1
+    /// column counts from the byte after it; our text keeps the mark. A use
+    /// and a declaration on line 1 must land on the bytes of the name, not one
+    /// character early.
+    #[test]
+    fn a_line_one_range_counts_from_after_a_byte_order_mark() {
+        let path = PathBuf::from("/tmp/corpus_diff_parse_bom/Program.fs");
+        let src: Arc<str> = Arc::from("\u{feff}module A\nlet x = 1\n");
+        let json = format!(
+            r#"{{
+  "Files": [
+    {{
+      "Path": "{0}",
+      "Diagnostics": [],
+      "Uses": [
+        {{
+          "SymbolName": "A",
+          "Range": {{ "File": "{0}", "Start": {{ "Line": 1, "Col": 7 }}, "End": {{ "Line": 1, "Col": 8 }} }},
+          "IsFromDefinition": true,
+          "DeclRange": {{ "File": "{0}", "Start": {{ "Line": 1, "Col": 7 }}, "End": {{ "Line": 1, "Col": 8 }} }},
+          "Assembly": null,
+          "FullName": null
+        }}
+      ]
+    }}
+  ]
+}}"#,
+            path.display(),
+        );
+        let parsed =
+            parse_project_uses(&json, &[(path.clone(), src.clone())]).expect("parse project uses");
+        let a = src.find('A').expect("the module name");
+        let u = &parsed[0].uses[0];
+        assert_eq!((u.start, u.end), (a, a + 1));
+        assert_eq!(
+            u.decl,
+            UseDecl::InProject(DeclSite {
+                file: path,
+                start: a,
+                end: a + 1,
+            })
         );
     }
 
@@ -6861,6 +6935,64 @@ mod tests {
         assert_eq!(json["statistics"]["unoracled_or_pattern_aliases"], 3);
     }
 
+    /// The shapes and the unexplained residue reach all three surfaces — the
+    /// text summary, the JSONL report and the generator statistics — on both
+    /// sides of the census. A surface that missed one would read as "this never
+    /// happens" rather than "nobody plotted it".
+    #[test]
+    fn every_surface_carries_the_decline_shapes_and_the_unexplained_residue() {
+        let mut project = DeclineCensus::default();
+        project.observe(DeferralCause::Shape(DeferralShape::Qualifier));
+        project.observe(DeferralCause::Shape(DeferralShape::Qualifier));
+        project.observe(DeferralCause::Unexplained);
+        let mut assembly = DeclineCensus::default();
+        assembly.observe(DeferralCause::Shape(DeferralShape::Operator));
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison {
+            project_decline_census: project,
+            assembly_decline_census: assembly,
+            ..Comparison::default()
+        });
+
+        let text = summary.render_text_report();
+        assert!(
+            text.contains(
+                "project declines: 0 attributed | 3 unattributed (1 unexplained) |  | tiers  | shapes qualifier=2"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("assembly declines: 0 attributed | 1 unattributed (0 unexplained)"),
+            "{text}"
+        );
+
+        let report: serde_json::Value =
+            serde_json::from_str(&summary.render_json_report_line().expect("render"))
+                .expect("valid JSON");
+        let stats: serde_json::Value = serde_json::from_str(
+            &render_generator_summary(&summary, &generator_settings()).expect("render"),
+        )
+        .expect("valid JSON");
+        for census in [
+            &report["decline_census"],
+            &stats["statistics"]["decline_census"],
+        ] {
+            assert_eq!(census["project"]["by_shape"]["qualifier"], 2, "{census}");
+            assert_eq!(census["project"]["by_shape"]["operator"], 0, "{census}");
+            assert_eq!(census["project"]["unexplained"], 1, "{census}");
+            assert_eq!(census["assembly"]["by_shape"]["operator"], 1, "{census}");
+            assert_eq!(census["assembly"]["unexplained"], 0, "{census}");
+            assert_eq!(
+                census["project"]["by_shape"]
+                    .as_object()
+                    .expect("a map")
+                    .len(),
+                DeferralShape::ALL.len()
+            );
+        }
+    }
+
     fn generator_settings() -> ProjectCandidateSettings {
         ProjectCandidateSettings {
             source: ProjectCandidateSource::List(vec![PathBuf::from("/checkout/A.fsproj")]),
@@ -6982,11 +7114,12 @@ mod tests {
     #[test]
     fn a_cause_that_did_not_occur_is_still_a_key() {
         let mut census = DeclineCensus::default();
-        census.observe(Some(DeclineSite {
+        census.observe(DeferralCause::Guard(DeclineSite {
             cause: DeclineCause::OpaqueOpen,
             tier: DeclineTier::PreWalk,
         }));
-        census.observe(None);
+        census.observe(DeferralCause::Shape(DeferralShape::TypeParameter));
+        census.observe(DeferralCause::Unexplained);
 
         let causes = census.causes();
         assert_eq!(causes.len(), DeclineCause::ALL.len());
@@ -7020,10 +7153,19 @@ mod tests {
             0
         );
 
-        // The unattributed decline is carried, not silently dropped into the
-        // attributed maps — it is the number that says how much of the census
-        // is working.
-        assert_eq!((census.attributed, census.unattributed), (1, 1));
+        // The shapes are dense too, and only ever count unattributed declines.
+        let shapes = census.shapes();
+        assert_eq!(shapes.len(), DeferralShape::ALL.len());
+        assert_eq!(shapes[DeferralShape::TypeParameter.label()], 1);
+        assert_eq!(shapes[DeferralShape::Qualifier.label()], 0);
+
+        // The unattributed declines are carried, not silently dropped into the
+        // attributed maps, and the one no shape explains is carried apart — it
+        // is the number that says how much of the census is working.
+        assert_eq!(
+            (census.attributed, census.unattributed, census.unexplained),
+            (1, 2, 1)
+        );
     }
 
     /// Every leaf of `statistics` must be a number, on every run, whatever the

@@ -26,15 +26,19 @@
 //!   explicit caller-supplied global packages root.
 //! - [`assets`] — NuGet's content model, restricted to compile assets: which
 //!   assemblies of a resolved package a project actually compiles against.
+//! - [`dgspec`] — the dependency-graph spec MSBuild hands to restore, read as
+//!   NuGet's own reader reads it, or declined.
 //!
 //! This crate never reads `$NUGET_PACKAGES`, `$HOME`, or NuGet.config by
 //! itself. Callers own environment/config discovery and pass concrete roots
 //! and typed inputs here.
 //!
 //! Self-contained by design: no dependencies on the other workspace crates,
-//! reusable outside this repo.
+//! reusable outside this repo. Its crates.io dependencies are `roxmltree`
+//! (nuspecs) and `serde`/`serde_json` (the dgspec).
 
 pub mod assets;
+pub mod dgspec;
 pub mod framework;
 pub mod package;
 pub mod range;
