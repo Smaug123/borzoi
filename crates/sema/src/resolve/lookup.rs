@@ -224,15 +224,28 @@ impl<'a> Resolver<'a> {
             .assemblies
             .open_static_entries(handle)
             .into_iter()
-            .map(|(name, idx)| {
-                let res = match idx {
-                    Some(idx) if certain => Resolution::Member {
+            .map(|(name, idx)| match idx {
+                Some(idx) if certain => ScopeEntry::opened(
+                    name.to_string(),
+                    Resolution::Member {
                         parent: handle,
                         idx,
                     },
-                    _ => Resolution::Deferred(DeferredReason::UnboundName),
-                };
-                ScopeEntry::opened(name.to_string(), res, generation, open_pos)
+                    generation,
+                    open_pos,
+                ),
+                Some(_) => ScopeEntry::opened_declined(
+                    name.to_string(),
+                    DeclineCause::OpenFoldResidue,
+                    generation,
+                    open_pos,
+                ),
+                None => ScopeEntry::opened_declined(
+                    name.to_string(),
+                    DeclineCause::OpenedOverloadSet,
+                    generation,
+                    open_pos,
+                ),
             })
             .collect();
         self.module_frame().entries.extend(entries);
@@ -394,7 +407,7 @@ impl<'a> Resolver<'a> {
         for surface in &mut group.surfaces {
             for entry in &mut surface.entries {
                 if self.block_local_shadow(&entry.name) {
-                    entry.target = OpenFoldTarget::Opaque;
+                    entry.target = OpenFoldTarget::Opaque(DeclineCause::BlockLocalShadow);
                 }
             }
         }
@@ -445,8 +458,7 @@ impl<'a> Resolver<'a> {
             .map(|(i, _)| from + i)
             .collect();
         for i in shadowed {
-            self.module_frame().entries[i].resolution =
-                Resolution::Deferred(DeferredReason::UnboundName);
+            self.module_frame().entries[i].withdraw(DeclineCause::BlockLocalShadow);
         }
     }
 
@@ -476,7 +488,7 @@ impl<'a> Resolver<'a> {
         for surface in &mut group.surfaces {
             for entry in &mut surface.entries {
                 if implicit_screened || self.preceding.sig_screened_open_name(gp, &entry.name) {
-                    entry.target = OpenFoldTarget::Opaque;
+                    entry.target = OpenFoldTarget::Opaque(DeclineCause::SignatureScreened);
                 }
             }
         }
@@ -552,28 +564,30 @@ impl<'a> Resolver<'a> {
         let mut entries: Vec<ScopeEntry> = Vec::new();
         for s in &surfaces {
             for e in &s.entries {
-                let demoted = demote || (demote_cases && e.is_case) || collided.contains(&e.name);
-                let res = if demoted {
-                    Resolution::Deferred(DeferredReason::UnboundName)
+                let demotion = if demote || (demote_cases && e.is_case) {
+                    Some(DeclineCause::OpenFoldResidue)
+                } else if collided.contains(&e.name) {
+                    Some(DeclineCause::OpenFoldCollision)
                 } else {
-                    match e.target {
-                        OpenFoldTarget::Member { parent, idx } => {
-                            Resolution::Member { parent, idx }
-                        }
-                        OpenFoldTarget::Entity(h) => Resolution::Entity(h),
-                        OpenFoldTarget::Opaque => Resolution::Deferred(DeferredReason::UnboundName),
+                    None
+                };
+                let demoted = demotion.is_some();
+                let answer = match (demotion, e.target) {
+                    (Some(cause), _) | (None, OpenFoldTarget::Opaque(cause)) => Err(cause),
+                    (None, OpenFoldTarget::Member { parent, idx }) => {
+                        Ok(Resolution::Member { parent, idx })
+                    }
+                    (None, OpenFoldTarget::Entity(h)) => Ok(Resolution::Entity(h)),
+                };
+                let mut entry = match answer {
+                    Ok(res) => ScopeEntry::opened(e.name.clone(), res, generation, open_pos),
+                    Err(cause) => {
+                        ScopeEntry::opened_declined(e.name.clone(), cause, generation, open_pos)
                     }
                 };
-                let mut entry = match e.space {
-                    // Active-pattern tags live in the constructor namespace only —
-                    // an expression-position use never sees them.
-                    OpenFoldSpace::Pattern => {
-                        ScopeEntry::opened_pattern_only(e.name.clone(), res, generation, open_pos)
-                    }
-                    OpenFoldSpace::Value | OpenFoldSpace::Both => {
-                        ScopeEntry::opened(e.name.clone(), res, generation, open_pos)
-                    }
-                };
+                // Active-pattern tags live in the constructor namespace only —
+                // an expression-position use never sees them.
+                entry.pattern_only = e.space == OpenFoldSpace::Pattern;
                 entry.opened_case = e.is_case;
                 // A val that may be a CLI literal / decimal constant contests the
                 // pattern namespace as a constant pattern (see
@@ -1067,8 +1081,7 @@ impl<'a> Resolver<'a> {
             if self.project_auto_open_here_nests_a_module(&namespace) {
                 let count = self.module_frame().entries.len();
                 for i in before..count {
-                    self.module_frame().entries[i].resolution =
-                        Resolution::Deferred(DeferredReason::UnboundName);
+                    self.module_frame().entries[i].withdraw(DeclineCause::OpenFoldResidue);
                 }
             }
         }
@@ -2016,7 +2029,7 @@ impl<'a> Resolver<'a> {
         // both).
         let mut value_winners: Vec<(String, ItemId)> = Vec::new();
         let mut ctor_winners: Vec<(String, ItemId)> = Vec::new();
-        let mut value_deferrals: Vec<String> = Vec::new();
+        let mut value_deferrals: Vec<(String, DeclineCause)> = Vec::new();
         let mut deferred_straddles: Vec<String> = Vec::new();
         if !direct_tier.is_empty() {
             let contributions = self.submodule_contributions_at(namespace);
@@ -2085,7 +2098,7 @@ impl<'a> Resolver<'a> {
                     let submodule_wins_value =
                         !type_present && sub.value_slot.is_some_and(|v| v >= direct_file);
                     if !submodule_wins_value {
-                        value_deferrals.push(name.clone());
+                        value_deferrals.push((name.clone(), DeclineCause::OpenedTypeName));
                     }
                 } else if !direct_wins_ctor && sub.value_slot.is_some() {
                     // The direct case wins the value slot but LOSES the constructor
@@ -2099,7 +2112,7 @@ impl<'a> Resolver<'a> {
                     // the direct value, which should win — and a value-only re-push is
                     // not expressible, so DEFER the value (a sound over-defer of an
                     // exotic collision; the constructor namespace still resolves).
-                    value_deferrals.push(name.clone());
+                    value_deferrals.push((name.clone(), DeclineCause::OpenFoldCollision));
                 }
             }
         }
@@ -2125,9 +2138,9 @@ impl<'a> Resolver<'a> {
                 let entries: Vec<ScopeEntry> = evicting_types
                     .into_iter()
                     .map(|name| {
-                        ScopeEntry::opened(
+                        ScopeEntry::opened_declined(
                             name,
-                            Resolution::Deferred(DeferredReason::UnboundName),
+                            DeclineCause::OpenedTypeName,
                             generation,
                             open_pos,
                         )
@@ -2171,18 +2184,17 @@ impl<'a> Resolver<'a> {
                 ));
             count += 1;
         }
-        for name in value_deferrals {
+        for (name, cause) in value_deferrals {
             // Value-namespace-only deferral: an ordinary `Deferred` (NOT
             // `opened_case`, NOT `pattern_only`) shadows the expression slot so a
             // use defers, while `case_reference` reads it as a non-case and scans
             // past it to the constructor outcome — so a pattern the type does not
             // contest still resolves.
-            self.module_frame().entries.push(ScopeEntry::opened(
-                name,
-                Resolution::Deferred(DeferredReason::UnboundName),
-                generation,
-                open_pos,
-            ));
+            self.module_frame()
+                .entries
+                .push(ScopeEntry::opened_declined(
+                    name, cause, generation, open_pos,
+                ));
             count += 1;
         }
         for name in deferred_straddles {
@@ -2192,9 +2204,9 @@ impl<'a> Resolver<'a> {
             // earlier submodule's real case); `opened_case = true` short-circuits
             // it — sound even between two plain values, since Deferred is never
             // wrong.
-            let mut entry = ScopeEntry::opened(
+            let mut entry = ScopeEntry::opened_declined(
                 name,
-                Resolution::Deferred(DeferredReason::UnboundName),
+                DeclineCause::OpenFoldResidue,
                 generation,
                 open_pos,
             );
@@ -2283,6 +2295,23 @@ impl<'a> Resolver<'a> {
     /// is in scope (including a require-qualified case — never added — or one in a
     /// sibling namespace), so a caller keeps the decline-and-drop behaviour for a
     /// genuine maybe-var head.
+    /// A **provisional** pattern head (`None` in `match o with None -> …`): a
+    /// constructor-shaped name that is a case reference when a case of it is
+    /// in scope, and otherwise a binder this pass drops. Records the case it
+    /// references; where none commits, records which guard declined it, if one
+    /// did ([`Self::bare_case_decline`]).
+    pub(super) fn resolve_provisional_case_head(&mut self, name: &str, range: TextRange) {
+        let res = self.case_reference(name);
+        if let Some(res) = res {
+            self.record(range, res);
+        }
+        if res.is_none_or(|r| matches!(r, Resolution::Deferred(_)))
+            && let Some(cause) = self.bare_case_decline(name, true)
+        {
+            self.record_decline(range, DeclineSite::pre_walk(cause));
+        }
+    }
+
     pub(super) fn case_reference(&self, name: &str) -> Option<Resolution> {
         // A bare head: a maybe-literal value met before the case defers it
         // (`constant_shadow_defers` — FCS's `ePatItems` holds literal values
@@ -2322,6 +2351,32 @@ impl<'a> Resolver<'a> {
         name: &str,
         constant_shadow_defers: bool,
     ) -> Option<&ScopeEntry> {
+        self.case_reference_scan(name, constant_shadow_defers).ok()
+    }
+
+    /// Which guard declined a **pattern-position** `name` — for the census
+    /// only. The constructor-namespace twin of [`Self::bare_value_decline`],
+    /// read off the same scan [`Self::case_reference`] makes: a guard that
+    /// stopped the scan, or the found entry's own [`ScopeEntry::decline`].
+    pub(super) fn bare_case_decline(
+        &self,
+        name: &str,
+        constant_shadow_defers: bool,
+    ) -> Option<DeclineCause> {
+        match self.case_reference_scan(name, constant_shadow_defers) {
+            Ok(entry) => entry.decline,
+            Err(cause) => cause,
+        }
+    }
+
+    /// The scan behind [`Self::case_reference_entry`]: the entry it resolves
+    /// to, or why it found none — the guard that stopped it, or `None` where
+    /// nothing in scope binds the name (or nothing classifies it).
+    fn case_reference_scan(
+        &self,
+        name: &str,
+        constant_shadow_defers: bool,
+    ) -> Result<&ScopeEntry, Option<DeclineCause>> {
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
@@ -2337,12 +2392,12 @@ impl<'a> Resolver<'a> {
                 // may include a shadowing constructor) is in scope, or when it is
                 // stale (a later hidden open bumped the generation).
                 if entry.from_open && self.opaque_value_open {
-                    return None;
+                    return Err(Some(DeclineCause::OpaqueOpen));
                 }
                 if entry.generation != self.open_generation {
                     // Stale — a later residue-bearing open may shadow it, a
                     // project case included (codex round 22): defer.
-                    return None;
+                    return Err(Some(DeclineCause::OpenBarrierStaled));
                 }
                 // An opened cross-file case from a *hidden* module is not trustworthy
                 // in pattern position — a hidden constructor of the same name could
@@ -2352,7 +2407,7 @@ impl<'a> Resolver<'a> {
                 if let Resolution::Item(id) = entry.resolution
                     && self.pattern_suppressed_case_ids.contains(&id)
                 {
-                    return None;
+                    return Err(None);
                 }
                 // An opened *assembly* case — a folded union case, exception
                 // constructor, or active-pattern tag ([`ScopeEntry::opened_case`]).
@@ -2361,10 +2416,10 @@ impl<'a> Resolver<'a> {
                 // *reference* — the name provably occupies the constructor
                 // namespace — just one with no committed target.
                 if entry.opened_case {
-                    return Some(entry);
+                    return Ok(entry);
                 }
                 match self.case_classification(entry.resolution) {
-                    Some(true) => return Some(entry),
+                    Some(true) => return Ok(entry),
                     // A **maybe-literal** value met before the case: a literal is
                     // a *constant pattern*, which DOES contest the constructor
                     // namespace (FCS's `ePatItems` holds cases and literal values,
@@ -2372,18 +2427,27 @@ impl<'a> Resolver<'a> {
                     // defer. Bare heads only: an applied literal pattern is
                     // FS3191-illegal, so the applied path keeps the case.
                     Some(false) if constant_shadow_defers && entry.maybe_constant_pattern => {
-                        return None;
+                        return Err(None);
                     }
                     // A **plain** value does not shadow a case in the constructor
                     // namespace (and an unattributed `let` provably cannot be a
                     // literal): keep scanning for an earlier case.
                     Some(false) => continue,
                     // Unclassifiable (cross-file `Item`): could be a shadowing case.
-                    None => return None,
+                    None => return Err(None),
                 }
             }
         }
-        None
+        Err(self.unfolded_implicit_surface(name))
+    }
+
+    /// [`DeclineCause::ImplicitSurfaceUnfolded`] when a bare `name` that no scope
+    /// entry binds is nonetheless supplied by an assembly surface F# opens
+    /// without a source `open`.
+    fn unfolded_implicit_surface(&self, name: &str) -> Option<DeclineCause> {
+        self.assemblies
+            .assembly_bare_value_surface_supplies(name)
+            .then_some(DeclineCause::ImplicitSurfaceUnfolded)
     }
 
     /// Entry-aware [`Self::case_classification`] of the **latest in-scope
@@ -3009,7 +3073,7 @@ impl<'a> Resolver<'a> {
             // already handled by the assembly-path resolution above. Forbid the
             // opened-type constructor fallback so a declined type-qualifier does
             // not re-resolve the head to a colliding opened assembly type.
-            self.resolve_name_use(first, false);
+            self.resolve_path_head_use(first);
             // An opaque `open` kept the assembly walk from running at all, and
             // the head found nothing in scope either: the binding the walk
             // might have made is lost, so the census names the guard rather
@@ -4924,6 +4988,16 @@ impl<'a> Resolver<'a> {
     /// rules). Exists so [`Self::head_entry_staled`] can distinguish "no entry
     /// at all" from "an entry the barrier staled".
     fn latest_entry(&self, name: &str) -> Option<&ScopeEntry> {
+        self.latest_entry_noting_withdrawals(name).0
+    }
+
+    /// [`Self::latest_entry`], and whether the walk passed over an **opened**
+    /// entry of the name because an [`opaque_value_open`](Self::opaque_value_open)
+    /// is in scope — the one skip that withdraws a name the walk would
+    /// otherwise have found. One walk, so the census
+    /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
+    fn latest_entry_noting_withdrawals(&self, name: &str) -> (Option<&ScopeEntry>, bool) {
+        let mut withdrawn_by_opaque_open = false;
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
@@ -4934,6 +5008,7 @@ impl<'a> Resolver<'a> {
                 }
                 if entry.from_open && self.opaque_value_open {
                     // An opaque open could shadow this opened name.
+                    withdrawn_by_opaque_open = true;
                     continue;
                 }
                 if let Resolution::Local(id) = entry.resolution
@@ -4941,10 +5016,33 @@ impl<'a> Resolver<'a> {
                 {
                     continue; // pattern-only: not a value in expression position
                 }
-                return Some(entry);
+                return (Some(entry), withdrawn_by_opaque_open);
             }
         }
-        None
+        (None, withdrawn_by_opaque_open)
+    }
+
+    /// Which guard declined a **bare** expression-position `name` that
+    /// [`Self::lookup`] did not commit — for the census only.
+    ///
+    /// A name is attributed only where an entry for it was in scope and a
+    /// guard withdrew or demoted it: an opened entry an opaque `open` hid, an
+    /// entry a later open's generation barrier staled, or an entry the open put
+    /// in scope already declining (its [`ScopeEntry::decline`]). A name nothing
+    /// in scope binds at all is not attributed — an opaque `open` being live is
+    /// no evidence that it is why *this* name found nothing.
+    pub(super) fn bare_value_decline(&self, name: &str) -> Option<DeclineCause> {
+        let (entry, withdrawn_by_opaque_open) = self.latest_entry_noting_withdrawals(name);
+        if withdrawn_by_opaque_open {
+            return Some(DeclineCause::OpaqueOpen);
+        }
+        let Some(entry) = entry else {
+            return self.unfolded_implicit_surface(name);
+        };
+        if entry.generation != self.open_generation {
+            return Some(DeclineCause::OpenBarrierStaled);
+        }
+        entry.decline
     }
 
     /// Whether the latest in-scope entry for `head` was **staled by a

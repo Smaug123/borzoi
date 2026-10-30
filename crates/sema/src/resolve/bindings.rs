@@ -194,9 +194,7 @@ impl<'a> Resolver<'a> {
                 // unrecorded (a coverage gap, never wrong). See the module-level
                 // "Provisional pattern heads" note.
                 if def.provisional {
-                    if let Some(res) = self.case_reference(&def.key()) {
-                        self.record(def.range, res);
-                    }
+                    self.resolve_provisional_case_head(&def.key(), def.range);
                     continue;
                 }
                 let name = def.key().to_string();
@@ -412,9 +410,7 @@ impl<'a> Resolver<'a> {
                     // resolve a known union-case reference, else decline (drop),
                     // as in `prepare_binding`.
                     if def.provisional {
-                        if let Some(res) = self.case_reference(&def.key()) {
-                            self.record(def.range, res);
-                        }
+                        self.resolve_provisional_case_head(&def.key(), def.range);
                         continue;
                     }
                     let name = def.key().to_string();

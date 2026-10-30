@@ -20,8 +20,8 @@ use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, DeferredReason, OpenFoldSpace, OpenFoldTarget, ProjectItems, Resolution,
-    ResolvedFile, SyntaxRecovery, resolve_file, resolve_project,
+    AssemblyEnv, DeclineCause, DeferredReason, OpenFoldSpace, OpenFoldTarget, ProjectItems,
+    Resolution, ResolvedFile, SyntaxRecovery, resolve_file, resolve_project,
 };
 use rowan::TextRange;
 
@@ -1860,7 +1860,7 @@ fn a_struct_rqa_union_still_shadows_an_earlier_opens_value() {
     let surface = env.open_fold_surface(h);
     assert!(
         surface.entries.iter().any(|e| e.name == "Flag"
-            && e.target == OpenFoldTarget::Opaque
+            && e.target == OpenFoldTarget::Opaque(DeclineCause::OpenedTypeName)
             && e.space == OpenFoldSpace::Value),
         "the struct RQA union's TYPE NAME occupies the unqualified value slot: the fold \
          surface must carry an opaque `Flag` value entry, got {:?}",
