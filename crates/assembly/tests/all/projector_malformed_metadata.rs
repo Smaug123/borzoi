@@ -218,12 +218,19 @@ fn bounded_array_projects() {
 }
 
 #[test]
-fn rank_one_array_projects() {
+fn rank_one_array_fails_loud() {
     // `IEnumerable<int[*]>` — a single-dim, non-vector `ELEMENT_TYPE_ARRAY` with
-    // an empty shape (no explicit bounds). The reader now decodes it to a
-    // rank-1 `TypeRef::Array` (the model conflates it with `SZARRAY`'s `int[]`,
-    // which is immaterial to name resolution), so enumeration succeeds.
-    assert_projects_cleanly("rank_one_array");
+    // an empty shape (no explicit bounds). `TypeRef::Array` would spell it
+    // exactly as `SZARRAY`'s `int[]`, a different type to every metadata
+    // consumer, so it is refused rather than conflated.
+    expect_unsupported_signature("rank_one_array", &["rank-1 array with no bounds"]);
+}
+
+#[test]
+fn rank_one_array_fails_loud_under_a_nullable_context() {
+    // The same `int[*]`, read through the nullable-annotation walk, which
+    // projects arrays on a path of its own.
+    expect_unsupported_signature("rank_one_array_nullable", &["rank-1 array with no bounds"]);
 }
 
 #[test]
@@ -890,4 +897,27 @@ fn a_type_names_arity_suffix_is_kept_as_written() {
             .unwrap_or_else(|| panic!("{name} projects"));
         assert_eq!(e.metadata_arity_suffix, None, "{name}");
     }
+}
+
+#[test]
+fn a_property_whose_signature_disagrees_with_its_getter_is_marked() {
+    // `PropertySig` says no index parameter, the getter takes one: the
+    // projection reads the accessor, a metadata consumer compares the
+    // property's own signature, so the property records the disagreement.
+    // `property_index_modopt` (a modopt on the `PropertySig` alone) agrees.
+    let marked = |shape: &str| {
+        let bytes = common::emit_metadata_fixture(shape);
+        let view = Ecma335Assembly::parse(&bytes).expect("parse");
+        let entities = view.enumerate_type_defs().expect("project");
+        entities
+            .iter()
+            .flat_map(|e| &e.members)
+            .find_map(|m| match m {
+                borzoi_assembly::Member::Property(p) => Some(p.signature_disagrees_with_accessors),
+                _ => None,
+            })
+            .expect("a property")
+    };
+    assert!(marked("property_sig_disagrees_with_getter"));
+    assert!(!marked("property_index_modopt"));
 }

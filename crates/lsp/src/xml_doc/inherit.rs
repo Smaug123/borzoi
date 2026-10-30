@@ -8,19 +8,18 @@
 //! by nodes selected from the inherited symbol's own — recursively expanded —
 //! documentation:
 //!
-//! - the inherited symbol is the `cref`'s, resolved by documentation-comment
-//!   ID across the whole compilation. Without a `cref`, Roslyn inherits from
-//!   an implicit candidate (base member, implemented interface member, base
-//!   constructor, base type), which is not modelled here: such an element
-//!   declines;
+//! - the inherited symbol is the `cref`'s, when there is one, resolved by
+//!   documentation-comment ID across the whole compilation; otherwise
+//!   [`candidate`]'s (base member, implemented interface member, base type);
 //! - the nodes are those an XPath selects from the inherited entry: the
 //!   `path` attribute's, or one built from the `<inheritdoc>`'s ancestry, so a
 //!   top-level `<inheritdoc/>` takes every child but `<overloads>` and one
 //!   inside `<summary>` takes the inherited summary's content ([`xpath`](super::xpath));
-//! - a `cref` names a definition, whose type parameters stand for themselves,
-//!   so the inherited entry's `<typeparamref>`s are kept as they are: Roslyn
-//!   rewrites one only to a type argument with a documentation ID, and a type
-//!   parameter's is an error ID;
+//! - in the inherited entry, a `<typeparamref>` naming a type parameter of the
+//!   inherited symbol's containing types becomes `<see cref="…"/>` of the type
+//!   argument it is reached with, when that argument has a documentation ID
+//!   (`class D : B<int>` inherits "a `T:System.Int32`", not "a `T`"); the name
+//!   is looked up innermost first, so a method's own `T` shadows its type's;
 //! - a symbol already being expanded on the current path is a cycle.
 //!
 //! So an entry with its own `<summary>` and a top-level `<inheritdoc/>` shows
@@ -28,27 +27,32 @@
 //!
 //! Every way the expansion could fail to be exactly Roslyn's declines — the
 //! entry keeps its `<inheritdoc>`, which renders as the honest marker — with a
-//! typed [`Decline`]: an implicit candidate, a `cref` that does not name
-//! exactly one importable symbol, an inherited entry that is missing or that
-//! Roslyn would read differently, a path outside the modelled XPath, a cycle,
-//! too many hops, or a result too large. One decline anywhere declines the
-//! whole entry: a partly expanded entry would hold a marker where Roslyn shows
-//! text, and the comparison against Roslyn is per entry.
+//! typed [`Decline`]: no candidate or an undecidable one, a `cref` that does not
+//! name exactly one importable symbol, an inherited entry that is missing or
+//! that Roslyn would read differently, a path outside the modelled XPath, a
+//! type argument whose documentation ID cannot be settled, a cycle, too many
+//! hops, or a result too large. One decline anywhere declines the whole entry:
+//! a partly expanded entry would hold a marker where Roslyn shows text, and
+//! the comparison against Roslyn is per entry.
 //!
-//! Where Roslyn itself expands to nothing — a cycle, an inherited symbol with
-//! no documentation, an XPath it cannot evaluate or that selects nothing to
-//! show — this module declines too rather than delete the element: an
-//! `<inheritdoc>` whose inherited text is not shown is marked, never silently
-//! dropped.
+//! Where Roslyn itself expands to nothing — no candidate, a cycle, an
+//! inherited symbol with no documentation, an XPath it cannot evaluate or
+//! that selects nothing to show — this module declines too rather than delete
+//! the element: an `<inheritdoc>` whose inherited text is not shown is marked,
+//! never silently dropped.
 
 use std::sync::Arc;
 
-use borzoi_assembly::doc_id::type_enc;
-use borzoi_assembly::{Access, EntityKind, Member, Primitive, TypeRef};
+use borzoi_assembly::doc_id::{demangle_segment, type_enc};
+use borzoi_assembly::{Access, Member, Primitive, TypeRef};
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
 
+use super::candidate::{
+    Candidate, Instantiation, NoCandidate, ParameterSlot, Reached, Undecidable, candidate,
+    il_faithful, inherits_automatically, type_parameters_in_scope,
+};
 use super::key::{DocIdIndex, DocTarget, type_name};
-use super::lookup::{DocLookup, DocSources, Located};
+use super::lookup::{DocLookup, DocSources, Located, xml_path_for};
 use super::tree::{DocElement, DocNode, MAX_DEPTH, Namespacing, name_is};
 use super::xpath::{Unsupported, authored_path, default_path};
 
@@ -63,7 +67,8 @@ pub struct Expansion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The entry has no `<inheritdoc>`.
+    /// The entry has no `<inheritdoc>`, and Roslyn reads it as the index
+    /// does: Roslyn shows it as it is.
     NoInheritdoc,
     /// Every `<inheritdoc>` was expanded, exactly as Roslyn expands it.
     Inherited,
@@ -74,27 +79,25 @@ pub enum Outcome {
 /// Why an entry is shown unexpanded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decline {
-    /// An `<inheritdoc>` without a `cref`, which inherits from an implicit
-    /// candidate the expansion does not model.
-    ImplicitCandidate,
-    /// Roslyn's own rule throws here — on a constructor of a type with no
-    /// base type, whose base it dereferences unchecked, even beside a `cref`
-    /// — and the exception abandons the whole expansion.
-    RoslynThrows,
+    /// A bare `<inheritdoc/>` whose symbol Roslyn gives no candidate.
+    NoCandidate(NoCandidate),
+    /// A bare `<inheritdoc/>` whose candidate the env cannot settle.
+    Undecidable(Undecidable),
     /// A `cref` that does not name exactly one symbol Roslyn would bind.
     Cref(CrefMiss),
-    /// The inherited symbol's documentation could not be read. Where Roslyn
-    /// reads none, an undocumented override or interface implementation
-    /// inherits from its implicit candidate, which is not modelled.
+    /// The inherited symbol's documentation could not be read.
     InheritedDoc(Box<DocLookup>),
-    /// The inherited symbol's entry is one Roslyn's documentation provider
-    /// reads differently (nested, unlisted, namespaced file).
+    /// The entry, or the inherited symbol's, is one Roslyn's documentation
+    /// provider reads differently (nested, unlisted, stepped over, namespaced
+    /// file).
     ReadDifferently,
     /// A `path` outside the modelled XPath.
     Path(Unsupported),
     /// A namespaced element or attribute, which Roslyn matches by qualified
     /// name.
     Namespaced,
+    /// A `<typeparamref>` whose replacement cannot be settled.
+    TypeParamRef(TypeArgMiss),
     /// A symbol reached again on its own expansion path (Roslyn leaves the
     /// element in place).
     Cycle,
@@ -166,6 +169,19 @@ pub enum CrefMiss {
     DuplicateAssemblyName,
 }
 
+/// Why a type argument's documentation ID cannot be settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeArgMiss {
+    /// `System.Object`, which may be `dynamic` (whose ID is none).
+    MaybeDynamic,
+    /// The argument's type does not bind, or the inherited symbol's
+    /// enclosing types are unknown.
+    Unbound,
+    /// A type constructed from its own type parameters somewhere other than
+    /// where the rendering of that case is modelled.
+    SelfConstructed,
+}
+
 /// A longer chain of inheritance (one `<inheritdoc>` inheriting another's)
 /// than any real documentation takes.
 pub const MAX_HOPS: usize = 32;
@@ -190,6 +206,15 @@ pub fn expand(
     start: DocTarget,
     entry: Located,
 ) -> Expansion {
+    // Every outcome but a decline is a claim about what Roslyn shows, which
+    // holds only for an entry its provider reads as the index does — even
+    // "nothing to expand".
+    if !entry.file.read_as_roslyn_reads(&entry.key) {
+        return Expansion {
+            member: entry.member,
+            outcome: Outcome::Declined(Decline::ReadDifferently),
+        };
+    }
     if !has_inheritdoc(&entry.member) {
         return Expansion {
             member: entry.member,
@@ -205,12 +230,7 @@ pub fn expand(
         nodes: 0,
         bytes: 0,
     };
-    let result = if entry.file.read_as_roslyn_reads(&entry.key) {
-        walk.expand_entry(start, &entry.member)
-    } else {
-        Err(Decline::ReadDifferently)
-    };
-    match result {
+    match walk.expand_entry(&Reached::definition(env, start), &entry.member) {
         Ok(expanded) => Expansion {
             member: expanded.normalized(),
             outcome: Outcome::Inherited,
@@ -239,13 +259,19 @@ pub fn is_inheritdoc(element: &DocElement) -> bool {
     element.namespaced != Namespacing::Element && name_is(&element.name, "inheritdoc")
 }
 
+/// What identifies one symbol on a path, as Roslyn's `visitedSymbols` set
+/// does: the definition and the type arguments it is reached with.
+type VisitKey = (DocTarget, EntityHandle, Vec<String>);
+
+fn visit_key(at: &Reached) -> VisitKey {
+    (at.target, at.inst.context, at.inst.key().to_vec())
+}
+
 struct Walk<'a> {
     sources: &'a mut DocSources,
     env: &'a Arc<AssemblyEnv>,
     index: Option<Arc<DocIdIndex>>,
-    /// The symbols being expanded on the current path, as Roslyn's
-    /// `visitedSymbols`: each a definition, named by a `cref`.
-    visited: Vec<DocTarget>,
+    visited: Vec<VisitKey>,
     hops: usize,
     nodes: usize,
     bytes: usize,
@@ -253,7 +279,7 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     /// `root` (an entry of `at`) with every `<inheritdoc>` rewritten.
-    fn expand_entry(&mut self, at: DocTarget, root: &DocElement) -> Result<DocElement, Decline> {
+    fn expand_entry(&mut self, at: &Reached, root: &DocElement) -> Result<DocElement, Decline> {
         if root.any_namespaced() {
             return Err(Decline::Namespaced);
         }
@@ -267,7 +293,7 @@ impl Walk<'_> {
 
     fn rewrite_children(
         &mut self,
-        at: DocTarget,
+        at: &Reached,
         parent: &DocElement,
         ancestry: &mut Vec<String>,
     ) -> Result<Vec<DocNode>, Decline> {
@@ -295,32 +321,37 @@ impl Walk<'_> {
     /// The nodes one `<inheritdoc>` element of `at`'s entry is replaced by.
     fn inheritdoc(
         &mut self,
-        at: DocTarget,
+        at: &Reached,
         element: &DocElement,
         ancestry: &[String],
     ) -> Result<Vec<DocNode>, Decline> {
-        // Roslyn computes the implicit candidate even beside a `cref`, and for
-        // a constructor it dereferences the base type unchecked — so a
+        // Roslyn computes the candidate even beside a `cref`, and for a
+        // constructor it dereferences the base type unchecked — so a
         // constructor of a type without one abandons the whole expansion.
-        if let DocTarget::Member { parent, idx } = at
+        if let DocTarget::Member { parent, idx } = at.target
             && matches!(self.env.member_at(parent, idx), Member::Method(m) if m.is_constructor)
             && self.env.entity(parent).base_type.is_none()
         {
-            return Err(Decline::RoslynThrows);
+            return Err(Decline::Undecidable(Undecidable::RoslynThrows));
         }
         let target = match element.attribute("cref") {
             Some(cref) => self.cref(cref)?,
-            None => return Err(Decline::ImplicitCandidate),
+            None => match candidate(self.env, at) {
+                Candidate::Found(target) => target,
+                Candidate::None(why) => return Err(Decline::NoCandidate(why)),
+                Candidate::Undecidable(why) => return Err(Decline::Undecidable(why)),
+            },
         };
-        if self.visited.contains(&target) {
+        let key = visit_key(&target);
+        if self.visited.contains(&key) {
             return Err(Decline::Cycle);
         }
         self.hops += 1;
         if self.visited.len() >= MAX_HOPS || self.hops > MAX_RESOLUTIONS {
             return Err(Decline::TooManyHops);
         }
-        self.visited.push(target);
-        let selected = self.inherit(target, element, ancestry);
+        self.visited.push(key);
+        let selected = self.inherit(&target, element, ancestry);
         self.visited.pop();
         let selected = selected?;
         let depth = selected
@@ -352,23 +383,55 @@ impl Walk<'_> {
     /// The selection from `target`'s expanded entry.
     fn inherit(
         &mut self,
-        target: DocTarget,
+        target: &Reached,
         element: &DocElement,
         ancestry: &[String],
     ) -> Result<Vec<DocNode>, Decline> {
-        // Where Roslyn reads no documentation for the symbol, an undocumented
-        // override or interface implementation inherits from its implicit
-        // candidate, which is not modelled, and anything else inherits
-        // nothing, which this module marks rather than deletes: either way,
-        // a miss declines.
-        let located = self
-            .sources
-            .locate(self.env, target)
-            .map_err(|miss| Decline::InheritedDoc(Box::new(miss)))?;
-        if !located.file.read_as_roslyn_reads(&located.key) {
-            return Err(Decline::ReadDifferently);
-        }
-        let inherited = self.expand_entry(target, &located.member)?;
+        let mut inherited = match self.sources.locate(self.env, target.target) {
+            Ok(located) => {
+                if !located.file.read_as_roslyn_reads(&located.key) {
+                    return Err(Decline::ReadDifferently);
+                }
+                self.expand_entry(target, &located.member)?
+            }
+            // Roslyn reads no documentation for the symbol — its file has no
+            // entry, or there is no file — and an undocumented override or
+            // interface implementation inherits as if its entry were a bare
+            // `<inheritdoc/>`. Anything else inherits nothing, which this
+            // module marks rather than deletes.
+            Err(miss @ (DocLookup::NoEntry { .. } | DocLookup::NoXmlFile(_))) => {
+                // "No entry" here must be "no entry" to Roslyn too.
+                if let DocLookup::NoEntry { key } = &miss
+                    && let Some(dll) = self.env.assembly_path(target.target.owner())
+                    && !self
+                        .sources
+                        .files
+                        .load(&xml_path_for(dll))
+                        .is_ok_and(|file| file.read_as_roslyn_reads(key))
+                {
+                    return Err(Decline::ReadDifferently);
+                }
+                match inherits_automatically(self.env, target) {
+                    Ok(true) => {
+                        let automatic = DocElement::new(
+                            "doc",
+                            Vec::new(),
+                            vec![DocNode::Element(DocElement::new(
+                                "inheritdoc",
+                                Vec::new(),
+                                Vec::new(),
+                            ))],
+                        );
+                        self.expand_entry(target, &automatic)?
+                    }
+                    Ok(false) => return Err(Decline::InheritedDoc(Box::new(miss))),
+                    Err(why) => return Err(Decline::Undecidable(why)),
+                }
+            }
+            Err(miss) => return Err(Decline::InheritedDoc(Box::new(miss))),
+        };
+        let in_scope = type_parameters_in_scope(self.env, target.target);
+        rewrite_type_param_refs(self.env, &target.inst, in_scope.as_deref(), &mut inherited)?;
         let path = match element.attribute("path") {
             Some(path) if !path.is_empty() => authored_path(path),
             _ => {
@@ -391,7 +454,7 @@ impl Walk<'_> {
     /// The symbol a `cref` names, as Roslyn's
     /// `DocumentationCommentId.GetFirstSymbolForDeclarationId` binds it over
     /// the compilation: exactly one importable symbol with that ID.
-    fn cref(&mut self, cref: &str) -> Result<DocTarget, Decline> {
+    fn cref(&mut self, cref: &str) -> Result<Reached, Decline> {
         let env = self.env;
         if env.identities_incomplete() {
             return Err(Decline::Cref(CrefMiss::IncompleteAssemblySet));
@@ -505,7 +568,7 @@ impl Walk<'_> {
                 return Err(Decline::Cref(CrefMiss::AmbiguousSignatureType));
             }
         }
-        Ok(target)
+        Ok(Reached::definition(env, target))
     }
 }
 
@@ -522,6 +585,42 @@ fn byte_size(node: &DocNode) -> usize {
                     .sum::<usize>()
                 + e.children.iter().map(byte_size).sum::<usize>()
         }
+    }
+}
+
+/// The types a member's documentation ID spells: its parameter types, and a
+/// conversion operator's return type.
+fn signature_types(member: &Member) -> Vec<&TypeRef> {
+    match member {
+        Member::Method(m) => {
+            let mut types: Vec<&TypeRef> = m.signature.parameters.iter().map(|p| &p.ty).collect();
+            if m.name.starts_with("op_") && m.name.ends_with("plicit") {
+                types.push(&m.signature.return_type);
+            }
+            types
+        }
+        Member::Property(p) => p.parameters.iter().map(|ip| &ip.ty.ty).collect(),
+        Member::Field(_) | Member::Event(_) => Vec::new(),
+    }
+}
+
+/// Whether every named type in `ty` (written in `from`'s metadata) binds, and
+/// every primitive ([`AssemblyEnv::primitive_binds`]).
+fn binds_throughout(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Named { type_args, .. } => {
+            matches!(
+                super::candidate::roslyn_type_definition(env, from, ty),
+                IlTypeDefinition::Resolved(_)
+            ) && type_args.iter().all(|a| binds_throughout(env, from, &a.ty))
+        }
+        TypeRef::Array { element, .. } => binds_throughout(env, from, &element.ty),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
+            binds_throughout(env, from, inner)
+        }
+        TypeRef::Primitive(p) => env.primitive_binds(*p),
+        TypeRef::Ptr(None) => env.primitive_binds(Primitive::Void),
+        TypeRef::Var { .. } => true,
     }
 }
 
@@ -574,56 +673,6 @@ fn raw_names_round_trip(env: &AssemblyEnv, chain: &[EntityHandle], member: Optio
         && member.is_none_or(|m| !m.contains(['#', '`']))
 }
 
-/// Whether `handle` is read here as the IL a metadata consumer reads: an
-/// assembly without an authoritative F# signature, and an IL type kind.
-pub fn il_faithful(env: &AssemblyEnv, handle: EntityHandle) -> bool {
-    !env.has_authoritative_fsharp_signature(handle)
-        && matches!(
-            env.entity(handle).kind,
-            EntityKind::Class
-                | EntityKind::Struct
-                | EntityKind::Interface
-                | EntityKind::Enum
-                | EntityKind::Delegate
-        )
-}
-
-/// The types a member's documentation ID spells: its parameter types, and a
-/// conversion operator's return type.
-fn signature_types(member: &Member) -> Vec<&TypeRef> {
-    match member {
-        Member::Method(m) => {
-            let mut types: Vec<&TypeRef> = m.signature.parameters.iter().map(|p| &p.ty).collect();
-            if m.name.starts_with("op_") && m.name.ends_with("plicit") {
-                types.push(&m.signature.return_type);
-            }
-            types
-        }
-        Member::Property(p) => p.parameters.iter().map(|ip| &ip.ty.ty).collect(),
-        Member::Field(_) | Member::Event(_) => Vec::new(),
-    }
-}
-
-/// Whether every named type in `ty` (written in `from`'s metadata) binds, and
-/// every primitive ([`AssemblyEnv::primitive_binds`]).
-fn binds_throughout(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Named { type_args, .. } => {
-            matches!(
-                env.il_type_definition(from, ty),
-                IlTypeDefinition::Resolved(_)
-            ) && type_args.iter().all(|a| binds_throughout(env, from, &a.ty))
-        }
-        TypeRef::Array { element, .. } => binds_throughout(env, from, &element.ty),
-        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
-            binds_throughout(env, from, inner)
-        }
-        TypeRef::Primitive(p) => env.primitive_binds(*p),
-        TypeRef::Ptr(None) => env.primitive_binds(Primitive::Void),
-        TypeRef::Var { .. } => true,
-    }
-}
-
 /// Whether every named type and primitive in `ty` (written in `from`'s
 /// metadata, and binding throughout: [`binds_throughout`]) has an ID that no
 /// other type of the env carries, so that the spelling in a documentation ID
@@ -637,7 +686,9 @@ fn spelled_uniquely(
     let sole = |id: String| index.targets(&id).len() == 1;
     match ty {
         TypeRef::Named { type_args, .. } => {
-            let IlTypeDefinition::Resolved(def) = env.il_type_definition(from, ty) else {
+            let IlTypeDefinition::Resolved(def) =
+                super::candidate::roslyn_type_definition(env, from, ty)
+            else {
                 return false;
             };
             type_name(env, def).is_ok_and(|name| {
@@ -673,7 +724,10 @@ pub fn roslyn_imports(env: &AssemblyEnv, target: DocTarget) -> bool {
     let visible = |access: Access| !matches!(access, Access::Private | Access::Internal);
     match env.member_at(parent, idx) {
         // An enum's backing field is no member of the enum to Roslyn.
-        Member::Field(f) if f.name == "value__" && env.entity(parent).kind == EntityKind::Enum => {
+        Member::Field(f)
+            if f.name == "value__"
+                && env.entity(parent).kind == borzoi_assembly::EntityKind::Enum =>
+        {
             false
         }
         Member::Field(f) => visible(f.access),
@@ -695,6 +749,265 @@ pub fn roslyn_imports(env: &AssemblyEnv, target: DocTarget) -> bool {
                 || (e.is_static && (!e.implements.is_empty() || !e.unclassified_impls.is_empty()))
         }
     }
+}
+
+/// Rewrite, in `root`, each `<typeparamref name="T"/>` naming a containing
+/// type's parameter of the inherited symbol to `<see cref="…"/>` of the type
+/// argument `inst` gives it, when that argument has a documentation ID that
+/// is not an error ID (`!:`) — Roslyn's `RewriteInheritdocElement`. The name
+/// is the first of `in_scope` (innermost first) to match; a method's own type
+/// parameter is its own argument, whose ID is an error ID. `in_scope` is
+/// `None` where the inherited symbol's type parameters are unknown.
+fn rewrite_type_param_refs(
+    env: &AssemblyEnv,
+    inst: &Instantiation,
+    in_scope: Option<&[(String, ParameterSlot)]>,
+    root: &mut DocElement,
+) -> Result<(), Decline> {
+    for child in &mut root.children {
+        let DocNode::Element(e) = child else {
+            continue;
+        };
+        if e.name == "typeparamref"
+            && let Some(name) = e.attribute("name")
+        {
+            let in_scope = in_scope.ok_or(Decline::TypeParamRef(TypeArgMiss::Unbound))?;
+            let replacement = match in_scope.iter().find(|(n, _)| n == name) {
+                Some((_, ParameterSlot::Type(index))) if *index < inst.args.len() => {
+                    type_argument_id(env, inst, &inst.args[*index])
+                        .map_err(Decline::TypeParamRef)?
+                }
+                _ => None,
+            };
+            if let Some(id) = replacement {
+                *child = DocNode::Element(DocElement::new(
+                    "see",
+                    vec![("cref".to_string(), id)],
+                    Vec::new(),
+                ));
+                continue;
+            }
+        }
+        rewrite_type_param_refs(env, inst, in_scope, e)?;
+    }
+    Ok(())
+}
+
+/// The documentation ID Roslyn's `GetDocumentationCommentId` gives a type
+/// argument, or `None` where it gives none or an error ID (a type parameter,
+/// an array, a pointer). A primitive that does not bind
+/// ([`AssemblyEnv::primitive_binds`]), at any depth, is an error type to
+/// Roslyn: its rendering is not modelled.
+fn type_argument_id(
+    env: &AssemblyEnv,
+    inst: &Instantiation,
+    arg: &TypeRef,
+) -> Result<Option<String>, TypeArgMiss> {
+    if !primitives_bind(env, arg) {
+        return Err(TypeArgMiss::Unbound);
+    }
+    match arg {
+        TypeRef::Var { .. } | TypeRef::Array { .. } | TypeRef::Ptr(_) | TypeRef::ByRef { .. } => {
+            Ok(None)
+        }
+        // `dynamic` is `object` plus an attribute the model does not keep, and
+        // has no ID of its own.
+        TypeRef::Primitive(Primitive::Object) => Err(TypeArgMiss::MaybeDynamic),
+        TypeRef::Primitive(_) => Ok(Some(format!("T:{}", type_enc(arg)))),
+        TypeRef::Named { .. } => {
+            if !matches!(
+                super::candidate::roslyn_type_definition(env, inst.context, arg),
+                IlTypeDefinition::Resolved(_)
+            ) {
+                return Err(TypeArgMiss::Unbound);
+            }
+            let enclosing = env.enclosing_chain_from_root(inst.context);
+            let id = reference_enc(env, inst.context, enclosing.as_deref(), arg)?;
+            Ok(Some(format!("T:{id}")))
+        }
+    }
+}
+
+/// Whether every primitive in `ty` binds ([`AssemblyEnv::primitive_binds`]).
+fn primitives_bind(env: &AssemblyEnv, ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Primitive(p) => env.primitive_binds(*p),
+        TypeRef::Named { type_args, .. } => type_args.iter().all(|a| primitives_bind(env, &a.ty)),
+        TypeRef::Array { element, .. } => primitives_bind(env, &element.ty),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => primitives_bind(env, inner),
+        TypeRef::Ptr(None) => env.primitive_binds(Primitive::Void),
+        TypeRef::Var { .. } => true,
+    }
+}
+
+/// The ID Roslyn's reference-ID visitor writes for `ty`, a type written in
+/// `context` (whose chain from the root is `enclosing`, `None` where it is
+/// unplaced). Each level of a constructed type's name is a symbol of its own,
+/// and one whose arguments — its enclosers' included — are its own type
+/// parameters *is* its definition, written `` Name`n ``; the other levels
+/// take their arguments in braces. A level's own parameters are the
+/// context's, in order, where the level is the context or one of its
+/// enclosers, or nested in one of those that declares them. Where no level of
+/// `ty` can be a definition this is [`type_enc`].
+fn reference_enc(
+    env: &AssemblyEnv,
+    context: EntityHandle,
+    enclosing: Option<&[EntityHandle]>,
+    ty: &TypeRef,
+) -> Result<String, TypeArgMiss> {
+    if !has_definition_level(env, context, enclosing, ty)? {
+        return Ok(type_enc(ty));
+    }
+    let TypeRef::Named {
+        namespace,
+        name,
+        type_args,
+        segment_arities,
+        ..
+    } = ty
+    else {
+        // An array, pointer or byref of such a type: its suffix is not
+        // modelled here.
+        return Err(TypeArgMiss::SelfConstructed);
+    };
+    let segments: Vec<&str> = name.split('/').collect();
+    let total = segment_arities
+        .iter()
+        .copied()
+        .fold(0usize, usize::saturating_add);
+    if segments.len() != segment_arities.len() || total != type_args.len() {
+        return Err(TypeArgMiss::SelfConstructed);
+    }
+    let own = definition_args(env, context, enclosing, ty)?;
+    let mut out: String = namespace.iter().map(|seg| format!("{seg}.")).collect();
+    let mut next = 0usize;
+    for (k, (seg, &arity)) in segments.iter().zip(segment_arities).enumerate() {
+        if k > 0 {
+            out.push('.');
+        }
+        out.push_str(demangle_segment(seg));
+        if arity == 0 {
+            continue;
+        }
+        if next + arity <= own {
+            out.push_str(&format!("`{arity}"));
+        } else {
+            let inner = type_args[next..next + arity]
+                .iter()
+                .map(|a| reference_enc(env, context, enclosing, &a.ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            out.push('{');
+            out.push_str(&inner.join(","));
+            out.push('}');
+        }
+        next += arity;
+    }
+    Ok(out)
+}
+
+/// Whether some level of `ty`, or of a type nested in its arguments, is its
+/// own definition ([`definition_args`]).
+fn has_definition_level(
+    env: &AssemblyEnv,
+    context: EntityHandle,
+    enclosing: Option<&[EntityHandle]>,
+    ty: &TypeRef,
+) -> Result<bool, TypeArgMiss> {
+    match ty {
+        TypeRef::Named { type_args, .. } => {
+            if definition_args(env, context, enclosing, ty)? > 0 {
+                return Ok(true);
+            }
+            for a in type_args {
+                if has_definition_level(env, context, enclosing, &a.ty)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        TypeRef::Array { element, .. } => {
+            has_definition_level(env, context, enclosing, &element.ty)
+        }
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
+            has_definition_level(env, context, enclosing, inner)
+        }
+        TypeRef::Ptr(None) | TypeRef::Primitive(_) | TypeRef::Var { .. } => Ok(false),
+    }
+}
+
+/// How many of `ty`'s leading arguments belong to levels of its name that
+/// are their own definitions: the cumulative arity of the deepest such
+/// level, `0` for none (and for a type that is not constructed).
+///
+/// The context's type parameter `` `i `` is the one its chain from the root
+/// introduces at index `i`, so it is a level's own `i`th parameter exactly
+/// when that parameter is introduced by a type the two chains share. A level
+/// is its definition when every argument up to its cumulative arity is the
+/// context's parameter of that index, and that arity stays within what the
+/// shared types introduce.
+fn definition_args(
+    env: &AssemblyEnv,
+    context: EntityHandle,
+    enclosing: Option<&[EntityHandle]>,
+    ty: &TypeRef,
+) -> Result<usize, TypeArgMiss> {
+    let TypeRef::Named {
+        name,
+        type_args,
+        segment_arities,
+        ..
+    } = ty
+    else {
+        return Ok(0);
+    };
+    let leading = type_args
+        .iter()
+        .enumerate()
+        .take_while(|(i, a)| {
+            matches!(a.ty, TypeRef::Var { index, is_method: false } if usize::from(index) == *i)
+        })
+        .count();
+    if leading == 0 {
+        return Ok(0);
+    }
+    let enclosing = enclosing.ok_or(TypeArgMiss::SelfConstructed)?;
+    let def = match super::candidate::roslyn_type_definition(env, context, ty) {
+        IlTypeDefinition::Resolved(def) => def,
+        _ => return Err(TypeArgMiss::Unbound),
+    };
+    let chain = env
+        .enclosing_chain_from_root(def)
+        .ok_or(TypeArgMiss::SelfConstructed)?;
+    let shared = chain
+        .iter()
+        .zip(enclosing)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let introduced = match shared {
+        0 => 0,
+        n => env.entity(chain[n - 1]).generic_parameters.len(),
+    };
+    let limit = leading.min(introduced);
+    if limit == 0 {
+        return Ok(0);
+    }
+    // The levels must line up with the chain, each carrying the parameters
+    // its entity declares, for a level's arity to say which are its own.
+    if name.split('/').count() != chain.len() || segment_arities.len() != chain.len() {
+        return Err(TypeArgMiss::SelfConstructed);
+    }
+    let mut cumulative = 0usize;
+    let mut own = 0usize;
+    for (&arity, &level) in segment_arities.iter().zip(&chain) {
+        cumulative = cumulative.saturating_add(arity);
+        if env.entity(level).generic_parameters.len() != cumulative {
+            return Err(TypeArgMiss::SelfConstructed);
+        }
+        if cumulative <= limit {
+            own = cumulative;
+        }
+    }
+    Ok(own)
 }
 
 #[cfg(test)]

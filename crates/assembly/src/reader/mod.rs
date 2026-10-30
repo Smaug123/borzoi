@@ -58,7 +58,6 @@ pub(crate) use model::{
 pub(crate) use model::MemberRefParent;
 #[cfg(feature = "test-support")]
 pub(crate) use model::{InterfaceMemberImpl, MemberRef, UnclassifiedImpl};
-#[cfg(feature = "test-support")]
 pub(crate) use signature::DecodedMethodSig;
 pub(crate) use signature::{
     CallConv, CustomMod, ModifiedType, NamedKind, Primitive, RetType, SigError, TypeScope, TypeSig,

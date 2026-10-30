@@ -37,6 +37,7 @@ internal static class Program
             "nil_scope_typeref_base" => EmitNilScopeTypeRefBase(),
             "bounded_array" => EmitArrayShape("BoundedArrayFixture", "boundarr", ArrayKind.Bounded),
             "rank_one_array" => EmitArrayShape("RankOneArrayFixture", "rankarr", ArrayKind.RankOne),
+            "rank_one_array_nullable" => EmitRankOneArrayNullableReturn(),
             "array_custom_modifier" => EmitArrayShape("ArrayModifierFixture", "modarr", ArrayKind.Modifier),
             "nullable_invalid_byte" => EmitNullableInvalidByte(),
             "nullable_byte_array_form" => EmitNullableByteArrayForm(),
@@ -55,6 +56,7 @@ internal static class Program
             "property_generic_accessor" => EmitPropertyGenericGetter(),
             "property_init_only_setter" => EmitPropertyInitOnlySetter(),
             "property_index_modopt" => EmitPropertyIndexModopt(),
+            "property_sig_disagrees_with_getter" => EmitPropertySigDisagreesWithGetter(),
             "method_init_marker_void" => EmitMethodInitMarkerVoid(),
             "method_modopt_void" => EmitMethodModoptVoid(),
             "event_other_accessor" => EmitEventOtherAccessor(),
@@ -503,6 +505,46 @@ internal static class Program
             methodList: MetadataTokens.MethodDefinitionHandle(1));
         mb.AddInterfaceImplementation(weird, specHandle);
 
+        return Finish(mb);
+    }
+
+    // An interface `Host` under `[NullableContext(1)]` with an abstract method
+    // `int[*] M()`: the rank-1 array read through the nullable-annotation
+    // walk, which projects signatures on a path of its own.
+    private static BlobBuilder EmitRankOneArrayNullableReturn()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "RankOneNullableFixture", "ranknul");
+        var sig = new BlobBuilder();
+        sig.WriteByte(HASTHIS);
+        sig.WriteCompressedInteger(0);
+        sig.WriteByte(ELEMENT_TYPE_ARRAY);
+        sig.WriteByte(ELEMENT_TYPE_I4);
+        sig.WriteCompressedInteger(1);
+        sig.WriteCompressedInteger(0);
+        sig.WriteCompressedInteger(0);
+        mb.AddMethodDefinition(
+            AbstractPublic,
+            MethodImplAttributes.IL,
+            mb.GetOrAddString("M"),
+            mb.GetOrAddBlob(sig),
+            bodyOffset: -1,
+            parameterList: MetadataTokens.ParameterHandle(1));
+        AddModuleType(mb);
+        TypeDefinitionHandle host = mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract,
+            default,
+            mb.GetOrAddString("Host"),
+            baseType: default,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+        MemberReferenceHandle ctor = AddAttrCtor(
+            mb, "System.Runtime.CompilerServices", "NullableContextAttribute", new[] { CtorU1 });
+        mb.AddCustomAttribute(host, ctor, CaBlob(mb, b =>
+        {
+            b.WriteByte(1);
+            b.WriteUInt16(0);
+        }));
         return Finish(mb);
     }
 
@@ -1295,6 +1337,39 @@ internal static class Program
         propSig.WriteByte(ELEMENT_TYPE_I4);
         PropertyDefinitionHandle prop = mb.AddProperty(
             PropertyAttributes.None, mb.GetOrAddString("Item"), mb.GetOrAddBlob(propSig));
+
+        return FinishWithHostInterface(mb, host =>
+        {
+            mb.AddPropertyMap(host, prop);
+            mb.AddMethodSemantics(prop, MethodSemanticsAttributes.Getter, getter);
+        });
+    }
+
+    // `int P { get; }` whose `PropertySig` has no index parameter while its
+    // getter takes an `int`: the property's own signature, which Roslyn
+    // compares, disagrees with the accessor the projection reads.
+    private static BlobBuilder EmitPropertySigDisagreesWithGetter()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "PropertySigDisagreesFixture", "propdis");
+
+        // int32 get_P(int32) : HASTHIS, 1 param, ret I4, I4.
+        var getterSig = new BlobBuilder();
+        getterSig.WriteByte(HASTHIS);
+        getterSig.WriteByte(0x01);
+        getterSig.WriteByte(ELEMENT_TYPE_I4);
+        getterSig.WriteByte(ELEMENT_TYPE_I4);
+        MethodDefinitionHandle getter = mb.AddMethodDefinition(
+            AccessorFlags, MethodImplAttributes.IL, mb.GetOrAddString("get_P"),
+            mb.GetOrAddBlob(getterSig), bodyOffset: -1, MetadataTokens.ParameterHandle(1));
+
+        // PROPERTY|HASTHIS, 0 index params, I4.
+        var propSig = new BlobBuilder();
+        propSig.WriteByte(CALLCONV_PROPERTY | HASTHIS);
+        propSig.WriteByte(0x00);
+        propSig.WriteByte(ELEMENT_TYPE_I4);
+        PropertyDefinitionHandle prop = mb.AddProperty(
+            PropertyAttributes.None, mb.GetOrAddString("P"), mb.GetOrAddBlob(propSig));
 
         return FinishWithHostInterface(mb, host =>
         {

@@ -515,6 +515,24 @@ fn a_cref_inheritdoc_shows_the_inherited_doc() {
     assert!(!doc.contains("not shown"), "{doc}");
 }
 
+/// A bare `<inheritdoc/>` on a class inherits from its base type — here
+/// `System.Object`, whatever that says.
+#[test]
+fn a_bare_inheritdoc_on_a_class_inherits_from_its_base() {
+    let xml = with_entry("T:System.String", "<inheritdoc/>");
+    let mut p = project(IS_NULL_OR_EMPTY, Xml::Text(xml), None);
+    let body = hover_at(&mut p, 1, "String");
+    assert_eq!(
+        split(&body).1,
+        Some(
+            "Supports all classes in the .NET class hierarchy and provides low-level services \
+             to derived classes. This is the ultimate base class of all .NET classes; it is the \
+             root of the type hierarchy."
+        ),
+        "{body}"
+    );
+}
+
 /// An `<inheritdoc>` that cannot be resolved exactly keeps its marker: the
 /// entry is never shown as if it were complete.
 #[test]

@@ -8,8 +8,8 @@
 //! - [`file`](mod@file) — one `.xml` file, indexed by documentation-comment ID.
 //! - [`key`] — a symbol's documentation-comment ID, from the assembly env.
 //! - [`lookup`] — the `.xml` beside a DLL, the per-file cache, the lookup.
-//! - [`inherit`] — `<inheritdoc>` expansion through `cref`, as Roslyn's IDE
-//!   expands it.
+//! - [`inherit`] — `<inheritdoc>` expansion, as Roslyn's IDE expands it;
+//!   [`candidate`] is its "which symbol" rule for a bare `<inheritdoc/>`.
 //! - [`markdown`] — the Markdown model and its proven-faithful printer.
 //! - [`render`] — documentation trees to that model.
 //! - [`source`] — the `///` documentation FCS attaches to a declaration in F#
@@ -17,6 +17,7 @@
 //! - [`xpath`] — the XPath subset an `<inheritdoc>` selects inherited nodes
 //!   with, evaluated as Roslyn evaluates it.
 
+pub mod candidate;
 pub mod depth;
 pub mod file;
 pub mod inherit;

@@ -51,13 +51,13 @@ pub use fsharp_pickle_merge::{ModuleMemberTarget, ModuleMemberVal, collect_modul
 pub use model::{
     AbbreviationTarget, Access, AccessorSlot, ArgGroup, ArgGroups, AssemblyIdentity,
     AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired, CompilerMessage, ConstantValue,
-    CurriedArg, CurriedArgs, CustomAttr, CustomOperation, CustomOperationName, DefaultMember,
-    Entity, EntityKind, EqualityComparison, Event, Experimental, FSharpConstraints, Field,
-    FsharpOverlayKind, FsharpSourceRange, ImplementedMember, IndexParameter, InterfaceMemberImpl,
-    Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue, NamedTypeHead, Nullability,
-    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, ReadValFacts,
-    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, SplitParams, TypeForwarder,
-    TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, ValFacts, ValMeasures, Variance,
-    Version,
+    CurriedArg, CurriedArgs, CustomAttr, CustomOperation, CustomOperationName, DeclaredSignature,
+    DefaultMember, Entity, EntityKind, EqualityComparison, Event, Experimental, FSharpConstraints,
+    Field, FsharpOverlayKind, FsharpSourceRange, ImplementedMember, IndexParameter,
+    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
+    NamedTypeHead, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive,
+    Property, ReadValFacts, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem,
+    SplitParams, TypeForwarder, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases,
+    ValFacts, ValMeasures, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};
