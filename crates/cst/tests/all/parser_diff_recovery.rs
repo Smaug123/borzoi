@@ -373,60 +373,86 @@ const DEBRIS: &[&str] = &[
 /// not have. And every unit FCS keeps after the stray's lines must be in our
 /// tree too, however wide the damage: an error span of ours that covers a
 /// declaration would otherwise hide that we lost it. The cells where either
-/// fails are pinned one per line in `tests/manifests/debris_grid.txt`.
+/// fails are pinned one per line in `tests/manifests/debris_grid.txt`, and
+/// each must be one where `main`'s parser fails too
+/// (`tests/manifests/debris_grid.base.txt`).
 #[test]
 fn recover_debris_grid_matches_fcs() {
     use crate::common::recovery::{fcs_units, grade};
     use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
-    const FOLLOWING: [&str; 2] = ["let after = a\nlet z = 2\n", "module N =\n    let x = 1\n"];
     // Distinct cells, keyed by the stray's lines and what follows them: `(`
-    // then `)` is `( )`.
+    // then `)` is `( )`. Each is (its manifest key, its source, the length of
+    // the source up to the end of the stray's lines).
     let mut cells = std::collections::BTreeSet::new();
-    for stray in ["_", "private", "member", "override", "->"] {
-        for a in DEBRIS {
-            for b in DEBRIS {
-                let line = format!("{stray} foo {a} {b}").trim_end().to_string();
-                let following: &[&str] = if b.is_empty() {
-                    &FOLLOWING
-                } else {
-                    &FOLLOWING[..1]
-                };
-                for more in ["", "\n    let inner = 1", "\n    x"] {
-                    for f in following {
-                        cells.insert((format!("{line}{more}"), *f));
+    for depth in 0..=2 {
+        // At depth 0 the stray is in the file's module, after two items; deeper,
+        // in the innermost of `depth` nested modules, after one, so the grid
+        // stays affordable.
+        let pairs = depth == 0;
+        let indent = "    ".repeat(depth);
+        let prefix = match depth {
+            0 => String::new(),
+            1 => "in A: ".to_string(),
+            _ => "in O.A: ".to_string(),
+        };
+        let open = match depth {
+            0 => String::new(),
+            1 => "module A =\n".to_string(),
+            _ => "module O =\n    module A =\n".to_string(),
+        };
+        // What follows the stray's lines: two declarations in its module (and
+        // one in each enclosing module), or a nested module.
+        let after_decls = match depth {
+            0 => format!("let after = a\nlet z = 2\n"),
+            1 => format!("{indent}let after = a\nlet z = 2\n"),
+            _ => format!("{indent}let after = a\n    let y = 2\nlet z = 3\n"),
+        };
+        let after_module = format!("{indent}module N =\n{indent}    let x = 1\n");
+        for stray in ["_", "private", "member", "override", "->"] {
+            for a in DEBRIS {
+                for b in DEBRIS.iter().filter(|b| pairs || b.is_empty()) {
+                    let line = format!("{stray} foo {a} {b}").trim_end().to_string();
+                    for more in ["", "\n    let inner = 1", "\n    x"] {
+                        let lines = format!("{line}{more}").replace('\n', &format!("\n{indent}"));
+                        let head = format!("module M\n{open}{indent}let a = 0\n{indent}{lines}\n");
+                        let key = format!("{prefix}{}", format!("{line}{more}").replace('\n', "⏎"));
+                        cells.insert((key.clone(), format!("{head}{after_decls}"), head.len()));
+                        if b.is_empty() {
+                            cells.insert((
+                                format!("{key} ⏎module N"),
+                                format!("{head}{after_module}"),
+                                head.len(),
+                            ));
+                        }
                     }
                 }
             }
         }
     }
     let mut divergent = Vec::new();
-    for (line, following) in &cells {
-        let head = format!("module M\nlet a = 0\n{line}\n");
-        let src = format!("{head}{following}");
+    for (cell, src, head) in &cells {
+        let (src, head) = (src.as_str(), *head);
         let json = {
             let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
             std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
             crate::common::fcs_ast_batch(tmp.path())
         };
-        let parse = borzoi_cst::parser::parse(&src);
-        let cell = match following.starts_with("module") {
-            true => format!("{} ⏎module N", line.replace('\n', "⏎")),
-            false => line.replace('\n', "⏎"),
-        };
+        let parse = borzoi_cst::parser::parse(src);
         let verdict =
-            grade(&parse, &Default::default(), &json, &src).expect("FCS record is readable");
+            grade(&parse, &Default::default(), &json, src).expect("FCS record is readable");
         if verdict.relation == Relation::Divergent {
             divergent.push(format!("{cell} | divergent"));
         }
-        let fcs = fcs_units(&json, &src).expect("FCS record is readable");
+        let fcs = fcs_units(&json, src).expect("FCS record is readable");
         let ours = our_units(&parse);
-        for unit in fcs.iter().filter(|u| u.key.start >= head.len()) {
+        for unit in fcs.iter().filter(|u| u.key.start >= head) {
             if !ours.iter().any(|o| o.key == unit.key) {
                 let name = src[unit.key.start..].lines().next().unwrap_or("");
                 divergent.push(format!("{cell} | loses `{name}`"));
             }
         }
     }
+    let keys = divergent.clone();
     let actual = Manifest::from_entries(divergent).expect("one line per cell");
     crate::common::corpus_manifest::check_manifest(
         "debris_grid",
@@ -435,6 +461,7 @@ fn recover_debris_grid_matches_fcs() {
             "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_recovery::recover_debris_grid"
         ),
     );
+    crate::common::corpus_manifest::check_no_worse_than_base("debris_grid", &keys);
 }
 
 /// A line indented past the stray's continues what it began, so the `let` on
@@ -755,4 +782,239 @@ fn recovery_verdicts_follow_the_generated_layout() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The tokens a nested module's first declaration may continue with after its
+/// `=`: every class of token that can or cannot begin a type representation or
+/// an expression (closers, operators, declaration keywords, atoms, openers), a
+/// few short sequences, and nothing at all.
+const SCOPE_GRID_RHS: &[&str] = &[
+    "",
+    ".Foo",
+    ".",
+    ".Foo.Bar",
+    ")",
+    "]",
+    "}",
+    "|]",
+    "end",
+    "=",
+    "->",
+    "<-",
+    "|",
+    ",",
+    ";",
+    ";;",
+    ":",
+    ":>",
+    "*",
+    "+",
+    "-",
+    "_",
+    "#",
+    "1",
+    "\"s\"",
+    "x",
+    "Foo",
+    "int",
+    "int *",
+    "int .",
+    "A.",
+    "A.B",
+    "'a",
+    "(",
+    "[",
+    "{",
+    "[|",
+    "{ F : .Foo }",
+    "private .Foo",
+    "private",
+    "of",
+    "with",
+    "and",
+    "in",
+    "then",
+    "else",
+    "when",
+    "as",
+    "member",
+    "new",
+    "inherit",
+    "interface",
+    "class",
+    "struct",
+    "begin",
+    "delegate",
+    "exception",
+    "let",
+    "type",
+    "module",
+    "open",
+    "do",
+    "static",
+    "abstract",
+    "val",
+    "override",
+    "default",
+    "static member",
+    "abstract member",
+    "fun",
+    "match",
+    "null",
+    "[<A>",
+];
+
+/// One cell of [`scope_grid`].
+struct ScopeCase {
+    /// The broken first declaration, with `⏎` for a line break.
+    decl: String,
+    /// Whether the nested module sits inside another one.
+    double: bool,
+    /// How the nested module's body is laid out, when not plainly: ` begin`
+    /// (`= begin … end`), ` +indented` (a `let q` indented past the broken
+    /// declaration on the line after it) and ` +type` (a `type V = int` before
+    /// `let x`).
+    layout: String,
+    source: String,
+}
+
+/// The nested-module scope grid: a nested module's first declaration, a type
+/// definition or a `let` whose `=` is followed by each [`SCOPE_GRID_RHS`], ×
+/// an attribute on the line before the declaration, before it on its own line,
+/// before its representation (its right-hand side, for a `let`), or nowhere ×
+/// single or double nesting × a body after `=` or in `= begin … end` ×
+/// whether a line indented past the declaration follows it × whether a
+/// `type V = int` comes before `let x`. `let x` follows in the
+/// nested module `A`; doubly nested, `let y` follows in the outer module `O`
+/// and `let z` at top level.
+///
+/// An attribute on a `let`'s own line anchors the `let`'s context at the
+/// `let`, so the lines after it are offside of it in FCS: that placement
+/// grades layout recovery as much as the module boundary.
+fn scope_grid() -> Vec<ScopeCase> {
+    let mut out = Vec::new();
+    for keyword in ["type T", "let w"] {
+        for rhs in SCOPE_GRID_RHS {
+            for (before_decl, before_rhs) in
+                [("", ""), ("[<A>]⏎", ""), ("[<A>] ", ""), ("", "[<A>] ")]
+            {
+                let decl = format!("{before_decl}{keyword} = {before_rhs}{rhs}")
+                    .trim_end()
+                    .to_string();
+                for double in [false, true] {
+                    for begin in [false, true] {
+                        for typed in [false, true] {
+                            for indented in [false, true] {
+                                let outer = if double { "    " } else { "" };
+                                let indent = format!("{outer}    ");
+                                let body = decl.replace('⏎', &format!("\n{indent}"));
+                                let open = if begin { " begin" } else { "" };
+                                let mut next = String::new();
+                                if indented {
+                                    next.push_str(&format!("{indent}    let q = 9\n"));
+                                }
+                                if typed {
+                                    next.push_str(&format!("{indent}type V = int\n"));
+                                }
+                                let close = if begin {
+                                    format!("{outer}end\n")
+                                } else {
+                                    String::new()
+                                };
+                                let nested = format!(
+                                    "{outer}module A ={open}\n{indent}{body}\n{next}{indent}let x = 1\n{close}"
+                                );
+                                let source = if double {
+                                    format!(
+                                        "module M\nmodule O =\n{nested}    let y = 2\nlet z = 3\n"
+                                    )
+                                } else {
+                                    format!("module M\n{nested}")
+                                };
+                                out.push(ScopeCase {
+                                    decl: decl.clone(),
+                                    double,
+                                    layout: format!(
+                                        "{}{}{}",
+                                        if begin { " begin" } else { "" },
+                                        if indented { " +indented" } else { "" },
+                                        if typed { " +type" } else { "" }
+                                    ),
+                                    source,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Over [`scope_grid`], graded against FCS: whether a broken first declaration
+/// closes its nested module (moving what follows into the enclosing module)
+/// is decided by FCS's error recovery, so each declaration after it that FCS
+/// keeps must sit in the same module in our tree. The cells where it does not
+/// are pinned, one line each, in `tests/manifests/nested_module_scope.txt`, so
+/// a fix or a regression moves a line either way, and each must be one where
+/// `main`'s parser diverges too (`nested_module_scope.base.txt`).
+#[test]
+fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
+    use crate::common::recovery::{Unit, fcs_units, our_units};
+    use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
+    let mut divergences = Vec::new();
+    // Each divergence, keyed without our side's module, which differs between
+    // parsers that diverge alike.
+    let mut keys = Vec::new();
+    for case in scope_grid() {
+        let src = &case.source;
+        let fcs = {
+            let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
+            std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
+            let json = crate::common::fcs_ast_batch(tmp.path());
+            fcs_units(&json, src).expect("FCS record is readable")
+        };
+        let ours = our_units(&borzoi_cst::parser::parse(src));
+        // Each module, by how many modules enclose its declarations.
+        let modules: &[&str] = if case.double {
+            &["M", "O", "A"]
+        } else {
+            &["M", "A"]
+        };
+        for (name, kind) in [
+            ("type V", "Types"),
+            ("let x", "Let"),
+            ("let y", "Let"),
+            ("let z", "Let"),
+        ] {
+            let Some(at) = src.find(name) else { continue };
+            let module_of = |units: &[Unit]| {
+                units
+                    .iter()
+                    .find(|u| u.key.start == at && u.key.kind == kind)
+                    .map_or("nowhere", |u| modules[u.key.scope.len() - 1])
+            };
+            let (want, got) = (module_of(&fcs), module_of(&ours));
+            if want != "nowhere" && got != want {
+                let key = format!(
+                    "{} | {}{} | `{name}`: FCS in {want}",
+                    case.decl,
+                    if case.double { "double" } else { "single" },
+                    case.layout,
+                );
+                keys.push(key.clone());
+                divergences.push(format!("{key}, ours in {got}"));
+            }
+        }
+    }
+    let actual = Manifest::from_entries(divergences).expect("one line per cell and name");
+    crate::common::corpus_manifest::check_manifest(
+        "nested_module_scope",
+        &actual,
+        &format!(
+            "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_recovery::recover_nested_module_scope"
+        ),
+    );
+    crate::common::corpus_manifest::check_no_worse_than_base("nested_module_scope", &keys);
 }
