@@ -977,6 +977,18 @@ fn sig_bare_value_idents(defn: &TypeDefn) -> Vec<SyntaxToken> {
     }
 }
 
+/// Whether the definition declares a case [`sig_bare_value_idents`] cannot
+/// name: an operator-named union case (`([])`, `(::)`, whose names are
+/// `op_Nil` / `op_ColonColon`), or one the parse left without an ident. Such
+/// a case is a bare name the fold cannot list.
+fn sig_has_unnamed_case(defn: &TypeDefn) -> bool {
+    match defn.repr() {
+        Some(TypeDefnRepr::Union(u)) => u.cases().any(|c| c.ident().is_none()),
+        Some(TypeDefnRepr::Enum(e)) => e.cases().any(|c| c.ident().is_none()),
+        _ => false,
+    }
+}
+
 /// The type's own name, when the type may take FCS's unqualified
 /// **constructor slot** and so compete with a same-named case: anything but
 /// an attribute-free union or record — a class, an abbreviation, an opaque
@@ -1314,6 +1326,12 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 &[SigDecl::Types(types.clone())],
                                 &mut auto_open_type_containers,
                             );
+                            // A case the scan cannot name is a name the fold
+                            // cannot list: the namespace hides behind the
+                            // barrier, as an `[<AutoOpen>]` type's does.
+                            if types.defns().any(|defn| sig_has_unnamed_case(&defn)) {
+                                auto_open_type_containers.push(ns.clone());
+                            }
                             for defn in types.defns() {
                                 for ident in sig_bare_value_idents(&defn) {
                                     let mut path = ns.clone();
@@ -1357,11 +1375,14 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 &[SigDecl::Exception(exn.clone())],
                                 &mut auto_open_type_containers,
                             );
-                            if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
-                                let mut path = ns.clone();
-                                path.push(id_text(&ident).to_string());
-                                bare_value_paths.push(path.clone());
-                                value_paths.push(path);
+                            match exn.union_case().and_then(|c| c.ident()) {
+                                Some(ident) => {
+                                    let mut path = ns.clone();
+                                    path.push(id_text(&ident).to_string());
+                                    bare_value_paths.push(path.clone());
+                                    value_paths.push(path);
+                                }
+                                None => auto_open_type_containers.push(ns.clone()),
                             }
                         }
                         // A `val` cannot sit directly under a namespace (FCS

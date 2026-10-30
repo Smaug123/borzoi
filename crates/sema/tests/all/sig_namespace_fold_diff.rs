@@ -322,6 +322,14 @@ const SHAPES: &[Shape] = &[
         imp: "type V =\n    | Vcase\n\n[<AutoOpen>]\nexception E of string\n    with\n        static member ref (x : int) = x\n    end\n",
         model: Model::Unmodelled,
     },
+    // Operator-named cases have no ident to shadow by (Codex review); the
+    // reader's `op_ColonColon` must not stay FSharp.Core's.
+    Shape {
+        label: "operator_cases",
+        sig: "type U =\n    | ([])\n    | (::) of int * U\n",
+        imp: "type U =\n    | ([])\n    | (::) of int * U\n",
+        model: Model::Unmodelled,
+    },
     Shape {
         label: "enum_lowercase",
         sig: "type U =\n    | ref = 0\n    | failwith = 1\n",
@@ -345,6 +353,7 @@ const PROBES: &str = concat!(
     "    let useInt (x : int) = x\n",
     "    let useFailure () = Failure \"x\"\n",
     "    let useModuleOk () = M.Ok\n",
+    "    let useConsOperator () = op_ColonColon\n",
 );
 
 /// Where the reader file sits relative to the pair, and how it reaches `N`.
@@ -369,7 +378,11 @@ fn reader_src(reader: Reader) -> String {
         Reader::SameNamespaceAfter | Reader::SameNamespaceBetween => {
             format!("namespace N\n\nmodule UseB =\n{PROBES}")
         }
-        Reader::OpenAfter => format!("module UseC\n\nopen N\n\nmodule Inner =\n{PROBES}"),
+        // An earlier open supplies `op_ColonColon`, so `open N` must shadow
+        // it wherever the signature exposes an operator-named case.
+        Reader::OpenAfter => format!(
+            "module UseC\n\nmodule Low =\n    let op_ColonColon = 42\n\nopen Low\nopen N\n\nmodule Inner =\n{PROBES}"
+        ),
     }
 }
 
