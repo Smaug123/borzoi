@@ -6,8 +6,22 @@
 //! wraps those nodes with strongly-typed accessors so consumers can navigate
 //! the tree without matching on raw [`SyntaxKind`]s.
 
+#[cfg(feature = "accessor-trace")]
+pub mod accessor_trace;
 mod kinds;
 pub mod projection;
+
+/// The first statement of every public accessor below: `accessor!("Type::name")`.
+/// It expands to nothing unless the `accessor-trace` feature is on, when it
+/// opens an [`accessor_trace`] guard so a test can see which accessors a
+/// computation reads. The parser differential's coverage check depends on every
+/// accessor carrying it (`tests/all/accessor_coverage.rs` checks that).
+macro_rules! accessor {
+    ($name:literal) => {
+        #[cfg(feature = "accessor-trace")]
+        let _accessor_guard = crate::syntax::accessor_trace::enter($name);
+    };
+}
 
 // The borzoi-astgen-generated facade (plan PR D). The types category is generated and
 // re-exported below as the real facade; bespoke `*Type` accessors stay
@@ -189,6 +203,7 @@ ast_node!(StaticOptCondition, STATIC_OPT_CONDITION);
 
 impl ImplFile {
     pub fn modules(&self) -> impl Iterator<Item = ModuleOrNamespace> + '_ {
+        accessor!("ImplFile::modules");
         children(&self.0)
     }
 }
@@ -199,6 +214,7 @@ impl SigFile {
     /// (the parser emits the same `MODULE_OR_NAMESPACE` node for sig headers,
     /// whose `kind`/`long_id`/`is_rec`/`attributes` read identically).
     pub fn modules(&self) -> impl Iterator<Item = ModuleOrNamespace> + '_ {
+        accessor!("SigFile::modules");
         children(&self.0)
     }
 }
@@ -223,6 +239,7 @@ pub enum ModuleOrNamespaceKind {
 
 impl ModuleOrNamespace {
     pub fn decls(&self) -> impl Iterator<Item = ModuleDecl> + '_ {
+        accessor!("ModuleOrNamespace::decls");
         children(&self.0)
     }
 
@@ -231,6 +248,7 @@ impl ModuleOrNamespace {
     /// segment (under a [`SigFile`] root); casts the decl children to [`SigDecl`]
     /// rather than the impl-side [`ModuleDecl`].
     pub fn sig_decls(&self) -> impl Iterator<Item = SigDecl> + '_ {
+        accessor!("ModuleOrNamespace::sig_decls");
         children(&self.0)
     }
 
@@ -251,6 +269,7 @@ impl ModuleOrNamespace {
     /// when a [`SyntaxKind::GLOBAL_TOK`] is present, else
     /// [`DeclaredNamespace`](ModuleOrNamespaceKind::DeclaredNamespace).
     pub fn kind(&self) -> ModuleOrNamespaceKind {
+        accessor!("ModuleOrNamespace::kind");
         match self.header_keyword().map(|t| t.kind()) {
             None => ModuleOrNamespaceKind::Anon,
             Some(SyntaxKind::MODULE_TOK) => ModuleOrNamespaceKind::NamedModule,
@@ -273,6 +292,7 @@ impl ModuleOrNamespace {
     /// `true` for the implicit anonymous module wrapping a script-style body
     /// — i.e. no `module`/`namespace` header keyword child.
     pub fn is_anon(&self) -> bool {
+        accessor!("ModuleOrNamespace::is_anon");
         self.kind() == ModuleOrNamespaceKind::Anon
     }
 
@@ -280,6 +300,7 @@ impl ModuleOrNamespace {
     /// (`module rec Foo` / `namespace rec A.B`) sits in the header. Encoded
     /// as the presence of a [`SyntaxKind::REC_TOK`] child token.
     pub fn is_rec(&self) -> bool {
+        accessor!("ModuleOrNamespace::is_rec");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -292,6 +313,7 @@ impl ModuleOrNamespace {
     /// `None` for an anonymous module and for `namespace global` (whose
     /// target is a [`SyntaxKind::GLOBAL_TOK`], not a path).
     pub fn long_id(&self) -> Option<LongIdent> {
+        accessor!("ModuleOrNamespace::long_id");
         child(&self.0)
     }
 
@@ -306,6 +328,7 @@ impl ModuleOrNamespace {
     /// [`NamedModule`](ModuleOrNamespaceKind::NamedModule): an anonymous module (no
     /// header) and a `namespace` (which cannot carry attributes) both yield none.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("ModuleOrNamespace::attributes");
         let named_module = self.kind() == ModuleOrNamespaceKind::NamedModule;
         self.0
             .children_with_tokens()
@@ -321,6 +344,7 @@ impl ValDecl {
     /// The sole [`VAL_SIG`](SyntaxKind::VAL_SIG) child holding the name and
     /// `: <type>`. `None` only on a malformed (parser-bailed) decl.
     pub fn val_sig(&self) -> Option<ValSig> {
+        accessor!("ValDecl::val_sig");
         child(&self.0)
     }
 
@@ -329,6 +353,7 @@ impl ValDecl {
     /// the `VAL_DECL` (the signature type nests inside the `VAL_SIG` child, so
     /// no attribute list leaks in from there — cf. [`AbstractSlot::attributes`]).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("ValDecl::attributes");
         children(&self.0)
     }
 }
@@ -337,6 +362,7 @@ impl TypeDefnsDecl {
     /// The type definitions in this `SynModuleDecl.Types` group. Phase 9.1
     /// yields exactly one; an `and`-chain (phase 9.2) yields several.
     pub fn defns(&self) -> impl Iterator<Item = TypeDefn> + '_ {
+        accessor!("TypeDefnsDecl::defns");
         children(&self.0)
     }
 }
@@ -346,6 +372,7 @@ impl AttributesDecl {
     /// 10.7), a standalone `[<assembly: …>]` not attached to a carrier. The
     /// [`AttributeList`] children, in source order.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("AttributesDecl::attributes");
         children(&self.0)
     }
 }
@@ -357,6 +384,7 @@ impl TypeDefn {
     /// `type … and …` group carries them (the leading `[<…>]` attaches to the
     /// first `SynComponentInfo`); `and`-chained definitions yield none here.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("TypeDefn::attributes");
         children(&self.0)
     }
 
@@ -364,6 +392,7 @@ impl TypeDefn {
     /// [`SyntaxKind::LONG_IDENT`] child (the abbreviation RHS's own paths nest
     /// inside the repr node). `None` only on a malformed header with no name.
     pub fn long_id(&self) -> Option<LongIdent> {
+        accessor!("TypeDefn::long_id");
         child(&self.0)
     }
 
@@ -372,6 +401,7 @@ impl TypeDefn {
     /// The `PostfixList`/`PrefixList`/`SinglePrefix` variant is not represented
     /// (the typar list is the same); see [`TyparDecls::typars`].
     pub fn typar_decls(&self) -> Option<TyparDecls> {
+        accessor!("TypeDefn::typar_decls");
         child(&self.0)
     }
 
@@ -380,6 +410,7 @@ impl TypeDefn {
     /// `[<Measure>] type m`, `type Foo`) and on a malformed body; otherwise the
     /// repr node (an abbreviation, record, union, enum, or object model).
     pub fn repr(&self) -> Option<TypeDefnRepr> {
+        accessor!("TypeDefn::repr");
         child(&self.0)
     }
 
@@ -389,6 +420,7 @@ impl TypeDefn {
     /// object-model repr's member list on FCS's side; the normaliser mirrors
     /// that dual placement.
     pub fn implicit_ctor(&self) -> Option<ImplicitCtor> {
+        accessor!("TypeDefn::implicit_ctor");
         child(&self.0)
     }
 
@@ -402,6 +434,7 @@ impl TypeDefn {
     /// node, so they are not picked up here); empty for a non-augmented
     /// definition.
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
+        accessor!("TypeDefn::members");
         children(&self.0)
     }
 
@@ -419,6 +452,7 @@ impl TypeDefn {
     /// inside the member body (under a [`SyntaxKind::CONSTRAINED_TYPE`]), and
     /// that constraint belongs to the *return type*, not the type's header.
     pub fn constraints(&self) -> impl Iterator<Item = TyparConstraint> + '_ {
+        accessor!("TypeDefn::constraints");
         // inside-`<>` clause (nested in the header's `TyparDecls`), then the
         // after-decls clause (a direct `TyparConstraints` child of the
         // `TYPE_DEFN`). Both are owned newtypes, so collect into a `Vec` to
@@ -439,12 +473,14 @@ impl TyparDecls {
     /// The individual type-parameter declarations, in source order — FCS's
     /// `SynTyparDecls.TyparDecls`.
     pub fn typars(&self) -> impl Iterator<Item = TyparDecl> + '_ {
+        accessor!("TyparDecls::typars");
         children(&self.0)
     }
 
     /// The inside-`<>` `when` constraint clause, if present (phase 9.3b) — FCS's
     /// `SynTyparDecls.PostfixList` constraints.
     pub fn constraint_clause(&self) -> Option<TyparConstraints> {
+        accessor!("TyparDecls::constraint_clause");
         child(&self.0)
     }
 }
@@ -482,6 +518,7 @@ impl TyparConstraints {
     /// The individual constraints, in source order — FCS's `typeConstraints`
     /// (`and`-separated).
     pub fn constraints(&self) -> impl Iterator<Item = TyparConstraint> + '_ {
+        accessor!("TyparConstraints::constraints");
         children(&self.0)
     }
 }
@@ -493,6 +530,7 @@ impl TyparConstraint {
     /// `(Witnesses or ^T) : (member …)`, whose `or`-separated operands are
     /// general types read via [`Self::support_types`], not a subject typar.
     pub fn typar(&self) -> Option<TyparDecl> {
+        accessor!("TyparConstraint::typar");
         child(&self.0)
     }
 
@@ -507,6 +545,7 @@ impl TyparConstraint {
     /// [`Self::ty`] keys off) — the two accessors partition the constraint's
     /// `Type` children by kind and never both return one.
     pub fn support_types(&self) -> impl Iterator<Item = Type> + '_ {
+        accessor!("TyparConstraint::support_types");
         // A `:>` subtype constraint's direct `Type` child is the target, read via
         // `ty`; it is not an SRTP support alternative.
         let is_subtype = token(&self.0, SyntaxKind::COLON_GREATER_TOK).is_some();
@@ -519,6 +558,7 @@ impl TyparConstraint {
     /// (member …)`, whose operand `Type`s are also direct children, does not
     /// surface its first alternative here.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("TyparConstraint::ty");
         if token(&self.0, SyntaxKind::COLON_GREATER_TOK).is_some() {
             child(&self.0)
         } else {
@@ -532,6 +572,7 @@ impl TyparConstraint {
     /// every other kind, so the subtype form's direct constraint type (read via
     /// [`Self::ty`]) is never returned here.
     pub fn type_args(&self) -> impl Iterator<Item = Type> {
+        accessor!("TyparConstraint::type_args");
         let args: Vec<Type> = self
             .0
             .children()
@@ -547,6 +588,7 @@ impl TyparConstraint {
     /// own `^T` subject is a [`TyparDecl`], not a [`MemberSig`], so it is never
     /// returned here.
     pub fn member_sig(&self) -> Option<MemberSig> {
+        accessor!("TyparConstraint::member_sig");
         child(&self.0)
     }
 
@@ -557,6 +599,7 @@ impl TyparConstraint {
     /// form's direct constraint type (`'a :> T`, [`Self::ty`]); a self-constraint
     /// has no subject typar, so [`Self::typar`] returns `None` for it.
     pub fn self_constraint(&self) -> Option<Type> {
+        accessor!("TyparConstraint::self_constraint");
         self.0
             .children()
             .find(|n| n.kind() == SyntaxKind::SELF_CONSTRAINT)
@@ -566,6 +609,7 @@ impl TyparConstraint {
     /// Which constraint this is, read from the operator/keyword tokens. `None`
     /// on a malformed/unsupported constraint (see [`TyparConstraintKind`]).
     pub fn kind(&self) -> Option<TyparConstraintKind> {
+        accessor!("TyparConstraint::kind");
         if token(&self.0, SyntaxKind::COLON_GREATER_TOK).is_some() {
             return Some(TyparConstraintKind::SubtypeOf);
         }
@@ -619,12 +663,14 @@ impl TyparDecl {
     /// (field 0), `type T<[<Measure>] 'a>`. Leading [`AttributeList`] children;
     /// empty for an unattributed typar.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("TyparDecl::attributes");
         children(&self.0)
     }
 
     /// The type-variable identifier — the `a` in `'a` / `^a`
     /// (`SynTypar.ident`).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("TyparDecl::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -635,6 +681,7 @@ impl TyparDecl {
     /// for the plain `'a` form (`TyparStaticReq.None`). Read from the sigil
     /// token kind ([`SyntaxKind::HAT_TOK`] vs [`SyntaxKind::QUOTE_TOK`]).
     pub fn is_head_type(&self) -> bool {
+        accessor!("TyparDecl::is_head_type");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -650,6 +697,7 @@ impl TyparDecl {
     /// no other [`Type`] children — its attributes nest inside `ATTRIBUTE_LIST`
     /// and its name is a token — so every [`Type`] child is a constraint.)
     pub fn intersection_constraints(&self) -> impl Iterator<Item = Type> + '_ {
+        accessor!("TyparDecl::intersection_constraints");
         children(&self.0)
     }
 }
@@ -657,6 +705,7 @@ impl TyparDecl {
 impl TypeAbbrev {
     /// The abbreviated type — FCS's `SynTypeDefnSimpleRepr.TypeAbbrev.rhsType`.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("TypeAbbrev::ty");
         child(&self.0)
     }
 }
@@ -666,6 +715,7 @@ impl DelegateRepr {
     /// `SynTypeDefnKind.Delegate.ty` (and the type of the synthetic `Invoke`
     /// slot). `None` only on a malformed body with no parseable type.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("DelegateRepr::ty");
         child(&self.0)
     }
 }
@@ -674,6 +724,7 @@ impl RecordRepr {
     /// The record's fields in source order — FCS's
     /// `SynTypeDefnSimpleRepr.Record.recordFields`.
     pub fn fields(&self) -> impl Iterator<Item = RecordFieldDecl> + '_ {
+        accessor!("RecordRepr::fields");
         children(&self.0)
     }
 }
@@ -683,12 +734,14 @@ impl RecordFieldDecl {
     /// `type R = { [<A>] X : int }`. Leading [`AttributeList`] children; empty for
     /// an unattributed field.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("RecordFieldDecl::attributes");
         children(&self.0)
     }
 
     /// The field name — FCS's `SynField.idOpt` (always `Some` for a record
     /// field; `None` only on a malformed field with no name).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("RecordFieldDecl::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -698,6 +751,7 @@ impl RecordFieldDecl {
     /// `true` iff the field is `mutable` — FCS's `SynField.isMutable`. Encoded
     /// as the presence of a [`SyntaxKind::MUTABLE_TOK`] child.
     pub fn is_mutable(&self) -> bool {
+        accessor!("RecordFieldDecl::is_mutable");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -706,6 +760,7 @@ impl RecordFieldDecl {
 
     /// The field's type — FCS's `SynField.fieldType` (the full `parse_type`).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("RecordFieldDecl::ty");
         child(&self.0)
     }
 }
@@ -714,6 +769,7 @@ impl UnionRepr {
     /// The union's cases in source order — FCS's
     /// `SynTypeDefnSimpleRepr.Union.unionCases`.
     pub fn cases(&self) -> impl Iterator<Item = UnionCase> + '_ {
+        accessor!("UnionRepr::cases");
         children(&self.0)
     }
 }
@@ -723,6 +779,7 @@ impl UnionCase {
     /// `type T = | [<A>] X`. Leading [`AttributeList`] children; empty for an
     /// unattributed case.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("UnionCase::attributes");
         children(&self.0)
     }
 
@@ -730,6 +787,7 @@ impl UnionCase {
     /// [`SyntaxKind::IDENT_TOK`] child (a named field's ident is nested inside a
     /// [`SyntaxKind::UNION_CASE_FIELD`], so it is not a direct child here).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("UnionCase::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -740,6 +798,7 @@ impl UnionCase {
     /// (`of T1 * x:T2 * …`). Empty for a nullary case (and for the
     /// [`Self::full_type`] signature form).
     pub fn fields(&self) -> impl Iterator<Item = UnionCaseField> + '_ {
+        accessor!("UnionCase::fields");
         children(&self.0)
     }
 
@@ -749,6 +808,7 @@ impl UnionCase {
     /// for the ordinary `Fields` form). A named *field*'s type nests inside a
     /// [`SyntaxKind::UNION_CASE_FIELD`], so it never collides here.
     pub fn full_type(&self) -> Option<Type> {
+        accessor!("UnionCase::full_type");
         child(&self.0)
     }
 
@@ -757,6 +817,7 @@ impl UnionCase {
     /// constructors, FCS's `CompileOpName`). `None` for an ordinary ident-named
     /// case (use [`Self::ident`]).
     pub fn operator_name(&self) -> Option<(&'static str, rowan::TextRange)> {
+        accessor!("UnionCase::operator_name");
         operator_case_name(&self.0)
     }
 }
@@ -791,6 +852,7 @@ impl UnionCaseField {
     /// [`SyntaxKind::IDENT_TOK`] child; the field type's own idents are nested
     /// inside the type node, so they are not picked up here.
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("UnionCaseField::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -800,6 +862,7 @@ impl UnionCaseField {
     /// The field's type — FCS's `SynField.fieldType` (parsed at the
     /// tuple-segment level, so the case's `*` separates fields).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("UnionCaseField::ty");
         child(&self.0)
     }
 }
@@ -808,6 +871,7 @@ impl EnumRepr {
     /// The enum's cases in source order — FCS's
     /// `SynTypeDefnSimpleRepr.Enum.cases`.
     pub fn cases(&self) -> impl Iterator<Item = EnumCase> + '_ {
+        accessor!("EnumRepr::cases");
         children(&self.0)
     }
 }
@@ -817,6 +881,7 @@ impl EnumCase {
     /// `type E = | [<A>] A = 0`. Leading [`AttributeList`] children; empty for an
     /// unattributed case.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("EnumCase::attributes");
         children(&self.0)
     }
 
@@ -824,6 +889,7 @@ impl EnumCase {
     /// [`SyntaxKind::IDENT_TOK`] child (the value expression's own idents are
     /// nested inside the value node).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("EnumCase::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -833,6 +899,7 @@ impl EnumCase {
     /// The case value — FCS's `SynEnumCase.valueExpr` (a `SynExpr`, e.g.
     /// `Const 0`), the single [`Expr`] child after the `=`.
     pub fn value(&self) -> Option<Expr> {
+        accessor!("EnumCase::value");
         child(&self.0)
     }
 
@@ -841,6 +908,7 @@ impl EnumCase {
     /// `unionCaseName EQUALS atomicExpr`, e.g. `| ([]) = 0`). `None` for an
     /// ordinary ident-named case.
     pub fn operator_name(&self) -> Option<(&'static str, rowan::TextRange)> {
+        accessor!("EnumCase::operator_name");
         operator_case_name(&self.0)
     }
 }
@@ -851,6 +919,7 @@ impl ObjectModelRepr {
     /// [`MemberDefn::Member`]). Empty for an *augmentation* repr (its members
     /// live in the outer [`TypeDefn::members`] slot; see [`Self::is_augmentation`]).
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
+        accessor!("ObjectModelRepr::members");
         children(&self.0)
     }
 
@@ -861,6 +930,7 @@ impl ObjectModelRepr {
     /// [`TypeDefn::members`] slot and this repr node carries none. A pure object
     /// model (`type C = member …`, kind `Unspecified`) has no `with`.
     pub fn is_augmentation(&self) -> bool {
+        accessor!("ObjectModelRepr::is_augmentation");
         token(&self.0, SyntaxKind::WITH_TOK).is_some()
     }
 
@@ -868,12 +938,14 @@ impl ObjectModelRepr {
     /// `SynTypeDefnKind.Class` (phase 9.12). Encoded as a [`SyntaxKind::CLASS_TOK`]
     /// direct token child.
     pub fn is_class(&self) -> bool {
+        accessor!("ObjectModelRepr::is_class");
         token(&self.0, SyntaxKind::CLASS_TOK).is_some()
     }
 
     /// `true` iff written with an explicit `struct … end` kind marker — FCS's
     /// `SynTypeDefnKind.Struct` (phase 9.12, a [`SyntaxKind::STRUCT_TOK`] child).
     pub fn is_struct(&self) -> bool {
+        accessor!("ObjectModelRepr::is_struct");
         token(&self.0, SyntaxKind::STRUCT_TOK).is_some()
     }
 
@@ -883,6 +955,7 @@ impl ObjectModelRepr {
     /// (9.11b) nests its `INTERFACE_TOK` inside an [`InterfaceImpl`] node, so this
     /// direct-token check does not confuse the two.
     pub fn is_interface(&self) -> bool {
+        accessor!("ObjectModelRepr::is_interface");
         token(&self.0, SyntaxKind::INTERFACE_TOK).is_some()
     }
 }
@@ -905,6 +978,7 @@ impl MemberMethod {
     /// [`LongIdentPat`]) and RHS expression. `None` only on a malformed
     /// (parser-bailed) member.
     pub fn binding(&self) -> Option<Binding> {
+        accessor!("MemberMethod::binding");
         child(&self.0)
     }
 
@@ -913,6 +987,7 @@ impl MemberMethod {
     /// children of the `MEMBER_DEFN` (the binding's head/RHS nest their own nodes,
     /// so no attribute list leaks in from there).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("MemberMethod::attributes");
         children(&self.0)
     }
 
@@ -920,6 +995,7 @@ impl MemberMethod {
     /// [`SyntaxKind::STATIC_TOK`] child. Drives the binding's `SynLeadingKeyword`
     /// (`StaticMember` vs `Member`) and `SynMemberFlags.IsInstance`.
     pub fn is_static(&self) -> bool {
+        accessor!("MemberMethod::is_static");
         self.leading_keyword() == MemberLeading::StaticMember
     }
 
@@ -932,6 +1008,7 @@ impl MemberMethod {
     /// is detected from the head. A malformed member with no keyword defaults to
     /// [`MemberLeading::Member`].
     pub fn leading_keyword(&self) -> MemberLeading {
+        accessor!("MemberMethod::leading_keyword");
         let direct = self
             .0
             .children_with_tokens()
@@ -973,6 +1050,7 @@ impl AbstractSlot {
     /// (`SynValSig`), the `[VAL_SIG]` child holding the name and `: <type>`.
     /// `None` only on a malformed (parser-bailed) slot.
     pub fn val_sig(&self) -> Option<ValSig> {
+        accessor!("AbstractSlot::val_sig");
         child(&self.0)
     }
 
@@ -981,6 +1059,7 @@ impl AbstractSlot {
     /// of the `ABSTRACT_SLOT` (the signature type nests inside the `VAL_SIG`
     /// child, so no attribute list leaks in from there).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("AbstractSlot::attributes");
         children(&self.0)
     }
 
@@ -988,6 +1067,7 @@ impl AbstractSlot {
     /// `abstract`) rather than the bare `abstract …` — FCS's `AbstractMember`
     /// vs `Abstract` leading keyword (`SynValSig.trivia.LeadingKeyword`).
     pub fn is_abstract_member(&self) -> bool {
+        accessor!("AbstractSlot::is_abstract_member");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -999,6 +1079,7 @@ impl AbstractSlot {
     /// the `StaticAbstract`/`StaticAbstractMember` leading keyword (paired with
     /// [`Self::is_abstract_member`]) over `Abstract`/`AbstractMember`.
     pub fn is_static(&self) -> bool {
+        accessor!("AbstractSlot::is_static");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1011,6 +1092,7 @@ impl MemberSig {
     /// the sole [`VAL_SIG`](SyntaxKind::VAL_SIG) child holding the name and
     /// `: <type>`. `None` only on a malformed (parser-bailed) member sig.
     pub fn val_sig(&self) -> Option<ValSig> {
+        accessor!("MemberSig::val_sig");
         child(&self.0)
     }
 
@@ -1018,6 +1100,7 @@ impl MemberSig {
     /// leading [`AttributeList`] children (the signature type's attributes nest
     /// inside the `VAL_SIG`).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("MemberSig::attributes");
         children(&self.0)
     }
 
@@ -1028,6 +1111,7 @@ impl MemberSig {
     /// `abstract member` → `AbstractMember`, `abstract` → `Abstract`, plain
     /// `member` → `Member`. (`new`-constructor sigs are a later slice.)
     pub fn leading_keyword(&self) -> MemberSigLeading {
+        accessor!("MemberSig::leading_keyword");
         let mut has_static = false;
         let mut has_abstract = false;
         let mut has_member = false;
@@ -1107,6 +1191,7 @@ impl ValSig {
     /// **or** an active-pattern name (`val (|Foo|_|) : …`), whose idents live
     /// inside the [`ActivePatName`] node — read those via [`Self::active_pat_name`].
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("ValSig::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1120,6 +1205,7 @@ impl ValSig {
     /// whole name into the single `idText` of `SynValSig.ident`; reconstruct
     /// that text from [`ActivePatName::case_tokens`].
     pub fn active_pat_name(&self) -> Option<ActivePatName> {
+        accessor!("ValSig::active_pat_name");
         child(&self.0)
     }
 
@@ -1127,6 +1213,7 @@ impl ValSig {
     /// → `Fun(int, int)`). The `VAL_SIG`'s [`Type`] child. `None` only on a
     /// malformed slot (a missing `: <type>`).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("ValSig::ty");
         child(&self.0)
     }
 
@@ -1134,6 +1221,7 @@ impl ValSig {
     /// (`val f<'T> : …`, phase 10.12). The postfix [`TyparDecls`] child (the same
     /// node a `type T<'a>` header carries), or `None` for a non-generic value.
     pub fn typar_decls(&self) -> Option<TyparDecls> {
+        accessor!("ValSig::typar_decls");
         child(&self.0)
     }
 
@@ -1144,6 +1232,7 @@ impl ValSig {
     /// signature type as a [`Type::Constrained`], not here.) Empty when the value
     /// has no inside-`<>` constraints.
     pub fn constraints(&self) -> impl Iterator<Item = TyparConstraint> + '_ {
+        accessor!("ValSig::constraints");
         self.typar_decls()
             .and_then(|d| d.constraint_clause())
             .into_iter()
@@ -1156,6 +1245,7 @@ impl ValSig {
     /// child, a different node kind, so the two never clash). `None` for a `val`
     /// without a literal value.
     pub fn literal_value(&self) -> Option<Expr> {
+        accessor!("ValSig::literal_value");
         child(&self.0)
     }
 }
@@ -1165,6 +1255,7 @@ impl MemberLetBindings {
     /// `SynMemberDefn.LetBindings.bindings` (one for `let x = …`, several for an
     /// `and`-chain). Same `BINDING` children as a [`LetDecl`].
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
+        accessor!("MemberLetBindings::bindings");
         children(&self.0)
     }
 
@@ -1176,12 +1267,14 @@ impl MemberLetBindings {
     /// consumer projects these onto the *first* binding, exactly like the
     /// module-level [`LetDecl`] (FCS homes the run on the group's first binding).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("MemberLetBindings::attributes");
         children(&self.0)
     }
 
     /// `SynMemberDefn.LetBindings.isRecursive` — `true` iff a `rec` keyword
     /// follows the `let` (encoded as a [`SyntaxKind::REC_TOK`] child).
     pub fn is_rec(&self) -> bool {
+        accessor!("MemberLetBindings::is_rec");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1191,6 +1284,7 @@ impl MemberLetBindings {
     /// `true` iff introduced by `use` rather than `let` (the head `LET_TOK`'s
     /// text is `use`) — drives the binding's `SynLeadingKeyword`.
     pub fn is_use(&self) -> bool {
+        accessor!("MemberLetBindings::is_use");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1202,6 +1296,7 @@ impl MemberLetBindings {
     /// `SynMemberDefn.LetBindings.isStatic` (phase 9.8c), encoded as a leading
     /// [`SyntaxKind::STATIC_TOK`] child (before `LET_TOK`).
     pub fn is_static(&self) -> bool {
+        accessor!("MemberLetBindings::is_static");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1215,6 +1310,7 @@ impl MemberDo {
     /// [`SyntaxKind::DO_EXPR`] child, whose offside scaffolding is zero-width
     /// `ERROR` tokens, so this digs through to the `DO_EXPR`'s body expression.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("MemberDo::expr");
         child::<DoExpr>(&self.0).and_then(|d| d.inner())
     }
 
@@ -1222,6 +1318,7 @@ impl MemberDo {
     /// (phase 9.8d), encoded as a leading [`SyntaxKind::STATIC_TOK`] child
     /// (before the `DO_EXPR`).
     pub fn is_static(&self) -> bool {
+        accessor!("MemberDo::is_static");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1235,6 +1332,7 @@ impl ValField {
     /// `ATTRIBUTE_LIST` children of the `VAL_FIELD` (the field type nests inside
     /// its own [`Type`] node, so no attribute list leaks in from there).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("ValField::attributes");
         children(&self.0)
     }
 
@@ -1242,6 +1340,7 @@ impl ValField {
     /// field; `None` only on a malformed field). The first [`SyntaxKind::IDENT_TOK`]
     /// child (the field type's idents nest inside the type node).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("ValField::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1251,6 +1350,7 @@ impl ValField {
     /// `true` iff `val mutable …` — FCS's `SynField.isMutable`
     /// ([`SyntaxKind::MUTABLE_TOK`] child).
     pub fn is_mutable(&self) -> bool {
+        accessor!("ValField::is_mutable");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1260,6 +1360,7 @@ impl ValField {
     /// `true` iff `static val …` — FCS's `SynField.isStatic`
     /// ([`SyntaxKind::STATIC_TOK`] child).
     pub fn is_static(&self) -> bool {
+        accessor!("ValField::is_static");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1268,6 +1369,7 @@ impl ValField {
 
     /// The field's type — FCS's `SynField.fieldType` (the full `parse_type`).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("ValField::ty");
         child(&self.0)
     }
 }
@@ -1279,6 +1381,7 @@ impl InheritMember {
     /// expression's own types nest inside the [`Expr`] child). `None` only on a
     /// malformed `inherit` with no base type (FCS's `Inherit(None, …)` recovery).
     pub fn base_type(&self) -> Option<Type> {
+        accessor!("InheritMember::base_type");
         child(&self.0)
     }
 
@@ -1287,6 +1390,7 @@ impl InheritMember {
     /// `Paren(Tuple)`). The sole direct [`Expr`] child. `None` for the
     /// argument-less `inherit Base` form (FCS's `SynMemberDefn.Inherit`).
     pub fn args(&self) -> Option<Expr> {
+        accessor!("InheritMember::args");
         child(&self.0)
     }
 
@@ -1294,6 +1398,7 @@ impl InheritMember {
     /// `inherit Base()`), `false` for the bare `Inherit` form (`inherit Base`) —
     /// the discriminant FCS encodes as the `ImplicitInherit` vs `Inherit` case.
     pub fn is_implicit(&self) -> bool {
+        accessor!("InheritMember::is_implicit");
         self.args().is_some()
     }
 }
@@ -1305,6 +1410,7 @@ impl InterfaceImpl {
     /// members' own types nest inside their member nodes). `None` only on a
     /// malformed `interface` with no type.
     pub fn interface_type(&self) -> Option<Type> {
+        accessor!("InterfaceImpl::interface_type");
         child(&self.0)
     }
 
@@ -1313,6 +1419,7 @@ impl InterfaceImpl {
     /// option` discriminant: `with` → `Some` (the [`Self::members`] list, possibly
     /// empty); no `with` → `None` (the bare `interface I`).
     pub fn has_with(&self) -> bool {
+        accessor!("InterfaceImpl::has_with");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1324,6 +1431,7 @@ impl InterfaceImpl {
     /// [`MemberDefn`] children of the `INTERFACE_IMPL` node; empty for a bare
     /// `interface I` (where [`Self::has_with`] is `false`, i.e. FCS's `None`).
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
+        accessor!("InterfaceImpl::members");
         children(&self.0)
     }
 }
@@ -1335,6 +1443,7 @@ impl GetSetMember {
     /// attribute onto *both* accessor bindings, so a consumer projects this list
     /// onto each present accessor.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("GetSetMember::attributes");
         children(&self.0)
     }
 
@@ -1346,6 +1455,7 @@ impl GetSetMember {
     /// via [`Self::head_pat`] instead — an active-pattern segment is a sibling
     /// `ACTIVE_PAT_NAME`, not part of this `LONG_IDENT`.
     pub fn name(&self) -> Option<LongIdent> {
+        accessor!("GetSetMember::name");
         child::<LongIdentPat>(&self.0).and_then(|p| child(p.syntax()))
     }
 
@@ -1354,6 +1464,7 @@ impl GetSetMember {
     /// active-pattern's sibling `ACTIVE_PAT_NAME`), so a consumer wanting every
     /// name segment should read this rather than [`Self::name`].
     pub fn head_pat(&self) -> Option<LongIdentPat> {
+        accessor!("GetSetMember::head_pat");
         child(&self.0)
     }
 
@@ -1362,6 +1473,7 @@ impl GetSetMember {
     /// [`SyntaxKind::STATIC_TOK`] child (the same marker [`MemberMethod`] and
     /// [`AutoProperty`] carry).
     pub fn is_static(&self) -> bool {
+        accessor!("GetSetMember::is_static");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1372,12 +1484,14 @@ impl GetSetMember {
     /// `get` (FCS's `getBinding`, `MemberKind = PropertyGet`). `None` for a
     /// set-only property.
     pub fn getter(&self) -> Option<GetSetAccessor> {
+        accessor!("GetSetMember::getter");
         children::<GetSetAccessor>(&self.0).find(|a| a.is_get())
     }
 
     /// The setter accessor — the [`GetSetAccessor`] child whose keyword is
     /// `set` (FCS's `setBinding`). `None` for a get-only property.
     pub fn setter(&self) -> Option<GetSetAccessor> {
+        accessor!("GetSetMember::setter");
         children::<GetSetAccessor>(&self.0).find(|a| !a.is_get())
     }
 }
@@ -1386,6 +1500,7 @@ impl GetSetAccessor {
     /// `true` iff this is the `get` accessor (a [`SyntaxKind::GET_TOK`] child),
     /// `false` for the `set` accessor (a [`SyntaxKind::SET_TOK`]).
     pub fn is_get(&self) -> bool {
+        accessor!("GetSetAccessor::is_get");
         token(&self.0, SyntaxKind::GET_TOK).is_some()
     }
 
@@ -1396,6 +1511,7 @@ impl GetSetAccessor {
     /// accessor bindings ahead of these (a consumer concatenates the two, the
     /// property-level lists first — matching FCS's `SynBinding.attributes` order).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("GetSetAccessor::attributes");
         children(&self.0)
     }
 
@@ -1403,12 +1519,14 @@ impl GetSetAccessor {
     /// (`get()` → `[Paren(Const Unit)]`, `set v` → `[Named v]`, `get(i)` →
     /// `[Paren(Named i)]`). The [`Pat`] children, in source order.
     pub fn args(&self) -> impl Iterator<Item = Pat> + '_ {
+        accessor!("GetSetAccessor::args");
         children(&self.0)
     }
 
     /// The accessor body — FCS's `SynBinding` rhs expression (`get() = <expr>`).
     /// The sole [`Expr`] child. `None` only on a malformed accessor.
     pub fn body(&self) -> Option<Expr> {
+        accessor!("GetSetAccessor::body");
         child(&self.0)
     }
 
@@ -1418,6 +1536,7 @@ impl GetSetAccessor {
     /// and (as elsewhere) FCS wraps the body in `SynExpr.Typed(body, T)`;
     /// [`Self::body`] returns the unwrapped body regardless.
     pub fn return_type(&self) -> Option<Type> {
+        accessor!("GetSetAccessor::return_type");
         child::<BindingReturnInfo>(&self.0).and_then(|ri| ri.ty())
     }
 }
@@ -1444,6 +1563,7 @@ impl AutoProperty {
     /// `AUTO_PROPERTY` (the type annotation and RHS nest inside their own nodes,
     /// so no attribute list leaks in from there).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("AutoProperty::attributes");
         children(&self.0)
     }
 
@@ -1451,6 +1571,7 @@ impl AutoProperty {
     /// [`SyntaxKind::IDENT_TOK`] child (the type annotation's and RHS's idents
     /// nest inside their nodes).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("AutoProperty::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1460,6 +1581,7 @@ impl AutoProperty {
     /// `true` iff `static member val …` — FCS's
     /// `SynMemberDefn.AutoProperty.isStatic` ([`SyntaxKind::STATIC_TOK`] child).
     pub fn is_static(&self) -> bool {
+        accessor!("AutoProperty::is_static");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1470,12 +1592,14 @@ impl AutoProperty {
     /// (`member val X : T = …`). The direct child [`Type`] node, present only
     /// after a [`SyntaxKind::COLON_TOK`].
     pub fn ty(&self) -> Option<Type> {
+        accessor!("AutoProperty::ty");
         child(&self.0)
     }
 
     /// The initialiser expression — FCS's `AutoProperty.synExpr` (the `= <expr>`
     /// RHS).
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("AutoProperty::expr");
         child(&self.0)
     }
 
@@ -1484,6 +1608,7 @@ impl AutoProperty {
     /// `with get, set`; a [`SyntaxKind::GET_TOK`] child alone means `with get`;
     /// neither means a plain `member val X = e`.
     pub fn prop_kind(&self) -> AutoPropertyKind {
+        accessor!("AutoProperty::prop_kind");
         let mut get = false;
         let mut set = false;
         for t in self
@@ -1513,6 +1638,7 @@ impl ImplicitCtor {
     /// `IMPLICIT_CTOR` (the args pattern nests inside its own [`Pat`] node, so no
     /// attribute list leaks in from there).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("ImplicitCtor::attributes");
         children(&self.0)
     }
 
@@ -1520,6 +1646,7 @@ impl ImplicitCtor {
     /// `ctorArgs` (a `SynPat`): a [`Pat::Const`] (unit) for the empty `()`, or
     /// a [`Pat::Paren`] for `(x: int, y)` etc. `None` only on a malformed ctor.
     pub fn args(&self) -> Option<Pat> {
+        accessor!("ImplicitCtor::args");
         child(&self.0)
     }
 
@@ -1527,6 +1654,7 @@ impl ImplicitCtor {
     /// `SynMemberDefn.ImplicitCtor.selfIdentifier`. The [`SyntaxKind::IDENT_TOK`]
     /// following the [`SyntaxKind::AS_TOK`]; `None` when there is no `as` clause.
     pub fn self_id(&self) -> Option<SyntaxToken> {
+        accessor!("ImplicitCtor::self_id");
         // The only direct `IDENT_TOK` child (the args pattern's idents nest
         // inside the pat node), present only after an `as`.
         self.0
@@ -1538,6 +1666,7 @@ impl ImplicitCtor {
 
 impl ExprDecl {
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("ExprDecl::expr");
         child(&self.0)
     }
 }
@@ -1548,6 +1677,7 @@ impl OpenDecl {
     /// `type` keyword the parser recovered from the raw stream). When `false`
     /// the target is a module/namespace path (`SynOpenDeclTarget.ModuleOrNamespace`).
     pub fn is_type(&self) -> bool {
+        accessor!("OpenDecl::is_type");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1558,6 +1688,7 @@ impl OpenDecl {
     /// `SynOpenDeclTarget.ModuleOrNamespace.longId`. `None` for the
     /// `open type T` form (use [`OpenDecl::ty`] there).
     pub fn long_ident(&self) -> Option<LongIdent> {
+        accessor!("OpenDecl::long_ident");
         child(&self.0)
     }
 
@@ -1565,6 +1696,7 @@ impl OpenDecl {
     /// `SynOpenDeclTarget.Type.typeName`. `None` for the module/namespace
     /// form (use [`OpenDecl::long_ident`] there).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("OpenDecl::ty");
         child(&self.0)
     }
 }
@@ -1581,6 +1713,7 @@ impl NestedModuleDecl {
     /// which is correctly excluded. (Well-formed body attributes nest inside their
     /// own `*_DECL` node and never appear here.)
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("NestedModuleDecl::attributes");
         self.0
             .children_with_tokens()
             .take_while(|el| el.kind() != SyntaxKind::LONG_IDENT)
@@ -1594,6 +1727,7 @@ impl NestedModuleDecl {
     /// `LONG_IDENT` child (body decls nest their own paths inside `*_DECL`
     /// nodes). `None` only on a malformed header with no name.
     pub fn long_id(&self) -> Option<LongIdent> {
+        accessor!("NestedModuleDecl::long_id");
         child(&self.0)
     }
 
@@ -1601,6 +1735,7 @@ impl NestedModuleDecl {
     /// (`module rec X = …`) sits in the header. Encoded as the presence of a
     /// direct [`SyntaxKind::REC_TOK`] child token.
     pub fn is_rec(&self) -> bool {
+        accessor!("NestedModuleDecl::is_rec");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1611,6 +1746,7 @@ impl NestedModuleDecl {
     /// The decls are direct `*_DECL` children (the body is *not* wrapped in a
     /// [`SyntaxKind::MODULE_OR_NAMESPACE`]).
     pub fn decls(&self) -> impl Iterator<Item = ModuleDecl> + '_ {
+        accessor!("NestedModuleDecl::decls");
         children(&self.0)
     }
 
@@ -1619,6 +1755,7 @@ impl NestedModuleDecl {
     /// `*_DECL` children as [`Self::decls`], cast to [`SigDecl`] instead of the
     /// impl-side [`ModuleDecl`].
     pub fn sig_decls(&self) -> impl Iterator<Item = SigDecl> + '_ {
+        accessor!("NestedModuleDecl::sig_decls");
         children(&self.0)
     }
 }
@@ -1629,6 +1766,7 @@ impl ModuleAbbrevDecl {
     /// child (the header name; the parser rejects a dotted LHS as an `ERROR`
     /// node, so a `MODULE_ABBREV_DECL`'s LHS is always one segment).
     pub fn ident(&self) -> Option<LongIdent> {
+        accessor!("ModuleAbbrevDecl::ident");
         children::<LongIdent>(&self.0).next()
     }
 
@@ -1636,6 +1774,7 @@ impl ModuleAbbrevDecl {
     /// (possibly dotted) module path being abbreviated. The *second* direct
     /// [`SyntaxKind::LONG_IDENT`] child (the body, parsed as a bare path).
     pub fn long_id(&self) -> Option<LongIdent> {
+        accessor!("ModuleAbbrevDecl::long_id");
         children::<LongIdent>(&self.0).nth(1)
     }
 }
@@ -1650,6 +1789,7 @@ impl ExceptionDefnDecl {
     /// exception) inside the nested `UNION_CASE`, so it does not leak in here.
     /// Empty for an unattributed exception.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("ExceptionDefnDecl::attributes");
         children(&self.0)
     }
 
@@ -1659,6 +1799,7 @@ impl ExceptionDefnDecl {
     /// [`SyntaxKind::UNION_CASE`] child. `None` only on a malformed definition
     /// with no case name.
     pub fn union_case(&self) -> Option<UnionCase> {
+        accessor!("ExceptionDefnDecl::union_case");
         child(&self.0)
     }
 
@@ -1667,6 +1808,7 @@ impl ExceptionDefnDecl {
     /// [`SyntaxKind::LONG_IDENT`] child after the `=`. `None` for a
     /// non-abbreviation exception.
     pub fn abbrev_path(&self) -> Option<LongIdent> {
+        accessor!("ExceptionDefnDecl::abbrev_path");
         child(&self.0)
     }
 
@@ -1674,6 +1816,7 @@ impl ExceptionDefnDecl {
     /// `exception E with member …` block (phase 9.15b). Empty for a plain
     /// exception (phase 9.15a never produces members).
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
+        accessor!("ExceptionDefnDecl::members");
         children(&self.0)
     }
 }
@@ -1684,6 +1827,7 @@ impl LetDecl {
     /// child token (set at parse time; trivia and other token kinds are
     /// filtered out so only the actual `rec` matches).
     pub fn is_rec(&self) -> bool {
+        accessor!("LetDecl::is_rec");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1696,6 +1840,7 @@ impl LetDecl {
     /// `use` reach the parser through the same `Virtual::Let` and are emitted
     /// as `LET_TOK`, so the text — not the kind — carries the distinction.
     pub fn is_use(&self) -> bool {
+        accessor!("LetDecl::is_use");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1706,6 +1851,7 @@ impl LetDecl {
     /// The bindings introduced by this `let`. A single `let x = e` yields
     /// one binding; `let x = e and y = e'` yields two; etc.
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
+        accessor!("LetDecl::bindings");
         children(&self.0)
     }
 
@@ -1717,6 +1863,7 @@ impl LetDecl {
     /// them onto the first binding's `attributes`. Empty for an unattributed
     /// `let`.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("LetDecl::attributes");
         children(&self.0)
     }
 }
@@ -1727,21 +1874,25 @@ impl ExternDecl {
     /// return type's own attributes are nested inside the `EXTERN_RET` child and
     /// are elided by the normaliser.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("ExternDecl::attributes");
         children(&self.0)
     }
 
     /// The return type (`EXTERN_RET`, FCS's `cRetType`).
     pub fn return_info(&self) -> Option<ExternRet> {
+        accessor!("ExternDecl::return_info");
         child(&self.0)
     }
 
     /// The prototype's name (FCS's `ident`, a single-segment `SynLongIdent`).
     pub fn name(&self) -> Option<LongIdent> {
+        accessor!("ExternDecl::name");
         child(&self.0)
     }
 
     /// The arguments (FCS's `externArgs`), in source order.
     pub fn args(&self) -> impl Iterator<Item = ExternArg> + '_ {
+        accessor!("ExternDecl::args");
         children(&self.0)
     }
 }
@@ -1791,6 +1942,7 @@ impl ExternRet {
     /// suffixes. FCS maps this form to `unit`; `void*` is a native pointer type
     /// and returns `false`.
     pub fn is_void(&self) -> bool {
+        accessor!("ExternRet::is_void");
         matches!(self.c_type_base(), Some(ExternCTypeBase::Void(_)))
             && self.c_type_suffixes().next().is_none()
     }
@@ -1799,6 +1951,7 @@ impl ExternRet {
     /// bare `void` and `void*`). Use [`Self::c_type_base`] and
     /// [`Self::c_type_suffixes`] to distinguish those forms.
     pub fn ty(&self) -> Option<LongIdent> {
+        accessor!("ExternRet::ty");
         match self.c_type_base() {
             Some(ExternCTypeBase::Path(path)) => Some(path),
             Some(ExternCTypeBase::Void(_)) | None => None,
@@ -1807,12 +1960,14 @@ impl ExternRet {
 
     /// The return type's base (`void` or a path), before C-style suffixes.
     pub fn c_type_base(&self) -> Option<ExternCTypeBase> {
+        accessor!("ExternRet::c_type_base");
         extern_c_type_base(&self.0)
     }
 
     /// The C-style suffixes (`&`, `*`, `[]`) attached to the return type, in
     /// source order.
     pub fn c_type_suffixes(&self) -> impl Iterator<Item = ExternCTypeSuffix> + '_ {
+        accessor!("ExternRet::c_type_suffixes");
         extern_c_type_suffixes(&self.0)
     }
 }
@@ -1821,6 +1976,7 @@ impl ExternArg {
     /// The argument's `[< … >]` attribute groups (FCS's `externArg`'s
     /// `opt_attributes`).
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("ExternArg::attributes");
         children(&self.0)
     }
 
@@ -1828,6 +1984,7 @@ impl ExternArg {
     /// Returns `None` for `void`-based C types such as `void*`; use
     /// [`Self::c_type_base`] and [`Self::c_type_suffixes`] to distinguish them.
     pub fn ty(&self) -> Option<LongIdent> {
+        accessor!("ExternArg::ty");
         match self.c_type_base() {
             Some(ExternCTypeBase::Path(path)) => Some(path),
             Some(ExternCTypeBase::Void(_)) | None => None,
@@ -1836,18 +1993,21 @@ impl ExternArg {
 
     /// The argument type's base (`void` or a path), before C-style suffixes.
     pub fn c_type_base(&self) -> Option<ExternCTypeBase> {
+        accessor!("ExternArg::c_type_base");
         extern_c_type_base(&self.0)
     }
 
     /// The C-style suffixes (`&`, `*`, `[]`) attached to the argument type, in
     /// source order.
     pub fn c_type_suffixes(&self) -> impl Iterator<Item = ExternCTypeSuffix> + '_ {
+        accessor!("ExternArg::c_type_suffixes");
         extern_c_type_suffixes(&self.0)
     }
 
     /// The optional argument name (`None` → an unnamed `SynPat.Wild`) — the
     /// trailing `IDENT_TOK` after the type path.
     pub fn name(&self) -> Option<SyntaxToken> {
+        accessor!("ExternArg::name");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1859,6 +2019,7 @@ impl AttributeList {
     /// The attributes inside this `[< … >]` group — one or more, `;`-separated
     /// (phase 10.5a; FCS's `attributeListElements`).
     pub fn attributes(&self) -> impl Iterator<Item = Attribute> + '_ {
+        accessor!("AttributeList::attributes");
         children(&self.0)
     }
 }
@@ -1866,6 +2027,7 @@ impl AttributeList {
 impl Attribute {
     /// `SynAttribute.TypeName` — the attribute's `path` as a [`LongIdent`].
     pub fn type_name(&self) -> Option<LongIdent> {
+        accessor!("Attribute::type_name");
         child(&self.0)
     }
 
@@ -1874,6 +2036,7 @@ impl Attribute {
     /// path (which is not `Expr`-castable, so `child` returns the arg). `None`
     /// for a bare attribute, whose FCS `ArgExpr` is the synthetic `mkSynUnit`.
     pub fn arg(&self) -> Option<Expr> {
+        accessor!("Attribute::arg");
         child(&self.0)
     }
 
@@ -1882,6 +2045,7 @@ impl Attribute {
     /// the leading [`SyntaxKind::ATTRIBUTE_TARGET`] child; `None` for an
     /// untargeted attribute.
     pub fn target(&self) -> Option<SyntaxToken> {
+        accessor!("Attribute::target");
         self.0
             .children()
             .find(|n| n.kind() == SyntaxKind::ATTRIBUTE_TARGET)
@@ -1902,6 +2066,7 @@ impl Binding {
     /// `LET_DECL` instead). A pattern's own attributes (`ATTRIB_PAT`) are nested
     /// inside the pattern child, not direct children, so they are not included.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("Binding::attributes");
         children(&self.0)
     }
 
@@ -1909,6 +2074,7 @@ impl Binding {
     /// keyword on this binding. Encoded as the presence of a
     /// [`SyntaxKind::MUTABLE_TOK`] child token.
     pub fn is_mutable(&self) -> bool {
+        accessor!("Binding::is_mutable");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1919,6 +2085,7 @@ impl Binding {
     /// keyword on this binding. Encoded as the presence of an
     /// [`SyntaxKind::INLINE_TOK`] child token.
     pub fn is_inline(&self) -> bool {
+        accessor!("Binding::is_inline");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1929,12 +2096,14 @@ impl Binding {
     /// value form `let x = e`, [`WildcardPat`] for `let _ = e`, or
     /// [`LongIdentPat`] for the function form `let f x y = e`.
     pub fn pat(&self) -> Option<Pat> {
+        accessor!("Binding::pat");
         child(&self.0)
     }
 
     /// `SynBinding.expr` — the RHS expression. Returns `None` only on a
     /// malformed (parser-bailed) tree; well-formed input always has one.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("Binding::expr");
         child(&self.0)
     }
 
@@ -1946,6 +2115,7 @@ impl Binding {
     /// returns the unwrapped RHS, since the type lives in a sibling node, not on
     /// the expression.
     pub fn return_type(&self) -> Option<Type> {
+        accessor!("Binding::return_type");
         child::<BindingReturnInfo>(&self.0).and_then(|ri| ri.ty())
     }
 }
@@ -1953,6 +2123,7 @@ impl Binding {
 impl BindingReturnInfo {
     /// The annotated type — FCS's `SynBindingReturnInfo.typeName`.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("BindingReturnInfo::ty");
         child(&self.0)
     }
 }
@@ -1963,6 +2134,7 @@ impl NamedPat {
     /// is an [`ActivePatName`] child instead — read it via
     /// [`Self::active_pat_name`].
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("NamedPat::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -1976,6 +2148,7 @@ impl NamedPat {
     /// kept under this [`ActivePatName`]. Mutually exclusive with
     /// [`Self::ident`].
     pub fn active_pat_name(&self) -> Option<ActivePatName> {
+        accessor!("NamedPat::active_pat_name");
         child(&self.0)
     }
 }
@@ -1987,6 +2160,7 @@ impl OptionalValPat {
     /// equivalent. Absent only on the recovery shape (`?` with no following
     /// ident).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("OptionalValPat::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2000,6 +2174,7 @@ impl LongIdentPat {
     /// head (`let f …`, `Some x`), multi-segment for a dotted union-case path
     /// (`Foo.Bar`, `A.B.C`); read the segments via [`LongIdent::idents`].
     pub fn head(&self) -> Option<LongIdent> {
+        accessor!("LongIdentPat::head");
         child(&self.0)
     }
 
@@ -2010,6 +2185,7 @@ impl LongIdentPat {
     /// whole name into the single `idText` of a one-segment `SynLongIdent`;
     /// reconstruct that text from [`ActivePatName::case_tokens`].
     pub fn active_pat_name(&self) -> Option<ActivePatName> {
+        accessor!("LongIdentPat::active_pat_name");
         child(&self.0)
     }
 
@@ -2021,6 +2197,7 @@ impl LongIdentPat {
     /// [`TyparDecls::typars`]. (The synthetic `noInferredTypars` FCS attaches to
     /// ctor heads has no parser surface here, so it never appears.)
     pub fn typar_decls(&self) -> Option<TyparDecls> {
+        accessor!("LongIdentPat::typar_decls");
         child(&self.0)
     }
 
@@ -2032,6 +2209,7 @@ impl LongIdentPat {
     /// live under [`Self::name_pat_pairs`] instead — the two are mutually
     /// exclusive, mirroring FCS's `SynArgPats.Pats` vs `.NamePatPairs`.
     pub fn args(&self) -> impl Iterator<Item = Pat> + '_ {
+        accessor!("LongIdentPat::args");
         children(&self.0)
     }
 
@@ -2039,6 +2217,7 @@ impl LongIdentPat {
     /// this is the `Case (field = pat; …)` form. `None` for the ordinary
     /// curried-args ([`Self::args`]) form.
     pub fn name_pat_pairs(&self) -> Option<NamePatPairs> {
+        accessor!("LongIdentPat::name_pat_pairs");
         child(&self.0)
     }
 }
@@ -2051,6 +2230,7 @@ impl ActivePatName {
     /// separators are skipped, so FCS's single `idText` is rebuilt as `"|"` +
     /// the case texts joined by `"|"` + `"|"`.
     pub fn case_tokens(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        accessor!("ActivePatName::case_tokens");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2064,6 +2244,7 @@ impl ActivePatName {
     /// `idText` is `"|Foo|Bar|"`, ranged over exactly the bars-and-names span.
     /// `None` for a malformed name with no `|` (recovery).
     pub fn name_range(&self) -> Option<rowan::TextRange> {
+        accessor!("ActivePatName::name_range");
         let mut bars = self
             .0
             .children_with_tokens()
@@ -2084,6 +2265,7 @@ impl NamePatPairs {
     /// layout separators and the surrounding `(` / `)` are interleaved as
     /// non-`NamePatPair` children.
     pub fn pairs(&self) -> impl Iterator<Item = NamePatPair> + '_ {
+        accessor!("NamePatPairs::pairs");
         children(&self.0)
     }
 }
@@ -2094,6 +2276,7 @@ impl NamePatPair {
     /// The leading [`SyntaxKind::IDENT_TOK`] child. `None` only on recovery
     /// from a missing field name.
     pub fn name(&self) -> Option<SyntaxToken> {
+        accessor!("NamePatPair::name");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2103,6 +2286,7 @@ impl NamePatPair {
     /// The field's value pattern — FCS's `NamePatPairField` `pat`. The sole
     /// [`Pat`] child after the `=`. `None` on recovery from a missing value.
     pub fn pat(&self) -> Option<Pat> {
+        accessor!("NamePatPair::pat");
         child(&self.0)
     }
 }
@@ -2113,6 +2297,7 @@ impl WildcardPat {
     /// that want the source range can read the token's span); the
     /// pattern's semantics are fully determined by its kind.
     pub fn underscore(&self) -> Option<SyntaxToken> {
+        accessor!("WildcardPat::underscore");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2125,6 +2310,7 @@ impl ParenPat {
     /// in FCS terms. Returns `None` only when the parser bailed
     /// mid-production — well-formed input always has an inner pattern.
     pub fn inner(&self) -> Option<Pat> {
+        accessor!("ParenPat::inner");
         child(&self.0)
     }
 }
@@ -2136,6 +2322,7 @@ impl ConstPat {
     /// variant; for the unit form `()` it returns the
     /// [`SyntaxKind::LPAREN_TOK`] and callers dispatch on the kind alone.
     pub fn literal(&self) -> Option<SyntaxToken> {
+        accessor!("ConstPat::literal");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2148,6 +2335,7 @@ impl NullPat {
     /// keyword. Exposed for source-range recovery; the pattern's
     /// semantics are fully determined by its kind.
     pub fn keyword(&self) -> Option<SyntaxToken> {
+        accessor!("NullPat::keyword");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2161,11 +2349,13 @@ impl TypedPat {
     /// <type>]`, so the first `Pat` child is the annotated pattern.
     /// Mirrors [`TypedExpr::expr`] on the pattern side.
     pub fn pat(&self) -> Option<Pat> {
+        accessor!("TypedPat::pat");
         child(&self.0)
     }
 
     /// The type annotation — FCS's `SynPat.Typed.targetType` field.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("TypedPat::ty");
         child(&self.0)
     }
 }
@@ -2176,6 +2366,7 @@ impl TuplePat {
     /// with `COMMA_TOK` separators interleaved between them in the
     /// green tree. Mirrors [`TupleExpr::elements`] on the pattern side.
     pub fn elements(&self) -> impl Iterator<Item = Pat> + '_ {
+        accessor!("TuplePat::elements");
         children(&self.0)
     }
 
@@ -2184,6 +2375,7 @@ impl TuplePat {
     /// has none). The struct-tuple's parens are children of this node, so it has
     /// no `Paren` wrapper — mirrors [`TupleExpr::is_struct`] on the pattern side.
     pub fn is_struct(&self) -> bool {
+        accessor!("TuplePat::is_struct");
         token(&self.0, SyntaxKind::STRUCT_TOK).is_some()
     }
 }
@@ -2193,17 +2385,20 @@ impl AsPat {
     /// node stores its children as `[<lhs-pat>, AS_TOK, <rhs-pat>]`, so
     /// the first `Pat` child is the left operand.
     pub fn lhs(&self) -> Option<Pat> {
+        accessor!("AsPat::lhs");
         children(&self.0).next()
     }
 
     /// The right operand — FCS's `SynPat.As.rhsPat` field. The second
     /// `Pat` child (a `constrPattern`-level pattern).
     pub fn rhs(&self) -> Option<Pat> {
+        accessor!("AsPat::rhs");
         children(&self.0).nth(1)
     }
 
     /// The `as` keyword token between the two operands.
     pub fn as_token(&self) -> Option<SyntaxToken> {
+        accessor!("AsPat::as_token");
         token(&self.0, SyntaxKind::AS_TOK)
     }
 }
@@ -2213,6 +2408,7 @@ impl ArrayOrListPat {
     /// `[ … ]` — FCS's `SynPat.ArrayOrList.isArray` field. Recovered from
     /// the opener: an [`SyntaxKind::LBRACK_BAR_TOK`] child means array.
     pub fn is_array(&self) -> bool {
+        accessor!("ArrayOrListPat::is_array");
         token(&self.0, SyntaxKind::LBRACK_BAR_TOK).is_some()
     }
 
@@ -2221,6 +2417,7 @@ impl ArrayOrListPat {
     /// `parenPattern` (so an element may itself be a `TUPLE_PAT`, `AS_PAT`,
     /// etc.), with `SEMI_TOK` separators interleaved in the green tree.
     pub fn elements(&self) -> impl Iterator<Item = Pat> + '_ {
+        accessor!("ArrayOrListPat::elements");
         children(&self.0)
     }
 }
@@ -2231,6 +2428,7 @@ impl RecordPat {
     /// [`RecordPatField`]; `SEMI_TOK`/layout separators and the surrounding
     /// `{` / `}` are interleaved as non-`RecordPatField` children.
     pub fn fields(&self) -> impl Iterator<Item = RecordPatField> + '_ {
+        accessor!("RecordPat::fields");
         children(&self.0)
     }
 }
@@ -2240,6 +2438,7 @@ impl RecordPatField {
     /// [`LongIdent`] child (a `path`, so `{ M.X = p }` is qualified). `None`
     /// only on recovery from a missing field name.
     pub fn name(&self) -> Option<LongIdent> {
+        accessor!("RecordPatField::name");
         child(&self.0)
     }
 
@@ -2248,6 +2447,7 @@ impl RecordPatField {
     /// `Pat`-castable, so it is skipped. `None` on recovery from a missing
     /// value.
     pub fn pat(&self) -> Option<Pat> {
+        accessor!("RecordPatField::pat");
         child(&self.0)
     }
 }
@@ -2257,6 +2457,7 @@ impl IsInstPat {
     /// the field name). The sole [`Type`] child after the `:?` token. `None`
     /// only on recovery from a `:?` with no following type.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("IsInstPat::ty");
         child(&self.0)
     }
 }
@@ -2268,6 +2469,7 @@ impl QuotePat {
     /// [`Expr::Quote`]. `None` only on recovery from an unclosed quotation that
     /// produced no inner node.
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("QuotePat::inner");
         child(&self.0)
     }
 }
@@ -2277,6 +2479,7 @@ impl ListConsPat {
     /// node stores its children as `[<lhs-pat>, COLON_COLON_TOK, <rhs-pat>]`,
     /// so the first `Pat` child is the head. Mirrors [`AsPat::lhs`].
     pub fn lhs(&self) -> Option<Pat> {
+        accessor!("ListConsPat::lhs");
         children(&self.0).next()
     }
 
@@ -2284,11 +2487,13 @@ impl ListConsPat {
     /// child. Right-associative, so `a :: b :: c` nests another
     /// `LIST_CONS_PAT` here.
     pub fn rhs(&self) -> Option<Pat> {
+        accessor!("ListConsPat::rhs");
         children(&self.0).nth(1)
     }
 
     /// The `::` operator token between the two operands.
     pub fn cons_token(&self) -> Option<SyntaxToken> {
+        accessor!("ListConsPat::cons_token");
         token(&self.0, SyntaxKind::COLON_COLON_TOK)
     }
 }
@@ -2300,6 +2505,7 @@ impl AndsPat {
     /// [`TuplePat::elements`]; the `Ands` list is flat (`a & b & c` is one
     /// `Ands` of three, not nested).
     pub fn operands(&self) -> impl Iterator<Item = Pat> + '_ {
+        accessor!("AndsPat::operands");
         children(&self.0)
     }
 }
@@ -2310,16 +2516,19 @@ impl OrPat {
     /// child is the left operand. Left-associative, so `A | B | C` nests
     /// another `OR_PAT` here. Mirrors [`AsPat::lhs`].
     pub fn lhs(&self) -> Option<Pat> {
+        accessor!("OrPat::lhs");
         children(&self.0).next()
     }
 
     /// The right operand — FCS's `SynPat.Or.rhsPat`. The second `Pat` child.
     pub fn rhs(&self) -> Option<Pat> {
+        accessor!("OrPat::rhs");
         children(&self.0).nth(1)
     }
 
     /// The `|` operator token between the two operands.
     pub fn bar_token(&self) -> Option<SyntaxToken> {
+        accessor!("OrPat::bar_token");
         token(&self.0, SyntaxKind::BAR_TOK)
     }
 }
@@ -2330,6 +2539,7 @@ impl AttribPat {
     /// the [`AttributeList`]s are not `Pat`-castable, so the first `Pat` child
     /// is the inner pattern. Mirrors [`TypedPat::pat`] on the attribute side.
     pub fn pat(&self) -> Option<Pat> {
+        accessor!("AttribPat::pat");
         child(&self.0)
     }
 
@@ -2338,6 +2548,7 @@ impl AttribPat {
     /// One or more adjacent `[< … >]` groups; reuses the phase-10.5
     /// [`AttributeList`] facade.
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("AttribPat::attributes");
         children(&self.0)
     }
 }
@@ -2358,11 +2569,13 @@ impl MeasureLitExpr {
     /// The underlying numeric constant — the sole [`ConstExpr`] child (the
     /// `1.0` in `1.0<m>`), carrying FCS's `SynConst.Measure.constant`.
     pub fn const_expr(&self) -> Option<ConstExpr> {
+        accessor!("MeasureLitExpr::const_expr");
         child(&self.0)
     }
 
     /// The measure annotation — the sole [`Measure`] child (the `<m>`).
     pub fn measure(&self) -> Option<Measure> {
+        accessor!("MeasureLitExpr::measure");
         child(&self.0)
     }
 }
@@ -2370,6 +2583,7 @@ impl MeasureLitExpr {
 impl MeasureSeq {
     /// The juxtaposed measure factors, in source order (`m`, `s` in `<m s>`).
     pub fn measures(&self) -> impl Iterator<Item = Measure> + '_ {
+        accessor!("MeasureSeq::measures");
         children(&self.0)
     }
 }
@@ -2377,6 +2591,7 @@ impl MeasureSeq {
 impl MeasureNamed {
     /// The path of the named measure — the sole [`LongIdent`] child.
     pub fn path(&self) -> Option<LongIdent> {
+        accessor!("MeasureNamed::path");
         child(&self.0)
     }
 }
@@ -2384,11 +2599,13 @@ impl MeasureNamed {
 impl MeasureProduct {
     /// The left factor — the first [`Measure`] child.
     pub fn lhs(&self) -> Option<Measure> {
+        accessor!("MeasureProduct::lhs");
         children(&self.0).next()
     }
 
     /// The right factor — the second [`Measure`] child.
     pub fn rhs(&self) -> Option<Measure> {
+        accessor!("MeasureProduct::rhs");
         children(&self.0).nth(1)
     }
 }
@@ -2397,6 +2614,7 @@ impl MeasureDivide {
     /// The numerator — the [`Measure`] child *before* the `SLASH_TOK`, or
     /// `None` for the reciprocal `</s>` (where the `/` leads).
     pub fn numerator(&self) -> Option<Measure> {
+        accessor!("MeasureDivide::numerator");
         let mut seen_slash = false;
         for el in self.0.children_with_tokens() {
             match el {
@@ -2414,6 +2632,7 @@ impl MeasureDivide {
 
     /// The denominator — the [`Measure`] child *after* the `SLASH_TOK`.
     pub fn denominator(&self) -> Option<Measure> {
+        accessor!("MeasureDivide::denominator");
         let mut seen_slash = false;
         for el in self.0.children_with_tokens() {
             match el {
@@ -2433,6 +2652,7 @@ impl MeasureDivide {
 impl MeasurePower {
     /// The base measure — the sole [`Measure`] child.
     pub fn base(&self) -> Option<Measure> {
+        accessor!("MeasurePower::base");
         child(&self.0)
     }
 
@@ -2441,11 +2661,13 @@ impl MeasurePower {
     /// [`SyntaxKind::MEASURE_POWER_OP_TOK`] child's text (mirrors
     /// [`MeasurePowerType::is_negated`]).
     pub fn is_negated(&self) -> bool {
+        accessor!("MeasurePower::is_negated");
         token(&self.0, SyntaxKind::MEASURE_POWER_OP_TOK).is_some_and(|t| t.text() == "^-")
     }
 
     /// The exponent — the sole [`RationalConst`] child.
     pub fn exponent(&self) -> Option<RationalConst> {
+        accessor!("MeasurePower::exponent");
         child(&self.0)
     }
 }
@@ -2454,6 +2676,7 @@ impl MeasureVar {
     /// The measure variable's name — the [`SyntaxKind::IDENT_TOK`] child (the
     /// `u` of `'u` / `^u`), backticks-as-lexed.
     pub fn name(&self) -> Option<SyntaxToken> {
+        accessor!("MeasureVar::name");
         token(&self.0, SyntaxKind::IDENT_TOK)
     }
 
@@ -2461,6 +2684,7 @@ impl MeasureVar {
     /// for the quote form `'u` (`TyparStaticReq.None`) — read from the sigil
     /// token kind ([`SyntaxKind::HAT_TOK`] vs [`SyntaxKind::QUOTE_TOK`]).
     pub fn is_head_type(&self) -> bool {
+        accessor!("MeasureVar::is_head_type");
         token(&self.0, SyntaxKind::HAT_TOK).is_some()
     }
 }
@@ -2468,6 +2692,7 @@ impl MeasureVar {
 impl MeasureParen {
     /// The parenthesised measure — the sole [`Measure`] child.
     pub fn inner(&self) -> Option<Measure> {
+        accessor!("MeasureParen::inner");
         child(&self.0)
     }
 }
@@ -2480,6 +2705,7 @@ impl ConstExpr {
     /// the [`SyntaxKind::LPAREN_TOK`]; callers dispatch on that kind and
     /// don't read the token's text.
     pub fn literal(&self) -> Option<SyntaxToken> {
+        accessor!("ConstExpr::literal");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2492,6 +2718,7 @@ impl NullExpr {
     /// keyword. Exposed for source-range recovery; the expression's
     /// semantics are fully determined by its kind (FCS's `SynExpr.Null`).
     pub fn keyword(&self) -> Option<SyntaxToken> {
+        accessor!("NullExpr::keyword");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2505,6 +2732,7 @@ impl IdentExpr {
     /// in the token text; consumers that want FCS's `Ident.idText`
     /// semantics need to strip them.
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("IdentExpr::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2520,6 +2748,7 @@ impl TyparExpr {
     /// always `None` (only the quote sigil reaches this node), so there is no
     /// head-type accessor.
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("TyparExpr::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2532,6 +2761,7 @@ impl LongIdentExpr {
     /// `SynExpr.LongIdent`'s wrapping is purely structural; the body lives
     /// on the inner `SynLongIdent`.
     pub fn long_ident(&self) -> Option<LongIdent> {
+        accessor!("LongIdentExpr::long_ident");
         child(&self.0)
     }
 }
@@ -2541,6 +2771,7 @@ impl ParenExpr {
     /// 0 in FCS terms. Returns `None` only when the parser bailed mid-
     /// production — well-formed input always has an inner expression here.
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("ParenExpr::inner");
         child(&self.0)
     }
 }
@@ -2552,6 +2783,7 @@ impl TupleExpr {
     /// the typed accessor filters them out by only yielding `Expr`
     /// children.
     pub fn elements(&self) -> impl Iterator<Item = Expr> + '_ {
+        accessor!("TupleExpr::elements");
         children(&self.0)
     }
 
@@ -2560,6 +2792,7 @@ impl TupleExpr {
     /// none). The struct-tuple's parens are children of this node, so it has no
     /// `Paren` wrapper.
     pub fn is_struct(&self) -> bool {
+        accessor!("TupleExpr::is_struct");
         token(&self.0, SyntaxKind::STRUCT_TOK).is_some()
     }
 }
@@ -2572,6 +2805,7 @@ impl SequentialExpr {
     /// `Sequential(_, _, e1, Sequential(_, _, e2, e3, …), …)` flattens
     /// into a list when projected.
     pub fn statements(&self) -> impl Iterator<Item = Expr> + '_ {
+        accessor!("SequentialExpr::statements");
         children(&self.0)
     }
 }
@@ -2611,6 +2845,7 @@ impl InterpStringExpr {
     ///
     /// [`Fill`]: InterpStringPart::Fill
     pub fn parts(&self) -> Vec<InterpStringPart> {
+        accessor!("InterpStringExpr::parts");
         let mut parts: Vec<InterpStringPart> = Vec::new();
         for el in self.0.children_with_tokens() {
             match el {
@@ -2648,6 +2883,7 @@ impl AppExpr {
     /// op, lhs)` produced by FCS's `mkSynInfix` lowering — i.e. its
     /// [`SyntaxKind`] is [`SyntaxKind::INFIX_APP_EXPR`].
     pub fn is_infix(&self) -> bool {
+        accessor!("AppExpr::is_infix");
         self.0.kind() == SyntaxKind::INFIX_APP_EXPR
     }
 
@@ -2661,6 +2897,7 @@ impl AppExpr {
     /// Always `false` for an [`SyntaxKind::INFIX_APP_EXPR`] (FCS lowers infix ops
     /// with `ExprAtomicFlag.NonAtomic`), which never carries a marker.
     pub fn is_atomic(&self) -> bool {
+        accessor!("AppExpr::is_atomic");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2682,6 +2919,7 @@ impl AppExpr {
     /// [`SyntaxKind::APP_EXPR`]. The whitespace-separated `f [i]` (application of a
     /// list literal) carries **no** marker and so is *not* a bracket indexer.
     pub fn is_bracket_indexer(&self) -> bool {
+        accessor!("AppExpr::is_bracket_indexer");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2695,6 +2933,7 @@ impl AppExpr {
     /// records the operator as `funcExpr` — so we return the second
     /// child instead.
     pub fn func(&self) -> Option<Expr> {
+        accessor!("AppExpr::func");
         if self.is_infix() {
             children(&self.0).nth(1)
         } else {
@@ -2708,6 +2947,7 @@ impl AppExpr {
     /// in source order but FCS records it as `argExpr`, so we return
     /// the first child instead.
     pub fn arg(&self) -> Option<Expr> {
+        accessor!("AppExpr::arg");
         if self.is_infix() {
             children(&self.0).next()
         } else {
@@ -2723,6 +2963,7 @@ impl AssignExpr {
     /// shape onto the concrete `SynExpr.*Set` variant; the diff normaliser
     /// replays that dispatch.
     pub fn target(&self) -> Option<Expr> {
+        accessor!("AssignExpr::target");
         children(&self.0).next()
     }
 
@@ -2730,6 +2971,7 @@ impl AssignExpr {
     /// second `Expr` child in source order. `None` only on a malformed
     /// (parser-bailed) RHS.
     pub fn value(&self) -> Option<Expr> {
+        accessor!("AssignExpr::value");
         children(&self.0).nth(1)
     }
 }
@@ -2739,6 +2981,7 @@ impl DotGetExpr {
     /// The first (and only) `Expr` child; the [`LongIdent`] sibling holds
     /// the member path, so it is skipped by the `Expr` cast filter.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("DotGetExpr::expr");
         child(&self.0)
     }
 
@@ -2747,6 +2990,7 @@ impl DotGetExpr {
     /// [`LongIdent::idents`] projects the segment texts (`["Bar"; "Baz"]`
     /// for `(f x).Bar.Baz`).
     pub fn long_ident(&self) -> Option<LongIdent> {
+        accessor!("DotGetExpr::long_ident");
         child(&self.0)
     }
 }
@@ -2755,6 +2999,7 @@ impl DynamicExpr {
     /// The LHS expression — FCS's `SynExpr.Dynamic.funcExpr`. The first `Expr`
     /// child in source order (before the `QMARK_TOK`).
     pub fn lhs(&self) -> Option<Expr> {
+        accessor!("DynamicExpr::lhs");
         children(&self.0).next()
     }
 
@@ -2762,6 +3007,7 @@ impl DynamicExpr {
     /// child (after the `QMARK_TOK`): an [`IdentExpr`] for the `a?b` member-name
     /// form, or a [`ParenExpr`] for the `a?(e)` form.
     pub fn arg(&self) -> Option<Expr> {
+        accessor!("DynamicExpr::arg");
         children(&self.0).nth(1)
     }
 }
@@ -2773,6 +3019,7 @@ impl DotLambdaExpr {
     /// the cast filter skips them). `None` only if the parser bailed before the
     /// body. For `_.Foo.Bar` this is the folded `LongIdentExpr ["Foo"; "Bar"]`.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("DotLambdaExpr::expr");
         child(&self.0)
     }
 }
@@ -2781,12 +3028,14 @@ impl DotIndexedGetExpr {
     /// The object being indexed — FCS's `SynExpr.DotIndexedGet.objectExpr`.
     /// The first `Expr` child in source order.
     pub fn object(&self) -> Option<Expr> {
+        accessor!("DotIndexedGetExpr::object");
         children(&self.0).next()
     }
 
     /// The index argument(s) — FCS's `SynExpr.DotIndexedGet.indexArgs`. The
     /// second `Expr` child (a [`TupleExpr`] for the multi-arg `arr.[i, j]`).
     pub fn index(&self) -> Option<Expr> {
+        accessor!("DotIndexedGetExpr::index");
         children(&self.0).nth(1)
     }
 }
@@ -2796,6 +3045,7 @@ impl DotMissingExpr {
     /// `SynExpr.DiscardAfterMissingQualificationAfterDot.expr` (`(f x)` in
     /// `(f x).`). The sole `Expr` child. `None` only on malformed input.
     pub fn receiver(&self) -> Option<Expr> {
+        accessor!("DotMissingExpr::receiver");
         child(&self.0)
     }
 }
@@ -2806,6 +3056,7 @@ impl LibraryOnlyFieldGetExpr {
     /// `Expr` child (the `( :: )` name and field number are tokens). `None` only
     /// on malformed input.
     pub fn object(&self) -> Option<Expr> {
+        accessor!("LibraryOnlyFieldGetExpr::object");
         child(&self.0)
     }
 
@@ -2817,6 +3068,7 @@ impl LibraryOnlyFieldGetExpr {
     /// high-bit literal is negative (`0xFFFFFFFF` → `-1`). `None` only on
     /// malformed input or a literal wider than 32 bits (which FCS rejects too).
     pub fn field_num(&self) -> Option<i32> {
+        accessor!("LibraryOnlyFieldGetExpr::field_num");
         let tok = token(&self.0, SyntaxKind::INT32_LIT)?;
         let owned = tok.text().replace('_', "");
         // Drop the int32 `l`/`L` suffix if present (never a hex digit, so this is
@@ -2840,6 +3092,7 @@ impl IndexRangeExpr {
     /// (`^1`, an [`SyntaxKind::INDEX_FROM_END_EXPR`]) is an ordinary `Expr` child,
     /// returned here / by [`Self::upper`] like any other bound.
     pub fn lower(&self) -> Option<Expr> {
+        accessor!("IndexRangeExpr::lower");
         let mut found = None;
         for el in self.0.children_with_tokens() {
             match el {
@@ -2859,6 +3112,7 @@ impl IndexRangeExpr {
     /// child *after* the `..` token, or `None` for an open-upper range
     /// (`lower..`).
     pub fn upper(&self) -> Option<Expr> {
+        accessor!("IndexRangeExpr::upper");
         let mut seen_dot_dot = false;
         for el in self.0.children_with_tokens() {
             match el {
@@ -2882,6 +3136,7 @@ impl IndexFromEndExpr {
     /// in `arr.[^1]`). The sole [`Expr`] child; the leading `^`
     /// ([`SyntaxKind::HAT_TOK`]) is a sibling token.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("IndexFromEndExpr::expr");
         child(&self.0)
     }
 }
@@ -2894,6 +3149,7 @@ impl LongIdent {
     /// segment (a [`SyntaxKind::NEW_TOK`], text `"new"`), mirroring FCS's
     /// `SynLongIdent(["new"])`, so it is yielded here too.
     pub fn idents(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        accessor!("LongIdent::idents");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -2913,6 +3169,7 @@ impl LongIdent {
     /// ([`Self::idents`]) must consult this too, lest they silently drop the
     /// active-pattern segment (and mis-read the remaining tokens as the path).
     pub fn active_pat_names(&self) -> impl Iterator<Item = ActivePatName> + '_ {
+        accessor!("LongIdent::active_pat_names");
         children(&self.0)
     }
 }
@@ -2929,6 +3186,7 @@ impl IfThenElseExpr {
     /// (`if a then else c`) would otherwise let positional access mistake the
     /// `else` expression for the `then` branch.
     pub fn condition(&self) -> Option<Expr> {
+        accessor!("IfThenElseExpr::condition");
         self.0
             .children_with_tokens()
             .take_while(|el| el.kind() != SyntaxKind::THEN_TOK)
@@ -2944,6 +3202,7 @@ impl IfThenElseExpr {
     /// it the `elif` would be mistaken for the then-branch. `None` for the
     /// `if c then` recovery hole.
     pub fn then_branch(&self) -> Option<Expr> {
+        accessor!("IfThenElseExpr::then_branch");
         self.0
             .children_with_tokens()
             .skip_while(|el| el.kind() != SyntaxKind::THEN_TOK)
@@ -2962,6 +3221,7 @@ impl IfThenElseExpr {
     /// plain no-`else` form. Use [`Self::has_else`] to tell "no else" from
     /// "else present, expression missing".
     pub fn else_branch(&self) -> Option<Expr> {
+        accessor!("IfThenElseExpr::else_branch");
         if token(&self.0, SyntaxKind::ELSE_TOK).is_some() {
             self.0
                 .children_with_tokens()
@@ -2980,6 +3240,7 @@ impl IfThenElseExpr {
     /// keyword whose expression failed to parse (this `true`, `else_branch`
     /// `None`), which FCS recovers as `SynExpr.ArbitraryAfterError`.
     pub fn has_else(&self) -> bool {
+        accessor!("IfThenElseExpr::has_else");
         token(&self.0, SyntaxKind::ELSE_TOK).is_some()
             || self.0.children().any(|n| is_elif_node(&n))
     }
@@ -2995,6 +3256,7 @@ impl FunExpr {
     /// body is a parameter — the `RARROW_TOK` separates the two
     /// groups in source order.
     pub fn args(&self) -> impl Iterator<Item = Pat> + '_ {
+        accessor!("FunExpr::args");
         children(&self.0)
     }
 
@@ -3003,6 +3265,7 @@ impl FunExpr {
     /// after the `RARROW_TOK`; well-formed input always has one.
     /// Returns `None` only on a malformed (parser-bailed) tree.
     pub fn body(&self) -> Option<Expr> {
+        accessor!("FunExpr::body");
         children(&self.0).next()
     }
 }
@@ -3013,12 +3276,14 @@ impl MatchExpr {
     /// [`MatchClause`] nodes, which are not `Expr`-castable). Returns
     /// `None` only on a malformed (parser-bailed) tree.
     pub fn scrutinee(&self) -> Option<Expr> {
+        accessor!("MatchExpr::scrutinee");
         child(&self.0)
     }
 
     /// The clause arms in source order — FCS's `SynExpr.Match.clauses`.
     /// Phase 5.M.1 always emits exactly one.
     pub fn clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
+        accessor!("MatchExpr::clauses");
         children(&self.0)
     }
 }
@@ -3030,12 +3295,14 @@ impl MatchBangExpr {
     /// [`MatchExpr::scrutinee`]. Returns `None` only on a malformed
     /// (parser-bailed) tree.
     pub fn scrutinee(&self) -> Option<Expr> {
+        accessor!("MatchBangExpr::scrutinee");
         child(&self.0)
     }
 
     /// The clause arms in source order — FCS's `SynExpr.MatchBang.clauses`.
     /// Reuses [`MatchClause`] verbatim (same shape as `match`).
     pub fn clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
+        accessor!("MatchBangExpr::clauses");
         children(&self.0)
     }
 }
@@ -3049,6 +3316,7 @@ impl TryExpr {
     /// direct `Expr` child after it (see [`Self::finally_expr`]). Returns `None`
     /// only on a malformed (parser-bailed) tree.
     pub fn try_expr(&self) -> Option<Expr> {
+        accessor!("TryExpr::try_expr");
         child(&self.0)
     }
 
@@ -3057,6 +3325,7 @@ impl TryExpr {
     /// `patternClauses`, the same non-terminal as `match … with`). Empty for the
     /// `try … finally …` form.
     pub fn with_clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
+        accessor!("TryExpr::with_clauses");
         children(&self.0)
     }
 
@@ -3065,6 +3334,7 @@ impl TryExpr {
     /// versus the `try … with …` form (`SynExpr.TryWith`, marked by
     /// [`SyntaxKind::WITH_TOK`] + a [`MatchClause`] list).
     pub fn is_try_finally(&self) -> bool {
+        accessor!("TryExpr::is_try_finally");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3078,6 +3348,7 @@ impl TryExpr {
     /// form has only one — so this is `None` for the `with` form. Mirrors
     /// [`WhileExpr::body`]'s positional disambiguation.
     pub fn finally_expr(&self) -> Option<Expr> {
+        accessor!("TryExpr::finally_expr");
         children(&self.0).nth(1)
     }
 }
@@ -3087,6 +3358,7 @@ impl WhileExpr {
     /// `Expr` child (before `DO_TOK`). Returns `None` only on a malformed
     /// (parser-bailed) tree.
     pub fn cond(&self) -> Option<Expr> {
+        accessor!("WhileExpr::cond");
         child(&self.0)
     }
 
@@ -3096,6 +3368,7 @@ impl WhileExpr {
     /// is the body; on a malformed tree missing the body it coincides with the
     /// condition. Mirrors [`MatchClause::result`]'s positional disambiguation.
     pub fn body(&self) -> Option<Expr> {
+        accessor!("WhileExpr::body");
         children(&self.0).last()
     }
 }
@@ -3104,6 +3377,7 @@ impl WhileBangExpr {
     /// The loop condition — FCS's `SynExpr.WhileBang.whileExpr`. The *leading*
     /// `Expr` child (before `DO_TOK`). Same shape as [`WhileExpr::cond`].
     pub fn cond(&self) -> Option<Expr> {
+        accessor!("WhileBangExpr::cond");
         child(&self.0)
     }
 
@@ -3111,6 +3385,7 @@ impl WhileBangExpr {
     /// child after `DO_TOK`. Same positional disambiguation as
     /// [`WhileExpr::body`].
     pub fn body(&self) -> Option<Expr> {
+        accessor!("WhileBangExpr::body");
         children(&self.0).last()
     }
 }
@@ -3120,6 +3395,7 @@ impl ForEachExpr {
     /// (before `IN_TOK`). Returns `None` only on a malformed (parser-bailed)
     /// tree.
     pub fn pat(&self) -> Option<Pat> {
+        accessor!("ForEachExpr::pat");
         child(&self.0)
     }
 
@@ -3128,6 +3404,7 @@ impl ForEachExpr {
     /// first `Expr` child. Same positional disambiguation as
     /// [`WhileExpr::cond`].
     pub fn enum_expr(&self) -> Option<Expr> {
+        accessor!("ForEachExpr::enum_expr");
         child(&self.0)
     }
 
@@ -3136,6 +3413,7 @@ impl ForEachExpr {
     /// present collection and body the node has two `Expr` children, so
     /// `last()` is the body. Mirrors [`WhileExpr::body`].
     pub fn body(&self) -> Option<Expr> {
+        accessor!("ForEachExpr::body");
         children(&self.0).last()
     }
 }
@@ -3143,6 +3421,7 @@ impl ForEachExpr {
 impl ForExpr {
     /// The loop variable — FCS's `SynExpr.For.ident`. The `IDENT_TOK` child.
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("ForExpr::ident");
         token(&self.0, SyntaxKind::IDENT_TOK)
     }
 
@@ -3150,23 +3429,27 @@ impl ForExpr {
     /// `to`, `false` = descending `downto`). Recovered from which keyword token
     /// the node carries; defaults to `true` on a malformed tree missing both.
     pub fn is_ascending(&self) -> bool {
+        accessor!("ForExpr::is_ascending");
         token(&self.0, SyntaxKind::DOWNTO_TOK).is_none()
     }
 
     /// The start bound — FCS's `SynExpr.For.identBody`. The first of the three
     /// `Expr` children (start, end, body), in source order.
     pub fn from_expr(&self) -> Option<Expr> {
+        accessor!("ForExpr::from_expr");
         children(&self.0).next()
     }
 
     /// The end bound — FCS's `SynExpr.For.toBody`. The second `Expr` child.
     pub fn to_expr(&self) -> Option<Expr> {
+        accessor!("ForExpr::to_expr");
         children(&self.0).nth(1)
     }
 
     /// The loop body — FCS's `SynExpr.For.doBody`, the `Expr` child after
     /// `DO_TOK`. The third (and last) `Expr` child.
     pub fn body(&self) -> Option<Expr> {
+        accessor!("ForExpr::body");
         children(&self.0).nth(2)
     }
 }
@@ -3175,6 +3458,7 @@ impl MatchClause {
     /// The clause pattern — FCS's `SynMatchClause.pat`. The first (and
     /// only) `Pat` child, before the `WHEN_TOK` / `RARROW_TOK`.
     pub fn pat(&self) -> Option<Pat> {
+        accessor!("MatchClause::pat");
         child(&self.0)
     }
 
@@ -3184,6 +3468,7 @@ impl MatchClause {
     /// a guard there is exactly one `Expr` child (the result), so we must
     /// gate on the token to avoid mistaking the result for a guard.
     pub fn guard(&self) -> Option<Expr> {
+        accessor!("MatchClause::guard");
         token(&self.0, SyntaxKind::WHEN_TOK)?;
         children(&self.0).next()
     }
@@ -3196,6 +3481,7 @@ impl MatchClause {
     /// the result instead of the empty hole. `None` for the `A ->` /
     /// `A when c ->` recovery holes.
     pub fn result(&self) -> Option<Expr> {
+        accessor!("MatchClause::result");
         self.0
             .children_with_tokens()
             .skip_while(|el| el.kind() != SyntaxKind::RARROW_TOK)
@@ -3211,6 +3497,7 @@ impl MatchLambdaExpr {
     /// (same `pat`/`guard`/`result` shape as `match`); there is no
     /// scrutinee, so the clauses are the only structural children.
     pub fn clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
+        accessor!("MatchLambdaExpr::clauses");
         children(&self.0)
     }
 }
@@ -3222,6 +3509,7 @@ impl AddressOfExpr {
     /// [`SyntaxKind::AMP_AMP_TOK`]) — the parser stamps the matching
     /// token, so the typed-AST flag is just a kind lookup.
     pub fn is_byref(&self) -> bool {
+        accessor!("AddressOfExpr::is_byref");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3234,6 +3522,7 @@ impl AddressOfExpr {
     /// `SynExpr.AddressOf.expr` field. Returns `None` only on a malformed
     /// (parser-bailed) tree; well-formed input always has an inner expr.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("AddressOfExpr::expr");
         child(&self.0)
     }
 }
@@ -3243,6 +3532,7 @@ impl NewExpr {
     /// (and only) [`Type`] child, before the argument expression. `None` only on
     /// the error-recovery path where `new` was not followed by a type.
     pub fn target_type(&self) -> Option<Type> {
+        accessor!("NewExpr::target_type");
         child(&self.0)
     }
 
@@ -3251,6 +3541,7 @@ impl NewExpr {
     /// target [`Type`] is not `Expr`-castable, so `child` returns the argument.
     /// `None` only on the missing-argument recovery path.
     pub fn arg(&self) -> Option<Expr> {
+        accessor!("NewExpr::arg");
         child(&self.0)
     }
 }
@@ -3268,6 +3559,7 @@ impl ObjExpr {
     /// the leading [`NewExpr`] carrier ([`NewExpr::target_type`]). `None` only on
     /// the error-recovery path where `new` was not followed by a type.
     pub fn obj_type(&self) -> Option<Type> {
+        accessor!("ObjExpr::obj_type");
         self.base_call()?.target_type()
     }
 
@@ -3276,6 +3568,7 @@ impl ObjExpr {
     /// `new T` form (no parens, FCS `argOptions = None`); `Some` for
     /// `new T(args) with …` (`()` → `Const Unit`, `(a, b)` → `Paren(Tuple)`).
     pub fn arg(&self) -> Option<Expr> {
+        accessor!("ObjExpr::arg");
         self.base_call()?.arg()
     }
 
@@ -3289,6 +3582,7 @@ impl ObjExpr {
     /// `INTERFACE_IMPL` as its [`MemberDefn::Interface`] variant, so the member
     /// list is filtered to exclude it.
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
+        accessor!("ObjExpr::members");
         children::<MemberDefn>(&self.0).filter(|m| !matches!(m, MemberDefn::Interface(_)))
     }
 
@@ -3301,6 +3595,7 @@ impl ObjExpr {
     /// [`MemberDefn::Interface`] variant so the normaliser reuses the shared
     /// member projection.
     pub fn extra_impls(&self) -> impl Iterator<Item = MemberDefn> + '_ {
+        accessor!("ObjExpr::extra_impls");
         children::<MemberDefn>(&self.0).filter(|m| matches!(m, MemberDefn::Interface(_)))
     }
 
@@ -3314,6 +3609,7 @@ impl ObjExpr {
     /// `Synthetic` and `and`-chained ones as `And` (there is no per-binding
     /// keyword token — the `with` is shared).
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
+        accessor!("ObjExpr::bindings");
         children::<Binding>(&self.0)
     }
 }
@@ -3323,6 +3619,7 @@ impl InferredUpcastExpr {
     /// The sole [`Expr`] child of the `INFERRED_UPCAST_EXPR` node (after the
     /// `UPCAST_TOK`). `None` only on the missing-operand recovery path.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("InferredUpcastExpr::expr");
         child(&self.0)
     }
 }
@@ -3332,6 +3629,7 @@ impl InferredDowncastExpr {
     /// The sole [`Expr`] child of the `INFERRED_DOWNCAST_EXPR` node (after the
     /// `DOWNCAST_TOK`). `None` only on the missing-operand recovery path.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("InferredDowncastExpr::expr");
         child(&self.0)
     }
 }
@@ -3341,6 +3639,7 @@ impl LazyExpr {
     /// [`Expr`] child of the `LAZY_EXPR` node (after the `LAZY_TOK`). `None`
     /// only on the missing-operand recovery path.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("LazyExpr::expr");
         child(&self.0)
     }
 }
@@ -3350,6 +3649,7 @@ impl AssertExpr {
     /// [`Expr`] child of the `ASSERT_EXPR` node (after the `ASSERT_TOK`).
     /// `None` only on the missing-operand recovery path.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("AssertExpr::expr");
         child(&self.0)
     }
 }
@@ -3361,6 +3661,7 @@ impl FixedExpr {
     /// tuple `,`, `:=`, `<-`, `:>`, control-flow), so the child can be any
     /// [`Expr`] variant. `None` only on the missing-operand recovery path.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("FixedExpr::expr");
         child(&self.0)
     }
 }
@@ -3371,6 +3672,7 @@ impl TypeAppExpr {
     /// `Seq.empty<int>`), captured before the `<` opener. Returns `None` only
     /// on the error-recovery path where no head was parsed.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("TypeAppExpr::expr");
         child(&self.0)
     }
 
@@ -3380,6 +3682,7 @@ impl TypeAppExpr {
     /// The head is an [`Expr`], not a [`Type`], so it is naturally excluded.
     /// Empty only for the spaced empty form `f< >` (FCS's `LESS GREATER` arm).
     pub fn type_args(&self) -> Vec<Type> {
+        accessor!("TypeAppExpr::type_args");
         children::<Type>(&self.0).collect()
     }
 }
@@ -3389,11 +3692,13 @@ impl TypedExpr {
     /// `TYPED_EXPR` node stores its children as `[<inner-expr>, COLON_TOK,
     /// <type>]`, so the first `Expr` child is the annotated value.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("TypedExpr::expr");
         child(&self.0)
     }
 
     /// The type annotation — FCS's `SynExpr.Typed.targetType` field.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("TypedExpr::ty");
         child(&self.0)
     }
 }
@@ -3403,12 +3708,14 @@ impl TypeTestExpr {
     /// `TYPE_TEST_EXPR` node stores its children as `[<inner-expr>,
     /// COLON_QMARK_TOK, <type>]`, so the first `Expr` child is the value.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("TypeTestExpr::expr");
         child(&self.0)
     }
 
     /// The target type — FCS's `SynExpr.TypeTest.targetType` field. The sole
     /// [`Type`] child (`None` only on the missing-type recovery path).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("TypeTestExpr::ty");
         child(&self.0)
     }
 }
@@ -3418,12 +3725,14 @@ impl UpcastExpr {
     /// `UPCAST_EXPR` node stores its children as `[<inner-expr>,
     /// COLON_GREATER_TOK, <type>]`, so the first `Expr` child is the value.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("UpcastExpr::expr");
         child(&self.0)
     }
 
     /// The target type — FCS's `SynExpr.Upcast.targetType` field. The sole
     /// [`Type`] child (`None` only on the missing-type recovery path).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("UpcastExpr::ty");
         child(&self.0)
     }
 }
@@ -3433,12 +3742,14 @@ impl DowncastExpr {
     /// `DOWNCAST_EXPR` node stores its children as `[<inner-expr>,
     /// COLON_QMARK_GREATER_TOK, <type>]`, so the first `Expr` child is the value.
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("DowncastExpr::expr");
         child(&self.0)
     }
 
     /// The target type — FCS's `SynExpr.Downcast.targetType` field. The sole
     /// [`Type`] child (`None` only on the missing-type recovery path).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("DowncastExpr::ty");
         child(&self.0)
     }
 }
@@ -3448,17 +3759,20 @@ impl ConsExpr {
     /// its children as `[<lhs-expr>, COLON_COLON_TOK, <rhs-expr>]`, so the first
     /// `Expr` child is the head. Mirrors [`ListConsPat::lhs`].
     pub fn lhs(&self) -> Option<Expr> {
+        accessor!("ConsExpr::lhs");
         children(&self.0).next()
     }
 
     /// The tail expression — the `rhs` of `a :: b`. The second `Expr` child.
     /// Right-associative, so `a :: b :: c` nests another `CONS_EXPR` here.
     pub fn rhs(&self) -> Option<Expr> {
+        accessor!("ConsExpr::rhs");
         children(&self.0).nth(1)
     }
 
     /// The `::` operator token between the two operands.
     pub fn cons_token(&self) -> Option<SyntaxToken> {
+        accessor!("ConsExpr::cons_token");
         token(&self.0, SyntaxKind::COLON_COLON_TOK)
     }
 }
@@ -3469,17 +3783,20 @@ impl JoinInExpr {
     /// `[<lhs-expr>, IN_TOK, <rhs-expr>]`, so the first `Expr` child is the
     /// left side. Mirrors [`ConsExpr::lhs`].
     pub fn lhs(&self) -> Option<Expr> {
+        accessor!("JoinInExpr::lhs");
         children(&self.0).next()
     }
 
     /// The right operand — FCS's `SynExpr.JoinIn.rhsExpr` (the `xs on (a = b)`
     /// of `join x in xs on (a = b)`). The second `Expr` child.
     pub fn rhs(&self) -> Option<Expr> {
+        accessor!("JoinInExpr::rhs");
         children(&self.0).nth(1)
     }
 
     /// The `in` (`JOIN_IN`) operator token between the two operands.
     pub fn in_token(&self) -> Option<SyntaxToken> {
+        accessor!("JoinInExpr::in_token");
         token(&self.0, SyntaxKind::IN_TOK)
     }
 }
@@ -3491,12 +3808,14 @@ impl QuoteExpr {
     /// closer's raw-ness is not consulted because FCS, on a mismatch,
     /// keeps the opener's flag (see [`SyntaxKind::RQUOTE_TOK`]).
     pub fn is_raw(&self) -> bool {
+        accessor!("QuoteExpr::is_raw");
         token(&self.0, SyntaxKind::LQUOTE_TOK).is_some_and(|t| t.text() == "<@@")
     }
 
     /// The quoted expression — FCS's `SynExpr.Quote.quotedExpr` field, the
     /// expression between the delimiters.
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("QuoteExpr::inner");
         child(&self.0)
     }
 }
@@ -3508,6 +3827,7 @@ impl InlineIlExpr {
     /// string-literal kind; string *arguments* sit nested inside a `CONST_EXPR`
     /// and are not surfaced here.
     pub fn instruction(&self) -> Option<SyntaxToken> {
+        accessor!("InlineIlExpr::instruction");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3525,6 +3845,7 @@ impl InlineIlExpr {
     /// The IL string is a bare token (not an `Expr`) and the type operands are
     /// `Type` children, so the `Expr` children are exactly the arguments.
     pub fn args(&self) -> impl Iterator<Item = Expr> + '_ {
+        accessor!("InlineIlExpr::args");
         children(&self.0)
     }
 
@@ -3533,6 +3854,7 @@ impl InlineIlExpr {
     /// `retTy`). Both are `Type` children; a caller needing to tell them apart
     /// can split on the [`SyntaxKind::COLON_TOK`] that precedes the return type.
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
+        accessor!("InlineIlExpr::types");
         children(&self.0)
     }
 }
@@ -3545,6 +3867,7 @@ impl TraitCallExpr {
     /// alternative (always a typar); use [`Self::support_types`] for the whole
     /// list. `None` only on malformed input.
     pub fn support_type(&self) -> Option<Type> {
+        accessor!("TraitCallExpr::support_type");
         child(&self.0)
     }
 
@@ -3555,6 +3878,7 @@ impl TraitCallExpr {
     /// member signature's own types nest inside the [`MemberSig`], so they are
     /// never direct `Type` children and are not returned here.
     pub fn support_types(&self) -> impl Iterator<Item = Type> + '_ {
+        accessor!("TraitCallExpr::support_types");
         children(&self.0)
     }
 
@@ -3562,6 +3886,7 @@ impl TraitCallExpr {
     /// `MEMBER_SIG` child (the `classMemberSpfn` payload shared with the SRTP
     /// member *constraint*). `None` only on malformed input.
     pub fn member_sig(&self) -> Option<MemberSig> {
+        accessor!("TraitCallExpr::member_sig");
         child(&self.0)
     }
 
@@ -3570,6 +3895,7 @@ impl TraitCallExpr {
     /// signature a [`MemberSig`], neither castable to [`Expr`]). `None` only on
     /// malformed input.
     pub fn arg(&self) -> Option<Expr> {
+        accessor!("TraitCallExpr::arg");
         child(&self.0)
     }
 }
@@ -3579,6 +3905,7 @@ impl ComputationExpr {
     /// `SynExpr.ComputationExpr.expr` field. (`hasSeqBuilder` carries no
     /// syntactic information at parse and has no accessor.)
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("ComputationExpr::inner");
         child(&self.0)
     }
 }
@@ -3590,12 +3917,14 @@ impl StaticOptimizationExpr {
     /// clause's branch expression nests inside its [`StaticOptWhenClause`], so it
     /// is not a direct child here. `None` only on malformed input.
     pub fn main_expr(&self) -> Option<Expr> {
+        accessor!("StaticOptimizationExpr::main_expr");
         child(&self.0)
     }
 
     /// The `when <conditions> = <branch>` clauses in source order — FCS's
     /// `opt_staticOptimizations`.
     pub fn clauses(&self) -> impl Iterator<Item = StaticOptWhenClause> + '_ {
+        accessor!("StaticOptimizationExpr::clauses");
         children(&self.0)
     }
 }
@@ -3604,6 +3933,7 @@ impl StaticOptWhenClause {
     /// The `and`-chained conditions — the clause's
     /// `SynStaticOptimizationConstraint` list.
     pub fn conditions(&self) -> impl Iterator<Item = StaticOptCondition> + '_ {
+        accessor!("StaticOptWhenClause::conditions");
         children(&self.0)
     }
 
@@ -3612,6 +3942,7 @@ impl StaticOptWhenClause {
     /// are [`StaticOptCondition`]s, not `Expr`-castable). `None` only on
     /// malformed input.
     pub fn branch(&self) -> Option<Expr> {
+        accessor!("StaticOptWhenClause::branch");
         child(&self.0)
     }
 }
@@ -3619,12 +3950,14 @@ impl StaticOptWhenClause {
 impl StaticOptCondition {
     /// The subject typar — FCS's `SynStaticOptimizationConstraint` `typar` (`'T`).
     pub fn typar(&self) -> Option<TyparDecl> {
+        accessor!("StaticOptCondition::typar");
         child(&self.0)
     }
 
     /// `true` for the bare `'T struct` form (`WhenTyparIsStruct`) — marked by a
     /// `struct` keyword in place of `: <type>`.
     pub fn is_struct(&self) -> bool {
+        accessor!("StaticOptCondition::is_struct");
         token(&self.0, SyntaxKind::STRUCT_TOK).is_some()
     }
 
@@ -3632,6 +3965,7 @@ impl StaticOptCondition {
     /// (`'T : ty`). `None` for the [`Self::is_struct`] form (no type), or on
     /// malformed input.
     pub fn ty(&self) -> Option<Type> {
+        accessor!("StaticOptCondition::ty");
         child(&self.0)
     }
 }
@@ -3642,6 +3976,7 @@ impl RecordExpr {
     /// Reuses the [`InheritMember`] node ([`InheritMember::base_type`] /
     /// [`InheritMember::args`]); `None` for an ordinary record.
     pub fn inherit(&self) -> Option<InheritMember> {
+        accessor!("RecordExpr::inherit");
         child(&self.0)
     }
 
@@ -3650,12 +3985,14 @@ impl RecordExpr {
     /// plain field-list record. It is the sole *direct* `Expr` child
     /// (`RECORD_FIELD` is not `Expr`-castable, so field values don't collide).
     pub fn copy_source(&self) -> Option<Expr> {
+        accessor!("RecordExpr::copy_source");
         token(&self.0, SyntaxKind::WITH_TOK)?;
         child(&self.0)
     }
 
     /// The field bindings in source order — FCS's `SynExpr.Record.recordFields`.
     pub fn fields(&self) -> impl Iterator<Item = RecordField> + '_ {
+        accessor!("RecordExpr::fields");
         children(&self.0)
     }
 }
@@ -3667,6 +4004,7 @@ impl AnonRecdExpr {
     /// child (`RECORD_FIELD` is not `Expr`-castable). Mirrors
     /// [`RecordExpr::copy_source`].
     pub fn copy_source(&self) -> Option<Expr> {
+        accessor!("AnonRecdExpr::copy_source");
         token(&self.0, SyntaxKind::WITH_TOK)?;
         child(&self.0)
     }
@@ -3675,12 +4013,14 @@ impl AnonRecdExpr {
     /// `SynExpr.AnonRecd.recordFields`. Reuses [`RecordField`] (the same
     /// `RECORD_FIELD` green node the regular record uses).
     pub fn fields(&self) -> impl Iterator<Item = RecordField> + '_ {
+        accessor!("AnonRecdExpr::fields");
         children(&self.0)
     }
 
     /// `true` for the `struct {| … |}` form — FCS's `SynExpr.AnonRecd.isStruct`.
     /// Recovered from a leading `STRUCT_TOK` child.
     pub fn is_struct(&self) -> bool {
+        accessor!("AnonRecdExpr::is_struct");
         token(&self.0, SyntaxKind::STRUCT_TOK).is_some()
     }
 }
@@ -3691,6 +4031,7 @@ impl ArrayOrListExpr {
     /// the opener: a `LBRACK_BAR_TOK` (`[|`) ⇒ array, a `LBRACK_TOK` (`[`) ⇒
     /// list.
     pub fn is_array(&self) -> bool {
+        accessor!("ArrayOrListExpr::is_array");
         token(&self.0, SyntaxKind::LBRACK_BAR_TOK).is_some()
     }
 
@@ -3701,6 +4042,7 @@ impl ArrayOrListExpr {
     /// [`SequentialExpr`] child; the brackets are tokens, so the body is the
     /// sole `Expr`-castable child either way.
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("ArrayOrListExpr::inner");
         child(&self.0)
     }
 }
@@ -3710,6 +4052,7 @@ impl RecordField {
     /// `RecordFieldName = SynLongIdent * bool`). The [`LongIdent`] child before
     /// `EQUALS_TOK`.
     pub fn field_name(&self) -> Option<LongIdent> {
+        accessor!("RecordField::field_name");
         child(&self.0)
     }
 
@@ -3717,6 +4060,7 @@ impl RecordField {
     /// `EQUALS_TOK`. (The field-name [`LongIdent`] is not `Expr`-castable, so
     /// `child` returns the value.)
     pub fn value(&self) -> Option<Expr> {
+        accessor!("RecordField::value");
         child(&self.0)
     }
 }
@@ -3726,6 +4070,7 @@ impl YieldExpr {
     /// (`yield!` / `return!`) vs `SynExpr.YieldOrReturn` (`yield` /
     /// `return`). Recovered from the node kind.
     pub fn is_from(&self) -> bool {
+        accessor!("YieldExpr::is_from");
         self.0.kind() == SyntaxKind::YIELD_OR_RETURN_FROM_EXPR
     }
 
@@ -3737,6 +4082,7 @@ impl YieldExpr {
     /// `RARROW_TOK` instead of a keyword) is FCS's `YieldOrReturn((true, false),
     /// …)` — always an implicit `yield` — so the arrow reads as `is_yield`.
     pub fn is_yield(&self) -> bool {
+        accessor!("YieldExpr::is_yield");
         if token(&self.0, SyntaxKind::RARROW_TOK).is_some() {
             return true;
         }
@@ -3747,6 +4093,7 @@ impl YieldExpr {
 
     /// The yielded/returned expression — FCS's `expr` field.
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("YieldExpr::inner");
         child(&self.0)
     }
 }
@@ -3756,6 +4103,7 @@ impl DoBangExpr {
     /// offside-block scaffolding around it is held as zero-width `ERROR`
     /// tokens, so the first `Expr` child is the body.
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("DoBangExpr::inner");
         child(&self.0)
     }
 }
@@ -3765,6 +4113,7 @@ impl DoExpr {
     /// offside-block scaffolding around it is held as zero-width `ERROR`
     /// tokens, so the first `Expr` child is the body.
     pub fn inner(&self) -> Option<Expr> {
+        accessor!("DoExpr::inner");
         child(&self.0)
     }
 }
@@ -3776,6 +4125,7 @@ impl LetOrUseExpr {
     /// per-binding leading keyword lives in the preceding `BINDER_TOK`/
     /// `AND_BANG_TOK` token, not in the `BINDING` node.
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
+        accessor!("LetOrUseExpr::bindings");
         children(&self.0)
     }
 
@@ -3783,6 +4133,7 @@ impl LetOrUseExpr {
     /// are nested inside the `BINDING` children, so the sole *direct* `Expr`
     /// child of this node is the body.
     pub fn body(&self) -> Option<Expr> {
+        accessor!("LetOrUseExpr::body");
         child(&self.0)
     }
 
@@ -3794,6 +4145,7 @@ impl LetOrUseExpr {
     /// binding's `SynLeadingKeyword` (`Use`/`UseBang` vs `Let`/`LetBang`);
     /// `and`/`and!` followers are always `And`/`AndBang`.
     pub fn is_use(&self) -> bool {
+        accessor!("LetOrUseExpr::is_use");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3806,6 +4158,7 @@ impl LetOrUseExpr {
     /// the bang form (`let!`/`use!`) never is, so this is always `false` there.
     /// Drives `SynLetOrUse.IsRecursive`.
     pub fn is_rec(&self) -> bool {
+        accessor!("LetOrUseExpr::is_rec");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3818,6 +4171,7 @@ impl LetOrUseExpr {
     /// token discriminates. Drives `SynLetOrUse.IsBang` and selects the
     /// per-binding `SynLeadingKeyword` family (`*Bang` vs plain).
     pub fn is_bang(&self) -> bool {
+        accessor!("LetOrUseExpr::is_bang");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3831,6 +4185,7 @@ impl LetOrUseExpr {
     /// `FS0821` at the entire `SynExpr.LetOrUse` range, but the keyword is the
     /// more useful position for a reader).
     pub fn keyword(&self) -> Option<SyntaxToken> {
+        accessor!("LetOrUseExpr::keyword");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3844,6 +4199,7 @@ impl LongIdentType {
     /// `LONG_IDENT` node so the same path-projection helpers work for
     /// types as for expressions.
     pub fn long_ident(&self) -> Option<LongIdent> {
+        accessor!("LongIdentType::long_ident");
         child(&self.0)
     }
 }
@@ -3853,6 +4209,7 @@ impl AnonType {
     /// that want the source range can read its span. The type's semantics
     /// are fully determined by its kind.
     pub fn underscore(&self) -> Option<SyntaxToken> {
+        accessor!("AnonType::underscore");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -3864,6 +4221,7 @@ impl ParenType {
     /// The inner type wrapped by the parens. FCS's `SynType.Paren.innerType`.
     /// Returns `None` only on a malformed (parser-bailed) tree.
     pub fn inner(&self) -> Option<Type> {
+        accessor!("ParenType::inner");
         child(&self.0)
     }
 }
@@ -3873,12 +4231,14 @@ impl FunType {
     /// `FUN_TYPE` node stores its children as `[<arg>, RARROW_TOK,
     /// <ret>]`, so the first `Type` child is the argument.
     pub fn arg(&self) -> Option<Type> {
+        accessor!("FunType::arg");
         children(&self.0).next()
     }
 
     /// The return type — FCS's `SynType.Fun.returnType` field. The
     /// second `Type` child in source order.
     pub fn ret(&self) -> Option<Type> {
+        accessor!("FunType::ret");
         children(&self.0).nth(1)
     }
 }
@@ -3902,6 +4262,7 @@ impl TupleType {
     /// [`STRUCT_TOK`](SyntaxKind::STRUCT_TOK) the struct form carries (a plain
     /// `T1 * T2` tuple has none).
     pub fn is_struct(&self) -> bool {
+        accessor!("TupleType::is_struct");
         token(&self.0, SyntaxKind::STRUCT_TOK).is_some()
     }
 
@@ -3911,6 +4272,7 @@ impl TupleType {
     /// skipped; their presence in the green tree is preserved separately via
     /// `SyntaxNode::text_range`.
     pub fn segments(&self) -> Vec<TupleSegment> {
+        accessor!("TupleType::segments");
         self.0
             .children_with_tokens()
             .filter_map(|el| match el {
@@ -3935,6 +4297,7 @@ impl AppType {
     /// child: the parser emits that token only for the prefix form
     /// (between the head and the first arg).
     pub fn is_postfix(&self) -> bool {
+        accessor!("AppType::is_postfix");
         !self
             .0
             .children_with_tokens()
@@ -3947,6 +4310,7 @@ impl AppType {
     /// for prefix `Foo<int>` it is the *first* `Type` child (`Foo`).
     /// Returns `None` only when the parser bailed mid-production.
     pub fn type_name(&self) -> Option<Type> {
+        accessor!("AppType::type_name");
         let types: Vec<_> = children::<Type>(&self.0).collect();
         if self.is_postfix() {
             types.into_iter().next_back()
@@ -3962,6 +4326,7 @@ impl AppType {
     /// source order (the `LESS_TOK`, `COMMA_TOK`, and `GREATER_TOK`
     /// punctuation tokens are skipped by `children::<Type>`).
     pub fn type_args(&self) -> Vec<Type> {
+        accessor!("AppType::type_args");
         let types: Vec<_> = children::<Type>(&self.0).collect();
         if self.is_postfix() {
             let n = types.len();
@@ -3984,6 +4349,7 @@ impl LongIdentAppType {
     /// the parser's left-associative chain (`(int).Foo<string>.Bar`).
     /// Returns `None` only when the parser bailed mid-production.
     pub fn root(&self) -> Option<Type> {
+        accessor!("LongIdentAppType::root");
         children::<Type>(&self.0).next()
     }
 
@@ -3994,6 +4360,7 @@ impl LongIdentAppType {
     /// only when the parser bailed before consuming any ident after
     /// the dot.
     pub fn path(&self) -> Option<LongIdent> {
+        accessor!("LongIdentAppType::path");
         child(&self.0)
     }
 
@@ -4002,6 +4369,7 @@ impl LongIdentAppType {
     /// root, captured between the `<` / `>` punctuation tokens. Empty
     /// for the bare `root.path` shape (no angle brackets in source).
     pub fn type_args(&self) -> Vec<Type> {
+        accessor!("LongIdentAppType::type_args");
         children::<Type>(&self.0).skip(1).collect()
     }
 }
@@ -4012,6 +4380,7 @@ impl StaticConstType {
     /// child token. Its [`SyntaxKind`] (`INT32_LIT`, `STRING_LIT`,
     /// `BOOL_LIT`, …) tells callers which `SynConst` variant it carries.
     pub fn literal(&self) -> Option<SyntaxToken> {
+        accessor!("StaticConstType::literal");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -4024,6 +4393,7 @@ impl StaticConstExprType {
     /// The sole [`Expr`] child after the `const` keyword. Returns `None` only
     /// when the parser bailed (no expression followed `const`).
     pub fn expr(&self) -> Option<Expr> {
+        accessor!("StaticConstExprType::expr");
         child(&self.0)
     }
 }
@@ -4033,6 +4403,7 @@ impl StaticConstNamedType {
     /// `SynType`, e.g. `LongIdent N`). The *first* [`Type`] child, before the
     /// `=`. Returns `None` only when the parser bailed mid-production.
     pub fn ident(&self) -> Option<Type> {
+        accessor!("StaticConstNamedType::ident");
         children::<Type>(&self.0).next()
     }
 
@@ -4041,6 +4412,7 @@ impl StaticConstNamedType {
     /// [`Type`] child, after the `=`. Returns `None` only when the parser
     /// bailed before the value.
     pub fn value(&self) -> Option<Type> {
+        accessor!("StaticConstNamedType::value");
         children::<Type>(&self.0).nth(1)
     }
 }
@@ -4051,6 +4423,7 @@ impl ArrayType {
     /// shared checkpoint before the suffix wrap. Returns `None` only when
     /// the parser bailed mid-production.
     pub fn element_type(&self) -> Option<Type> {
+        accessor!("ArrayType::element_type");
         child(&self.0)
     }
 
@@ -4061,6 +4434,7 @@ impl ArrayType {
     /// facade returns whatever the input gives; a diagnostic for
     /// rank > 32 belongs to a later validation pass.
     pub fn rank(&self) -> usize {
+        accessor!("ArrayType::rank");
         1 + self
             .0
             .children_with_tokens()
@@ -4077,6 +4451,7 @@ impl HashConstraintType {
     /// or by the RHS of the `_ :> T` app-type shorthand. Returns `None` only
     /// when the parser bailed mid-production.
     pub fn inner(&self) -> Option<Type> {
+        accessor!("HashConstraintType::inner");
         child(&self.0)
     }
 }
@@ -4087,6 +4462,7 @@ impl WithNullType {
     /// before the `|`. Returns `None` only when the parser bailed
     /// mid-production.
     pub fn inner(&self) -> Option<Type> {
+        accessor!("WithNullType::inner");
         child(&self.0)
     }
 
@@ -4094,6 +4470,7 @@ impl WithNullType {
     /// `SynTypeWithNullTrivia.BarRange`. Exposed for full-fidelity
     /// callers; `None` only on a malformed tree.
     pub fn bar_token(&self) -> Option<SyntaxToken> {
+        accessor!("WithNullType::bar_token");
         token(&self.0, SyntaxKind::BAR_TOK)
     }
 }
@@ -4105,6 +4482,7 @@ impl SignatureParameterType {
     /// (The attribute idents nest inside the [`AttributeList`] nodes, so they do
     /// not disturb [`Self::name`]'s direct-child `IDENT_TOK` lookup.)
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
+        accessor!("SignatureParameterType::attributes");
         children(&self.0)
     }
 
@@ -4112,6 +4490,7 @@ impl SignatureParameterType {
     /// `SynType.SignatureParameter.isOptional`, the leading `?`
     /// ([`QMARK_TOK`](SyntaxKind::QMARK_TOK)) of `?x: int`.
     pub fn is_optional(&self) -> bool {
+        accessor!("SignatureParameterType::is_optional");
         token(&self.0, SyntaxKind::QMARK_TOK).is_some()
     }
 
@@ -4119,6 +4498,7 @@ impl SignatureParameterType {
     /// for the named/optional forms this carrier models). The sole
     /// [`IDENT_TOK`](SyntaxKind::IDENT_TOK) before the `:`.
     pub fn name(&self) -> Option<SyntaxToken> {
+        accessor!("SignatureParameterType::name");
         token(&self.0, SyntaxKind::IDENT_TOK)
     }
 
@@ -4126,6 +4506,7 @@ impl SignatureParameterType {
     /// the `appTypeCanBeNullable` after the `:`. The sole [`Type`] child. `None`
     /// only on a malformed (parser-bailed) tree.
     pub fn value_type(&self) -> Option<Type> {
+        accessor!("SignatureParameterType::value_type");
         child(&self.0)
     }
 }
@@ -4135,6 +4516,7 @@ impl ConstrainedType {
     /// `SynType.WithGlobalConstraints.typeName`. The sole [`Type`] child parsed
     /// before the `when`. `None` only on a malformed (parser-bailed) tree.
     pub fn base(&self) -> Option<Type> {
+        accessor!("ConstrainedType::base");
         child(&self.0)
     }
 
@@ -4144,6 +4526,7 @@ impl ConstrainedType {
     /// individual constraints via [`TyparConstraints::constraints`]. `None` for
     /// the `:>` shorthand form ([`Self::subtype`]).
     pub fn constraints(&self) -> Option<TyparConstraints> {
+        accessor!("ConstrainedType::constraints");
         child(&self.0)
     }
 
@@ -4155,6 +4538,7 @@ impl ConstrainedType {
     /// typar, T)])`, so the constraint subject is the base typar (see
     /// [`Self::base`]).
     pub fn subtype(&self) -> Option<Type> {
+        accessor!("ConstrainedType::subtype");
         children::<Type>(&self.0).nth(1)
     }
 }
@@ -4168,6 +4552,7 @@ impl IntersectionType {
     /// head was a *bare* typar or a hash constraint, so the leading child is
     /// unambiguously one or the other.
     pub fn typar(&self) -> Option<VarType> {
+        accessor!("IntersectionType::typar");
         match children::<Type>(&self.0).next() {
             Some(Type::Var(v)) => Some(v),
             _ => None,
@@ -4179,6 +4564,7 @@ impl IntersectionType {
     /// [`Self::typar`]); for the hash-head form the leading `#A` is included
     /// here, matching FCS's `types` list.
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
+        accessor!("IntersectionType::types");
         let skip = usize::from(matches!(
             children::<Type>(&self.0).next(),
             Some(Type::Var(_))
@@ -4192,6 +4578,7 @@ impl MeasurePowerType {
     /// The sole [`Type`] child (`m` in `m^2`, or a typar `'a`/`^a`). Returns
     /// `None` only when the parser bailed mid-production.
     pub fn base(&self) -> Option<Type> {
+        accessor!("MeasurePowerType::base");
         child(&self.0)
     }
 
@@ -4200,6 +4587,7 @@ impl MeasurePowerType {
     /// [`SyntaxKind::MEASURE_POWER_OP_TOK`] child's text; `false` for the
     /// plain `^` and for a malformed tree with no operator token.
     pub fn is_negated(&self) -> bool {
+        accessor!("MeasurePowerType::is_negated");
         token(&self.0, SyntaxKind::MEASURE_POWER_OP_TOK).is_some_and(|t| t.text() == "^-")
     }
 
@@ -4207,6 +4595,7 @@ impl MeasurePowerType {
     /// [`RationalConst`] child. Returns `None` only when the parser bailed
     /// before consuming the exponent.
     pub fn exponent(&self) -> Option<RationalConst> {
+        accessor!("MeasurePowerType::exponent");
         child(&self.0)
     }
 }
@@ -4216,6 +4605,7 @@ impl RationalConstInteger {
     /// Its text may carry a [`sign_fold`](crate::parser)-merged `-` (e.g.
     /// `-1` in `m^(-1)`). Returns `None` only on a malformed tree.
     pub fn value_token(&self) -> Option<SyntaxToken> {
+        accessor!("RationalConstInteger::value_token");
         token(&self.0, SyntaxKind::INT32_LIT)
     }
 }
@@ -4224,6 +4614,7 @@ impl RationalConstRational {
     /// The numerator — the *first* [`SyntaxKind::INT32_LIT`] child (the `1`
     /// in `1/2`).
     pub fn numerator(&self) -> Option<SyntaxToken> {
+        accessor!("RationalConstRational::numerator");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -4233,6 +4624,7 @@ impl RationalConstRational {
     /// The denominator — the *second* [`SyntaxKind::INT32_LIT`] child (the
     /// `2` in `1/2`).
     pub fn denominator(&self) -> Option<SyntaxToken> {
+        accessor!("RationalConstRational::denominator");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -4245,6 +4637,7 @@ impl RationalConstNegate {
     /// The negated inner rational constant — the sole [`RationalConst`]
     /// child (the `2` in `m^(- 2)`). Returns `None` only on a malformed tree.
     pub fn inner(&self) -> Option<RationalConst> {
+        accessor!("RationalConstNegate::inner");
         child(&self.0)
     }
 }
@@ -4254,6 +4647,7 @@ impl RationalConstParen {
     /// child (the `1/2` in `m^(1/2)`). Returns `None` only on a malformed
     /// tree.
     pub fn inner(&self) -> Option<RationalConst> {
+        accessor!("RationalConstParen::inner");
         child(&self.0)
     }
 }
@@ -4265,6 +4659,7 @@ impl AnonRecdType {
     /// [`SyntaxKind::STRUCT_TOK`] child, which the parser only emits in
     /// the struct branch.
     pub fn is_struct(&self) -> bool {
+        accessor!("AnonRecdType::is_struct");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -4277,6 +4672,7 @@ impl AnonRecdType {
     /// surrounding `{|` / `|}` / `;` tokens because they are token
     /// children of the outer node, not [`AstNode`]s.
     pub fn fields(&self) -> impl Iterator<Item = AnonRecdTypeField> + '_ {
+        accessor!("AnonRecdType::fields");
         children(&self.0)
     }
 }
@@ -4286,6 +4682,7 @@ impl AnonRecdTypeField {
     /// child. Returns `None` only when the parser bailed before
     /// consuming the ident (recovery from a missing field name).
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("AnonRecdTypeField::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -4297,6 +4694,7 @@ impl AnonRecdTypeField {
     /// `parse_anon_recd_type_field`. `None` when the parser bailed
     /// mid-production (e.g. missing `:`).
     pub fn ty(&self) -> Option<Type> {
+        accessor!("AnonRecdTypeField::ty");
         child(&self.0)
     }
 }
@@ -4305,6 +4703,7 @@ impl VarType {
     /// The type-variable identifier, e.g. the `a` in `'a` or the `T` in
     /// `^T`. Mirrors `SynTypar.ident`.
     pub fn ident(&self) -> Option<SyntaxToken> {
+        accessor!("VarType::ident");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
@@ -4317,6 +4716,7 @@ impl VarType {
     /// [`SyntaxKind::QUOTE_TOK`]); the parser stamps the matching token so
     /// the typed flag is a pure kind lookup.
     pub fn is_head_type(&self) -> bool {
+        accessor!("VarType::is_head_type");
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())

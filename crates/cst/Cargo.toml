@@ -8,9 +8,23 @@ license.workspace = true
 logos.workspace = true
 rowan.workspace = true
 
+[features]
+# Records which typed-AST accessors a computation reads
+# (`syntax::accessor_trace`). Test-only: the parser differential uses it to
+# check that its projection reads every accessor `borzoi-sema` and the LSP
+# read. The self-reference in `[dev-dependencies]` turns it on for this
+# crate's own tests.
+accessor-trace = []
+
 [dev-dependencies]
+borzoi-cst = { path = ".", features = ["accessor-trace"] }
 borzoi-oracle-harness.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+# Parses `src/syntax/mod.rs` and the consumers' sources for the accessor
+# coverage check (`tests/all/accessor_coverage.rs`).
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true

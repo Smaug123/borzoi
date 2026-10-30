@@ -83,6 +83,15 @@ exists.
   the differential oracle (FCS 43.12.204), so it is not a divergence today. No
   differential coverage — FCS errors on `(or)`. (`is_paren_operator_name`,
   `crates/cst/src/parser/classify.rs`)
+- **The glued `(*)` operator name is ranged as its `*`** — `let (*) x y = …`,
+  `static member (*) (a, b) = …`. The lexer reads `(*)` as one token (FCS's
+  `LPAREN_STAR_RPAREN`), and FCS names the operator over all three characters.
+  We emit it as `LPAREN_TOK IDENT_TOK("*") RPAREN_TOK` so the name reads as `*`,
+  which makes the binder's name range the middle character, where FCS's is the
+  whole token. The spaced `( * )` agrees. Found by the sub-declaration name
+  ranges in `range_audit`; five corpus files are `range-divergent` for it in
+  `parser_corpus_diff.txt`. (`consume_star_op_value`,
+  `crates/cst/src/parser/expr_atom.rs`)
 - **Dotted longident head in lambda-arg position not parsed** — `fun X.Y -> …`.
   Verified live 2026-05-31. (`a5b00d8`)
 - **Sign-folding: overflow recovery values on genuine errors** — adjacent-sign

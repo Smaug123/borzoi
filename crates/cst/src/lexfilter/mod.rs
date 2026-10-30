@@ -12,9 +12,11 @@
 //! - Virtual tokens prefixed `Offside*` in FCS get a flat enum ([`Virtual`]).
 //! - The outer `LexFilter` wrapper's `OBLOCKEND → OBLOCKEND_COMING_SOON…` /
 //!   `RBRACE → RBRACE_COMING_SOON…` swallowing (LexFilter.fs:2828-2839) maps
-//!   the would-be virtual tokens to `FSharpTokenKind.None`, so the public-facing
-//!   stream omits them. We emit [`Virtual::BlockEnd`] from the LexFilter-impl
-//!   level for fidelity; the diff harness drops it before comparing.
+//!   the would-be virtual tokens to `FSharpTokenKind.None`, so FCS's public
+//!   token stream omits them. We emit [`Virtual::BlockEnd`] where the
+//!   LexFilter-impl level does, and the diff harness compares it with FCS's
+//!   internal stream (`fcs-dump tokens-lexfilter-internal-batch`), where the
+//!   `OBLOCKEND_IS_HERE` token marks it.
 
 use crate::language_version::LanguageVersion;
 use crate::lexer::{LexError, Span, Token};
