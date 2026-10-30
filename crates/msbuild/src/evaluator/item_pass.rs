@@ -191,6 +191,16 @@ impl<'r> State<'r> {
 pub(super) fn replay_deferred_item_groups(entry_doc: &Document<'_>, state: &mut State<'_>) {
     let groups = std::mem::take(&mut state.deferred_item_groups);
     let files = std::mem::take(&mut state.retained_imported_files);
+    // One parse per retained file for the whole pass, not one per group: a
+    // file is retained only when it defers a group, so none of these parses
+    // is wasted, and re-parsing per group is quadratic in a file's groups.
+    let docs: Vec<Document<'_>> = files
+        .iter()
+        .map(|file| {
+            Document::parse(&file.source)
+                .expect("retained source parsed successfully in the property pass")
+        })
+        .collect();
     let definition_groups = groups
         .iter()
         .filter(|group| group.kind == DeferredGroupKind::ItemDefinitionGroup);
@@ -215,14 +225,13 @@ pub(super) fn replay_deferred_item_groups(entry_doc: &Document<'_>, state: &mut 
             }
             DeferredFileKey::Imported(index) => {
                 let file = &files[index];
-                let doc = Document::parse(&file.source)
-                    .expect("retained source parsed successfully in the property pass");
+                let doc = &docs[index];
                 // MSBuild rebinds `MSBuildThisFile{,Directory}` to the
                 // *defining* file during the item pass too — an imported
                 // item's `$(MSBuildThisFileDirectory)Extra.fs` resolves
                 // against the import's directory, not the entry project's.
                 let frame = state.enter_this_file(&file.path);
-                evaluate(resolve_deferred_node(&doc, group), state);
+                evaluate(resolve_deferred_node(doc, group), state);
                 state.exit_this_file(frame);
             }
         }

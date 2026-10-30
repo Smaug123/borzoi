@@ -128,6 +128,40 @@ fn write_marker_atomically(marker: &Path, contents: &str) {
     }
 }
 
+/// The directory of the .NET SDK that `dotnet` resolves from the workspace
+/// root: `dotnet --version` names it (honouring any `global.json`) and
+/// `dotnet --list-sdks` says where it lives. This is the SDK whose NuGet the
+/// oracle runs, so its `NuGet.Commands` is the one every oracle verdict was
+/// established against.
+pub fn sdk_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dotnet = |arg: &str| {
+            let mut cmd = Command::new("dotnet");
+            cmd.current_dir(workspace_root()).arg(arg);
+            let out = BoundedCommand::new(cmd).run_ok(format_args!("dotnet {arg}"));
+            String::from_utf8(out.stdout).expect("dotnet output is UTF-8")
+        };
+        let version = dotnet("--version");
+        let version = version.trim();
+        let listing = dotnet("--list-sdks");
+        // Each line is `<version> [<sdk-root>]`, e.g. `10.0.401 [/…/sdk]`.
+        let roots: Vec<&str> = listing
+            .lines()
+            .filter_map(|line| line.strip_prefix(version)?.strip_prefix(" ["))
+            .filter_map(|rest| rest.strip_suffix(']'))
+            .collect();
+        match roots.as_slice() {
+            [root] => Path::new(root).join(version),
+            _ => panic!(
+                "expected exactly one SDK {version} in `dotnet --list-sdks`, found {}:\n{listing}",
+                roots.len()
+            ),
+        }
+    })
+    .as_path()
+}
+
 /// A long-lived `nuget-oracle` child driven in lock-step: write one JSON
 /// request line, read exactly the one JSON response line it produces.
 ///
@@ -141,9 +175,25 @@ pub struct Oracle {
 }
 
 impl Oracle {
+    /// Spawn the oracle on the NuGet of [`sdk_dir`].
     pub fn spawn() -> Oracle {
+        Oracle::spawn_with_environment(&[])
+    }
+
+    /// [`Self::spawn`], with each `(name, value)` set in the oracle's
+    /// environment before NuGet loads.
+    pub fn spawn_with_environment(environment: &[(&str, &str)]) -> Oracle {
+        let sdk = sdk_dir().to_str().expect("SDK directory is UTF-8");
+        let assignments: Vec<String> = environment
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        let mut args = vec!["--nuget-from", sdk];
+        for assignment in &assignments {
+            args.extend(["--env", assignment.as_str()]);
+        }
         Oracle {
-            child: BatchChild::spawn(ensure_oracle_built(), &[]),
+            child: BatchChild::spawn(ensure_oracle_built(), &args),
         }
     }
 

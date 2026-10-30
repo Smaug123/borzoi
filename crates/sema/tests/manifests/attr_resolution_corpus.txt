@@ -512,7 +512,7 @@ vsintegration/src/FSharp.Editor/LanguageService/Symbols.fs compared fcs-check-er
 vsintegration/src/FSharp.Editor/LanguageService/Symbols.fs:10:27 "NoComparison" commit
 vsintegration/src/FSharp.Editor/LanguageService/Symbols.fs:10:3 "RequireQualifiedAccess" commit
 vsintegration/src/FSharp.Editor/LanguageService/Symbols.fs:16:3 "NoComparison" commit
-vsintegration/src/FSharp.Editor/LanguageService/Symbols.fs:1:3 "<AutoOpe" decline
+vsintegration/src/FSharp.Editor/LanguageService/Symbols.fs:1:3 "AutoOpen" commit
 vsintegration/src/FSharp.Editor/Refactor/ChangeDerefToValueRefactoring.fs compared fcs-check-errors
 vsintegration/src/FSharp.ProjectSystem.FSharp/Project.fs compared fcs-check-errors
 vsintegration/src/FSharp.ProjectSystem.FSharp/Project.fs:1763:24 "In" decline

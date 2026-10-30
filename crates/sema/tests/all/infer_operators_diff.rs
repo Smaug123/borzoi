@@ -44,8 +44,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::common::{
-    full_bcl_env, invoke_fcs_dump, invoke_fcs_dump_with_refs, module_value_fixture_env,
-    module_value_fixture_refs, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
+    GradedDumps, full_bcl_env, invoke_fcs_dump, invoke_fcs_dump_with_refs,
+    module_value_fixture_env, module_value_fixture_refs, parse_fcs_binder_types_with_errors,
     temp_fs_file, try_invoke_fcs_dump_with_refs,
 };
 use borzoi_cst::parser::parse;
@@ -262,21 +262,13 @@ const OPS: &[Op] = &[
             Expect::Declined(OperatorGap::Signature),
         )
     },
-    // Statically resolved, or `equality`-constrained.
-    op(
-        "+",
-        Sort::Int,
-        Sort::Int,
-        Sort::Int,
-        Expect::Declined(OperatorGap::Constrained),
-    ),
-    op(
-        "=",
-        Sort::Int,
-        Sort::Int,
-        Sort::Bool,
-        Expect::Declined(OperatorGap::Constrained),
-    ),
+    // Statically resolved, by F#'s built-in rule over its operands' types
+    // where they are known (`infer_builtin_operators_diff` grades the rule).
+    op("+", Sort::Int, Sort::Int, Sort::Int, Expect::Typed),
+    // `equality`- and `comparison`-constrained: typed, each instantiation
+    // checked once the binding is solved.
+    op("=", Sort::Int, Sort::Int, Sort::Bool, Expect::Typed),
+    op("<", Sort::Int, Sort::Int, Sort::Bool, Expect::Typed),
 ];
 
 /// Where the application sits.
@@ -443,6 +435,10 @@ pub(crate) struct Checked {
     pub(crate) committed_rows: std::collections::HashSet<(usize, usize)>,
     /// FCS errors on the file.
     pub(crate) errors: usize,
+    /// Their `FS####` codes.
+    pub(crate) fcs_error_codes: Vec<u32>,
+    /// Commits inside a declaration FCS could not convert: not graded.
+    pub(crate) ungraded: usize,
     /// Every incompleteness reason any binding recorded.
     pub(crate) reasons: Vec<Incomplete>,
     /// FCS's expression types, by range.
@@ -452,9 +448,11 @@ pub(crate) struct Checked {
     pub(crate) commits: Vec<(usize, usize, &'static str, String)>,
 }
 
-/// Resolve, infer and diff `src` against both oracles. `None` when FCS cannot
-/// produce a typed tree for the file (it throws materialising some rejected
-/// operators), which the ill-typed family counts rather than grades.
+/// Resolve, infer and diff `src` against both oracles. A commit inside a
+/// declaration FCS could not convert (a rejected constraint, re-raised while
+/// materialising it) is not graded; `None` when FCS cannot produce a typed
+/// tree for the file at all, which the ill-typed family counts rather than
+/// grades.
 fn check(label: &str, src: &str, rows: &[Row], expect_clean: bool) -> Option<Checked> {
     check_in(Defs::InFile, label, src, rows, expect_clean)
 }
@@ -490,8 +488,8 @@ pub(crate) fn check_in(
     let jsons = oracle("types").zip(oracle("binder-types"));
     let _ = std::fs::remove_file(&path);
     let (types_json, binders_json) = jsons?;
-    let (fcs_types, errors) = parse_fcs_types_with_errors(&types_json, src);
-    let (fcs_binders, _) = parse_fcs_binder_types_with_errors(&binders_json, src);
+    let dumps = GradedDumps::read(&types_json, &binders_json, src, Some(&file))?;
+    let errors = &dumps.errors;
     if expect_clean {
         assert!(
             errors.is_empty(),
@@ -503,6 +501,7 @@ pub(crate) fn check_in(
         rows.iter().filter(|r| r.synth).map(|r| r.range).collect();
     let mut c = Checked {
         errors: errors.len(),
+        fcs_error_codes: errors.iter().map(|e| e.code).collect(),
         reasons: inferred
             .incompleteness()
             .iter()
@@ -524,8 +523,12 @@ pub(crate) fn check_in(
             u32::from(range.start()) as usize,
             u32::from(range.end()) as usize,
         );
+        if dumps.is_ungraded(key) {
+            c.ungraded += 1;
+            continue;
+        }
         let ours = ty.render();
-        match fcs_types.get(&key) {
+        match dumps.types.get(&key) {
             None => wrong.push(format!(
                 "`{}` at {key:?} typed `{ours}`, but FCS has no node there: {}",
                 &src[key.0..key.1],
@@ -551,8 +554,12 @@ pub(crate) fn check_in(
             u32::from(def.range.start()) as usize,
             u32::from(def.range.end()) as usize,
         );
+        if dumps.is_ungraded(key) {
+            c.ungraded += 1;
+            continue;
+        }
         let ours = ty.render();
-        match fcs_binders.get(&key) {
+        match dumps.binders.get(&key) {
             None => wrong.push(format!(
                 "binder `{}` typed `{ours}`, but FCS has no binder there: {}",
                 def.name,
@@ -561,6 +568,12 @@ pub(crate) fn check_in(
             Some(theirs) if *theirs != ours => wrong.push(format!(
                 "binder `{}` typed `{ours}`, FCS `{theirs}`: {}",
                 def.name,
+                line_of(key.0)
+            )),
+            Some(_) if dumps.hides_constraint(key, &ours) => wrong.push(format!(
+                "binder `{}` typed `{ours}`, which FCS constrains ({:?}): {}",
+                def.name,
+                dumps.binder_constraints[&key],
                 line_of(key.0)
             )),
             Some(_) => {}
@@ -574,7 +587,7 @@ pub(crate) fn check_in(
         wrong.len(),
         wrong.join("\n")
     );
-    c.fcs_types = fcs_types;
+    c.fcs_types = dumps.types;
     Some(c)
 }
 
@@ -683,16 +696,19 @@ fn ill_typed_operator_grid_commits_only_what_fcs_kept() {
         errors >= 100,
         "the ill-typed grid stopped producing ill-typed programs: {errors}"
     );
-    // The constrained operators' ill-typed rows violate their constraints,
-    // which the oracle cannot materialise; every other file must be graded.
+    // The statically resolved operators' ill-typed rows violate their
+    // constraints in a way the oracle cannot place; every other file must be
+    // graded.
     for spelling in &ungradable {
         assert!(
-            OPS.iter().any(|o| o.spelling == *spelling
-                && o.expect == Expect::Declined(OperatorGap::Constrained)),
+            STATICALLY_RESOLVED.contains(spelling),
             "`{spelling}`'s ill-typed file could not be graded"
         );
     }
 }
+
+/// The operators of [`OPS`] whose constraint F# resolves statically.
+const STATICALLY_RESOLVED: &[&str] = &["+"];
 
 /// A shadowed operator is the shadow's, never FSharp.Core's. Each shadow gives
 /// `&&` (whose FSharp.Core result is `bool`) and `|>` an `int`/`string`
@@ -880,8 +896,8 @@ fn an_in_file_operator_grounds_its_operands() {
     let src = "module S\nlet (&&.) (a: bool) (b: bool) = a\nlet both p q = p &&. q\n";
     let c = check("operators_ground", src, &[], true).expect("a clean file checks");
     assert_eq!(
-        c.binders, 2,
-        "`(&&.)` and `both` are `bool -> bool -> bool`\n{src}"
+        c.binders, 6,
+        "`(&&.)` and `both` are `bool -> bool -> bool`, and each parameter `bool`\n{src}"
     );
 }
 
@@ -1318,12 +1334,17 @@ fn order_use(kind: usize, f: &str, lit: &str) -> String {
         // A method argument, whose relation to the parameter inference does
         // not model.
         6 => "System.String.IsNullOrEmpty(p)".to_string(),
+        // An `equality`- and a `comparison`-constrained use, which fixes `p`
+        // to the literal's type and checks that type only once the binding
+        // is solved.
+        7 => format!("(p = {lit})"),
+        8 => format!("(compare p {lit})"),
         // The parameter itself, which a combiner's own parameter may fix.
         _ => "p".to_string(),
     }
 }
 
-const ORDER_USES: usize = 8;
+const ORDER_USES: usize = 10;
 
 /// How the use-order grid combines its two uses of `p`, each followed by `p`
 /// itself in a synth position.
@@ -1540,7 +1561,7 @@ pub(crate) const ARG_CHECK_HEADER: &str = "module Checks\n\
                                 let gib (a: int) (b: bool) = 1\n\
                                 let (+.) (a: int) (b: bool) = a\n";
 
-const ARG_CHECK_FNS: [&str; 14] = [
+const ARG_CHECK_FNS: [&str; 17] = [
     "inc",
     "incs",
     "opn",
@@ -1555,6 +1576,15 @@ const ARG_CHECK_FNS: [&str; 14] = [
     "(inc >> idf)",
     "(fo >> inc)",
     "(idf << incs)",
+    // Constrained by `equality` and `comparison`: whatever reaches them —
+    // through a pipe, a dropped branch, a composition — is checked only once
+    // the binding is solved, and a violation refuses the speculation.
+    "hash",
+    "(compare 1)",
+    // Statically resolved: applied by name it is typed by F#'s built-in rule
+    // where its operand's type is known; piped or composed it is a value, and
+    // declines.
+    "int",
 ];
 
 /// An expression over the parameters `ai: int`, `ss: string`, `xs: List<int>`,
@@ -1611,10 +1641,19 @@ fn arg_check_expr(rng: &mut Rng, depth: usize) -> String {
         // generic, and with parameters of their own that fix each argument.
         14 | 15 => {
             let y = arg_check_expr(rng, depth - 1);
-            match rng.below(4) {
+            match rng.below(9) {
                 0 => format!("(two {x} {y})"),
                 1 => format!("({x} +? {y})"),
                 2 => format!("(gib {x} {y})"),
+                // Constrained, so each instantiation is checked only once the
+                // binding is solved, and a violation refuses its speculation.
+                3 => format!("({x} = {y})"),
+                4 => format!("(compare {x} {y})"),
+                // Statically resolved, by a rule FCS applies where it knows
+                // the operands' types: typed only when they are known there.
+                5 => format!("({x} + {y})"),
+                6 => format!("({x} <<< {y})"),
+                7 => format!("(-{x} * int {y})"),
                 _ => format!("({x} +. {y})"),
             }
         }

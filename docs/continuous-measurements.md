@@ -215,7 +215,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | manifest | entries |
 |---|---|
 | `resolve_corpus_diff` | one per sampled file (compared or skipped and why; whether FCS's check errored; its match count; its count of graded uses FCS resolves outside the file) and one per gap, alt-binder or divergence use. Matches are counted per file rather than listed — ~22k of them — which loses no movement, since every non-match use is listed by key. External-target uses (~18k) are counted likewise: any of them not declined is a divergence, which fails first. |
-| `infer_corpus_diff` | one per sampled file, and one per commit (agree or error-recovered, with both types when they differ). |
+| `infer_corpus_diff` | one per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
 | `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside; and, per file, the request handlers' probe counts for the plain and the perturbed copy, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). |

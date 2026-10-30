@@ -15,6 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use borzoi_oracle_harness::fcs_position::LineIndex;
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
 use borzoi::handlers::{served_resolution_with_range, smallest_resolution_with_range};
@@ -3676,7 +3677,7 @@ fn served_answer_agrees(
         }
         (Resolution::Entity(_) | Resolution::Member { .. }, Err(expected)) => {
             let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-            canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly)
+            assembly_names_agree(&loaded.assembly_env, res, &actual, expected)
                 && assembly_full_name_agrees_for(
                     &loaded.assembly_env,
                     res,
@@ -4015,6 +4016,37 @@ fn canonical_assembly(name: &str) -> &str {
     }
 }
 
+/// Whether the oracle's assembly `expected` names the entity our answer `res`
+/// lives in (`actual`): the same name, up to [`canonical_assembly`], or a
+/// facade whose type forwarders send the answer's declaring type to it
+/// ([`assembly_names_type`](borzoi_sema::test_support::assembly_names_type)).
+///
+/// FCS names a type by the assembly it reached it through. A corelib type
+/// FSharp.Core's references introduce — `string`, and `System.String` in an
+/// annotation — is named through the `netstandard` facade FSharp.Core
+/// compiles against, so `name.Length` is `netstandard`'s, while the same
+/// member on a `String` reached by `open System` is `System.Runtime`'s. One
+/// entity, two names; the forwarder table is what proves it the same entity,
+/// and the full name must still agree.
+fn assembly_names_agree(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &AssemblyDecl,
+    expected: &AssemblyDecl,
+) -> bool {
+    if canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly) {
+        return true;
+    }
+    let declaring = match res {
+        Resolution::Entity(handle) | Resolution::Member { parent: handle, .. } => handle,
+        Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => return false,
+    };
+    borzoi_sema::test_support::assembly_names_type(env, &expected.assembly, declaring)
+}
+
 /// [`assembly_full_name_agrees`] against the oracle's rendered name **or** the
 /// structural one our own resolution certifies — see [`certified_expected`].
 ///
@@ -4052,7 +4084,7 @@ fn assembly_resolution_confirms_decl(
     expected: &AssemblyDecl,
 ) -> bool {
     let actual = assembly_resolution_decl(env, res);
-    if canonical_assembly(&actual.assembly) != canonical_assembly(&expected.assembly) {
+    if !assembly_names_agree(env, res, &actual, expected) {
         return false;
     }
     // The oracle's rendered name and the structural one it certifies are both
@@ -4357,52 +4389,6 @@ fn range_pair(range: TextRange) -> (usize, usize) {
         u32::from(range.start()) as usize,
         u32::from(range.end()) as usize,
     )
-}
-
-struct LineIndex<'a> {
-    source: &'a str,
-    starts: Vec<usize>,
-}
-
-impl<'a> LineIndex<'a> {
-    fn new(source: &'a str) -> Self {
-        let mut starts = vec![0, 0];
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                starts.push(i + 1);
-            }
-        }
-        Self { source, starts }
-    }
-
-    fn offset(&self, line: u32, col: u32) -> usize {
-        let line = line as usize;
-        let col = col as usize;
-        if line >= self.starts.len() {
-            return self.source.len();
-        }
-        let base = self.starts[line];
-        let line_end = self
-            .starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-
-        let mut units = 0usize;
-        let mut byte_pos = base;
-        for ch in self.source[base..line_end].chars() {
-            if units >= col {
-                break;
-            }
-            let next_units = units + ch.len_utf16();
-            if next_units > col {
-                break;
-            }
-            units = next_units;
-            byte_pos += ch.len_utf8();
-        }
-        byte_pos.min(self.source.len())
-    }
 }
 
 /// Recursively collect `.fsproj` candidates for the ignored corpus runner.
@@ -5940,6 +5926,50 @@ mod tests {
         assert_eq!(
             parsed[0].uses[0].decl,
             UseDecl::OutsideProject(PathBuf::from(foreign))
+        );
+    }
+
+    /// FCS reads a source with its byte-order mark stripped, so a line-1
+    /// column counts from the byte after it; our text keeps the mark. A use
+    /// and a declaration on line 1 must land on the bytes of the name, not one
+    /// character early.
+    #[test]
+    fn a_line_one_range_counts_from_after_a_byte_order_mark() {
+        let path = PathBuf::from("/tmp/corpus_diff_parse_bom/Program.fs");
+        let src: Arc<str> = Arc::from("\u{feff}module A\nlet x = 1\n");
+        let json = format!(
+            r#"{{
+  "Files": [
+    {{
+      "Path": "{0}",
+      "Diagnostics": [],
+      "Uses": [
+        {{
+          "SymbolName": "A",
+          "Range": {{ "File": "{0}", "Start": {{ "Line": 1, "Col": 7 }}, "End": {{ "Line": 1, "Col": 8 }} }},
+          "IsFromDefinition": true,
+          "DeclRange": {{ "File": "{0}", "Start": {{ "Line": 1, "Col": 7 }}, "End": {{ "Line": 1, "Col": 8 }} }},
+          "Assembly": null,
+          "FullName": null
+        }}
+      ]
+    }}
+  ]
+}}"#,
+            path.display(),
+        );
+        let parsed =
+            parse_project_uses(&json, &[(path.clone(), src.clone())]).expect("parse project uses");
+        let a = src.find('A').expect("the module name");
+        let u = &parsed[0].uses[0];
+        assert_eq!((u.start, u.end), (a, a + 1));
+        assert_eq!(
+            u.decl,
+            UseDecl::InProject(DeclSite {
+                file: path,
+                start: a,
+                end: a + 1,
+            })
         );
     }
 

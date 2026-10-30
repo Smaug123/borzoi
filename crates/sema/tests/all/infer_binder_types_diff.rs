@@ -83,24 +83,22 @@ fn assert_binder_sound(source: &str) -> usize {
 }
 
 /// A monomorphic function typed via condition grounding: `let f c = if c then 1
-/// else 2` ⇒ `f : bool -> int`, agreeing with FCS. The parameter `c` is grounded
-/// to bool to build the type but is not published as a standalone binder, so only
-/// `f` is checked.
+/// else 2` ⇒ `f : bool -> int`, agreeing with FCS, and the parameter `c` publishes
+/// its slot, `bool`.
 #[test]
 fn monomorphic_function_matches_fcs() {
     let source = "module M\nlet f c = if c then 1 else 2\n";
-    // Only `f` (bool -> int); the parameter `c` is not published standalone.
-    assert_eq!(assert_binder_sound(source), 1);
+    // `f` (bool -> int) and its parameter `c` (bool).
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// A curried function right-associates and agrees with FCS: `let f a b = …` ⇒
-/// `f : bool -> bool -> int`. The parameters `a`, `b` are grounded internally but
-/// not published standalone.
+/// `f : bool -> bool -> int`, and each parameter `bool`.
 #[test]
 fn curried_function_matches_fcs() {
     let source = "module M\nlet f a b = if a then (if b then 1 else 2) else 3\n";
     // Only `f` (bool -> bool -> int).
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 3);
 }
 
 /// Value binders (and value-chain propagation) agree with FCS on the binder axis:
@@ -119,20 +117,21 @@ fn value_binders_match_fcs() {
 #[test]
 fn mixed_mono_and_generic_functions() {
     let source = "module M\nlet f c = if c then 1 else 2\nlet id x = x\n";
-    // `f` (bool -> int) and `id` (`'a -> 'a`); parameters not published standalone.
+    // `f` (bool -> int), its `c` (bool), and `id` (`'a -> 'a`), whose generic
+    // parameter is not published.
     assert_eq!(
         binder_render(source, "f").as_deref(),
         Some("System.Boolean -> System.Int32")
     );
     assert_eq!(binder_render(source, "id").as_deref(), Some("'a -> 'a"));
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 3);
 }
 
 /// An annotated parameter grounds through its annotation (Stage R2-b): the
 /// parameter annotation is exact in F# (subsumption applies at call sites, not
 /// the binder), so `let f (c: bool) = if c then 1 else 2` is
-/// `f : bool -> int`, agreeing with FCS. The parameter is still not published
-/// standalone. (Flipped from the pre-R2-b defer pin.)
+/// `f : bool -> int`, agreeing with FCS, and the parameter publishes its
+/// annotation.
 #[test]
 fn annotated_parameter_types_the_function() {
     let source = "module M\nlet f (c: bool) = if c then 1 else 2\n";
@@ -140,8 +139,11 @@ fn annotated_parameter_types_the_function() {
         binder_render(source, "f").as_deref(),
         Some("System.Boolean -> System.Int32")
     );
-    assert_eq!(binder_render(source, "c"), None);
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(
+        binder_render(source, "c").as_deref(),
+        Some("System.Boolean")
+    );
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// R6's parameter shapes: `let f (x: int) = x` ⇒ `int -> int` — the annotated
@@ -154,7 +156,7 @@ fn annotated_parameter_grounds_the_return_matching_fcs() {
         binder_render(source, "f").as_deref(),
         Some("System.Int32 -> System.Int32")
     );
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// Annotation + generalisation composing (the R2-b oracle's mixed shape):
@@ -168,7 +170,7 @@ fn annotated_and_bare_parameters_compose() {
         binder_render(source, "f").as_deref(),
         Some("System.Boolean -> 'a -> System.Int32 * 'a")
     );
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 2);
 
     // The branch-tuple variant `if b then (1, x) else (2, x)` keeps `x` in a
     // check-mode else branch, whose dropped relation poisons it — so the
@@ -213,7 +215,7 @@ fn conflicting_wake_keeps_annotation_and_result() {
         binder_render(source, "h").as_deref(),
         Some("System.String -> System.String * System.Int64")
     );
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 4);
 }
 
 // ============================================================================
@@ -231,7 +233,7 @@ fn return_annotation_grounds_the_parameter() {
         binder_render(source, "h").as_deref(),
         Some("System.Int32 -> System.Int32")
     );
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// R6's annotated-both-ends shape: `let g (x: int) : string = "s"` ⇒
@@ -244,7 +246,7 @@ fn parameter_and_return_annotations_compose() {
         binder_render(source, "g").as_deref(),
         Some("System.Int32 -> System.String")
     );
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// The `obj` defer pin: `let f x : obj = x` is legal via subsumption
@@ -269,7 +271,7 @@ fn subsumption_return_with_ground_params_emits() {
         binder_render(source, "f").as_deref(),
         Some("System.Boolean -> System.Object")
     );
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// Ill-typed bodies keep the annotation's truth (the R2-c counterpart of the
@@ -373,8 +375,8 @@ fn binder_render(source: &str, name: &str) -> Option<String> {
 fn identity_generalises_to_a_to_a() {
     let source = "module M\nlet f x = x\n";
     assert_eq!(binder_render(source, "f").as_deref(), Some("'a -> 'a"));
-    // `f` is checked against FCS (`'a -> 'a` on both sides); the parameter `x` is
-    // not published standalone.
+    // `f` is checked against FCS (`'a -> 'a` on both sides); the generic
+    // parameter `x` is not published.
     assert_eq!(assert_binder_sound(source), 1);
 }
 
@@ -412,7 +414,7 @@ fn mixed_ground_and_param_generalises() {
         binder_render(source, "f").as_deref(),
         Some("System.Boolean -> 'a -> System.Int32 * 'a")
     );
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// The slot=binder payoff `let f x = if x then (1, x) else (2, x)` ⇒
@@ -426,7 +428,7 @@ fn condition_grounded_param_use_is_bool() {
         binder_render(source, "f").as_deref(),
         Some("System.Boolean -> System.Int32 * System.Boolean")
     );
-    assert_eq!(assert_binder_sound(source), 1);
+    assert_eq!(assert_binder_sound(source), 2);
 }
 
 /// A generalised function and its use in a later binding: `let id x = x` ⇒
@@ -518,8 +520,8 @@ fn ground_application_result_matches_fcs() {
         Some("System.Boolean -> System.Int32")
     );
     assert_eq!(binder_render(source, "n").as_deref(), Some("System.Int32"));
-    // `f` (bool -> int) and `n` (int); the parameter `c` is not published.
-    assert_eq!(assert_binder_sound(source), 2);
+    // `f` (bool -> int), its `c` (bool), and `n` (int).
+    assert_eq!(assert_binder_sound(source), 3);
 }
 
 /// Curried **full** application grounds the result: `let add a b = …`
@@ -534,7 +536,7 @@ fn curried_full_application_grounds_result() {
         Some("System.Boolean -> System.Boolean -> System.Int32")
     );
     assert_eq!(binder_render(source, "n").as_deref(), Some("System.Int32"));
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 4);
 }
 
 /// **Partial** application grounds a function-typed result binder: `let add a b =
@@ -549,7 +551,7 @@ fn partial_application_grounds_function_result() {
         binder_render(source, "g").as_deref(),
         Some("System.Boolean -> System.Int32")
     );
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 4);
 }
 
 /// An application result flowing into a tuple: `let f c = …` (`f : bool -> int`)
@@ -563,7 +565,7 @@ fn application_result_in_tuple_matches_fcs() {
         binder_render(source, "t").as_deref(),
         Some("System.Int32 * System.Int32")
     );
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 3);
 }
 
 /// A function whose body **dead-ends an application into ground types** can still
@@ -579,7 +581,7 @@ fn ground_application_dead_end_lets_unrelated_param_generalise() {
         binder_render(source, "h").as_deref(),
         Some("'a -> System.Int32 * 'a")
     );
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 3);
 }
 
 // ============================================================================
@@ -638,7 +640,7 @@ fn in_file_monomorphic_application_wakes() {
         binder_render(source, "h").as_deref(),
         Some("System.Boolean -> System.Int32")
     );
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 4);
 }
 
 /// A ground value argument wakes: `let b = true`, `let fb b2 = if b2 …`
@@ -654,7 +656,7 @@ fn ground_value_argument_application_matches_fcs() {
     );
     assert_eq!(binder_render(source, "n").as_deref(), Some("System.Int32"));
     // `b`, `fb`, and `n` are all checked against FCS.
-    assert_eq!(assert_binder_sound(source), 3);
+    assert_eq!(assert_binder_sound(source), 4);
 }
 
 /// An instantiated-scheme argument flowing into a tuple: `let k y = (id y, y)` ⇒
@@ -682,7 +684,7 @@ fn woken_argument_grounds_a_synth_use_matching_fcs() {
         binder_render(source, "h").as_deref(),
         Some("System.Boolean -> System.Int32 * System.Boolean")
     );
-    assert_eq!(assert_binder_sound(source), 2);
+    assert_eq!(assert_binder_sound(source), 4);
 }
 
 /// A ground-value argument against a sealed domain, differential end-to-end:

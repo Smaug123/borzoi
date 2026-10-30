@@ -367,3 +367,50 @@ fn get_nearest_matches_the_oracle_between_two_incomparable_pcls() {
         cands[mine], cands[theirs as usize]
     );
 }
+
+/// A portable's version text that is not a version: NuGet reads the whole
+/// framework as unsupported, never as `.NETPortable` 0.0. The well-formed
+/// spellings are controls, so the test cannot pass by everything being
+/// unsupported.
+#[test]
+fn a_malformed_portable_version_is_unsupported() {
+    let mut oracle = Oracle::spawn();
+    let malformed = [
+        "portable.-net45+win8",
+        "portable.net45+win8",
+        "portable4..5-net45+win8",
+        "portable4.-net45+win8",
+        "portable.5-net45+win8",
+        "netportable.-net45+win8",
+    ];
+    let controls = [
+        "portable-net45+win8",
+        "portable45-net45+win8",
+        "portable4.5-net45+win8",
+    ];
+    let mut mismatches = Vec::new();
+    for input in malformed.iter().chain(&controls) {
+        let resp = oracle.request(&serde_json::json!({"op": "parseFramework", "input": input}));
+        let ours = NuGetFramework::parse(input).expect("short forms never fail");
+        let fields = [
+            ("framework", ours.framework().to_owned()),
+            ("version", ours.version_string()),
+            ("profile", ours.profile().unwrap_or_default().to_owned()),
+        ];
+        for (field, mine) in fields {
+            let theirs = oracle_str(&resp, field);
+            if mine != theirs {
+                mismatches.push(format!(
+                    "{input:?}: {field} ours={mine:?} oracle={theirs:?}"
+                ));
+            }
+        }
+    }
+    for input in controls {
+        assert!(
+            !NuGetFramework::parse(input).unwrap().is_unsupported(),
+            "control {input:?} must parse"
+        );
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}

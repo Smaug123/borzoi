@@ -22,6 +22,7 @@
 //! runs in its binary — never of shipping code.
 
 pub mod corpus_key;
+pub mod fcs_position;
 pub mod manifest;
 pub mod module_tree;
 pub mod panic_silence;
