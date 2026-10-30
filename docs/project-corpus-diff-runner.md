@@ -164,7 +164,8 @@ For each visited project, the runner:
    RSS past 21 GB in five minutes). A project whose composed set is *incomplete*
    now fails to type-check and is skipped, loudly, rather than compared against
    a framework we never read.
-4. Invokes `fcs-dump uses-project`.
+4. Puts the project to `fcs-dump uses-project-batch`: one resident child per
+   run, which every project and every perturbed copy is checked by.
 5. Parses FCS ranges back to byte offsets using full path identity.
 6. Compares every comparable FCS project declaration and assembly declaration
    against sema resolution.

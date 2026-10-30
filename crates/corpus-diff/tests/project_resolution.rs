@@ -17,26 +17,21 @@ use borzoi_corpus_diff::{
     Comparison, CorpusRun, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange,
     FileUses, Graded, ItemOutcome, LoadLimits, LoadOptions, LoadSkip, LoadedProject,
     ProjectAssetsStatus, ProjectCandidates, ProjectCorpusRunOptions, ProjectRecord, ProjectSkip,
-    ProjectUse, ProjectVerdict, ServedDecline, SetAside, SkippedUses, UseDecl,
+    ProjectUse, ProjectVerdict, ServedDecline, SetAside, SkippedUses, UseDecl, UsesProjectOracle,
     check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env, explain_token,
-    fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project,
-    load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
-    project_candidates_from_env, project_corpus_run_options_from_env,
-    render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
+    fcs_error_skip_reason, load_lsp_project, load_lsp_project_with_limits,
+    load_lsp_project_with_options, parse_project_uses, project_candidates_from_env,
+    project_corpus_run_options_from_env, render_project_corpus_run_report,
+    run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
-use borzoi_oracle_harness::BatchChild;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, SourceFile, SyntaxRecovery, qualified_names,
     resolve_project_files,
 };
 use lsp_types::Position;
 use tempfile::TempDir;
-
-/// One request type-checks a whole (single-file) generated project, so it gets
-/// a project-scale budget rather than the snippet-sized driver default.
-const PROJECT_ORACLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn write(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
@@ -2249,7 +2244,9 @@ fn fcs_error(number: i32, message: &str, line: u32, col: u32) -> FcsDiagnostic {
 fn tiny_project_matches_fcs() {
     let (_tmp, project) = tiny_project();
     let loaded = load_lsp_project(&project).expect("project should load");
-    let json = invoke_fcs_uses_project(&loaded).expect("fcs-dump uses-project");
+    let json = UsesProjectOracle::default()
+        .uses_project(&loaded)
+        .expect("fcs-dump uses-project-batch");
     let sources: Vec<_> = loaded
         .parses
         .paths
@@ -2274,10 +2271,12 @@ fn tiny_project_matches_fcs() {
 }
 
 /// Concurrent callers each get a working oracle. The test harness runs this
-/// file's FCS-driven tests on parallel threads, and they all locate `fcs-dump`
-/// through [`fcs_dump_command`]; were that to rebuild `tools/fcs-dump` per call,
-/// one thread's build would rewrite the output directory under another's running
-/// oracle, which then dies unable to load `FSharp.Core`.
+/// file's FCS-driven tests on parallel threads, and each one's
+/// [`UsesProjectOracle`] locates `fcs-dump` through the crate's
+/// `fcs_dump_command` on its first request; were that to rebuild
+/// `tools/fcs-dump` per call, one thread's build would rewrite the output
+/// directory under another's running oracle, which then dies unable to load
+/// `FSharp.Core`.
 #[test]
 #[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
 fn concurrent_callers_each_get_a_working_oracle() {
@@ -2291,14 +2290,16 @@ fn concurrent_callers_each_get_a_working_oracle() {
                     // A `LoadedProject` holds syntax trees, which are not `Sync`.
                     let loaded = load_lsp_project(&project).expect("project should load");
                     start.wait();
-                    invoke_fcs_uses_project(&loaded).map(|_| ())
+                    UsesProjectOracle::default()
+                        .uses_project(&loaded)
+                        .map(|_| ())
                 })
             })
             .collect();
         for call in calls {
             call.join()
                 .expect("oracle thread panicked")
-                .expect("fcs-dump uses-project");
+                .expect("fcs-dump uses-project-batch");
         }
     });
 }
@@ -2318,7 +2319,9 @@ fn concurrent_callers_each_get_a_working_oracle() {
 fn alias_attribute_project_matches_fcs() {
     let (_tmp, project) = alias_attribute_project();
     let loaded = load_lsp_project(&project).expect("project should load");
-    let json = invoke_fcs_uses_project(&loaded).expect("fcs-dump uses-project");
+    let json = UsesProjectOracle::default()
+        .uses_project(&loaded)
+        .expect("fcs-dump uses-project-batch");
     let sources: Vec<_> = loaded
         .parses
         .paths
@@ -2375,7 +2378,9 @@ fn fcs_reports_a_member_access_over_a_span_our_key_ends() {
     loaded.project = tmp.path().join("Synthetic.fsproj");
     loaded.parses.paths = vec![path.clone()];
 
-    let json = invoke_fcs_uses_project(&loaded).expect("fcs-dump uses-project");
+    let json = UsesProjectOracle::default()
+        .uses_project(&loaded)
+        .expect("fcs-dump uses-project-batch");
     let sources = vec![(path.clone(), loaded.parses.texts[0].clone())];
     let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
 
@@ -2808,21 +2813,9 @@ fn attribute_matrix() -> Vec<AttrCell> {
     cells
 }
 
-/// The resident `uses-project-batch` child the generated sweep drives.
-///
-/// One child for the whole matrix. `invoke_fcs_uses_project` spawns a one-shot
-/// per call, so a cell-per-invocation loop pays a .NET start and an FCS load
-/// twenty times over, which is most of its wall clock and grows with every
-/// shape added. The batch op exists for exactly this loop.
-///
-/// The request is the same project description the one-shot composes from
-/// `LoadedProject`: these cells carry no references, no `#if` symbols and no
-/// `<LangVersion>` pin, so `refs`/`defines`/`langversion` are empty and
-/// `exclusiveRefs` is false — which is what the one-shot does when
-/// `fcs_extra_refs` is empty (it *clears* `BORZOI_FCS_EXCLUSIVE_REFS` rather
-/// than leaving an inherited one set). A cell that ever needs a reference set
-/// must send it here too, or the oracle stops reading what our env was built
-/// from.
+/// The corpus runner's own resident oracle, one for the whole matrix: a cell
+/// per process would pay a .NET start and an FCS load per cell, which is most
+/// of the sweep's wall clock and grows with every shape added.
 ///
 /// Serialised behind a mutex because a resident oracle matches requests to
 /// responses positionally, so it cannot serve concurrent callers.
@@ -2832,34 +2825,15 @@ fn attribute_matrix() -> Vec<AttrCell> {
 /// directory — and that was checked rather than argued: the batched matrix
 /// reports the same clean/erroring split, the same graded counts and the same
 /// erroring-cell list as one one-shot invocation per cell did, in an eighth of
-/// the wall clock. The single-project tests above stay on the one-shot driver,
-/// which is the invocation the corpus runner itself makes.
-fn uses_project_batch(paths: &[PathBuf]) -> String {
-    static CHILD: OnceLock<Mutex<BatchChild>> = OnceLock::new();
-    let child = CHILD.get_or_init(|| {
-        Mutex::new(BatchChild::with_factory(
-            Box::new(|| {
-                fcs_dump_command("uses-project-batch").expect("build fcs-dump for the batch oracle")
-            }),
-            "fcs-dump uses-project-batch",
-            PROJECT_ORACLE_TIMEOUT,
-            2,
-        ))
-    });
-    let request = serde_json::json!({
-        "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        "refs": Vec::<String>::new(),
-        "exclusiveRefs": false,
-    });
-    let line = child
+/// the wall clock.
+fn uses_project_batch(loaded: &LoadedProject) -> String {
+    static ORACLE: OnceLock<Mutex<UsesProjectOracle>> = OnceLock::new();
+    ORACLE
+        .get_or_init(Mutex::default)
         .lock()
         .expect("batch oracle mutex")
-        .request(&request.to_string());
-    assert!(
-        !line.contains("\"BatchError\""),
-        "fcs-dump uses-project-batch refused the request: {line}"
-    );
-    line
+        .uses_project(loaded)
+        .unwrap_or_else(|e| panic!("fcs-dump uses-project-batch: {e}"))
 }
 
 /// What one cell produced: the comparison the corpus runner itself would make,
@@ -2908,7 +2882,7 @@ fn run_attribute_cell(cell: &AttrCell) -> AttrCellOutcome {
     write(&tmp.path().join("A.fs"), &cell.src);
     let loaded = load_lsp_project(&project)
         .unwrap_or_else(|e| panic!("cell {} should load: {e:?}", cell.label));
-    let json = uses_project_batch(&loaded.parses.paths);
+    let json = uses_project_batch(&loaded);
     let sources: Vec<_> = loaded
         .parses
         .paths
@@ -3349,7 +3323,7 @@ fn run_qualifier_cell(cell: &QualCell) -> (LoadedProject, Vec<FileUses>, Compari
     write(&project, &fsproj);
     let loaded = load_lsp_project(&project)
         .unwrap_or_else(|e| panic!("cell {} should load: {e:?}", cell.label));
-    let json = uses_project_batch(&loaded.parses.paths);
+    let json = uses_project_batch(&loaded);
     let sources: Vec<_> = loaded
         .parses
         .paths
@@ -3992,7 +3966,9 @@ fn hover_types_are_graded_per_kind() {
         .zip(loaded.parses.texts.iter().cloned())
         .collect();
     let fcs = parse_project_uses(
-        &invoke_fcs_uses_project(&loaded).expect("FCS answers"),
+        &UsesProjectOracle::default()
+            .uses_project(&loaded)
+            .expect("FCS answers"),
         &sources,
     )
     .expect("parses");

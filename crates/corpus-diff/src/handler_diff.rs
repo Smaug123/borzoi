@@ -1762,14 +1762,22 @@ mod tests {
             .cloned()
             .zip(loaded.parses.texts.iter().cloned())
             .collect();
+        let mut oracle = crate::UsesProjectOracle::default();
         let fcs = crate::parse_project_uses(
-            &crate::invoke_fcs_uses_project(&loaded).expect("FCS answers"),
+            &oracle.uses_project(&loaded).expect("FCS answers"),
             &sources,
         )
         .expect("parses");
         let comparison = crate::compare_project_uses(&loaded, &fcs);
-        let run = |fcs: &[FileUses]| {
-            crate::compare_project_handlers(&loaded, &options, NonZeroUsize::MIN, fcs, &comparison)
+        let mut run = |fcs: &[FileUses]| {
+            crate::compare_project_handlers(
+                &loaded,
+                &options,
+                NonZeroUsize::MIN,
+                &mut oracle,
+                fcs,
+                &comparison,
+            )
         };
         let grades = |report: &HandlerReport, file: usize| -> BTreeSet<TypeVerdict> {
             report
