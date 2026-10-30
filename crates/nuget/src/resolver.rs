@@ -69,9 +69,12 @@
 //! Ranges must be non-floating with an inclusive lower bound (a floating range's
 //! answer lives in feed state we cannot see). The selected version must be
 //! committed on disk, as must the lower bound of any edge that loses to it.
-//! Anything the legacy engine would *fail* on — a cycle (NU1108), a version
-//! conflict (NU1107), a relevant downgrade (NU1605) — we decline on, because a
-//! failed restore has no closure to reproduce. Those declines name the legacy
+//! Anything the legacy engine would *fail* on — a cycle (NU1108), a conflict
+//! its conflict pass cannot settle (NU1106), a version conflict (NU1107), a
+//! relevant downgrade (NU1605) — we decline on, because a failed restore has no
+//! closure to reproduce. Settling is not a corollary of the walk: the pass
+//! marks ambiguity by package name, so it can stall on disputes whose losers
+//! are all leaves (`settle_conflicts` runs it). Those declines name the legacy
 //! engine's error; the default engine may resolve the same graph or fail it
 //! differently, so they claim nothing about it. Dependency-level
 //! `include`/`exclude` asset filters are unmodelled and decline — but only when
@@ -92,7 +95,7 @@ use crate::{
     PackageReadError, VersionRange, read_installed_package,
 };
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -161,15 +164,21 @@ pub enum ResolveDecline {
         identity: PackageIdentity,
         source: Box<PackageReadError>,
     },
-    /// The legacy restore engine fails with a version conflict: a surviving
-    /// edge's range does not accept the version the graph settled on. That is
-    /// NU1107, or NU1106 when the conflict leaves the engine's conflict pass
-    /// unable to settle the package at all. The default engine may resolve the
-    /// graph, or fail it differently.
+    /// The legacy restore engine fails with NU1107: a surviving edge's range
+    /// does not accept the version the graph settled on. The default engine
+    /// may resolve the graph, or fail it differently.
     VersionConflict {
         id: PackageId,
         selected: Box<NuGetVersion>,
         range: Box<VersionRange>,
+    },
+    /// The legacy restore engine fails with NU1106: its conflict pass cannot
+    /// settle these packages. It marks ambiguity by package *name*, so cousin
+    /// disputes that each have a node of the other's name beneath them block
+    /// one another for ever, even when every losing version is a leaf. The
+    /// default engine may resolve the graph, or fail it differently.
+    UndecidedConflict {
+        ids: Vec<PackageId>,
     },
     /// The legacy restore engine fails with NU1605: a nearer edge pinned the
     /// package below what a deeper one needs. The default engine may resolve the
@@ -272,7 +281,19 @@ impl fmt::Display for ResolveDecline {
                 write!(
                     f,
                     "package {id} settled on version {selected}, which does not satisfy {range} \
-                     (the legacy restore engine fails with NU1107 or NU1106)"
+                     (the legacy restore engine fails with NU1107)"
+                )
+            }
+            ResolveDecline::UndecidedConflict { ids } => {
+                let ids = ids
+                    .iter()
+                    .map(PackageId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    f,
+                    "the conflicts over {ids} each leave the other ambiguous (the legacy restore \
+                     engine fails with NU1106)"
                 )
             }
             ResolveDecline::Downgrade {
@@ -491,6 +512,11 @@ fn finish(
         return Err(ResolveDecline::DependencyCycle { cycle });
     }
 
+    // NU1106: the legacy conflict pass must settle every node. This comes before
+    // the conflict and downgrade checks, which both assume the winners were
+    // accepted: restore reports neither against a node it left undecided.
+    settle_conflicts(&walk)?;
+
     // NU1107: every surviving edge must accept the version the graph settled on.
     for (id, ranges) in &walk.edges {
         let version = walk
@@ -638,6 +664,186 @@ fn engines_agree(
     }
 
     Ok(())
+}
+
+/// NuGet's `TryResolveConflicts` gives up after this many rounds
+/// (`patience = 1000`, decremented before each round).
+const CONFLICT_PASS_ROUNDS: usize = 999;
+
+/// Where the legacy conflict pass has got to with one node.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    Acceptable,
+    Accepted,
+    Rejected,
+}
+
+/// The state `WalkTreeMarkAmbiguousNodes` threads from a node to its children.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AmbiguityWalk {
+    Walking,
+    Rejected,
+    Ambiguous,
+}
+
+/// One node of the tree the legacy conflict pass sees. `id` and `version` are
+/// `None` for the synthetic root.
+struct ConflictNode<'a> {
+    id: Option<&'a PackageId>,
+    version: Option<&'a NuGetVersion>,
+    children: Vec<usize>,
+}
+
+/// `GraphOperations.TryResolveConflicts`: does the legacy engine's conflict pass
+/// settle every node of the tree, or leave some `Acceptable` and fail with
+/// NU1106?
+///
+/// "Highest version wins" is the pass's *answer* when it finishes, but it does
+/// not always finish. Each round it rejects the subtrees of rejected nodes,
+/// tracks the versions of every remaining node by name, and marks a package
+/// name *ambiguous* if any node of that name sits strictly below a node whose
+/// name is disputed (tracked at more than one version). It then accepts or
+/// rejects, top down, only nodes whose name is not ambiguous. Ambiguity is by
+/// name, not by node, so a leaf loser of Y beneath the disputed winner of X,
+/// and a leaf loser of X beneath the disputed winner of Y, block both winners
+/// for ever.
+///
+/// The tree is the walk's: every expanded node at its settled version, plus
+/// each losing edge as a leaf. That is exactly the legacy tree once its cycles
+/// and potential downgrades are removed (as `CheckCycleAndNearestWins` does
+/// before this pass), given [`engines_agree`]'s guarantee that no loser has a
+/// subtree. Every round is a function of the dispositions alone, so a round
+/// that changes none is one the pass repeats until its patience runs out.
+fn settle_conflicts(walk: &Walk) -> Result<(), ResolveDecline> {
+    let mut nodes: Vec<ConflictNode<'_>> = walk
+        .nodes
+        .iter()
+        .map(|node| ConflictNode {
+            id: node.id.as_ref(),
+            version: node.id.as_ref().map(|id| {
+                walk.selected
+                    .get(id)
+                    .expect("an expanded node's package is selected")
+            }),
+            children: Vec::new(),
+        })
+        .collect();
+    for (index, node) in walk.nodes.iter().enumerate() {
+        if let Some(parent) = node.parent {
+            nodes[parent].children.push(index);
+        }
+    }
+    for loser in &walk.losers {
+        nodes.push(ConflictNode {
+            id: Some(&loser.identity.id),
+            version: Some(&loser.identity.version),
+            children: Vec::new(),
+        });
+        let index = nodes.len() - 1;
+        nodes[loser.parent].children.push(index);
+    }
+
+    let mut dispositions = vec![Disposition::Acceptable; nodes.len()];
+    for _ in 0..CONFLICT_PASS_ROUNDS {
+        if !dispositions.contains(&Disposition::Acceptable) {
+            break;
+        }
+        let before = dispositions.clone();
+        conflict_round(&nodes, &mut dispositions);
+        if dispositions == before {
+            break;
+        }
+    }
+
+    let undecided: BTreeSet<&PackageId> = nodes
+        .iter()
+        .zip(&dispositions)
+        .filter(|(_, disposition)| **disposition == Disposition::Acceptable)
+        .filter_map(|(node, _)| node.id)
+        .collect();
+    if !undecided.is_empty() {
+        return Err(ResolveDecline::UndecidedConflict {
+            ids: undecided.into_iter().cloned().collect(),
+        });
+    }
+
+    // Settled, the pass accepts exactly the walk's winners and rejects its
+    // losers: every expanded node is at its package's highest tracked version,
+    // as is every ancestor of one, and every loser is below its winner.
+    for (index, disposition) in dispositions.iter().enumerate() {
+        let expected = if index < walk.nodes.len() {
+            Disposition::Accepted
+        } else {
+            Disposition::Rejected
+        };
+        assert!(
+            *disposition == expected,
+            "a settled conflict pass accepts the winners and rejects the losers"
+        );
+    }
+    Ok(())
+}
+
+/// One round of `TryResolveConflicts`. NuGet walks each pass breadth-first, but
+/// every pass reads only what the previous one wrote, so any parent-first
+/// order gives the same result.
+fn conflict_round(nodes: &[ConflictNode<'_>], dispositions: &mut [Disposition]) {
+    // `WalkTreeRejectNodesOfRejectedNodes`: reject the subtree of every
+    // rejected node, and track the versions of everything else by name.
+    let mut tracked: BTreeMap<Option<&PackageId>, Vec<Option<&NuGetVersion>>> = BTreeMap::new();
+    let mut stack = vec![(0usize, true)];
+    while let Some((index, live)) = stack.pop() {
+        let live = live && dispositions[index] != Disposition::Rejected;
+        if live {
+            let versions = tracked.entry(nodes[index].id).or_default();
+            if !versions.contains(&nodes[index].version) {
+                versions.push(nodes[index].version);
+            }
+        } else {
+            dispositions[index] = Disposition::Rejected;
+        }
+        stack.extend(nodes[index].children.iter().map(|&child| (child, live)));
+    }
+    let disputed = |id: Option<&PackageId>| tracked.get(&id).is_some_and(|v| v.len() > 1);
+
+    // `WalkTreeMarkAmbiguousNodes`: every name with a node strictly below a
+    // disputed one is ambiguous.
+    let mut ambiguous: BTreeSet<Option<&PackageId>> = BTreeSet::new();
+    let mut stack = vec![(0usize, AmbiguityWalk::Walking)];
+    while let Some((index, state)) = stack.pop() {
+        let next = if dispositions[index] == Disposition::Rejected {
+            AmbiguityWalk::Rejected
+        } else if state == AmbiguityWalk::Walking && disputed(nodes[index].id) {
+            AmbiguityWalk::Ambiguous
+        } else {
+            if state == AmbiguityWalk::Ambiguous {
+                ambiguous.insert(nodes[index].id);
+            }
+            state
+        };
+        stack.extend(nodes[index].children.iter().map(|&child| (child, next)));
+    }
+
+    // `WalkTreeAcceptOrRejectNodes`: top down through accepted nodes, decide
+    // every unambiguous one by whether it is its name's highest version.
+    let mut stack = vec![0usize];
+    while let Some(index) = stack.pop() {
+        let node = &nodes[index];
+        if dispositions[index] == Disposition::Rejected || ambiguous.contains(&node.id) {
+            continue;
+        }
+        if dispositions[index] == Disposition::Acceptable {
+            let best = tracked[&node.id].iter().all(|known| node.version >= *known);
+            dispositions[index] = if best {
+                Disposition::Accepted
+            } else {
+                Disposition::Rejected
+            };
+        }
+        if dispositions[index] == Disposition::Accepted {
+            stack.extend(&node.children);
+        }
+    }
 }
 
 /// `GraphOperations.CheckCycleAndNearestWins` plus `IsRelevantDowngrade`: does
