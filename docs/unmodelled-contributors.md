@@ -138,7 +138,8 @@ base that cannot be proven, when an F# module dropped a member mangled like an
 augmentation, when a type was dropped, when the extension surface is
 unknowable, or when an attribute's name cannot be read (a non-literal argument,
 an escape). An attribute spelled any way may be `[<CustomOperation>]` once a
-file or an assembly may rename it.
+file or an assembly may rename it, and one written `X` may be an assembly's
+unread abbreviation `X` or `XAttribute`, the suffix F# also looks up.
 
 The grid's computation-expression axis
 (`every_computation_expression_cell_agrees_with_fcs`) crosses each way of
