@@ -512,7 +512,8 @@ impl<'a> Resolver<'a> {
                         // case/member.
                         let type_access_root =
                             self.export_access_root_len(type_header_is_private(defn));
-                        self.define_type(&name, slot, type_access_root);
+                        let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+                        self.define_type(&name, arity, slot, type_access_root);
                         // The cross-file type index: any genuine non-abbreviation
                         // repr's cases are fully indexed below (a union/enum's by
                         // `define_union_cases` / `define_enum_cases`; other reprs
@@ -589,6 +590,17 @@ impl<'a> Resolver<'a> {
                         self.define_type_members(defn, &name);
                     }
                 }
+                // An abbreviation-shaped union case, once every type of the
+                // group is defined: a target naming a later type of the group
+                // is that type, not a case.
+                for defn in &defns {
+                    if !is_type_augmentation(defn)
+                        && let Some(name) = defn.long_id().and_then(single_ident)
+                    {
+                        let require_qualified = attrs_require_qualified_access(defn.attributes());
+                        self.shadow_abbreviation_case(defn, &name, require_qualified);
+                    }
+                }
                 // 3. Now every name in the group is in scope, resolve the uses:
                 //    an augmentation's head (`type T with …`) is a *use* of an
                 //    existing type — resolve it against the table (a genuine
@@ -610,13 +622,14 @@ impl<'a> Resolver<'a> {
                     {
                         let segs: Vec<SyntaxToken> = li.idents().collect();
                         // An augmentation head (`type T with …`) resolves in-file
-                        // only: an in-file `T` resolves via `lookup_type_def`
-                        // (arity-agnostic). It must *not* fall through to the
+                        // only: an in-file `T` of the head's arity resolves via
+                        // `in_file_type_at`. It must *not* fall through to the
                         // arity-keyed assembly lookup — the augmented type's typars
                         // aren't on this `long_id`, so a generic assembly target
                         // (`type Demo.Pair<'T> with …`) would mis-key to arity 0 and
                         // resolve a wrong same-named entity (D5).
-                        self.resolve_in_file_type_path(&segs);
+                        let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+                        self.resolve_in_file_type_path(&segs, arity);
                         // The augmentation's members join the in-file member
                         // index — visible only from here on (FCS FS0039 before
                         // the augmentation, probe M4a) — or, when the head is
@@ -627,15 +640,16 @@ impl<'a> Resolver<'a> {
                     // The type header's generic parameters (`type Foo<'T>`) are in
                     // scope throughout its body: the abbreviation/record/union RHS
                     // resolved by `resolve_type_defn`, and every member signature
-                    // and body reached by `resolve_type_member_bodies`. (An
-                    // augmentation carries no `<…>` on its head, so this pushes
-                    // nothing there.)
-                    let pushed_typars = self.enter_typars(defn.typar_decls());
+                    // and body reached by `resolve_type_member_bodies`. An
+                    // intrinsic augmentation's members see the augmented type's
+                    // own parameters instead ([`MemberScope`](super::types::MemberScope)).
+                    let scope = self.member_scope_of(defn);
+                    let pushed_typars = self.enter_type_typars(defn, &scope);
                     self.resolve_type_defn(defn);
                     // Descend into the type's member bodies (self-id, params,
                     // ctor params, class fields) — the value-resolution slice
                     // that `resolve_type_defn` (type uses only) does not cover.
-                    self.resolve_type_member_bodies(defn);
+                    self.resolve_type_member_bodies(defn, &scope);
                     self.leave_typars(pushed_typars);
                 }
             }
@@ -838,10 +852,11 @@ impl<'a> Resolver<'a> {
                 // paths) rather than resolving anything from it.
                 // EX-3 §2(d): every `open` of any kind bumps the latest-open
                 // position — F# is latest-wins across bindings and opens alike,
-                // so an in-file attribute-type commit whose definition precedes
-                // any open must defer (the open could supply the candidate at
-                // higher priority; see `attribute_candidate`). Monotone: never
-                // restored on nested-module exit, which only over-defers.
+                // so an in-file type commit whose definition precedes any open
+                // in scope must defer (the open could supply the type at higher
+                // priority; see `attribute_candidate`, `decide_type_path`). An
+                // open is scoped to its module, so leaving a nested module
+                // restores the position.
                 self.latest_open_pos = self
                     .latest_open_pos
                     .max(open.syntax().text_range().start().into());
@@ -1652,6 +1667,7 @@ impl<'a> Resolver<'a> {
         let saved_unmodelled_open = self.unmodelled_open_active;
         let saved_opaque_value_open = self.opaque_value_open;
         let saved_opaque_dotted_open = self.opaque_dotted_open;
+        let saved_latest_open_pos = self.latest_open_pos;
         let saved_recursive_module = self.recursive_module_active;
         let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
         let saved_nested_locals = self.nested_module_locals.clone();
@@ -1719,6 +1735,7 @@ impl<'a> Resolver<'a> {
         self.unmodelled_open_active = saved_unmodelled_open;
         self.opaque_value_open = saved_opaque_value_open;
         self.opaque_dotted_open = saved_opaque_dotted_open;
+        self.latest_open_pos = saved_latest_open_pos;
         self.recursive_module_active = saved_recursive_module;
         if let Some(saved) = saved_rec_module_names {
             self.rec_module_names = saved;

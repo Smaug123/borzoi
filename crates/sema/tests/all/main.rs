@@ -7,9 +7,11 @@
 
 mod common;
 
+mod abbreviation_case_diff;
 mod assembly_env;
 mod attr_resolution_diff;
 mod attr_resolution_sweep;
+mod augmentation_scope_diff;
 mod classify_assembly_diff;
 mod classify_diff;
 mod commit_surface;
@@ -70,6 +72,7 @@ mod resolve_fsharp_core;
 mod resolve_incomplete_projection;
 mod resolve_incremental_diff;
 mod resolve_member_bodies;
+mod resolve_member_signatures_diff;
 mod resolve_module_opens;
 mod resolve_named_args_diff;
 mod resolve_nested_modules;
@@ -86,12 +89,15 @@ mod resolve_signature_exports;
 mod resolve_signatures;
 mod resolve_straddle_gen_diff;
 mod resolve_string_qualifier_repro;
+mod resolve_type_arity_diff;
 mod resolve_type_members;
 mod resolve_type_parameters;
 mod resolve_type_qualified_cases;
 mod resolve_types;
 mod resolve_union_cases;
+mod silent_region_sweep;
 mod tier_order_diff;
+mod type_name_env_grid;
 mod types_census;
 mod use_rec;
 mod uses_census;

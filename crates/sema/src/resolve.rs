@@ -119,15 +119,36 @@ pub fn resolve_file(
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
+            if !is_type_augmentation(&defn) {
+                let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+                let scoped = arity > 0
+                    || match defn.repr() {
+                        Some(TypeDefnRepr::Union(_)) => true,
+                        Some(TypeDefnRepr::Abbrev(a)) => a
+                            .ty()
+                            .as_ref()
+                            .and_then(abbrev_target_single_ident)
+                            .is_some(),
+                        _ => false,
+                    };
+                *r.own_type_scoped
+                    .entry((id_text(&name).to_string(), arity))
+                    .or_default() |= scoped;
+            }
             // A generic declaration of the name disqualifies an in-file
             // attribute commit: FCS's attribute lookup is arity-0
             // (`DefiniteEmpty`), so it skips a generic local and binds an
-            // assembly arity-0 type instead, while `lookup_type_def` is
-            // arity-agnostic and would hand the generic local back
-            // (codex round 7).
+            // assembly arity-0 type instead, and the in-file lookup only
+            // pins a local of the written arity in the innermost container
+            // declaring the name (codex round 7).
             if defn.typar_decls().is_some() {
                 r.own_generic_type_simple_names
                     .insert(id_text(&name).to_string());
+            }
+            if !is_type_augmentation(&defn) {
+                *r.own_type_decl_counts
+                    .entry(id_text(&name).to_string())
+                    .or_default() += 1;
             }
             // An in-file ABBREVIATION could alias `ExtensionAttribute` (the
             // resolver records the local without chasing its target), so the
@@ -156,6 +177,9 @@ pub fn resolve_file(
             r.own_type_simple_names.insert(id_text(&name).to_string());
             r.own_exception_simple_names
                 .insert(id_text(&name).to_string());
+            *r.own_type_decl_counts
+                .entry(id_text(&name).to_string())
+                .or_default() += 1;
         }
     }
     // Every *nested module definition*'s simple name in the file, for the
@@ -362,7 +386,15 @@ pub fn resolve_file(
     // enclosing container's bindings without leaking into it. The per-segment
     // qualification (`module *path*` for exports, `container_path`) is set per
     // module below and in `nested_module`.
+    // The same-file `[<AutoOpen>]` type shadows each top-level block leaves
+    // behind, by the block's path: a later block of the same namespace opens
+    // those modules again.
+    let mut block_auto_open_type_shadows = HashMap::new();
     for module in file.modules() {
+        let block_key: Vec<String> = module
+            .long_id()
+            .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
+            .unwrap_or_default();
         // Imports are scoped to a *single* top-level block: an `open` in one
         // `namespace`/`module` block does not carry to the next (FCS-verified,
         // even for two same-named `namespace N` blocks), so reset the open state
@@ -386,7 +418,24 @@ pub fn resolve_file(
         r.opaque_value_open = false;
         r.opaque_dotted_open = false;
         r.recursive_module_active = module.is_rec();
-        r.auto_open_type_shadow_names.clear();
+        // An `[<AutoOpen>]` module declared in one `namespace N` block is
+        // opened again by every later block of `N`, and only of `N`.
+        // They enter this block at its start, outranking every declaration
+        // of an earlier block.
+        let block_start = u32::from(module.syntax().text_range().start());
+        r.auto_open_type_shadow_names = block_auto_open_type_shadows
+            .get(&block_key)
+            .map(|shadows: &HashMap<String, state::AutoOpenTypeShadow>| {
+                shadows
+                    .iter()
+                    .map(|(name, shadow)| {
+                        let mut shadow = *shadow;
+                        shadow.import_pos = shadow.import_pos.max(block_start);
+                        (name.clone(), shadow)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         r.rec_module_names.clear();
         if module.is_rec() {
             collect_nested_module_names(module.decls(), &mut r.rec_module_names);
@@ -536,6 +585,10 @@ pub fn resolve_file(
         let augmentation_locals = std::mem::take(&mut r.augmentation_head_locals);
         r.top_level_augmentation_locals
             .insert(r.container_path.clone(), augmentation_locals);
+        block_auto_open_type_shadows.insert(
+            block_key,
+            std::mem::take(&mut r.auto_open_type_shadow_names),
+        );
     }
     #[cfg(feature = "otel")]
     drop(_phase);
@@ -1887,6 +1940,13 @@ impl<'a> Resolver<'a> {
             own_binder_simple_names: HashSet::new(),
             case_field_names: HashMap::new(),
             own_generic_type_simple_names: HashSet::new(),
+            own_type_decl_counts: HashMap::new(),
+            type_decl_counts: HashMap::new(),
+            type_def_arities: HashMap::new(),
+            type_defs_by_arity: HashMap::new(),
+            own_type_scoped: HashMap::new(),
+            own_union_cases: HashMap::new(),
+            type_typar_frames: HashMap::new(),
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),

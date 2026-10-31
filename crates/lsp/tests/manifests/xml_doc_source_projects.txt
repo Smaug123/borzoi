@@ -6,7 +6,7 @@ TypeEquality/TypeEquality/TypeEquality.fsproj oracle-errors=0 agree-doc=133 cros
 WoofWare.Expect/WoofWare.Expect/Domain.fs declined ArityMismatch fcs-none x7
 WoofWare.Expect/WoofWare.Expect/Domain.fs declined QualifierArityMismatch fcs-none x7
 WoofWare.Expect/WoofWare.Expect/Dot.fs:51:15 IFileSystem Type use declined ConstructorCall fcs-doc
-WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj oracle-errors=0 agree-doc=211 cross-file-doc=8 agree-none=1702
+WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj oracle-errors=0 agree-doc=211 cross-file-doc=8 agree-none=1707
 WoofWare.Incremental/WoofWare.Incremental/Incremental.fs declined ConstructorCall fcs-none x3
 WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined ArityMismatch fcs-none x14
 WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined QualifierArityMismatch fcs-none x14
@@ -23,8 +23,8 @@ WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:58:11 Sequence Type use de
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:78:9 Sequence Type use declined ArityMismatch fcs-doc
 WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined ArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined QualifierArityMismatch fcs-none
-WoofWare.Incremental/WoofWare.Incremental/Types.fs declined ConstructorCall fcs-none x7
-WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj oracle-errors=0 agree-doc=167 cross-file-doc=3 agree-none=6339
+WoofWare.Incremental/WoofWare.Incremental/Types.fs declined ConstructorCall fcs-none x8
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj oracle-errors=0 agree-doc=169 cross-file-doc=3 agree-none=6782
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj oracle-errors=0 agree-doc=98 cross-file-doc=8 agree-none=758
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:156:11 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:157:11 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
@@ -92,6 +92,6 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:39:43 MethodReturnType Ty
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:40:11 MethodReturnType Type use declined ArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:42:20 MethodReturnType Type use declined ArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeInfo.fs declined ConstructorCall fcs-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj oracle-errors=0 agree-doc=1213 cross-file-doc=222 agree-none=8260
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj oracle-errors=0 agree-doc=1214 cross-file-doc=222 agree-none=8270
 WoofWare.WeakHashTable/WoofWare.WeakHashTable/WeakHashTable.fs:84:15 WeakHashTableCrate Type use declined ConstructorCall fcs-doc
-WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj oracle-errors=0 agree-doc=52 cross-file-doc=0 agree-none=339
+WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj oracle-errors=0 agree-doc=54 cross-file-doc=0 agree-none=349

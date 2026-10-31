@@ -47,12 +47,12 @@
 //! attaches, and a neighbour's doc must never be shown. The differential
 //! against FCS (`xml_doc_source_diff`) holds every committed answer to that.
 //!
-//! A doc is only as right as the resolution that chose its declaration, and
-//! the differential found a shape resolution gets wrong (#323); it declines
-//! here too ([`SourceDocDecline::ArityMismatch`]) until resolution is fixed.
-//! The guard checks an invariant of the occurrence itself — the type
-//! arguments it supplies — rather than enumerate the declarations that could
-//! collide.
+//! A doc is only as right as the resolution that chose its declaration. One
+//! shape the differential found resolution getting wrong (#323) — a use
+//! whose type arguments do not match the declaration's — is declined here
+//! as well as by resolution ([`SourceDocDecline::ArityMismatch`]). The guard
+//! checks an invariant of the occurrence itself — the type arguments it
+//! supplies — rather than enumerate the declarations that could collide.
 
 use std::collections::HashMap;
 
@@ -118,10 +118,11 @@ pub enum SourceDocDecline {
     /// the first.
     SameNameDeclarations,
     /// A use of a type supplies a different number of type arguments than the
-    /// type resolution chose declares. Resolution does not yet choose among
-    /// same-named types by arity (#323), so FCS binds another type there — a
+    /// type resolution chose declares, so FCS binds another type there — a
     /// source namesake or a referenced assembly's (`Action<int>` against a
-    /// project's `type Action`).
+    /// project's `type Action`). Resolution declines such a use in type
+    /// position; this holds the line for the occurrences it reaches by name
+    /// alone (#323).
     ArityMismatch,
     /// `T.M` where the type resolution chose declares no `M`: FCS looks `M`
     /// up in every same-named type (`NameResolution`'s arity-sorted tycon
