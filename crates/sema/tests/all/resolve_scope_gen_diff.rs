@@ -23,14 +23,6 @@
 //! pass the first and third checks, so the census and the must-commit kinds
 //! are what keep them from holding vacuously.
 //!
-//! One known wrong-answer class is classified rather than failed: sema does not
-//! fold a same-file `[<AutoOpen>]` module's values back into its parent, so a
-//! use FCS binds to the folded value binds an earlier same-named binder
-//! instead. Open PR #233 fixes it. The classifier is exact — a planted
-//! auto-opened use that hides a same-named binder — and its count over the
-//! default seeds is pinned two-sided, so the fix landing fails the test until
-//! the classifier is deleted.
-//!
 //! Default runtime is modest: a fixed handful of seeds against FCS and 256
 //! FCS-free cases. For the soak, set `BORZOI_SCOPE_GEN_SEEDS=<n>` (seeds
 //! against FCS) and `BORZOI_SCOPE_GEN_CASES=<n>` (FCS-free cases);
@@ -42,9 +34,7 @@ use std::path::PathBuf;
 use proptest::prelude::*;
 use rowan::TextRange;
 
-use crate::common::scope_gen::{
-    Expected, Form, Generated, PlantedRef, RefKind, generate, generate_seed,
-};
+use crate::common::scope_gen::{Expected, Form, Generated, RefKind, generate, generate_seed};
 use crate::common::{
     CensusDecl, census_resolve_uses, env_usize_or, invoke_fcs_dump_census, parse_census_jsonl,
     temp_fs_file,
@@ -110,26 +100,6 @@ const MUST_COMMIT: &[RefKind] = &[
     RefKind::UnionCase,
 ];
 
-/// How many uses of the known fold-back class (below) the default seeds
-/// produce. Two-sided: fewer means the defect is (partly) fixed — #233 has
-/// landed — and the classifier should go.
-const KNOWN_FOLD_BACK_AT_DEFAULT: usize = 9;
-
-/// Whether our answer at `r` is exactly the known defect that open PR #233
-/// fixes: sema does not fold an in-file `[<AutoOpen>]` module's values back
-/// into its parent, so a use that FCS binds to the folded value binds instead
-/// the earlier same-named binder the fold hides — that binder, and no other
-/// wrong answer.
-fn is_known_auto_open_fold_back(g: &Generated, rf: &ResolvedFile, r: &PlantedRef) -> bool {
-    let Some(fallback) = r.fold_back_fallback else {
-        return false;
-    };
-    rf.resolution_at(r.range)
-        .filter(|res| matches!(res, Resolution::Local(_) | Resolution::Item(_)))
-        .and_then(|res| rf.resolved_def(res))
-        .is_some_and(|def| def.range == g.binder_ranges[&fallback])
-}
-
 /// Grade one planted use, or describe the wrong answer.
 fn grade(
     g: &Generated,
@@ -176,7 +146,6 @@ fn check_against_generator(g: &Generated) -> Result<Vec<(RefKind, Grade)>, Strin
                 ));
             }
             Ok(gr) => grades.push((r.kind, gr)),
-            Err(_) if is_known_auto_open_fold_back(g, &rf, r) => {}
             Err(why) => {
                 return Err(format!(
                     "{:?} use {:?} at {:?}: {why}\n{}",
@@ -237,7 +206,6 @@ fn generated_programs_agree_with_fcs() {
     let mut ours_wrong = Vec::new();
     let mut adjudicated: BTreeMap<RefKind, (usize, usize)> = BTreeMap::new();
     let mut fcs_uses_graded = 0usize;
-    let mut known_fold_back = 0usize;
     let mut undercommitted = Vec::new();
     for (seed, (g, file)) in programs.iter().zip(&census).enumerate() {
         if !file.ok || file.has_check_errors {
@@ -317,11 +285,6 @@ fn generated_programs_agree_with_fcs() {
                 _ => None,
             };
             fcs_uses_graded += 1;
-            let planted = g.refs.iter().find(|r| r.range == range);
-            if wrong.is_some() && planted.is_some_and(|r| is_known_auto_open_fold_back(g, &rf, r)) {
-                known_fold_back += 1;
-                continue;
-            }
             if let Some(w) = wrong {
                 ours_wrong.push(format!(
                     "seed {seed}: {:?} at {range:?}: we gave {w}",
@@ -332,12 +295,10 @@ fn generated_programs_agree_with_fcs() {
     }
 
     eprintln!(
-        "scope-gen: {} programs, {} rejected by FCS, {} FCS uses graded, {} wrong \
-         answers of the known [<AutoOpen>] fold-back class (#233)",
+        "scope-gen: {} programs, {} rejected by FCS, {} FCS uses graded",
         programs.len(),
         rejected.len(),
         fcs_uses_graded,
-        known_fold_back,
     );
     for (kind, (n, committed)) in &adjudicated {
         eprintln!("  {kind:?}: {n} adjudicated, {committed} committed");
@@ -359,14 +320,6 @@ fn generated_programs_agree_with_fcs() {
         undercommitted.len(),
         undercommitted.join("\n")
     );
-    if seeds == DEFAULT_SEEDS {
-        assert_eq!(
-            known_fold_back, KNOWN_FOLD_BACK_AT_DEFAULT,
-            "the known [<AutoOpen>] fold-back class moved: fewer means #233 (or \
-             another fix) landed, so delete `is_known_auto_open_fold_back`; more \
-             means the generator or the resolver changed"
-        );
-    }
     assert!(
         ours_wrong.is_empty(),
         "{} uses committed to something FCS does not name:\n{}",

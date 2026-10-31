@@ -6,7 +6,7 @@ TypeEquality/TypeEquality/TypeEquality.fsproj oracle-errors=0 agree-doc=133 cros
 WoofWare.Expect/WoofWare.Expect/Domain.fs declined ArityMismatch fcs-none x7
 WoofWare.Expect/WoofWare.Expect/Domain.fs declined QualifierArityMismatch fcs-none x7
 WoofWare.Expect/WoofWare.Expect/Dot.fs:51:15 IFileSystem Type use declined ConstructorCall fcs-doc
-WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj oracle-errors=0 agree-doc=211 cross-file-doc=8 agree-none=1702
+WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj oracle-errors=0 agree-doc=217 cross-file-doc=14 agree-none=1696
 WoofWare.Incremental/WoofWare.Incremental/Incremental.fs declined ConstructorCall fcs-none x3
 WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined ArityMismatch fcs-none x14
 WoofWare.Incremental/WoofWare.Incremental/OnUpdateHandler.fs declined QualifierArityMismatch fcs-none x14
@@ -92,6 +92,6 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:39:43 MethodReturnType Ty
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:40:11 MethodReturnType Type use declined ArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeDefn.fs:42:20 MethodReturnType Type use declined ArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/TypeInfo.fs declined ConstructorCall fcs-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj oracle-errors=0 agree-doc=1213 cross-file-doc=222 agree-none=8260
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj oracle-errors=0 agree-doc=1214 cross-file-doc=223 agree-none=8276
 WoofWare.WeakHashTable/WoofWare.WeakHashTable/WeakHashTable.fs:84:15 WeakHashTableCrate Type use declined ConstructorCall fcs-doc
 WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj oracle-errors=0 agree-doc=52 cross-file-doc=0 agree-none=339
