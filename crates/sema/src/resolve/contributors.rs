@@ -93,6 +93,10 @@ pub(super) struct FileContributions {
     /// (`AddLocalRootModuleOrNamespace`): its root-level `[<AutoOpen>]`
     /// modules, and the declarations of its `namespace global` blocks.
     pub(super) root: Contribution,
+    /// Every name the file's type augmentations (`type T with …`) declare,
+    /// whatever `T`: an `open type` brings the extension members in scope for
+    /// the type it opens, and which type that is the name does not prove.
+    pub(super) extension_statics: BTreeSet<String>,
     /// For a project module, what an `open` of it adds beyond the values the
     /// walk folds ([`Resolver::open_module_values`]): its `[<AutoOpen>]`
     /// children, at any depth through `[<AutoOpen>]` ones.
@@ -116,7 +120,7 @@ pub(super) struct FileContributions {
 /// accessor names a property or event of that name brings (`get_P`, `set_P`,
 /// `add_E`, `remove_E`), and the compiled names of operator-named union cases
 /// (`op_Nil`, `op_ColonColon`), which are spelled with no identifier at all.
-fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
+pub(super) fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
     let idents: Vec<String> = node
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
@@ -568,6 +572,20 @@ impl Resolver<'_> {
             contribution.merge(c);
         }
         self.push_contribution(&contribution, pos);
+    }
+
+    /// What this file's earlier blocks put in the root scope of the blocks
+    /// after them (`AddLocalRootModuleOrNamespace`, as an earlier file's
+    /// do), marked in the block frame just above the `seeded` implicit
+    /// entries: FCS adds them after the implicit opens, and a reopened
+    /// block's re-taken bindings, which are those same declarations walked,
+    /// stand above them.
+    pub(super) fn earlier_block_contributions(&mut self, seeded: usize) {
+        let own = self.contributions.root.clone();
+        let before = self.module_frame().entries.len();
+        self.push_contribution(&own, 0);
+        let pushed = self.module_frame().entries.len() - before;
+        self.module_frame().entries[seeded..].rotate_right(pushed);
     }
 
     /// A top-level block, after the implicit auto-opens are seeded and before

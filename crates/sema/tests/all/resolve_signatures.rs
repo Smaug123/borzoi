@@ -854,7 +854,11 @@ pub(crate) fn assert_sig_matches_fcs(p: &SigProject) {
                 // FCS must NOT have an in-project decl for them, and we only
                 // reach here when it does — so an assembly commit at an
                 // in-project-declared use is a wrong commit.
-                Some(res @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
+                Some(
+                    res @ (Resolution::Entity(_)
+                    | Resolution::Member { .. }
+                    | Resolution::UnionCase { .. }),
+                ) => {
                     panic!(
                         "{}: assembly commit {res:?} at {use_range:?} ({:?}) where FCS \
                          declares in-project at {:?}",

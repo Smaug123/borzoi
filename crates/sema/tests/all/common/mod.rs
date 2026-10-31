@@ -1317,6 +1317,29 @@ pub fn ensure_ce_extension_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **unmodelled-contributor extension** fixture
+/// (`tests/fixtures/contributor_ext_env`, `SemaContributorExtFixture.dll`)
+/// once per test binary and return its `.dll` path: extension members, from
+/// referenced `[<AutoOpen>]` modules, that an `open type` brings
+/// (`tests/all/unmodelled_contributor_grid.rs`). Behind the shared
+/// [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_contributor_ext_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/contributor_ext_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build contributor extension fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaContributorExtFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **active-pattern** fixture (`tests/fixtures/active_pattern_env`,
 /// `SemaActivePatternFixture.dll`) once per test binary and return its `.dll`
 /// path. A referenced F# library exposing active-pattern recognizers of every
@@ -1335,6 +1358,53 @@ pub fn ensure_active_pattern_fixture_built() -> &'static Path {
                 .join("Release")
                 .join("net10.0")
                 .join("SemaActivePatternFixture.dll")
+        })
+        .as_path()
+}
+
+/// Build the **union-case shadow** fixture
+/// (`tests/fixtures/union_case_shadow_env`, `SemaUnionCaseShadowFixture.dll`)
+/// once per test binary and return its `.dll` path: the referenced-assembly
+/// shapes that contest FSharp.Core's implicitly opened union cases for a bare
+/// name (`tests/all/assembly_union_case_table.rs`). Behind the shared
+/// [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_union_case_shadow_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/union_case_shadow_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build union-case shadow fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaUnionCaseShadowFixture.dll")
+        })
+        .as_path()
+}
+
+/// Build the **union-case auto-open** fixture
+/// (`tests/fixtures/union_case_autoopen_env`, `SemaUnionCaseAutoOpenFixture.dll`)
+/// once per test binary and return its `.dll` path: an assembly-level
+/// `[<AutoOpen>]` namespace whose union cases and class sit beside
+/// FSharp.Core's implicitly opened ones in every file
+/// (`tests/all/assembly_union_case_table.rs`). Behind the shared [`BUILD_LOCK`]
+/// like the other fixtures.
+pub fn ensure_union_case_autoopen_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/union_case_autoopen_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build union-case auto-open fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaUnionCaseAutoOpenFixture.dll")
         })
         .as_path()
 }

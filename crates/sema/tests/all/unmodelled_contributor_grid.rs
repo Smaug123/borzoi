@@ -33,12 +33,13 @@ use std::path::{Path, PathBuf};
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
     FileUses, NormalisedProjectUse, ensure_ce_extension_fixture_built,
-    ensure_contributor_fixture_built, ensure_fsharp_core_dll, invoke_fcs_dump_project_with_refs,
-    parse_fcs_uses_project, temp_fs_tree,
+    ensure_contributor_ext_fixture_built, ensure_contributor_fixture_built, ensure_fsharp_core_dll,
+    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
 };
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_oracle_harness::manifest::Manifest;
+use borzoi_sema::test_support::{DeclaringEntity, StructuralName, certified_expected};
 use borzoi_sema::{AssemblyEnv, Resolution, ResolvedProject, resolve_project_files};
 use rowan::TextRange;
 
@@ -257,6 +258,22 @@ enum Route {
     OpenTypeInherited,
     /// `open type` of a referenced type whose static the projection drops.
     OpenTypeDropped,
+    /// `open type` of a referenced type the probe file augments with the
+    /// static: FCS opens the extension members in scope for the type.
+    OpenTypeSourceExtension,
+    /// `open type` of a referenced type a referenced `[<AutoOpen>]` module
+    /// augments with the static, in scope through an `open`.
+    OpenTypeAssemblyExtension,
+    /// The same with extension *properties*, whose accessors carry the name.
+    OpenTypeAssemblyExtensionProperty,
+    /// The same with extension methods whose compiled names name another
+    /// type.
+    OpenTypeAssemblyExtensionRenamed,
+    /// The same with extensions the projection drops.
+    OpenTypeAssemblyExtensionDropped,
+    /// `open type` of a type whose static of the name is an overload set, in
+    /// front of a union case of it: methods never contest a pattern.
+    OpenTypeOverloadPattern,
     /// A constructible type of the name.
     ConstructibleType,
     /// A record of the name that a `StructAttribute` spelled through an
@@ -329,7 +346,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 70] = [
+    const ALL: [Route; 76] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -375,6 +392,12 @@ impl Route {
         Route::OpenTypeDeclared,
         Route::OpenTypeInherited,
         Route::OpenTypeDropped,
+        Route::OpenTypeSourceExtension,
+        Route::OpenTypeAssemblyExtension,
+        Route::OpenTypeAssemblyExtensionProperty,
+        Route::OpenTypeAssemblyExtensionRenamed,
+        Route::OpenTypeAssemblyExtensionDropped,
+        Route::OpenTypeOverloadPattern,
         Route::ConstructibleType,
         Route::AutoOpenAliasedStructRecord,
         Route::AliasedStructRecord,
@@ -418,6 +441,20 @@ impl Route {
                 | Route::TypeGroupParameter
                 | Route::TypeGroupLocalLet
                 | Route::TypeGroupLocalHead
+                | Route::OpenTypeOverloadPattern
+        )
+    }
+
+    /// Whether the route references the extension fixture: any extension
+    /// member of a probed name is a candidate at every `open type`, so the
+    /// other routes run without it.
+    fn needs_extensions(self) -> bool {
+        matches!(
+            self,
+            Route::OpenTypeAssemblyExtension
+                | Route::OpenTypeAssemblyExtensionProperty
+                | Route::OpenTypeAssemblyExtensionRenamed
+                | Route::OpenTypeAssemblyExtensionDropped
         )
     }
 
@@ -433,6 +470,7 @@ impl Route {
                 | Route::RecTypeGroupQualifier
                 | Route::AutoOpenTypeAccessor
                 | Route::AutoOpenOperatorCase
+                | Route::OpenTypeOverloadPattern
         )
     }
 
@@ -454,6 +492,7 @@ impl Route {
             | Route::RecTypeGroupQualifier => !kind.is_case(),
             // The probe is a fixed name, not the kind's: one kind runs it.
             Route::AutoOpenTypeAccessor | Route::AutoOpenOperatorCase => kind == Kind::OwnValue,
+            Route::OpenTypeOverloadPattern => kind == Kind::OwnCase,
             _ => true,
         }
     }
@@ -720,6 +759,30 @@ impl Route {
                 vec![],
                 "module GridProbe\n@OWN\ntype GridS = StructAttribute\n[<GridS>]\ntype @NAME = { GridF: int }\n@USE\n",
             ),
+            Route::OpenTypeSourceExtension => (
+                vec![],
+                "module GridProbe\n@OWN\ntype GridFix.Plain with\n    @STATIC\nopen type GridFix.Plain\n@USE\n",
+            ),
+            Route::OpenTypeAssemblyExtensionProperty => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain3\n@USE\n",
+            ),
+            Route::OpenTypeAssemblyExtensionRenamed => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain4\n@USE\n",
+            ),
+            Route::OpenTypeAssemblyExtensionDropped => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain5\n@USE\n",
+            ),
+            Route::OpenTypeOverloadPattern => (
+                vec![],
+                "module GridProbe\ntype GridE = Parse of string | GridEOther\nopen type GridFix.Overloads\nlet probe = function @P{Parse} x -> x | GridEOther -> \"\"\n",
+            ),
+            Route::OpenTypeAssemblyExtension => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain2\n@USE\n",
+            ),
             Route::ConstructibleType => (vec![], "module GridProbe\n@OWN\n@CTOR\n@USE\n"),
             Route::ConstructibleAbbrev => (vec![], "module GridProbe\n@OWN\n@OBJ\n@USE\n"),
             Route::GenericClassThenUnion => (
@@ -910,7 +973,7 @@ struct Cell {
     shadowed: bool,
 }
 
-fn cells(fixture: &'static Path) -> Vec<Cell> {
+fn cells(fixture: &'static Path, ext_fixture: &'static Path) -> Vec<Cell> {
     let mut cells = Vec::new();
     for kind in Kind::ALL {
         for route in Route::ALL {
@@ -932,14 +995,13 @@ fn cells(fixture: &'static Path) -> Vec<Cell> {
                     label: format!("{kind:?} / {route:?} / {use_:?}"),
                     files,
                     probe: probe.expect("every probe template has a use"),
-                    // FSharp.Core's union cases are not folded into the
-                    // implicit surface, so its unshadowed cells decline.
-                    // A union case heading a dotted path is not committed
-                    // either.
-                    control: route.adds_nothing()
-                        && kind != Kind::ImplicitCase
-                        && !(use_ == Use::Head && kind.is_case()),
-                    refs: vec![fixture],
+                    // A union case heading a dotted path is not committed.
+                    control: route.adds_nothing() && !(use_ == Use::Head && kind.is_case()),
+                    refs: if route.needs_extensions() {
+                        vec![fixture, ext_fixture]
+                    } else {
+                        vec![fixture]
+                    },
                     clean: None,
                     shadowed: !route.adds_nothing(),
                 });
@@ -1016,6 +1078,34 @@ pub(crate) fn agrees(
             paths[file_idx].file_name() == decl.file.file_name()
                 && (usize::from(range.start()), usize::from(range.end())) == (decl.start, decl.end)
         }
+        Resolution::UnionCase { union, case } => {
+            let entity = env.entity(union);
+            let Some(path) = &u.declaring_path else {
+                return false;
+            };
+            let structural = StructuralName {
+                declaring: DeclaringEntity {
+                    namespace: u
+                        .declaring_namespace
+                        .as_deref()
+                        .map(|ns| ns.split('.').map(str::to_string).collect())
+                        .unwrap_or_default(),
+                    path: path.clone(),
+                    is_constructor: false,
+                },
+                leaf: u.name.clone(),
+                leaf_arity: None,
+            };
+            let ours = format!(
+                "{}.{}",
+                env.entity_full_name(union),
+                env.union_case_name(union, case)
+            );
+            u.decl.is_none()
+                && u.kind.as_deref() == Some("unioncase")
+                && u.assembly.as_deref() == Some(entity.assembly.name.as_str())
+                && certified_expected(env, res, &structural).as_deref() == Some(ours.as_str())
+        }
         Resolution::Entity(_) | Resolution::Member { .. } => {
             let Some(full_name) = &u.full_name else {
                 return false;
@@ -1059,8 +1149,9 @@ pub(crate) fn env_of(dlls: &[&Path]) -> AssemblyEnv {
 #[test]
 fn every_contributor_route_agrees_with_fcs() {
     let fixture = ensure_contributor_fixture_built();
+    let ext_fixture = ensure_contributor_ext_fixture_built();
     grade(
-        &cells(fixture),
+        &cells(fixture, ext_fixture),
         "unmodelled_contributor_grid",
         "every_contributor_route",
     );
@@ -1182,8 +1273,10 @@ fn grade(all: &[Cell], manifest: &str, test: &str) {
             None => {
                 if cell.control {
                     failures.push(format!(
-                        "  {} [MUST COMMIT]\n    FCS:  {rendered}\n    files: {:?}",
-                        cell.label, cell.files
+                        "  {} [MUST COMMIT]\n    FCS:  {rendered}\n    ours: {:?}\n    files: {:?}",
+                        cell.label,
+                        proj.file(probe_idx).decline_site(cell.probe),
+                        cell.files
                     ));
                 }
                 "decline"

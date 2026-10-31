@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's unmodelled-contributor grid
+       (tests/all/unmodelled_contributor_grid.rs): referenced types whose
+       extension members, from referenced `[<AutoOpen>]` modules, reach bare
+       scope through an `open type`. Kept apart from the main fixture because
+       any extension member of a probed name is a candidate at every
+       `open type`, so it is referenced only by the rows about extensions. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaContributorExtFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

@@ -183,7 +183,8 @@ pub fn classify(
             Resolution::Local(_)
             | Resolution::Item(_)
             | Resolution::Entity(_)
-            | Resolution::Member { .. },
+            | Resolution::Member { .. }
+            | Resolution::UnionCase { .. },
         ) => return None,
         Some(Resolution::Deferred(DeferredReason::UnboundName)) => UnavailableReason::UnboundName,
         Some(Resolution::Deferred(DeferredReason::QualifiedAccess)) => {
@@ -343,7 +344,8 @@ mod tests {
                     Resolution::Local(_)
                     | Resolution::Item(_)
                     | Resolution::Entity(_)
-                    | Resolution::Member { .. },
+                    | Resolution::Member { .. }
+                    | Resolution::UnionCase { .. },
                 ) => None,
                 Some(Resolution::Deferred(DeferredReason::UnboundName)) => {
                     Some(UnavailableReason::UnboundName)

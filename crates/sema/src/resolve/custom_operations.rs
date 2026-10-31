@@ -340,6 +340,19 @@ fn string_literal_text(tok: &SyntaxToken) -> Option<Option<String>> {
     )
 }
 
+/// What [`clause_identifiers`] collects.
+#[derive(Default)]
+struct ClauseIdentifiers {
+    /// Every identifier a clause's translation may read by name alone.
+    read: Vec<SyntaxToken>,
+    /// The identifiers that may bind a range variable, which the walk does
+    /// not intern: every one in what a join applies on its pattern side
+    /// (`join (a, b) in …`), the identifiers its sources side applies (the
+    /// condition word among them), and every one after an `into`
+    /// (`groupBy k into g`).
+    range_variables: Vec<SyntaxToken>,
+}
+
 /// Every bare identifier the translation of the expression whose body is
 /// `comp` may read as a custom-operation clause by name alone: the head of
 /// each clause, and the identifiers applied in its spine (a join's condition
@@ -347,7 +360,7 @@ fn string_literal_text(tok: &SyntaxToken) -> Option<Option<String>> {
 /// `TryTranslateComputationExpression` — sequenced statements, a `let`'s body,
 /// the branches of an `if`, a `match` or a `try`, a loop's body — and nothing
 /// a clause applies to beyond its spine.
-fn clause_identifiers(comp: &Expr, out: &mut Vec<SyntaxToken>) {
+fn clause_identifiers(comp: &Expr, out: &mut ClauseIdentifiers) {
     match comp {
         Expr::Sequential(e) => {
             for s in e.statements() {
@@ -420,16 +433,14 @@ fn clause_identifiers(comp: &Expr, out: &mut Vec<SyntaxToken>) {
 /// and — in a join, whose sources a `JoinIn` separates — the condition word
 /// it applies (`OnExpr`), which the operation names as it likes. An argument
 /// is otherwise an ordinary expression.
-fn clause_spine(e: &Expr, out: &mut Vec<SyntaxToken>) {
+fn clause_spine(e: &Expr, out: &mut ClauseIdentifiers) {
     let mut args = Vec::new();
     let mut joins = false;
     let mut head = e.clone();
     loop {
         match head {
             Expr::App(app) if !app.is_infix() => {
-                if let Some(Expr::Ident(i)) = app.arg() {
-                    args.extend(i.ident());
-                }
+                args.extend(app.arg());
                 match app.func() {
                     Some(f) => head = f,
                     None => break,
@@ -437,20 +448,43 @@ fn clause_spine(e: &Expr, out: &mut Vec<SyntaxToken>) {
             }
             Expr::JoinIn(j) => {
                 joins = true;
+                // The sources side applies the condition word, and the range
+                // variable an `into` binds.
+                let mut sources_args = Vec::new();
+                let mut sources = j.rhs();
+                while let Some(Expr::App(app)) = sources {
+                    if app.is_infix() {
+                        break;
+                    }
+                    sources_args.extend(app.arg());
+                    sources = app.func();
+                }
+                sources_args.reverse();
+                let mut after_into = false;
+                for arg in sources_args {
+                    match &arg {
+                        Expr::Ident(i) => {
+                            after_into |= i.ident().is_some_and(|t| &*id_text(&t) == "into");
+                            out.range_variables.extend(i.ident());
+                        }
+                        _ if after_into => out.range_variables.extend(identifiers(&arg)),
+                        _ => {}
+                    }
+                }
                 match j.lhs() {
                     Some(l) => head = l,
                     None => break,
                 }
             }
             Expr::Ident(i) => {
-                out.extend(i.ident());
+                out.read.extend(i.ident());
                 break;
             }
             Expr::LongIdent(li) => {
                 if let Some(li) = li.long_ident() {
                     let segs: Vec<SyntaxToken> = li.idents().collect();
                     if let [only] = segs.as_slice() {
-                        out.push(only.clone());
+                        out.read.push(only.clone());
                     }
                 }
                 break;
@@ -458,7 +492,39 @@ fn clause_spine(e: &Expr, out: &mut Vec<SyntaxToken>) {
             _ => break,
         }
     }
-    out.extend(args.into_iter().filter(|t| joins || &*id_text(t) == "into"));
+    // Peeled outermost first: back into source order, so `into` precedes
+    // what it binds. A join's pattern side and whatever follows an `into`
+    // may bind through any pattern (`join (a, b) in …`), so every
+    // identifier in them counts.
+    args.reverse();
+    let mut after_into = false;
+    for arg in args {
+        let ident = match &arg {
+            Expr::Ident(i) => i.ident(),
+            _ => None,
+        };
+        if let Some(tok) = &ident
+            && &*id_text(tok) == "into"
+        {
+            out.read.push(tok.clone());
+            after_into = true;
+            continue;
+        }
+        if joins {
+            out.read.extend(ident);
+        }
+        if joins || after_into {
+            out.range_variables.extend(identifiers(&arg));
+        }
+    }
+}
+
+/// Every identifier token under `e`.
+fn identifiers(e: &Expr) -> impl Iterator<Item = SyntaxToken> + use<> {
+    e.syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
 }
 
 /// The token of the name an expression applies or constructs from, for
@@ -517,13 +583,24 @@ impl Resolver<'_> {
         if names.is_empty() {
             return false;
         }
+        // A join's or an `into`'s range variables bind names the walk does
+        // not intern, for the rest of the expression: each is marked like an
+        // operation's name, so no binding outside the expression answers
+        // for it.
+        let mut range_variables = BTreeSet::new();
         if let Some(inner) = ce.inner() {
-            let mut heads = Vec::new();
-            clause_identifiers(&inner, &mut heads);
-            for tok in heads {
+            let mut idents = ClauseIdentifiers::default();
+            clause_identifiers(&inner, &mut idents);
+            for tok in idents.read {
                 if names.contains(&*id_text(&tok)) {
                     self.custom_operation_clauses
                         .insert(tok.text_range(), cause);
+                }
+            }
+            for tok in idents.range_variables {
+                let name = id_text(&tok);
+                if !names.contains(&*name) {
+                    range_variables.insert(name.to_string());
                 }
             }
         }
@@ -531,7 +608,13 @@ impl Resolver<'_> {
         let generation = self.open_generation;
         let entries = names
             .into_iter()
-            .map(|name| {
+            .map(|name| (name, cause))
+            .chain(
+                range_variables
+                    .into_iter()
+                    .map(|name| (name, DeclineCause::UnmodelledContributor)),
+            )
+            .map(|(name, cause)| {
                 let mut mark =
                     ScopeEntry::contributor_mark(name, MarkReach::Expression, generation, pos);
                 mark.decline = Some(cause);

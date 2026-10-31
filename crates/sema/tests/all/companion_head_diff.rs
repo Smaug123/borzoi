@@ -92,14 +92,6 @@ impl Site {
 const PATTERN_DECOY: &str = "the case-pattern walk declines at a prefix holding a same-named non-union type instead of \
      reading past it";
 
-/// A **nullary** union case compiles to a static property, which the F#-entity
-/// projection drops (FCS surfaces the case, not the property), and it has no
-/// nested carrier type either. So the case is *found* — `union_cases` names
-/// it, which is what lets the reading own the path — but there is no handle to
-/// name it by.
-const NULLARY_CASE: &str = "a nullary union case has neither a carrier type nor a projected member, so the reading owns \
-     the path but can name no target";
-
 /// The cells where FCS resolves and we decline to name a target, each with the
 /// modelling reason. Keyed `"<plant>/<site>"`.
 ///
@@ -131,20 +123,6 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ("CT1TFPD/leaf", PATTERN_DECOY),
     ("CT1TUPD/head", PATTERN_DECOY),
     ("CT1TUPD/leaf", PATTERN_DECOY),
-    ("CB0BUPX/leaf", NULLARY_CASE),
-    ("CB0TUED/leaf", NULLARY_CASE),
-    ("CB0TUEX/leaf", NULLARY_CASE),
-    ("CB0TUPX/leaf", NULLARY_CASE),
-    ("CB1BUPX/leaf", NULLARY_CASE),
-    ("CB1TUED/leaf", NULLARY_CASE),
-    ("CB1TUEX/leaf", NULLARY_CASE),
-    ("CB1TUPX/leaf", NULLARY_CASE),
-    ("CT0TUED/leaf", NULLARY_CASE),
-    ("CT0TUEX/leaf", NULLARY_CASE),
-    ("CT0TUPX/leaf", NULLARY_CASE),
-    ("CT1TUED/leaf", NULLARY_CASE),
-    ("CT1TUEX/leaf", NULLARY_CASE),
-    ("CT1TUPX/leaf", NULLARY_CASE),
 ];
 
 /// The cells where we name the **wrong** target, each with the defect it is a
@@ -243,6 +221,18 @@ fn our_targets(env: &AssemblyEnv, src: &str, plant: &Plant) -> BTreeMap<Site, Ou
                 "{}.{}",
                 env.entity_full_name(parent),
                 env.member_display_name(parent, idx)
+            ),
+            entity: None,
+        }),
+        // A union case, like a member, is never the head's entity: at the head
+        // it disagrees with any oracle kind, and at the leaf it is compared by
+        // its full name, as a member is.
+        Some(Resolution::UnionCase { union, case }) => Ours::Committed(Target {
+            assembly: env.entity(union).assembly.name.clone(),
+            full_name: format!(
+                "{}.{}",
+                env.entity_full_name(union),
+                env.union_case_name(union, case)
             ),
             entity: None,
         }),

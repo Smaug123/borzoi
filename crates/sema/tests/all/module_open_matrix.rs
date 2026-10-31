@@ -131,7 +131,7 @@ const CELLS: &[Cell] = &[
         probe: "MExnShadow",
         position: Position::PatternCtor,
     },
-    // ---- plain union: cases fold opaque (Q1) ----
+    // ---- plain union: cases fold with their definite targets (Q1) ----
     Cell {
         container: Container::Anon,
         decls: &[],
@@ -331,34 +331,30 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ),
     (
         "union-mod / unique case, expression",
-        "an assembly union case folds opaque (Q1): in scope, naming no target",
-    ),
-    (
-        "union-mod / unique case, pattern",
-        "an assembly union case folds opaque (Q1): in scope, naming no target",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         could supply a constructible type of the name, which would evict the case from \
+         FCS's bare constructor slot (`assembly_case_slot_contested`)",
     ),
     (
         "union-mod-dotted / type-qualified case, expression",
-        "an assembly union case folds opaque (Q1) and is not a static member of its type \
-         in the entity model, so the type-qualified reading defers the same way",
+        "the opened module folds its nested union's type name as an opaque value entry, so \
+         the dotted head declines (`OpaqueValueHead`)",
     ),
     (
         "rqa-mod-dotted / required-qualified case, expression",
-        "an assembly union case folds opaque (Q1) even when RQA makes the qualified \
-         channel the ONLY one — the sharpest availability edge of the opaque-case fold",
+        "the opened module folds its nested union's type name as an opaque value entry, so \
+         the dotted head declines (`OpaqueValueHead`)",
     ),
     (
         "rqa-mod-dotted / required-qualified case, bare pattern",
-        "an assembly union case folds opaque (Q1) even when RQA makes the qualified \
-         channel the ONLY one — the sharpest availability edge of the opaque-case fold",
+        "an `open` of a module holding an RQA union is opaque to the pattern walk, so the \
+         type-qualified pattern defers (`OpaqueOpen`)",
     ),
     (
         "struct-mod / unique case, expression",
-        "an assembly union case folds opaque (Q1)",
-    ),
-    (
-        "struct-mod / unique case, bare pattern",
-        "an assembly union case folds opaque (Q1)",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         could supply a constructible type of the name, which would evict the case from \
+         FCS's bare constructor slot (`assembly_case_slot_contested`)",
     ),
     (
         "actpat / tag, bare pattern",

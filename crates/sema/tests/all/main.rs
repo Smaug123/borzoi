@@ -8,6 +8,7 @@
 mod common;
 
 mod assembly_env;
+mod assembly_union_case_table;
 mod attr_resolution_diff;
 mod attr_resolution_sweep;
 mod classify_assembly_diff;
