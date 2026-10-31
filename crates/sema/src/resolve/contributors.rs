@@ -334,6 +334,18 @@ impl Resolver<'_> {
         self.may_carry_core_attribute(attrs, "RequireQualifiedAccess")
     }
 
+    /// Whether an augmentation of `name` may extend an `[<AutoOpen>]` type's
+    /// fold: one of the block's own (`block`), or one the walk has met in an
+    /// earlier block of any container, since a namespace's blocks share its
+    /// types.
+    fn may_augment_auto_open(&self, block: &HashSet<String>, name: &str) -> bool {
+        block.contains(name)
+            || self
+                .auto_open_type_paths
+                .iter()
+                .any(|path| path.last().is_some_and(|last| last == name))
+    }
+
     /// What a block of module declarations puts in bare scope when the block
     /// is opened: its `let` binders, its types' names and union cases, its
     /// exceptions, `extern`s and active-pattern cases, and — recursively — its
@@ -436,7 +448,9 @@ impl Resolver<'_> {
                             && defn
                                 .long_id()
                                 .and_then(|li| li.idents().last())
-                                .is_some_and(|name| auto_open_types.contains(&*id_text(&name)))
+                                .is_some_and(|name| {
+                                    self.may_augment_auto_open(&auto_open_types, &id_text(&name))
+                                })
                         {
                             out.values.extend(augmentation_member_names(&defn));
                         }

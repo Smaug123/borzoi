@@ -386,10 +386,21 @@ enum Route {
     AutoOpenExceptionStaticInAugmentation,
     /// [`Route::AutoOpenTypeStaticAfterAugmentation`] for an exception.
     AutoOpenExceptionStaticAfterAugmentation,
+    /// An earlier file's `namespace global` `[<AutoOpen>]` type, augmented
+    /// with the static in a second `namespace global` block.
+    EarlierGlobalTypeAugmentedLaterBlock,
+    /// The same in a named namespace, opened.
+    EarlierNamespaceTypeAugmentedLaterBlock,
+    /// The same, both blocks in the probe file, opened from a later block.
+    NamespaceTypeAugmentedLaterBlock,
+    /// An earlier file's `[<AutoOpen>]` type, opened, then extended with the
+    /// static in an `[<AutoOpen>]` module of the probe file: an extension,
+    /// not its intrinsic augmentation.
+    EarlierAutoOpenTypeExtended,
 }
 
 impl Route {
-    const ALL: [Route; 88] = [
+    const ALL: [Route; 92] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -478,6 +489,10 @@ impl Route {
         Route::AutoOpenTypeStaticAfterAugmentation,
         Route::AutoOpenExceptionStaticInAugmentation,
         Route::AutoOpenExceptionStaticAfterAugmentation,
+        Route::EarlierGlobalTypeAugmentedLaterBlock,
+        Route::EarlierNamespaceTypeAugmentedLaterBlock,
+        Route::NamespaceTypeAugmentedLaterBlock,
+        Route::EarlierAutoOpenTypeExtended,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -757,6 +772,31 @@ impl Route {
                     "namespace GridNs\n[<AutoOpen>]\nmodule GridAuto =\n    [<AutoOpen>]\n    module GridDeep =\n        @MEMBER\n",
                 )],
                 "module GridProbe\n@OWN\nopen GridNs\n@USE\n",
+            ),
+            Route::EarlierGlobalTypeAugmentedLaterBlock => (
+                vec![(
+                    "GridRoot.fs",
+                    "namespace global\n[<AutoOpen>]\ntype GridRootT() = class end\nnamespace global\ntype GridRootT with\n    @STATIC\n",
+                )],
+                PLAIN,
+            ),
+            Route::EarlierNamespaceTypeAugmentedLaterBlock => (
+                vec![(
+                    "GridNs.fs",
+                    "namespace GridNs\n[<AutoOpen>]\ntype GridT() = class end\nnamespace GridNs\ntype GridT with\n    @STATIC\n",
+                )],
+                "module GridProbe\n@OWN\nopen GridNs\n@USE\n",
+            ),
+            Route::EarlierAutoOpenTypeExtended => (
+                vec![(
+                    "GridNs.fs",
+                    "namespace GridNs\n[<AutoOpen>]\ntype GridT() = class end\n",
+                )],
+                "module GridProbe\nopen GridNs\n@OWN\n[<AutoOpen>]\nmodule GridAuto =\n    type GridT with\n        @STATIC\n@USE\n",
+            ),
+            Route::NamespaceTypeAugmentedLaterBlock => (
+                vec![],
+                "namespace GridNs\n[<AutoOpen>]\ntype GridT() = class end\nnamespace GridNs\ntype GridT with\n    @STATIC\nnamespace GridUse\nmodule GridProbe =\n    @OWN\n    open GridNs\n    @USE\n",
             ),
             Route::EarlierNamespaceType => (
                 vec![(
