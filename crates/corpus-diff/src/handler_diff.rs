@@ -23,10 +23,10 @@
 //!
 //! Every record the comparator matched in the project is asked
 //! go-to-definition at its last character, which is cheap. Everything else is
-//! asked of a deterministic sample of records ([`SAMPLE_STRIDE`]): a hover, or
-//! a definition the resolver declined, costs the server a whole-file inference
-//! today, and asking every record everything would take the better part of an
-//! hour on the pinned corpus.
+//! asked of a deterministic sample of records ([`SAMPLE_STRIDE`], [`sample`]):
+//! a hover, or a definition the resolver declined, costs the server a
+//! whole-file inference today, and asking every record everything would take
+//! the better part of an hour on the pinned corpus.
 //!
 //! # What must hold
 //!
@@ -51,18 +51,20 @@
 //!   did not, the comparator would be grading an answer no user is shown.
 //! - Every returned position names a byte of the file it is in.
 //!
-//! Recorded — in the exact manifest, so every movement is visible: per file,
-//! how many probes each handler answered, declined and so on; and, item by
-//! item, every probe whose answer is not the one the comparator's verdict
-//! implies ([`consistent`]): a handler declining where the comparator matched,
+//! Recorded — in the exact manifest, so every movement is visible: per file
+//! and copy, how many records were chosen to be asked everything
+//! ([`Selected`]); and, item by item, every probe whose answer is not the one
+//! the comparator's verdict implies ([`consistent`]): a handler declining where the comparator matched,
 //! answering where it declined, or answering a references request for a symbol
 //! with a different set of (correct) uses than it gave for the same symbol
 //! from another of its uses. A use in the perturbed run's appended code has no
 //! comparator verdict, so every probe of one that is not answered is listed.
 //! And for every hover, what it showed of its symbol's type
-//! ([`hover_type::TypeVerdict`]): counted per file, and listed record by record
-//! where it is not what its kind of symbol is expected to show — so a type a
-//! hover stops showing moves a line.
+//! ([`hover_type::TypeVerdict`]), listed record by record where it is not what
+//! its kind of symbol is expected to show — so a type a hover stops showing
+//! moves a line. Answers are not counted: a consistent probe's answer follows
+//! from its record's verdict, and a count would move with every probe in the
+//! file.
 //!
 //! The second and third are what the handlers' **single-file fallback** looks
 //! like from outside. Go-to-definition and hover fall back to resolving the
@@ -381,6 +383,23 @@ pub struct HandlerReport {
     pub perturbed_texts: Vec<Arc<str>>,
     /// Sources the server answers as another project's, so not probed.
     pub owned_elsewhere: Vec<PathBuf>,
+    /// Per probed source, how many of its gradable oracle records each copy
+    /// asks everything of by a rule that reads only the oracle and the text.
+    pub selected: BTreeMap<PathBuf, Selected>,
+}
+
+/// How many of one source's gradable oracle records each copy asks
+/// everything of, by the rules that read only the oracle and the text: the
+/// plain copy's [`sample`], and the perturbed copy's records on a line with a
+/// substitution plus its appended code's. Counted whether or not the
+/// comparator graded the record. These are the manifest's pin on what was
+/// asked; what each probe answered is listed probe by probe where it is not
+/// what the comparator's verdict implies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Selected {
+    pub plain: usize,
+    /// Zero when the perturbed run was not made.
+    pub perturbed: usize,
 }
 
 /// A record's identity across the two copies: the original file, its range in
@@ -576,8 +595,67 @@ struct Target<'a> {
 /// Each request's exact answer, kept to compare the two runs.
 type Answers = HashMap<(RecordKey, Handler, Probe), Value>;
 
-fn sampled(u: &ProjectUse, stride: NonZeroUsize) -> bool {
-    (u.start.wrapping_mul(31) ^ u.end).is_multiple_of(stride.get())
+/// The records of one file that are in the sample, out of `records` (each a
+/// `(start, end, name)`); `file` is the file's name within its project
+/// ([`sample_key`]).
+///
+/// A record is named by what it says rather than where it is: its name, and
+/// which of that name's spans in the file it is, counted from the start. So
+/// the sample does not depend on a byte offset, and an edit that moves text
+/// without changing its records — a byte-order mark, a line added above —
+/// cannot reselect it. Which records a sample holds decides which probe lines
+/// the manifest lists, so a reselection would move lines no answer moved, and
+/// every manifest change touching the file would conflict with it.
+pub fn sample<'a>(
+    file: &str,
+    records: impl IntoIterator<Item = (usize, usize, &'a str)>,
+    stride: NonZeroUsize,
+) -> BTreeSet<(usize, usize, &'a str)> {
+    let mut spans: BTreeMap<&str, BTreeSet<(usize, usize)>> = BTreeMap::new();
+    for (start, end, name) in records {
+        spans.entry(name).or_default().insert((start, end));
+    }
+    let mut out = BTreeSet::new();
+    for (name, spans) in spans {
+        for (nth, (start, end)) in spans.into_iter().enumerate() {
+            if fnv1a([
+                file.as_bytes(),
+                name.as_bytes(),
+                &(nth as u64).to_le_bytes(),
+            ])
+            .is_multiple_of(stride.get() as u64)
+            {
+                out.insert((start, end, name));
+            }
+        }
+    }
+    out
+}
+
+/// The 64-bit FNV-1a hash of `parts`, each followed by a zero byte. Spelled out
+/// rather than taken from `std`, whose hashers may change between releases: the
+/// sample, and so the manifest, must be the same on every toolchain.
+fn fnv1a<const N: usize>(parts: [&[u8]; N]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in parts.into_iter().flat_map(|p| p.iter().copied().chain([0])) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// A source's name for [`sample`]: its path relative to the project's
+/// directory, or its file name if it is outside it. The same on every host the
+/// corpus is checked out on.
+pub fn sample_key(project: &Path, path: &Path) -> String {
+    match project.parent() {
+        Some(dir) if path.starts_with(dir) => {
+            borzoi_oracle_harness::corpus_key::corpus_relative(dir, path)
+        }
+        _ => path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+    }
 }
 
 /// The records the comparator grades: uses, not definitions, that the author
@@ -1251,13 +1329,15 @@ pub struct PerturbedProject {
 /// `comparison` the comparator's verdict. `owned` says, per source, whether the
 /// server answers it as this project's: a source another project also compiles
 /// may be answered as that one's, and is then not probed. One record in
-/// `sample_stride` is asked everything ([`SAMPLE_STRIDE`]). `start_server`
-/// starts a server for the project; it is called once per copy.
+/// `sample_stride` is asked everything ([`SAMPLE_STRIDE`]), chosen by
+/// [`sample`] under each source's `sample_keys` entry ([`sample_key`]).
+/// `start_server` starts a server for the project; it is called once per copy.
 #[allow(clippy::too_many_arguments)]
 pub fn compare_handlers(
     paths: &[PathBuf],
     texts: &[Arc<str>],
     owned: &[bool],
+    sample_keys: &[String],
     sample_stride: NonZeroUsize,
     fcs: &[FileUses],
     comparison: &Comparison,
@@ -1265,6 +1345,7 @@ pub fn compare_handlers(
     start_server: &dyn Fn() -> LspClient,
 ) -> HandlerReport {
     assert_eq!(owned.len(), paths.len(), "one ownership verdict per source");
+    assert_eq!(sample_keys.len(), paths.len(), "one sample key per source");
     let mut report = HandlerReport {
         owned_elsewhere: paths
             .iter()
@@ -1300,7 +1381,20 @@ pub fn compare_handlers(
         let Some(uses) = uses.filter(|_| owned[file]) else {
             continue;
         };
+        let sampled = sample(
+            &sample_keys[file],
+            uses.uses
+                .iter()
+                .filter(|u| gradable(u))
+                .map(|u| (u.start, u.end, u.name.as_str())),
+            sample_stride,
+        );
+        let mut selected = Selected::default();
         for u in uses.uses.iter().filter(|u| gradable(u)) {
+            let is_sampled = sampled.contains(&(u.start, u.end, u.name.as_str()));
+            let is_rerun = perturbed_fcs.is_some() && affected(file, u);
+            selected.plain += usize::from(is_sampled);
+            selected.perturbed += usize::from(is_rerun);
             let key = RecordKey {
                 file,
                 start: u.start,
@@ -1311,13 +1405,13 @@ pub fn compare_handlers(
                 continue;
             };
             let mut ask = Ask::default();
-            if sampled(u, sample_stride) {
+            if is_sampled {
                 ask.merge(Ask::everything());
             }
             if matches!(expectation, Expectation::Served(Graded::Project, _)) {
                 ask.merge(Ask::definition_at_last());
             }
-            if perturbed_fcs.is_some() && affected(file, u) {
+            if is_rerun {
                 ask.merge(Ask::everything());
                 rerun.push((file, u, expectation));
             }
@@ -1331,6 +1425,7 @@ pub fn compare_handlers(
                 });
             }
         }
+        report.selected.insert(paths[file].clone(), selected);
     }
 
     let mut plain_answers = Answers::new();
@@ -1395,6 +1490,11 @@ pub fn compare_handlers(
             continue;
         };
         for u in uses.uses.iter().filter(|u| gradable(u) && u.start >= at) {
+            report
+                .selected
+                .entry(paths[file].clone())
+                .or_default()
+                .perturbed += 1;
             targets.push(Target {
                 file,
                 use_: u,
@@ -1576,6 +1676,58 @@ fn check_inertness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// Records over a small name alphabet, so names repeat, with distinct spans.
+    fn records() -> impl Strategy<Value = Vec<(usize, usize, String)>> {
+        prop::collection::btree_map((0usize..400, 1usize..6), "[a-e]", 0..60).prop_map(|m| {
+            m.into_iter()
+                .map(|((start, len), name)| (start, start + len, name))
+                .collect()
+        })
+    }
+
+    proptest! {
+        /// Whether a record is sampled does not depend on where its file's
+        /// text sits: shifting every record by the same number of bytes — a
+        /// byte-order mark, a line added above — samples the same records. So
+        /// an unrelated edit to a file cannot reselect which of its records the
+        /// manifest lists probes for.
+        #[test]
+        fn the_sample_survives_a_shift(records in records(), shift in 1usize..64) {
+            let stride = NonZeroUsize::new(3).expect("non-zero");
+            let at = |rs: &[(usize, usize, String)], by: usize| -> BTreeSet<(usize, usize, String)> {
+                sample("Teq.fs", rs.iter().map(|(s, e, n)| (s + by, e + by, n.as_str())), stride)
+                    .into_iter()
+                    .map(|(s, e, n)| (s - by, e - by, n.to_string()))
+                    .collect()
+            };
+            prop_assert_eq!(at(&records, 0), at(&records, shift));
+        }
+
+        /// Duplicated records — FCS reports an attribute's name and its
+        /// constructor at one range — are sampled together.
+        #[test]
+        fn a_record_and_its_duplicate_are_sampled_together(records in records()) {
+            let stride = NonZeroUsize::new(3).expect("non-zero");
+            let doubled = records.iter().chain(&records).map(|(s, e, n)| (*s, *e, n.as_str()));
+            let once = records.iter().map(|(s, e, n)| (*s, *e, n.as_str()));
+            prop_assert_eq!(sample("Teq.fs", doubled, stride), sample("Teq.fs", once, stride));
+        }
+    }
+
+    /// The sample is the stride's share of the records — not none, not all.
+    #[test]
+    fn the_sample_is_about_one_in_stride() {
+        let names: Vec<String> = (0..2000).map(|i| format!("n{}", i % 50)).collect();
+        let records = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (i * 10, i * 10 + 2, n.as_str()));
+        let n = sample("Teq.fs", records.clone(), SAMPLE_STRIDE).len();
+        assert!((200..400).contains(&n), "{n} of 2000 sampled at stride 7");
+        assert_eq!(sample("Teq.fs", records, NonZeroUsize::MIN).len(), 2000);
+    }
 
     /// The type grading is not vacuous: an oracle whose type for a value is
     /// planted wrong makes the real handler's (right) hover a divergence —

@@ -1,0 +1,8 @@
+# Exact manifests whose every entry is keyed (`<key><TAB><value>`) merge key by
+# key (tools/manifest-merge.sh); without `git config merge.borzoi-manifest.driver …`
+# (AGENTS.md) Git merges them as ordinary text. A manifest without keys stays
+# on Git's text merge: merged as a set, a line both sides rewrote would come out
+# twice rather than conflict. Name each file here by its literal path —
+# `every_merge_driver_manifest_is_keyed` checks each is keyed.
+crates/corpus-diff/manifests/project_corpus.txt merge=borzoi-manifest
+crates/msbuild/tests/manifests/fsproj_msbuild_corpus_diff.txt merge=borzoi-manifest

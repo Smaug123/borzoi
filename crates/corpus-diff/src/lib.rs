@@ -1563,11 +1563,24 @@ pub struct Comparison {
     pub assembly_divergences: Vec<AssemblyDivergence>,
     pub reverse_divergences: Vec<ReverseDivergence>,
     pub fcs_error_files: Vec<FcsErrorFile>,
-    /// The project files the oracle reported on and the forward pass compared,
-    /// as the loaded project spells them; [`Self::files_compared`] counts them.
-    pub compared_files: Vec<PathBuf>,
+    /// The project files the oracle reported on and the forward pass compared;
+    /// [`Self::files_compared`] counts them.
+    pub compared_files: Vec<ComparedFile>,
     /// Every item behind the counts above, in the order it was graded.
     pub ledger: Vec<LedgerItem>,
+}
+
+/// A project file the forward pass compared, and how many records the oracle
+/// reported in it. The forward pass grades each record into exactly one
+/// [`LedgerItem`], so these counts are what a file's items must add up to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComparedFile {
+    /// As the loaded project spells it.
+    pub path: PathBuf,
+    /// Every record, the oracle's defining occurrences included.
+    pub records: usize,
+    /// Of those, the defining occurrences ([`SetAside::Definition`]).
+    pub definitions: usize,
 }
 
 impl Comparison {
@@ -2568,10 +2581,17 @@ fn compare_project_handlers(
         let build_properties = build_properties.clone();
         lsp_client::LspClient::start(move || workspace_with(build_properties))
     };
+    let sample_keys: Vec<String> = loaded
+        .parses
+        .paths
+        .iter()
+        .map(|path| handler_diff::sample_key(&loaded.project, path))
+        .collect();
     let report = handler_diff::compare_handlers(
         &loaded.parses.paths,
         &loaded.parses.texts,
         &owned,
+        &sample_keys,
         sample_stride,
         fcs,
         comparison,
@@ -3626,9 +3646,15 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             continue;
         };
         comparison.files_compared += 1;
-        comparison
-            .compared_files
-            .push(loaded.parses.paths[file_idx].clone());
+        comparison.compared_files.push(ComparedFile {
+            path: loaded.parses.paths[file_idx].clone(),
+            records: file_uses.uses.len(),
+            definitions: file_uses
+                .uses
+                .iter()
+                .filter(|u| u.is_from_definition)
+                .count(),
+        });
         comparison.uses_reported += file_uses.uses.len();
         let rf = loaded.resolved.file(file_idx);
         let (inferred, members) = infer_for_comparison(loaded, file_idx);

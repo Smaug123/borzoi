@@ -1633,6 +1633,133 @@ fn a_qualifier_is_graded_at_the_answer_served_there() {
     assert_eq!(comparison.skipped_uses.ambiguous_oracle_range, 0);
 }
 
+/// The manifest counts no matches, so it must still determine them: for any
+/// ledger, every file's matches through the resolver are its oracle records
+/// less its definitions less its listed records ([`resolver_matches`]). And a
+/// file whose items do not add up to the oracle's records is refused, rather
+/// than rendered as if the missing ones matched.
+#[test]
+fn the_manifest_derives_every_files_matches() {
+    use borzoi_corpus_diff::{AnswerSurface, ComparedFile, LedgerItem};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    let texts = [
+        ("A.fs", "module A\nlet a = 1\n"),
+        ("B.fs", "module B\nlet b = A.a\n"),
+    ];
+    let loaded = synthetic_multi_file_project(&texts);
+    let root = PathBuf::from("/tmp/corpus-diff-synthetic-multi");
+    let outcomes = vec![
+        ItemOutcome::Match(Graded::Project, AnswerSurface::Resolver),
+        ItemOutcome::Match(Graded::Assembly, AnswerSurface::Resolver),
+        ItemOutcome::Match(Graded::Assembly, AnswerSurface::Attribute),
+        ItemOutcome::Match(Graded::Project, AnswerSurface::Member),
+        ItemOutcome::Deferral {
+            graded: Graded::Project,
+            served: ServedDecline::Unrecorded,
+            cause: DeferralCause::Unexplained,
+        },
+        ItemOutcome::Divergence(Graded::Assembly),
+        ItemOutcome::SetAside(SetAside::Definition),
+        ItemOutcome::SetAside(SetAside::ShadowedConstructorUse),
+        ItemOutcome::SetAside(SetAside::AmbiguousOracleRange),
+        ItemOutcome::UnoracledDefinition,
+        ItemOutcome::UnoracledOrPatternAlias,
+        ItemOutcome::ReverseDivergence,
+    ];
+    let item = (
+        0..2usize,
+        0..8usize,
+        1..4usize,
+        prop::sample::select(vec!["a", "b"]),
+        prop::sample::select(outcomes),
+    );
+    let render = |ledger: &[LedgerItem], compared: Vec<ComparedFile>| {
+        let comparison = Comparison {
+            ledger: ledger.to_vec(),
+            compared_files: compared,
+            ..Comparison::default()
+        };
+        project_corpus_manifest(
+            &[ProjectRecord {
+                project: loaded.project.clone(),
+                verdict: ProjectVerdict::Comparable {
+                    assets: ProjectAssetsStatus::NotChecked,
+                    sources: loaded
+                        .parses
+                        .paths
+                        .iter()
+                        .cloned()
+                        .zip(loaded.parses.texts.iter().cloned())
+                        .collect(),
+                    comparison: Box::new(comparison),
+                    handlers: Box::default(),
+                },
+            }],
+            &root,
+        )
+    };
+    TestRunner::new(Config::with_cases(256))
+        .run(&prop::collection::vec(item, 0..24), |items| {
+            let ledger: Vec<LedgerItem> = items
+                .iter()
+                .map(|&(file, start, len, name, outcome)| LedgerItem {
+                    file: loaded.parses.paths[file].clone(),
+                    range: (start, start + len),
+                    name: name.to_string(),
+                    outcome,
+                })
+                .collect();
+            let oracle = |file: usize, keep: &dyn Fn(ItemOutcome) -> bool| {
+                ledger
+                    .iter()
+                    .filter(|i| i.file == loaded.parses.paths[file] && keep(i.outcome))
+                    .count()
+            };
+            let of_oracle = |o: ItemOutcome| {
+                !matches!(
+                    o,
+                    ItemOutcome::UnoracledDefinition
+                        | ItemOutcome::UnoracledOrPatternAlias
+                        | ItemOutcome::ReverseDivergence
+                )
+            };
+            let compared = |extra: usize| -> Vec<ComparedFile> {
+                (0..2)
+                    .map(|file| ComparedFile {
+                        path: loaded.parses.paths[file].clone(),
+                        records: oracle(file, &of_oracle) + if file == 1 { extra } else { 0 },
+                        definitions: oracle(file, &|o| {
+                            o == ItemOutcome::SetAside(SetAside::Definition)
+                        }),
+                    })
+                    .collect()
+            };
+            let text = render(&ledger, compared(0)).expect("renders").render("");
+            for (file, (name, _)) in texts.iter().enumerate() {
+                prop_assert_eq!(
+                    resolver_matches(&text, &format!("Synthetic.fsproj {name}")),
+                    oracle(file, &|o| matches!(
+                        o,
+                        ItemOutcome::Match(_, AnswerSurface::Resolver)
+                    )),
+                    "{}",
+                    text
+                );
+            }
+            prop_assert!(
+                matches!(
+                    render(&ledger, compared(1)),
+                    Err(ManifestError::Unaccounted { .. })
+                ),
+                "a record the ledger does not account for must be refused"
+            );
+            Ok(())
+        })
+        .expect("every file's matches follow from its lines");
+}
+
 /// The exact manifest names every project's verdict, every compared file's
 /// counts, and every graded record that is not a match — and keys all of them
 /// relative to the corpus root, so it reads the same on every host.
@@ -1722,16 +1849,18 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
     assert_eq!(
         manifest.entries(),
         [
-            "Erroring/Erroring.fsproj E.fs:3:5 fcs-error FS0039 x2",
-            "Erroring/Erroring.fsproj skipped fcs-errors files=1 errors=2",
-            "Synthetic.fsproj A.fs compared match=0 assembly-match=0 attribute=0 member=0 definitions=0",
+            "Erroring/Erroring.fsproj\tskipped fcs-errors files=1 errors=2",
+            "Erroring/Erroring.fsproj E.fs:3:5 fcs-error\tFS0039 x2",
+            "Synthetic.fsproj\tcomparable assets=not_checked",
+            "Synthetic.fsproj A.fs\tcompared records=0 definitions=0",
             // Our own binder, which the oracle (given nothing for `A.fs`) is
             // silent about.
-            "Synthetic.fsproj A.fs:2:5-8 \"foo\" unoracled-definition",
-            "Synthetic.fsproj B.fs compared match=1 assembly-match=0 attribute=0 member=0 definitions=1",
-            "Synthetic.fsproj B.fs:2:11-17 \"Shared\" project-deferral qualified-access qualifier",
-            "Synthetic.fsproj comparable assets=not_checked",
-            "Uncertain/Uncertain.fsproj skipped load project-evaluation-failed",
+            "Synthetic.fsproj A.fs:2:5-8 \"foo\"\tunoracled-definition",
+            // Three records: `bar`'s definition, the deferred `Shared` listed
+            // below, and `foo`, which is unlisted and so a match.
+            "Synthetic.fsproj B.fs\tcompared records=3 definitions=1",
+            "Synthetic.fsproj B.fs:2:11-17 \"Shared\"\tproject-deferral qualified-access qualifier",
+            "Uncertain/Uncertain.fsproj\tskipped load project-evaluation-failed",
         ]
         .map(String::from)
     );
@@ -1785,6 +1914,55 @@ fn the_manifest_lists_each_verdict_and_every_non_match() {
             root: PathBuf::from("/elsewhere"),
         })
     );
+}
+
+/// What `manifest` (rendered) says `file` matched through the resolver: the
+/// records its `compared` line says the oracle reported, less its oracle's
+/// defining occurrences, less every oracle record listed under it. The
+/// manifest's claim is that this is exact; [`the_manifest_derives_every_files_matches`]
+/// checks it against the comparator.
+fn resolver_matches(manifest: &str, file: &str) -> usize {
+    let compared = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{file}\tcompared ")))
+        .unwrap_or_else(|| panic!("no compared line for {file} in {manifest}"));
+    let field = |name: &str| -> usize {
+        compared
+            .split(' ')
+            .find_map(|f| f.strip_prefix(&format!("{name}=")))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {name}= in {compared:?}"))
+    };
+    let mut listed = 0;
+    for line in manifest.lines() {
+        let Some((key, values)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(rest) = key.strip_prefix(&format!("{file}:")) else {
+            continue;
+        };
+        if [" handlers ", " hover-type ", " fcs-error"]
+            .iter()
+            .any(|kind| rest.contains(kind))
+        {
+            continue;
+        }
+        for value in values.split('\t') {
+            let (outcome, n) = match value.rsplit_once(" x") {
+                Some((outcome, n)) if n.parse::<usize>().is_ok() => {
+                    (outcome, n.parse().expect("checked"))
+                }
+                _ => (value, 1),
+            };
+            let ours = ["unoracled-", "reverse-divergence"]
+                .iter()
+                .any(|p| outcome.starts_with(p));
+            if !ours {
+                listed += n;
+            }
+        }
+    }
+    field("records") - field("definitions") - listed
 }
 
 /// [`compare_project_uses`], with its ledger checked against its counts — every
@@ -3366,14 +3544,17 @@ fn generated_qualifier_cursors_agree_with_the_project_use_stream() {
     );
 }
 
-/// The handler differential's manifest lines: per file, copy and handler, how
-/// many probes came to each outcome; and every probe whose answer is not the
-/// one the comparator's verdict implies, at its span in the copy it asked.
+/// The handler differential's manifest lines: per file and copy, how many
+/// records were chosen to be asked everything; and every probe whose answer is
+/// not the one the comparator's verdict implies, at its span in the copy it
+/// asked. Probe answers are not counted: a count over a file's probes would
+/// move with any of them.
 #[test]
-fn the_manifest_counts_handler_probes_and_lists_every_inconsistent_one() {
+fn the_manifest_lists_every_inconsistent_handler_probe() {
     use borzoi_corpus_diff::AnswerSurface;
     use borzoi_corpus_diff::handler_diff::{
-        Expectation, Handler, HandlerReport, Outcome, PerturbedSkip, Probe, ProbeItem, Variant,
+        Expectation, Handler, HandlerReport, Outcome, PerturbedSkip, Probe, ProbeItem, Selected,
+        Variant,
     };
 
     let lib = "module Shared\nlet foo = 1\n";
@@ -3436,6 +3617,15 @@ fn the_manifest_counts_handler_probes_and_lists_every_inconsistent_one() {
         perturbed_skip: Some(PerturbedSkip::FcsErrors(vec![(b.clone(), 2, 5, 39)])),
         perturbed_texts: vec![Arc::from(lib), Arc::from(perturbed_using)],
         owned_elsewhere: vec![loaded.parses.paths[0].clone()],
+        // The perturbed run was skipped, so only the plain copy's is a line.
+        selected: [(
+            b.clone(),
+            Selected {
+                plain: 2,
+                perturbed: 0,
+            },
+        )]
+        .into(),
     };
     let projects = vec![ProjectRecord {
         project: loaded.project.clone(),
@@ -3456,21 +3646,19 @@ fn the_manifest_counts_handler_probes_and_lists_every_inconsistent_one() {
     let lines: Vec<&String> = manifest
         .entries()
         .iter()
-        .filter(|line| line.contains(" handlers "))
+        .filter(|line| line.contains(" handlers"))
         .collect();
     assert_eq!(
         lines,
         [
-            "Synthetic.fsproj A.fs handlers skipped owned-by-another-project",
-            "Synthetic.fsproj B.fs handlers perturbed references referenced-differently=1",
-            "Synthetic.fsproj B.fs handlers plain definition declined=1 located=1",
-            "Synthetic.fsproj B.fs handlers plain hover described=1",
-            "Synthetic.fsproj B.fs:2:11-21 \"foo\" handlers plain definition first declined \
+            "Synthetic.fsproj A.fs handlers\tskipped owned-by-another-project",
+            "Synthetic.fsproj B.fs handlers plain\tselected=2",
+            "Synthetic.fsproj B.fs:2:11-21 \"foo\" handlers plain definition first\tdeclined \
              expected served-project",
-            "Synthetic.fsproj B.fs:2:19-29 \"foo\" handlers perturbed references middle \
+            "Synthetic.fsproj B.fs:2:19-29 \"foo\" handlers perturbed references middle\t\
              referenced-differently expected served-project",
-            "Synthetic.fsproj B.fs:2:5 handlers perturbed fcs-error FS0039",
-            "Synthetic.fsproj handlers perturbed skipped fcs-errors errors=1",
+            "Synthetic.fsproj B.fs:2:5 handlers perturbed fcs-error\tFS0039",
+            "Synthetic.fsproj handlers perturbed\tskipped fcs-errors errors=1",
         ]
         .map(String::from)
         .iter()
@@ -3650,11 +3838,11 @@ fn a_byte_order_mark_moves_no_handler_fixture_verdict() {
             .render("")
     };
     let plain = manifest("");
-    // Not vacuous: the line-1 uses are graded, and agree.
-    assert!(
-        plain
-            .lines()
-            .any(|l| l.starts_with("lineone/P.fsproj B.fs compared match=3 ")),
+    // Not vacuous: the line-1 uses are graded, and agree — `x` twice and
+    // `y`, which no line lists, so they are matches.
+    assert_eq!(
+        resolver_matches(&plain, "lineone/P.fsproj B.fs"),
+        3,
         "{plain}"
     );
     assert_eq!(
@@ -4174,11 +4362,11 @@ fn no_two_hover_probes_can_trade_type_verdicts_unseen() {
     );
 }
 
-/// The manifest counts each file's hover type verdicts, and lists a record
-/// whose verdict is not its class's expected one with its class, its verdict
-/// and the probes that came to it.
+/// The manifest lists a record whose hover type verdict is not its class's
+/// expected one with its class, its verdict and the probes that came to it,
+/// and counts none.
 #[test]
-fn the_manifest_counts_hover_types_and_lists_every_unexpected_one() {
+fn the_manifest_lists_every_unexpected_hover_type() {
     use borzoi_corpus_diff::handler_diff::{
         Expectation, HoverType, SymbolClass, TypeVerdict, ValueLabel, Withheld,
     };
@@ -4208,9 +4396,8 @@ fn the_manifest_counts_hover_types_and_lists_every_unexpected_one() {
     assert_eq!(
         hover_types,
         [
-            "Synthetic.fsproj A.fs hover-types plain agrees=1 withheld-in-file-function=1",
-            "Synthetic.fsproj A.fs:3:17-20 \"foo\" hover-type plain in-file-value \
-             withheld-in-file-function at last",
+            "Synthetic.fsproj A.fs:3:17-20 \"foo\" hover-type plain\tin-file-value \
+          withheld-in-file-function at last"
         ]
     );
 }

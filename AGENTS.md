@@ -414,6 +414,23 @@ manifests") has the format and the helpers: `borzoi_oracle_harness::manifest`,
 and `borzoi_oracle_harness::corpus_key`, which spells a corpus file the same way
 on macOS (where Nix renames case-colliding names) and on Linux CI.
 
+A manifest whose every entry is keyed (`<key><TAB><value>`) — the
+whole-project `project_corpus.txt` among them — merges key by key rather than as
+text, so a rebase past another branch's manifest movement needs no regeneration
+when the two moved different items. Enable the driver once per clone:
+
+```sh
+git config merge.borzoi-manifest.driver 'bash tools/manifest-merge.sh %O %A %B %P'
+```
+
+It fails, marking the entries, where both sides moved one item differently;
+regenerate then. CI's gates still check the merged manifest. `.gitattributes`
+names the keyed manifests, and a test holds it to them: an unkeyed manifest
+merged as a set would keep both sides' rewrite of one line rather than conflict.
+A line that counts the sweep's own verdicts conflicts whenever two branches move
+any item it counts, so a manifest should count only its inputs and list its
+verdicts (`docs/continuous-measurements.md`, "Exact manifests").
+
 The remaining sweeps' floors are one-sided and documented as such. What must
 never happen to any of them is loosening one to make a red run green without
 first establishing which direction it moved and why.
