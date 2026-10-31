@@ -136,6 +136,34 @@ pub(super) struct SigScreen {
     /// signatured `[<RequireQualifiedAccess>] type T = CaseC` — `M.T.CaseC`
     /// binds the `.fsi` case), so a value commit there would be wrong.
     pub(super) exported_case_paths: HashSet<Vec<String>>,
+    /// The `namespace` fragments the signature declares. A value-space name
+    /// directly under one of them can only be a union/enum case or an
+    /// exception constructor, and the signature text says exactly which of
+    /// those it exposes — so the paired implementation's own dropped
+    /// identities there mark nothing hidden
+    /// ([`FileExportIndices::derive`]); [`Self::namespace_unexported_names`]
+    /// carries what they hide instead.
+    pub(super) namespaces: HashSet<Vec<String>>,
+    /// The `(namespace, type name)` pairs of every type the signature declares
+    /// directly under a namespace that may take FCS's constructor slot —
+    /// read from the signature, which is what later files are checked
+    /// against even where the implementation disagrees with it.
+    pub(super) namespace_slot_type_names: Vec<(Vec<String>, String)>,
+    /// The `(namespace, name)` pairs of every **bare** value-space name the
+    /// signature may expose directly under a namespace without an exported
+    /// identity: a case of an attributed union (whose
+    /// `[<RequireQualifiedAccess>]` its written attributes cannot settle), of
+    /// a privately represented one, a nullary case spelled as an abbreviation,
+    /// an exception constructor, an enum case, a name two declarations share.
+    /// Each is known by name, so it shadows by name
+    /// ([`ProjectItems::namespace_shadow_names`]) rather than hiding the whole
+    /// namespace behind a generation barrier.
+    pub(super) namespace_unexported_names: Vec<(Vec<String>, String)>,
+    /// Every attribute name the signature writes, as written
+    /// ([`super::contributors::attribute_spellings`]) — what decides whether a
+    /// referenced assembly's undecoded abbreviation could be one of its
+    /// attributes ([`ProjectItems::trusts_attribute_spellings_of`]).
+    pub(super) attribute_spellings: HashSet<String>,
 }
 
 /// One export the paired signature contributes **at the implementation's
@@ -297,6 +325,24 @@ pub struct ProjectItems {
     /// [`Resolver::modules_with_hidden_values`](super::state::Resolver::modules_with_hidden_values)). A later file's `open M` of one
     /// must bump the open generation so it shadows earlier opens.
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
+    /// Bare value names a signatured file exposes directly under each
+    /// namespace without an exported identity
+    /// ([`SigScreen::namespace_unexported_names`]). A fold of the namespace
+    /// puts each in scope naming nothing, after everything else it folds, so
+    /// it shadows a same-named earlier entry — an implicit FSharp.Core
+    /// auto-open's, an assembly half's, another project fragment's — without
+    /// a target of its own. Known by name, so unlike a hidden-value marker it
+    /// stales nothing else.
+    pub(super) namespace_shadow_names: HashMap<Vec<String>, HashSet<String>>,
+    /// The namespaces some paired signature folded so far declares
+    /// ([`SigScreen::namespaces`]).
+    pub(super) signatured_namespaces: HashSet<Vec<String>>,
+    /// [`SigScreen::namespace_slot_type_names`] of every paired signature
+    /// folded so far, by namespace.
+    pub(super) signatured_slot_type_names: HashMap<Vec<String>, HashSet<String>>,
+    /// [`AssemblyEnv::core_attribute_aliases`](crate::AssemblyEnv::core_attribute_aliases)
+    /// for the env the fold resolves against, set when the fold starts.
+    pub(super) assembly_core_attribute_aliases: Arc<crate::assembly_env::CoreAttributeAliases>,
     /// The subset of [`Self::modules_with_hidden_values`] whose markers no
     /// signature bounds — so an `open` of a path marked here must stale its
     /// **own** assembly entries via the generation bump, not just earlier
@@ -939,6 +985,22 @@ impl ProjectItems {
             .any(|path| path.starts_with(mp))
     }
 
+    /// Whether every attribute `screen`'s signature writes is the attribute
+    /// it spells as far as `[<AutoOpen>]` and `[<RequireQualifiedAccess>]` go:
+    /// the [`super::contributors::core_attribute_spellings_trusted`] rule over
+    /// all of the signature's spellings at once, with every file folded so
+    /// far ([`Self::core_attribute_alias_declared`]) and the fold's assembly
+    /// env ([`Self::assembly_core_attribute_aliases`]). It is the conjunction
+    /// of the rule over each of the signature's attribute lists, which is how
+    /// a file's own walk asks it.
+    pub(super) fn trusts_attribute_spellings_of(&self, screen: &SigScreen) -> bool {
+        super::contributors::core_attribute_spellings_trusted(
+            self.core_attribute_alias_declared,
+            &self.assembly_core_attribute_aliases,
+            screen.attribute_spellings.iter().map(String::as_str),
+        )
+    }
+
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
         self.screened_path(names, false)
     }
@@ -1127,9 +1189,27 @@ impl ProjectItems {
             self.sig_screens.push((Arc::clone(screen), impl_idx));
         }
 
+        // Written attribute names are trustworthy only while nothing so far
+        // (this file included) can rename or impersonate the two whose
+        // presence the signature derivation reads.
+        self.core_attribute_alias_declared |= file.declares_core_attribute_alias;
+        let trust_attribute_spellings =
+            paired_screen.is_some_and(|screen| self.trusts_attribute_spellings_of(screen));
+        if let Some(screen) = paired_screen {
+            self.signatured_namespaces
+                .extend(screen.namespaces.iter().cloned());
+            for (namespace, name) in &screen.namespace_slot_type_names {
+                self.signatured_slot_type_names
+                    .entry(namespace.clone())
+                    .or_default()
+                    .insert(name.clone());
+            }
+        }
         let idx = match paired_screen {
             None => FileExportIndices::from_decls(file),
-            Some(screen) => FileExportIndices::from_decls_screened(file, screen),
+            Some(screen) => {
+                FileExportIndices::from_decls_screened(file, screen, trust_attribute_spellings)
+            }
         };
         for module in idx.module_headers {
             self.module_headers.insert(module);
@@ -1166,9 +1246,6 @@ impl ProjectItems {
         // only while every file contributes both indices together.
         self.project_module_simple_names
             .extend(file.own_module_simple_names.iter().cloned());
-        // Written attribute names stay trustworthy only while nothing so far
-        // can rename or impersonate `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`.
-        self.core_attribute_alias_declared |= file.declares_core_attribute_alias;
         // What the file contributes through routes the walk does not model.
         self.root_contribution.merge(&file.contributions.root);
         self.custom_operations
@@ -1194,6 +1271,12 @@ impl ProjectItems {
         }
         for hidden in idx.opaque_hidden_value_modules {
             self.opaque_hidden_value_modules.insert(hidden);
+        }
+        for (namespace, name) in idx.namespace_shadow_names {
+            self.namespace_shadow_names
+                .entry(namespace)
+                .or_default()
+                .insert(name);
         }
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
@@ -1370,6 +1453,7 @@ struct FileExportIndices {
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
+    namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
 
 /// Where the names a hidden-value marker fears come from — the one question
@@ -1437,11 +1521,23 @@ impl FileExportIndices {
     ///   implementation header is bare, and signature-declared auto-open
     ///   nested modules join `auto_open_module_paths` (marked hidden, so the
     ///   fold's generation barrier fires for them).
-    fn from_decls_screened(file: &ResolvedFile, screen: &SigScreen) -> Self {
-        Self::derive(file, Some(screen))
+    ///
+    /// `trust_attribute_spellings` says whether a written attribute name is
+    /// the attribute it spells (see [`ProjectItems::core_attribute_alias_declared`]).
+    /// The signature's namespace-level names are enumerable only then; else
+    /// every dropped identity marks its container hidden, as it would with no
+    /// signature model at all.
+    fn from_decls_screened(
+        file: &ResolvedFile,
+        screen: &SigScreen,
+        trust_attribute_spellings: bool,
+    ) -> Self {
+        Self::derive(file, Some((screen, trust_attribute_spellings)))
     }
 
-    fn derive(file: &ResolvedFile, screen: Option<&SigScreen>) -> Self {
+    fn derive(file: &ResolvedFile, screened: Option<(&SigScreen, bool)>) -> Self {
+        let screen = screened.map(|(screen, _)| screen);
+        let trust_attribute_spellings = screened.is_some_and(|(_, trust)| trust);
         let mut fi = Self::default();
         for decl in &file.export_decls {
             let anon = decl.anonymous_root;
@@ -1458,10 +1554,20 @@ impl FileExportIndices {
                     // the dropped surface, so it survives into the ordinary
                     // export arm below.
                     Some(item_idx)
-                        if screen.is_some()
+                        if let Some(screen) = screen
                             && matches!(file.exports.items[*item_idx].def, ExportDef::Own(_)) =>
                     {
-                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                        // Directly under a namespace the signature names
+                        // every bare value it exposes there, so the screen's
+                        // own name list ([`SigScreen::namespace_unexported_names`],
+                        // pushed below) replaces the per-item marker.
+                        let in_sig_namespace = trust_attribute_spellings
+                            && decl.path.split_last().is_some_and(|(_, container)| {
+                                screen.namespaces.contains(container)
+                            });
+                        if !in_sig_namespace {
+                            push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                        }
                     }
                     Some(item_idx) => {
                         let it = &file.exports.items[*item_idx];
@@ -1670,6 +1776,10 @@ impl FileExportIndices {
             for root in &screen.roots {
                 push_hidden(&mut fi, root.path.clone(), HiddenNames::SigDeclared);
             }
+            // The bare names the signature exposes under a namespace without
+            // an exported identity shadow by name.
+            fi.namespace_shadow_names
+                .extend(screen.namespace_unexported_names.iter().cloned());
             // Signature-declared `[<AutoOpen>]` nested modules (conclusion 6)
             // — auto-open even when the implementation carries no attribute,
             // and hidden so the namespace fold's barrier fires for them.
@@ -2548,6 +2658,14 @@ pub struct OpenTrace {
     pub path: Vec<String>,
     /// Whether this is an `open type …` (vs a plain `open <path>`).
     pub is_type: bool,
+    /// Whether this is the **implicit** open of a block's own enclosing
+    /// namespace, which every `namespace N` block performs before its first
+    /// declaration (FCS's `ImplicitlyOpenOwnNamespace`). Its
+    /// [`range`](Self::range) is then the header's namespace path. It folds
+    /// every earlier fragment of `N` — the project's own files included — so
+    /// a fragment the fold cannot enumerate perturbs every name in the block
+    /// with no `open` written anywhere.
+    pub implicit: bool,
     /// How this open perturbs later resolution (see [`OpenOpacity`]).
     pub opacity: OpenOpacity,
 }

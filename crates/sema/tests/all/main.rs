@@ -94,6 +94,7 @@ mod resolve_type_parameters;
 mod resolve_type_qualified_cases;
 mod resolve_types;
 mod resolve_union_cases;
+mod sig_namespace_fold_diff;
 mod tier_order_diff;
 mod type_name_env_grid;
 mod types_census;

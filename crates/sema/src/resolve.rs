@@ -880,7 +880,13 @@ fn collect_auto_open_type_containers(
                 // Before any of the export walker's `continue`s: a type it
                 // skips (an accessibility modifier, a dotted name) still
                 // publishes members if it is auto-open.
-                if types.defns().any(|defn| attrs_auto_open(defn.attributes())) {
+                if types.defns().any(|defn| sig_type_may_be_auto_open(&defn)) {
+                    out.push(container.to_vec());
+                }
+            }
+            // An exception is a type too, and may carry static members.
+            SigDecl::Exception(exn) => {
+                if may_publish_statics(exn.attributes(), exn.syntax(), false) {
                     out.push(container.to_vec());
                 }
             }
@@ -899,6 +905,148 @@ fn collect_auto_open_type_containers(
     }
 }
 
+/// Whether a signature type may be `[<AutoOpen>]` and publish static members
+/// where its container is opened: spelled so, or carrying any attribute at all
+/// (an abbreviation can rename `AutoOpenAttribute`) while having statics to
+/// publish — a `static` member in its signature, or an abbreviation's
+/// borrowed ones. A type whose signature declares no static member publishes
+/// none, auto-open or not.
+fn sig_type_may_be_auto_open(defn: &TypeDefn) -> bool {
+    may_publish_statics(
+        defn.attributes(),
+        defn.syntax(),
+        matches!(defn.repr(), Some(TypeDefnRepr::Abbrev(_))),
+    )
+}
+
+/// [`sig_type_may_be_auto_open`] over any type-like declaration — a `type`
+/// definition or an `exception` — given its attribute lists, its syntax (for
+/// a `static` member) and whether it is an abbreviation (whose statics are
+/// borrowed from its target).
+fn may_publish_statics(
+    attrs: impl Iterator<Item = AttributeList>,
+    syntax: &SyntaxNode,
+    abbreviation: bool,
+) -> bool {
+    let attrs: Vec<AttributeList> = attrs.collect();
+    if attrs_auto_open(attrs.iter().cloned()) {
+        return true;
+    }
+    !attrs.is_empty()
+        && (abbreviation
+            || syntax
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|t| t.kind() == SyntaxKind::STATIC_TOK))
+}
+
+/// Whether a signature type's cases are **certainly** in bare scope where
+/// its container is opened: it carries no attribute at all.
+///
+/// An attribute is known only by its written name, and any name can be an
+/// abbreviation of `RequireQualifiedAccessAttribute` (`type Obsolete =
+/// RequireQualifiedAccessAttribute`, then `[<Obsolete>]`), just as
+/// `[<RequireQualifiedAccess>]` can name something else. So an attributed
+/// type's cases are exported type-qualified only, and their bare names are
+/// shadowed without a target
+/// ([`SigScreen::namespace_unexported_names`](model::SigScreen::namespace_unexported_names)).
+fn sig_cases_certainly_bare(defn: &TypeDefn) -> bool {
+    defn.attributes().next().is_none()
+}
+
+/// The names a signature type definition may put in **bare value scope**:
+/// every union case (whether the type is `[<RequireQualifiedAccess>]` is not
+/// knowable from its written attributes), every enum case, and a single-ident
+/// abbreviation target (FCS reads one that names no type as a nullary union
+/// case). Over-collected where uncertain.
+fn sig_bare_value_idents(defn: &TypeDefn) -> Vec<SyntaxToken> {
+    match defn.repr() {
+        Some(TypeDefnRepr::Union(u)) => u.cases().filter_map(|c| c.ident()).collect(),
+        Some(TypeDefnRepr::Enum(e)) => e.cases().filter_map(|c| c.ident()).collect(),
+        Some(TypeDefnRepr::Abbrev(a)) => a
+            .ty()
+            .as_ref()
+            .and_then(abbrev_target_single_ident)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the definition declares a case [`sig_bare_value_idents`] cannot
+/// name: an operator-named union case (`([])`, `(::)`, whose names are
+/// `op_Nil` / `op_ColonColon`), or one the parse left without an ident. Such
+/// a case is a bare name the fold cannot list.
+fn sig_has_unnamed_case(defn: &TypeDefn) -> bool {
+    match defn.repr() {
+        Some(TypeDefnRepr::Union(u)) => u.cases().any(|c| c.ident().is_none()),
+        Some(TypeDefnRepr::Enum(e)) => e.cases().any(|c| c.ident().is_none()),
+        _ => false,
+    }
+}
+
+/// The type's own name, when the type may take FCS's unqualified
+/// **constructor slot** and so compete with a same-named case: anything but
+/// an attribute-free union or record — a class, an abbreviation, an opaque
+/// `type T` whose representation the signature hides, a type an attribute
+/// may make a struct.
+fn sig_type_slot_name(defn: &TypeDefn) -> Option<SyntaxToken> {
+    let plain = matches!(
+        defn.repr(),
+        Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_))
+    ) && defn.attributes().next().is_none();
+    if plain {
+        return None;
+    }
+    defn.long_id().and_then(single_ident)
+}
+
+/// The bare value names more than one of `decls` puts in scope: plain
+/// `val`s, the cases of a union without `[<RequireQualifiedAccess>]`, enum
+/// cases, a single-ident abbreviation target (FCS reads one that names no
+/// type as a nullary union case), and exception constructors. Counted
+/// syntactically, modelled or not, since a declaration the export walk skips
+/// still occupies its name.
+fn contested_bare_value_names(decls: &[SigDecl]) -> HashSet<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut contested: HashSet<String> = HashSet::new();
+    let mut note = |name: String| {
+        if !seen.insert(name.clone()) {
+            contested.insert(name);
+        }
+    };
+    for decl in decls {
+        match decl {
+            SigDecl::Val(vd) => {
+                if let Some(ident) = vd
+                    .val_sig()
+                    .filter(|vs| vs.active_pat_name().is_none())
+                    .and_then(|vs| vs.ident())
+                {
+                    note(id_text(&ident).to_string());
+                }
+            }
+            SigDecl::Types(types) => {
+                for defn in types.defns() {
+                    for ident in sig_bare_value_idents(&defn)
+                        .into_iter()
+                        .chain(sig_type_slot_name(&defn))
+                    {
+                        note(id_text(&ident).to_string());
+                    }
+                }
+            }
+            SigDecl::Exception(exn) => {
+                if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
+                    note(id_text(&ident).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    contested
+}
+
 fn collect_sig_container_exports(
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
@@ -913,6 +1061,30 @@ fn collect_sig_container_exports(
     // decls through this one function, so scanning here is what keeps a shape
     // from being forgotten ([`model::SigScreen::auto_open_type_containers`]).
     collect_auto_open_type_containers(container, &decls, auto_open_type_containers);
+    // A bare name two of the container's declarations both put in value
+    // scope gets no bare identity: which one FCS binds turns on declaration
+    // order and kind, and one of them may be a declaration this walk does not
+    // model at all (an abbreviation FCS reads as a nullary case, a privately
+    // represented union, an exception). Its type-qualified paths are
+    // unaffected — `A.Ok` and `B.Ok` are distinct.
+    let contested = contested_bare_value_names(&decls);
+    // A type name two definitions share (`type U` beside `type U<'a>`) keys
+    // both types' cases at one type-qualified path, which FCS tells apart by
+    // arity: neither type's cases export type-qualified.
+    let contested_types: HashSet<String> = {
+        let mut seen = HashSet::new();
+        decls
+            .iter()
+            .filter_map(|decl| match decl {
+                SigDecl::Types(types) => Some(types.defns()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|defn| defn.long_id().and_then(single_ident))
+            .map(|ident| id_text(&ident).to_string())
+            .filter(|name| !seen.insert(name.clone()))
+            .collect()
+    };
     let decls = decls.into_iter();
     debug_assert!(
         access_floor.is_none_or(|f| f < container.len()),
@@ -931,6 +1103,7 @@ fn collect_sig_container_exports(
         defs.push(def);
         let mut path = container.to_vec();
         path.push(name.clone());
+        let qualified = qualified && !contested.contains(&name);
         exports.push(model::SigExport {
             name,
             qualified: qualified.then(|| path.clone()),
@@ -981,12 +1154,16 @@ fn collect_sig_container_exports(
                         continue;
                     };
                     let type_name = id_text(&type_ident).to_string();
-                    let rqa = attrs_require_qualified_access(defn.attributes());
+                    // A case enters bare scope only when the type is
+                    // certainly not `[<RequireQualifiedAccess>]`; otherwise
+                    // it exports type-qualified only.
+                    let rqa = !sig_cases_certainly_bare(&defn);
+                    let type_contested = contested_types.contains(&type_name);
                     let tq_path = |case: &str| {
                         let mut p = container.to_vec();
                         p.push(type_name.clone());
                         p.push(case.to_string());
-                        p
+                        (!type_contested).then_some(p)
                     };
                     match defn.repr() {
                         Some(TypeDefnRepr::Union(u)) => {
@@ -1006,7 +1183,7 @@ fn collect_sig_container_exports(
                                     Some(CaseKind::Union {
                                         require_qualified: rqa,
                                     }),
-                                    Some(tq),
+                                    tq,
                                     false,
                                 );
                             }
@@ -1022,7 +1199,7 @@ fn collect_sig_container_exports(
                                     false,
                                     access_floor,
                                     Some(CaseKind::Enum),
-                                    Some(tq),
+                                    tq,
                                     false,
                                 );
                             }
@@ -1055,6 +1232,9 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut auto_open_nested = Vec::new();
     let mut auto_open_type_containers = Vec::new();
     let mut value_paths = Vec::new();
+    let mut bare_value_paths: Vec<Vec<String>> = Vec::new();
+    let mut namespaces: HashSet<Vec<String>> = HashSet::new();
+    let mut namespace_slot_type_names: Vec<(Vec<String>, String)> = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
     for fragment in sig.modules() {
@@ -1090,6 +1270,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                     .long_id()
                     .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
                     .unwrap_or_default();
+                namespaces.insert(ns.clone());
                 for decl in fragment.sig_decls() {
                     match decl {
                         SigDecl::NestedModule(nm) => {
@@ -1129,12 +1310,33 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         // their own exposed value paths (RQA-blind: an
                         // over-collected RQA case only defers more).
                         SigDecl::Types(types) => {
+                            // No case here gets an identity: each bare name
+                            // the type may put in scope where `ns` is opened
+                            // shadows by name instead
+                            // ([`model::SigScreen::namespace_unexported_names`]).
+                            // A type directly under the namespace has no
+                            // container walker to report an `[<AutoOpen>]`
+                            // on it: the namespace itself is the container.
+                            collect_auto_open_type_containers(
+                                &ns,
+                                &[SigDecl::Types(types.clone())],
+                                &mut auto_open_type_containers,
+                            );
+                            // A case the scan cannot name is a name the fold
+                            // cannot list: the namespace hides behind the
+                            // barrier, as an `[<AutoOpen>]` type's does.
+                            if types.defns().any(|defn| sig_has_unnamed_case(&defn)) {
+                                auto_open_type_containers.push(ns.clone());
+                            }
                             for defn in types.defns() {
-                                // A type declared *directly* under the
-                                // namespace has no container walker to report
-                                // it: the namespace itself is the container.
-                                if attrs_auto_open(defn.attributes()) {
-                                    auto_open_type_containers.push(ns.clone());
+                                if let Some(ident) = sig_type_slot_name(&defn) {
+                                    namespace_slot_type_names
+                                        .push((ns.clone(), id_text(&ident).to_string()));
+                                }
+                                for ident in sig_bare_value_idents(&defn) {
+                                    let mut path = ns.clone();
+                                    path.push(id_text(&ident).to_string());
+                                    bare_value_paths.push(path);
                                 }
                                 let case_idents: Vec<SyntaxToken> = match defn.repr() {
                                     Some(TypeDefnRepr::Union(u)) => {
@@ -1168,13 +1370,30 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             }
                         }
                         SigDecl::Exception(exn) => {
-                            if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
-                                let mut path = ns.clone();
-                                path.push(id_text(&ident).to_string());
-                                value_paths.push(path);
+                            collect_auto_open_type_containers(
+                                &ns,
+                                &[SigDecl::Exception(exn.clone())],
+                                &mut auto_open_type_containers,
+                            );
+                            match exn.union_case().and_then(|c| c.ident()) {
+                                Some(ident) => {
+                                    let mut path = ns.clone();
+                                    path.push(id_text(&ident).to_string());
+                                    bare_value_paths.push(path.clone());
+                                    value_paths.push(path);
+                                }
+                                None => auto_open_type_containers.push(ns.clone()),
                             }
                         }
-                        _ => {}
+                        // A `val` cannot sit directly under a namespace (FCS
+                        // rejects it); if one parses, nothing here lists
+                        // the name it would bring, so the namespace is
+                        // treated as publishing names it cannot list.
+                        SigDecl::Val(_) => auto_open_type_containers.push(ns.clone()),
+                        // An `open`, a directive, and a module abbreviation
+                        // (file-local) put nothing in the namespace.
+                        SigDecl::Open(_) | SigDecl::HashDirective(_) | SigDecl::ModuleAbbrev(_) => {
+                        }
                     }
                 }
             }
@@ -1225,6 +1444,23 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         .iter()
         .filter_map(|e| e.type_qualified.clone())
         .collect();
+    // The bare names the signature may expose directly under a namespace
+    // without an exported identity: in scope, shadowing, naming nothing.
+    let namespace_unexported_names: Vec<(Vec<String>, String)> = bare_value_paths
+        .iter()
+        .filter(|path| !exported_value_paths.contains(*path))
+        .filter_map(|path| {
+            let (name, container) = path.split_last()?;
+            Some((container.to_vec(), name.clone()))
+        })
+        .collect();
+    // Every attribute spelling the signature writes, as written: the trust
+    // rule expands each to the names FCS may look it up under.
+    let attribute_spellings: HashSet<String> = contributors::attribute_spellings(
+        sig.syntax().descendants().filter_map(AttributeList::cast),
+    )
+    .into_iter()
+    .collect();
     let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),
@@ -1233,6 +1469,10 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         value_paths,
         exported_value_paths,
         exported_case_paths,
+        namespaces,
+        namespace_slot_type_names,
+        namespace_unexported_names,
+        attribute_spellings,
     });
     SignatureSurface {
         screen,
@@ -1345,7 +1585,10 @@ fn resolve_project_files_impl(
         files.len()
     );
     let partners = signature_partners(files);
-    let mut preceding = ProjectItems::default();
+    let mut preceding = ProjectItems {
+        assembly_core_attribute_aliases: Arc::new(assemblies.core_attribute_aliases().clone()),
+        ..ProjectItems::default()
+    };
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(files.len());
     // Accumulate the OV-6 cross-file **extension-source** signal in **Compile
     // order**: F# is order-sensitive, so a project extension source (a
@@ -1707,7 +1950,10 @@ fn resolve_project_files_incremental_impl(
     );
     let partners_prev = signature_partners(prev_files);
     let partners_new = signature_partners(new_files);
-    let mut preceding = ProjectItems::default();
+    let mut preceding = ProjectItems {
+        assembly_core_attribute_aliases: Arc::new(assemblies.core_attribute_aliases().clone()),
+        ..ProjectItems::default()
+    };
     let mut ext = ExtThreading::default();
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(horizon);
     let mut reused = Vec::with_capacity(horizon);

@@ -7,9 +7,7 @@ use borzoi_cst::syntax::{
 use crate::def::DefId;
 
 use super::contributors::Contribution;
-use super::model::{
-    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, Resolution, SlotClass,
-};
+use super::model::{CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenTrace, SlotClass};
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
 };
@@ -139,9 +137,10 @@ impl<'a> Resolver<'a> {
     /// `open Container; Case` ([`open_module_values`](Self::open_module_values)) and
     /// `Container.Case` ([`resolve_long_ident`](Self::resolve_long_ident)) resolve
     /// it. Returns the new [`ItemId`] (the caller records the decl and frame entry
-    /// as that [`Resolution::Item`], so the case has the *same* identity everywhere
-    /// — declaration, same-file uses, and the cross-file open — which keeps
-    /// find-references / rename intact, exactly as a top-level `let` does).
+    /// as that [`Resolution::Item`](crate::Resolution::Item), so the case has the
+    /// *same* identity everywhere — declaration, same-file uses, and the
+    /// cross-file open — which keeps find-references / rename intact, exactly
+    /// as a top-level `let` does).
     ///
     /// The path is built from [`container_path`](Self::container_path), not
     /// [`module_path`](Self::module_path) (which is `None` for a `namespace`): a
@@ -272,7 +271,7 @@ impl<'a> Resolver<'a> {
     /// [`ItemId`] as the case's resolution **everywhere** (declaration and same-file
     /// `Color.Red`), so it has one identity for find-references / rename, just like a
     /// non-RQA union case. `None` in an anonymous-root file (no cross-file handle),
-    /// where the case stays a [`Resolution::Local`].
+    /// where the case stays a [`Resolution::Local`](crate::Resolution::Local).
     pub(super) fn export_require_qualified_case(
         &mut self,
         name: &str,
@@ -803,36 +802,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     Vec::new()
                 };
-                let trace_before = (
-                    self.opaque_value_open,
-                    self.opaque_dotted_open,
-                    self.unmodelled_open_active,
-                );
-                // The generation is a fourth deferral mechanism: an open that
-                // raises the barrier stales earlier entries, deferring a later
-                // head through one even when the three flags stay false. Snapshot
-                // it too. Monotone within the arm (only ever bumped), so a strict
-                // increase is this open's own barrier.
-                let trace_before_gen = self.open_generation;
-                // A fifth: a fully-enumerated open can import a name that is
-                // ITSELF `Deferred` (a cross-assembly duplicate, say), setting no
-                // flag and bumping no generation — yet it is the source of that
-                // deferred name. Opened entries all land in `module_frame()`
-                // (`scopes.last()`), and this arm pushes only its own (it never
-                // enters a nested module), so a new `Deferred` entry after it is
-                // this open's import.
-                let trace_before_entries = self.scopes.last().map_or(0, |f| f.entries.len());
-                // A sixth: a namespace open contributes a **reading** / shortening
-                // prefix — a qualified-path precedence entry — while setting no flag
-                // and raising no barrier. It usually *resolves* names, but it can
-                // re-own a later dotted head against a lower open's reading (`open
-                // Low; open High; M.Mangled`), deferring when the higher reading owns
-                // the path with an uncertain member. Both `imports` (the `OpenGroup`)
-                // and `open_shortening_prefixes` grow only within this arm (it never
-                // enters a nested module), so a strict length increase in either is
-                // this open's own reading contribution.
-                let trace_before_imports = self.imports.len();
-                let trace_before_shortening = self.open_shortening_prefixes.len();
+                let trace_before = self.open_trace_snapshot();
                 // Classify the open. `open <namespace>` brings the namespace's
                 // *types* into scope — record the prefix so later qualified
                 // references retry under it (modelled), no unqualified values.
@@ -1535,25 +1505,13 @@ impl<'a> Resolver<'a> {
                 // Resolution-explain trace: record which opaque-open flags THIS
                 // open flipped false→true (snapshot at the arm's start). Both the
                 // `open type` and plain-`open` branches fall through to here.
+                let opacity = self.open_opacity_since(&trace_before);
                 self.trace_opens.push(OpenTrace {
                     range: trace_range,
                     path: trace_path,
                     is_type: trace_is_type,
-                    opacity: OpenOpacity {
-                        opaque_value: self.opaque_value_open && !trace_before.0,
-                        opaque_dotted: self.opaque_dotted_open && !trace_before.1,
-                        unmodelled: self.unmodelled_open_active && !trace_before.2,
-                        staled_earlier: self.open_generation > trace_before_gen,
-                        imported_deferred: self.scopes.last().is_some_and(|f| {
-                            f.entries
-                                .get(trace_before_entries..)
-                                .unwrap_or(&[])
-                                .iter()
-                                .any(|e| matches!(e.resolution, Resolution::Deferred(_)))
-                        }),
-                        added_reading: self.imports.len() > trace_before_imports
-                            || self.open_shortening_prefixes.len() > trace_before_shortening,
-                    },
+                    implicit: false,
+                    opacity,
                 });
             }
             ModuleDecl::Attributes(_) => {
