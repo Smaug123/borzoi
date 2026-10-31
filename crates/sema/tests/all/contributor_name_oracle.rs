@@ -7,7 +7,8 @@
 //! The hand-written grid (`unmodelled_contributor_grid.rs`) finds those one
 //! shape at a time. This generates the shapes instead: contributors of every
 //! kind (`[<AutoOpen>]` modules, aliased, nested, `rec`, an earlier file's
-//! root, a signature-only `[<AutoOpen>]`) holding random declarations of every
+//! root, a signature-only `[<AutoOpen>]`, and a plain module under an explicit
+//! `open`) holding random declarations of every
 //! kind (values, functions, literals, patterns, active patterns, unions,
 //! operator cases, records, classes and structs with every kind of static,
 //! enums, exceptions, abbreviations, delegates, externs, nested modules, and
@@ -92,6 +93,8 @@ enum DeclKind {
     AutoOpenException,
     Abbreviation,
     BarlessUnion,
+    /// `type T = T`: a union whose one case is named like the type.
+    SelfUnion,
     Delegate,
     Extern,
     NestedAutoOpen,
@@ -237,7 +240,7 @@ impl AutoOpenAttr {
 }
 
 impl DeclKind {
-    const BASE: [DeclKind; 25] = [
+    const BASE: [DeclKind; 26] = [
         DeclKind::LetValue,
         DeclKind::LetFunction,
         DeclKind::LetLiteral,
@@ -258,6 +261,7 @@ impl DeclKind {
         DeclKind::AutoOpenException,
         DeclKind::Abbreviation,
         DeclKind::BarlessUnion,
+        DeclKind::SelfUnion,
         DeclKind::Delegate,
         DeclKind::Extern,
         DeclKind::NestedAutoOpen,
@@ -416,16 +420,19 @@ enum Context {
     Root,
     /// The same, with only its signature saying `[<AutoOpen>]`.
     Signature,
+    /// A plain module, then an explicit `open` of it.
+    Opened,
 }
 
 impl Context {
-    const ALL: [Context; 6] = [
+    const ALL: [Context; 7] = [
         Context::Module,
         Context::Aliased,
         Context::Nested,
         Context::Rec,
         Context::Root,
         Context::Signature,
+        Context::Opened,
     ];
 }
 
@@ -687,6 +694,12 @@ fn decl(kind: DeclKind, i: usize, rng: &mut Rng) -> Decl {
             d.sig = vec![l];
             d.names.extend([format!("OraBu{i}"), format!("OraBc{i}")]);
         }
+        DeclKind::SelfUnion => {
+            let l = format!("type OraSu{i} = OraSu{i}");
+            lines(&mut d, std::slice::from_ref(&l));
+            d.sig = vec![l];
+            d.names.push(format!("OraSu{i}"));
+        }
         DeclKind::Delegate => {
             let l = format!("type OraDl{i} = delegate of int -> int");
             lines(&mut d, std::slice::from_ref(&l));
@@ -839,7 +852,12 @@ fn generate(seed: u64, extra_names: &BTreeSet<String>) -> Program {
     let augmentations = DeclKind::augmentations();
     // Not in an earlier file's root: the probe file's own binders follow its
     // implicit open, so no probe can bind what it contributes.
-    const FORCED: [Context; 3] = [Context::Module, Context::Aliased, Context::Nested];
+    const FORCED: [Context; 4] = [
+        Context::Module,
+        Context::Aliased,
+        Context::Nested,
+        Context::Opened,
+    ];
     let forced = FORCED.iter().position(|c| *c == context).map(|rank| {
         let round = usize::try_from(seed).unwrap() / Context::ALL.len();
         augmentations[(round * FORCED.len() + rank) % augmentations.len()]
@@ -950,6 +968,12 @@ fn generate(seed: u64, extra_names: &BTreeSet<String>) -> Program {
             };
             probe.push_str(&format!("[<{attr}>]\nmodule OraAuto =\n"));
             write_decls(&mut probe, &decls, "    ", probe_idx, &mut units);
+            write_probes(&mut probe, "");
+        }
+        Context::Opened => {
+            probe.push_str("module OraOpened =\n");
+            write_decls(&mut probe, &decls, "    ", probe_idx, &mut units);
+            probe.push_str("open OraOpened\n");
             write_probes(&mut probe, "");
         }
         Context::Nested => {
