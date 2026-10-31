@@ -2570,11 +2570,14 @@ impl<'a> Resolver<'a> {
                 // An enum case loses the qualifier only to a *later* value; the
                 // position needs an in-file range (an opened value has none, and is
                 // never later than the same-file enum we model, so it does not take).
+                // A contributor mark the position cannot order against the
+                // enum keeps the qualifier: the path then declines at the mark.
                 Some(DefKind::EnumCase) => {
                     head_is_value
-                        && self
-                            .value_slot_position(head)
-                            .is_some_and(|vp| vp > self.defs[type_id.index()].range.start())
+                        && match self.value_slot_position(head) {
+                            Some(vp) => vp > self.defs[type_id.index()].range.start(),
+                            None => self.lookup_entry(head).is_some_and(|e| e.mark.is_some()),
+                        }
                 }
                 // A union case loses the qualifier to *any* definite non-case value.
                 _ => head_is_value,
@@ -4372,13 +4375,16 @@ impl<'a> Resolver<'a> {
     /// to break a value-vs-type qualifier collision by source order (latest
     /// wins): see the enum-case branch of [`resolve_long_ident`](Self::resolve_long_ident).
     /// Where the value [`Self::lookup`] finds for `name` entered the
-    /// environment, for ordering it against a same-named type: its in-file
-    /// definition, or — for a contributor mark — where its contributor added
-    /// the name. `None` for an opened value.
+    /// environment, for ordering it against a same-named in-file type: its
+    /// in-file definition. `None` for an opened value — and for a contributor
+    /// mark unless a constructible type took the slot after it
+    /// ([`Self::head_value_slot`]), when it is the mark's position: a record
+    /// or union never takes the slot, so a mark before one still holds it.
     pub(super) fn value_slot_position(&self, name: &str) -> Option<rowan::TextSize> {
         let entry = self.lookup_entry(name)?;
         if entry.mark.is_some() {
-            return Some(rowan::TextSize::from(entry.open_pos));
+            return matches!(self.head_value_slot(name), HeadSlot::Evicted)
+                .then(|| rowan::TextSize::from(entry.open_pos));
         }
         self.value_resolution_def_range(entry.resolution)
             .map(|r| r.start())

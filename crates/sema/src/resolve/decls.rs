@@ -598,6 +598,10 @@ impl<'a> Resolver<'a> {
                         self.define_type_members(defn, &name);
                     }
                 }
+                // In a `rec` block, the block's modules enter after its types,
+                // ahead of every member body: their `[<AutoOpen>]` contents
+                // outrank the cases just pushed.
+                self.reassert_rec_modules(u32::from(types.syntax().text_range().end()));
                 // 3. Now every name in the group is in scope, resolve the uses:
                 //    an augmentation's head (`type T with …`) is a *use* of an
                 //    existing type — resolve it against the table (a genuine

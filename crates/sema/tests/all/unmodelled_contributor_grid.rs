@@ -310,10 +310,18 @@ enum Route {
     /// `[<AutoOpen>]` type that spells the name only as a parameter: the
     /// value keeps the qualifier, whatever the contributor's mark says.
     EnumQualifierAfterMark,
+    /// A contributor's value heading a dotted path, after a later record of
+    /// the name with a static of the tail: a record never takes the slot, so
+    /// the value keeps the qualifier.
+    RecordQualifierAfterMark,
+    /// In a `module rec`, a type group's member body heading a dotted path
+    /// with a name the group declares as a type and a later `[<AutoOpen>]`
+    /// module declares as a value: modules enter after the group's types.
+    RecTypeGroupQualifier,
 }
 
 impl Route {
-    const ALL: [Route; 63] = [
+    const ALL: [Route; 65] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -377,6 +385,8 @@ impl Route {
         Route::TypeGroupLocalLet,
         Route::TypeGroupLocalHead,
         Route::EnumQualifierAfterMark,
+        Route::RecordQualifierAfterMark,
+        Route::RecTypeGroupQualifier,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -406,6 +416,8 @@ impl Route {
                 | Route::TypeGroupLocalLet
                 | Route::TypeGroupLocalHead
                 | Route::EnumQualifierAfterMark
+                | Route::RecordQualifierAfterMark
+                | Route::RecTypeGroupQualifier
         )
     }
 
@@ -427,7 +439,9 @@ impl Route {
             Route::TypeGroupParameter
             | Route::TypeGroupLocalLet
             | Route::TypeGroupLocalHead
-            | Route::EnumQualifierAfterMark => !kind.is_case(),
+            | Route::EnumQualifierAfterMark
+            | Route::RecordQualifierAfterMark
+            | Route::RecTypeGroupQualifier => !kind.is_case(),
             _ => true,
         }
     }
@@ -743,6 +757,14 @@ impl Route {
             Route::EnumQualifierAfterMark => (
                 vec![],
                 "module GridProbe\ntype @NAME = GridRed = 0\nlet @NAME = {| GridRed = 42 |}\n[<AutoOpen>]\ntype GridT =\n    static member F(@NAME: int) = @NAME\nlet probe = @P.GridRed\n",
+            ),
+            Route::RecordQualifierAfterMark => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\nmodule GridAuto =\n    let @NAME = \"contributed\"\ntype @NAME =\n    { GridF: int }\n    static member Length = 0\nlet probe = @P.Length\n",
+            ),
+            Route::RecTypeGroupQualifier => (
+                vec![],
+                "module rec GridProbe\ntype @NAME() =\n    static member Length = 0\nand GridX() =\n    static member Test() = @P.Length\n[<AutoOpen>]\nmodule GridAuto =\n    let @NAME = \"contributed\"\n",
             ),
             Route::CeNoOperation => (
                 vec![],
