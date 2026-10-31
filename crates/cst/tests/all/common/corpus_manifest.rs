@@ -1,11 +1,14 @@
 //! The cst corpus gates' manifest vocabulary: where each sweep's checked-in
 //! [`Manifest`] lives and the one command that regenerates it.
 //!
-//! Every per-file entry starts with the corpus-relative, `/`-separated path
-//! ([`corpus_relative`]), then the file's bucket, so a [`Manifest`] diff — which is
-//! sorted — puts a file's old and new lines next to each other. A sweep's
-//! dominant bucket is one summary entry carrying its count, spelled with a
-//! leading `(` so it sorts ahead of every path.
+//! A corpus sweep's entries are keyed ([`Manifest::from_keyed`]): each per-file
+//! entry's key is the corpus-relative, `/`-separated path ([`corpus_relative`])
+//! and its value the file's bucket, so a [`Manifest`] diff — which is sorted —
+//! puts a file's old and new lines next to each other, and two independent
+//! changes merge key by key (`tools/manifest-merge.sh`). A sweep that leaves
+//! its dominant bucket unlisted counts its *input* instead, in one entry
+//! ([`corpus_count_item`]): the bucket is the count less the listed files, and
+//! the count moves only with the corpus, so it never conflicts.
 
 use std::path::{Path, PathBuf};
 
@@ -43,9 +46,12 @@ pub fn check_manifest(name: &str, actual: &Manifest, regenerate: &str) {
     check(&manifest_path(name), actual, regenerate);
 }
 
-/// The summary entry for a sweep's dominant bucket: `(<bucket>) <count> files`.
-pub fn summary_entry(bucket: &str, count: usize) -> String {
-    format!("({bucket}) {count} files")
+/// The entry counting a sweep's input, `(corpus)` → `files=<files>`: every file
+/// it was given, listed or not. Spelled with a leading `(` so it sorts ahead of
+/// every path. The caller asserts that every file is listed or in the one
+/// unlisted bucket, so the bucket's size is `files` less the listed entries.
+pub fn corpus_count_item(files: usize) -> (String, String) {
+    ("(corpus)".to_string(), format!("files={files}"))
 }
 
 /// The base file of recovery grid `name`: the grid's divergences under the

@@ -26,6 +26,7 @@ use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_oracle_harness::BatchChild;
+use borzoi_oracle_harness::corpus_key::Positions;
 use borzoi_sema::{
     AssemblyEnv, Def, DefKind, ProjectFile, Resolution, ResolvedProject, SourceFile,
     SyntaxRecovery, qualified_names, resolve_project_files,
@@ -471,6 +472,50 @@ pub fn census(graded: &[Graded]) -> BTreeMap<String, usize> {
         *counts.entry(key).or_default() += 1;
     }
     counts
+}
+
+/// One graded occurrence as a keyed manifest item (`Manifest::from_keyed`):
+/// the key is where it is — `file`, then its range in `text` — so it reads
+/// only the source (`positions` is of the occurrence's file), and the value is
+/// what we resolved there and its verdict. Every verdict is spelled,
+/// agreements included: an occurrence is ours, not an oracle record, so no
+/// count of the oracle's could stand in for the ones left out.
+pub fn manifest_item(file: &str, positions: &Positions<'_>, g: &Graded) -> (String, String) {
+    let fcs = match g.fcs_lines.as_deref() {
+        Some(lines) if !lines.is_empty() => "fcs-doc",
+        Some(_) => "fcs-none",
+        None => "fcs-unpaired",
+    };
+    let verdict = match &g.verdict {
+        Verdict::Agree { attached: true } => "agree-doc".to_string(),
+        Verdict::Agree { attached: false } => "agree-none".to_string(),
+        Verdict::Declined(why) => format!("declined {why:?} {fcs}"),
+        Verdict::Unpaired => match g.ours.as_deref() {
+            Some(lines) if !lines.is_empty() => "unpaired-doc".to_string(),
+            _ => "unpaired-none".to_string(),
+        },
+        Verdict::OracleAmbiguous => "oracle-ambiguous".to_string(),
+        Verdict::Diverge { .. } | Verdict::ElaborationDiverges { .. } => "DIVERGE".to_string(),
+    };
+    let site = if g.is_definition {
+        "def"
+    } else if g.declared_in.is_some_and(|d| d != g.file) {
+        "cross-file-use"
+    } else {
+        "use"
+    };
+    (
+        format!(
+            "{file}:{}-{}",
+            positions.at(usize::from(g.range.start())),
+            positions.at(usize::from(g.range.end()))
+        ),
+        format!(
+            "{} {:?} {site} {verdict}",
+            g.name.replace(char::is_whitespace, "_"),
+            g.def_kind,
+        ),
+    )
 }
 
 /// Everything that must not happen: a divergence of either kind, and — in a

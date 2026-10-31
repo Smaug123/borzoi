@@ -6,3 +6,10 @@
 # `every_merge_driver_manifest_is_keyed` checks each is keyed.
 crates/corpus-diff/manifests/project_corpus.txt merge=borzoi-manifest
 crates/msbuild/tests/manifests/fsproj_msbuild_corpus_diff.txt merge=borzoi-manifest
+crates/sema/tests/manifests/infer_corpus_diff.txt merge=borzoi-manifest
+crates/sema/tests/manifests/resolve_corpus_diff.txt merge=borzoi-manifest
+crates/lsp/tests/manifests/xml_doc_source_corpus.txt merge=borzoi-manifest
+crates/lsp/tests/manifests/xml_doc_source_projects.txt merge=borzoi-manifest
+crates/cst/tests/manifests/parser_corpus.txt merge=borzoi-manifest
+crates/cst/tests/manifests/parser_corpus_diff.txt merge=borzoi-manifest
+crates/cst/tests/manifests/recovery_sweep.txt merge=borzoi-manifest

@@ -36,9 +36,13 @@
 //!
 //! The corpus is pinned by the flake and both sides are deterministic, so the
 //! bucket of every commit is a fixed fact, and the sweep checks it **exactly**
-//! against `tests/manifests/infer_corpus_diff.txt`: one line per sampled file
-//! (compared, or skipped and why) and one per commit, keyed by corpus-relative
-//! path, kind and `line:col` range, with both types for a commit that disagrees.
+//! against `tests/manifests/infer_corpus_diff.txt`. Every line is
+//! `<key><TAB><value>` ([`Manifest::from_keyed`]), so independent changes merge
+//! key by key (`tools/manifest-merge.sh`): one per sampled file (compared, or
+//! skipped and why), one per declaration fcs-dump could not convert, and one
+//! per commit, keyed by corpus-relative path, `line:col` range and kind, with
+//! its bucket and both types for a commit that disagrees. Every commit is
+//! listed, agreements included, so no line counts the sweep's own verdicts.
 //! A lost agreement fails it, and so does a new one, an error-recovered commit
 //! changing type, or a file moving in or out of the comparable set; an intended
 //! movement is acknowledged by regenerating the manifest and committing the
@@ -149,8 +153,9 @@ struct Site {
 
 #[derive(Debug, Default)]
 struct Tally {
-    /// One entry per sampled file and per commit (see the module docs).
-    manifest: Vec<String>,
+    /// One `(key, value)` per sampled file and per commit (see the module
+    /// docs).
+    manifest: Vec<(String, String)>,
     files_compared: usize,
     our_parse_errors: usize,
     /// Files skipped for a line directive (see [`has_line_directive`]).
@@ -316,7 +321,7 @@ fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
 
 /// [`compare_file`] against `oracle`.
 fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracle) {
-    let entry = |status: &str| format!("{rel} {status}");
+    let entry = |status: &str| (rel.to_string(), status.to_string());
     let Ok(raw) = std::fs::read_to_string(path) else {
         tally.lock().unwrap().manifest.push(entry("unreadable"));
         return;
@@ -458,10 +463,13 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
             start, end, name, ..
         } = u
         {
-            t.manifest.push(format!(
-                "{rel}:{}-{} unconverted-decl {name:?}",
-                positions.at(*start),
-                positions.at(*end)
+            t.manifest.push((
+                format!(
+                    "{rel}:{}-{} unconverted-decl",
+                    positions.at(*start),
+                    positions.at(*end)
+                ),
+                format!("{name:?}"),
             ));
         }
     }
@@ -486,7 +494,7 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
             let key = format!("{rel}:{}-{} {kind}", positions.at(*s), positions.at(*e));
             if ungraded.iter().any(|(u0, u1)| s < u1 && u0 < e) {
                 t.unconverted_commits += 1;
-                t.manifest.push(format!("{key} unconverted ours={ours:?}"));
+                t.manifest.push((key, format!("unconverted ours={ours:?}")));
                 continue;
             }
             // A generic binder type agrees only if FCS constrains none of its
@@ -502,7 +510,7 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
                 } else {
                     t.agree_binders += 1;
                 }
-                t.manifest.push(format!("{key} agree"));
+                t.manifest.push((key, "agree".to_string()));
                 continue;
             }
             let disagreement = if hides {
@@ -529,10 +537,10 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
                 .map_or((*s, *e), |f| enclosing_decl(f, *s, *e));
             if touches_error(&lines, &errors, d0, d1) {
                 t.manifest
-                    .push(format!("{key} error-recovered {disagreement}"));
+                    .push((key, format!("error-recovered {disagreement}")));
                 t.error_lines.push(site);
             } else {
-                t.manifest.push(format!("{key} divergence {disagreement}"));
+                t.manifest.push((key, format!("divergence {disagreement}")));
                 t.divergences.push(site);
             }
         }
@@ -689,7 +697,7 @@ fn inferred_types_match_fcs_over_corpus() {
         return;
     }
     let manifest =
-        Manifest::from_counted(t.manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+        Manifest::from_keyed(t.manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
     check_manifest(
         "infer_corpus_diff",
         &manifest,
@@ -822,12 +830,13 @@ fn compare_doctored(name: &str, src: &str, doctor: &dyn Fn(&mut serde_json::Valu
     tally.into_inner().unwrap()
 }
 
-/// The manifest entries for commits on 1-based `line` of `case.fs`.
+/// The manifest values of the commits on 1-based `line` of `case.fs`.
 fn commits_on_line(t: &Tally, line: u32) -> Vec<&String> {
     let prefix = format!("case.fs:{line}:");
     t.manifest
         .iter()
-        .filter(|m| m.starts_with(&prefix) && !m.contains("unconverted-decl"))
+        .filter(|(k, _)| k.starts_with(&prefix) && !k.ends_with(" unconverted-decl"))
+        .map(|(_, v)| v)
         .collect()
 }
 
@@ -844,7 +853,7 @@ fn an_unconverted_declaration_is_ungraded_and_the_rest_of_the_file_graded() {
         "the fixture must commit on both locals of `bad`: {t:#?}"
     );
     assert!(
-        bad.iter().all(|m| m.contains(" unconverted ")),
+        bad.iter().all(|m| m.starts_with("unconverted ")),
         "every commit in `bad` is ungraded: {bad:#?}"
     );
     assert_eq!(t.unconverted_commits, bad.len());
@@ -855,7 +864,7 @@ fn an_unconverted_declaration_is_ungraded_and_the_rest_of_the_file_graded() {
     for line in [2, 8] {
         let graded = commits_on_line(&t, line);
         assert!(
-            !graded.is_empty() && graded.iter().all(|m| m.ends_with(" agree")),
+            !graded.is_empty() && graded.iter().all(|m| *m == "agree"),
             "line {line} is graded as usual: {graded:#?}"
         );
     }
@@ -893,6 +902,6 @@ fn an_unlocated_unconverted_declaration_skips_the_file() {
     );
     assert_eq!(
         t.manifest,
-        vec!["case.fs unconverted-unlocated".to_string()]
+        vec![("case.fs".to_string(), "unconverted-unlocated".to_string())]
     );
 }

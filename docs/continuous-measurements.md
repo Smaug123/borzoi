@@ -214,26 +214,30 @@ Granularity is chosen per sweep, to keep each file reviewable:
 
 | manifest | entries |
 |---|---|
-| `resolve_corpus_diff` | one per sampled file (compared or skipped and why; whether FCS's check errored; its match count; its count of graded uses FCS resolves outside the file) and one per gap, alt-binder or divergence use. Matches are counted per file rather than listed — ~22k of them — which loses no movement, since every non-match use is listed by key. External-target uses (~18k) are counted likewise: any of them not declined is a divergence, which fails first. |
-| `infer_corpus_diff` | one per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
+| `resolve_corpus_diff` | keyed. One per sampled file (compared or skipped and why; whether FCS's check errored; how many in-file B1 uses FCS reported, `b1=`, and how many uses it resolved outside the file, `external=`) and one per gap, alt-binder or divergence use. The matches (~22k) are a file's `b1` less its listed in-file uses, and the declined external uses (~18k) its `external` less its listed external ones; the sweep checks, file by file, that every counted record came to exactly one verdict. |
+| `infer_corpus_diff` | keyed. One per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
 | `project_corpus` (`crates/corpus-diff/manifests/`) | keyed (`<key><TAB><value>`), and with no count of its own verdicts, so it merges item by item. One per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with how many records the oracle reported and how many are definitions, or unreported), and one per graded record that is not a match through the resolver: each deferral with what the LSP served and which guard declined, each attribute or member match, and each record set aside; and, per file and copy, how many records the request handlers were asked everything about, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). A file's matches are its records less its definitions less its listed records, which the manifest checks before it renders. |
-| `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
-| `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). A file either parser rejects also carries its recovered-tree verdict ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
-| `recovery_sweep` (cst) | one per sampled single-token deletion graded against FCS: the relation and its compared/undamaged/total counts ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
+| `parser_corpus` (cst) | keyed. One per file that parses with errors or is not UTF-8, and `(corpus)` counting every file walked; the clean parses (~5.6k) are the files not listed. |
+| `parser_corpus_diff` (cst) | keyed. One per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and `(corpus)` counting every file walked; the matches (~5.4k) are the files not listed. A file either parser rejects also carries its recovered-tree verdict ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
+| `recovery_sweep` (cst) | keyed by file, deletion offset and family. One per sampled single-token deletion graded against FCS: the relation and its compared/undamaged/total counts ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
+| `xml_doc_source_corpus` (lsp) | keyed. One per sampled file (compared or skipped and why; whether FCS's check errored) and one per occurrence hover was graded at, keyed by its range: what we resolved there and its verdict — agreement on a doc or on none, a decline with its cause and whether FCS had a doc, an unpaired answer, an oracle-ambiguous site. Agreements are listed too (~36k): an occurrence is ours, not an oracle record, so no count of the oracle's would leave them derivable. |
+| `xml_doc_source_projects` (lsp) | as `xml_doc_source_corpus`, over the pinned projects: one per project with FCS's error count, and one per graded occurrence, keyed `<project> <file>:<range>` (two projects may compile one file, and each project's answers are separate facts), a use of a declaration in another file marked `cross-file-use`. |
 | `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
 | `fsproj_msbuild_corpus_diff` (msbuild) | one per pinned `.fsproj`, `<project>\t<outcomes>`: a project-level `error(...)`, or each facet's `match`, `decline(<first cause>)` or `skip(<reason>)`. A tab separates the two because a path may contain a space. A run over a project list checks just the listed projects' entries. |
 | `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |
 | `doc_id_csharp/<pack>` (assembly) | per targeting pack (`Microsoft.NETCore.App.Ref`, `Microsoft.AspNetCore.App.Ref`): the pack version; one per DLL with its shipped-key and hit counts, or `no-xml`; one per shipped doc key our generated IDs miss, with its mechanically decided cause (a docs-pipeline spelling such as `ei-at-separator`, or an absence such as `type-absent`); and one per ID two members generate. A miss no cause explains fails before the manifest is read. |
 
-The cst manifests count their dominant bucket for the same reason
-`resolve_corpus_diff` counts matches: every other file is listed by path, so a
-file entering or leaving the counted bucket moves a listed line, and the corpus
-is pinned, so no file can join the walk unlisted.
-
-A count of the sweep's own verdicts has a cost, though: it changes whenever any
-item it counts does, so two branches that moved different items conflict on it.
+A sweep with a dominant bucket leaves it unlisted — matches, clean parses —
+which loses no movement: every other item is listed, so one entering or leaving
+the bucket moves a listed line. What it must not do is *count* the bucket. A
+count of the sweep's own verdicts changes whenever any item it counts does, so
+two branches that moved different items conflict on it. So the count is of the
+sweep's input instead — the files walked, the records the oracle reported —
+which moves only with the corpus or the oracle, and the bucket is that count
+less the listed items. Each sweep that does this asserts, before it renders,
+that every input came to exactly one verdict, so the subtraction holds.
 An entry's key is the text before its first tab, or all of it, and keys are
 distinct; a manifest whose every entry is keyed can merge key by key
 (`borzoi_oracle_harness::manifest::merge3`), and `.gitattributes` gives those to
@@ -241,13 +245,13 @@ the merge driver `tools/manifest-merge.sh` (enable it with
 `git config merge.borzoi-manifest.driver 'bash tools/manifest-merge.sh %O %A %B %P'`).
 A key one branch changed takes that branch's entry; a key both changed
 differently is a conflict. So a manifest merges cleanly exactly as far as its
-lines are independent. `project_corpus`, which most resolver changes move, is
-keyed, lists its verdicts item by item and counts only the oracle's input —
-records per file, which move only with the corpus or the oracle — so the match
-count it no longer prints still follows from its lines;
+lines are independent. `project_corpus`, `resolve_corpus_diff`,
+`infer_corpus_diff`, `xml_doc_source_corpus`, `xml_doc_source_projects`,
+`parser_corpus`, `parser_corpus_diff` and `recovery_sweep` are keyed, list
+their verdicts item by item and count only their inputs, and
 `fsproj_msbuild_corpus_diff` is keyed by project. The others are not keyed and
-stay on Git's text merge: merged as sets, a count line both branches rewrote
-would come out twice instead of conflicting.
+stay on Git's text merge: merged as sets, a line both branches rewrote would
+come out twice instead of conflicting.
 
 The reference pack is not the F# corpus: it is whichever pack the SDK on `PATH`
 ships. Under `nix develop`, which is how CI and every documented command run
