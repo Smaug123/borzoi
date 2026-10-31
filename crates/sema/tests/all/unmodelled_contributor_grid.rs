@@ -264,6 +264,11 @@ enum Route {
     /// `open type` of a referenced type a referenced `[<AutoOpen>]` module
     /// augments with the static, in scope through an `open`.
     OpenTypeAssemblyExtension,
+    /// The same with extension *properties*, whose accessors carry the name.
+    OpenTypeAssemblyExtensionProperty,
+    /// `open type` of a type whose static of the name is an overload set, in
+    /// front of a union case of it: methods never contest a pattern.
+    OpenTypeOverloadPattern,
     /// A constructible type of the name.
     ConstructibleType,
     /// A record of the name that a `StructAttribute` spelled through an
@@ -336,7 +341,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 72] = [
+    const ALL: [Route; 74] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -384,6 +389,8 @@ impl Route {
         Route::OpenTypeDropped,
         Route::OpenTypeSourceExtension,
         Route::OpenTypeAssemblyExtension,
+        Route::OpenTypeAssemblyExtensionProperty,
+        Route::OpenTypeOverloadPattern,
         Route::ConstructibleType,
         Route::AutoOpenAliasedStructRecord,
         Route::AliasedStructRecord,
@@ -427,6 +434,7 @@ impl Route {
                 | Route::TypeGroupParameter
                 | Route::TypeGroupLocalLet
                 | Route::TypeGroupLocalHead
+                | Route::OpenTypeOverloadPattern
         )
     }
 
@@ -442,6 +450,7 @@ impl Route {
                 | Route::RecTypeGroupQualifier
                 | Route::AutoOpenTypeAccessor
                 | Route::AutoOpenOperatorCase
+                | Route::OpenTypeOverloadPattern
         )
     }
 
@@ -463,6 +472,7 @@ impl Route {
             | Route::RecTypeGroupQualifier => !kind.is_case(),
             // The probe is a fixed name, not the kind's: one kind runs it.
             Route::AutoOpenTypeAccessor | Route::AutoOpenOperatorCase => kind == Kind::OwnValue,
+            Route::OpenTypeOverloadPattern => kind == Kind::OwnCase,
             _ => true,
         }
     }
@@ -732,6 +742,14 @@ impl Route {
             Route::OpenTypeSourceExtension => (
                 vec![],
                 "module GridProbe\n@OWN\ntype GridFix.Plain with\n    @STATIC\nopen type GridFix.Plain\n@USE\n",
+            ),
+            Route::OpenTypeAssemblyExtensionProperty => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFix\nopen type GridFix.Plain3\n@USE\n",
+            ),
+            Route::OpenTypeOverloadPattern => (
+                vec![],
+                "module GridProbe\ntype GridE = Parse of string | GridEOther\nopen type GridFix.Overloads\nlet probe = function @P{Parse} x -> x | GridEOther -> \"\"\n",
             ),
             Route::OpenTypeAssemblyExtension => (
                 vec![],

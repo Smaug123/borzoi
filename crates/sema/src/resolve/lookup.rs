@@ -2561,11 +2561,14 @@ impl<'a> Resolver<'a> {
                 // An opened entry that declines — one an open withdrew, a block's
                 // own declaration demoted — no longer says whether it is a case,
                 // and may be one shadowing everything earlier in the scan. A type
-                // name is the exception: it takes the value slot only, and never
-                // the constructor namespace.
+                // name and an overload set of statics are the exceptions: they
+                // take the value slot only, never the constructor namespace.
                 if entry.from_open
                     && entry.decline.is_some()
-                    && entry.decline != Some(DeclineCause::OpenedTypeName)
+                    && !matches!(
+                        entry.decline,
+                        Some(DeclineCause::OpenedTypeName | DeclineCause::OpenedOverloadSet)
+                    )
                 {
                     return Err(entry.decline);
                 }

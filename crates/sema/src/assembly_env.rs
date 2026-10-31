@@ -2491,9 +2491,18 @@ impl AssemblyEnv {
                         }
                         None => (String::new(), None),
                     };
+                    // An extension property or event compiles to its
+                    // accessors (`T.get_P.Static`), whose names carry its own.
                     let names = index.entry(target).or_default();
-                    names.insert(member_name(member).to_string());
-                    names.extend(tail.map(str::to_string));
+                    for name in std::iter::once(member_name(member)).chain(tail) {
+                        names.insert(name.to_string());
+                        if let Some(own) = ["get_", "set_", "add_", "remove_"]
+                            .iter()
+                            .find_map(|p| name.strip_prefix(p))
+                        {
+                            names.insert(own.to_string());
+                        }
+                    }
                 }
             }
             index
