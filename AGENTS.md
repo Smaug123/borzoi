@@ -398,7 +398,7 @@ nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ign
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_source_diff::corpus:: -- --ignored  #  ~20 s
-nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ xml_doc_inheritdoc_generated_diff::deep_ xml_doc_inheritdoc_metadata_diff::deep_  #  ~4 min
+nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ xml_doc_inheritdoc_generated_diff:: xml_doc_inheritdoc_metadata_diff::deep_  #  ~4 min
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s
