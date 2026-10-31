@@ -132,6 +132,7 @@ case "$1" in
   *) echo "fake cargo: unexpected $*" >&2; exit 99 ;;
 esac
 fail() { echo "step of run $FAKE_RUN: $*" >&2; exit 1; }
+touch "$FAKE_DIR/started.$FAKE_RUN"
 [ -n "${BORZOI_PROJECT_LIST:-}" ] || fail "no BORZOI_PROJECT_LIST"
 lines="$(grep -c '^BORZOI_PROJECT_LIST=' "$GITHUB_ENV")"
 [ "$lines" = 1 ] || fail "$GITHUB_ENV has $lines BORZOI_PROJECT_LIST lines"
@@ -180,9 +181,10 @@ run_gate() {
       FAKE_LOG="$tmp/log" FAKE_RESTORE_FAILS="${FAKE_RESTORE_FAILS:-}" \
       FAKE_RESTORE_FAILS_AFTER="${FAKE_RESTORE_FAILS_AFTER:-}" \
       FAKE_PS_SLOW_PID="${FAKE_PS_SLOW_PID:-}" FAKE_PS_ENTERED="$tmp/ps-entered" \
+      FAKE_DIR="$tmp" \
       bash "$tmp/repo/tools/ci/project-corpus-gate.sh" "$@" >"$tmp/$name.out" 2>&1
     echo $? >"$tmp/$name.status"
-  )
+  ) 2>/dev/null
 }
 
 show_failure() { # name
@@ -240,17 +242,24 @@ test_concurrency() {
   assert_eq "the run after a failed restore succeeds" 0 "$(cat "$tmp/g.status")"
   show_failure g
 
-  # A lock or a reader registration left by a process that no longer exists.
+  # A reader registration left by a process that no longer exists. Its steps
+  # may outlive it, so a run that would rewrite the corpus stops.
   local dead
   sh -c 'exit 0' &
   dead=$!
   wait "$dead"
-  mkdir -p "$tmp/cache/readers"
   echo "$dead gone" >"$tmp/cache/readers/stale"
-  : >"$tmp/log"
   run_gate h "$tmp/plan2" "$rev2" "$step"
-  assert_eq "a dead reader does not block materialisation" 0 "$(cat "$tmp/h.status")"
-  show_failure h
+  assert_eq "a dead reader stops a run that would rewrite the corpus" 1 "$(cat "$tmp/h.status")"
+  assert_eq "the failure names the registration to remove" 1 \
+    "$(grep -c "rm '$tmp/cache/readers/stale'" "$tmp/h.out")"
+  rm "$tmp/cache/readers/stale"
+
+  # An empty registration is a run that died registering, before any step.
+  : >"$tmp/cache/readers/empty"
+  run_gate h2 "$tmp/plan2" "$rev2" "$step"
+  assert_eq "an empty registration does not stop materialisation" 0 "$(cat "$tmp/h2.status")"
+  show_failure h2
 
   mkdir "$tmp/cache/lock"
   echo "$dead gone" >"$tmp/cache/lock/owner"
@@ -280,6 +289,17 @@ test_concurrency() {
   assert_eq "the run whose restore failed fails" 1 "$(cat "$tmp/k.status")"
   assert_eq "the run that waited on it takes the lock and succeeds" 0 "$(cat "$tmp/l.status")"
   show_failure l
+
+  # A run killed outright while its step still reads: the step outlives the
+  # registration's owner, and a run of another pin must not restore under it.
+  : >"$tmp/log"
+  run_gate m "$tmp/plan1" "$rev1" "$step" &
+  for _ in $(seq 100); do [ -e "$tmp/started.m" ] && break; sleep 0.1; done
+  kill -9 "$(cut -d' ' -f1 "$tmp/cache/readers"/*)"
+  run_gate n "$tmp/plan2" "$rev2" "$step"
+  for _ in $(seq 100); do [ "$(count_log step)" = 0 ] || break; sleep 0.1; done
+  assert_eq "a killed run's surviving step reads its own pin to the end" 1 "$(count_log "step m")"
+  assert_eq "the run of another pin beside it stops" 1 "$(cat "$tmp/n.status")"
 
   rm -rf "$tmp"
 }

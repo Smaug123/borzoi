@@ -443,5 +443,6 @@ restores from nuget.org) into a cache shared by every worktree,
 runs are safe: each has its own plan and env files, a lock serialises the
 checkout and restore, and no run rewrites the corpus while another run's steps
 read it, so a run of a different pin waits for them. A run whose pin is
-already materialised skips the restore. If a run reports that the lock is held
-by a run that has exited, remove it as the message says.
+already materialised skips the restore. A run killed outright leaves its lock
+or its reader registration behind; the next run that needs it gone fails and
+says what to remove once no step of the killed run is still going.

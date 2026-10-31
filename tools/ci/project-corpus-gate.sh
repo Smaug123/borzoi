@@ -29,8 +29,9 @@
 # moment its materialisation is settled until it exits, so no run checks out
 # or restores under another run's steps. A run whose plan, SDK and
 # materialisation script match the cache's `materialised` stamp skips the
-# writing phase and reads straight away. A run that died holding the lock
-# leaves it behind, and the next run fails naming it rather than guessing.
+# writing phase and reads straight away. A run killed outright (SIGKILL)
+# leaves its lock or its reader registration behind, and the next run that
+# needs either gone fails naming it rather than guessing.
 #
 # Run it outside `nix develop`: it enters the devshell itself.
 set -euo pipefail
@@ -221,7 +222,11 @@ release_lock() {
 }
 
 # Called holding the lock, which is the only time a reader registers, so an
-# empty registration is one whose run died writing it.
+# empty registration is one whose run died writing it, before any step began.
+# A run that died after registering is another matter: its steps are its
+# children, and a run killed outright leaves them reading the corpus (and,
+# under BORZOI_UPDATE_MANIFESTS=1, writing manifests from it). Nothing here
+# can tell whether they have finished, so a writer stops rather than guess.
 wait_for_readers() {
   local r owner live said=
   while :; do
@@ -229,10 +234,15 @@ wait_for_readers() {
     for r in "$readers"/*; do
       [ -e "$r" ] || continue
       owner="$(cat "$r" 2>/dev/null || true)"
-      if [ -n "$owner" ] && alive "$owner"; then
+      if [ -z "$owner" ]; then
+        rm -f "$r"
+      elif alive "$owner"; then
         live+=" ${owner%% *}"
       else
-        rm -f "$r"
+        echo "project-corpus-gate: $r registers a run that has exited ($owner)," \
+          "and its steps may still be reading the corpus. Once none is, remove it:" >&2
+        echo "  rm '$r'" >&2
+        exit 1
       fi
     done
     [ -n "$live" ] || return 0
