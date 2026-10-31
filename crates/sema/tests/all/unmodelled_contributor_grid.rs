@@ -1328,6 +1328,13 @@ enum CeBuilder {
     OpEmptyNameJoinWord,
     /// The attribute spelled through an abbreviation.
     OpAliased,
+    /// The attribute through an abbreviation declared with the `Attribute`
+    /// suffix and written without it, which F# also looks up.
+    OpAliasedSuffixed,
+    /// The same abbreviation declared in an earlier file.
+    OpAliasedSuffixedEarlier,
+    /// The same abbreviation declared in an earlier file's signature.
+    OpAliasedSuffixedSignature,
     /// The attribute spelled fully qualified, with its `Attribute` suffix.
     OpQualified,
     /// The operation declared on the builder's base class.
@@ -1389,7 +1396,7 @@ enum CeForm {
 }
 
 impl CeBuilder {
-    const ALL: [CeBuilder; 34] = [
+    const ALL: [CeBuilder; 37] = [
         CeBuilder::Async,
         CeBuilder::Task,
         CeBuilder::Seq,
@@ -1402,6 +1409,9 @@ impl CeBuilder {
         CeBuilder::OpEmptyName,
         CeBuilder::OpEmptyNameJoinWord,
         CeBuilder::OpAliased,
+        CeBuilder::OpAliasedSuffixed,
+        CeBuilder::OpAliasedSuffixedEarlier,
+        CeBuilder::OpAliasedSuffixedSignature,
         CeBuilder::OpQualified,
         CeBuilder::OpInherited,
         CeBuilder::OpAbbreviated,
@@ -1591,6 +1601,29 @@ impl CeBuilder {
                     ]),
                 ),
             ],
+            CeBuilder::OpAliasedSuffixedEarlier => vec![(
+                "GridAlias.fs",
+                lines_of([
+                    "module GridAlias".to_string(),
+                    "type GridCOAttribute = CustomOperationAttribute".to_string(),
+                ]),
+            )],
+            CeBuilder::OpAliasedSuffixedSignature => vec![
+                (
+                    "GridAlias.fsi",
+                    lines_of([
+                        "module GridAlias".to_string(),
+                        "type GridCOAttribute = CustomOperationAttribute".to_string(),
+                    ]),
+                ),
+                (
+                    "GridAlias.fs",
+                    lines_of([
+                        "module GridAlias".to_string(),
+                        "type GridCOAttribute = CustomOperationAttribute".to_string(),
+                    ]),
+                ),
+            ],
             CeBuilder::CrossFileNoOp => vec![(
                 "GridBuilders.fs",
                 lines_of(
@@ -1679,6 +1712,17 @@ impl CeBuilder {
                         .to_string(),
                 ])
                 .collect(),
+            CeBuilder::OpAliasedSuffixed => {
+                ["type GridCOAttribute = CustomOperationAttribute".to_string()]
+                    .into_iter()
+                    .chain(suffixed_alias_builder("GridCO"))
+                    .collect()
+            }
+            // Qualified, not opened: an `open` of the module is its own
+            // contributor, which the grid's other routes cover.
+            CeBuilder::OpAliasedSuffixedEarlier | CeBuilder::OpAliasedSuffixedSignature => {
+                suffixed_alias_builder("GridAlias.GridCO")
+            }
             CeBuilder::OpAliased => ["type GridCO = CustomOperationAttribute".to_string()]
                 .into_iter()
                 .chain(grid_builder(
@@ -1765,6 +1809,22 @@ impl CeBuilder {
         }
         out
     }
+}
+
+/// A builder whose operation's attribute is written `attribute`, which names
+/// an abbreviation spelled with `Attribute` after it through F#'s suffix
+/// lookup.
+fn suffixed_alias_builder(attribute: &str) -> Vec<String> {
+    grid_builder(
+        "type GridB() =",
+        vec![
+            format!("[<{attribute}(\"@N\")>]"),
+            "member _.GridOp(state: int, v: int) = state + v".to_string(),
+        ],
+    )
+    .into_iter()
+    .chain(["let gridB = GridB()".to_string()])
+    .collect()
 }
 
 /// `[<CustomOperation(name)>]` on a method, indented by `indent`.

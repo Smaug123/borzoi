@@ -64,6 +64,13 @@ impl CeOps {
 pub(super) const CUSTOM_OPERATION_SPELLINGS: &[&str] =
     &["CustomOperation", "CustomOperationAttribute"];
 
+/// Whether `names` holds a type F# may find for an attribute written
+/// `spelling`: one spelled so, or spelled so with `Attribute` after it, the
+/// suffix F# also looks up (`[<CO>]` finds `COAttribute`).
+pub(super) fn spelling_may_name(names: &std::collections::HashSet<String>, spelling: &str) -> bool {
+    names.contains(spelling) || names.contains(&format!("{spelling}Attribute"))
+}
+
 /// Whether `defn` declares a type spelled like `CustomOperationAttribute`, or
 /// an abbreviation that mentions it: after one, an attribute spelled any way
 /// may be a custom operation.
@@ -671,7 +678,7 @@ impl Resolver<'_> {
         let aliases = self.assemblies.custom_operation_aliases();
         CUSTOM_OPERATION_SPELLINGS.contains(&spelling)
             || aliases.certain
-            || aliases.possible.contains(spelling)
+            || spelling_may_name(&aliases.possible, spelling)
             || self.preceding.custom_operation_alias_declared
             || self.contributions.declares_custom_operation_alias
     }
@@ -794,6 +801,111 @@ mod tests {
         );
         let parsed = parse(&src);
         file_custom_operations(&parsed.root, &|s| CUSTOM_OPERATION_SPELLINGS.contains(&s))
+    }
+
+    /// A referenced abbreviation whose target the projection could not read
+    /// may be `CustomOperationAttribute`, and F# finds it for an attribute
+    /// written without its `Attribute` suffix: `[<GridCO("foo")>]` names
+    /// `GridCOAttribute`. The operation it may declare takes `foo` from the
+    /// file's own `foo` inside the expression.
+    #[test]
+    fn an_unread_abbreviation_named_with_the_suffix_may_be_custom_operation() {
+        use crate::assembly_env::from_views_tests::abbrev_marker;
+        use crate::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+        use borzoi_cst::syntax::{AstNode, ImplFile};
+
+        let src = "module M\ntype B() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\n    [<GridCO(\"foo\")>]\n    member _.Op(s: int, v: int) = s + v\nlet b = B()\nlet foo (x: int) = x\nlet probe = b { return foo 1 }\n";
+        for (alias, declines) in [
+            ("GridCOAttribute", true),
+            ("GridCO", true),
+            ("Unrelated", false),
+        ] {
+            let env = AssemblyEnv::from_entities(vec![abbrev_marker("Lib", &["Lib"], alias, None)]);
+            let parsed = parse(src);
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let recovery = SyntaxRecovery::of(&parsed);
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+            let at = src.rfind("foo 1").expect("the use");
+            let range = rowan::TextRange::new(
+                u32::try_from(at).unwrap().into(),
+                u32::try_from(at + 3).unwrap().into(),
+            );
+            let committed = rf
+                .resolution_at(range)
+                .is_some_and(|r| matches!(r, Resolution::Local(_) | Resolution::Item(_)));
+            assert_eq!(
+                !committed,
+                declines,
+                "{alias}: {:?}",
+                rf.resolution_at(range)
+            );
+        }
+    }
+
+    /// The same in an earlier file's signature, whose attributes are the ones
+    /// later files see: its augmentation's operation extends the later
+    /// file's builder.
+    #[test]
+    fn a_signature_attribute_written_without_the_suffix_may_be_custom_operation() {
+        use crate::assembly_env::from_views_tests::abbrev_marker;
+        use crate::{
+            AssemblyEnv, ProjectFile, Resolution, SourceFile, SyntaxRecovery, qualified_names,
+            resolve_project_files,
+        };
+        use borzoi_cst::parser::parse_sig;
+        use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
+        use std::path::PathBuf;
+
+        let files = [
+            (
+                "Ext.fsi",
+                "module Ext\ntype System.Object with\n    [<GridCO(\"foo\")>]\n    member Op: s: int * v: int -> int\n",
+            ),
+            (
+                "Ext.fs",
+                "module Ext\ntype System.Object with\n    member _.Op(s: int, v: int) = s + v\n",
+            ),
+            (
+                "P.fs",
+                "module P\ntype B() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\nlet b = B()\nlet foo (x: int) = x\nlet probe = b { return foo 1 }\n",
+            ),
+        ];
+        for (alias, declines) in [("GridCOAttribute", true), ("Unrelated", false)] {
+            let srcs: Vec<SourceFile> = files
+                .iter()
+                .map(|(path, src)| {
+                    if path.ends_with(".fsi") {
+                        let p = parse_sig(src);
+                        assert!(p.errors.is_empty(), "{:?}", p.errors);
+                        SourceFile::Sig(SigFile::cast(p.root).expect("sig file"))
+                    } else {
+                        let p = parse(src);
+                        assert!(p.errors.is_empty(), "{:?}", p.errors);
+                        SourceFile::Impl(ImplFile::cast(p.root).expect("impl file"))
+                    }
+                })
+                .collect();
+            let paths: Vec<PathBuf> = files.iter().map(|(p, _)| PathBuf::from(p)).collect();
+            let qnofs = qualified_names(&srcs, &paths);
+            let project: Vec<ProjectFile> = srcs
+                .into_iter()
+                .zip(qnofs)
+                .map(|(f, q)| ProjectFile::new(f, q, SyntaxRecovery::Unretained))
+                .collect();
+            let env = AssemblyEnv::from_entities(vec![abbrev_marker("Lib", &["Lib"], alias, None)]);
+            let resolved = resolve_project_files(&project, &env);
+            let src = files[2].1;
+            let at = src.rfind("foo 1").expect("the use");
+            let range = rowan::TextRange::new(
+                u32::try_from(at).unwrap().into(),
+                u32::try_from(at + 3).unwrap().into(),
+            );
+            let res = resolved.file(2).resolution_at(range);
+            let committed =
+                res.is_some_and(|r| matches!(r, Resolution::Local(_) | Resolution::Item(_)));
+            assert_eq!(!committed, declines, "{alias}: {res:?}");
+        }
     }
 
     /// An augmentation's operation is named by the attribute's string, a

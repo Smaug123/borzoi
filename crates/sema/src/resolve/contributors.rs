@@ -667,7 +667,7 @@ pub(super) fn signature_contributions(
         super::custom_operations::signature_custom_operations(sig.syntax(), &|s| {
             super::custom_operations::CUSTOM_OPERATION_SPELLINGS.contains(&s)
                 || !co_trusted
-                || co_aliases.possible.contains(s)
+                || super::custom_operations::spelling_may_name(&co_aliases.possible, s)
         });
     for module in sig.modules() {
         let root_module = matches!(module.kind(), ModuleOrNamespaceKind::NamedModule)

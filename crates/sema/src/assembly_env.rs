@@ -6975,7 +6975,7 @@ mod active_pattern_banana_tests {
 }
 
 #[cfg(test)]
-mod from_views_tests {
+pub(crate) mod from_views_tests {
     use super::{AssemblyEnv, EntityHandle, InterfaceChain, ManifestSurfacePosition};
     use borzoi_assembly::{
         AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, EcmaView, Entity,
@@ -7168,7 +7168,7 @@ mod from_views_tests {
 
     /// A public, non-generic, extension-member-free module `name` in `namespace`,
     /// owned by assembly `assembly` — the surviving half of an auto-open target.
-    fn module_entity(assembly: &str, namespace: &[&str], name: &str) -> Entity {
+    pub(crate) fn module_entity(assembly: &str, namespace: &[&str], name: &str) -> Entity {
         Entity {
             assembly: ident(assembly),
             namespace: namespace.iter().map(|s| (*s).to_string()).collect(),
@@ -7602,7 +7602,7 @@ mod from_views_tests {
     }
 
     /// An abbreviation marker `namespace.name` whose decoded target is `target`.
-    fn abbrev_marker(
+    pub(crate) fn abbrev_marker(
         assembly: &str,
         namespace: &[&str],
         name: &str,
