@@ -167,6 +167,12 @@ impl<'a> Resolver<'a> {
             .entry(self.container_path.clone())
             .or_default()
             .insert(key.clone(), slot);
+        self.type_slot_history
+            .entry(self.container_path.clone())
+            .or_default()
+            .entry(key.clone())
+            .or_default()
+            .push((u32::from(range.start()), slot));
         // The parallel access-root entry (same key, same last-wins): a `private`
         // type is accessible only within its container's subtree, so a same-file
         // module-qualified `A.Foo.Red` from an inaccessible site (a sibling) does

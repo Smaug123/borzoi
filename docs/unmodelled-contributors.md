@@ -29,6 +29,19 @@ A mark's reach follows FCS's two tables:
 | `Both` | bare use, dotted head, and pattern | cases, active-pattern cases, attributed `let`s (which may be `[<Literal>]`) |
 | `Expression` | bare use and dotted head | values that cannot be literals (an unattributed `let`, an `extern`, a static), and constructible types' names |
 
+Whether a name set holds every name FCS says a contributor introduces is
+checked by a generated oracle, `crates/sema/tests/all/contributor_name_oracle.rs`.
+It writes contributors of every kind (`[<AutoOpen>]` modules, aliased, nested,
+`rec`, an earlier file's root, a signature-only `[<AutoOpen>]`) holding random
+declarations of every kind, and binds every candidate name ahead of the
+contributor. The candidates are the names the generator wrote, their accessor
+forms, the compiled operator names, and every name FCS reports as defined in the
+contributor. It then uses each candidate bare in expression position, and in
+pattern position when capitalised. Wherever we commit, FCS must name the same
+symbol. Its absolute half checks the generator against FCS: every declaration
+and member kind the generator says introduces a bare name must do so in FCS
+somewhere in the run.
+
 ## The closed list
 
 The list is enumerated from where FCS extends the environment, not from review

@@ -275,6 +275,9 @@ enum Route {
     AliasedStructRecord,
     /// An abbreviation of a constructible type, named so.
     ConstructibleAbbrev,
+    /// A generic class of the name, then a non-generic union of it: both take
+    /// part in the slot, the class's constructor among them.
+    GenericClassThenUnion,
     /// An earlier file's constructible type of the name in the probe file's
     /// own namespace.
     EarlierNamespaceCtor,
@@ -339,7 +342,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 71] = [
+    const ALL: [Route; 72] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -389,6 +392,7 @@ impl Route {
         Route::AutoOpenAliasedStructRecord,
         Route::AliasedStructRecord,
         Route::ConstructibleAbbrev,
+        Route::GenericClassThenUnion,
         Route::EarlierNamespaceCtor,
         Route::EarlierNamespaceCtorOpened,
         Route::EarlierNamespaceCtorAbbrev,
@@ -738,6 +742,10 @@ impl Route {
             ),
             Route::ConstructibleType => (vec![], "module GridProbe\n@OWN\n@CTOR\n@USE\n"),
             Route::ConstructibleAbbrev => (vec![], "module GridProbe\n@OWN\n@OBJ\n@USE\n"),
+            Route::GenericClassThenUnion => (
+                vec![],
+                "module GridProbe\n@OWN\ntype @NAME<'T>(value: 'T) =\n    member _.Value = value\ntype @NAME = GridA | GridB\n@USE\n",
+            ),
             Route::EarlierNamespaceCtor => (
                 vec![("GridNs.fs", "namespace GridNs\n@CTOR\n")],
                 "namespace GridNs\nmodule GridProbe =\n    @OWN\n    @USE\n",
@@ -975,7 +983,7 @@ fn cells() -> Vec<Cell> {
 }
 
 /// FCS's record at exactly `span`, ignoring definitions.
-fn fcs_at(uses: &FileUses, span: TextRange) -> Option<&NormalisedProjectUse> {
+pub(crate) fn fcs_at(uses: &FileUses, span: TextRange) -> Option<&NormalisedProjectUse> {
     let (start, end) = (usize::from(span.start()), usize::from(span.end()));
     let at: Vec<&NormalisedProjectUse> = uses
         .uses
@@ -993,7 +1001,7 @@ fn fcs_at(uses: &FileUses, span: TextRange) -> Option<&NormalisedProjectUse> {
 }
 
 /// FCS's record, rendered for the manifest.
-fn render_fcs(u: Option<&NormalisedProjectUse>) -> String {
+pub(crate) fn render_fcs(u: Option<&NormalisedProjectUse>) -> String {
     let Some(u) = u else {
         return "-".to_string();
     };
@@ -1015,7 +1023,7 @@ fn render_fcs(u: Option<&NormalisedProjectUse>) -> String {
 }
 
 /// Whether our committed `res` names exactly FCS's record `u`.
-fn agrees(
+pub(crate) fn agrees(
     env: &AssemblyEnv,
     proj: &ResolvedProject,
     paths: &[PathBuf],
@@ -1067,7 +1075,7 @@ fn agrees(
     }
 }
 
-fn env_of(dlls: &[&Path]) -> AssemblyEnv {
+pub(crate) fn env_of(dlls: &[&Path]) -> AssemblyEnv {
     let bytes: Vec<Vec<u8>> = dlls
         .iter()
         .map(|p| std::fs::read(p).unwrap_or_else(|e| panic!("read {p:?}: {e}")))

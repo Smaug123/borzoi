@@ -1825,6 +1825,7 @@ impl<'a> Resolver<'a> {
             typar_scopes: Vec::new(),
             type_defs: HashMap::new(),
             type_slot_classes: HashMap::new(),
+            type_slot_history: HashMap::new(),
             type_access_roots: HashMap::new(),
             container_decls: HashMap::new(),
             type_cases: HashMap::new(),

@@ -4688,14 +4688,14 @@ impl<'a> Resolver<'a> {
         };
         for k in 0..=self.container_path.len() {
             let prefix = &self.container_path[..k];
-            if let Some(&id) = self.type_defs.get(prefix).and_then(|m| m.get(head)) {
-                let class = self
-                    .type_slot_classes
-                    .get(prefix)
-                    .and_then(|m| m.get(head))
-                    .copied()
-                    .unwrap_or(SlotClass::Unknown);
-                note(u32::from(self.defs[id.index()].range.start()), class);
+            for &(pos, class) in self
+                .type_slot_history
+                .get(prefix)
+                .and_then(|m| m.get(head))
+                .into_iter()
+                .flatten()
+            {
+                note(pos, class);
             }
         }
         // Namespace opens AND project module opens both import *project* types

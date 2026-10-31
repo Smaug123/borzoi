@@ -272,6 +272,10 @@ impl ScopeEntry {
     }
 }
 
+/// One in-file type definition's position and [`SlotClass`]
+/// ([`Resolver::type_slot_history`]).
+pub(super) type TypeSlotDef = (u32, SlotClass);
+
 /// One lexical scope: a flat, source-ordered list of its own bindings. The
 /// parent-linked scope *tree* of D4 is realised implicitly as the live stack of
 /// frames during the walk — at any use, the frame stack is exactly that use's
@@ -836,6 +840,12 @@ pub(super) struct Resolver<'a> {
     /// type's name enters FCS's unqualified slot and so can EVICT a
     /// same-named definite value (probes M20a–M20o).
     pub(super) type_slot_classes: HashMap<Vec<String>, HashMap<String, SlotClass>>,
+    /// Every in-file type definition's position and [`SlotClass`], by
+    /// container and simple name — all of them, not the last-wins one
+    /// [`Self::type_slot_classes`] keeps: same-named types of different
+    /// arities each take the unqualified slot, and the latest of any of them
+    /// is what orders a value ([`Self::head_value_slot`]).
+    pub(super) type_slot_history: HashMap<Vec<String>, HashMap<String, Vec<TypeSlotDef>>>,
     /// Each in-file type's **access-root** — keyed like [`Self::type_defs`] and
     /// populated by the same [`define_type`](Self::define_type) call. `None` =
     /// public; `Some(k)` = accessible only from a site within the `k`-segment
