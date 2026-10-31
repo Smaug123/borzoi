@@ -4376,6 +4376,10 @@ pub struct ExplainedOpen {
     pub path: Vec<String>,
     /// Whether this is an `open type …`.
     pub is_type: bool,
+    /// Whether this is a block's implicit open of its own enclosing
+    /// namespace, recorded at the header's namespace path (see
+    /// [`OpenTrace::implicit`](borzoi_sema::OpenTrace)).
+    pub implicit: bool,
     /// Which opaque-open flags this open flipped (see [`OpenOpacity`]).
     pub opacity: OpenOpacity,
 }
@@ -4452,7 +4456,13 @@ impl TokenExplanation {
         } else {
             let _ = writeln!(out, "  opens (source order):");
             for o in &self.opens {
-                let kind = if o.is_type { "open type" } else { "open" };
+                let kind = if o.implicit {
+                    "implicit open of the enclosing namespace"
+                } else if o.is_type {
+                    "open type"
+                } else {
+                    "open"
+                };
                 let effect = if o.opacity.perturbs_resolution() {
                     let mut flags = Vec::new();
                     if o.opacity.opaque_value {
@@ -4558,6 +4568,7 @@ pub fn explain_token(loaded: &LoadedProject, file_idx: usize, byte: usize) -> To
             range: range_pair(o.range),
             path: o.path.clone(),
             is_type: o.is_type,
+            implicit: o.implicit,
             opacity: o.opacity,
         })
         .collect();

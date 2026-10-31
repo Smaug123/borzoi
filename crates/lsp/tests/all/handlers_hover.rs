@@ -123,6 +123,30 @@ fn tuple_expression_hover_is_not_labelled_literal() {
     assert_eq!(body(&hover), "`1, \"hi\"` — `int * string`");
 }
 
+/// The inferred-type fallback describes the expression the cursor is *in*,
+/// never an enclosing one: an unresolved name inside a typed block is not
+/// that block. (WoofWare.Incremental's `NodeToDot.fs`: hover on a deferred
+/// `HashSet` described the whole function body as `unit`, its blank lines
+/// breaking the code span.)
+#[test]
+fn hover_on_an_untyped_name_does_not_describe_the_enclosing_block() {
+    let src =
+        "let f (write : string -> unit) =\n    write \"a\"\n    let seen = Unknown ()\n\n    ()\n";
+    let (mut state, uri) = orphan_state(src);
+    let col = "    let seen = ".len() as u32;
+    if let Some(hover) = run(&mut state, &uri, 2, col) {
+        assert!(
+            !body(&hover).contains("let seen"),
+            "the hover describes an enclosing expression: {:?}",
+            body(&hover)
+        );
+    }
+    // The fallback still describes the expression the cursor is in.
+    let unit_col = "    ".len() as u32;
+    let hover = run(&mut state, &uri, 4, unit_col).expect("hover on the `()` literal");
+    assert!(body(&hover).starts_with("`()`"), "{:?}", body(&hover));
+}
+
 #[test]
 fn hover_shows_binder_type_not_coerced_use_type() {
     // `let o : obj = s` coerces the *expression* `s` to obj, but the *symbol* `s`

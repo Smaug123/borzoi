@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 418782ac881dceb79c614dd7e5bbd0733451574d07cb7aae918db4ae9a6d0b4e # shrinks to alias_declared = false, aliases = CoreAttributeAliases { certain: false, possible: {"AOAttribute"} }, spellings = ["AO"]
+cc d4491c275c4e05053f79804a4d0361397728450b56242024e8d02465d6d2f324 # shrinks to alias_declared = false, aliases = CoreAttributeAliases { certain: false, possible: {"AOAttribute"} }, lists = [[(false, "AO")]]
