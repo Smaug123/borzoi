@@ -318,6 +318,7 @@ TyparDecl::attributes
 TyparDecl::ident
 TyparDecl::intersection_constraints
 TyparDecl::is_head_type
+TyparDecls::constraint_clause
 TyparDecls::typars
 TyparExpr::ident
 TypeAbbrev::ty

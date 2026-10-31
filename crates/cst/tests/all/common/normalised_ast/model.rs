@@ -650,9 +650,16 @@ pub enum NormalisedMember {
     /// `abstract`/`static member` carriers); an *impl*-side `SynMemberDefn.Abstract‑
     /// Slot` is bodyless (FCS rejects `abstract M : int = 1` — FS0010), so its
     /// projection is always `None`. The `SynValInfo` arity, `SynMemberFlags`,
-    /// explicit typar decls, and inline/mutable flags are elided.
+    /// and inline/mutable flags are elided.
     AbstractSlot {
         name: String,
+        /// The slot's explicit type parameters — `SynValSig.explicitTypeParams`
+        /// (`abstract M<'U> : …`). Empty for a non-generic slot.
+        typars: Vec<NormalisedTypar>,
+        /// The inside-`<>` `when` constraints on those typars
+        /// (`abstract M<'U when 'U :> IDisposable> : …`). The after-type `when`
+        /// clause lives in `ty`.
+        constraints: Vec<NormalisedTypeConstraint>,
         ty: NormalisedType,
         leading_keyword: NormalisedLeadingKeyword,
         attributes: Vec<Vec<NormalisedAttribute>>,

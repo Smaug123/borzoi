@@ -1454,6 +1454,7 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
                 .to_string()
             };
             let ty = type_slot(vs.ty());
+            let (typars, constraints) = val_sig_typars(&vs);
             let leading_keyword = match (a.is_static(), a.is_abstract_member()) {
                 (true, true) => NormalisedLeadingKeyword::StaticAbstractMember,
                 (true, false) => NormalisedLeadingKeyword::StaticAbstract,
@@ -1467,6 +1468,8 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
             let attributes = normalise_attribute_lists(a.attributes(), &mut counter);
             NormalisedMember::AbstractSlot {
                 name,
+                typars,
+                constraints,
                 ty,
                 leading_keyword,
                 attributes,
@@ -1541,8 +1544,11 @@ fn normalise_member_sig(ms: &MemberSig) -> NormalisedMember {
     let literal = vs
         .literal_value()
         .map(|e| Box::new(normalise_expr(&e, &mut counter)));
+    let (typars, constraints) = val_sig_typars(&vs);
     NormalisedMember::AbstractSlot {
         name,
+        typars,
+        constraints,
         ty,
         leading_keyword,
         attributes,
@@ -1552,6 +1558,29 @@ fn normalise_member_sig(ms: &MemberSig) -> NormalisedMember {
         // modifier lives on the per-accessor slot (overall stays `None`).
         access: cst_member_sig_access(ms.syntax(), vs.syntax()),
     }
+}
+
+/// A member slot's explicit type parameters and their inside-`<>` `when`
+/// constraints — FCS's `SynValSig.explicitTypeParams`. The constraints are read
+/// through the type-parameter list's own clause, the accessor the resolver
+/// reads them by.
+fn val_sig_typars(
+    vs: &borzoi_cst::syntax::ValSig,
+) -> (Vec<NormalisedTypar>, Vec<NormalisedTypeConstraint>) {
+    let decls = vs.typar_decls();
+    let typars = decls
+        .as_ref()
+        .map(|ds| ds.typars().map(|t| normalise_typar(&t)).collect())
+        .unwrap_or_default();
+    let constraints = decls
+        .and_then(|ds| ds.constraint_clause())
+        .map(|c| {
+            c.constraints()
+                .map(|c| normalise_type_constraint(&c))
+                .collect()
+        })
+        .unwrap_or_default();
+    (typars, constraints)
 }
 
 /// Flatten an indexer setter's index pattern for the FCS-faithful arg tuple

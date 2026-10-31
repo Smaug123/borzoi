@@ -194,17 +194,9 @@ fn fcs_sig_decl_with(v: &Value, recurse: bool) -> NormalisedSigDecl {
             // `SynValSig.accessibility` (field 8, a `SynValSigAccess`).
             let access = fcs_val_sig_access(&fields(val_sig)[8]);
             let (name, ty) = fcs_val_sig(val_sig);
-            // Explicit value typars (`val f<'T> : …`, phase 10.12) — `SynValSig`
-            // field 2 is a `SynValTyparDecls(typarDecls: SynTyparDecls option,
-            // canInfer)` record; its field 0 is the `SynTyparDecls option`, read
-            // the same way a type-definition header's `typeParams` is. The
-            // inside-`<>` `when` constraints come from that same `PostfixList`
-            // (there is no after-decls constraint slot at the typar position — the
-            // after-type `when` lives in the signature `ty`).
-            let syn_val_typar_decls = &fields(val_sig)[2];
-            let typar_decls_opt = &fields(syn_val_typar_decls)[0];
-            let typars = fcs_typar_decls(typar_decls_opt);
-            let constraints = fcs_type_defn_constraints(typar_decls_opt, &Value::Null);
+            // Explicit value typars (`val f<'T> : …`, phase 10.12) and their
+            // inside-`<>` `when` constraints.
+            let (typars, constraints) = fcs_val_sig_typars(val_sig);
             // The `= <literal>` value (`val x : int = 1`, phase 10.12) —
             // `SynValSig.synExpr` (field 9, a `SynExpr option`), projected via the
             // shared expression normaliser. `null` (None) for no literal.
@@ -366,8 +358,11 @@ fn fcs_member_sig(v: &Value) -> NormalisedMember {
                 Value::Null => None,
                 some => Some(Box::new(fcs_expr(&fields(some)[0]))),
             };
+            let (typars, constraints) = fcs_val_sig_typars(slot);
             NormalisedMember::AbstractSlot {
                 name,
+                typars,
+                constraints,
                 ty,
                 leading_keyword,
                 attributes,
@@ -1485,8 +1480,11 @@ fn fcs_member(v: &Value) -> NormalisedMember {
             );
             // `SynValSig.attributes` is field 0 (phase 10.7g).
             let attributes = fcs_attribute_lists(&fields(slot)[0]);
+            let (typars, constraints) = fcs_val_sig_typars(slot);
             NormalisedMember::AbstractSlot {
                 name,
+                typars,
+                constraints,
                 ty,
                 leading_keyword,
                 attributes,
@@ -1594,13 +1592,27 @@ fn fcs_get_set_accessor(binding: &Value) -> (Vec<String>, NormalisedAccessor) {
 /// synType, arity, isInline, isMutable, xmlDoc, accessibility, synExpr, range,
 /// trivia)` to its `(name, type)`. Shared by the phase-9.10c abstract slot and
 /// (later) phase-10.12 `val` signatures. Field 1 is the `SynIdent` (its field 0
-/// the `Ident`); field 3 the `synType`. Arity / flags / explicit typars /
-/// inline / mutable / accessibility / attributes are elided.
+/// the `Ident`); field 3 the `synType`. The explicit typars are
+/// [`fcs_val_sig_typars`]; arity / flags / inline / mutable / accessibility /
+/// attributes are elided here.
 fn fcs_val_sig(v: &Value) -> (String, NormalisedType) {
     let f = fields(v);
     let name = fcs_syn_ident_name(&f[1]);
     let ty = fcs_type(&f[3]);
     (name, ty)
+}
+
+/// A `SynValSig`'s explicit type parameters and their inside-`<>` `when`
+/// constraints. Field 2 is a `SynValTyparDecls(typarDecls: SynTyparDecls option,
+/// canInfer)` record; its field 0, the `SynTyparDecls option`, is read the way a
+/// type-definition header's `typeParams` is. There is no after-decls constraint
+/// slot at this position: the after-type `when` lives in the `synType`.
+fn fcs_val_sig_typars(val_sig: &Value) -> (Vec<NormalisedTypar>, Vec<NormalisedTypeConstraint>) {
+    let typar_decls_opt = &fields(&fields(val_sig)[2])[0];
+    (
+        fcs_typar_decls(typar_decls_opt),
+        fcs_type_defn_constraints(typar_decls_opt, &Value::Null),
+    )
 }
 
 /// The source name of a `SynIdent(ident: Ident, trivia: IdentTrivia option)` —
