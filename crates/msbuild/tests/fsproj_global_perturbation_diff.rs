@@ -225,6 +225,25 @@ const CASES: &[Case] = &[
         )],
         pins: &[("Out", "FromImport"), ("Configuration", "FromImport")],
     },
+    // …and the opt-out *outlives* the import. MSBuild adds an imported root's
+    // `TreatAsLocalProperty` names to one per-evaluation set
+    // (`Evaluator.PerformDepthFirstPass` → `GlobalPropertiesToTreatAsLocal`)
+    // that is never cleared, so a write *after* the import, in the entry
+    // document, beats the global too; one *before* it is still discarded. Found
+    // by `fsproj_grammar_generative_diff`'s soak.
+    Case {
+        name: "treat-as-local-outlives-its-import",
+        xml: "<Project>\n  <PropertyGroup>\n    <Configuration>BeforeImport</Configuration>\n    <Helper>$(Configuration)</Helper>\n  </PropertyGroup>\n  <Import Project=\"local.props\" />\n  <PropertyGroup>\n    <Configuration>AfterImport</Configuration>\n    <Out>$(Configuration)</Out>\n  </PropertyGroup>\n</Project>\n",
+        files: &[(
+            "local.props",
+            "<Project TreatAsLocalProperty=\"Configuration\">\n</Project>\n",
+        )],
+        pins: &[
+            ("Helper", "Debug"),
+            ("Out", "AfterImport"),
+            ("Configuration", "AfterImport"),
+        ],
+    },
     // A gated import: which *document* arrives depends on a global.
     Case {
         name: "import-condition",
