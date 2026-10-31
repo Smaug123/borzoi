@@ -1,0 +1,15 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all fcs_divergence::the_metric_namespace_is_pinned
+ast_divergences
+both_reject
+fcs_unmodeled
+match_rate.basis_points
+match_rate.matched
+match_rate.seen
+matches
+other
+our_panics
+records
+we_accept_fcs_rejects
+we_reject_fcs_accepts

@@ -48,12 +48,15 @@
 
 use crate::common;
 
+use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    FileTypeCensus, TypeBucket, classify_expr, env_usize_or, invoke_fcs_dump_types_census,
-    parse_type_census_jsonl,
+    CensusExpr, FileTypeCensus, TypeBucket, classify_expr, env_usize_or,
+    invoke_fcs_dump_types_census, parse_type_census_jsonl,
 };
+use borzoi_oracle_harness::manifest::Manifest;
+use proptest::prelude::*;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Which top-level area of the F# repo a file belongs to (the `tests/` snippets
@@ -130,6 +133,37 @@ impl Tally {
 
     fn total(&self) -> u64 {
         self.buckets.iter().sum()
+    }
+}
+
+/// One run's tallies: the files FCS elaborated, as a whole and by area.
+struct CensusTally {
+    type_checked_ok: usize,
+    overall: Tally,
+    /// Every one of [`AREAS`], keyed by area, with its file count. An area
+    /// with no files is present as zeros; see [`AREAS`] for why.
+    per_area: BTreeMap<&'static str, (usize, Tally)>,
+}
+
+/// Tally the files FCS produced a typed tree for, overall and per area.
+fn tally_census(census: &[FileTypeCensus]) -> CensusTally {
+    let ok: Vec<&FileTypeCensus> = census.iter().filter(|f| f.ok).collect();
+    let mut overall = Tally::default();
+    overall.add(ok.iter().flat_map(|f| f.exprs.iter()));
+    let per_area = AREAS
+        .into_iter()
+        .map(|area| {
+            let area_files: Vec<&&FileTypeCensus> =
+                ok.iter().filter(|f| area_of(&f.path) == area).collect();
+            let mut t = Tally::default();
+            t.add(area_files.iter().flat_map(|f| f.exprs.iter()));
+            (area, (area_files.len(), t))
+        })
+        .collect();
+    CensusTally {
+        type_checked_ok: ok.len(),
+        overall,
+        per_area,
     }
 }
 
@@ -362,30 +396,23 @@ fn types_bucket_census() {
 
     let census: Vec<FileTypeCensus> =
         parse_type_census_jsonl(&invoke_fcs_dump_types_census(&sample));
-    let ok: Vec<&FileTypeCensus> = census.iter().filter(|f| f.ok).collect();
+    let tally = tally_census(&census);
     println!(
         "FILES: {} sampled, {} produced a typed tree ({:.0}%)",
         census.len(),
-        ok.len(),
-        100.0 * ok.len() as f64 / census.len().max(1) as f64
+        tally.type_checked_ok,
+        100.0 * tally.type_checked_ok as f64 / census.len().max(1) as f64
     );
 
-    let mut overall = Tally::default();
-    overall.add(ok.iter().flat_map(|f| f.exprs.iter()));
-    print_report("ALL AREAS", ok.len(), &overall);
+    print_report("ALL AREAS", tally.type_checked_ok, &tally.overall);
 
-    // Tallied for every area, printed only for the non-empty ones: an empty
-    // section is noise on a terminal, but an absent key is a lost metric.
-    let mut per_area: BTreeMap<&'static str, (usize, Tally)> = BTreeMap::new();
+    // Printed only for the non-empty areas: an empty section is noise on a
+    // terminal, but an absent key is a lost metric, so the summary keeps them.
     for area in AREAS {
-        let area_files: Vec<&&FileTypeCensus> =
-            ok.iter().filter(|f| area_of(&f.path) == area).collect();
-        let mut t = Tally::default();
-        t.add(area_files.iter().flat_map(|f| f.exprs.iter()));
-        if !area_files.is_empty() {
-            print_report(&format!("AREA = {area}"), area_files.len(), &t);
+        let (files, t) = &tally.per_area[area];
+        if *files > 0 {
+            print_report(&format!("AREA = {area}"), *files, t);
         }
-        per_area.insert(area, (area_files.len(), t));
     }
 
     if let Some(dir) = std::env::var_os("BORZOI_TYPES_CENSUS_OUT") {
@@ -393,9 +420,9 @@ fn types_bucket_census() {
         std::fs::create_dir_all(&dir).expect("create types-census output directory");
         let json = summary_json(
             sample.len(),
-            ok.len(),
-            &overall,
-            &per_area,
+            tally.type_checked_ok,
+            &tally.overall,
+            &tally.per_area,
             stride,
             (limit != usize::MAX).then_some(limit),
         );
@@ -404,7 +431,7 @@ fn types_bucket_census() {
     }
 
     assert!(
-        overall.total() > 0,
+        tally.overall.total() > 0,
         "type census observed no typed expressions"
     );
 }
@@ -495,4 +522,114 @@ fn the_published_buckets_account_for_every_expression() {
     assert_eq!(json["statistics"]["needs_inference"]["denominator"], 60);
     assert_eq!(json["statistics"]["hard_pile_share"]["numerator"], 2);
     assert_eq!(json["statistics"]["hard_pile_share"]["denominator"], 8);
+}
+
+/// The metric namespace this generator publishes, one line per metric.
+///
+/// A metric that stops being emitted shows on the dashboard as retired, so a
+/// deliberate drop needs no ceremony beyond this file's diff. What the pin
+/// catches is the accidental one, which is otherwise invisible until someone
+/// wonders where a chart went.
+#[test]
+fn the_metric_namespace_is_pinned() {
+    let manifest = Manifest::from_entries(metric_paths(&[], 13, None))
+        .expect("metric paths are manifest entries");
+    check_manifest(
+        "types_census_metrics",
+        &manifest,
+        &regenerate("types_census::the_metric_namespace_is_pinned"),
+    );
+}
+
+/// The metrics `summary.json` publishes for a run over `census`, named as the
+/// dashboard names them.
+fn metric_paths(
+    census: &[FileTypeCensus],
+    stride: usize,
+    limit: Option<usize>,
+) -> BTreeSet<String> {
+    let tally = tally_census(census);
+    let json: serde_json::Value = serde_json::from_str(&summary_json(
+        census.len(),
+        tally.type_checked_ok,
+        &tally.overall,
+        &tally.per_area,
+        stride,
+        limit,
+    ))
+    .expect("valid JSON");
+    borzoi_stats::metric_paths(&json["statistics"])
+}
+
+/// Every [`TypeBucket`], for drawing generated expressions from.
+const TYPE_BUCKETS: [TypeBucket; 5] = [
+    TypeBucket::Lit,
+    TypeBucket::Spine,
+    TypeBucket::Member,
+    TypeBucket::Hard,
+    TypeBucket::Other,
+];
+
+/// An expression kind [`classify_expr`] files under `bucket`. Exhaustive, so a
+/// new bucket cannot be added without saying how to reach it.
+fn representative_kind(bucket: TypeBucket) -> &'static str {
+    match bucket {
+        TypeBucket::Lit => "const",
+        TypeBucket::Spine => "value",
+        TypeBucket::Member => "call:instance",
+        TypeBucket::Hard => "trait-call",
+        TypeBucket::Other => "a-kind-the-taxonomy-does-not-place",
+    }
+}
+
+#[test]
+fn each_representative_kind_reaches_its_bucket() {
+    for bucket in TYPE_BUCKETS {
+        assert_eq!(classify_expr(representative_kind(bucket)), bucket);
+    }
+}
+
+proptest! {
+    /// Which metrics a run publishes is a function of the code alone. A map
+    /// keyed by what occurred, or a ratio that turns `null` on an empty
+    /// denominator, makes it depend on the run instead — and then a metric
+    /// vanishes from one observation with nothing in the diff to say so, which
+    /// [`the_metric_namespace_is_pinned`] cannot see because it renders only
+    /// one run.
+    ///
+    /// Each generated file sits in one of [`AREAS`] and carries expressions in
+    /// every [`TypeBucket`], ground and unground, so each area, bucket and
+    /// unground count is present or absent independently across cases.
+    #[test]
+    fn the_metric_namespace_does_not_depend_on_the_run(
+        files in prop::collection::vec(
+            (
+                prop::sample::select(AREAS.to_vec()),
+                any::<bool>(),
+                prop::collection::vec(
+                    (prop::sample::select(TYPE_BUCKETS.to_vec()), any::<bool>()),
+                    0..6,
+                ),
+            ),
+            0..5,
+        ),
+        stride in 1..20usize,
+        limit in prop::option::of(0..100usize),
+    ) {
+        let census: Vec<FileTypeCensus> = files
+            .into_iter()
+            .map(|(area, ok, exprs)| FileTypeCensus {
+                path: format!("/corpus/{area}/File.fs"),
+                ok,
+                exprs: exprs
+                    .into_iter()
+                    .map(|(bucket, unground)| CensusExpr {
+                        kind: representative_kind(bucket).to_string(),
+                        ty: if unground { "'a list" } else { "int" }.to_string(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        prop_assert_eq!(metric_paths(&census, stride, limit), metric_paths(&[], 13, None));
+    }
 }

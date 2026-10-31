@@ -150,6 +150,7 @@ dependencies = [
  "borzoi-oracle-harness",
  "borzoi-sema",
  "borzoi-spawn",
+ "borzoi-stats",
  "lsp-server",
  "lsp-types",
  "minreq",
@@ -220,6 +221,7 @@ name = "borzoi-cst"
 version = "0.1.0"
 dependencies = [
  "borzoi-oracle-harness",
+ "borzoi-stats",
  "logos",
  "proptest",
  "rowan",
@@ -271,6 +273,7 @@ dependencies = [
  "borzoi-cst",
  "borzoi-oracle-harness",
  "borzoi-sema",
+ "borzoi-stats",
  "ena",
  "proptest",
  "rowan",

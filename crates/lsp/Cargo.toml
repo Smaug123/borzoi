@@ -89,6 +89,9 @@ sourcelink-fetch = ["dep:minreq"]
 
 [dev-dependencies]
 borzoi-oracle-harness.workspace = true
+# The metric-path walk the stats dashboard plots by, so a generator's
+# pinned metric namespace is read exactly as it is published.
+borzoi-stats.workspace = true
 # The dependency-graph spec reader the restore-graph oracle's specs are read
 # with (`tests/all/restore_graph.rs`). The server does not depend on it yet.
 borzoi-nuget.workspace = true

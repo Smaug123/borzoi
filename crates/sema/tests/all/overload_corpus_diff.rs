@@ -62,7 +62,8 @@
 //! nix develop -c cargo test -p borzoi-sema --test all overload_corpus_diff:: -- --ignored --nocapture
 //! ```
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::LazyLock;
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::overload_corpus::{Corpus, Site, corpus};
@@ -78,6 +79,7 @@ use borzoi_sema::{
     AssemblyEnv, EntityHandle, InferredFile, ProjectItems, Resolution, SyntaxRecovery, Ty,
     arity_window, infer_file, resolve_file,
 };
+use proptest::prelude::*;
 
 /// Everything one run of the corpus produces: the generated universe, our
 /// inference of it, and FCS's two oracles over the *same* file.
@@ -918,6 +920,73 @@ fn summary_json_is_versioned_and_never_publishes_a_null() {
         for (_, name) in REPORTED_OUTCOMES {
             assert!(outcomes.contains_key(name), "outcomes lost {name}");
         }
+    }
+}
+
+/// The metric namespace this generator publishes, one line per metric.
+///
+/// A metric that stops being emitted shows on the dashboard as retired, so a
+/// deliberate drop needs no ceremony beyond this file's diff. What the pin
+/// catches is the accidental one, which is otherwise invisible until someone
+/// wonders where a chart went.
+#[test]
+fn the_metric_namespace_is_pinned() {
+    let manifest = Manifest::from_entries(metric_paths(&HashMap::new(), 0))
+        .expect("metric paths are manifest entries");
+    check_manifest(
+        "overload_coverage_metrics",
+        &manifest,
+        &regenerate("overload_corpus_diff::the_metric_namespace_is_pinned"),
+    );
+}
+
+/// The generated matrix, built once for every case that renders a summary.
+static CORPUS: LazyLock<Corpus> = LazyLock::new(corpus);
+
+/// The metrics `summary.json` publishes for a run tallying `tally`, named as
+/// the dashboard names them.
+fn metric_paths(
+    tally: &HashMap<Outcome, usize>,
+    commits_on_error_lines: usize,
+) -> BTreeSet<String> {
+    let json: serde_json::Value =
+        serde_json::from_str(&summary_json(&CORPUS, tally, commits_on_error_lines))
+            .expect("valid JSON");
+    borzoi_stats::metric_paths(&json["statistics"])
+}
+
+/// Every [`Outcome`]: the ones [`REPORTED_OUTCOMES`] publishes, and the one it
+/// leaves out of the denominator.
+fn every_outcome() -> Vec<Outcome> {
+    std::iter::once(Outcome::FcsErrored)
+        .chain(REPORTED_OUTCOMES.map(|(outcome, _)| outcome))
+        .collect()
+}
+
+proptest! {
+    /// Which metrics a run publishes is a function of the code alone. A map
+    /// keyed by what occurred, or a ratio that turns `null` on an empty
+    /// denominator, makes it depend on the run instead — and then a metric
+    /// vanishes from one observation with nothing in the diff to say so, which
+    /// [`the_metric_namespace_is_pinned`] cannot see because it renders only
+    /// one run.
+    ///
+    /// The tally is built the way [`coverage_report`] builds it, one entry per
+    /// outcome that occurred, so every [`Outcome`] is present or absent
+    /// independently across cases.
+    #[test]
+    fn the_metric_namespace_does_not_depend_on_the_run(
+        outcomes in prop::collection::vec(prop::sample::select(every_outcome()), 0..8),
+        commits_on_error_lines in 0..4usize,
+    ) {
+        let mut tally: HashMap<Outcome, usize> = HashMap::new();
+        for outcome in outcomes {
+            *tally.entry(outcome).or_default() += 1;
+        }
+        prop_assert_eq!(
+            metric_paths(&tally, commits_on_error_lines),
+            metric_paths(&HashMap::new(), 0)
+        );
     }
 }
 

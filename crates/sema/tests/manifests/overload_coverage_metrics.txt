@@ -1,0 +1,23 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all overload_corpus_diff::the_metric_namespace_is_pinned
+affirmation_gap.basis_points
+affirmation_gap.denominator
+affirmation_gap.numerator
+betterness_addressable.basis_points
+betterness_addressable.denominator
+betterness_addressable.numerator
+commit_rate.basis_points
+commit_rate.denominator
+commit_rate.numerator
+commits_on_error_lines
+outcomes.betterness
+outcomes.committed
+outcomes.gate_declined
+outcomes.group_incomplete
+outcomes.no_survivor
+outcomes.possibly_curried
+outcomes.unaffirmable
+sites.fcs_errored
+sites.fcs_resolved
+sites.total

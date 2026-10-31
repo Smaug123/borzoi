@@ -34,6 +34,9 @@ test-support = []
 
 [dev-dependencies]
 borzoi-oracle-harness.workspace = true
+# The metric-path walk the stats dashboard plots by, so a generator's
+# pinned metric namespace is read exactly as it is published.
+borzoi-stats.workspace = true
 # Self-reference activates `test-support` when building this crate for its own
 # integration tests, so they exercise the shared comparator without a
 # `--features` flag on the test command.
