@@ -1282,6 +1282,33 @@ const ROWS: &[Row] = &[
         ],
     },
     Row {
+        label: "a sequence expression's let! binds a case-named head",
+        decls: &[],
+        src: "module UcR44\n\
+              let a = seq { let! Some = [ 1; 2 ] in yield Some }\n\
+              let b = [ let! None = [ 1 ] in yield None ]\n\
+              let c = async { let! x = async.Return (Some 1) in return x }\n\
+              let d = Some 1\n",
+        probes: &[
+            defer("Some", 0, "-", "a sequence expression's let! head binds"),
+            defer(
+                "Some",
+                1,
+                "proj:Some:member",
+                "a sequence expression's let! head binds",
+            ),
+            defer("None", 0, "-", "a sequence expression's let! head binds"),
+            defer(
+                "None",
+                1,
+                "proj:None:member",
+                "a sequence expression's let! head binds",
+            ),
+            commit("Some", 2, SOME),
+            commit("Some", 3, SOME),
+        ],
+    },
+    Row {
         label: "query range variables an into binds",
         decls: &[],
         src: "module UcR41\n\

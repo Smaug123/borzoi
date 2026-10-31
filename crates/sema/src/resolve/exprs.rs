@@ -534,6 +534,27 @@ impl<'a> Resolver<'a> {
                     if let Some(ret) = b.return_type() {
                         self.resolve_type(&ret);
                     }
+                    // A sequence expression checks `let! Head … = m` as a
+                    // `let`, so a bare one-segment head binds the name, a
+                    // case's included (`seq { let! Some = xs in yield Some }`);
+                    // a builder's reads it as a pattern. The walk does not know
+                    // which it is in, so the head masks the name and records
+                    // nothing, and only the arguments bind.
+                    if let Some(Pat::LongIdent(p)) = b.pat()
+                        && p.typar_decls().is_none()
+                        && p.name_pat_pairs().is_none()
+                        && let Some(head) = p.head()
+                        && let [only] = head.idents().collect::<Vec<_>>().as_slice()
+                    {
+                        let args: Vec<Pat> = p.args().collect();
+                        entries.extend(self.pattern_locals(args.into_iter(), BinderRole::Pattern));
+                        entries.push(ScopeEntry::binding(
+                            id_text(only).to_string(),
+                            Resolution::Deferred(DeferredReason::UnboundName),
+                            self.open_generation,
+                        ));
+                        continue;
+                    }
                     entries.extend(self.pattern_locals(b.pat().into_iter(), BinderRole::Pattern));
                 }
                 self.scopes.push(Frame { entries });
