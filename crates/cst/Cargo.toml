@@ -10,6 +10,9 @@ rowan.workspace = true
 
 [dev-dependencies]
 borzoi-oracle-harness.workspace = true
+# The metric-path walk the stats dashboard plots by, so a generator's
+# pinned metric namespace is read exactly as it is published.
+borzoi-stats.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

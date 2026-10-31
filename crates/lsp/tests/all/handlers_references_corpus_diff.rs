@@ -41,18 +41,20 @@
 //! workspace root; override that with `BORZOI_REFERENCES_DIFF_OUT`.
 
 use borzoi::uri::UriExt as _;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 use borzoi::handlers::references;
 use borzoi::position::{offset_to_position, position_to_offset};
 use borzoi::server::State;
+use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use lsp_types::{
     PartialResultParams, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
     TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
+use proptest::prelude::*;
 use serde::Serialize;
 
 use crate::common::{FileCensus, LineIndex, invoke_fcs_dump_census, parse_fcs_census_jsonl};
@@ -137,6 +139,14 @@ enum MismatchKind {
     OracleOmission,
 }
 
+impl MismatchKind {
+    const ALL: [Self; 3] = [
+        Self::Divergence,
+        Self::AlternateBinder,
+        Self::OracleOmission,
+    ];
+}
+
 /// Classify a returned range that did not exactly match the target symbol.
 /// Same-name/different-declaration occupants are only ambiguous while FCS is
 /// recovering from check errors; in a clean check they prove a wrong symbol.
@@ -154,7 +164,7 @@ fn classify_mismatch(
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Tally {
     files_seen: usize,
     fcs_not_ok: usize,
@@ -174,6 +184,16 @@ struct Tally {
     divergences: Vec<Site>,
     alt_binders: Vec<Site>,
     oracle_omissions: Vec<Site>,
+}
+
+impl Tally {
+    fn record_mismatch(&mut self, kind: MismatchKind, site: Site) {
+        match kind {
+            MismatchKind::Divergence => self.divergences.push(site),
+            MismatchKind::AlternateBinder => self.alt_binders.push(site),
+            MismatchKind::OracleOmission => self.oracle_omissions.push(site),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -459,11 +479,8 @@ fn compare_file(file: &FileCensus, ordinal: usize, tally: &mut Tally) {
                 result: (start, end),
                 occupants,
             };
-            match classify_mismatch(file.has_check_errors, &target.key.name, &site.occupants) {
-                MismatchKind::Divergence => tally.divergences.push(site),
-                MismatchKind::AlternateBinder => tally.alt_binders.push(site),
-                MismatchKind::OracleOmission => tally.oracle_omissions.push(site),
-            }
+            let kind = classify_mismatch(file.has_check_errors, &target.key.name, &site.occupants);
+            tally.record_mismatch(kind, site);
         }
     }
 
@@ -891,6 +908,110 @@ fn summary_json_contract_is_versioned_and_preserves_denominators() {
             }
         })
     );
+}
+
+/// The metric namespace this generator publishes, one line per metric.
+///
+/// A metric that stops being emitted shows on the dashboard as retired, so a
+/// deliberate drop needs no ceremony beyond this file's diff. What the pin
+/// catches is the accidental one, which is otherwise invisible until someone
+/// wonders where a chart went.
+#[test]
+fn the_metric_namespace_is_pinned() {
+    let manifest = Manifest::from_entries(metric_paths(&Tally::default(), 0, 0, 13, None))
+        .expect("metric paths are manifest entries");
+    check(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/manifests/handlers_references_corpus_diff_metrics.txt"),
+        &manifest,
+        &format!(
+            "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi --test all \
+             handlers_references_corpus_diff::the_metric_namespace_is_pinned"
+        ),
+    );
+}
+
+/// The metrics `summary.json` publishes for `tally`, named as the dashboard
+/// names them.
+fn metric_paths(
+    tally: &Tally,
+    discovered_files: usize,
+    sampled_files: usize,
+    stride: usize,
+    limit: Option<usize>,
+) -> BTreeSet<String> {
+    let json: serde_json::Value = serde_json::from_str(&summary_json(
+        tally,
+        discovered_files,
+        sampled_files,
+        stride,
+        limit,
+    ))
+    .expect("valid JSON");
+    borzoi_stats::metric_paths(&json["statistics"])
+}
+
+/// Tallies whose returned locations fall into every [`MismatchKind`], each
+/// present or absent independently, filed the way [`compare_file`] files them.
+fn tally_strategy() -> impl Strategy<Value = Tally> {
+    (
+        prop::collection::vec(0..4usize, 15),
+        prop::collection::vec(prop::sample::select(MismatchKind::ALL.to_vec()), 0..6),
+    )
+        .prop_map(|(counts, mismatches)| {
+            let mut tally = Tally {
+                files_seen: counts[0],
+                fcs_not_ok: counts[1],
+                fcs_with_check_errors: counts[2],
+                unreadable: counts[3],
+                files_without_targets: counts[4],
+                files_with_targets: counts[5],
+                files_answered: counts[6],
+                source_targets: counts[7],
+                selected_targets: counts[8],
+                answered_targets: counts[9],
+                declined_targets: counts[10],
+                handler_panics: counts[11],
+                exact_locations: counts[12],
+                definition_locations: counts[13],
+                use_locations: counts[14],
+                ..Tally::default()
+            };
+            for kind in mismatches {
+                let site = Site {
+                    path: "sample.fs".into(),
+                    target: SymbolKey {
+                        name: "x".into(),
+                        decl: (1, 2),
+                    },
+                    result: (3, 4),
+                    occupants: Vec::new(),
+                };
+                tally.record_mismatch(kind, site);
+            }
+            tally
+        })
+}
+
+proptest! {
+    /// Which metrics a run publishes is a function of the code alone. A field
+    /// skipped when it is zero, or a ratio that turns `null` on an empty
+    /// denominator, makes it depend on the run instead — and then a metric
+    /// vanishes from one observation with nothing in the diff to say so, which
+    /// [`the_metric_namespace_is_pinned`] cannot see because it renders only
+    /// one run.
+    #[test]
+    fn the_metric_namespace_does_not_depend_on_the_run(
+        tally in tally_strategy(),
+        (discovered, sampled) in (0..20usize, 0..20usize),
+        stride in 1..20usize,
+        limit in prop::option::of(0..100usize),
+    ) {
+        prop_assert_eq!(
+            metric_paths(&tally, discovered, sampled, stride, limit),
+            metric_paths(&Tally::default(), 0, 0, 13, None)
+        );
+    }
 }
 
 fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {

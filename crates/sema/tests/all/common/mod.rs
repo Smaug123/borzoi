@@ -674,65 +674,78 @@ pub const CENSUS_TAGS: [(&str, Bucket); 19] = [
     ("value:module-or-import", Bucket::B1),
 ];
 
-/// Every shape [`classify`] can be handed: the symbol class crossed with all
-/// 1,024 settings of the ten flags it reads, 8,192 in total.
+/// The symbol classes [`classify`] distinguishes, plus one it does not place.
+const PROBE_CLASSES: [&str; 8] = [
+    "Entity",
+    "GenericParameter",
+    "UnionCase",
+    "ActivePatternCase",
+    "Field",
+    "Parameter",
+    "Mfv",
+    "AClassTheTaxonomyDoesNotPlace",
+];
+
+/// The flags [`classify`] reads.
+const PROBE_FLAGS: [&str; 10] = [
+    "IsFromDefinition",
+    "IsNamespace",
+    "IsModule",
+    "IsMember",
+    "IsInstance",
+    "IsExtension",
+    "IsConstructor",
+    "IsModuleValueOrMember",
+    "IsActivePattern",
+    "IsOverloaded",
+];
+
+/// The size of the shape space [`classify_probe`] indexes: the symbol class
+/// crossed with all 1,024 settings of the ten flags [`classify`] reads, 8,192
+/// in total.
+pub const CLASSIFY_PROBES: usize = PROBE_CLASSES.len() << PROBE_FLAGS.len();
+
+/// Shape `index` (below [`CLASSIFY_PROBES`]) of everything [`classify`] can be
+/// handed.
 ///
 /// Enumerating the input space is how both tag lists below are established —
 /// searching it exhaustively is cheaper than arguing about which arms of the
-/// match are reachable, and it cannot go stale when an arm is added.
+/// match are reachable, and it cannot go stale when an arm is added. Indexing
+/// it lets a property test draw from the same space.
+pub fn classify_probe(index: usize) -> CensusUse {
+    assert!(index < CLASSIFY_PROBES, "probe {index} is out of range");
+    let class = PROBE_CLASSES[index >> PROBE_FLAGS.len()];
+    let bits = index & ((1 << PROBE_FLAGS.len()) - 1);
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        "Range".into(),
+        serde_json::json!({
+            "File": "probe.fs",
+            "Start": { "Line": 1, "Col": 0 },
+            "End": { "Line": 1, "Col": 1 }
+        }),
+    );
+    fields.insert("DeclRange".into(), serde_json::Value::Null);
+    fields.insert("Class".into(), serde_json::json!(class));
+    for (flag_index, flag) in PROBE_FLAGS.iter().enumerate() {
+        fields.insert(
+            (*flag).into(),
+            serde_json::json!((bits >> flag_index) & 1 == 1),
+        );
+    }
+    // Read by other consumers of the census, never by `classify`.
+    for flag in ["IsProperty", "IsValue", "IsFunction"] {
+        fields.insert(flag.into(), serde_json::json!(false));
+    }
+    serde_json::from_value(serde_json::Value::Object(fields))
+        .expect("the probe carries every field the census use needs")
+}
+
+/// Every shape [`classify`] can be handed — [`classify_probe`] over its whole
+/// index range.
 #[cfg(test)]
 fn classify_probe_space() -> Vec<CensusUse> {
-    const CLASSES: [&str; 8] = [
-        "Entity",
-        "GenericParameter",
-        "UnionCase",
-        "ActivePatternCase",
-        "Field",
-        "Parameter",
-        "Mfv",
-        "AClassTheTaxonomyDoesNotPlace",
-    ];
-    const FLAGS: [&str; 10] = [
-        "IsFromDefinition",
-        "IsNamespace",
-        "IsModule",
-        "IsMember",
-        "IsInstance",
-        "IsExtension",
-        "IsConstructor",
-        "IsModuleValueOrMember",
-        "IsActivePattern",
-        "IsOverloaded",
-    ];
-
-    let mut probes = Vec::with_capacity(CLASSES.len() << FLAGS.len());
-    for class in CLASSES {
-        for bits in 0..(1u32 << FLAGS.len()) {
-            let mut fields = serde_json::Map::new();
-            fields.insert(
-                "Range".into(),
-                serde_json::json!({
-                    "File": "probe.fs",
-                    "Start": { "Line": 1, "Col": 0 },
-                    "End": { "Line": 1, "Col": 1 }
-                }),
-            );
-            fields.insert("DeclRange".into(), serde_json::Value::Null);
-            fields.insert("Class".into(), serde_json::json!(class));
-            for (index, flag) in FLAGS.iter().enumerate() {
-                fields.insert((*flag).into(), serde_json::json!((bits >> index) & 1 == 1));
-            }
-            // Read by other consumers of the census, never by `classify`.
-            for flag in ["IsProperty", "IsValue", "IsFunction"] {
-                fields.insert(flag.into(), serde_json::json!(false));
-            }
-            probes.push(
-                serde_json::from_value(serde_json::Value::Object(fields))
-                    .expect("the probe carries every field the census use needs"),
-            );
-        }
-    }
-    probes
+    (0..CLASSIFY_PROBES).map(classify_probe).collect()
 }
 
 /// [`B1_TAGS`] is the whole of what [`classify`] can produce for

@@ -31,6 +31,12 @@ pub fn regenerate_ignored(group: &str) -> String {
     )
 }
 
+/// The command that regenerates the manifest of the ordinary (not ignored)
+/// test selected by `filter`.
+pub fn regenerate(filter: &str) -> String {
+    format!("{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-cst --test all {filter}")
+}
+
 /// Compare `actual` against the checked-in manifest of sweep `name`.
 #[track_caller]
 pub fn check_manifest(name: &str, actual: &Manifest, regenerate: &str) {

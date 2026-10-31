@@ -422,14 +422,28 @@ observations themselves, so it needs no declaration to be right, and the series
 digest does not move: the metrics beside a retired one keep their history.
 
 What does need catching is a metric dropped *by accident*, and the place to
-catch it is the pull request. The whole-project generator pins its namespace in
-`crates/corpus-diff/manifests/generator_metrics.txt`, checked by
-`the_metric_namespace_is_pinned`. Any added or removed metric moves that file,
-and `BORZOI_UPDATE_MANIFESTS=1` regenerates it, so the reviewer sees exactly
-which metrics a change adds or removes. The pin renders a single run, so
-`the_metric_namespace_does_not_depend_on_the_run` covers the data side: over
-generated summaries that touch every decline cause and tier, shape, hover
-grade, asset status and skip, the namespace never moves.
+catch it is the pull request. Every generator pins its namespace in an exact
+manifest, checked by a test named `the_metric_namespace_is_pinned` beside the
+generator:
+
+| Generator | Manifest |
+| --- | --- |
+| `project-corpus-diff` | `crates/corpus-diff/manifests/generator_metrics.txt` |
+| `parser-divergence` | `crates/cst/tests/manifests/fcs_divergence_metrics.txt` |
+| `resolution-divergence` | `crates/sema/tests/manifests/resolve_divergence_metrics.txt` |
+| `find-references-differential` | `crates/lsp/tests/manifests/handlers_references_corpus_diff_metrics.txt` |
+| `uses-census` | `crates/sema/tests/manifests/uses_census_metrics.txt` |
+| `types-census` | `crates/sema/tests/manifests/types_census_metrics.txt` |
+| `overload-coverage` | `crates/sema/tests/manifests/overload_coverage_metrics.txt` |
+
+Any added or removed metric moves its file, and `BORZOI_UPDATE_MANIFESTS=1`
+regenerates it, so the reviewer sees exactly which metrics a change adds or
+removes. Each pin renders a single run, so a property test beside it,
+`the_metric_namespace_does_not_depend_on_the_run`, covers the data side: over
+generated runs that reach every key of every closed enumeration the summary
+publishes — each decline cause and tier, hover grade, area, sub-tag, bucket and
+outcome — the namespace never moves. The paths are read with
+`borzoi_stats::metric_paths`, the walk the dashboard plots by.
 
 Renaming is retirement plus introduction. The new key starts mid-series, which
 the dashboard shows honestly — the chart begins where the metric does — and the

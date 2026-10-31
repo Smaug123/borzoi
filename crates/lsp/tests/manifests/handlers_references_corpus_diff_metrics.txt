@@ -1,0 +1,30 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi --test all handlers_references_corpus_diff::the_metric_namespace_is_pinned
+files.answered
+files.discovered
+files.sampled
+files.seen
+files.with_targets
+files.without_targets
+infrastructure.fcs_not_ok
+infrastructure.fcs_with_check_errors
+infrastructure.handler_panics
+infrastructure.unreadable
+locations.corroboration_rate.basis_points
+locations.corroboration_rate.denominator
+locations.corroboration_rate.numerator
+locations.definitions
+locations.exact
+locations.returned
+locations.uses
+mismatches.alternate_binders
+mismatches.divergences
+mismatches.oracle_omissions
+targets.answer_rate.basis_points
+targets.answer_rate.denominator
+targets.answer_rate.numerator
+targets.answered
+targets.declined
+targets.selected
+targets.source

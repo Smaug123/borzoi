@@ -40,12 +40,15 @@
 //! `cargo test -p borzoi-cst --test all fcs_divergence:: -- --ignored --nocapture`
 //! under `nix develop` (which sets `BORZOI_CORPUS`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::{parse_sig_with_symbols, parse_with_symbols};
+use borzoi_oracle_harness::manifest::Manifest;
+use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
 use crate::common::{catch_unwind_silent, corpus_root, fcs_ast_batch};
 
@@ -64,7 +67,7 @@ struct BatchMeta {
     parse_had_errors: Option<bool>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Buckets {
     /// `(message, path)` — sorted by message then path on write.
     we_reject_fcs_accepts: Vec<(String, PathBuf)>,
@@ -444,4 +447,74 @@ fn summary_json_contract_is_versioned_and_complete() {
             }
         })
     );
+}
+
+/// The metric namespace this generator publishes, one line per metric.
+///
+/// A metric that stops being emitted shows on the dashboard as retired, so a
+/// deliberate drop needs no ceremony beyond this file's diff. What the pin
+/// catches is the accidental one, which is otherwise invisible until someone
+/// wonders where a chart went.
+#[test]
+fn the_metric_namespace_is_pinned() {
+    let manifest = Manifest::from_entries(metric_paths(&Buckets::default()))
+        .expect("metric paths are manifest entries");
+    check_manifest(
+        "fcs_divergence_metrics",
+        &manifest,
+        &regenerate("fcs_divergence::the_metric_namespace_is_pinned"),
+    );
+}
+
+/// The metrics `summary.json` publishes for `b`, named as the dashboard names
+/// them.
+fn metric_paths(b: &Buckets) -> BTreeSet<String> {
+    let json: serde_json::Value = serde_json::from_str(&summary_json(b)).expect("valid JSON");
+    borzoi_stats::metric_paths(&json["statistics"])
+}
+
+fn buckets_strategy() -> impl Strategy<Value = Buckets> {
+    let paths = || prop::collection::vec(Just(PathBuf::from("a.fs")), 0..3);
+    (
+        (paths(), paths(), paths(), paths()),
+        (
+            paths(),
+            paths(),
+            prop::collection::vec(Just(String::new()), 0..3),
+        ),
+        (0..4usize, 0..4usize),
+    )
+        .prop_map(
+            |(
+                (we_reject, we_accept_fcs_rejects, both_reject, ast_divergence),
+                (uncompared_fcs_unmodeled, our_parser_panics, uncompared_other),
+                (matches, extra),
+            )| Buckets {
+                we_reject_fcs_accepts: we_reject
+                    .into_iter()
+                    .map(|path| ("expected expression".to_string(), path))
+                    .collect(),
+                we_accept_fcs_rejects,
+                both_reject,
+                ast_divergence,
+                uncompared_fcs_unmodeled,
+                our_parser_panics,
+                uncompared_other,
+                matches,
+                seen: matches + extra,
+            },
+        )
+}
+
+proptest! {
+    /// Which metrics a run publishes is a function of the code alone. A field
+    /// skipped when it is zero, or a ratio that turns `null` on an empty
+    /// denominator, makes it depend on the run instead — and then a metric
+    /// vanishes from one observation with nothing in the diff to say so, which
+    /// [`the_metric_namespace_is_pinned`] cannot see because it renders only
+    /// one run.
+    #[test]
+    fn the_metric_namespace_does_not_depend_on_the_run(b in buckets_strategy()) {
+        prop_assert_eq!(metric_paths(&b), metric_paths(&Buckets::default()));
+    }
 }
