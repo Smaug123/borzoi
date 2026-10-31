@@ -8,6 +8,8 @@ result-*
 # .NET build artifacts (tools/fcs-dump)
 bin/
 obj/
+# …but a Rust crate's `src/bin/` holds its binaries' sources.
+!crates/*/src/bin/
 
 # Generated parser-vs-FCS divergence report (cargo test --test fcs_divergence)
 fcs-divergence/

@@ -218,7 +218,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `infer_corpus_diff` | one per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
-| `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside; and, per file, the request handlers' probe counts for the plain and the perturbed copy, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). |
+| `project_corpus` (`crates/corpus-diff/manifests/`) | keyed (`<key><TAB><value>`), and with no count of its own verdicts, so it merges item by item. One per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with how many records the oracle reported and how many are definitions, or unreported), and one per graded record that is not a match through the resolver: each deferral with what the LSP served and which guard declined, each attribute or member match, and each record set aside; and, per file and copy, how many records the request handlers were asked everything about, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). A file's matches are its records less its definitions less its listed records, which the manifest checks before it renders. |
 | `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |
 | `parser_corpus_diff` (cst) | one per file outside the match bucket — range-divergent, AST-divergent, we-accept/FCS-rejects, both-reject, we-reject/FCS-accepts, a side that does not model a construct, an FCS failure, non-UTF-8 — and one line counting the matches (~5.4k). A file either parser rejects also carries its recovered-tree verdict ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
 | `recovery_sweep` (cst) | one per sampled single-token deletion graded against FCS: the relation and its compared/undamaged/total counts ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
@@ -231,6 +231,23 @@ The cst manifests count their dominant bucket for the same reason
 `resolve_corpus_diff` counts matches: every other file is listed by path, so a
 file entering or leaving the counted bucket moves a listed line, and the corpus
 is pinned, so no file can join the walk unlisted.
+
+A count of the sweep's own verdicts has a cost, though: it changes whenever any
+item it counts does, so two branches that moved different items conflict on it.
+An entry's key is the text before its first tab, or all of it, and keys are
+distinct; a manifest whose every entry is keyed can merge key by key
+(`borzoi_oracle_harness::manifest::merge3`), and `.gitattributes` gives those to
+the merge driver `tools/manifest-merge.sh` (enable it with
+`git config merge.borzoi-manifest.driver 'bash tools/manifest-merge.sh %O %A %B %P'`).
+A key one branch changed takes that branch's entry; a key both changed
+differently is a conflict. So a manifest merges cleanly exactly as far as its
+lines are independent. `project_corpus`, which most resolver changes move, is
+keyed, lists its verdicts item by item and counts only the oracle's input —
+records per file, which move only with the corpus or the oracle — so the match
+count it no longer prints still follows from its lines;
+`fsproj_msbuild_corpus_diff` is keyed by project. The others are not keyed and
+stay on Git's text merge: merged as sets, a count line both branches rewrote
+would come out twice instead of conflicting.
 
 The reference pack is not the F# corpus: it is whichever pack the SDK on `PATH`
 ships. Under `nix develop`, which is how CI and every documented command run

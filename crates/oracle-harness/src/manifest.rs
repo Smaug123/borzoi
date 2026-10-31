@@ -20,8 +20,31 @@
 //! Hard soundness gates (a divergence count that must be zero) stay separate
 //! assertions, which run whether or not the manifest is being regenerated, so
 //! regeneration cannot bless a wrong answer.
+//!
+//! # Keys, and merging
+//!
+//! An entry names its item with a **key**: the text before its first
+//! [`KEY_SEPARATOR`], or the whole entry if it has none ([`key_of`]). Keys are
+//! distinct within a manifest. A keyed entry is `key<TAB>value`, so an item
+//! whose verdict moves changes one line and keeps its key; an entry with no
+//! separator is its own key, an item that is either present or absent.
+//!
+//! That makes a manifest a finite map from key to entry, and two independent
+//! changes to one merge as maps ([`merge3`]): a key one side changed takes that
+//! side's entry, and a key both sides changed differently is a conflict. Git
+//! is pointed at this through `.gitattributes` and `tools/manifest-merge.sh`
+//! for each manifest whose every entry is keyed, so rebasing past an unrelated
+//! change to one needs no regeneration. (An unkeyed entry is its own key, so a
+//! line both sides rewrote would merge to both rewrites; such a manifest stays
+//! on Git's text merge.) The merge is only as good as the manifest's lines are
+//! independent: a line
+//! summing over items (`matches=…`) changes with every item it sums and so
+//! conflicts whenever two changes touch any of them. A manifest that should
+//! merge keeps such counts to its *inputs* (what the oracle reported), which
+//! move only when the corpus or the oracle does, and lists its own verdicts
+//! item by item.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Set to a non-empty value other than `0` to rewrite every manifest a test run
@@ -30,6 +53,18 @@ pub const UPDATE_ENV: &str = "BORZOI_UPDATE_MANIFESTS";
 
 /// How many diff lines [`check`] prints before eliding the rest.
 const DIFF_LIMIT: usize = 200;
+
+/// Ends an entry's key ([`key_of`]). Also separates the values of a
+/// [`Manifest::from_keyed`] entry.
+pub const KEY_SEPARATOR: char = '\t';
+
+/// The key `entry` names its item by: the text before its first
+/// [`KEY_SEPARATOR`], or all of it.
+pub fn key_of(entry: &str) -> &str {
+    entry
+        .split_once(KEY_SEPARATOR)
+        .map_or(entry, |(key, _)| key)
+}
 
 /// Why a string cannot be a manifest entry. Each would make the rendered file
 /// fail to parse back to the same manifest.
@@ -50,6 +85,12 @@ pub enum EntryError {
     /// ` x<digits>` count suffix, which would make `a x2` indistinguishable from
     /// `a` twice.
     ReservedCountSuffix(String),
+    /// Two entries with one key ([`key_of`]): the manifest would no longer say
+    /// which entry is the item's.
+    DuplicateKey(String),
+    /// A [`KEY_SEPARATOR`] inside a [`Manifest::from_keyed`] key or value,
+    /// which would move where the key ends or where one value does.
+    KeySeparator(String),
 }
 
 impl std::fmt::Display for EntryError {
@@ -65,8 +106,24 @@ impl std::fmt::Display for EntryError {
             EntryError::ReservedCountSuffix(e) => {
                 write!(f, "counted item ends in the reserved ` x<n>` suffix: {e:?}")
             }
+            EntryError::DuplicateKey(k) => write!(f, "two manifest entries have the key {k:?}"),
+            EntryError::KeySeparator(e) => {
+                write!(f, "keyed manifest key or value contains a tab: {e:?}")
+            }
         }
     }
+}
+
+/// Whether `item` ends in the ` x<digits>` suffix [`Manifest::from_counted`]
+/// writes.
+fn has_count_suffix(item: &str) -> bool {
+    item.rsplit_once(" x")
+        .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `item`, or `item x<n>` when it occurs `n > 1` times.
+fn counted(item: String, n: usize) -> String {
+    if n == 1 { item } else { format!("{item} x{n}") }
 }
 
 fn validate(entry: &str) -> Result<(), EntryError> {
@@ -92,7 +149,8 @@ pub struct Manifest {
 
 impl Manifest {
     /// A manifest of exactly these entries. Duplicates are an error: an entry is
-    /// meant to be a key, and two identical ones mean the key is too coarse.
+    /// meant to be a key, and two identical ones mean the key is too coarse. So
+    /// are two entries with one [`key_of`].
     pub fn from_entries(entries: impl IntoIterator<Item = String>) -> Result<Self, EntryError> {
         let mut entries: Vec<String> = entries.into_iter().collect();
         for e in &entries {
@@ -102,7 +160,43 @@ impl Manifest {
         if let Some(w) = entries.windows(2).find(|w| w[0] == w[1]) {
             return Err(EntryError::Duplicate(w[0].clone()));
         }
+        let mut keys = BTreeSet::new();
+        if let Some(e) = entries.iter().find(|e| !keys.insert(key_of(e))) {
+            return Err(EntryError::DuplicateKey(key_of(e).to_string()));
+        }
         Ok(Manifest { entries })
+    }
+
+    /// A manifest of `(key, value)` items: one entry per key,
+    /// `key<TAB>value<TAB>value…`, its values sorted and counted as
+    /// [`Self::from_counted`] counts items. Several values under one key are
+    /// for an item the oracle reports more than once — FCS records an
+    /// attribute's name and its constructor at one range — so the entry is the
+    /// multiset of their verdicts.
+    pub fn from_keyed(
+        items: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, EntryError> {
+        let mut by_key: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        for (key, value) in items {
+            for part in [&key, &value] {
+                validate(part)?;
+                if part.contains(KEY_SEPARATOR) {
+                    return Err(EntryError::KeySeparator(part.clone()));
+                }
+            }
+            if has_count_suffix(&value) {
+                return Err(EntryError::ReservedCountSuffix(value));
+            }
+            *by_key.entry(key).or_default().entry(value).or_default() += 1;
+        }
+        Manifest::from_entries(by_key.into_iter().map(|(key, values)| {
+            let mut entry = key;
+            for (value, n) in values {
+                entry.push(KEY_SEPARATOR);
+                entry.push_str(&counted(value, n));
+            }
+            entry
+        }))
     }
 
     /// A manifest of these items as a multiset: an item that occurs `n > 1`
@@ -114,17 +208,12 @@ impl Manifest {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for item in items {
             validate(&item)?;
-            if item
-                .rsplit_once(" x")
-                .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-            {
+            if has_count_suffix(&item) {
                 return Err(EntryError::ReservedCountSuffix(item));
             }
             *counts.entry(item).or_default() += 1;
         }
-        Manifest::from_entries(counts.into_iter().map(|(item, n)| {
-            if n == 1 { item } else { format!("{item} x{n}") }
-        }))
+        Manifest::from_entries(counts.into_iter().map(|(item, n)| counted(item, n)))
     }
 
     /// Read a rendered manifest back. Blank lines and `#` comment lines are
@@ -314,6 +403,206 @@ pub fn compare_with(
     ))
 }
 
+/// A key both sides of a [`merge3`] changed from the base, to different
+/// entries. `None` is the key's absence: an item one side dropped and the
+/// other moved conflicts too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeConflict {
+    pub key: String,
+    pub base: Option<String>,
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
+}
+
+/// The three-way merge of one key's entries: a side that left the base alone
+/// takes the other side's. `Err(())` when both changed it, differently.
+fn merge_one<T: PartialEq>(base: T, ours: T, theirs: T) -> Result<T, ()> {
+    if ours == theirs || theirs == base {
+        Ok(ours)
+    } else if ours == base {
+        Ok(theirs)
+    } else {
+        Err(())
+    }
+}
+
+/// The three-way merge of two manifests changed independently from `base`,
+/// key by key ([`key_of`]): each key takes the entry of whichever side changed
+/// it, adding and dropping included. Fails, naming each, on the keys both sides
+/// changed to different entries; nothing else can conflict.
+///
+/// Symmetric in `ours` and `theirs`, and `merge3(b, m, m) == Ok(m)`.
+pub fn merge3(
+    base: &Manifest,
+    ours: &Manifest,
+    theirs: &Manifest,
+) -> Result<Manifest, Vec<MergeConflict>> {
+    let by_key = |m: &Manifest| -> BTreeMap<String, String> {
+        m.entries
+            .iter()
+            .map(|e| (key_of(e).to_string(), e.clone()))
+            .collect()
+    };
+    let (base, ours, theirs) = (by_key(base), by_key(ours), by_key(theirs));
+    let keys: BTreeSet<&String> = base
+        .keys()
+        .chain(ours.keys())
+        .chain(theirs.keys())
+        .collect();
+    let (mut merged, mut conflicts) = (Vec::new(), Vec::new());
+    for key in keys {
+        let (b, o, t) = (base.get(key), ours.get(key), theirs.get(key));
+        match merge_one(b, o, t) {
+            Ok(entry) => merged.extend(entry.cloned()),
+            Err(()) => conflicts.push(MergeConflict {
+                key: key.clone(),
+                base: b.cloned(),
+                ours: o.cloned(),
+                theirs: t.cloned(),
+            }),
+        }
+    }
+    if conflicts.is_empty() {
+        Ok(Manifest::from_entries(merged)
+            .expect("one entry per key, each taken from a valid manifest"))
+    } else {
+        Err(conflicts)
+    }
+}
+
+/// Which input of a [`merge_files`] a problem is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeSide {
+    Base,
+    Ours,
+    Theirs,
+}
+
+/// Why [`merge_files`] produced no merged manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeFailure {
+    /// An input is not a rendered manifest, so it has no keys to merge by.
+    Malformed {
+        side: MergeSide,
+        line: usize,
+        error: EntryError,
+    },
+    /// An input has an entry with no key ([`key_of`] is all of it), so the
+    /// merge could not tell a rewrite of it from a new item: a branch from
+    /// before the manifest was keyed, say, whose rewrite of a line would come
+    /// out beside the keyed one rather than conflict with it.
+    Unkeyed { side: MergeSide, entry: String },
+    /// Both sides changed the same keys (or the header) differently.
+    /// `marked` is the merge with each such key's three entries between Git's
+    /// conflict markers, in its sorted place, for a person to resolve.
+    Conflicts {
+        header: bool,
+        keys: Vec<MergeConflict>,
+        marked: String,
+    },
+}
+
+/// A rendered manifest's comment lines, in order, and its entries, each of
+/// which must be keyed.
+fn split_file(text: &str, side: MergeSide) -> Result<(Vec<&str>, Manifest), MergeFailure> {
+    let header = text.lines().filter(|l| l.starts_with('#')).collect();
+    let manifest = Manifest::parse(text).map_err(|(line, error)| MergeFailure::Malformed {
+        side,
+        line,
+        error,
+    })?;
+    if let Some(e) = manifest.entries.iter().find(|e| key_of(e) == e.as_str()) {
+        return Err(MergeFailure::Unkeyed {
+            side,
+            entry: e.clone(),
+        });
+    }
+    Ok((header, manifest))
+}
+
+/// [`merge3`] over three rendered manifest files — what the Git merge driver
+/// `tools/manifest-merge.sh` runs. Every entry of every input must be keyed
+/// ([`MergeFailure::Unkeyed`]). The comment header merges as one value: a
+/// side that left it alone takes the other side's. The result is rendered as
+/// [`Manifest::render`] renders: the header, then the entries sorted.
+pub fn merge_files(base: &str, ours: &str, theirs: &str) -> Result<String, MergeFailure> {
+    let (base_header, base) = split_file(base, MergeSide::Base)?;
+    let (ours_header, ours) = split_file(ours, MergeSide::Ours)?;
+    let (theirs_header, theirs) = split_file(theirs, MergeSide::Theirs)?;
+    let header = merge_one(&base_header, &ours_header, &theirs_header);
+    let entries = merge3(&base, &ours, &theirs);
+    let mut out = String::new();
+    let line = |out: &mut String, l: &str| {
+        out.push_str(l);
+        out.push('\n');
+    };
+    let marked = |out: &mut String, [b, o, t]: [&[&str]; 3]| {
+        for (marker, lines) in [("<<<<<<< ours", o), ("||||||| base", b), ("=======", t)] {
+            line(out, marker);
+            for l in lines {
+                line(out, l);
+            }
+        }
+        line(out, ">>>>>>> theirs");
+    };
+    match header {
+        Ok(h) => h.iter().for_each(|l| line(&mut out, l)),
+        Err(()) => marked(&mut out, [&base_header, &ours_header, &theirs_header]),
+    }
+    match (header, entries) {
+        (Ok(_), Ok(merged)) => {
+            merged.entries.iter().for_each(|e| line(&mut out, e));
+            Ok(out)
+        }
+        (header, entries) => {
+            let keys = entries.as_ref().err().cloned().unwrap_or_default();
+            // The clean keys' entries and the conflicted keys' blocks, each at
+            // its key's sorted place.
+            let conflicted: BTreeSet<&str> = keys.iter().map(|c| c.key.as_str()).collect();
+            let clean = merge3(
+                &base,
+                &without(&ours, &conflicted),
+                &without(&theirs, &conflicted),
+            )
+            .expect("no key left that both sides changed");
+            let mut blocks: Vec<(&str, Option<&MergeConflict>)> = clean
+                .entries
+                .iter()
+                .filter(|e| !conflicted.contains(key_of(e)))
+                .map(|e| (e.as_str(), None))
+                .chain(keys.iter().map(|c| (c.key.as_str(), Some(c))))
+                .collect();
+            blocks.sort_by(|a, b| a.0.cmp(b.0));
+            for (text, conflict) in blocks {
+                match conflict {
+                    None => line(&mut out, text),
+                    Some(c) => {
+                        let [b, o, t] = [&c.base, &c.ours, &c.theirs]
+                            .map(|e| e.iter().map(String::as_str).collect::<Vec<_>>());
+                        marked(&mut out, [&b, &o, &t]);
+                    }
+                }
+            }
+            Err(MergeFailure::Conflicts {
+                header: header.is_err(),
+                keys,
+                marked: out,
+            })
+        }
+    }
+}
+
+/// `m` without the entries whose keys are in `keys`.
+fn without(m: &Manifest, keys: &BTreeSet<&str>) -> Manifest {
+    Manifest::from_entries(
+        m.entries
+            .iter()
+            .filter(|e| !keys.contains(key_of(e)))
+            .cloned(),
+    )
+    .expect("a subset of a valid manifest")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +696,342 @@ mod tests {
                 prop_assert!(text.lines().any(|l| l == want));
             }
         }
+    }
+
+    /// A keyed manifest over a small key and value alphabet, so independently
+    /// generated ones share keys: each key absent, bare (`a`), or with a value
+    /// (`a<TAB>x`).
+    fn keyed() -> impl Strategy<Value = BTreeMap<String, Option<String>>> {
+        prop::collection::btree_map("[a-d]{1,2}", prop::option::of("[xyz]"), 0..8)
+    }
+
+    /// `map` with every bare key given a value: the form the merge driver
+    /// accepts.
+    fn valued(map: BTreeMap<String, Option<String>>) -> BTreeMap<String, Option<String>> {
+        map.into_iter()
+            .map(|(k, v)| (k, Some(v.unwrap_or_else(|| "w".to_string()))))
+            .collect()
+    }
+
+    fn manifest_of(map: &BTreeMap<String, Option<String>>) -> Manifest {
+        Manifest::from_entries(map.iter().map(|(k, v)| match v {
+            Some(v) => format!("{k}{KEY_SEPARATOR}{v}"),
+            None => k.clone(),
+        }))
+        .expect("one entry per key")
+    }
+
+    /// `base` with each key in `edits` set to its edit: `None` drops it,
+    /// `Some(v)` writes `v` (itself absent-or-valued).
+    type Edits = BTreeMap<String, Option<Option<String>>>;
+
+    fn edits() -> impl Strategy<Value = Edits> {
+        prop::collection::btree_map(
+            "[a-d]{1,2}",
+            prop::option::of(prop::option::of("[xyz]")),
+            0..5,
+        )
+    }
+
+    fn apply(
+        base: &BTreeMap<String, Option<String>>,
+        edits: &Edits,
+    ) -> BTreeMap<String, Option<String>> {
+        let mut out = base.clone();
+        for (k, edit) in edits {
+            match edit {
+                Some(v) => out.insert(k.clone(), v.clone()),
+                None => out.remove(k),
+            };
+        }
+        out
+    }
+
+    /// The naive oracle: per key, the three sides' entries, and the conflicts.
+    fn reference_merge(b: &Manifest, o: &Manifest, t: &Manifest) -> Result<Manifest, Vec<String>> {
+        let map = |m: &Manifest| -> BTreeMap<String, String> {
+            m.entries()
+                .iter()
+                .map(|e| (key_of(e).to_string(), e.clone()))
+                .collect()
+        };
+        let (b, o, t) = (map(b), map(o), map(t));
+        let keys: BTreeSet<&String> = b.keys().chain(o.keys()).chain(t.keys()).collect();
+        let (mut out, mut conflicts) = (Vec::new(), Vec::new());
+        for k in keys {
+            let (bk, ok, tk) = (b.get(k), o.get(k), t.get(k));
+            if ok != bk && tk != bk && ok != tk {
+                conflicts.push(k.clone());
+            } else if ok != bk {
+                out.extend(ok.cloned());
+            } else {
+                out.extend(tk.cloned());
+            }
+        }
+        if conflicts.is_empty() {
+            Ok(Manifest::from_entries(out).expect("one per key"))
+        } else {
+            Err(conflicts)
+        }
+    }
+
+    fn conflict_keys(r: Result<Manifest, Vec<MergeConflict>>) -> Result<Manifest, Vec<String>> {
+        r.map_err(|cs| cs.into_iter().map(|c| c.key).collect())
+    }
+
+    proptest! {
+        #[test]
+        fn merge_agrees_with_the_per_key_reference(
+            b in keyed(), eo in edits(), et in edits()
+        ) {
+            let (base, ours, theirs) =
+                (manifest_of(&b), manifest_of(&apply(&b, &eo)), manifest_of(&apply(&b, &et)));
+            prop_assert_eq!(
+                conflict_keys(merge3(&base, &ours, &theirs)),
+                reference_merge(&base, &ours, &theirs)
+            );
+        }
+
+        #[test]
+        fn merge_is_symmetric(b in keyed(), o in keyed(), t in keyed()) {
+            let (b, o, t) = (manifest_of(&b), manifest_of(&o), manifest_of(&t));
+            prop_assert_eq!(merge3(&b, &o, &t), merge3(&b, &t, &o).map_err(|cs| {
+                cs.into_iter()
+                    .map(|c| MergeConflict { ours: c.theirs, theirs: c.ours, ..c })
+                    .collect::<Vec<_>>()
+            }));
+        }
+
+        #[test]
+        fn a_side_that_changed_nothing_takes_the_other(b in keyed(), m in keyed()) {
+            let (b, m) = (manifest_of(&b), manifest_of(&m));
+            prop_assert_eq!(merge3(&b, &m, &m), Ok(m.clone()));
+            prop_assert_eq!(merge3(&b, &b, &m), Ok(m.clone()));
+            prop_assert_eq!(merge3(&b, &m, &b), Ok(m.clone()));
+        }
+
+        /// Merging is idempotent: folding the same side in again changes nothing.
+        #[test]
+        fn merging_a_side_in_twice_changes_nothing(b in keyed(), eo in edits(), et in edits()) {
+            let (base, ours, theirs) =
+                (manifest_of(&b), manifest_of(&apply(&b, &eo)), manifest_of(&apply(&b, &et)));
+            if let Ok(merged) = merge3(&base, &ours, &theirs) {
+                prop_assert_eq!(merge3(&base, &merged, &theirs), Ok(merged.clone()));
+                prop_assert_eq!(merge3(&base, &ours, &merged), Ok(merged));
+            }
+        }
+
+        /// Edits to disjoint keys always merge, to both edits applied.
+        #[test]
+        fn disjoint_edits_merge_to_both(b in keyed(), eo in edits(), et in edits()) {
+            let et: Edits = et.into_iter().filter(|(k, _)| !eo.contains_key(k)).collect();
+            let both: Edits = eo.iter().chain(&et).map(|(k, v)| (k.clone(), v.clone())).collect();
+            prop_assert_eq!(
+                merge3(&manifest_of(&b), &manifest_of(&apply(&b, &eo)), &manifest_of(&apply(&b, &et))),
+                Ok(manifest_of(&apply(&b, &both)))
+            );
+        }
+
+        /// One key moved to two different entries is always a conflict, and
+        /// the only one, whatever else either side did elsewhere.
+        #[test]
+        fn one_key_changed_two_ways_always_conflicts(
+            b in keyed(),
+            eo in edits(),
+            et in edits(),
+            key in "[a-d]{1,2}",
+            [v1, v2] in prop::array::uniform2(prop::option::of(prop::option::of("[xyz]"))),
+        ) {
+            let current = b.get(&key).cloned();
+            prop_assume!(v1 != v2 && v1 != current && v2 != current);
+            let (mut eo, mut et) = (eo, et);
+            et.retain(|k, _| !eo.contains_key(k));
+            let set = |edits: &mut Edits, v: Option<Option<String>>| match v {
+                Some(v) => edits.insert(key.clone(), Some(v)),
+                None => edits.insert(key.clone(), None),
+            };
+            set(&mut eo, v1);
+            set(&mut et, v2);
+            let r = merge3(&manifest_of(&b), &manifest_of(&apply(&b, &eo)), &manifest_of(&apply(&b, &et)));
+            prop_assert_eq!(conflict_keys(r), Err(vec![key.clone()]));
+        }
+
+        /// The file form merges as the manifests do, its header included, and
+        /// a conflicted merge marks every conflicted key's entries.
+        #[test]
+        fn merge_files_renders_merge3(
+            b in keyed(), eo in edits(), et in edits(),
+            headers in prop::array::uniform3(prop::sample::select(vec!["h1", "h2"])),
+        ) {
+            let (base, ours, theirs) = (
+                manifest_of(&valued(b.clone())),
+                manifest_of(&valued(apply(&b, &eo))),
+                manifest_of(&valued(apply(&b, &et))),
+            );
+            let [hb, ho, ht] = headers;
+            let merged = merge_files(&base.render(hb), &ours.render(ho), &theirs.render(ht));
+            let header = merge_one(hb, ho, ht);
+            match (merge3(&base, &ours, &theirs), header) {
+                (Ok(m), Ok(h)) => prop_assert_eq!(merged, Ok(m.render(h))),
+                (entries, header) => {
+                    let Err(MergeFailure::Conflicts { header: h, keys, marked }) = merged else {
+                        return Err(TestCaseError::fail(format!("expected conflicts, got {merged:?}")));
+                    };
+                    prop_assert_eq!(h, header.is_err());
+                    prop_assert_eq!(keys.clone(), entries.err().unwrap_or_default());
+                    for c in &keys {
+                        for e in [&c.base, &c.ours, &c.theirs].into_iter().flatten() {
+                            prop_assert!(marked.lines().any(|l| l == e), "{e:?} not in {marked}");
+                        }
+                    }
+                    prop_assert_eq!(marked.matches("<<<<<<< ours").count(), keys.len() + usize::from(h));
+                }
+            }
+        }
+
+        /// A keyed manifest has one entry per key, and its values under each
+        /// key are exactly the multiset it was given.
+        #[test]
+        fn from_keyed_keeps_each_keys_value_multiset(
+            items in prop::collection::vec(("[a-c]", "[xy]{1,2}"), 0..12)
+        ) {
+            let m = Manifest::from_keyed(items.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+                .expect("valid items");
+            let mut want: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+            for (k, v) in &items {
+                *want.entry(k.clone()).or_default().entry(v.clone()).or_default() += 1;
+            }
+            let mut got: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+            for e in m.entries() {
+                let mut fields = e.split(KEY_SEPARATOR);
+                let key = fields.next().expect("a key").to_string();
+                prop_assert_eq!(key_of(e), key.as_str());
+                for f in fields {
+                    let (v, n) = match f.rsplit_once(" x") {
+                        Some((v, n)) if n.parse::<usize>().is_ok() => (v, n.parse().expect("checked")),
+                        _ => (f, 1),
+                    };
+                    *got.entry(key.clone()).or_default().entry(v.to_string()).or_default() += n;
+                }
+            }
+            prop_assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn keys_are_distinct() {
+        assert_eq!(
+            Manifest::from_entries(["a\tx".to_string(), "a\ty".to_string()]),
+            Err(EntryError::DuplicateKey("a".to_string()))
+        );
+        assert_eq!(
+            Manifest::from_entries(["a".to_string(), "a\ty".to_string()]),
+            Err(EntryError::DuplicateKey("a".to_string()))
+        );
+        assert!(Manifest::from_entries(["a b\tx".to_string(), "a\ty".to_string()]).is_ok());
+        assert!(matches!(
+            Manifest::from_keyed([("a\tb".to_string(), "x".to_string())]),
+            Err(EntryError::KeySeparator(_))
+        ));
+        assert!(matches!(
+            Manifest::from_keyed([("a".to_string(), "x\ty".to_string())]),
+            Err(EntryError::KeySeparator(_))
+        ));
+        assert!(matches!(
+            Manifest::from_keyed([("a".to_string(), "x x2".to_string())]),
+            Err(EntryError::ReservedCountSuffix(_))
+        ));
+    }
+
+    proptest! {
+        /// The driver merges only keyed manifests: an unkeyed entry is its own
+        /// key, so a line one side rewrote in the old format and the other
+        /// rekeyed would merge to both. Any side with one fails, naming it —
+        /// a branch from before a manifest was keyed included.
+        #[test]
+        fn an_unkeyed_entry_on_any_side_fails_the_merge(
+            b in keyed(), o in keyed(), t in keyed(), side in 0..3usize, bare in "[a-d]{1,2}"
+        ) {
+            let mut files = [b, o, t].map(|m| manifest_of(&valued(m)).render("h"));
+            files[side].push_str(&format!("zz{bare}\n"));
+            let want = [MergeSide::Base, MergeSide::Ours, MergeSide::Theirs][side];
+            match merge_files(&files[0], &files[1], &files[2]) {
+                Err(MergeFailure::Unkeyed { side, entry }) => {
+                    prop_assert_eq!(side, want);
+                    prop_assert_eq!(entry, format!("zz{bare}"));
+                }
+                other => prop_assert!(false, "expected Unkeyed, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_manifest_names_its_side() {
+        assert!(matches!(
+            merge_files("a\tx\n", "a\tx\n", "a\tx\na\ty\n"),
+            Err(MergeFailure::Malformed {
+                side: MergeSide::Theirs,
+                ..
+            })
+        ));
+    }
+
+    /// Every checked-in manifest parses — keys distinct included — so the
+    /// merge driver `.gitattributes` names for them can read each one.
+    #[test]
+    fn every_checked_in_manifest_parses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut dirs: Vec<std::path::PathBuf> = vec![root.join("crates/corpus-diff/manifests")];
+        for krate in std::fs::read_dir(root.join("crates")).expect("crates/") {
+            dirs.push(krate.expect("entry").path().join("tests/manifests"));
+        }
+        let mut seen = 0;
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    let text = std::fs::read_to_string(&path).expect("utf-8 manifest");
+                    if let Err((line, e)) = Manifest::parse(&text) {
+                        panic!("{}:{line}: {e}", path.display());
+                    }
+                    seen += 1;
+                }
+            }
+        }
+        assert!(
+            seen > 20,
+            "found only {seen} manifests; did the layout move?"
+        );
+    }
+
+    /// The merge driver only knows an item by its key, so every manifest
+    /// `.gitattributes` gives it must key every entry: an unkeyed line both
+    /// sides rewrote would merge to both new lines rather than conflict.
+    #[test]
+    fn every_merge_driver_manifest_is_keyed() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let attributes =
+            std::fs::read_to_string(root.join(".gitattributes")).expect(".gitattributes");
+        let mut named = 0;
+        for line in attributes.lines() {
+            let Some(path) = line.strip_suffix(" merge=borzoi-manifest") else {
+                continue;
+            };
+            let text = std::fs::read_to_string(root.join(path))
+                .unwrap_or_else(|e| panic!("{path}, named in .gitattributes: {e}"));
+            let manifest =
+                Manifest::parse(&text).unwrap_or_else(|(l, e)| panic!("{path}:{l}: {e}"));
+            if let Some(e) = manifest.entries().iter().find(|e| key_of(e) == e.as_str()) {
+                panic!("{path} has an unkeyed entry: {e:?}");
+            }
+            named += 1;
+        }
+        assert!(named >= 2, "the driver names only {named} manifests");
     }
 
     #[test]

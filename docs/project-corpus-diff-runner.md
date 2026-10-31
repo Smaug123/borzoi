@@ -253,7 +253,7 @@ union case) is recorded as such.
 
 The census (`hover_types`: per verdict, and per class of symbol × verdict, every
 key present) reaches the text report, the JSONL and the generator statistics.
-The manifest counts each file's verdicts and lists every record whose verdict
+The manifest lists every record whose verdict
 is not its class's expected one (a project value's type shown and FCS's; a
 referenced-assembly member's signature shown; nothing for a non-value), so a
 type a hover stops showing moves a line. A referenced-assembly signature is
@@ -386,7 +386,10 @@ The pinned corpus is fixed by revision and both sides are deterministic, so
 `ci.yml`'s `corpus-diff` job instead checks the run against
 `crates/corpus-diff/manifests/project_corpus.txt`
 (`borzoi_oracle_harness::manifest`; the format is documented in
-`crates/corpus-diff/src/manifest.rs`). It has:
+`crates/corpus-diff/src/manifest.rs`). Every line is `<key><TAB><value>`,
+and none is a count of our own verdicts, so that two branches that moved
+different items merge without a regeneration (see
+[Merging the manifest](#merging-the-manifest)). It has:
 
 - one line per project: `comparable`, with the assets file's package,
   framework and project-reference counts, or `skipped` and why. A project FCS
@@ -394,10 +397,13 @@ The pinned corpus is fixed by revision and both sides are deterministic, so
   the compiler's recovery, not its answer — so it is `skipped fcs-errors`, and
   each error gets its own line. A project that silently stops being comparable
   therefore fails the gate rather than shrinking the evidence;
-- one line per Compile file: `compared` with its match counts (and how many
-  were served from the attribute map or inference's member table), or
-  `unreported` if FCS said nothing about it;
-- one line per graded record that is **not** a match: each deferral with what
+- one line per Compile file: `compared` with how many records FCS reported in
+  it and how many of those are its own defining occurrences — counts of the
+  oracle's input, not of our verdicts — or `unreported` if FCS said nothing
+  about it;
+- one line per graded record that is **not** a match through the resolver:
+  each match served from the attribute map or inference's member table, each
+  deferral with what
   the LSP served (`unrecorded`, `qualified-access`, …) and what it is
   attributed to — the guard that declined (`opaque_open@explicit_open`), else
   the model the resolver lacks there (`member_access_on_value`, `qualifier`,
@@ -405,21 +411,33 @@ The pinned corpus is fixed by revision and both sides are deterministic, so
   ambiguous range,
   shadowed constructor record, zero-width or compiler-generated record, and each
   of our or-pattern aliases the oracle is silent about. FCS's own defining
-  occurrences are counted per file instead: they are not uses;
-- per Compile file, copy (`plain` or `perturbed`) and request handler, how many
-  probes came to each outcome (`located`, `declined`, `described`,
-  `explained`, `referenced`, …), and one line for every probe whose answer is
-  not the one the comparator's verdict on its record implies — a handler
-  declining where the comparator matched, answering where it declined, or
-  giving one symbol a different set of references from different uses. A
-  perturbed copy FCS could not check cleanly is `handlers perturbed skipped`,
-  with its errors.
+  occurrences are counted per file instead: they are not uses. Several records
+  at one range and name (an attribute's name and its constructor) share a line,
+  their outcomes its values;
+- per Compile file and copy (`plain` or `perturbed`), how many of its records
+  the handler differential chose to ask everything (`selected=`), and one line
+  for every probe whose answer is not the one the comparator's verdict on its
+  record implies — a handler declining where the comparator matched, answering
+  where it declined, or giving one symbol a different set of references from
+  different uses. A perturbed copy FCS could not check cleanly is
+  `handlers perturbed skipped`, with its errors.
 
-Matches are counted rather than listed. Every non-match is listed by key, so
-a match lost to a deferral, or traded for one elsewhere, still moves a line.
-File and record lines are scoped by their project (`<project> <path>`), since
-two projects may compile one file and each project's results for it are
-separate facts.
+Matches are neither listed nor counted: every oracle record that is not a
+defining occurrence and has no line of its own is a match through the
+resolver, so a file's matches are its `records` less its `definitions` less its
+listed records, and the manifest is refused if the comparator's items do not add
+up to the oracle's records. A match lost to a deferral, or traded for one
+elsewhere, therefore still moves a line — the one listing the deferral. Probe
+answers are not counted either: what a probe should answer follows from its
+record's verdict, so the listed inconsistent probes are the whole of what the
+answers say. File and record lines are scoped by their project
+(`<project> <path>`), since two projects may compile one file and each
+project's results for it are separate facts.
+
+The handler sample is chosen by a hash of each record's file, name and which of
+that name's spans in the file it is — never by a byte offset — so an edit that
+only moves text (a byte-order mark, a line added above) cannot reselect it and
+move probe lines no answer moved.
 
 Every movement fails, in either direction: a newly answered use is as much a
 change to acknowledge as a lost one. Acknowledge it by regenerating the
@@ -439,6 +457,26 @@ manifest is host-independent.
 Zero divergences stays a separate, hard assertion, and it runs first —
 including when regenerating — so a regenerated manifest can never record a wrong
 answer as state.
+
+### Merging the manifest
+
+Most resolver changes move the manifest, and two branches that moved different
+items still conflict as text. `.gitattributes` names a merge driver for it,
+`tools/manifest-merge.sh`, which merges it key by key: a key one
+branch changed takes that branch's line, and a key both changed differently is
+a conflict, marked in place. Enable it once per clone:
+
+```sh
+git config merge.borzoi-manifest.driver 'bash tools/manifest-merge.sh %O %A %B %P'
+```
+
+Then a rebase past an unrelated manifest change merges it without a gate run.
+The driver merges only keyed manifests and refuses one with an unkeyed line,
+so a branch from before the manifest was keyed needs one regeneration on its
+first rebase, as before.
+GitHub's own merge ignores the driver, so a pull request still needs rebasing
+locally; and the merged manifest is a claim about what the merged code does,
+which CI's gate checks like any other.
 
 Missing project assets are reported but do not directly fail the run. They often
 reduce FCS comparability or coverage, so pair long corpus runs with explicit

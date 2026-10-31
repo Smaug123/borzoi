@@ -9,26 +9,37 @@
 //! any divergence ceiling, and a movement inside a count (one use gained,
 //! another lost) is invisible however tight the bound.
 //!
-//! What the lines say:
+//! Every line is `<key><TAB><value>` ([`Manifest::from_keyed`]), so independent
+//! changes merge key by key (`tools/manifest-merge.sh`). For that, no line sums
+//! over our verdicts: a count of matches changes with every item it counts, so
+//! any two changes to one file's items would conflict on it. Our verdicts are
+//! listed item by item, and the only counts are of *inputs* — what the oracle
+//! reported, and which records the handler probes were chosen from — which move
+//! only when the corpus, the oracle or the sampling does. What each line says:
 //!
-//! - `<project> comparable assets=…` or `<project> skipped <why>`. A project
-//!   that stops being comparable moves its line; one the oracle cannot
-//!   type-check *grades nothing*, so it is `skipped fcs-errors` and its errors
-//!   are listed (`<file>:<line>:<col> fcs-error FS<n>`) rather than hidden.
-//! - `<file> compared match=… assembly-match=… attribute=… member=…
-//!   definitions=…` for each Compile file the oracle reported on, or
-//!   `<file> unreported` for one it said nothing about. Matches are counted, not
-//!   listed: every *non*-match is listed below, so no movement is lost.
-//! - `<file>:<start>-<end> "<name>" <outcome>` for every graded item that is not
-//!   a match, and every oracle record set aside — deferrals with what was served
-//!   and which guard declined, ambiguous ranges, shadowed constructor records,
-//!   our or-pattern aliases the oracle is silent about, and so on. FCS's own
-//!   defining occurrences are counted per file instead (`definitions=`): they
-//!   are not uses, and nothing of ours is graded against them.
+//! - `<project>` → `comparable assets=…` or `skipped <why>`. A project that
+//!   stops being comparable moves its line; one the oracle cannot type-check
+//!   *grades nothing*, so it is `skipped fcs-errors` and its errors are listed
+//!   (`<file>:<line>:<col> fcs-error` → `FS<n>`) rather than hidden.
+//! - `<file>` → `compared records=… definitions=…` for each Compile file the
+//!   oracle reported on — how many records it reported, and how many of those
+//!   are its own defining occurrences — or `unreported` for one it said nothing
+//!   about.
+//! - `<file>:<start>-<end> "<name>"` → the outcome of every graded record that
+//!   is not a match through the resolver, and of every record set aside or
+//!   item of ours the oracle is silent about: deferrals with what was served
+//!   and which guard declined, matches through the attribute or member
+//!   surface, ambiguous ranges, shadowed constructor records, our or-pattern
+//!   aliases, and so on. Several records at one range and name (FCS reports an
+//!   attribute's name and its constructor there) are one line, their outcomes
+//!   its values.
 //!
-//! A manifest records state, so it cannot say a state is wrong. Divergences are
-//! listed too, but the runner's zero-divergence gate fails before the manifest
-//! is consulted, so regenerating it cannot bless one.
+//! So every oracle record that is neither a defining occurrence nor listed is
+//! a match through the resolver, and a file's matches are its `records` less
+//! its `definitions` less its listed records. That is checked here, file by
+//! file, before the manifest is rendered ([`ManifestError::Unaccounted`]);
+//! divergences are listed too, but the runner's zero-divergence gate fails
+//! before the manifest is consulted, so regenerating it cannot bless one.
 //!
 //! Projects are keyed relative to a corpus root
 //! ([`borzoi_oracle_harness::corpus_key`]), so the manifest names the same item
@@ -59,6 +70,14 @@ pub enum ManifestError {
     OutsideRoot { path: PathBuf, root: PathBuf },
     /// An item could not be written as a manifest entry.
     Entry(String),
+    /// A compared file's graded items do not add up to the records the oracle
+    /// reported in it, so the manifest could not say that every unlisted record
+    /// is a match.
+    Unaccounted {
+        file: PathBuf,
+        records: usize,
+        items: usize,
+    },
 }
 
 impl std::fmt::Display for ManifestError {
@@ -71,6 +90,16 @@ impl std::fmt::Display for ManifestError {
                 root.display()
             ),
             Self::Entry(e) => write!(f, "{e}"),
+            Self::Unaccounted {
+                file,
+                records,
+                items,
+            } => write!(
+                f,
+                "{}: the oracle reported {records} records (definitions included) \
+                 but the comparator graded {items}",
+                file.display()
+            ),
         }
     }
 }
@@ -105,12 +134,29 @@ fn file_key(
     Ok(format!("{project_key} {file}"))
 }
 
+/// The `(key, value)` items a manifest is built from ([`Manifest::from_keyed`]).
+type Items = Vec<(String, String)>;
+
+/// Whether `outcome` is one the oracle's record came to in the forward pass,
+/// rather than an item of ours the oracle is silent about.
+fn of_an_oracle_record(outcome: ItemOutcome) -> bool {
+    match outcome {
+        ItemOutcome::Match(..)
+        | ItemOutcome::Deferral { .. }
+        | ItemOutcome::Divergence(_)
+        | ItemOutcome::SetAside(_) => true,
+        ItemOutcome::UnoracledDefinition
+        | ItemOutcome::UnoracledOrPatternAlias
+        | ItemOutcome::ReverseDivergence => false,
+    }
+}
+
 /// The manifest of `projects`, keyed relative to `root`.
 pub fn project_corpus_manifest(
     projects: &[ProjectRecord],
     root: &Path,
 ) -> Result<Manifest, ManifestError> {
-    let mut entries = Vec::new();
+    let mut items = Items::new();
     for record in projects {
         let project = key(root, &record.project)?;
         match &record.verdict {
@@ -120,67 +166,93 @@ pub fn project_corpus_manifest(
                 comparison,
                 handlers,
             } => {
-                handler_entries(root, record, &project, sources, handlers, &mut entries)?;
-                entries.push(format!(
-                    "{project} comparable assets={}",
-                    assets_label(assets)
+                handler_entries(root, record, &project, sources, handlers, &mut items)?;
+                items.push((
+                    project.clone(),
+                    format!("comparable assets={}", assets_label(assets)),
                 ));
                 let positions: HashMap<&Path, Positions<'_>> = sources
                     .iter()
                     .map(|(path, text)| (path.as_path(), Positions::new(text)))
                     .collect();
-                let mut per_file: BTreeMap<&Path, FileCounts> = BTreeMap::new();
-                for path in &comparison.compared_files {
-                    per_file.entry(path.as_path()).or_default();
-                }
+                // Per file, the forward pass's items: every oracle record's.
+                let mut graded: HashMap<&Path, usize> = HashMap::new();
                 for item in &comparison.ledger {
-                    let counts = per_file.entry(item.file.as_path()).or_default();
-                    match item.outcome {
-                        ItemOutcome::Match(graded, surface) => counts.matched(graded, surface),
-                        ItemOutcome::SetAside(SetAside::Definition) => counts.definitions += 1,
-                        outcome => {
-                            let at = positions.get(item.file.as_path()).ok_or_else(|| {
-                                ManifestError::Entry(format!(
-                                    "ledger item in {}, which is not a source of {}",
-                                    item.file.display(),
-                                    record.project.display()
-                                ))
-                            })?;
-                            entries.push(format!(
-                                "{}:{} {:?} {}",
-                                file_key(root, &record.project, &project, &item.file)?,
-                                span(at, item.range),
-                                item.name,
-                                outcome_label(outcome)
-                            ));
-                        }
+                    if of_an_oracle_record(item.outcome) {
+                        *graded.entry(item.file.as_path()).or_default() += 1;
                     }
+                    // Unlisted: a match through the resolver, and a defining
+                    // occurrence; `records` and `definitions` account for both.
+                    if matches!(
+                        item.outcome,
+                        ItemOutcome::Match(_, AnswerSurface::Resolver)
+                            | ItemOutcome::SetAside(SetAside::Definition)
+                    ) {
+                        continue;
+                    }
+                    let at = positions.get(item.file.as_path()).ok_or_else(|| {
+                        ManifestError::Entry(format!(
+                            "ledger item in {}, which is not a source of {}",
+                            item.file.display(),
+                            record.project.display()
+                        ))
+                    })?;
+                    items.push((
+                        format!(
+                            "{}:{} {:?}",
+                            file_key(root, &record.project, &project, &item.file)?,
+                            span(at, item.range),
+                            item.name
+                        ),
+                        outcome_label(item.outcome),
+                    ));
                 }
+                let compared: HashMap<&Path, &crate::ComparedFile> = comparison
+                    .compared_files
+                    .iter()
+                    .map(|c| (c.path.as_path(), c))
+                    .collect();
                 for (path, _) in sources {
                     let file = file_key(root, &record.project, &project, path)?;
-                    entries.push(match per_file.get(path.as_path()) {
-                        Some(counts) if comparison.compared_files.contains(path) => {
-                            format!("{file} compared {}", counts.render())
-                        }
-                        // A ledger item in a file the forward pass never
-                        // compared would be a comparator defect; render it
-                        // rather than lose it.
-                        Some(counts) => format!("{file} uncompared-with-items {}", counts.render()),
-                        None => format!("{file} unreported"),
-                    });
+                    let items_here = graded.remove(path.as_path()).unwrap_or(0);
+                    items.push((
+                        file,
+                        match compared.get(path.as_path()) {
+                            Some(c) => {
+                                if items_here != c.records {
+                                    return Err(ManifestError::Unaccounted {
+                                        file: path.clone(),
+                                        records: c.records,
+                                        items: items_here,
+                                    });
+                                }
+                                format!(
+                                    "compared records={} definitions={}",
+                                    c.records, c.definitions
+                                )
+                            }
+                            // A ledger item in a file the forward pass never
+                            // compared would be a comparator defect; its items
+                            // are listed, and this says it was not compared.
+                            None if items_here > 0 => "uncompared-with-items".to_string(),
+                            None => "unreported".to_string(),
+                        },
+                    ));
                 }
             }
             ProjectVerdict::Skipped(skip) => {
-                entries.push(format!("{project} skipped {}", skip_label(skip)));
+                items.push((project.clone(), format!("skipped {}", skip_label(skip))));
                 if let ProjectSkip::FcsErrors { files } = skip {
                     for file in files {
                         let erroring = file_key(root, &record.project, &project, &file.path)?;
                         for error in &file.errors {
-                            entries.push(format!(
-                                "{erroring}:{}:{} fcs-error FS{:04}",
-                                error.range.start.line,
-                                error.range.start.col + 1,
-                                error.error_number
+                            items.push((
+                                format!(
+                                    "{erroring}:{}:{} fcs-error",
+                                    error.range.start.line,
+                                    error.range.start.col + 1
+                                ),
+                                format!("FS{:04}", error.error_number),
                             ));
                         }
                     }
@@ -188,30 +260,33 @@ pub fn project_corpus_manifest(
             }
         }
     }
-    Manifest::from_counted(entries).map_err(|e| ManifestError::Entry(e.to_string()))
+    Manifest::from_keyed(items).map_err(|e| ManifestError::Entry(e.to_string()))
 }
 
 /// The handler differential's lines for one comparable project
-/// ([`crate::handler_diff`]):
+/// ([`crate::handler_diff`]). None counts probe answers: what each probe should
+/// answer follows from the comparator's verdict on its record
+/// ([`consistent`]), so the lines are the probes that did not, and the inputs
+/// that decide which probes were asked.
 ///
-/// - `<file> handlers <copy> <handler> <outcome>=<n> …` — per file, copy
-///   (`plain` or `perturbed`) and handler, how many probes came to each
-///   outcome;
-/// - `<file>:<span> "<name>" handlers <copy> <handler> <probe> <outcome>
+/// - `<file> handlers <copy>` → `selected=<n>` — per probed file and copy
+///   (`plain` or `perturbed`), how many of its oracle records the copy asks
+///   everything of by a rule that reads only the oracle and the text
+///   ([`crate::handler_diff::Selected`]);
+/// - `<file>:<span> "<name>" handlers <copy> <handler> <probe>` → `<outcome>
 ///   expected <verdict>` — every probe whose answer is not the one the
 ///   comparator's verdict on its record implies;
-/// - `<project> handlers perturbed skipped <why>`, with the oracle's errors on
-///   the copy, when the perturbed run could not be made;
-/// - `<file> handlers skipped owned-by-another-project` for a source the server
-///   answers as another project's, which is not probed;
-/// - `<file> hover-types <copy> <verdict>=<n> …` — per file and copy, how many
-///   hover probes came to each type verdict
-///   ([`crate::handler_diff::TypeVerdict`]);
-/// - `<file>:<span> "<name>" hover-type <copy> <class> <verdict> at <probes>` —
-///   every record whose hover describes its symbol with a verdict other than
-///   its class's expected one
+/// - `<project> handlers perturbed` → `skipped <why>`, with the oracle's errors
+///   on the copy, when the perturbed run could not be made;
+/// - `<file> handlers` → `skipped owned-by-another-project` for a source the
+///   server answers as another project's, which is not probed;
+/// - `<file>:<span> "<name>" hover-type <copy>` → `<class> <verdict> at
+///   <probes>` — every record whose hover describes its symbol with a verdict
+///   other than its class's expected one
 ///   ([`crate::handler_diff::SymbolClass::expected_verdict`]), with the probes
-///   that came to it. A type lost from a hover lists its record here.
+///   that came to it. A type lost from a hover lists its record here. A hover
+///   that describes no symbol is a probe whose outcome is not the expected
+///   one, listed above.
 ///
 /// A perturbed probe's span is in the perturbed copy's text.
 fn handler_entries(
@@ -220,7 +295,7 @@ fn handler_entries(
     project: &str,
     sources: &[(PathBuf, std::sync::Arc<str>)],
     handlers: &HandlerReport,
-    entries: &mut Vec<String>,
+    items: &mut Items,
 ) -> Result<(), ManifestError> {
     let plain: HashMap<&Path, Positions<'_>> = sources
         .iter()
@@ -231,8 +306,6 @@ fn handler_entries(
         .zip(&handlers.perturbed_texts)
         .map(|((path, _), text)| (path.as_path(), Positions::new(text)))
         .collect();
-    let mut counts: BTreeMap<(String, &str, &str), BTreeMap<&str, usize>> = BTreeMap::new();
-    let mut type_counts: BTreeMap<(String, &str), BTreeMap<String, usize>> = BTreeMap::new();
     // A listed hover-type record, and the probes that came to its verdict.
     type Listed = (String, &'static str, &'static str, String);
     let mut type_listed: BTreeMap<Listed, Vec<Probe>> = BTreeMap::new();
@@ -251,92 +324,88 @@ fn handler_entries(
                 ))
             })
         };
-        *counts
-            .entry((file.clone(), probe.variant.label(), probe.handler.label()))
-            .or_default()
-            .entry(probe.outcome.label())
-            .or_default() += 1;
-        if let Some(grade) = probe.hover_type {
-            *type_counts
-                .entry((file.clone(), probe.variant.label()))
+        if let Some(grade) = probe.hover_type
+            && grade.listed()
+        {
+            type_listed
+                .entry((
+                    format!("{file}:{} {:?}", span(at()?, probe.range), probe.name),
+                    probe.variant.label(),
+                    grade.class.label(),
+                    grade.verdict.label(),
+                ))
                 .or_default()
-                .entry(grade.verdict.label())
-                .or_default() += 1;
-            if grade.listed() {
-                type_listed
-                    .entry((
-                        format!("{file}:{} {:?}", span(at()?, probe.range), probe.name),
-                        probe.variant.label(),
-                        grade.class.label(),
-                        grade.verdict.label(),
-                    ))
-                    .or_default()
-                    .push(probe.probe);
-            }
+                .push(probe.probe);
         }
         if consistent(probe.handler, probe.expectation, probe.outcome) {
             continue;
         }
-        let at = at()?;
-        entries.push(format!(
-            "{file}:{} {:?} handlers {} {} {} {} expected {}",
-            span(at, probe.range),
-            probe.name,
-            probe.variant.label(),
-            probe.handler.label(),
-            probe.probe.label(),
-            probe.outcome.label(),
-            probe.expectation.label()
+        items.push((
+            format!(
+                "{file}:{} {:?} handlers {} {} {}",
+                span(at()?, probe.range),
+                probe.name,
+                probe.variant.label(),
+                probe.handler.label(),
+                probe.probe.label(),
+            ),
+            format!(
+                "{} expected {}",
+                probe.outcome.label(),
+                probe.expectation.label()
+            ),
         ));
     }
-    for ((file, variant, handler), outcomes) in counts {
-        let outcomes: Vec<String> = outcomes
-            .into_iter()
-            .map(|(outcome, n)| format!("{outcome}={n}"))
-            .collect();
-        entries.push(format!(
-            "{file} handlers {variant} {handler} {}",
-            outcomes.join(" ")
+    for (path, selected) in &handlers.selected {
+        let file = file_key(root, &record.project, project, path)?;
+        items.push((
+            format!("{file} handlers {}", Variant::Plain.label()),
+            format!("selected={}", selected.plain),
         ));
-    }
-    for ((file, variant), verdicts) in type_counts {
-        let verdicts: Vec<String> = verdicts
-            .into_iter()
-            .map(|(verdict, n)| format!("{verdict}={n}"))
-            .collect();
-        entries.push(format!(
-            "{file} hover-types {variant} {}",
-            verdicts.join(" ")
-        ));
+        if handlers.perturbed_skip.is_none() {
+            items.push((
+                format!("{file} handlers {}", Variant::Perturbed.label()),
+                format!("selected={}", selected.perturbed),
+            ));
+        }
     }
     for ((record, variant, class, verdict), mut probes) in type_listed {
         probes.sort_unstable();
         let probes: Vec<&str> = probes.into_iter().map(|p| p.label()).collect();
-        entries.push(format!(
-            "{record} hover-type {variant} {class} {verdict} at {}",
-            probes.join(",")
+        items.push((
+            format!("{record} hover-type {variant}"),
+            format!("{class} {verdict} at {}", probes.join(",")),
         ));
     }
     for path in &handlers.owned_elsewhere {
-        entries.push(format!(
-            "{} handlers skipped owned-by-another-project",
-            file_key(root, &record.project, project, path)?
+        items.push((
+            format!(
+                "{} handlers",
+                file_key(root, &record.project, project, path)?
+            ),
+            "skipped owned-by-another-project".to_string(),
         ));
     }
     match &handlers.perturbed_skip {
         None => {}
         Some(PerturbedSkip::Fcs(_)) => {
-            entries.push(format!("{project} handlers perturbed skipped fcs-failed"));
+            items.push((
+                format!("{project} handlers perturbed"),
+                "skipped fcs-failed".to_string(),
+            ));
         }
         Some(PerturbedSkip::FcsErrors(errors)) => {
-            entries.push(format!(
-                "{project} handlers perturbed skipped fcs-errors errors={}",
-                errors.len()
+            items.push((
+                format!("{project} handlers perturbed"),
+                format!("skipped fcs-errors errors={}", errors.len()),
             ));
             for (path, line, col, number) in errors {
-                entries.push(format!(
-                    "{}:{line}:{col} handlers perturbed fcs-error FS{number:04}",
-                    file_key(root, &record.project, project, path)?
+                items.push((
+                    format!(
+                        "{}:{line}:{col} handlers perturbed fcs-error",
+                        file_key(root, &record.project, project, path)?
+                    ),
+                    format!("FS{number:04}"),
                 ));
             }
         }
@@ -354,36 +423,6 @@ fn span(at: &Positions<'_>, (start, end): (usize, usize)) -> String {
             format!("{start}-{end_col}")
         }
         _ => format!("{start}-{end}"),
-    }
-}
-
-#[derive(Debug, Default)]
-struct FileCounts {
-    matches: usize,
-    assembly_matches: usize,
-    attribute: usize,
-    member: usize,
-    definitions: usize,
-}
-
-impl FileCounts {
-    fn matched(&mut self, graded: Graded, surface: AnswerSurface) {
-        match graded {
-            Graded::Project => self.matches += 1,
-            Graded::Assembly => self.assembly_matches += 1,
-        }
-        match surface {
-            AnswerSurface::Resolver => {}
-            AnswerSurface::Attribute => self.attribute += 1,
-            AnswerSurface::Member => self.member += 1,
-        }
-    }
-
-    fn render(&self) -> String {
-        format!(
-            "match={} assembly-match={} attribute={} member={} definitions={}",
-            self.matches, self.assembly_matches, self.attribute, self.member, self.definitions
-        )
     }
 }
 
@@ -431,7 +470,15 @@ fn graded_label(graded: Graded) -> &'static str {
 
 fn outcome_label(outcome: ItemOutcome) -> String {
     match outcome {
-        ItemOutcome::Match(graded, _) => format!("{}-match", graded_label(graded)),
+        ItemOutcome::Match(graded, surface) => format!(
+            "{}-match{}",
+            graded_label(graded),
+            match surface {
+                AnswerSurface::Resolver => "",
+                AnswerSurface::Attribute => " attribute",
+                AnswerSurface::Member => " member",
+            }
+        ),
         ItemOutcome::Deferral {
             graded,
             served,
