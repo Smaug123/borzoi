@@ -2014,20 +2014,23 @@ pub enum DeclineCause {
     /// with no later same-container `type` outranking it.
     SameFileAutoOpenType,
     /// A single-segment name whose in-file type definition is not the only
-    /// one in scope, so FCS may bind another: the enclosing containers
-    /// declare the name more than once (FCS picks by arity), or a `rec`
-    /// block or an exception may hold another.
+    /// one in scope at its arity, so FCS may bind another: the enclosing
+    /// containers declare the name twice at that arity (FCS binds the first
+    /// of a same-scope pair), or a `rec` block or an exception may hold
+    /// another.
     InFileTypeNameReused,
     /// A single-segment name whose in-file type definition lives in an
     /// ancestor namespace, which a namespace does not see unopened.
     InFileTypeOutsideNamespace,
     /// A single-segment name whose in-file type definition is followed by an
-    /// `open`, which may bring a same-named type FCS binds instead.
+    /// `open` still in scope, which may bring a same-named type FCS binds
+    /// instead.
     InFileTypeOpenedOver,
-    /// A single-segment type name whose written arity is not that of the one
-    /// in-file type of its name, where FCS may bind another: `List<int>`
-    /// beside an in-file `List` names an opened generic, and a bare `Action`
-    /// beside an in-file `Action<'T>` names an assembly `Action` in scope.
+    /// A single-segment type name the innermost container declaring it
+    /// declares only at other arities, where FCS binds one of the written
+    /// arity further out: `List<int>` beside an in-file `List` names an
+    /// opened generic, and a bare `Action` beside an in-file `Action<'T>`
+    /// names an assembly `Action` in scope.
     InFileArityMismatch,
     /// A single-segment name inside an active `rec` block, where a
     /// forward-declared project type may not be in `type_defs` yet.

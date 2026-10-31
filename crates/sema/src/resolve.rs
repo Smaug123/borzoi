@@ -128,12 +128,28 @@ pub fn resolve_file(
         }
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
+            if !is_type_augmentation(&defn) {
+                let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+                let scoped = arity > 0
+                    || match defn.repr() {
+                        Some(TypeDefnRepr::Union(_)) => true,
+                        Some(TypeDefnRepr::Abbrev(a)) => a
+                            .ty()
+                            .as_ref()
+                            .and_then(abbrev_target_single_ident)
+                            .is_some(),
+                        _ => false,
+                    };
+                *r.own_type_scoped
+                    .entry((id_text(&name).to_string(), arity))
+                    .or_default() |= scoped;
+            }
             // A generic declaration of the name disqualifies an in-file
             // attribute commit: FCS's attribute lookup is arity-0
             // (`DefiniteEmpty`), so it skips a generic local and binds an
-            // assembly arity-0 type instead, while `lookup_type_def` is
-            // arity-agnostic and would hand the generic local back
-            // (codex round 7).
+            // assembly arity-0 type instead, and the in-file lookup only
+            // pins a local of the written arity in the innermost container
+            // declaring the name (codex round 7).
             if defn.typar_decls().is_some() {
                 r.own_generic_type_simple_names
                     .insert(id_text(&name).to_string());
@@ -1918,8 +1934,10 @@ impl<'a> Resolver<'a> {
             own_type_decl_counts: HashMap::new(),
             type_decl_counts: HashMap::new(),
             type_def_arities: HashMap::new(),
-            open_decls_seen: 0,
-            type_def_open_marks: HashMap::new(),
+            type_defs_by_arity: HashMap::new(),
+            own_type_scoped: HashMap::new(),
+            own_union_cases: HashMap::new(),
+            type_typar_frames: HashMap::new(),
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),

@@ -731,6 +731,16 @@ jobs:
           nix develop --command cargo test -p borzoi-sema --test all \
             attr_resolution_sweep:: -- --ignored --nocapture
 
+      - name: Gate on resolver walk coverage over the corpus
+        if: steps.gate.outputs.run == 'true'
+        # Every expression-position name the resolver records nothing at, by
+        # the container that explains it, pinned per file by a checked-in
+        # manifest. A construct whose bodies the walk skips reads as ordinary
+        # deferrals to the FCS differentials; here it is a named block.
+        run: |
+          nix develop --command cargo test -p borzoi-sema --test all \
+            silent_region_sweep:: -- --ignored --nocapture
+
       - name: Gate on inferred types over the corpus
         if: steps.gate.outputs.run == 'true'
         # Every expression and binder type inference commits on a sampled

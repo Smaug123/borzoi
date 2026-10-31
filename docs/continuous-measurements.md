@@ -61,6 +61,7 @@ Both halves exist for every axis, and the split is:
 | parser on adversarial input | `parser_panic_sweep` | — |
 | in-file resolution | `resolve_corpus_diff` | `resolution-divergence` |
 | attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
+| resolver walk coverage | `silent_region_sweep` | — |
 | inferred types | `infer_corpus_diff` | — |
 | find references | the crate's own suite | `find-references-differential` |
 | whole project | `corpus-diff` job | `project-corpus-diff` |
@@ -217,6 +218,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `resolve_corpus_diff` | keyed. One per sampled file (compared or skipped and why; whether FCS's check errored; how many in-file B1 uses FCS reported, `b1=`, and how many uses it resolved outside the file, `external=`) and one per gap, alt-binder or divergence use. The matches (~22k) are a file's `b1` less its listed in-file uses, and the declined external uses (~18k) its `external` less its listed external ones; the sweep checks, file by file, that every counted record came to exactly one verdict. |
 | `infer_corpus_diff` | keyed. One per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
+| `silent_region_sweep` | per clean-parsing corpus file, one per container bucket (`member-of-object-expression`, `attribute`, `let_decl`, …) holding an expression-position name the resolver recorded nothing at, with its count. The run prints a sample of each bucket's names. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
 | `project_corpus` (`crates/corpus-diff/manifests/`) | keyed (`<key><TAB><value>`), and with no count of its own verdicts, so it merges item by item. One per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with how many records the oracle reported and how many are definitions, or unreported), and one per graded record that is not a match through the resolver: each deferral with what the LSP served and which guard declined, each attribute or member match, and each record set aside; and, per file and copy, how many records the request handlers were asked everything about, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). A file's matches are its records less its definitions less its listed records, which the manifest checks before it renders. |
 | `parser_corpus` (cst) | keyed. One per file that parses with errors or is not UTF-8, and `(corpus)` counting every file walked; the clean parses (~5.6k) are the files not listed. |

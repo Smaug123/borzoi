@@ -97,6 +97,9 @@ const MUST_COMMIT: &[RefKind] = &[
     RefKind::SelfIdentifier,
     RefKind::MemberParam,
     RefKind::StaticMemberParam,
+    RefKind::AugmentationSelfIdentifier,
+    RefKind::AugmentationMemberParam,
+    RefKind::AugmentationStaticMemberParam,
     RefKind::UnionCase,
 ];
 
