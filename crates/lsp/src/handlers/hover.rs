@@ -49,10 +49,12 @@ use borzoi_sema::{
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use rowan::TextRange;
 
-use crate::cst_panic_safe::parse_with_symbols;
+use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
 use crate::goto_source::DefinitionDocument;
 use crate::handlers::definition::{entity_definition_document, member_definition_document};
-use crate::handlers::definition_availability::{Analysis, classify, explanation_range};
+use crate::handlers::definition_availability::{
+    Analysis, classify, classify_signature, explanation_range,
+};
 use crate::handlers::{
     range_to_lsp, smallest_inferred_type_with_range, smallest_member_resolution_with_range,
     smallest_resolution_with_range,
@@ -60,7 +62,7 @@ use crate::handlers::{
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
 use crate::semantic::SemanticState;
-use crate::server::State;
+use crate::server::{State, path_extension};
 use crate::xml_doc::key::DocTarget;
 use crate::xml_doc::lookup::DocLookup;
 use crate::xml_doc::markdown::to_markdown;
@@ -225,7 +227,24 @@ fn single_file_unavailable(
     );
     // No project, so no assembly env worth inferring against: the member
     // side-table would be empty anyway.
-    unavailable_hover(&resolved, None, file.syntax(), text, byte, analysis)
+    let hover = unavailable_hover(&resolved, None, file.syntax(), text, byte, analysis);
+    if hover.is_some() || !is_signature_buffer(uri) {
+        return hover;
+    }
+    // A signature buffer is resolved through the implementation grammar, as
+    // go-to-definition resolves it, so a name both grammars read alike (a type
+    // abbreviation's target) is explained the same way. Where that grammar
+    // loses the name (`val f : …`, whose `val` it reads as a stray token), the
+    // signature grammar still finds the identifier; nothing resolved it.
+    let parse = parse_sig_with_symbols(text, &symbols, lang)?;
+    let (unavailable, range) = classify_signature(&parse.root, byte, analysis)?;
+    Some(make_hover(unavailable.explain(), text, range))
+}
+
+/// Whether `uri` names a signature file (`.fsi`), which is read under the
+/// signature grammar — the same test the diagnostics path uses.
+fn is_signature_buffer(uri: &lsp_types::Uri) -> bool {
+    path_extension(uri).as_deref() == Some("fsi")
 }
 
 /// Turn a [`classify`] verdict into an explanatory hover, anchored to the

@@ -539,14 +539,6 @@ tests/fsharp/core/members/console/console2.fs:31:37 ControlEventHandler Type use
 tests/fsharp/core/members/console/console2.fs:31:5 SetConsoleCtrlHandler Value { is_function: true } def declined ParseErrors fcs-none
 tests/fsharp/core/members/console/console2.fs:31:59 add Parameter def declined ParseErrors fcs-none
 tests/fsharp/core/members/console/console2.fs:35:6 ConsoleCtrl Type def declined ParseErrors fcs-doc
-tests/fsharp/core/members/console/console2.fs:42:57 i Parameter def declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:42:79 ControlEvent Type use declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:42:79 OfInt Member use declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:42:98 i Parameter use declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:44:8 SetConsoleCtrlHandler Value { is_function: true } use declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:49:15 h PatternLocal def declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:50:11 SetConsoleCtrlHandler Value { is_function: true } use declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:50:33 h PatternLocal use declined ParseErrors fcs-unpaired
 tests/fsharp/core/members/console/console2.fs:5:21 CTRL_C UnionCase def declined ParseErrors fcs-none
 tests/fsharp/core/members/console/console2.fs:5:30 CTRL_BREAK UnionCase def declined ParseErrors fcs-none
 tests/fsharp/core/members/console/console2.fs:5:43 CTRL_CLOSE UnionCase def declined ParseErrors fcs-none
@@ -561,7 +553,6 @@ tests/fsharp/core/members/console/console2.fs:63:3 cc Value { is_function: false
 tests/fsharp/core/members/console/console2.fs:63:65 ce Parameter use declined ParseErrors fcs-unpaired
 tests/fsharp/core/members/console/console2.fs:66:9 s Value { is_function: false } def declined ParseErrors fcs-unpaired
 tests/fsharp/core/members/console/console2.fs:67:9 s Value { is_function: false } use declined ParseErrors fcs-unpaired
-tests/fsharp/core/members/console/console2.fs:72:4 main Value { is_function: true } use declined ParseErrors fcs-unpaired
 tests/fsharp/core/members/console/console2.fs:7:13 x Value { is_function: false } def declined ParseErrors fcs-none
 tests/fsharp/core/members/console/console2.fs:8:14 x Value { is_function: false } use declined ParseErrors fcs-none
 tests/fsharp/core/members/console/console2.fs:9:10 CTRL_C UnionCase use declined ParseErrors fcs-none

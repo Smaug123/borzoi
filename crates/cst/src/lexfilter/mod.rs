@@ -935,6 +935,15 @@ fn is_adjacent(left: &TokenTup<'_>, right: &TokenTup<'_>) -> bool {
     left.span.end == right.span.start
 }
 
+/// Whether `tok` is an infix operator in FCS's sense (`infixTokenLength`'s
+/// set, LexFilter.fs:153-179): at the head of a line it continues the
+/// expression before it, rather than beginning anything of its own.
+pub(crate) fn is_infix(tok: &Token<'_>) -> bool {
+    Filter::<'_, std::iter::Empty<(Result<Token<'_>, LexError>, Span)>>::token_is_infix(
+        &TokenContent::Real(tok.clone()),
+    )
+}
+
 /// Port of FCS's `isAtomicExprEndToken` (`LexFilter.fs:394`): the token kinds
 /// after which a glued `-`/`+`/`&` is *infix* (subtraction/addition/AND) rather
 /// than a term-starting prefix sign. Used both by the offside `ADJACENT_PREFIX_OP`
