@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borzoi_oracle_harness::fcs_position::LineIndex;
+use borzoi_oracle_harness::{BatchChild, BatchFailure};
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
 use borzoi::handlers::{served_resolution_with_range, smallest_resolution_with_range};
@@ -683,7 +684,7 @@ fn import_fail_message(reason: &ImportFailReason) -> String {
 
 /// Budget for one whole-project `uses-project` type-check. Generous: it bounds
 /// "this will never finish", and must not be mistaken for a performance target —
-/// see [`invoke_fcs_uses_project`].
+/// see [`spawn_uses_project_batch`].
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// Budget for the `dotnet build` of `tools/fcs-dump`. A cold build restores
@@ -693,83 +694,130 @@ const PROJECT_TIMEOUT: Duration = Duration::from_secs(3600);
 /// one.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// Invoke `tools/fcs-dump uses-project` for an already-loaded project.
-pub fn invoke_fcs_uses_project(loaded: &LoadedProject) -> Result<String, FcsInvokeError> {
-    invoke_fcs_uses_paths(loaded, &loaded.parses.paths)
+/// The resident `fcs-dump uses-project-batch` oracle a run puts every project,
+/// and every project's perturbed copy, to.
+///
+/// One process for the run rather than one per call, because a cold process
+/// spends most of a check warming up: on `WoofWare.Incremental` (82 files) the
+/// type-check took ~5 s in a fresh process and ~2.4 s on a fresh
+/// `FSharpChecker` in a process that had already run one.
+///
+/// The child is spawned, and the tool built, on the first request, so a run
+/// that compares nothing builds nothing. A request the child cannot answer
+/// (it could not be started, outlived its hour-long budget or crashed) fails
+/// that request alone: the child is killed, and the next request starts a
+/// fresh one.
+#[derive(Default)]
+pub struct UsesProjectOracle {
+    child: Option<BatchChild>,
 }
 
-/// Invoke `tools/fcs-dump uses-project` on `paths`, in that order, with
-/// `loaded`'s reference set, defines and language version.
-fn invoke_fcs_uses_paths(
-    loaded: &LoadedProject,
-    paths: &[PathBuf],
-) -> Result<String, FcsInvokeError> {
-    let mut cmd = fcs_dump_command("uses-project")?;
-    if !loaded.fcs_extra_refs.is_empty() {
-        cmd.env(
-            "BORZOI_FCS_EXTRA_REFS",
-            loaded
+impl UsesProjectOracle {
+    /// FCS's `uses-project` records for an already-loaded project.
+    pub fn uses_project(&mut self, loaded: &LoadedProject) -> Result<String, FcsInvokeError> {
+        self.uses_paths(loaded, &loaded.parses.paths)
+    }
+
+    /// FCS's `uses-project` records for `paths`, checked in that order as one
+    /// project with `loaded`'s reference set, defines and language version.
+    fn uses_paths(
+        &mut self,
+        loaded: &LoadedProject,
+        paths: &[PathBuf],
+    ) -> Result<String, FcsInvokeError> {
+        let request = serde_json::json!({
+            "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "refs": loaded
                 .fcs_extra_refs
                 .iter()
                 .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(";"),
-        );
-    }
-    if !loaded.define_constants.is_empty() {
-        cmd.env("BORZOI_FCS_DEFINES", loaded.define_constants.join(";"));
-    }
-    if let Some(lang) = loaded.lang_version.as_deref() {
-        cmd.env("BORZOI_FCS_LANGVERSION", lang);
-    }
-    // The references we hand FCS are the **whole** set — the same
-    // `SemanticState::reference_dlls_for_project` composition our own
-    // `AssemblyEnv` is built from — so the oracle must not also resolve the
-    // *running SDK's* framework. It is not the project's: measured on
-    // `WoofWare.Incremental` (net5.0), FCS bound `System.IO.File` in the SDK's
-    // `System.Runtime` while the project's own references declare it in
-    // `System.IO.FileSystem`, and a resolution both sides had right was
-    // recorded as a divergence in each direction. A project whose composed set
-    // is *incomplete* now fails to type-check and is skipped, loudly, rather
-    // than compared against a framework we never read.
-    // …and *only* those. A project with no assets file composes no references
-    // at all, and "resolve against exactly nothing" is not a reference set —
-    // FCS aborts — so the mode needs a set to be exclusive about.
-    //
-    // Cleared rather than merely left unset in the other case: the child
-    // inherits this process's environment, so a `BORZOI_FCS_EXCLUSIVE_REFS`
-    // set for the whole run would turn "no references at all" into
-    // `--noframework` with nothing to resolve against, which aborts.
-    if loaded.fcs_extra_refs.is_empty() {
-        cmd.env_remove("BORZOI_FCS_EXCLUSIVE_REFS");
-    } else {
-        cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
-    }
-    // The Compile order goes in on stdin; `BoundedCommand` streams it from its
-    // own thread while draining both output pipes, so a project large enough to
-    // fill a pipe buffer can't deadlock the round-trip (writing stdin
-    // synchronously with the output pipes undrained, as this used to, is exactly
-    // that bug — fine at a thousand paths, a hang at a hundred thousand), and a
-    // wedged FCS is killed rather than waited on forever.
-    //
-    // This one invocation type-checks *every* Compile item in the project, so it
-    // gets a project-scale budget rather than the driver default (which is sized
-    // for a single snippet). Too tight a bound here would be worse than none: a
-    // healthy but large project would be killed and recorded as skipped, quietly
-    // shrinking the corpus the diff claims to cover.
-    let out = BoundedCommand::new(cmd)
-        .stdin_lines(paths.iter().map(|p| p.display().to_string()))
-        .timeout(PROJECT_TIMEOUT)
-        .run()
-        .map_err(FcsInvokeError::Harness)?;
-    if !out.status.success() {
-        return Err(FcsInvokeError::Failed {
-            status: out.status,
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                .collect::<Vec<_>>(),
+            // `--define:` with nothing after it is not a symbol.
+            "defines": loaded
+                .define_constants
+                .iter()
+                .filter(|d| !d.trim().is_empty())
+                .collect::<Vec<_>>(),
+            "langversion": loaded.lang_version,
+            // The references we hand FCS are the **whole** set — the same
+            // `SemanticState::reference_dlls_for_project` composition our own
+            // `AssemblyEnv` is built from — so the oracle must not also resolve
+            // the *running SDK's* framework. It is not the project's: measured on
+            // `WoofWare.Incremental` (net5.0), FCS bound `System.IO.File` in the
+            // SDK's `System.Runtime` while the project's own references declare
+            // it in `System.IO.FileSystem`, and a resolution both sides had right
+            // was recorded as a divergence in each direction. A project whose
+            // composed set is *incomplete* fails to type-check and is skipped,
+            // loudly, rather than compared against a framework we never read.
+            //
+            // …and *only* those. A project with no assets file composes no
+            // references at all, and "resolve against exactly nothing" is not a
+            // reference set — FCS aborts — so the mode needs a set to be
+            // exclusive about.
+            "exclusiveRefs": !loaded.fcs_extra_refs.is_empty(),
         });
+        if self.child.is_none() {
+            self.child = Some(spawn_uses_project_batch()?);
+        }
+        let child = self.child.as_mut().expect("spawned above");
+        let line = child
+            .try_request(&request.to_string())
+            .map_err(FcsInvokeError::Oracle)?;
+        match batch_error(&line) {
+            Some(message) => Err(FcsInvokeError::Refused(message)),
+            None => Ok(line),
+        }
     }
-    String::from_utf8(out.stdout).map_err(FcsInvokeError::Utf8)
+}
+
+/// The resident child, its command located once by [`fcs_dump_command`]: a
+/// respawn reuses that program and its arguments, so the factory, which cannot
+/// fail, has no build to fail.
+///
+/// One attempt per request, on a whole-project budget rather than the driver
+/// default (which is sized for a single snippet). A retry would spend another
+/// [`PROJECT_TIMEOUT`] on a project that already outlived one, and the next
+/// request gets a fresh child either way. Too tight a bound would be worse
+/// than none: a healthy but large project would be killed and recorded as
+/// skipped, quietly shrinking the corpus the diff claims to cover.
+fn spawn_uses_project_batch() -> Result<BatchChild, FcsInvokeError> {
+    let built = fcs_dump_command("uses-project-batch")?;
+    assert!(
+        built.get_envs().next().is_none() && built.get_current_dir().is_none(),
+        "a respawn rebuilds the command from its program and arguments alone"
+    );
+    let program = built.get_program().to_os_string();
+    let args: Vec<OsString> = built.get_args().map(OsString::from).collect();
+    Ok(BatchChild::with_factory(
+        Box::new(move || {
+            let mut cmd = Command::new(&program);
+            cmd.args(&args);
+            cmd
+        }),
+        "fcs-dump uses-project-batch",
+        PROJECT_TIMEOUT,
+        1,
+    ))
+}
+
+/// The message of a `{"BatchError": …}` response: the oracle caught an
+/// exception checking the request (a reference that does not resolve, a
+/// type-check FCS aborted).
+fn batch_error(line: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Refusal {
+        #[serde(rename = "BatchError")]
+        message: String,
+    }
+    // A response is one compact object, `{"Files": …}` or `{"BatchError": …}`,
+    // so the key alone tells them apart without parsing the records twice.
+    if !line.starts_with(r#"{"BatchError""#) {
+        return None;
+    }
+    Some(serde_json::from_str::<Refusal>(line).map_or_else(
+        |e| format!("unreadable BatchError response ({e}): {line}"),
+        |r| r.message,
+    ))
 }
 
 #[derive(Debug)]
@@ -784,12 +832,11 @@ pub enum FcsInvokeError {
     /// harness itself breaking, as opposed to the oracle answering
     /// unsuccessfully.
     Harness(ChildFailure),
-    Failed {
-        status: std::process::ExitStatus,
-        stdout: String,
-        stderr: String,
-    },
-    Utf8(std::string::FromUtf8Error),
+    /// The resident oracle could not be started, or wedged or crashed
+    /// answering the request.
+    Oracle(BatchFailure),
+    /// The resident oracle answered with a `BatchError`.
+    Refused(String),
 }
 
 impl fmt::Display for FcsInvokeError {
@@ -802,23 +849,18 @@ impl fmt::Display for FcsInvokeError {
                 )
             }
             Self::Harness(e) => write!(f, "fcs-dump did not answer: {e}"),
-            Self::Failed { status, stderr, .. } => {
-                write!(f, "fcs-dump uses-project failed with {status}: {stderr}")
-            }
-            Self::Utf8(e) => write!(f, "fcs-dump stdout was not UTF-8: {e}"),
+            Self::Oracle(e) => write!(f, "fcs-dump uses-project-batch did not answer: {e}"),
+            Self::Refused(message) => write!(f, "fcs-dump uses-project-batch failed: {message}"),
         }
     }
 }
 
 impl std::error::Error for FcsInvokeError {}
 
-/// The `fcs-dump` invocation for `subcommand`, building the tool on demand.
-///
-/// `pub` so a differential that drives the **resident** oracle
-/// (`…-batch`) locates the binary exactly as the one-shot callers here do
-/// rather than re-deriving the path. Without `BORZOI_FCS_DUMP` the first call
-/// in the process builds `tools/fcs-dump` and later calls reuse the output.
-pub fn fcs_dump_command(subcommand: &str) -> Result<Command, FcsInvokeError> {
+/// The `fcs-dump` invocation for `subcommand`. Without `BORZOI_FCS_DUMP` the
+/// first call in the process builds `tools/fcs-dump` and later calls reuse the
+/// output.
+fn fcs_dump_command(subcommand: &str) -> Result<Command, FcsInvokeError> {
     if let Some(bin) = std::env::var_os("BORZOI_FCS_DUMP") {
         let mut c = Command::new(bin);
         c.arg(subcommand);
@@ -2461,27 +2503,29 @@ pub fn run_project_corpus_diff_with_options(
         .handler_sample_stride
         .unwrap_or(handler_diff::SAMPLE_STRIDE);
 
+    let mut oracle = UsesProjectOracle::default();
     let mut projects = Vec::new();
     for project in visited {
         summary.record_project_visited();
-        let verdict = match visit_project(&project, &load_options, stride, &mut summary) {
-            Ok((assets, sources, comparison, handlers)) => {
-                summary.record_comparison(&comparison);
-                summary.record_hover_types(&handlers);
-                record_divergence_details(&comparison, &mut divergence_details);
-                divergence_details.extend(handlers.divergences.iter().map(|d| d.render()));
-                ProjectVerdict::Comparable {
-                    assets,
-                    sources,
-                    comparison: Box::new(comparison),
-                    handlers: Box::new(handlers),
+        let verdict =
+            match visit_project(&project, &load_options, stride, &mut oracle, &mut summary) {
+                Ok((assets, sources, comparison, handlers)) => {
+                    summary.record_comparison(&comparison);
+                    summary.record_hover_types(&handlers);
+                    record_divergence_details(&comparison, &mut divergence_details);
+                    divergence_details.extend(handlers.divergences.iter().map(|d| d.render()));
+                    ProjectVerdict::Comparable {
+                        assets,
+                        sources,
+                        comparison: Box::new(comparison),
+                        handlers: Box::new(handlers),
+                    }
                 }
-            }
-            Err((skip, reason)) => {
-                summary.record_skip(project.clone(), reason);
-                ProjectVerdict::Skipped(skip)
-            }
-        };
+                Err((skip, reason)) => {
+                    summary.record_skip(project.clone(), reason);
+                    ProjectVerdict::Skipped(skip)
+                }
+            };
         projects.push(ProjectRecord { project, verdict });
     }
 
@@ -2508,6 +2552,7 @@ fn visit_project(
     project: &Path,
     load_options: &LoadOptions,
     handler_sample_stride: NonZeroUsize,
+    oracle: &mut UsesProjectOracle,
     summary: &mut CorpusSummary,
 ) -> Result<Visited, (ProjectSkip, String)> {
     let loaded = load_lsp_project_with_options(project, load_options).map_err(|reason| {
@@ -2515,7 +2560,8 @@ fn visit_project(
         (ProjectSkip::Load(reason), text)
     })?;
     summary.record_project_assets(loaded.project.clone(), loaded.project_assets.clone());
-    let json = invoke_fcs_uses_project(&loaded)
+    let json = oracle
+        .uses_project(&loaded)
         .map_err(|err| (ProjectSkip::FcsInvoke, err.to_string()))?;
     let sources: Vec<(PathBuf, Arc<str>)> = loaded
         .parses
@@ -2540,6 +2586,7 @@ fn visit_project(
         &loaded,
         load_options,
         handler_sample_stride,
+        oracle,
         &fcs,
         &comparison,
     );
@@ -2553,11 +2600,12 @@ fn compare_project_handlers(
     loaded: &LoadedProject,
     load_options: &LoadOptions,
     sample_stride: NonZeroUsize,
+    oracle: &mut UsesProjectOracle,
     fcs: &[FileUses],
     comparison: &Comparison,
 ) -> handler_diff::HandlerReport {
     let started = std::time::Instant::now();
-    let perturbed = perturbed_project(loaded);
+    let perturbed = perturbed_project(loaded, oracle);
     let perturbed_at = started.elapsed();
     let build_properties = load_options.build_properties.clone();
     // A file two projects compile is answered by whichever the server finds it
@@ -2617,7 +2665,10 @@ fn compare_project_handlers(
 /// module its file name says) and two sources never collide. FCS reads only the
 /// files and the reference set, defines and language version the original was
 /// checked with, so nothing else of the project needs copying.
-fn perturbed_project(loaded: &LoadedProject) -> handler_diff::PerturbedProject {
+fn perturbed_project(
+    loaded: &LoadedProject,
+    oracle: &mut UsesProjectOracle,
+) -> handler_diff::PerturbedProject {
     let files: Vec<perturb::Perturbed> = loaded
         .parses
         .files
@@ -2630,12 +2681,13 @@ fn perturbed_project(loaded: &LoadedProject) -> handler_diff::PerturbedProject {
             perturb::perturb(text, file.file.syntax(), append.then_some(index))
         })
         .collect();
-    let fcs = perturbed_fcs(loaded, &files);
+    let fcs = perturbed_fcs(loaded, oracle, &files);
     handler_diff::PerturbedProject { files, fcs }
 }
 
 fn perturbed_fcs(
     loaded: &LoadedProject,
+    oracle: &mut UsesProjectOracle,
     files: &[perturb::Perturbed],
 ) -> Result<Vec<FileUses>, handler_diff::PerturbedSkip> {
     use handler_diff::PerturbedSkip;
@@ -2653,8 +2705,9 @@ fn perturbed_fcs(
         copies.push((copy, Arc::<str>::from(file.text.as_str())));
     }
     let paths: Vec<PathBuf> = copies.iter().map(|(p, _)| p.clone()).collect();
-    let json =
-        invoke_fcs_uses_paths(loaded, &paths).map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
+    let json = oracle
+        .uses_paths(loaded, &paths)
+        .map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
     let mut fcs =
         parse_project_uses(&json, &copies).map_err(|e| PerturbedSkip::Fcs(e.to_string()))?;
     // Every path back to the original's spelling.

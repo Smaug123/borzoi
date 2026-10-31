@@ -15,7 +15,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use borzoi_oracle_harness::BatchChild;
+use borzoi_oracle_harness::{BatchChild, BatchFailure};
 use tempfile::tempdir;
 
 /// A healthy fake oracle: echoes `ok:<request>` for each input line, exits on EOF.
@@ -163,4 +163,82 @@ fn batch_gives_up_loudly_on_a_permanent_wedge() {
         2,
     );
     child.request("/tmp/never.fs");
+}
+
+/// A fake oracle whose first spawn crashes (reads its request, then exits
+/// without answering) and whose later spawns answer `ok:<request>`. Reading
+/// first makes the failure the closed stdout, never a write into a pipe that
+/// a faster crash already closed.
+fn crashes_once(marker: &std::path::Path) -> impl FnMut() -> Command + Send + 'static {
+    let marker_s = marker.to_str().unwrap().to_string();
+    move || {
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg(
+                r#"if [ -e "$M" ]; then
+                       while IFS= read -r line; do printf 'ok:%s\n' "$line"; done
+                   else
+                       : > "$M"; IFS= read -r l; exit 1
+                   fi"#,
+            )
+            .env("M", &marker_s);
+        c
+    }
+}
+
+/// `try_request` reports exhausted attempts as a value instead of panicking, so
+/// a caller can treat one unanswerable request as that request's failure.
+#[test]
+fn batch_try_request_reports_exhausted_attempts() {
+    let factory = || {
+        let mut c = Command::new("sh");
+        // Reads the request before exiting, as `crashes_once` does.
+        c.arg("-c").arg("IFS= read -r l; exit 1");
+        c
+    };
+    let mut child =
+        BatchChild::with_factory(Box::new(factory), "fake-oracle", Duration::from_secs(5), 2);
+    assert!(matches!(
+        child.try_request("/tmp/a.fs"),
+        Err(BatchFailure::Crashed)
+    ));
+}
+
+/// Giving up on one request does not give up on the child: the next request
+/// is put to a fresh process, not to the one killed for the last.
+#[test]
+fn batch_serves_the_next_request_after_giving_up() {
+    let dir = tempdir().unwrap();
+    let mut child = BatchChild::with_factory(
+        Box::new(crashes_once(&dir.path().join("crashed-once"))),
+        "fake-oracle",
+        Duration::from_secs(5),
+        1,
+    );
+    assert!(matches!(
+        child.try_request("/tmp/a.fs"),
+        Err(BatchFailure::Crashed)
+    ));
+    assert_eq!(
+        child.try_request("/tmp/b.fs").unwrap().trim_end(),
+        "ok:/tmp/b.fs"
+    );
+}
+
+/// An oracle that cannot be started fails the request, as a value: nothing is
+/// spawned at construction, so building the driver cannot panic either.
+#[test]
+fn batch_try_request_reports_a_spawn_failure() {
+    let dir = tempdir().unwrap();
+    let missing = dir.path().join("no-such-oracle");
+    let mut child = BatchChild::with_factory(
+        Box::new(move || Command::new(&missing)),
+        "missing-oracle",
+        Duration::from_secs(5),
+        2,
+    );
+    assert!(matches!(
+        child.try_request("/tmp/a.fs"),
+        Err(BatchFailure::Spawn(_))
+    ));
 }

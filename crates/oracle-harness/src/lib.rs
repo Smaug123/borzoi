@@ -52,6 +52,8 @@ pub enum BatchFailure {
     Crashed,
     /// Writing the request failed outright.
     Stdin(std::io::Error),
+    /// The oracle could not be started.
+    Spawn(std::io::Error),
 }
 
 impl std::fmt::Display for BatchFailure {
@@ -67,6 +69,7 @@ impl std::fmt::Display for BatchFailure {
                 write!(f, "the oracle closed stdout before answering (it crashed)")
             }
             BatchFailure::Stdin(e) => write!(f, "writing the request to the oracle failed: {e}"),
+            BatchFailure::Spawn(e) => write!(f, "starting the oracle failed: {e}"),
         }
     }
 }
@@ -102,14 +105,17 @@ pub struct BatchChild {
     timeout: Duration,
     /// How many times to (re)spawn-and-try before giving up.
     attempts: u32,
-    io: ChildIo,
+    /// The live child, or `None` before the first request and once one was
+    /// killed for failing an attempt; the next attempt, of this request or a
+    /// later one, spawns its successor.
+    io: Option<ChildIo>,
 }
 
 /// The live child and its pipes: `stdin` to send requests, plus the `rx` end of
 /// the channel fed by the stdout reader thread.
 ///
 /// `stdin` is an [`Option`] because each write happens on a worker thread that
-/// owns the pipe for the duration (see [`BatchChild::try_request`]) and hands it
+/// owns the pipe for the duration (see [`ChildIo::round_trip`]) and hands it
 /// back on completion. It is `None` only while a write is in flight, or
 /// permanently if that write wedged — in which case this whole `ChildIo` is
 /// replaced by a respawn.
@@ -137,21 +143,21 @@ impl BatchChild {
     /// Construct over an arbitrary command factory and bounds — the seam the
     /// recovery tests use to inject fake oracles (responder / wedge /
     /// wedge-then-recover). `make_command` must yield a command *without* stdio
-    /// configured; the spawn sets the pipes itself.
+    /// configured; the spawn sets the pipes itself. Nothing is spawned until the
+    /// first request, so a child that cannot be started fails that request.
     pub fn with_factory(
-        mut make_command: Box<dyn FnMut() -> Command + Send>,
+        make_command: Box<dyn FnMut() -> Command + Send>,
         what: impl Into<String>,
         timeout: Duration,
         attempts: u32,
     ) -> Self {
         assert!(attempts >= 1, "need at least one attempt");
-        let io = Self::spawn_io(&mut *make_command);
         BatchChild {
             make_command,
             what: what.into(),
             timeout,
             attempts,
-            io,
+            io: None,
         }
     }
 
@@ -161,12 +167,12 @@ impl BatchChild {
     ///
     /// stderr is inherited: the oracles' diagnostics are worth seeing live, and an
     /// inherited pipe is one that cannot fill and wedge the child.
-    fn spawn_io(make_command: &mut dyn FnMut() -> Command) -> ChildIo {
+    fn spawn_io(make_command: &mut dyn FnMut() -> Command) -> std::io::Result<ChildIo> {
         let mut cmd = make_command();
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        let mut child = spawn_serialised(&mut cmd).expect("spawn batch oracle");
+        let mut child = spawn_serialised(&mut cmd)?;
         let stdin = child.stdin.take().expect("child stdin piped");
         let stdout = child.stdout.take().expect("child stdout piped");
         let (tx, rx) = mpsc::channel();
@@ -184,11 +190,11 @@ impl BatchChild {
                 }
             }
         });
-        ChildIo {
+        Ok(ChildIo {
             child,
             stdin: Some(stdin),
             rx,
-        }
+        })
     }
 
     /// Send one `request` line and return the single response line.
@@ -200,28 +206,51 @@ impl BatchChild {
     /// A wedged or crashed oracle is killed, reaped, and respawned, and the request
     /// retried on the fresh child, up to `attempts` times; only then does it panic.
     pub fn request(&mut self, request: &str) -> String {
+        self.try_request(request).unwrap_or_else(|why| {
+            panic!(
+                "{} failed {} time(s) answering {request:?}: {why} (see the child's stderr above)",
+                self.what, self.attempts,
+            )
+        })
+    }
+
+    /// [`request`](Self::request), with the failure of the last attempt
+    /// returned rather than panicked on. The child that failed it is gone, so
+    /// the next request is put to a fresh one.
+    pub fn try_request(&mut self, request: &str) -> Result<String, BatchFailure> {
         let mut last = None;
-        for attempt in 1..=self.attempts {
-            match self.try_request(request) {
-                Ok(line) => return line,
+        for _ in 0..self.attempts {
+            if self.io.is_none() {
+                match Self::spawn_io(&mut *self.make_command) {
+                    Ok(io) => self.io = Some(io),
+                    Err(e) => {
+                        last = Some(BatchFailure::Spawn(e));
+                        continue;
+                    }
+                }
+            }
+            let io = self.io.as_mut().expect("spawned above");
+            match io.round_trip(request, self.timeout) {
+                Ok(line) => return Ok(line),
                 Err(why) => {
                     last = Some(why);
-                    // Discard the wedged/dead child (reaping it, so no zombie)
-                    // before the next attempt talks to a fresh process.
-                    let _ = self.io.child.kill();
-                    let _ = self.io.child.wait();
-                    if attempt < self.attempts {
-                        self.io = Self::spawn_io(&mut *self.make_command);
+                    // Discard the wedged/dead child (reaping it, so no zombie),
+                    // so nothing talks to it again.
+                    if let Some(mut dead) = self.io.take() {
+                        dead.kill();
                     }
                 }
             }
         }
-        panic!(
-            "{} failed {} time(s) answering {request:?}: {} (see the child's stderr above)",
-            self.what,
-            self.attempts,
-            last.expect("a failed attempt records why"),
-        );
+        Err(last.expect("a failed attempt records why"))
+    }
+}
+
+impl ChildIo {
+    /// Kill and reap the child.
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// One write-then-wait round-trip against the current child, the whole
@@ -239,14 +268,11 @@ impl BatchChild {
     /// the caller kills and respawns the child, and a fresh [`ChildIo`] brings a
     /// fresh stdin with it, so the abandoned worker's next write fails and it
     /// exits.
-    fn try_request(&mut self, request: &str) -> Result<String, BatchFailure> {
-        let deadline = Instant::now() + self.timeout;
-        let wedged = || BatchFailure::Wedged {
-            after: self.timeout,
-        };
+    fn round_trip(&mut self, request: &str, timeout: Duration) -> Result<String, BatchFailure> {
+        let deadline = Instant::now() + timeout;
+        let wedged = || BatchFailure::Wedged { after: timeout };
 
         let mut stdin = self
-            .io
             .stdin
             .take()
             .expect("stdin is restored after each write");
@@ -259,14 +285,13 @@ impl BatchChild {
             // The write landed (or failed outright); either way the pipe is ours
             // again for the next request.
             Some((stdin, r)) => {
-                self.io.stdin = Some(stdin);
+                self.stdin = Some(stdin);
                 r.map_err(BatchFailure::Stdin)?;
             }
             None => return Err(wedged()),
         }
 
         match self
-            .io
             .rx
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
@@ -286,7 +311,8 @@ impl BatchChild {
 /// leak a .NET process per test.
 impl Drop for BatchChild {
     fn drop(&mut self) {
-        let _ = self.io.child.kill();
-        let _ = self.io.child.wait();
+        if let Some(io) = &mut self.io {
+            io.kill();
+        }
     }
 }
