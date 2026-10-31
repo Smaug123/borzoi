@@ -6851,6 +6851,16 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:223:16-223:20	path Parameter use ag
 src/Compiler/Service/ServiceParseTreeWalk.fs:224:25-224:31	valSig Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:224:9-224:24	defaultTraverse Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:22:7-22:27	SynModuleOrNamespace UnionCase def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:230:16-230:27	parsedInput Value { is_function: false } def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:231:19-231:30	parsedInput Value { is_function: false } use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:232:36-232:40	file PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:232:44-232:48	file PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:232:70-232:101	SynModuleOrNamespace UnionCase use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:232:70-232:80	SyntaxNode Type use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:233:35-233:39	file PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:233:43-233:47	file PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:233:69-233:103	SynModuleOrNamespaceSig UnionCase use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:233:69-233:79	SyntaxNode Type use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:238:44-238:46	m1 Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:238:55-238:56	p Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:238:9-238:42	rangeContainsPosLeftEdgeInclusive Value { is_function: true } def agree-none
@@ -7033,6 +7043,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:359:44-359:54	attributes PatternLoc
 src/Compiler/Service/ServiceParseTreeWalk.fs:359:62-359:87	attributeApplicationDives Value { is_function: true } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:359:88-359:92	path Value { is_function: false } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:359:93-359:103	attributes PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:35:11-35:17	SynPat UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:35:18-35:21	pat PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:35:25-35:28	pat PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:360:105-360:109	path Value { is_function: false } use agree-none
@@ -7064,6 +7075,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:369:28-369:38	SyntaxNode Type use a
 src/Compiler/Service/ServiceParseTreeWalk.fs:369:28-369:59	SynModuleOrNamespace UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:369:60-369:64	mors Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:369:68-369:76	origPath Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:36:11-36:18	SynType UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:36:19-36:21	ty PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:36:25-36:27	ty PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:371:17-371:31	synModuleDecls Parameter use agree-none
@@ -7082,6 +7094,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:375:39-375:43	expr Parameter def ag
 src/Compiler/Service/ServiceParseTreeWalk.fs:376:17-376:21	pick Value { is_function: false } def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:376:24-376:28	pick Value { is_function: true } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:376:29-376:33	expr Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:37:11-37:18	SynExpr UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:37:19-37:23	expr PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:37:27-37:31	expr PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:383:21-383:40	traverseSequentials Value { is_function: true } def agree-doc
@@ -7095,6 +7108,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:388:42-388:47	expr1 PatternLocal us
 src/Compiler/Service/ServiceParseTreeWalk.fs:388:71-388:75	path Value { is_function: false } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:389:52-389:56	path Value { is_function: false } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:389:57-389:62	expr2 PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:38:11-38:20	SynModule UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:38:21-38:26	modul PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:38:30-38:35	modul PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:397:17-397:32	defaultTraverse Value { is_function: true } def agree-none
@@ -7107,6 +7121,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:398:52-398:60	origPath Parameter us
 src/Compiler/Service/ServiceParseTreeWalk.fs:399:21-399:36	traverseSynExpr Value { is_function: false } def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:399:39-399:54	traverseSynExpr Value { is_function: true } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:399:55-399:59	path Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:39:11-39:31	SynModuleOrNamespace UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:39:32-39:49	moduleOrNamespace PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:39:53-39:70	moduleOrNamespace PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:400:21-400:36	traverseSynType Value { is_function: false } def agree-none
@@ -7122,6 +7137,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:406:37-406:44	synExpr PatternLocal 
 src/Compiler/Service/ServiceParseTreeWalk.fs:407:41-407:48	synExpr PatternLocal use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:408:41-408:48	synExpr PatternLocal use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:409:40-409:47	synExpr PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:40:11-40:22	SynTypeDefn UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:40:23-40:28	tyDef PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:40:32-40:37	tyDef PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:410:50-410:57	synExpr PatternLocal use unpaired-none
@@ -7134,6 +7150,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:416:48-416:55	synExpr PatternLocal 
 src/Compiler/Service/ServiceParseTreeWalk.fs:417:52-417:59	synExpr PatternLocal use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:418:49-418:56	synExpr PatternLocal use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:419:75-419:82	synExpr PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:41:11-41:24	SynMemberDefn UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:41:25-41:34	memberDef PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:41:38-41:47	memberDef PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:420:47-420:54	synExpr PatternLocal use unpaired-none
@@ -7146,6 +7163,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:426:40-426:47	synExpr PatternLocal 
 src/Compiler/Service/ServiceParseTreeWalk.fs:426:52-426:67	traverseSynExpr Value { is_function: false } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:426:68-426:75	synExpr PatternLocal use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:428:57-428:62	parts PatternLocal def unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:42:11-42:25	SynMatchClause UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:42:26-42:37	matchClause PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:42:41-42:52	matchClause PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:430:29-430:33	part PatternLocal def agree-none
@@ -7164,6 +7182,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:438:27-438:42	traverseSynExpr Value
 src/Compiler/Service/ServiceParseTreeWalk.fs:438:43-438:50	synExpr PatternLocal use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:439:31-439:46	traverseSynType Value { is_function: false } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:439:47-439:54	synType PatternLocal use unpaired-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:43:11-43:21	SynBinding UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:43:22-43:29	binding PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:43:33-43:40	binding PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:440:23-440:24	x PatternLocal def agree-none
@@ -7187,6 +7206,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:449:35-449:39	dive Value { is_funct
 src/Compiler/Service/ServiceParseTreeWalk.fs:449:40-449:44	expr PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:449:45-449:49	expr PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:449:56-449:71	traverseSynExpr Value { is_function: false } use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:44:11-44:34	SynModuleOrNamespaceSig UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:44:35-44:55	moduleOrNamespaceSig PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:44:59-44:79	moduleOrNamespaceSig PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:452:33-452:37	dive Value { is_function: true } use agree-none
@@ -7196,6 +7216,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:453:51-453:60	withRange PatternLoca
 src/Compiler/Service/ServiceParseTreeWalk.fs:456:41-456:48	visitor Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:456:66-456:70	path Value { is_function: false } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:456:77-456:81	expr PatternLocal use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:45:11-45:27	SynModuleSigDecl UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:45:28-45:41	moduleSigDecl PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:45:45-45:58	moduleSigDecl PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:461:29-461:34	field PatternLocal def agree-none
@@ -7220,6 +7241,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:469:29-469:46	diveIntoSeparator Val
 src/Compiler/Service/ServiceParseTreeWalk.fs:469:47-469:60	offsideColumn Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:469:61-469:69	scPosOpt Parameter def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:469:70-469:77	copyOpt Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:46:11-46:20	SynValSig UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:46:49-46:54	range PatternLocal def unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:46:60-46:65	range PatternLocal use unpaired-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:470:35-470:43	scPosOpt Parameter use agree-none
@@ -7234,6 +7256,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:478:49-478:62	offsideColumn Paramet
 src/Compiler/Service/ServiceParseTreeWalk.fs:479:37-479:44	visitor Parameter use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:479:62-479:66	path Value { is_function: false } use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:479:68-479:75	copyOpt Parameter use agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:47:11-47:25	SynTypeDefnSig UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:47:26-47:34	tyDefSig PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:47:38-47:46	tyDefSig PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:483:31-483:41	inheritOpt PatternLocal use unpaired-none
@@ -7246,6 +7269,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:487:33-487:37	dive Value { is_funct
 src/Compiler/Service/ServiceParseTreeWalk.fs:487:38-487:42	expr PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:487:43-487:47	expr PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:487:59-487:63	expr Parameter def agree-none
+src/Compiler/Service/ServiceParseTreeWalk.fs:48:11-48:23	SynMemberSig UnionCase use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:48:24-48:33	memberSig PatternLocal def agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:48:37-48:46	memberSig PatternLocal use agree-none
 src/Compiler/Service/ServiceParseTreeWalk.fs:492:63-492:67	expr Parameter use unpaired-none
@@ -20887,6 +20911,7 @@ src/FSharp.Core/quotations.fs:1022:11-1022:19	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:1022:20-1022:27	QuoteOp UnionCase use agree-none
 src/FSharp.Core/quotations.fs:1022:28-1022:35	isTyped Parameter use agree-none
 src/FSharp.Core/quotations.fs:1022:40-1022:41	a Parameter use agree-none
+src/FSharp.Core/quotations.fs:1022:45-1022:49	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1022:9-1022:10	E Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1024:18-1024:19	v Parameter def agree-none
 src/FSharp.Core/quotations.fs:1024:21-1024:23	ty Parameter def agree-none
@@ -20969,6 +20994,7 @@ src/FSharp.Core/quotations.fs:1060:9-1060:17	mkLambda Value { is_function: true 
 src/FSharp.Core/quotations.fs:1061:11-1061:21	LambdaTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:1061:22-1061:25	var Parameter use agree-none
 src/FSharp.Core/quotations.fs:1061:28-1061:32	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:1061:36-1061:40	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1061:9-1061:10	E Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1063:20-1063:22	e1 Parameter def agree-none
 src/FSharp.Core/quotations.fs:1063:24-1063:26	v1 Parameter def agree-none
@@ -21024,6 +21050,7 @@ src/FSharp.Core/quotations.fs:1081:18-1081:19	v Parameter use agree-none
 src/FSharp.Core/quotations.fs:1081:9-1081:17	mkLetRaw Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1084:29-1084:31	ty Parameter def agree-none
 src/FSharp.Core/quotations.fs:1084:33-1084:37	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1084:39-1084:43	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1084:9-1084:27	mkNewTupleWithType Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1085:13-1085:17	mems Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:1085:48-1085:50	ty Parameter use agree-none
@@ -21094,6 +21121,7 @@ src/FSharp.Core/quotations.fs:1112:35-1112:36	x Parameter use agree-none
 src/FSharp.Core/quotations.fs:1112:9-1112:14	mkFE1 Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1115:22-1115:24	ty Parameter def agree-none
 src/FSharp.Core/quotations.fs:1115:26-1115:30	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1115:32-1115:36	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1115:9-1115:20	mkNewRecord Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1116:13-1116:17	mems Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:1116:47-1116:49	ty Parameter use agree-none
@@ -21115,6 +21143,7 @@ src/FSharp.Core/quotations.fs:1127:9-1127:14	mkFEN Value { is_function: true } u
 src/FSharp.Core/quotations.fs:112:21-112:25	name Parameter use agree-none
 src/FSharp.Core/quotations.fs:1130:25-1130:34	unionCase Parameter def agree-none
 src/FSharp.Core/quotations.fs:1130:51-1130:55	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1130:57-1130:61	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1130:9-1130:23	mkNewUnionCase Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1131:49-1131:58	unionCase Parameter use agree-none
 src/FSharp.Core/quotations.fs:1134:13-1134:18	sargs Value { is_function: false } def agree-none
@@ -21198,6 +21227,7 @@ src/FSharp.Core/quotations.fs:1179:26-1179:42	StaticFieldGetOp UnionCase use agr
 src/FSharp.Core/quotations.fs:1179:43-1179:48	finfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1182:27-1182:32	finfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1182:45-1182:50	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:1182:52-1182:56	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1182:9-1182:25	mkStaticFieldSet Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1183:45-1183:50	finfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1186:23-1186:29	typeOf Value { is_function: true } use agree-doc
@@ -21213,6 +21243,7 @@ src/FSharp.Core/quotations.fs:118:22-118:27	stamp Value { is_function: false } u
 src/FSharp.Core/quotations.fs:1192:29-1192:32	obj Parameter def agree-none
 src/FSharp.Core/quotations.fs:1192:34-1192:39	finfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1192:52-1192:57	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:1192:59-1192:63	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1192:9-1192:27	mkInstanceFieldSet Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1193:45-1193:50	finfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1196:23-1196:29	typeOf Value { is_function: true } use agree-doc
@@ -21230,6 +21261,7 @@ src/FSharp.Core/quotations.fs:1201:47-1201:50	obj Parameter use agree-none
 src/FSharp.Core/quotations.fs:1201:52-1201:57	value Parameter use agree-none
 src/FSharp.Core/quotations.fs:1204:21-1204:23	ci Parameter def agree-none
 src/FSharp.Core/quotations.fs:1204:42-1204:46	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1204:48-1204:52	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1204:9-1204:19	mkCtorCall Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1205:51-1205:53	ci Parameter use agree-none
 src/FSharp.Core/quotations.fs:1208:20-1208:22	ci Parameter use agree-none
@@ -21248,6 +21280,7 @@ src/FSharp.Core/quotations.fs:1212:31-1212:33	ty Parameter use agree-none
 src/FSharp.Core/quotations.fs:1212:9-1212:14	mkFE0 Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1214:26-1214:31	pinfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1214:47-1214:51	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1214:53-1214:57	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1214:9-1214:24	mkStaticPropGet Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1215:48-1215:53	pinfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1218:17-1218:22	pinfo Parameter use agree-none
@@ -21264,6 +21297,7 @@ src/FSharp.Core/quotations.fs:1224:49-1224:53	args Parameter use agree-none
 src/FSharp.Core/quotations.fs:1227:28-1227:31	obj Parameter def agree-none
 src/FSharp.Core/quotations.fs:1227:33-1227:38	pinfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1227:54-1227:58	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1227:60-1227:64	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1227:9-1227:26	mkInstancePropGet Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1228:48-1228:53	pinfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:122:28-122:31	typ Parameter use agree-none
@@ -21283,7 +21317,9 @@ src/FSharp.Core/quotations.fs:1239:46-1239:49	obj Parameter use agree-none
 src/FSharp.Core/quotations.fs:1239:53-1239:57	args Parameter use agree-none
 src/FSharp.Core/quotations.fs:1242:26-1242:31	pinfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1242:47-1242:51	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1242:53-1242:57	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1242:64-1242:69	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:1242:71-1242:75	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1242:9-1242:24	mkStaticPropSet Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1243:48-1243:53	pinfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1246:17-1246:22	pinfo Parameter use agree-none
@@ -21300,7 +21336,9 @@ src/FSharp.Core/quotations.fs:1252:59-1252:64	value Parameter use agree-none
 src/FSharp.Core/quotations.fs:1255:28-1255:31	obj Parameter def agree-none
 src/FSharp.Core/quotations.fs:1255:33-1255:38	pinfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1255:54-1255:58	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1255:60-1255:64	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1255:71-1255:76	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:1255:78-1255:82	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1255:9-1255:26	mkInstancePropSet Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1256:48-1256:53	pinfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1259:17-1259:22	pinfo Parameter use agree-none
@@ -21327,6 +21365,7 @@ src/FSharp.Core/quotations.fs:126:56-126:59	res Value { is_function: false } use
 src/FSharp.Core/quotations.fs:1270:31-1270:34	obj Parameter def agree-none
 src/FSharp.Core/quotations.fs:1270:36-1270:41	minfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1270:55-1270:59	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1270:61-1270:65	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1270:9-1270:29	mkInstanceMethodCall Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1271:46-1271:51	minfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1274:20-1274:25	minfo Parameter use agree-none
@@ -21347,6 +21386,7 @@ src/FSharp.Core/quotations.fs:1282:56-1282:62	minfoW Parameter def agree-none
 src/FSharp.Core/quotations.fs:1282:76-1282:86	nWitnesses Parameter def agree-none
 src/FSharp.Core/quotations.fs:1282:9-1282:30	mkInstanceMethodCallW Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1282:93-1282:97	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1282:99-1282:103	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1283:46-1283:51	minfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1286:20-1286:26	minfoW Parameter use agree-none
 src/FSharp.Core/quotations.fs:1286:44-1286:48	args Parameter use agree-none
@@ -21365,6 +21405,7 @@ src/FSharp.Core/quotations.fs:1291:71-1291:74	obj Parameter use agree-none
 src/FSharp.Core/quotations.fs:1291:78-1291:82	args Parameter use agree-none
 src/FSharp.Core/quotations.fs:1294:29-1294:34	minfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:1294:48-1294:52	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:1294:54-1294:58	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1294:9-1294:27	mkStaticMethodCall Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1295:46-1295:51	minfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1298:20-1298:25	minfo Parameter use agree-none
@@ -21381,6 +21422,7 @@ src/FSharp.Core/quotations.fs:1304:49-1304:55	minfoW Parameter def agree-none
 src/FSharp.Core/quotations.fs:1304:69-1304:79	nWitnesses Parameter def agree-none
 src/FSharp.Core/quotations.fs:1304:86-1304:90	args Parameter def agree-none
 src/FSharp.Core/quotations.fs:1304:9-1304:28	mkStaticMethodCallW Value { is_function: true } def agree-none
+src/FSharp.Core/quotations.fs:1304:92-1304:96	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1305:46-1305:51	minfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:1308:20-1308:26	minfoW Parameter use agree-none
 src/FSharp.Core/quotations.fs:1308:44-1308:48	args Parameter use agree-none
@@ -21486,7 +21528,9 @@ src/FSharp.Core/quotations.fs:1344:31-1344:32	f Parameter use agree-none
 src/FSharp.Core/quotations.fs:1344:34-1344:44	mkNewTuple Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1344:45-1344:49	args Parameter use agree-none
 src/FSharp.Core/quotations.fs:1346:25-1346:26	f Parameter def agree-none
+src/FSharp.Core/quotations.fs:1346:28-1346:32	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1346:34-1346:36	es Parameter def agree-none
+src/FSharp.Core/quotations.fs:1346:38-1346:42	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1346:9-1346:23	mkApplications Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1347:19-1347:38	mkTupledApplication Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1347:40-1347:41	f Parameter use agree-none
@@ -21511,6 +21555,7 @@ src/FSharp.Core/quotations.fs:1356:28-1356:29	v Parameter use agree-none
 src/FSharp.Core/quotations.fs:1356:9-1356:14	mkFEN Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:1358:19-1358:22	ves Parameter def agree-none
 src/FSharp.Core/quotations.fs:1358:25-1358:28	Var Type use agree-none
+src/FSharp.Core/quotations.fs:1358:31-1358:35	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:1358:43-1358:47	body Parameter def agree-none
 src/FSharp.Core/quotations.fs:1358:9-1358:17	mkLetRec Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:1359:19-1359:28	checkBind Value { is_function: true } use agree-none
@@ -22241,6 +22286,7 @@ src/FSharp.Core/quotations.fs:1798:58-1798:59	u Parameter def agree-none
 src/FSharp.Core/quotations.fs:1798:60-1798:71	phase2bytes Parameter def agree-none
 src/FSharp.Core/quotations.fs:1799:17-1799:27	phase2data Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:179:19-179:32	ExprConstInfo Type use agree-none
+src/FSharp.Core/quotations.fs:179:35-179:39	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:179:7-179:15	CombTerm UnionCase def agree-none
 src/FSharp.Core/quotations.fs:1800:21-1800:24	st2 Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:1802:41-1802:52	phase2bytes Parameter use agree-none
@@ -22264,6 +22310,7 @@ src/FSharp.Core/quotations.fs:1815:45-1815:54	stringTab Value { is_function: fal
 src/FSharp.Core/quotations.fs:1816:37-1816:50	localAssembly Parameter use agree-none
 src/FSharp.Core/quotations.fs:1817:42-1817:60	referencedTypeDefs Parameter use agree-none
 src/FSharp.Core/quotations.fs:181:21-181:24	Var Type use agree-none
+src/FSharp.Core/quotations.fs:181:27-181:31	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:181:7-181:17	LambdaTerm UnionCase def agree-none
 src/FSharp.Core/quotations.fs:1820:17-1820:20	res Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:1820:23-1820:24	u Parameter use agree-none
@@ -23400,6 +23447,7 @@ src/FSharp.Core/quotations.fs:2284:9-2284:19	freeInExpr Value { is_function: tru
 src/FSharp.Core/quotations.fs:2285:43-2285:44	e Parameter use agree-none
 src/FSharp.Core/quotations.fs:2285:9-2285:22	freeInExprAcc Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:2288:15-2288:20	Clash ExceptionCase def agree-none
+src/FSharp.Core/quotations.fs:228:102-228:106	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:228:76-228:80	Expr Type def agree-none
 src/FSharp.Core/quotations.fs:228:81-228:85	term Parameter def agree-none
 src/FSharp.Core/quotations.fs:228:87-228:91	Tree Type use agree-doc
@@ -23525,6 +23573,7 @@ src/FSharp.Core/quotations.fs:2345:51-2345:59	Bindable Type use agree-none
 src/FSharp.Core/quotations.fs:2347:9-2347:33	reflectedDefinitionTable Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:2348:20-2348:47	ReflectedDefinitionTableKey Type use agree-none
 src/FSharp.Core/quotations.fs:2348:49-2348:78	ReflectedDefinitionTableEntry Type use agree-none
+src/FSharp.Core/quotations.fs:234:14-234:18	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:234:22-234:23	y PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:2350:39-2350:44	assem Parameter def agree-none
 src/FSharp.Core/quotations.fs:2350:46-2350:58	resourceName Parameter def agree-none
@@ -23728,7 +23777,11 @@ src/FSharp.Core/quotations.fs:2491:41-2491:45	expr Parameter use agree-none
 src/FSharp.Core/quotations.fs:2491:9-2491:21	checkTypesSR Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:2492:22-2492:26	expr Parameter use agree-none
 src/FSharp.Core/quotations.fs:2492:33-2492:37	expr Parameter use agree-none
-src/FSharp.Core/quotations.fs:2496:6-2496:10	Expr Type use declined ArityMismatch fcs-none
+src/FSharp.Core/quotations.fs:2498:12-2498:13	x Value { is_function: false } def agree-none
+src/FSharp.Core/quotations.fs:2498:25-2498:37	substitution Parameter def agree-none
+src/FSharp.Core/quotations.fs:2499:23-2499:35	substitution Parameter use agree-none
+src/FSharp.Core/quotations.fs:2499:36-2499:37	x Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:2499:9-2499:22	substituteRaw Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:249:22-249:30	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:249:31-249:52	InstanceMethodCallWOp UnionCase use agree-doc
 src/FSharp.Core/quotations.fs:249:53-249:59	minfo2 PatternLocal def agree-none
@@ -23736,11 +23789,78 @@ src/FSharp.Core/quotations.fs:249:61-249:69	_minfoW2 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:249:71-249:82	nWitnesses2 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:249:85-249:89	obj2 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:249:93-249:108	args2WithoutObj PatternLocal def agree-none
+src/FSharp.Core/quotations.fs:2501:12-2501:13	x Value { is_function: false } def agree-none
+src/FSharp.Core/quotations.fs:2502:10-2502:20	freeInExpr Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2502:21-2502:22	x Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:2504:12-2504:13	x Value { is_function: false } def agree-none
+src/FSharp.Core/quotations.fs:2504:21-2504:27	typeOf Value { is_function: true } use agree-doc
+src/FSharp.Core/quotations.fs:2504:28-2504:29	x Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:2506:29-2506:35	target Parameter def agree-none
+src/FSharp.Core/quotations.fs:2507:21-2507:27	target Parameter use agree-none
+src/FSharp.Core/quotations.fs:2507:9-2507:20	mkAddressOf Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2509:30-2509:36	target Parameter def agree-none
+src/FSharp.Core/quotations.fs:2509:44-2509:49	value Parameter def agree-none
 src/FSharp.Core/quotations.fs:250:21-250:32	nWitnesses2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:250:36-250:51	args2WithoutObj PatternLocal use agree-none
+src/FSharp.Core/quotations.fs:2510:23-2510:29	target Parameter use agree-none
+src/FSharp.Core/quotations.fs:2510:31-2510:36	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2510:9-2510:21	mkAddressSet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2512:31-2512:43	functionExpr Parameter def agree-none
+src/FSharp.Core/quotations.fs:2512:51-2512:59	argument Parameter def agree-none
+src/FSharp.Core/quotations.fs:2513:24-2513:36	functionExpr Parameter use agree-none
+src/FSharp.Core/quotations.fs:2513:38-2513:46	argument Parameter use agree-none
+src/FSharp.Core/quotations.fs:2513:9-2513:22	mkApplication Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2515:32-2515:44	functionExpr Parameter def agree-none
+src/FSharp.Core/quotations.fs:2515:52-2515:61	arguments Parameter def agree-none
+src/FSharp.Core/quotations.fs:2516:25-2516:37	functionExpr Parameter use agree-none
+src/FSharp.Core/quotations.fs:2516:39-2516:48	arguments Parameter use agree-none
+src/FSharp.Core/quotations.fs:2516:9-2516:23	mkApplications Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2518:24-2518:34	methodInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2518:48-2518:57	arguments Parameter def agree-none
+src/FSharp.Core/quotations.fs:2519:35-2519:45	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2520:29-2520:39	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2520:41-2520:50	arguments Parameter use agree-none
+src/FSharp.Core/quotations.fs:2520:9-2520:27	mkStaticMethodCall Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2522:24-2522:27	obj Parameter def agree-none
+src/FSharp.Core/quotations.fs:2522:35-2522:45	methodInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2522:59-2522:68	arguments Parameter def agree-none
+src/FSharp.Core/quotations.fs:2523:35-2523:45	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2524:31-2524:34	obj Parameter use agree-none
+src/FSharp.Core/quotations.fs:2524:36-2524:46	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2524:48-2524:57	arguments Parameter use agree-none
+src/FSharp.Core/quotations.fs:2524:9-2524:29	mkInstanceMethodCall Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2526:109-2526:118	arguments Parameter def agree-none
+src/FSharp.Core/quotations.fs:2526:37-2526:47	methodInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2526:61-2526:84	methodInfoWithWitnesses Parameter def agree-none
+src/FSharp.Core/quotations.fs:2526:98-2526:107	witnesses Parameter def agree-none
+src/FSharp.Core/quotations.fs:2527:35-2527:45	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2528:48-2528:71	methodInfoWithWitnesses Parameter use agree-none
+src/FSharp.Core/quotations.fs:2529:102-2529:111	arguments Parameter use agree-none
+src/FSharp.Core/quotations.fs:2529:30-2529:40	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2529:42-2529:65	methodInfoWithWitnesses Parameter use agree-none
+src/FSharp.Core/quotations.fs:2529:79-2529:88	witnesses Parameter use agree-none
+src/FSharp.Core/quotations.fs:2529:9-2529:28	mkStaticMethodCallW Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2529:90-2529:99	witnesses Parameter use agree-none
 src/FSharp.Core/quotations.fs:252:25-252:46	args2WithoutWitnesses Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:252:59-252:70	nWitnesses2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:252:71-252:86	args2WithoutObj PatternLocal use agree-none
+src/FSharp.Core/quotations.fs:2532:10-2532:13	obj Parameter def agree-none
+src/FSharp.Core/quotations.fs:2532:21-2532:31	methodInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2532:45-2532:68	methodInfoWithWitnesses Parameter def agree-none
+src/FSharp.Core/quotations.fs:2532:82-2532:91	witnesses Parameter def agree-none
+src/FSharp.Core/quotations.fs:2532:93-2532:102	arguments Parameter def agree-none
+src/FSharp.Core/quotations.fs:2534:35-2534:45	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2535:48-2535:71	methodInfoWithWitnesses Parameter use agree-none
+src/FSharp.Core/quotations.fs:2536:109-2536:118	arguments Parameter use agree-none
+src/FSharp.Core/quotations.fs:2536:32-2536:35	obj Parameter use agree-none
+src/FSharp.Core/quotations.fs:2536:37-2536:47	methodInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2536:49-2536:72	methodInfoWithWitnesses Parameter use agree-none
+src/FSharp.Core/quotations.fs:2536:86-2536:95	witnesses Parameter use agree-none
+src/FSharp.Core/quotations.fs:2536:9-2536:30	mkInstanceMethodCallW Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2536:97-2536:106	witnesses Parameter use agree-none
+src/FSharp.Core/quotations.fs:2538:26-2538:32	source Parameter def agree-none
+src/FSharp.Core/quotations.fs:2538:40-2538:46	target Parameter def agree-none
+src/FSharp.Core/quotations.fs:2539:31-2539:37	target Parameter use agree-none
 src/FSharp.Core/quotations.fs:253:21-253:23	eq Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:253:24-253:26	t1 Parameter use agree-none
 src/FSharp.Core/quotations.fs:253:28-253:36	CombTerm UnionCase use agree-none
@@ -23748,43 +23868,316 @@ src/FSharp.Core/quotations.fs:253:37-253:57	InstanceMethodCallOp UnionCase use a
 src/FSharp.Core/quotations.fs:253:58-253:64	minfo2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:253:67-253:71	obj2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:253:75-253:96	args2WithoutWitnesses Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:2540:19-2540:25	target Parameter use agree-none
+src/FSharp.Core/quotations.fs:2540:27-2540:33	source Parameter use agree-none
+src/FSharp.Core/quotations.fs:2540:9-2540:17	mkCoerce Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2542:30-2542:35	guard Parameter def agree-none
+src/FSharp.Core/quotations.fs:2542:43-2542:51	thenExpr Parameter def agree-none
+src/FSharp.Core/quotations.fs:2542:59-2542:67	elseExpr Parameter def agree-none
+src/FSharp.Core/quotations.fs:2543:23-2543:28	guard Parameter use agree-none
+src/FSharp.Core/quotations.fs:2543:30-2543:38	thenExpr Parameter use agree-none
+src/FSharp.Core/quotations.fs:2543:40-2543:48	elseExpr Parameter use agree-none
+src/FSharp.Core/quotations.fs:2543:9-2543:21	mkIfThenElse Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2545:39-2545:51	loopVariable Parameter def agree-none
+src/FSharp.Core/quotations.fs:2545:53-2545:58	start Parameter def agree-none
+src/FSharp.Core/quotations.fs:2545:66-2545:73	endExpr Parameter def agree-none
+src/FSharp.Core/quotations.fs:2545:81-2545:85	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2546:20-2546:32	loopVariable Parameter use agree-none
+src/FSharp.Core/quotations.fs:2546:34-2546:39	start Parameter use agree-none
+src/FSharp.Core/quotations.fs:2546:41-2546:48	endExpr Parameter use agree-none
+src/FSharp.Core/quotations.fs:2546:50-2546:54	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2546:9-2546:18	mkForLoop Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2548:28-2548:37	fieldInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2549:34-2549:43	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2550:26-2550:35	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2550:9-2550:25	mkStaticFieldGet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2552:28-2552:31	obj Parameter def agree-none
+src/FSharp.Core/quotations.fs:2552:39-2552:48	fieldInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2553:34-2553:43	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2554:29-2554:32	obj Parameter use agree-none
+src/FSharp.Core/quotations.fs:2554:34-2554:43	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2554:9-2554:27	mkInstanceFieldGet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2556:28-2556:37	fieldInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2556:50-2556:55	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2557:34-2557:43	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2558:27-2558:36	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2558:38-2558:43	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2558:9-2558:25	mkStaticFieldSet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2560:28-2560:31	obj Parameter def agree-none
+src/FSharp.Core/quotations.fs:2560:39-2560:48	fieldInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2560:61-2560:66	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2561:34-2561:43	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2562:29-2562:32	obj Parameter use agree-none
+src/FSharp.Core/quotations.fs:2562:34-2562:43	fieldInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2562:45-2562:50	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2562:9-2562:27	mkInstanceFieldSet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2564:26-2564:35	parameter Parameter def agree-none
+src/FSharp.Core/quotations.fs:2564:42-2564:46	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2565:19-2565:28	parameter Parameter use agree-none
+src/FSharp.Core/quotations.fs:2565:30-2565:34	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2565:9-2565:17	mkLambda Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2567:23-2567:34	letVariable Parameter def agree-none
+src/FSharp.Core/quotations.fs:2567:41-2567:48	letExpr Parameter def agree-none
+src/FSharp.Core/quotations.fs:2567:56-2567:60	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2568:16-2568:27	letVariable Parameter use agree-none
+src/FSharp.Core/quotations.fs:2568:29-2568:36	letExpr Parameter use agree-none
+src/FSharp.Core/quotations.fs:2568:38-2568:42	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2568:9-2568:14	mkLet Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:256:19-256:27	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:256:28-256:47	StaticMethodCallWOp UnionCase use agree-doc
 src/FSharp.Core/quotations.fs:256:48-256:54	minfo1 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:256:56-256:64	_minfoW1 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:256:66-256:77	nWitnesses1 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:256:80-256:85	args1 PatternLocal def agree-none
+src/FSharp.Core/quotations.fs:2570:32-2570:40	bindings Parameter def agree-none
+src/FSharp.Core/quotations.fs:2570:42-2570:46	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2571:19-2571:27	bindings Parameter use agree-none
+src/FSharp.Core/quotations.fs:2571:29-2571:33	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2571:9-2571:17	mkLetRec Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2573:29-2573:44	constructorInfo Parameter def agree-none
+src/FSharp.Core/quotations.fs:2573:63-2573:72	arguments Parameter def agree-none
+src/FSharp.Core/quotations.fs:2574:40-2574:55	constructorInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2575:21-2575:36	constructorInfo Parameter use agree-none
+src/FSharp.Core/quotations.fs:2575:38-2575:47	arguments Parameter use agree-none
+src/FSharp.Core/quotations.fs:2575:9-2575:19	mkCtorCall Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2577:32-2577:46	expressionType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2578:39-2578:53	expressionType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2579:24-2579:38	expressionType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2579:9-2579:23	mkDefaultValue Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:257:21-257:32	nWitnesses1 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:257:36-257:41	args1 PatternLocal use agree-none
+src/FSharp.Core/quotations.fs:2581:28-2581:36	elements Parameter def agree-none
+src/FSharp.Core/quotations.fs:2582:20-2582:28	elements Parameter use agree-none
+src/FSharp.Core/quotations.fs:2582:9-2582:19	mkNewTuple Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2584:34-2584:37	asm Parameter def agree-none
+src/FSharp.Core/quotations.fs:2584:49-2584:57	elements Parameter def agree-none
+src/FSharp.Core/quotations.fs:2585:27-2585:30	asm Parameter use agree-none
+src/FSharp.Core/quotations.fs:2585:32-2585:40	elements Parameter use agree-none
+src/FSharp.Core/quotations.fs:2585:9-2585:25	mkNewStructTuple Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2587:34-2587:42	elements Parameter def agree-none
+src/FSharp.Core/quotations.fs:2588:37-2588:45	elements Parameter use agree-none
+src/FSharp.Core/quotations.fs:2588:9-2588:36	mkNewStructTupleNetStandard Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2590:29-2590:39	recordType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2590:47-2590:55	elements Parameter def agree-none
+src/FSharp.Core/quotations.fs:2591:35-2591:45	recordType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2592:22-2592:32	recordType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2592:34-2592:42	elements Parameter use agree-none
+src/FSharp.Core/quotations.fs:2592:9-2592:20	mkNewRecord Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2594:28-2594:39	elementType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2594:47-2594:55	elements Parameter def agree-none
+src/FSharp.Core/quotations.fs:2595:36-2595:47	elementType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2596:21-2596:32	elementType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2596:34-2596:42	elements Parameter use agree-none
+src/FSharp.Core/quotations.fs:2596:9-2596:19	mkNewArray Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2598:31-2598:43	delegateType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2598:51-2598:61	parameters Parameter def agree-none
+src/FSharp.Core/quotations.fs:2598:73-2598:77	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2599:37-2599:49	delegateType Parameter use agree-none
 src/FSharp.Core/quotations.fs:259:25-259:46	argsWithoutWitnesses1 Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:259:59-259:70	nWitnesses1 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:259:71-259:76	args1 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:25:27-25:28	q Parameter def agree-none
 src/FSharp.Core/quotations.fs:25:29-25:32	inp Parameter def agree-none
 src/FSharp.Core/quotations.fs:25:9-25:26	qOneOrMoreRLinear Value { is_function: true } def agree-none
+src/FSharp.Core/quotations.fs:2600:24-2600:36	delegateType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2600:38-2600:55	mkIteratedLambdas Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2600:57-2600:67	parameters Parameter use agree-none
+src/FSharp.Core/quotations.fs:2600:69-2600:73	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2600:9-2600:22	mkNewDelegate Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2602:32-2602:41	unionCase Parameter def agree-none
+src/FSharp.Core/quotations.fs:2602:43-2602:52	arguments Parameter def agree-none
+src/FSharp.Core/quotations.fs:2603:25-2603:34	unionCase Parameter use agree-none
+src/FSharp.Core/quotations.fs:2603:36-2603:45	arguments Parameter use agree-none
+src/FSharp.Core/quotations.fs:2603:9-2603:23	mkNewUnionCase Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2605:31-2605:34	obj Parameter def agree-none
+src/FSharp.Core/quotations.fs:2605:42-2605:50	property Parameter def agree-none
+src/FSharp.Core/quotations.fs:2605:67-2605:78	indexerArgs Parameter def agree-none
+src/FSharp.Core/quotations.fs:2606:33-2606:41	property Parameter use agree-none
+src/FSharp.Core/quotations.fs:2607:28-2607:31	obj Parameter use agree-none
+src/FSharp.Core/quotations.fs:2607:33-2607:41	property Parameter use agree-none
+src/FSharp.Core/quotations.fs:2607:54-2607:65	indexerArgs Parameter use agree-none
+src/FSharp.Core/quotations.fs:2607:9-2607:26	mkInstancePropGet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2609:31-2609:39	property Parameter def agree-none
+src/FSharp.Core/quotations.fs:2609:56-2609:67	indexerArgs Parameter def agree-none
 src/FSharp.Core/quotations.fs:260:21-260:23	eq Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:260:25-260:33	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:260:34-260:52	StaticMethodCallOp UnionCase use agree-none
 src/FSharp.Core/quotations.fs:260:53-260:59	minfo1 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:260:62-260:83	argsWithoutWitnesses1 Value { is_function: false } use agree-none
 src/FSharp.Core/quotations.fs:260:86-260:88	t2 Parameter use agree-none
+src/FSharp.Core/quotations.fs:2610:33-2610:41	property Parameter use agree-none
+src/FSharp.Core/quotations.fs:2611:26-2611:34	property Parameter use agree-none
+src/FSharp.Core/quotations.fs:2611:47-2611:58	indexerArgs Parameter use agree-none
+src/FSharp.Core/quotations.fs:2611:9-2611:24	mkStaticPropGet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2613:31-2613:34	obj Parameter def agree-none
+src/FSharp.Core/quotations.fs:2613:42-2613:50	property Parameter def agree-none
+src/FSharp.Core/quotations.fs:2613:66-2613:71	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2613:80-2613:91	indexerArgs Parameter def agree-none
+src/FSharp.Core/quotations.fs:2614:33-2614:41	property Parameter use agree-none
+src/FSharp.Core/quotations.fs:2615:28-2615:31	obj Parameter use agree-none
+src/FSharp.Core/quotations.fs:2615:33-2615:41	property Parameter use agree-none
+src/FSharp.Core/quotations.fs:2615:54-2615:65	indexerArgs Parameter use agree-none
+src/FSharp.Core/quotations.fs:2615:70-2615:75	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2615:9-2615:26	mkInstancePropSet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2617:31-2617:39	property Parameter def agree-none
+src/FSharp.Core/quotations.fs:2617:55-2617:60	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2617:69-2617:80	indexerArgs Parameter def agree-none
+src/FSharp.Core/quotations.fs:2618:26-2618:34	property Parameter use agree-none
+src/FSharp.Core/quotations.fs:2618:47-2618:58	indexerArgs Parameter use agree-none
+src/FSharp.Core/quotations.fs:2618:63-2618:68	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2618:9-2618:24	mkStaticPropSet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2620:25-2620:30	inner Parameter def agree-none
+src/FSharp.Core/quotations.fs:2621:18-2621:23	inner Parameter use agree-none
+src/FSharp.Core/quotations.fs:2621:9-2621:16	mkQuote Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2623:28-2623:33	inner Parameter def agree-none
+src/FSharp.Core/quotations.fs:2624:18-2624:23	inner Parameter use agree-none
+src/FSharp.Core/quotations.fs:2624:9-2624:16	mkQuote Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2626:30-2626:35	inner Parameter def agree-none
+src/FSharp.Core/quotations.fs:2627:18-2627:23	inner Parameter use agree-none
+src/FSharp.Core/quotations.fs:2627:9-2627:16	mkQuote Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2629:30-2629:35	first Parameter def agree-none
+src/FSharp.Core/quotations.fs:2629:43-2629:49	second Parameter def agree-none
+src/FSharp.Core/quotations.fs:2630:23-2630:28	first Parameter use agree-none
+src/FSharp.Core/quotations.fs:2630:30-2630:36	second Parameter use agree-none
+src/FSharp.Core/quotations.fs:2630:9-2630:21	mkSequential Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2632:27-2632:31	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2632:39-2632:48	filterVar Parameter def agree-none
+src/FSharp.Core/quotations.fs:2632:55-2632:65	filterBody Parameter def agree-none
+src/FSharp.Core/quotations.fs:2632:73-2632:81	catchVar Parameter def agree-none
+src/FSharp.Core/quotations.fs:2632:88-2632:97	catchBody Parameter def agree-none
+src/FSharp.Core/quotations.fs:2633:20-2633:24	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2633:26-2633:35	filterVar Parameter use agree-none
+src/FSharp.Core/quotations.fs:2633:37-2633:47	filterBody Parameter use agree-none
+src/FSharp.Core/quotations.fs:2633:49-2633:57	catchVar Parameter use agree-none
+src/FSharp.Core/quotations.fs:2633:59-2633:68	catchBody Parameter use agree-none
+src/FSharp.Core/quotations.fs:2633:9-2633:18	mkTryWith Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2635:30-2635:34	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2635:42-2635:54	compensation Parameter def agree-none
+src/FSharp.Core/quotations.fs:2636:23-2636:27	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2636:29-2636:41	compensation Parameter use agree-none
+src/FSharp.Core/quotations.fs:2636:9-2636:21	mkTryFinally Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2638:28-2638:33	tuple Parameter def agree-none
+src/FSharp.Core/quotations.fs:2638:41-2638:46	index Parameter def agree-none
+src/FSharp.Core/quotations.fs:2639:21-2639:27	typeOf Value { is_function: true } use agree-doc
+src/FSharp.Core/quotations.fs:2639:28-2639:33	tuple Parameter use agree-none
+src/FSharp.Core/quotations.fs:2639:35-2639:40	index Parameter use agree-none
+src/FSharp.Core/quotations.fs:2639:42-2639:47	tuple Parameter use agree-none
+src/FSharp.Core/quotations.fs:2639:9-2639:19	mkTupleGet Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:263:22-263:30	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:263:31-263:50	StaticMethodCallWOp UnionCase use agree-doc
 src/FSharp.Core/quotations.fs:263:51-263:57	minfo2 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:263:59-263:67	_minfoW2 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:263:69-263:80	nWitnesses2 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:263:83-263:88	args2 PatternLocal def agree-none
+src/FSharp.Core/quotations.fs:2641:28-2641:34	source Parameter def agree-none
+src/FSharp.Core/quotations.fs:2641:42-2641:48	target Parameter def agree-none
+src/FSharp.Core/quotations.fs:2642:31-2642:37	target Parameter use agree-none
+src/FSharp.Core/quotations.fs:2643:21-2643:27	source Parameter use agree-none
+src/FSharp.Core/quotations.fs:2643:29-2643:35	target Parameter use agree-none
+src/FSharp.Core/quotations.fs:2643:9-2643:19	mkTypeTest Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2645:33-2645:39	source Parameter def agree-none
+src/FSharp.Core/quotations.fs:2645:47-2645:56	unionCase Parameter def agree-none
+src/FSharp.Core/quotations.fs:2646:26-2646:35	unionCase Parameter use agree-none
+src/FSharp.Core/quotations.fs:2646:37-2646:43	source Parameter use agree-none
+src/FSharp.Core/quotations.fs:2646:9-2646:24	mkUnionCaseTest Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2648:25-2648:30	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2649:22-2649:27	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2649:9-2649:16	mkValue Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:264:21-264:32	nWitnesses2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:264:36-264:41	args2 PatternLocal use agree-none
+src/FSharp.Core/quotations.fs:2651:25-2651:30	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2651:41-2651:55	expressionType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2652:39-2652:53	expressionType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2653:18-2653:23	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2653:25-2653:39	expressionType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2653:9-2653:16	mkValue Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2655:33-2655:38	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2655:44-2655:48	name Parameter def agree-none
+src/FSharp.Core/quotations.fs:2656:29-2656:33	name Parameter use agree-none
+src/FSharp.Core/quotations.fs:2657:30-2657:35	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2657:49-2657:53	name Parameter use agree-none
+src/FSharp.Core/quotations.fs:2657:9-2657:24	mkValueWithName Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2659:33-2659:38	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2659:49-2659:63	expressionType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2659:71-2659:75	name Parameter def agree-none
+src/FSharp.Core/quotations.fs:2660:39-2660:53	expressionType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2661:29-2661:33	name Parameter use agree-none
+src/FSharp.Core/quotations.fs:2662:26-2662:31	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2662:33-2662:47	expressionType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2662:49-2662:53	name Parameter use agree-none
+src/FSharp.Core/quotations.fs:2662:9-2662:24	mkValueWithName Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2664:29-2664:34	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2664:40-2664:50	definition Parameter def agree-none
+src/FSharp.Core/quotations.fs:2665:13-2665:16	raw Value { is_function: false } def agree-none
+src/FSharp.Core/quotations.fs:2665:19-2665:34	mkValueWithDefn Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2665:40-2665:45	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2665:59-2665:69	definition Parameter use agree-none
+src/FSharp.Core/quotations.fs:2666:22-2666:25	raw Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:2666:32-2666:35	raw Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:2668:29-2668:34	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2668:45-2668:59	expressionType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2668:67-2668:77	definition Parameter def agree-none
+src/FSharp.Core/quotations.fs:2669:39-2669:53	expressionType Parameter use agree-none
 src/FSharp.Core/quotations.fs:266:25-266:46	argsWithoutWitnesses2 Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:266:59-266:70	nWitnesses2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:266:71-266:76	args2 PatternLocal use agree-none
+src/FSharp.Core/quotations.fs:2670:26-2670:31	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2670:33-2670:47	expressionType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2670:49-2670:59	definition Parameter use agree-none
+src/FSharp.Core/quotations.fs:2670:9-2670:24	mkValueWithDefn Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2672:23-2672:31	variable Parameter def agree-none
+src/FSharp.Core/quotations.fs:2673:15-2673:23	variable Parameter use agree-none
+src/FSharp.Core/quotations.fs:2673:9-2673:14	mkVar Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2675:26-2675:34	variable Parameter def agree-none
+src/FSharp.Core/quotations.fs:2675:36-2675:41	value Parameter def agree-none
+src/FSharp.Core/quotations.fs:2676:19-2676:27	variable Parameter use agree-none
+src/FSharp.Core/quotations.fs:2676:29-2676:34	value Parameter use agree-none
+src/FSharp.Core/quotations.fs:2676:9-2676:17	mkVarSet Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2678:29-2678:34	guard Parameter def agree-none
+src/FSharp.Core/quotations.fs:2678:42-2678:46	body Parameter def agree-none
+src/FSharp.Core/quotations.fs:2679:22-2679:27	guard Parameter use agree-none
+src/FSharp.Core/quotations.fs:2679:29-2679:33	body Parameter use agree-none
+src/FSharp.Core/quotations.fs:2679:9-2679:20	mkWhileLoop Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:267:21-267:23	eq Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:267:24-267:26	t1 Parameter use agree-none
 src/FSharp.Core/quotations.fs:267:28-267:36	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:267:37-267:55	StaticMethodCallOp UnionCase use agree-none
 src/FSharp.Core/quotations.fs:267:56-267:62	minfo2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:267:65-267:86	argsWithoutWitnesses2 Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:2681:45-2681:55	methodBase Parameter def agree-none
+src/FSharp.Core/quotations.fs:2682:35-2682:45	methodBase Parameter use agree-none
+src/FSharp.Core/quotations.fs:2683:47-2683:57	methodBase Parameter use agree-none
+src/FSharp.Core/quotations.fs:2683:9-2683:46	tryGetReflectedDefinitionInstantiated Value { is_function: true } use agree-doc
+src/FSharp.Core/quotations.fs:2685:24-2685:30	source Parameter def agree-none
+src/FSharp.Core/quotations.fs:2686:14-2686:20	source Parameter use agree-none
+src/FSharp.Core/quotations.fs:2686:9-2686:13	cast Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2688:31-2688:45	qualifyingType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2688:53-2688:64	spliceTypes Parameter def agree-none
+src/FSharp.Core/quotations.fs:2688:66-2688:77	spliceExprs Parameter def agree-none
+src/FSharp.Core/quotations.fs:2688:79-2688:84	bytes Parameter def agree-none
+src/FSharp.Core/quotations.fs:2689:39-2689:53	qualifyingType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2690:30-2690:35	bytes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2691:22-2691:36	qualifyingType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2691:57-2691:68	spliceTypes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2691:83-2691:94	spliceExprs Parameter use agree-none
+src/FSharp.Core/quotations.fs:2691:9-2691:20	deserialize Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2691:96-2691:101	bytes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2693:33-2693:47	qualifyingType Parameter def agree-none
+src/FSharp.Core/quotations.fs:2693:55-2693:70	referencedTypes Parameter def agree-none
+src/FSharp.Core/quotations.fs:2693:72-2693:83	spliceTypes Parameter def agree-none
+src/FSharp.Core/quotations.fs:2693:85-2693:96	spliceExprs Parameter def agree-none
+src/FSharp.Core/quotations.fs:2693:98-2693:103	bytes Parameter def agree-none
+src/FSharp.Core/quotations.fs:2694:36-2694:47	spliceExprs Parameter use agree-none
+src/FSharp.Core/quotations.fs:2695:36-2695:47	spliceTypes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2696:43-2696:58	referencedTypes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2697:39-2697:53	qualifyingType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2698:30-2698:35	bytes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2699:22-2699:36	qualifyingType Parameter use agree-none
+src/FSharp.Core/quotations.fs:2699:38-2699:53	referencedTypes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2699:55-2699:66	spliceTypes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2699:68-2699:79	spliceExprs Parameter use agree-none
+src/FSharp.Core/quotations.fs:2699:81-2699:86	bytes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2699:9-2699:20	deserialize Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:269:104-269:107	es2 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:269:19-269:27	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:269:28-269:30	c1 PatternLocal def agree-none
@@ -23800,12 +24193,34 @@ src/FSharp.Core/quotations.fs:269:98-269:101	es1 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:26:17-26:25	queryAcc Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:26:26-26:29	rvs Parameter def agree-none
 src/FSharp.Core/quotations.fs:26:30-26:31	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:2701:48-2701:56	assembly Parameter def agree-none
+src/FSharp.Core/quotations.fs:2701:58-2701:66	resource Parameter def agree-none
+src/FSharp.Core/quotations.fs:2701:68-2701:83	serializedValue Parameter def agree-none
+src/FSharp.Core/quotations.fs:2702:43-2702:51	assembly Parameter use agree-none
+src/FSharp.Core/quotations.fs:2702:53-2702:61	resource Parameter use agree-none
+src/FSharp.Core/quotations.fs:2702:63-2702:78	serializedValue Parameter use agree-none
+src/FSharp.Core/quotations.fs:2704:48-2704:56	assembly Parameter def agree-none
+src/FSharp.Core/quotations.fs:2704:58-2704:66	resource Parameter def agree-none
+src/FSharp.Core/quotations.fs:2704:68-2704:83	serializedValue Parameter def agree-none
+src/FSharp.Core/quotations.fs:2704:85-2704:100	referencedTypes Parameter def agree-none
+src/FSharp.Core/quotations.fs:2705:33-2705:41	assembly Parameter use agree-none
+src/FSharp.Core/quotations.fs:2706:39-2706:47	assembly Parameter use agree-none
+src/FSharp.Core/quotations.fs:2706:49-2706:57	resource Parameter use agree-none
+src/FSharp.Core/quotations.fs:2706:59-2706:74	serializedValue Parameter use agree-none
+src/FSharp.Core/quotations.fs:2706:76-2706:91	referencedTypes Parameter use agree-none
+src/FSharp.Core/quotations.fs:2706:9-2706:37	registerReflectedDefinitions Value { is_function: true } use agree-none
+src/FSharp.Core/quotations.fs:2708:29-2708:31	'T TypeParam def agree-none
+src/FSharp.Core/quotations.fs:2708:33-2708:37	name Parameter def agree-none
+src/FSharp.Core/quotations.fs:2708:46-2708:48	'T TypeParam use agree-none
+src/FSharp.Core/quotations.fs:2709:29-2709:33	name Parameter use agree-none
 src/FSharp.Core/quotations.fs:270:19-270:26	VarTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:270:27-270:29	v1 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:270:31-270:38	VarTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:270:39-270:41	v2 PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:270:46-270:48	v1 PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:270:51-270:53	v2 PatternLocal use agree-none
+src/FSharp.Core/quotations.fs:2710:29-2710:33	name Parameter use agree-none
+src/FSharp.Core/quotations.fs:2710:42-2710:44	'T TypeParam use agree-none
 src/FSharp.Core/quotations.fs:2715:10-2715:18	_(|Bool|_|) ActivePattern def agree-none
 src/FSharp.Core/quotations.fs:2715:11-2715:15	Bool ActivePatternCase def agree-none
 src/FSharp.Core/quotations.fs:2715:20-2715:25	input Parameter def agree-none
@@ -24090,6 +24505,7 @@ src/FSharp.Core/quotations.fs:2905:54-2905:66	propertyInfo Parameter def agree-n
 src/FSharp.Core/quotations.fs:2906:40-2906:52	propertyInfo Parameter use agree-none
 src/FSharp.Core/quotations.fs:290:13-290:17	expr Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:290:19-290:20	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:290:22-290:26	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:2910:34-2910:39	shape Parameter def agree-none
 src/FSharp.Core/quotations.fs:2910:50-2910:59	arguments Parameter def agree-none
 src/FSharp.Core/quotations.fs:2910:9-2910:32	RebuildShapeCombination Value { is_function: true } def agree-none
@@ -24227,6 +24643,7 @@ src/FSharp.Core/quotations.fs:2939:56-2939:59	obj PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:2939:63-2939:67	args PatternLocal def agree-none
 src/FSharp.Core/quotations.fs:293:13-293:18	exprs Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:293:20-293:22	es Parameter def agree-none
+src/FSharp.Core/quotations.fs:293:24-293:28	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:2940:17-2940:38	mkInstanceMethodCallW Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:2940:40-2940:43	obj PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:2940:45-2940:50	minfo PatternLocal use agree-none
@@ -24397,6 +24814,7 @@ src/FSharp.Core/quotations.fs:323:29-323:30	v Parameter use unpaired-none
 src/FSharp.Core/quotations.fs:325:14-325:17	_(|E|) ActivePattern def agree-none
 src/FSharp.Core/quotations.fs:325:15-325:16	E ActivePatternCase def agree-none
 src/FSharp.Core/quotations.fs:325:20-325:21	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:325:23-325:27	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:326:13-326:14	e Parameter use agree-none
 src/FSharp.Core/quotations.fs:328:14-328:24	_(|Lambda|_|) ActivePattern def agree-none
 src/FSharp.Core/quotations.fs:328:15-328:21	Lambda ActivePatternCase def agree-none
@@ -24413,6 +24831,7 @@ src/FSharp.Core/quotations.fs:330:43-330:44	b PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:333:14-333:32	_(|IteratedLambda|_|) ActivePattern def agree-none
 src/FSharp.Core/quotations.fs:333:15-333:29	IteratedLambda ActivePatternCase def agree-none
 src/FSharp.Core/quotations.fs:333:35-333:36	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:333:38-333:42	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:334:13-334:30	qOneOrMoreRLinear Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:334:44-334:45	e Parameter use agree-none
 src/FSharp.Core/quotations.fs:336:13-336:19	ucaseL Value { is_function: true } def agree-none
@@ -24451,6 +24870,7 @@ src/FSharp.Core/quotations.fs:366:18-366:30	_(|NLambdas|_|) ActivePattern def ag
 src/FSharp.Core/quotations.fs:366:19-366:27	NLambdas ActivePatternCase def agree-none
 src/FSharp.Core/quotations.fs:366:32-366:33	n Parameter def agree-none
 src/FSharp.Core/quotations.fs:366:35-366:36	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:366:38-366:42	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:367:19-367:20	e Parameter use agree-none
 src/FSharp.Core/quotations.fs:368:22-368:23	n Parameter use agree-none
 src/FSharp.Core/quotations.fs:368:41-368:42	e Parameter use agree-none
@@ -24931,6 +25351,7 @@ src/FSharp.Core/quotations.fs:446:53-446:57	Tree Type use agree-doc
 src/FSharp.Core/quotations.fs:446:59-446:66	attribs Parameter def agree-none
 src/FSharp.Core/quotations.fs:448:12-448:13	x Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:448:21-448:22	x Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:448:26-448:30	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:455:10-455:22	Instantiable Type def agree-doc
 src/FSharp.Core/quotations.fs:455:23-455:25	'T TypeParam def agree-none
 src/FSharp.Core/quotations.fs:455:46-455:48	'T TypeParam use agree-none
@@ -24993,6 +25414,7 @@ src/FSharp.Core/quotations.fs:487:17-487:24	attribs Parameter use agree-none
 src/FSharp.Core/quotations.fs:489:10-489:13	_(|E|) ActivePattern def agree-none
 src/FSharp.Core/quotations.fs:489:11-489:12	E ActivePatternCase def agree-none
 src/FSharp.Core/quotations.fs:489:16-489:17	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:489:19-489:23	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:48:28-48:29	v Parameter def agree-none
 src/FSharp.Core/quotations.fs:48:30-48:33	acc Parameter def agree-none
 src/FSharp.Core/quotations.fs:48:37-48:39	mk Parameter use agree-none
@@ -25020,6 +25442,7 @@ src/FSharp.Core/quotations.fs:497:41-497:42	t PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:499:17-499:19	es Parameter use agree-none
 src/FSharp.Core/quotations.fs:499:9-499:13	loop Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:501:9-501:15	funTyC Value { is_function: false } def agree-none
+src/FSharp.Core/quotations.fs:502:29-502:33	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:502:9-502:16	exprTyC Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:503:9-503:15	voidTy Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:504:9-504:15	unitTy Value { is_function: false } def agree-none
@@ -25052,6 +25475,7 @@ src/FSharp.Core/quotations.fs:516:19-516:20	t Parameter def agree-none
 src/FSharp.Core/quotations.fs:516:9-516:17	mkExprTy Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:517:36-517:37	t Parameter use agree-none
 src/FSharp.Core/quotations.fs:517:9-517:16	exprTyC Value { is_function: false } use agree-none
+src/FSharp.Core/quotations.fs:519:28-519:32	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:519:9-519:18	rawExprTy Value { is_function: false } def agree-none
 src/FSharp.Core/quotations.fs:51:24-51:27	acc Parameter def agree-none
 src/FSharp.Core/quotations.fs:51:28-51:29	v Parameter def agree-none
@@ -25639,12 +26063,14 @@ src/FSharp.Core/quotations.fs:805:52-805:56	body PatternLocal use agree-none
 src/FSharp.Core/quotations.fs:808:10-808:28	_(|IteratedLambda|_|) ActivePattern def agree-none
 src/FSharp.Core/quotations.fs:808:11-808:25	IteratedLambda ActivePatternCase def agree-none
 src/FSharp.Core/quotations.fs:808:31-808:32	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:808:34-808:38	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:809:40-809:41	e Parameter use agree-none
 src/FSharp.Core/quotations.fs:809:9-809:26	qOneOrMoreRLinear Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:811:14-811:26	_(|NLambdas|_|) ActivePattern def agree-none
 src/FSharp.Core/quotations.fs:811:15-811:23	NLambdas ActivePatternCase def agree-none
 src/FSharp.Core/quotations.fs:811:28-811:29	n Parameter def agree-none
 src/FSharp.Core/quotations.fs:811:31-811:32	e Parameter def agree-none
+src/FSharp.Core/quotations.fs:811:34-811:38	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:812:15-812:16	e Parameter use agree-none
 src/FSharp.Core/quotations.fs:813:18-813:19	n Parameter use agree-none
 src/FSharp.Core/quotations.fs:813:37-813:38	e Parameter use agree-none
@@ -25929,6 +26355,7 @@ src/FSharp.Core/quotations.fs:946:9-946:14	mkFE1 Value { is_function: true } def
 src/FSharp.Core/quotations.fs:947:11-947:19	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:947:20-947:22	op Parameter use agree-none
 src/FSharp.Core/quotations.fs:947:27-947:28	x Parameter use agree-none
+src/FSharp.Core/quotations.fs:947:32-947:36	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:947:9-947:10	E Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:949:15-949:17	op Parameter def agree-none
 src/FSharp.Core/quotations.fs:949:19-949:20	x Parameter def agree-none
@@ -25940,7 +26367,9 @@ src/FSharp.Core/quotations.fs:94:9-94:14	infos Parameter use agree-none
 src/FSharp.Core/quotations.fs:950:11-950:19	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:950:20-950:22	op Parameter use agree-none
 src/FSharp.Core/quotations.fs:950:27-950:28	x Parameter use agree-none
+src/FSharp.Core/quotations.fs:950:32-950:36	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:950:40-950:41	y Parameter use agree-none
+src/FSharp.Core/quotations.fs:950:45-950:49	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:950:9-950:10	E Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:952:15-952:17	op Parameter def agree-none
 src/FSharp.Core/quotations.fs:952:19-952:20	x Parameter def agree-none
@@ -25950,8 +26379,11 @@ src/FSharp.Core/quotations.fs:952:9-952:14	mkFE3 Value { is_function: true } def
 src/FSharp.Core/quotations.fs:953:11-953:19	CombTerm UnionCase use agree-none
 src/FSharp.Core/quotations.fs:953:20-953:22	op Parameter use agree-none
 src/FSharp.Core/quotations.fs:953:27-953:28	x Parameter use agree-none
+src/FSharp.Core/quotations.fs:953:32-953:36	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:953:40-953:41	y Parameter use agree-none
+src/FSharp.Core/quotations.fs:953:45-953:49	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:953:53-953:54	z Parameter use agree-none
+src/FSharp.Core/quotations.fs:953:58-953:62	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:953:9-953:10	E Value { is_function: true } use agree-none
 src/FSharp.Core/quotations.fs:960:25-960:27	t1 Parameter def agree-none
 src/FSharp.Core/quotations.fs:960:36-960:38	t2 Parameter def agree-none
@@ -25983,6 +26415,7 @@ src/FSharp.Core/quotations.fs:969:73-969:85	expectedType Parameter use agree-non
 src/FSharp.Core/quotations.fs:969:87-969:99	receivedType Parameter use agree-none
 src/FSharp.Core/quotations.fs:971:20-971:30	paramInfos Parameter def agree-none
 src/FSharp.Core/quotations.fs:971:54-971:58	args Parameter def agree-none
+src/FSharp.Core/quotations.fs:971:60-971:64	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:971:9-971:18	checkArgs Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:972:13-972:23	paramInfos Parameter use agree-none
 src/FSharp.Core/quotations.fs:972:34-972:38	args Parameter use agree-none
@@ -25996,6 +26429,7 @@ src/FSharp.Core/quotations.fs:978:14-978:24	paramInfos Parameter use agree-none
 src/FSharp.Core/quotations.fs:979:13-979:17	args Parameter use agree-none
 src/FSharp.Core/quotations.fs:982:19-982:27	membInfo Parameter def agree-none
 src/FSharp.Core/quotations.fs:982:42-982:45	obj Parameter def agree-none
+src/FSharp.Core/quotations.fs:982:47-982:51	Expr Type use agree-none
 src/FSharp.Core/quotations.fs:982:9-982:17	checkObj Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:985:17-985:21	loop Value { is_function: true } def agree-none
 src/FSharp.Core/quotations.fs:985:23-985:25	ty Parameter def agree-none
@@ -27836,9 +28270,11 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/Obj
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:10-19:11	d Parameter def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:19-19:20	m Parameter def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:28-19:29	y Parameter def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:39-19:43	this Value { is_function: false } def declined PatternBinder fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:33-20:34	y Parameter use unpaired-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:35-20:36	m Parameter use unpaired-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:37-20:38	d Parameter use unpaired-none
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:9-20:13	this Value { is_function: false } use declined PatternBinder fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs	compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs:10:19-10:20	x Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs:10:26-10:27	x Value { is_function: false } use agree-none
@@ -28947,6 +29383,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/C
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/MemberDeclarations.fs:95:9-95:20	compilation Parameter use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs	compared fcs-check-errors
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs:7:6-7:7	A Type def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs:9:23-9:24	y Value { is_function: false } def declined PatternBinder fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs:9:8-9:9	x Parameter def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs	compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs:11:5-11:11	verify Value { is_function: false } def agree-none
@@ -28961,6 +29398,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/D
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:12:38-12:40	'T TypeParam def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:12:6-12:37	DelegateReturningAFunctionValue Type def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:12:74-12:76	'T TypeParam use agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:13-13:44	DelegateReturningAFunctionValue Type use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:5-13:6	q Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:52-13:53	x Parameter def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/DelegateTypes/ValidSignature_ReturningValues01.fs:13:61-13:62	y Parameter def agree-none
@@ -29107,8 +29545,10 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/S
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:6:6-6:9	RIP Type def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/Regressions02.fs:9:35-9:38	RIP Type use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/E_ExtensionInNamespace01.fs	compared fcs-check-errors
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/E_ExtensionInNamespace01.fs:10:12-10:16	this Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs	compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs:13:11-13:12	T Type use agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs:14:16-14:20	this Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/ExtensionInNamespace02.fs:9:9-9:10	T Type def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs	compared fcs-check-errors
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:12:17-12:20	res Value { is_function: false } def agree-none
@@ -29120,6 +29560,9 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/T
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:20:13-20:14	b Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:22:7-22:10	res Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:24:10-24:13	res Value { is_function: false } use agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:7:18-7:19	x Value { is_function: false } def unpaired-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:7:22-7:23	i Parameter def unpaired-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/intrinsic/typeext_int003.fs:7:26-7:27	i Parameter use unpaired-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeKindInference/infer_interface002.fs	compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeKindInference/infer_interface002.fs:11:4-11:5	a Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeKindInference/infer_interface002.fs:11:90-11:91	t Parameter def agree-none
@@ -31917,6 +32360,7 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_Overr
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:12:33-12:35	kg Type use agree-none
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:15:6-15:9	T4b Type def agree-none
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:19:6-19:9	T4b Type use agree-none
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:20:21-20:22	x Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs:8:18-8:20	kg Type def agree-none
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceExpr01.fs	compared fcs-check-errors
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/interactiveExprOrDefinitionsTerminator05.fs	compared fcs-check-errors
@@ -32924,6 +33368,8 @@ tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:29:12-29:18	Needed UnionCase
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:36:12-36:20	Unneeded UnionCase use agree-none
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:43:12-43:18	Needed UnionCase use agree-none
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:52:12-52:20	Unneeded UnionCase use agree-none
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:68:12-68:16	this Value { is_function: false } def agree-none
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:68:40-68:44	this Value { is_function: false } use agree-none
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:73:37-73:45	expected Parameter def agree-none
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:73:5-73:35	shouldBeParenthesizedInContext Value { is_function: true } def agree-none
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:73:70-73:73	src Parameter def agree-none
@@ -34359,65 +34805,94 @@ tests/FSharp.Test.Utilities/CompilerAssert.fs:119:7-119:9	Cs UnionCase def agree
 tests/FSharp.Test.Utilities/CompilerAssert.fs:121:26-121:30	path Parameter def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:121:40-121:46	source Parameter def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:122:33-122:37	path Parameter use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:123:21-123:24	Fsi UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:123:35-123:39	path Parameter use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:123:52-123:58	source Parameter use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:124:21-124:24	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:124:35-124:39	path Parameter use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:124:52-124:58	source Parameter use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:125:20-125:22	Cs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:125:33-125:37	path Parameter use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:125:50-125:56	source Parameter use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:126:24-126:26	Fs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:126:37-126:41	path Parameter use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:126:54-126:60	source Parameter use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:128:12-128:16	this Value { is_function: false } def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:129:15-129:19	this Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:130:11-130:13	Fs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:130:14-130:15	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:130:19-130:21	Fs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:130:23-130:24	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:130:60-130:61	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:131:11-131:14	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:131:15-131:16	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:131:20-131:23	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:131:25-131:26	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:131:62-131:63	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:132:11-132:14	Fsi UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:132:15-132:16	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:132:20-132:23	Fsi UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:132:25-132:26	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:132:62-132:63	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:133:11-133:13	Cs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:133:14-133:15	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:133:19-133:21	Cs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:133:23-133:24	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:133:60-133:61	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:135:12-135:16	this Value { is_function: false } def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:136:15-136:19	this Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:137:11-137:14	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:140:12-140:16	this Value { is_function: false } def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:140:31-140:35	name Parameter def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:141:15-141:19	this Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:142:11-142:13	Fs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:142:14-142:15	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:142:19-142:21	Fs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:142:23-142:24	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:142:39-142:43	name Parameter use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:143:11-143:14	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:143:15-143:16	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:143:20-143:23	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:143:25-143:26	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:143:41-143:45	name Parameter use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:144:11-144:14	Fsi UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:144:15-144:16	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:144:20-144:23	Fsi UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:144:25-144:26	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:144:41-144:45	name Parameter use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:145:11-145:13	Cs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:145:14-145:15	s PatternLocal def agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:145:19-145:21	Cs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:145:23-145:24	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:145:39-145:43	name Parameter use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:147:12-147:16	this Value { is_function: false } def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:148:15-148:19	this Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:149:11-149:13	Fs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:149:14-149:15	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:149:19-149:20	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:150:11-150:14	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:150:15-150:16	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:150:20-150:21	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:151:11-151:14	Fsi UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:151:15-151:16	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:151:20-151:21	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:152:11-152:13	Cs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:152:14-152:15	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:152:19-152:20	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:154:12-154:16	this Value { is_function: false } def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:154:67-154:71	this Value { is_function: false } use unpaired-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:156:12-156:16	this Value { is_function: false } def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:157:15-157:19	this Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:158:11-158:13	Fs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:158:14-158:15	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:158:19-158:20	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:159:11-159:14	Fsx UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:159:15-159:16	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:159:20-159:21	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:160:11-160:14	Fsi UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:160:15-160:16	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:160:20-160:21	s PatternLocal use agree-none
+tests/FSharp.Test.Utilities/CompilerAssert.fs:161:11-161:13	Cs UnionCase use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:161:14-161:15	s PatternLocal def agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:161:19-161:20	s PatternLocal use agree-none
 tests/FSharp.Test.Utilities/CompilerAssert.fs:163:6-163:27	RoslynLanguageVersion Type def agree-none
@@ -35829,6 +36304,23 @@ tests/FSharp.Test.Utilities/Utilities.fs:64:55-64:59	this Value { is_function: f
 tests/FSharp.Test.Utilities/Utilities.fs:64:6-64:49	FactForNETCOREAPPSkipOnSignedBuildAttribute Type def agree-none
 tests/FSharp.Test.Utilities/Utilities.fs:66:37-66:41	this Value { is_function: false } use agree-none
 tests/FSharp.Test.Utilities/Utilities.fs:66:8-66:36	skipIfSigned Value { is_function: true } use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:75:37-75:48	computation Parameter def agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:75:62-75:79	cancellationToken Parameter def agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:76:17-76:34	cancellationToken Value { is_function: false } def agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:76:48-76:65	cancellationToken Parameter use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:77:17-77:19	ts Value { is_function: false } def agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:78:17-78:21	task Value { is_function: false } def agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:78:24-78:26	ts Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:80:17-80:28	computation Parameter use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:81:22-81:23	k Parameter def agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:81:27-81:29	ts Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:81:40-81:41	k Parameter use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:82:22-82:25	exn Parameter def agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:82:29-82:31	ts Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:82:45-82:48	exn Parameter use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:83:27-83:29	ts Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:84:17-84:34	cancellationToken Value { is_function: false } use agree-none
+tests/FSharp.Test.Utilities/Utilities.fs:85:13-85:17	task Value { is_function: false } use agree-none
 tests/FSharp.Test.Utilities/Utilities.fs:88:10-88:25	TargetFramework Type def agree-none
 tests/FSharp.Test.Utilities/Utilities.fs:89:11-89:24	NetStandard20 UnionCase def agree-none
 tests/FSharp.Test.Utilities/Utilities.fs:90:11-90:18	Current UnionCase def agree-none
@@ -36133,15 +36625,21 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:305:7-305:10	Git UnionCase def agree-doc
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:306:14-306:18	this Value { is_function: false } def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:307:15-307:19	this Value { is_function: false } use agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:308:11-308:16	Local UnionCase use agree-doc
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:309:11-309:16	NuGet UnionCase use agree-doc
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:309:17-309:24	version PatternLocal def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:309:32-309:39	version PatternLocal use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:30:9-30:13	info Value { is_function: false } use agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:310:11-310:14	Git UnionCase use agree-doc
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:310:15-310:23	revision PatternLocal def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:310:34-310:42	revision PatternLocal use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:311:12-311:16	this Value { is_function: false } def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:312:15-312:19	this Value { is_function: false } use agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:313:11-313:16	Local UnionCase use agree-doc
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:314:11-314:16	NuGet UnionCase use agree-doc
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:314:17-314:24	version PatternLocal def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:314:32-314:39	version PatternLocal use agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:315:11-315:14	Git UnionCase use agree-doc
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:315:15-315:23	revision PatternLocal def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:315:34-315:42	revision PatternLocal use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:317:6-317:16	RunResults Type def agree-none
@@ -36152,6 +36650,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:327:19-327:29	RunResults Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:32:9-32:13	info Value { is_function: false } use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:330:21-330:27	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:330:30-330:39	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:330:42-330:49	version Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:330:5-330:19	getVersionDate Value { is_function: true } def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:330:52-330:62	FCSVersion Type use agree-none
@@ -36236,10 +36735,12 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:371:27-371:31	path Parameter use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:371:33-371:36	csv Value { is_function: false } use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:373:21-373:27	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:373:30-373:39	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:373:9-373:19	bdnBaseDir Value { is_function: true } def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:374:22-374:28	config Parameter use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:374:47-374:53	config Parameter use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:376:24-376:30	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:376:33-376:42	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:376:45-376:52	entries Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:376:55-376:58	Run Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:376:9-376:22	exportEntries Value { is_function: true } def agree-none
@@ -36309,6 +36810,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:410:19-410:23	mean Value { is_function: false } use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:410:39-410:41	am Value { is_function: false } use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:412:26-412:32	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:412:35-412:44	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:412:47-412:48	v Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:412:51-412:61	FCSVersion Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:412:9-412:24	bdnResultExists Value { is_function: true } def agree-none
@@ -36322,6 +36824,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:414:46-414:49	dir Value { is_function: false } use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:415:21-415:35	jsonReportPath Value { is_function: false } use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:417:20-417:26	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:417:29-417:38	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:417:41-417:48	version Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:417:51-417:61	FCSVersion Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:417:9-417:18	benchmark Value { is_function: true } def agree-none
@@ -36364,6 +36867,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:435:59-435:60	e PatternLocal use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:436:17-436:18	e PatternLocal use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:438:30-438:36	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:438:39-438:48	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:438:51-438:52	v Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:438:55-438:65	FCSVersion Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:438:9-438:28	loadResultsFromDisk Value { is_function: true } def agree-none
@@ -36387,6 +36891,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:44:41-44:45	args Parameter use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:44:56-44:62	errors Value { is_function: false } use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:25-451:31	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:34-451:43	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:46-451:53	version Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:56-451:66	FCSVersion Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:9-451:23	prepareVersion Value { is_function: true } def agree-doc
@@ -36404,6 +36909,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:463:11-463:21	FCSVersion Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:463:11-463:27	NuGet UnionCase use agree-doc
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:26-465:32	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:35-465:44	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:47-465:58	parallelism Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:67-465:75	versions Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:78-465:88	FCSVersion Type use agree-none
@@ -36417,6 +36923,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:470:39-470:43	jobs Parameter use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:470:45-470:56	parallelism Parameter use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:474:17-474:23	config Parameter def agree-none
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:474:26-474:35	RunConfig Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:474:38-474:46	versions Parameter def agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:474:49-474:59	FCSVersion Type use agree-none
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:474:9-474:15	runAll Value { is_function: true } def agree-none
@@ -37180,7 +37687,11 @@ tests/fsharp/typecheck/sigs/neg07.fs:17:10-17:20	UnionCase1 UnionCase def agree-
 tests/fsharp/typecheck/sigs/neg07.fs:18:10-18:20	UnionCase2 UnionCase def agree-none
 tests/fsharp/typecheck/sigs/neg07.fs:20:18-20:19	x Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg07.fs:20:32-20:33	x Value { is_function: false } use agree-none
+tests/fsharp/typecheck/sigs/neg07.fs:20:39-20:49	UnionCase1 UnionCase use agree-none
+tests/fsharp/typecheck/sigs/neg07.fs:20:57-20:67	UnionCase2 UnionCase use agree-none
 tests/fsharp/typecheck/sigs/neg07.fs:21:18-21:19	x Value { is_function: false } def agree-none
+tests/fsharp/typecheck/sigs/neg07.fs:21:27-21:37	UnionCase1 UnionCase use agree-none
+tests/fsharp/typecheck/sigs/neg07.fs:21:39-21:49	UnionCase2 UnionCase use agree-none
 tests/fsharp/typecheck/sigs/neg07.fs:25:11-25:12	x Parameter def agree-none
 tests/fsharp/typecheck/sigs/neg07.fs:25:9-25:10	f Value { is_function: true } def agree-none
 tests/fsharp/typecheck/sigs/neg07.fs:26:15-26:16	x Parameter use agree-none
@@ -37555,8 +38066,11 @@ tests/fsharp/typecheck/sigs/neg36.fs:7:22-7:24	'U TypeParam use agree-none
 tests/fsharp/typecheck/sigs/neg36.fs:9:10-9:11	E Type def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs	compared fcs-check-errors
 tests/fsharp/typecheck/sigs/neg48.fs:101:10-101:15	tree5 Type use agree-none
+tests/fsharp/typecheck/sigs/neg48.fs:102:14-102:15	x Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:104:10-104:15	tree5 Type use agree-none
+tests/fsharp/typecheck/sigs/neg48.fs:105:14-105:15	x Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:107:10-107:15	tree5 Type use agree-none
+tests/fsharp/typecheck/sigs/neg48.fs:108:14-108:15	x Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:10:10-10:21	tree3static Type def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:11:9-11:14	NodeA UnionCase def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:14:10-14:16	tree3B Type def agree-none
@@ -37568,8 +38082,11 @@ tests/fsharp/typecheck/sigs/neg48.fs:20:14-20:15	x Value { is_function: false } 
 tests/fsharp/typecheck/sigs/neg48.fs:22:10-22:15	tree5 Type def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:23:9-23:14	NodeA UnionCase def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:26:14-26:19	tree5 Type use agree-none
+tests/fsharp/typecheck/sigs/neg48.fs:27:18-27:19	x Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:29:14-29:19	tree5 Type use agree-none
+tests/fsharp/typecheck/sigs/neg48.fs:30:18-30:19	x Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:32:14-32:19	tree5 Type use agree-none
+tests/fsharp/typecheck/sigs/neg48.fs:33:18-33:19	x Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:38:10-38:16	tree1A Type def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:39:9-39:14	NodeA UnionCase def agree-none
 tests/fsharp/typecheck/sigs/neg48.fs:40:14-40:15	x Value { is_function: false } def agree-none
@@ -38156,7 +38673,93 @@ vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs:97:16-97
 vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs:98:9-98:19	sourceText Parameter def agree-none
 vsintegration/src/FSharp.Editor/Classification/ClassificationService.fs:99:10-99:20	targetSpan Parameter def agree-none
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs	compared fcs-check-errors
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:101:44-101:47	ctx Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:103:16-103:19	ctx Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:103:40-103:47	codeFix Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:105:22-105:31	codeFixes PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:107:21-107:28	codeFix PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:107:32-107:41	codeFixes PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:108:25-108:35	codeAction Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:108:78-108:85	codeFix PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:109:41-109:51	codeAction Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:111:44-111:47	ctx Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:113:16-113:19	ctx Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:115:22-115:39	cancellationToken PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:116:51-116:68	cancellationToken PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:119:16-119:19	ctx Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:121:22-121:32	sourceText PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:122:24-122:34	sourceText PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:125:16-125:19	ctx Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:127:22-127:32	sourceText PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:128:93-128:103	sourceText PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:131:16-131:19	ctx Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:131:41-131:49	position Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:133:22-133:32	sourceText PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:134:21-134:29	textLine Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:134:32-134:42	sourceText PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:135:21-135:32	textLinePos Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:135:35-135:45	sourceText PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:136:21-136:38	fcsTextLineNumber Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:136:52-136:63	textLinePos Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:137:24-137:41	fcsTextLineNumber Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:137:43-137:51	textLine Value { is_function: false } use unpaired-none
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:146:17-146:32	registerCodeFix Value { is_function: false } def agree-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:151:24-151:32	provider Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:151:46-151:55	fixAllCtx Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:151:73-151:76	doc Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:151:89-151:103	allDiagnostics Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:153:21-153:23	sw Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:155:22-155:27	token PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:156:22-156:32	sourceText PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:156:52-156:57	token PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:158:22-158:33	codeFixOpts PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:164:44-164:45	d Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:164:49-164:50	d Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:164:55-164:56	d Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:165:37-165:41	diag Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:166:29-166:36	context Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:166:59-166:63	diag Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:166:82-166:87	token PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:167:59-167:66	context Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:170:21-170:30	codeFixes Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:170:33-170:44	codeFixOpts PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:171:21-171:28	changes Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:171:31-171:40	codeFixes Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:171:61-171:68	codeFix Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:171:72-171:79	codeFix Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:172:21-172:31	updatedDoc Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:172:47-172:57	sourceText PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:172:70-172:77	changes Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:174:21-174:25	name Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:175:21-175:30	codeFixes Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:177:40-177:43	fix Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:177:47-177:50	fix Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:186:21-186:31	updatedDoc Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:187:21-187:25	name Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:188:74-188:76	sw Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:190:24-190:34	updatedDoc Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:193:16-193:24	provider Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:194:39-194:48	fixAllCtx Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:194:49-194:52	doc Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:194:53-194:67	allDiagnostics Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:195:17-195:25	provider Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:195:38-195:47	fixAllCtx Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:195:48-195:51	doc Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:195:52-195:66	allDiagnostics Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:196:42-196:51	fixAllCtx Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:198:16-198:24	provider Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:198:46-198:52	filter Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:199:39-199:48	fixAllCtx Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:199:49-199:52	doc Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:199:53-199:67	allDiagnostics Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:200:21-200:40	filteredDiagnostics Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:200:43-200:49	filter Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:200:50-200:64	allDiagnostics Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:202:17-202:25	provider Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:202:38-202:47	fixAllCtx Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:202:48-202:51	doc Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:202:52-202:71	filteredDiagnostics Value { is_function: false } use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:203:42-203:51	fixAllCtx Parameter use unpaired-none
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:23:25-23:33	textSpan Parameter def agree-none
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:23:35-23:43	document Parameter def agree-none
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:23:56-23:66	sourceText Parameter def agree-none
@@ -38211,6 +38814,12 @@ vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:82:25-82:28	doc Valu
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:82:57-82:67	sourceText PatternLocal use unpaired-none
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:84:28-84:31	doc Value { is_function: false } use unpaired-none
 vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:86:42-86:59	cancellationToken Parameter use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:93:16-93:19	ctx Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:93:38-93:45	codeFix Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:96:29-96:36	codeFix PatternLocal def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:97:25-97:35	codeAction Value { is_function: false } def unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:97:78-97:85	codeFix PatternLocal use unpaired-none
+vsintegration/src/FSharp.Editor/CodeFixes/CodeFixHelpers.fs:98:41-98:51	codeAction Value { is_function: false } use unpaired-none
 vsintegration/src/FSharp.Editor/CodeFixes/MissingReference.fs	compared fcs-check-errors
 vsintegration/src/FSharp.Editor/CodeFixes/MissingReference.fs:102:40-102:47	context Parameter use unpaired-none
 vsintegration/src/FSharp.Editor/CodeFixes/MissingReference.fs:16:14-16:27	ReferenceType Type def agree-none
@@ -39691,7 +40300,12 @@ vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:831:7-831:18	Constr
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:832:7-832:12	Other UnionCase def agree-none
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:834:30-834:31	s Parameter def agree-none
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:835:15-835:16	s Parameter use agree-none
+vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:836:18-836:23	Event UnionCase use agree-none
+vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:837:18-837:26	Property UnionCase use agree-none
+vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:838:21-838:32	Constructor UnionCase use agree-none
+vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:839:18-839:24	Method UnionCase use agree-none
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:83:73-83:80	methsym Parameter def unpaired-none
+vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:840:16-840:21	Other UnionCase use agree-none
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:842:15-842:25	SymbolPath Type def agree-none
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:84:21-84:64	tryOfRoslynParameters Value { is_function: true } use unpaired-none
 vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs:84:65-84:72	methsym Parameter use unpaired-none

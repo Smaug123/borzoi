@@ -66,7 +66,7 @@ src/Compiler/Service/FSharpProjectSnapshot.fs member-of-type x2
 src/Compiler/Service/FSharpProjectSnapshot.fs type_defn
 src/Compiler/Service/FSharpWorkspaceState.fs member-of-type x11
 src/Compiler/Service/IncrementalBuild.fs member-of-object-expression x12
-src/Compiler/Service/IncrementalBuild.fs type_defn x3
+src/Compiler/Service/IncrementalBuild.fs type_defn
 src/Compiler/Service/ServiceDeclarationLists.fs member-of-object-expression x19
 src/Compiler/Service/ServiceInterfaceStubGenerator.fs let_decl x3
 src/Compiler/Service/ServiceInterfaceStubGenerator.fs member-of-type x3
@@ -545,7 +545,6 @@ tests/fsharp/typecheck/sigs/neg07.fs attribute x7
 tests/fsharp/typecheck/sigs/neg08.fs member-of-object-expression x2
 tests/fsharp/typecheck/sigs/neg10.fs obj_expr
 tests/fsharp/typecheck/sigs/neg12.fs obj_expr x2
-tests/fsharp/typecheck/sigs/neg123.fs member-of-augmentation x6
 tests/fsharp/typecheck/sigs/neg15.fs let_decl x8
 tests/fsharp/typecheck/sigs/neg16.fs let_decl x2
 tests/fsharp/typecheck/sigs/neg26.fs member-of-object-expression x3

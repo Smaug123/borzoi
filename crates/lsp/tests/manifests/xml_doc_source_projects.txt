@@ -4031,9 +4031,45 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalOb
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:93:9-93:18	observing Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:98:9-98:22	nextInAllEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:11:27-11:29	'a TypeParam def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:34-13:38	invA Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:41-13:43	'a TypeParam use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:54-13:55	t Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:58-13:60	'a TypeParam use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:28-14:32	invA Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:33-14:34	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:17:23-17:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:42-19:43	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:24:23-24:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:27:24-27:25	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:31:23-31:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:32:29-32:38	prevInAll PatternLocal def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:29-33:40	sameAsCrate Value { is_function: true } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:41-33:42	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:76-33:85	prevInAll PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:38:23-38:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:41:24-41:25	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:45:23-45:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:46:29-46:38	nextInAll PatternLocal def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:29-47:40	sameAsCrate Value { is_function: true } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:41-47:42	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:76-47:85	nextInAll PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:52:23-52:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:55:24-55:25	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:59:23-59:24	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:17-5:28	sameAsCrate Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:30-5:31	a Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:57-5:58	b Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:60:29-60:44	prevInObserving PatternLocal def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:49-61:50	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:51-61:66	prevInObserving PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:66:23-66:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:69:24-69:25	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:73:23-73:24	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:74:29-74:44	nextInObserving PatternLocal def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:49-75:50	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:51-75:66	nextInObserving PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:80:34-80:35	i Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:85:16-85:17	i Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:9:12-9:13	b Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:10:15-10:16	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:12:25-12:27	t' PatternLocal def agree-none
@@ -9120,7 +9156,16 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:5
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:553:9-553:13	make Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:554:15-554:24	BindCrate Type use declined ConstructorCall fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:561:10-561:19	NodeCrate Type use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:36-564:40	node Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:43-564:47	Node Type use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:55-564:64	NodeCrate Type use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:67-564:71	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:75-564:84	NodeCrate Type use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:566:10-566:31	InternalObserverCrate Type use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:567:38-567:39	i Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:567:42-567:58	InternalObserver Type use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:567:66-567:87	InternalObserverCrate Type use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:568:19-568:40	InternalObserverCrate Type use declined ConstructorCall fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:56:14-56:25	AtIntervals Type def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:574:15-574:16	v Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:574:19-574:22	Var Type use agree-none

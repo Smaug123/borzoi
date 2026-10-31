@@ -6805,130 +6805,106 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs	compared records=168 definitions=19
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs handlers perturbed	selected=11
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs handlers plain	selected=16
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:41-43 "a"	project-deferral unrecorded type_parameter x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:47-51 "unit"	assembly-deferral unrecorded unexplained x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:58-60 "a"	project-deferral unrecorded type_parameter x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:61-77 "InternalObserver"	project-deferral unrecorded unexplained x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:13-17 "Node"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:13-27 "invariant"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:28-32 "invA"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:33-34 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:33-44 "Observing"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:17:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:17:23-30 "State"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:47-51 "unit"	assembly-deferral shadowable-type opaque_open@pre_walk x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:13:61-77 "InternalObserver"	project-deferral shadowable-type opaque_open@pre_walk x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:13-17 "Node"	project-deferral unbound-name qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:13-27 "invariant"	project-deferral qualified-access opaque_value_head@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:14:33-44 "Observing"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:17:23-30 "State"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:18:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:18:19-49 "Unlinked"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:24-27 "``not``"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:29-33 "List"	assembly-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:29-41 "isEmpty"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:42-43 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:42-60 "OnUpdateHandlers"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:18:19-49 "Unlinked"	project-deferral unrecorded opaque_open@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:24-27 "``not``"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:29-33 "List"	assembly-deferral unbound-name qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:29-41 "isEmpty"	assembly-deferral qualified-access opaque_value_head@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:19:42-60 "OnUpdateHandlers"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:1:20-31 "Incremental"	project-deferral unrecorded declaration_path
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:20:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:24:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:24:23-30 "State"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:20:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:24:23-30 "State"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:25:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:25:19-48 "Created"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:25:19-48 "Created"	project-deferral unrecorded opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:26:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:26:19-49 "Unlinked"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:27:24-25 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:27:24-42 "IsSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:27:26-35 "PrevInAll"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:28:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:31:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:31:23-34 "PrevInAll"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:32:19-28 "ValueSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:24-27 "``not``"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:29-40 "sameAsCrate"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:41-42 "t"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:26:19-49 "Unlinked"	project-deferral unrecorded opaque_open@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:27:24-42 "IsSome"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:27:26-35 "PrevInAll"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:28:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:31:23-34 "PrevInAll"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:32:19-28 "ValueSome"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:24-27 "``not``"	assembly-deferral unbound-name open_barrier_staled@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:43-92 "Value"	assembly-deferral unrecorded member_access_on_expression
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:44-65 "InternalObserverCrate"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:44-75 "nextInAll"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:76-85 "prevInAll"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:34:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:35:19-28 "ValueNone"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:38:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:38:23-30 "State"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:44-65 "InternalObserverCrate"	project-deferral unbound-name qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:33:44-75 "nextInAll"	project-deferral qualified-access opaque_value_head@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:34:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:35:19-28 "ValueNone"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:38:23-30 "State"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:39:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:39:19-48 "Created"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:39:19-48 "Created"	project-deferral unrecorded opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:3:3-11 "AutoOpenAttribute"	assembly-deferral shadowable-type opaque_open@pre_walk	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:3:4-11 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:40:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:40:19-49 "Unlinked"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:41:24-25 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:41:24-42 "IsSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:41:26-35 "NextInAll"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:42:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:45:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:45:23-34 "NextInAll"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:46:19-28 "ValueSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:24-27 "``not``"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:29-40 "sameAsCrate"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:41-42 "t"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:40:19-49 "Unlinked"	project-deferral unrecorded opaque_open@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:41:24-42 "IsSome"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:41:26-35 "NextInAll"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:42:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:45:23-24 "t" hover-type plain	local withheld-in-file-parameter at first,middle,last
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:45:23-34 "NextInAll"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:46:19-28 "ValueSome"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:24-27 "``not``"	assembly-deferral unbound-name open_barrier_staled@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:43-92 "Value"	assembly-deferral unrecorded member_access_on_expression
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:44-65 "InternalObserverCrate"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:44-75 "prevInAll"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:76-85 "nextInAll"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:48:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:49:19-28 "ValueNone"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:52:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:52:23-30 "State"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:44-65 "InternalObserverCrate"	project-deferral unbound-name qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:47:44-75 "prevInAll"	project-deferral qualified-access opaque_value_head@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:48:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:49:19-28 "ValueNone"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:52:23-30 "State"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:53:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:53:19-48 "Created"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:53:19-48 "Created"	project-deferral unrecorded opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:54:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:54:19-49 "Unlinked"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:55:24-25 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:55:24-48 "IsSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:55:26-41 "PrevInObserving"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:56:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:59:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:59:23-40 "PrevInObserving"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:54:19-49 "Unlinked"	project-deferral unrecorded opaque_open@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:55:24-48 "IsSome"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:55:26-41 "PrevInObserving"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:56:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:59:23-40 "PrevInObserving"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:34-50 "InternalObserver"	project-deferral shadowable-type opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:51-53 "a"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:61-82 "InternalObserverCrate"	project-deferral shadowable-type opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:86-90 "bool"	assembly-deferral shadowable-type opaque_open@pre_walk
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:60:19-28 "ValueSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:24-27 "``not``"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:29-33 "Type"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:29-48 "referenceEqual"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:49-50 "t"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:51-66 "prevInObserving"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:51-88 "Value"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:67-82 "NextInObserving"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:62:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:63:19-28 "ValueNone"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:66:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:66:23-30 "State"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:60:19-28 "ValueSome"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:24-27 "``not``"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:29-33 "Type"	project-deferral unbound-name qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:29-48 "referenceEqual"	project-deferral qualified-access opaque_value_head@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:49-50 "t" hover-type plain	local withheld-in-file-parameter at first,middle,last
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:51-66 "prevInObserving" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:51-88 "Value"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:61:67-82 "NextInObserving"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:62:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:63:19-28 "ValueNone"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:66:23-30 "State"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:67:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:67:19-48 "Created"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:67:19-48 "Created"	project-deferral unrecorded opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:68:19-40 "InternalObserverState"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:68:19-49 "Unlinked"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:69:24-25 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:69:24-48 "IsSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:69:26-41 "NextInObserving"	project-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:68:19-49 "Unlinked"	project-deferral unrecorded opaque_open@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:69:24-48 "IsSome"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:69:26-41 "NextInObserving"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:6:15-35 "InternalObserverEval"	project-deferral shadowable-type opaque_open@pre_walk
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:70:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:73:23-24 "t"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:73:23-40 "NextInObserving"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:74:19-28 "ValueSome"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:24-27 "``not``"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:29-33 "Type"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:29-48 "referenceEqual"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:49-50 "t"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:51-66 "nextInObserving"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:51-88 "Value"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:67-82 "PrevInObserving"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:76:25-33 "failwith"	assembly-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:77:19-28 "ValueNone"	assembly-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:70:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:73:23-24 "t" hover-type plain	local withheld-in-file-parameter at first,middle,last
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:73:23-40 "NextInObserving"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:74:19-28 "ValueSome"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:24-27 "``not``"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:29-33 "Type"	project-deferral unbound-name qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:29-48 "referenceEqual"	project-deferral qualified-access opaque_value_head@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:51-88 "Value"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:75:67-82 "PrevInObserving"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:76:25-33 "failwith"	assembly-deferral unbound-name open_barrier_staled@pre_walk
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:77:19-28 "ValueNone"	assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:22-26 "Eval"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:31-47 "InternalObserver"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:31-52 "same"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:53-54 "a"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:55-56 "b"	project-deferral unrecorded object_expression_body
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:80:38-59 "InternalObserverCrate"	project-deferral unrecorded unexplained x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:80:63-67 "unit"	assembly-deferral unrecorded unexplained x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:81:19-39 "InternalObserverEval"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:80:38-59 "InternalObserverCrate"	project-deferral shadowable-type opaque_open@pre_walk x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:80:63-67 "unit"	assembly-deferral shadowable-type opaque_open@pre_walk x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:81:19-39 "InternalObserverEval"	project-deferral shadowable-type opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:82:26-30 "Eval"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:83:21-37 "InternalObserver"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:83:21-47 "invariant"	project-deferral unrecorded object_expression_body
@@ -6937,12 +6913,11 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj I
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:83:57-59 "(|>)"	assembly-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:83:60-68 "FakeUnit"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:83:60-75 "ofUnit"	project-deferral unrecorded object_expression_body
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:85:13-15 "(|>)"	assembly-deferral unrecorded operator
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:85:16-17 "i"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:85:16-23 "Apply"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:86:13-15 "(|>)"	assembly-deferral unrecorded operator
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:86:16-24 "FakeUnit"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:86:16-31 "toUnit"	project-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:85:13-15 "(|>)"	assembly-deferral unbound-name operator
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:85:16-23 "Apply"	project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:86:13-15 "(|>)"	assembly-deferral unbound-name operator
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:86:16-24 "FakeUnit"	project-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:86:16-31 "toUnit"	project-deferral qualified-access opaque_value_head@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:91:30-33 "int" handlers perturbed definition first	declined expected fresh-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:91:30-33 "int" handlers perturbed definition last	declined expected fresh-assembly
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:91:30-33 "int" handlers perturbed definition middle	declined expected fresh-assembly
@@ -15433,15 +15408,8 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj T
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:555:50-54 "bind"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:559:3-11 "AutoOpenAttribute"	assembly-deferral shadowable-type opaque_open@pre_walk	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:559:4-11 "``.ctor``"	shadowed-constructor
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:43-47 "Node"	project-deferral unrecorded unexplained x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:48-50 "a"	project-deferral unrecorded type_parameter x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:55-64 "NodeCrate"	project-deferral unrecorded unexplained x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:67-71 "node"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:564:75-84 "NodeCrate"	project-deferral unrecorded unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:567:42-58 "InternalObserver"	project-deferral unrecorded unexplained x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:567:59-61 "a"	project-deferral unrecorded type_parameter x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:567:66-87 "InternalObserverCrate"	project-deferral unrecorded unexplained x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:568:19-40 "InternalObserverCrate"	project-deferral unrecorded unexplained
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:569:26-31 "Apply"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:569:36-37 "e"	project-deferral unrecorded object_expression_body
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:569:36-42 "Eval"	project-deferral unrecorded object_expression_body
