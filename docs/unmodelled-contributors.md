@@ -55,7 +55,7 @@ pinned in `crates/sema/tests/manifests/unmodelled_contributor_grid.txt`.
 | 3 | Same-file `[<AutoOpen>]` non-generic type: its own statics, not a base class's, including an intrinsic augmentation's | `AddLocalTycons` → `CanAutoOpenTyconRef`, `AddStaticContentOfTypeToNameEnv` | marks at the type group's start, and at each later augmentation of it. An abbreviation, a delegate or inline IL is unlisted. |
 | 4 | An `open` of a project module: its `[<AutoOpen>]` children | `OpenModuleOrNamespaceRefs` → `AddModuleOrNamespaceContentsToNameEnv` | marks after the module's folded values (`FileContributions::module_opens`) |
 | 5 | An `open`, or the implicit open, of a project namespace: aliased `[<AutoOpen>]` children and `[<AutoOpen>]` types | same | marks after the namespace fold (`FileContributions::namespace_opens`) |
-| 6 | An earlier file's root: a top-level `[<AutoOpen>] module X`, and everything `namespace global` declares | `AddLocalRootModuleOrNamespace` | marks at every later block's start, after the implicit auto-opens and before its own namespace (`FileContributions::root`) |
+| 6 | An earlier file's root: a top-level `[<AutoOpen>] module X`, and everything `namespace global` declares, with the attribute read from the signature when there is one | `AddLocalRootModuleOrNamespace` | marks at every later block's start, after the implicit auto-opens and before its own namespace (`FileContributions::root`, from the implementation and from the signature, `signature_contributions`) |
 | 7 | A `module rec` / `namespace rec` block, a nested `module rec`, and every module inside one: every binder, from the block's start | `TcMutRecDefns_Phase1` | marks at the block's start. The binders are re-asserted after each `open`, because FCS adds them after every open. The nested modules' `[<AutoOpen>]` contents are re-asserted after each type or exception, because FCS adds modules after tycons and exceptions. |
 | 8 | A constructible type (class, struct, enum, delegate, or an abbreviation of one) taking the unqualified slot from an earlier value or case: in the same file, from an earlier file's own or opened namespace, or from a contributor | `AddTyconRefsToNameEnv` (types with "potential use as a constructor") | the head-slot ordering (`value_slot`), asked at a bare use as well as at a dotted head, with the enclosing namespace's earlier-file types. A parameter or pattern local always holds: the types in scope where it is bound entered first. A contributor's own constructible types are marks. |
 | 9 | An `extern` prototype | `AddLocalVals` | an `Expression` mark at the prototype, which the walk does not intern |
@@ -99,7 +99,10 @@ active pattern.
 
 - **Signature files** restrict what an implementation exports. The earlier-file
   routes read the implementation's declarations, which over-approximate what the
-  signature exposes. The grid's signed-root row checks this.
+  signature exposes. A signature's own attributes are the ones later files see.
+  So a root-level module that only its signature marks `[<AutoOpen>]` contributes
+  too. The grid's signed rows check both directions, plus the namespace and
+  nested-module forms.
 - **Referenced assemblies' contributors** — their `[<AutoOpen>]` modules,
   `[<assembly: AutoOpen>]`, and root namespace — are the assembly fold's
   business (`docs/assembly-module-open-plan.md`). They enter before every

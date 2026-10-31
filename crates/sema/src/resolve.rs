@@ -1315,12 +1315,14 @@ fn resolve_project_files_impl(
             // slot materialises.
             SourceFile::Sig(sig) => {
                 let surface = signature_surface(sig, &pf.qnof);
-                ResolvedFile::signature_slot(
+                let mut rf = ResolvedFile::signature_slot(
                     preceding.next_base(),
                     surface.screen,
                     surface.defs,
                     surface.exports,
-                )
+                );
+                contributors::signature_contributions(sig, &preceding, assemblies, &mut rf);
+                rf
             }
             SourceFile::Impl(file) => {
                 // Per-file span so the fold's cost is attributable in the LSP's
@@ -1715,12 +1717,14 @@ fn resolve_project_files_incremental_impl(
             let mut rf = match &pf.file {
                 SourceFile::Sig(sig) => {
                     let surface = signature_surface(sig, &pf.qnof);
-                    ResolvedFile::signature_slot(
+                    let mut rf = ResolvedFile::signature_slot(
                         preceding.next_base(),
                         surface.screen,
                         surface.defs,
                         surface.exports,
-                    )
+                    );
+                    contributors::signature_contributions(sig, &preceding, assemblies, &mut rf);
+                    rf
                 }
                 SourceFile::Impl(file) => {
                     let mut rf = resolve_file(file, &preceding, assemblies, &pf.recovery);
@@ -2366,7 +2370,7 @@ pub(crate) fn collect_nested_module_names(
 /// so no target syntax escapes it; a spurious match only withdraws trust in
 /// written attribute names. The definition's own attribute lists are not
 /// read: using an attribute renames nothing.
-fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
+pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
     let spelled_core =
         |t: &SyntaxToken| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(t));
     let named_core = defn

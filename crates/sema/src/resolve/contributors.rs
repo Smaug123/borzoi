@@ -27,15 +27,19 @@ use std::collections::{BTreeSet, HashSet};
 
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, AttributeList, Expr, ModuleDecl, ModuleOrNamespace,
-    ModuleOrNamespaceKind, NestedModuleDecl, SyntaxKind, SyntaxNode, Type, TypeDefn, TypeDefnRepr,
-    TypeDefnsDecl, UnionCase,
+    ModuleOrNamespaceKind, NestedModuleDecl, SigFile, SyntaxKind, SyntaxNode, Type, TypeDefn,
+    TypeDefnRepr, TypeDefnsDecl, UnionCase,
 };
 
 use super::decls::type_slot_class;
-use super::model::DeclineCause;
 use super::model::SlotClass;
+use super::model::{DeclineCause, ProjectItems, ResolvedFile};
 use super::state::{MarkReach, ScopeEntry};
-use super::{Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation};
+use super::{
+    Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation,
+    type_defn_renames_core_attribute,
+};
+use crate::assembly_env::AssemblyEnv;
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
 
@@ -579,5 +583,53 @@ impl Resolver<'_> {
         let entry = self.lookup_entry(name)?;
         (entry.from_open && entry.open_pos == 0)
             .then_some(DeclineCause::ComputationExpressionImplicit)
+    }
+}
+
+/// What a signature file contributes to later files through routes the walk
+/// does not model, written into its slot's `rf`. A signature's attributes are
+/// the ones later files see, so a top-level `[<AutoOpen>] module X` it
+/// declares opens into every later file's root
+/// (`AddLocalRootModuleOrNamespace`) whatever its implementation says; so do
+/// the declarations of a `namespace global` block. Whether an attribute may be
+/// `[<AutoOpen>]` is decided as for an implementation
+/// ([`Resolver::attribute_spellings_trusted`]).
+pub(super) fn signature_contributions(
+    sig: &SigFile,
+    preceding: &ProjectItems,
+    assemblies: &AssemblyEnv,
+    rf: &mut ResolvedFile,
+) {
+    let renames = sig
+        .syntax()
+        .descendants()
+        .filter_map(TypeDefn::cast)
+        .any(|defn| type_defn_renames_core_attribute(&defn));
+    rf.declares_core_attribute_alias = renames;
+    let aliases = assemblies.core_attribute_aliases();
+    let may_auto_open = |attrs: &mut dyn Iterator<Item = AttributeList>| {
+        let spellings: Vec<String> = attrs
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .filter_map(|attr| attr.type_name())
+            .filter_map(|li| li.idents().last())
+            .map(|seg| id_text(&seg).to_string())
+            .collect();
+        let trusted = !renames
+            && !preceding.core_attribute_alias_declared
+            && !aliases.certain
+            && spellings.iter().all(|s| !aliases.possible.contains(s));
+        spellings
+            .iter()
+            .any(|s| s == "AutoOpen" || s == "AutoOpenAttribute")
+            || (!spellings.is_empty() && !trusted)
+    };
+    for module in sig.modules() {
+        let root_module = matches!(module.kind(), ModuleOrNamespaceKind::NamedModule)
+            && module.long_id().is_some_and(|li| li.idents().count() == 1)
+            && may_auto_open(&mut module.attributes());
+        if root_module || matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace) {
+            let names = declared_identifiers(module.syntax());
+            rf.contributions.root.names.extend(names);
+        }
     }
 }

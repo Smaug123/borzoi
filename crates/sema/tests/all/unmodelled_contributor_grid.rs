@@ -209,6 +209,16 @@ enum Route {
     EarlierGlobalTypeAbbrev,
     /// An earlier file's root-level `[<AutoOpen>]` module behind a signature.
     EarlierRootModuleSigned,
+    /// An earlier file's root-level module whose signature alone says
+    /// `[<AutoOpen>]`: the signature's attributes are the ones later files see.
+    EarlierRootModuleSigOnly,
+    /// The same for a module in a namespace the probe file opens.
+    EarlierNamespaceSigOnly,
+    /// The same for a module nested in a module the probe file opens.
+    EarlierTopSigOnly,
+    /// An earlier file's root-level module whose implementation alone says
+    /// `[<AutoOpen>]`.
+    EarlierRootModuleImplOnly,
     /// An earlier file's `namespace global` declaring the name directly: a
     /// union case, or a constructible type.
     EarlierGlobalDecl,
@@ -299,7 +309,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 58] = [
+    const ALL: [Route; 62] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -321,6 +331,10 @@ impl Route {
         Route::EarlierGlobalType,
         Route::EarlierGlobalTypeAbbrev,
         Route::EarlierRootModuleSigned,
+        Route::EarlierRootModuleSigOnly,
+        Route::EarlierNamespaceSigOnly,
+        Route::EarlierTopSigOnly,
+        Route::EarlierRootModuleImplOnly,
         Route::EarlierGlobalDecl,
         Route::EarlierTopUnopened,
         Route::EarlierTopOpened,
@@ -506,6 +520,46 @@ impl Route {
             Route::EarlierRootModuleSigned => (
                 vec![
                     ("GridRoot.fsi", "[<AutoOpen>]\nmodule GridRoot\n@SIG\n"),
+                    ("GridRoot.fs", "[<AutoOpen>]\nmodule GridRoot\n@MEMBER\n"),
+                ],
+                PLAIN,
+            ),
+            Route::EarlierRootModuleSigOnly => (
+                vec![
+                    ("GridRoot.fsi", "[<AutoOpen>]\nmodule GridRoot\n@SIG\n"),
+                    ("GridRoot.fs", "module GridRoot\n@MEMBER\n"),
+                ],
+                PLAIN,
+            ),
+            Route::EarlierNamespaceSigOnly => (
+                vec![
+                    (
+                        "GridNs.fsi",
+                        "namespace GridNs\n[<AutoOpen>]\nmodule GridAuto =\n    @SIG\n",
+                    ),
+                    (
+                        "GridNs.fs",
+                        "namespace GridNs\nmodule GridAuto =\n    @MEMBER\n",
+                    ),
+                ],
+                "module GridProbe\n@OWN\nopen GridNs\n@USE\n",
+            ),
+            Route::EarlierTopSigOnly => (
+                vec![
+                    (
+                        "GridTop.fsi",
+                        "module GridTop\n[<AutoOpen>]\nmodule GridAuto =\n    @SIG\n",
+                    ),
+                    (
+                        "GridTop.fs",
+                        "module GridTop\nmodule GridAuto =\n    @MEMBER\n",
+                    ),
+                ],
+                "module GridProbe\n@OWN\nopen GridTop\n@USE\n",
+            ),
+            Route::EarlierRootModuleImplOnly => (
+                vec![
+                    ("GridRoot.fsi", "module GridRoot\n@SIG\n"),
                     ("GridRoot.fs", "[<AutoOpen>]\nmodule GridRoot\n@MEMBER\n"),
                 ],
                 PLAIN,
