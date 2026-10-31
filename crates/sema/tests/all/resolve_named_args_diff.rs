@@ -63,9 +63,6 @@ const CALLS: &[&str] = &[
     "    (new T(«a» = ‹a›)).I(‹a›)\n",
     // Methods in referenced assemblies.
     "    let count = ‹a›\n    System.String('x', «count» = ‹count›).Length\n",
-    "    let timeout = ‹b›\n    Async.RunSynchronously(async { return ‹a› }, «?timeout» = ‹timeout›)\n",
-    "    let cancellationToken = None\n    Async.RunSynchronously(async { return ‹a› }, \
-     «?cancellationToken» = ‹cancellationToken›)\n",
     // An equality under an operator is never an argument list's element.
     "    g (true && (‹a› = ‹a›))\n",
 ];
@@ -114,10 +111,14 @@ fn function_calls() -> Vec<String> {
 /// Calls whose value sides can only be committed once FSharp.Core is
 /// referenced: the head is a module function there (`not`, `List.contains`),
 /// so `a = a` is an equality — but under an empty environment the head is
-/// unknown, and could as well be a method.
+/// unknown, and could as well be a method. So is `async`, whose custom
+/// operations could take any name in its expression.
 const CALLS_NEEDING_CORE: &[&str] = &[
     "    not (‹a› = ‹a›)\n",
     "    List.contains (‹a› = ‹a›) [ true ]\n",
+    "    let timeout = ‹b›\n    Async.RunSynchronously(async { return ‹a› }, «?timeout» = ‹timeout›)\n",
+    "    let cancellationToken = None\n    Async.RunSynchronously(async { return ‹a› }, \
+     «?cancellationToken» = ‹cancellationToken›)\n",
 ];
 
 /// A program and the ranges planted in it, by kind.

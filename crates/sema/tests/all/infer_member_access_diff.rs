@@ -1345,6 +1345,7 @@ fn interface_receiver_method_call_defers() {
             unclassified_impls: vec![],
             xml_doc_sig: None,
             drops_optional_modifier: false,
+            custom_operation: None,
             has_other_method_impl: false,
         }))
     };
@@ -1486,6 +1487,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
         drops_optional_modifier: false,
+        custom_operation: None,
         has_other_method_impl: false,
     }));
     let class = Entity {

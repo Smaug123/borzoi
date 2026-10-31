@@ -33,13 +33,13 @@ use borzoi_cst::syntax::{
 
 use super::decls::type_slot_class;
 use super::model::SlotClass;
-use super::model::{DeclineCause, ProjectItems, ResolvedFile};
+use super::model::{ProjectItems, ResolvedFile};
 use super::state::{MarkReach, ScopeEntry};
 use super::{
     Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation,
     type_defn_renames_core_attribute,
 };
-use crate::assembly_env::AssemblyEnv;
+use crate::assembly_env::{AssemblyEnv, CustomOperationNames};
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
 
@@ -101,6 +101,14 @@ pub(super) struct FileContributions {
     /// not model: the `[<AutoOpen>]` children whose attribute is not spelled
     /// `AutoOpen`, and the `[<AutoOpen>]` types.
     pub(super) namespace_opens: Vec<(Vec<String>, Contribution)>,
+    /// The names the custom operations the file's type augmentations declare
+    /// may take ([`super::custom_operations::file_custom_operations`]): an
+    /// extension of any builder in any later computation expression.
+    pub(super) custom_operations: CustomOperationNames,
+    /// Whether the file declares a type spelled like
+    /// `CustomOperationAttribute` or an abbreviation of it, after which any
+    /// attribute may be one.
+    pub(super) declares_custom_operation_alias: bool,
 }
 
 /// Every name anything declared in `node` can bear: each identifier written
@@ -608,25 +616,6 @@ impl Resolver<'_> {
     }
 }
 
-impl Resolver<'_> {
-    /// Why a committed **bare** use of `name` inside a computation expression
-    /// must decline: the builder's custom operations (`[<CustomOperation>]`)
-    /// take bare names in the expression ahead of the implicit opens, and the
-    /// walk does not know the builder's type, so it cannot list them. Only a
-    /// name an implicit open supplies is withheld: one the project binds is
-    /// taken just the same, but withholding those too would cost every
-    /// parameter used in an `async { … }`
-    /// (`docs/unmodelled-contributors.md`, "Not on the list").
-    pub(super) fn computation_expression_decline(&self, name: &str) -> Option<DeclineCause> {
-        if self.ce_depth == 0 {
-            return None;
-        }
-        let entry = self.lookup_entry(name)?;
-        (entry.from_open && entry.open_pos == 0)
-            .then_some(DeclineCause::ComputationExpressionImplicit)
-    }
-}
-
 /// What a signature file contributes to later files through routes the walk
 /// does not model, written into its slot's `rf`. A signature's attributes are
 /// the ones later files see, so a top-level `[<AutoOpen>] module X` it
@@ -664,6 +653,22 @@ pub(super) fn signature_contributions(
             .any(|s| s == "AutoOpen" || s == "AutoOpenAttribute")
             || (!spellings.is_empty() && !trusted)
     };
+    // A signature's attributes are the ones later files see, so the custom
+    // operations it declares count as an implementation's would
+    // (`super::custom_operations::signature_custom_operations`).
+    let custom_operation_alias =
+        super::custom_operations::signature_renames_custom_operation(sig.syntax());
+    rf.contributions.declares_custom_operation_alias = custom_operation_alias;
+    let co_aliases = assemblies.custom_operation_aliases();
+    let co_trusted = !custom_operation_alias
+        && !preceding.custom_operation_alias_declared
+        && !co_aliases.certain;
+    rf.contributions.custom_operations =
+        super::custom_operations::signature_custom_operations(sig.syntax(), &|s| {
+            super::custom_operations::CUSTOM_OPERATION_SPELLINGS.contains(&s)
+                || !co_trusted
+                || co_aliases.possible.contains(s)
+        });
     for module in sig.modules() {
         let root_module = matches!(module.kind(), ModuleOrNamespaceKind::NamedModule)
             && module.long_id().is_some_and(|li| li.idents().count() == 1)

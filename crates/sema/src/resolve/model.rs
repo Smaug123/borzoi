@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use rowan::{TextRange, TextSize};
 
-use crate::assembly_env::{AssemblyEnv, EntityHandle, MemberIndex};
+use crate::assembly_env::{AssemblyEnv, CustomOperationNames, EntityHandle, MemberIndex};
 use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
@@ -343,6 +343,13 @@ pub struct ProjectItems {
     /// What earlier files add to every later file's root scope through routes
     /// the walk does not model ([`FileContributions::root`]).
     pub(super) root_contribution: Contribution,
+    /// The names the custom operations earlier files declare may take
+    /// ([`FileContributions::custom_operations`]).
+    pub(super) custom_operations: CustomOperationNames,
+    /// Whether some earlier file declares a type spelled like
+    /// `CustomOperationAttribute` or an abbreviation of it
+    /// ([`FileContributions::declares_custom_operation_alias`]).
+    pub(super) custom_operation_alias_declared: bool,
     /// Whether some file folded so far declares a type spelled like
     /// `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`, or an abbreviation of
     /// one ([`ResolvedFile::declares_core_attribute_alias`]).
@@ -1164,6 +1171,9 @@ impl ProjectItems {
         self.core_attribute_alias_declared |= file.declares_core_attribute_alias;
         // What the file contributes through routes the walk does not model.
         self.root_contribution.merge(&file.contributions.root);
+        self.custom_operations
+            .merge(&file.contributions.custom_operations);
+        self.custom_operation_alias_declared |= file.contributions.declares_custom_operation_alias;
         for (path, c) in &file.contributions.module_opens {
             self.module_open_contributions
                 .entry(path.clone())
@@ -2193,11 +2203,15 @@ pub enum DeclineCause {
     /// environment after the entry the walk would commit
     /// (`docs/unmodelled-contributors.md`).
     UnmodelledContributor,
-    /// A bare name an implicit open supplies, used inside a computation
-    /// expression, where a custom operation of its builder
-    /// (`[<CustomOperation("name")>]`) may take it; the walk does not model
-    /// those.
-    ComputationExpressionImplicit,
+    /// A bare name inside a computation expression that a custom operation
+    /// of its builder (`[<CustomOperation("name")>]`) may take: its type is
+    /// known, and the operations it and every extension in scope may offer
+    /// include the name.
+    CustomOperationMayTake,
+    /// A bare name inside a computation expression whose builder's custom
+    /// operations the walk cannot list: its type is unknown, or some route
+    /// that could add an operation is unread.
+    CustomOperationsUnknown,
 }
 
 impl DeclineCause {
@@ -2253,7 +2267,8 @@ impl DeclineCause {
         DeclineCause::OpenFoldCollision,
         DeclineCause::ImplicitSurfaceUnfolded,
         DeclineCause::UnmodelledContributor,
-        DeclineCause::ComputationExpressionImplicit,
+        DeclineCause::CustomOperationMayTake,
+        DeclineCause::CustomOperationsUnknown,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2307,7 +2322,8 @@ impl DeclineCause {
             DeclineCause::OpenFoldCollision => "open_fold_collision",
             DeclineCause::ImplicitSurfaceUnfolded => "implicit_surface_unfolded",
             DeclineCause::UnmodelledContributor => "unmodelled_contributor",
-            DeclineCause::ComputationExpressionImplicit => "computation_expression_implicit",
+            DeclineCause::CustomOperationMayTake => "custom_operation_may_take",
+            DeclineCause::CustomOperationsUnknown => "custom_operations_unknown",
         }
     }
 }

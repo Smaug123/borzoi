@@ -32,6 +32,7 @@ mod pickled_ranges;
 mod projection_skip_sweep;
 mod projector_accessor_slots;
 mod projector_custom_modifiers;
+mod projector_custom_operations;
 mod projector_default_member;
 mod projector_events;
 mod projector_extension_index;

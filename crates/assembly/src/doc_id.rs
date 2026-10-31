@@ -972,6 +972,7 @@ mod tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             drops_optional_modifier: false,
+            custom_operation: None,
             has_other_method_impl: false,
         }))
     }

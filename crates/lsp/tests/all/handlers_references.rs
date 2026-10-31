@@ -272,10 +272,14 @@ fn equality_inside_an_infix_rhs_is_not_an_argument_label() {
 
 #[test]
 fn query_join_equality_is_not_an_argument_label() {
-    let src = "let xs = [1]\nlet a = 1\nlet b = 1\nlet result = query { for x in xs do join y in xs on (a = b); select x }\n";
+    // An orphan document has no FSharp.Core to say what FSharp.Core's `query`
+    // is, and a name inside an expression over a builder whose custom
+    // operations are unknown declines; so the builder is the file's own,
+    // with none.
+    let src = "type Q() = member _.Yield(x: int) = x\nlet query = Q()\nlet xs = [1]\nlet a = 1\nlet b = 1\nlet result = query { for x in xs do join y in xs on (a = b); select x }\n";
     let (mut state, uri) = orphan_state(src);
 
-    let locs = run(&mut state, &uri, 1, 4, true);
+    let locs = run(&mut state, &uri, 3, 4, true);
     assert_eq!(
         locs.len(),
         2,
@@ -285,7 +289,7 @@ fn query_join_equality_is_not_an_argument_label() {
         locs.iter().any(|location| {
             location.range.start
                 == Position {
-                    line: 3,
+                    line: 5,
                     character: 53,
                 }
         }),
@@ -295,18 +299,20 @@ fn query_join_equality_is_not_an_argument_label() {
 
 #[test]
 fn query_join_direct_rhs_call_still_defers_argument_labels() {
+    // The builder is the file's own, with no custom operations
+    // (`query_join_equality_is_not_an_argument_label`).
     assert_argument_label_is_deferred(
-        "let x = 1\nlet result = query { join y in C.M(?x = x) }\n",
+        "type Q() = member _.Yield(x: int) = x\nlet query = Q()\nlet x = 1\nlet result = query { join y in C.M(?x = x) }\n",
         Position {
-            line: 0,
+            line: 2,
             character: 4,
         },
         Position {
-            line: 1,
+            line: 3,
             character: 36,
         },
         Position {
-            line: 1,
+            line: 3,
             character: 40,
         },
     );

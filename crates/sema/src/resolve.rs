@@ -66,6 +66,7 @@ use crate::qnof::QualifiedNameOfFile;
 mod assembly;
 mod bindings;
 mod contributors;
+mod custom_operations;
 use contributors::FileContributions;
 mod decls;
 mod exprs;
@@ -122,6 +123,9 @@ pub fn resolve_file(
         if type_defn_renames_core_attribute(&defn) {
             r.declares_core_attribute_alias = true;
         }
+        if custom_operations::type_defn_renames_custom_operation(&defn) {
+            r.contributions.declares_custom_operation_alias = true;
+        }
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
             // A generic declaration of the name disqualifies an in-file
@@ -163,6 +167,12 @@ pub fn resolve_file(
                 .insert(id_text(&name).to_string());
         }
     }
+    // The custom operations the file's augmentations declare, which extend
+    // every builder in every later computation expression, this file's
+    // included. Whole-file: F# reads a builder's operations off the completed
+    // type.
+    r.contributions.custom_operations =
+        custom_operations::file_custom_operations(file.syntax(), &|s| r.may_be_custom_operation(s));
     // Every *nested module definition*'s simple name in the file, for the
     // dotted half of the project `[<AutoOpen>]` shadow
     // (`Resolver::project_module_named`): what owns a dotted head is a module.
@@ -1884,7 +1894,8 @@ impl<'a> Resolver<'a> {
             contributions: FileContributions::default(),
             rec_contribution: None,
             declares_core_attribute_alias: false,
-            ce_depth: 0,
+            custom_operation_clauses: HashMap::new(),
+            in_file_constructions: HashMap::new(),
             module_frames: Vec::new(),
             auto_open_type_paths: HashSet::new(),
             rec_module_names: HashSet::new(),

@@ -38,6 +38,64 @@ pub use il_types::IlTypeDefinition;
 /// terminates well within it).
 const ABBREV_CHASE_FUEL: u32 = 32;
 
+/// The names a set of methods may give custom operations of a
+/// computation-expression builder ([`borzoi_assembly::CustomOperation`]): a
+/// closed over-approximation, or `unlisted` when one is unread.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CustomOperationNames {
+    pub(crate) names: std::collections::BTreeSet<String>,
+    pub(crate) unlisted: bool,
+}
+
+impl CustomOperationNames {
+    pub(crate) fn merge(&mut self, other: &CustomOperationNames) {
+        self.names.extend(other.names.iter().cloned());
+        self.unlisted |= other.unlisted;
+    }
+
+    /// Add the names `m`'s `[<CustomOperation>]` gives it, if it has one: its
+    /// own, a join's condition word, and the `into` and `on` a clause of it
+    /// reads by name.
+    fn add_method(&mut self, m: &MethodLike) {
+        use borzoi_assembly::CustomOperationName as N;
+        let Some(op) = &m.custom_operation else {
+            return;
+        };
+        match &op.name {
+            N::Named(name) => {
+                self.names.insert(name.clone());
+            }
+            N::MethodName => {
+                // F# names the operation after the method's logical name: the
+                // source name a `[<CompiledName>]` hides, and for an extension
+                // member the part after its target's mangled prefix.
+                let name = m.source_name.as_deref().unwrap_or(&m.name);
+                self.names.insert(name.to_string());
+                if let Some((_, tail)) = name.rsplit_once('.') {
+                    self.names.insert(tail.to_string());
+                }
+            }
+            N::Unreadable => self.unlisted = true,
+        }
+        self.names.extend(op.join_condition_word.iter().cloned());
+        self.names.insert("into".to_string());
+        self.names.insert("on".to_string());
+    }
+}
+
+/// What a referenced value used as a computation expression's builder is
+/// ([`AssemblyEnv::builder_value`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuilderValue {
+    /// A value of this type.
+    Of(EntityHandle),
+    /// A function: the braces it applies to are a sequence expression, which
+    /// has no custom operations.
+    Function,
+    /// Neither is known.
+    Unknown,
+}
+
 /// See [`AssemblyEnv::core_attribute_aliases`].
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CoreAttributeAliases {
@@ -742,6 +800,11 @@ pub struct AssemblyEnv {
     /// Memo for [`Self::core_attribute_aliases`]: a scan of every entity,
     /// asked once per project fold.
     core_attribute_alias: std::sync::OnceLock<CoreAttributeAliases>,
+    /// Memo for [`Self::extension_custom_operations`]: the part read off the
+    /// entities, a scan of every one.
+    extension_custom_operation: std::sync::OnceLock<CustomOperationNames>,
+    /// Memo for [`Self::custom_operation_aliases`].
+    custom_operation_alias: std::sync::OnceLock<CoreAttributeAliases>,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -3355,8 +3418,26 @@ impl AssemblyEnv {
     /// target was not decoded: an attribute written with one of those names
     /// may be either.
     pub(crate) fn core_attribute_aliases(&self) -> &CoreAttributeAliases {
-        self.core_attribute_alias.get_or_init(|| {
-            let spelled_core = |name: &str| CORE_ATTRIBUTE_NAMES.contains(&name);
+        self.core_attribute_alias
+            .get_or_init(|| self.attribute_aliases(CORE_ATTRIBUTE_NAMES))
+    }
+
+    /// What the referenced assemblies say about renaming
+    /// `[<CustomOperation>]`, as [`Self::core_attribute_aliases`] says it of
+    /// `[<AutoOpen>]`: where [`CoreAttributeAliases::certain`], or for a
+    /// spelling in [`CoreAttributeAliases::possible`], an attribute may be a
+    /// custom operation whatever it is spelled.
+    pub(crate) fn custom_operation_aliases(&self) -> &CoreAttributeAliases {
+        self.custom_operation_alias.get_or_init(|| {
+            self.attribute_aliases(&["CustomOperation", "CustomOperationAttribute"])
+        })
+    }
+
+    /// The scan behind [`Self::core_attribute_aliases`], for the FSharp.Core
+    /// attribute written `names`.
+    fn attribute_aliases(&self, names: &[&str]) -> CoreAttributeAliases {
+        {
+            let spelled_core = |name: &str| names.contains(&name);
             let core_namespace = ["Microsoft", "FSharp", "Core"];
             let mut aliases = CoreAttributeAliases {
                 certain: !self.unknowable_abbreviation_namespaces.is_empty(),
@@ -3392,7 +3473,7 @@ impl AssemblyEnv {
                 }
             }
             aliases
-        })
+        }
     }
 
     /// The F# source full name of `handle`: namespace segments, enclosing
@@ -4056,6 +4137,156 @@ impl AssemblyEnv {
             return ExtensionMembers::Unknowable;
         }
         ExtensionMembers::Known(&self.entity(handle).extension_member_names)
+    }
+
+    /// The names custom operations declared on the referenced assemblies'
+    /// **extension members** may take: every F#-native augmentation and every
+    /// `[<Extension>]` method carrying `[<CustomOperation>]`, whatever it
+    /// extends and whether or not its module is open — a closed
+    /// over-approximation of what any builder's in-scope extensions add.
+    ///
+    /// Unlisted when an extension may be unread: the extension surface is
+    /// unknowable, an F# assembly's extension index is
+    /// ([`EntityNode::extensions_unknowable`]), a type was dropped, or an
+    /// F# module dropped a member mangled like an augmentation (`Type.Member`)
+    /// or an extension container dropped any. A non-F# assembly's dropped
+    /// member is no loss: F# ignores `[<CustomOperation>]` on a method it
+    /// reads through IL.
+    pub(crate) fn extension_custom_operations(&self) -> CustomOperationNames {
+        let mut out = self
+            .extension_custom_operation
+            .get_or_init(|| {
+                let mut out = CustomOperationNames::default();
+                for (i, node) in self.nodes.iter().enumerate() {
+                    let e = &node.entity;
+                    // An augmentation compiles to a module static mangled
+                    // `Type.Member`; any member of an extension container
+                    // may be an extension.
+                    let may_extend = |name: &str| {
+                        e.is_extension_container
+                            || (e.kind == EntityKind::Module && name.contains('.'))
+                    };
+                    if node.extensions_unknowable
+                        || (e.skipped_members.iter().any(|m| may_extend(&m.name))
+                            && self.has_authoritative_fsharp_signature(EntityHandle::new(i)))
+                    {
+                        out.unlisted = true;
+                    }
+                    for m in &e.members {
+                        if let Member::Method(m) = m
+                            && (m.is_extension_method || m.augmentation != Augmentation::No)
+                        {
+                            out.add_method(m);
+                        }
+                    }
+                }
+                out
+            })
+            .clone();
+        if self.extension_surface_unknowable || self.dropped_any_type() {
+            out.unlisted = true;
+        }
+        out
+    }
+
+    /// The names the custom operations of the type `handle` and its base
+    /// types may take. Unlisted when a level dropped a member, a base cannot
+    /// be proven, or the type is an interface (whose inherited interfaces F#
+    /// also searches). A base the env holds is walked whatever it is called;
+    /// one it does not hold ends the chain only if it is `System.Object` and
+    /// the env names every assembly it read, since a referenced F# assembly
+    /// declaring a type of that name would be in it.
+    pub(crate) fn type_custom_operations(&self, handle: EntityHandle) -> CustomOperationNames {
+        let mut out = CustomOperationNames::default();
+        let mut seen = HashSet::new();
+        let mut current = handle;
+        loop {
+            if !seen.insert(current) {
+                out.unlisted = true;
+                return out;
+            }
+            let e = self.entity(current);
+            if e.kind == EntityKind::Interface || !e.skipped_members.is_empty() {
+                out.unlisted = true;
+                return out;
+            }
+            for m in &e.members {
+                if let Member::Method(m) = m {
+                    out.add_method(m);
+                }
+            }
+            let Some(base) = &e.base_type else {
+                return out;
+            };
+            match self.resolve_named_type(base, &e.assembly.name) {
+                Some(next) => current = next,
+                // `System.Object` from an assembly the env does not hold: no
+                // referenced F# assembly declares it, or the env would.
+                None if matches!(base, TypeRef::Named { namespace, name, .. }
+                    if namespace.len() == 1 && namespace[0] == "System" && name == "Object")
+                    && !self.identities_incomplete()
+                    && !self.namespace_has_dropped_type(&[String::from("System")]) =>
+                {
+                    return out;
+                }
+                None => {
+                    out.unlisted = true;
+                    return out;
+                }
+            }
+        }
+    }
+
+    /// The type a [`TypeRef`] names, generic or not: the type at its compiled
+    /// path in the assembly that scopes it, following type forwarders. `None`
+    /// for a nested type, a non-named one, or a namespace with a dropped type,
+    /// which could be the one meant.
+    fn resolve_named_type(&self, ty: &TypeRef, declaring_assembly: &str) -> Option<EntityHandle> {
+        let TypeRef::Named {
+            assembly,
+            namespace,
+            name,
+            type_args,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        if name.contains('/') || self.namespace_has_dropped_type(namespace) {
+            return None;
+        }
+        let scope = assembly
+            .as_ref()
+            .map_or(declaring_assembly, |a| a.name.as_str());
+        let mut path = namespace.clone();
+        path.push(if type_args.is_empty() {
+            name.clone()
+        } else {
+            format!("{name}`{}", type_args.len())
+        });
+        self.forwarded_target_at_path(scope, &path, ABBREV_CHASE_FUEL)
+    }
+
+    /// What the member `parent.idx` is as a computation expression's builder:
+    /// an F# module value has the type its getter returns, a static
+    /// non-indexed property the type it holds; a module member of an
+    /// authoritative F# signature that is no value is a function.
+    pub(crate) fn builder_value(&self, parent: EntityHandle, idx: MemberIndex) -> BuilderValue {
+        let declaring = &self.entity(parent).assembly.name;
+        let ty = match self.member_at(parent, idx) {
+            Member::Method(m) if m.module_value.is_some() || m.is_module_value_binding => {
+                &m.signature.return_type
+            }
+            Member::Method(_) if self.has_authoritative_fsharp_signature(parent) => {
+                return BuilderValue::Function;
+            }
+            Member::Property(p) if p.is_static && p.parameters.is_empty() => &p.ty,
+            _ => return BuilderValue::Unknown,
+        };
+        match self.resolve_named_type(ty, declaring) {
+            Some(h) => BuilderValue::Of(h),
+            None => BuilderValue::Unknown,
+        }
     }
 
     /// Mark the env's referenced-assembly **extension surface unknowable** — a
@@ -7390,6 +7621,180 @@ mod from_views_tests {
             path: path.iter().map(|s| (*s).to_string()).collect(),
             args: Vec::new(),
         }
+    }
+
+    /// A method `name` carrying `[<CustomOperation(op)>]`, or none.
+    fn op_method(name: &str, op: Option<borzoi_assembly::CustomOperationName>) -> Member {
+        Member::Method(Box::new(borzoi_assembly::MethodLike {
+            val_facts: borzoi_assembly::ValFacts::NotFSharp,
+            definition_range: None,
+            name: name.to_owned(),
+            access: Access::Public,
+            signature: borzoi_assembly::MethodSignature {
+                parameters: vec![],
+                return_type: TypeRef::Primitive(Primitive::I4),
+                return_nullability: Nullability::Oblivious,
+            },
+            arg_group_count: Some(1),
+            arg_groups: borzoi_assembly::ArgGroups::NotFSharp,
+            is_static: false,
+            is_virtual: false,
+            is_abstract: false,
+            is_final: false,
+            is_newslot: false,
+            is_hide_by_sig: false,
+            is_constructor: false,
+            is_extension_method: false,
+            augmentation: borzoi_assembly::Augmentation::No,
+            module_value: None,
+            is_module_value_binding: false,
+            generic_parameters: vec![],
+            obsolete: None,
+            experimental: None,
+            sets_required_members: false,
+            compiler_feature_required: vec![],
+            source_name: None,
+            custom_attrs: vec![],
+            metadata_token: 0,
+            implements: Vec::new(),
+            unclassified_impls: Vec::new(),
+            xml_doc_sig: None,
+            drops_optional_modifier: false,
+            custom_operation: op.map(|name| borzoi_assembly::CustomOperation {
+                name,
+                join_condition_word: None,
+            }),
+            has_other_method_impl: false,
+        }))
+    }
+
+    fn skipped(name: &str) -> borzoi_assembly::SkippedMember {
+        borzoi_assembly::SkippedMember {
+            name: name.to_owned(),
+            reason: String::new(),
+        }
+    }
+
+    /// A builder type's custom operations are its own methods' and its base
+    /// types', named by the attribute or by the method; a dropped member, a
+    /// base that cannot be proven, or an unreadable attribute leaves them
+    /// unlisted, and the chain ends at `System.Object` by name.
+    #[test]
+    fn type_custom_operations_read_the_whole_chain_or_decline() {
+        use borzoi_assembly::CustomOperationName as N;
+        let class = |name: &str, base: Option<TypeRef>, members: Vec<Member>| Entity {
+            kind: EntityKind::Class,
+            base_type: base,
+            members,
+            ..module_entity("Lib", &["Lib"], name)
+        };
+        let named = |name: &str| TypeRef::Named {
+            assembly: None,
+            namespace: vec!["Lib".to_string()],
+            name: name.to_string(),
+            type_args: vec![],
+            segment_arities: vec![0],
+        };
+        let object = TypeRef::Named {
+            assembly: None,
+            namespace: vec!["System".to_string()],
+            name: "Object".to_string(),
+            type_args: vec![],
+            segment_arities: vec![0],
+        };
+        let base = class(
+            "Base",
+            Some(object.clone()),
+            vec![op_method("Op", Some(N::Named("inherited".to_string())))],
+        );
+        let derived = class(
+            "Derived",
+            Some(named("Base")),
+            vec![
+                op_method("Where", Some(N::MethodName)),
+                op_method("Plain", None),
+            ],
+        );
+        // A `System.Object` the env holds is walked like any base.
+        let impostor = Entity {
+            kind: EntityKind::Class,
+            members: vec![op_method("Op", Some(N::Named("fromObject".to_string())))],
+            ..module_entity("Lib", &["System"], "Object")
+        };
+        let on_impostor = Entity {
+            kind: EntityKind::Class,
+            base_type: Some(object.clone()),
+            ..module_entity("Lib", &["Lib"], "OnImpostor")
+        };
+        let env = AssemblyEnv::from_entities(vec![impostor, on_impostor]);
+        let ops = env.type_custom_operations(handle_of(&env, &["Lib"], "OnImpostor"));
+        assert!(ops.names.contains("fromObject"), "{ops:?}");
+
+        let env = AssemblyEnv::from_entities(vec![base, derived]);
+        let ops = env.type_custom_operations(handle_of(&env, &["Lib"], "Derived"));
+        assert!(!ops.unlisted, "{ops:?}");
+        for name in ["inherited", "Where", "into", "on"] {
+            assert!(ops.names.contains(name), "{name}: {ops:?}");
+        }
+        assert!(!ops.names.contains("Plain"), "{ops:?}");
+
+        for (label, entity) in [
+            (
+                "dropped member",
+                Entity {
+                    skipped_members: vec![skipped("Hidden")],
+                    ..class("B", Some(object.clone()), vec![])
+                },
+            ),
+            ("unprovable base", class("B", Some(named("Absent")), vec![])),
+            (
+                "unreadable attribute",
+                class(
+                    "B",
+                    Some(object.clone()),
+                    vec![op_method("Op", Some(N::Unreadable))],
+                ),
+            ),
+        ] {
+            let env = AssemblyEnv::from_entities(vec![entity]);
+            let ops = env.type_custom_operations(handle_of(&env, &["Lib"], "B"));
+            assert!(ops.unlisted, "{label}: {ops:?}");
+        }
+    }
+
+    /// Every extension member carrying `[<CustomOperation>]` counts, whatever
+    /// it extends; a module that dropped a member mangled like an
+    /// augmentation leaves the set unlisted, and one that dropped a plain
+    /// function does not.
+    #[test]
+    fn extension_custom_operations_read_every_extension_or_decline() {
+        use borzoi_assembly::CustomOperationName as N;
+        let augmentation =
+            |name: &str, op: &str| match op_method(name, Some(N::Named(op.to_string()))) {
+                Member::Method(mut m) => {
+                    m.augmentation = borzoi_assembly::Augmentation::Certain {
+                        target_typars: Some(0),
+                    };
+                    Member::Method(m)
+                }
+                _ => unreachable!(),
+            };
+        let module = |skips: Vec<borzoi_assembly::SkippedMember>| Entity {
+            members: vec![
+                augmentation("AsyncBuilder.Op", "extended"),
+                op_method("intrinsic", Some(N::Named("notAnExtension".to_string()))),
+            ],
+            skipped_members: skips,
+            ..module_entity("Lib", &["Lib"], "Ext")
+        };
+        let env = AssemblyEnv::from_entities(vec![module(vec![skipped("plainFunction")])]);
+        let ops = env.extension_custom_operations();
+        assert!(!ops.unlisted, "{ops:?}");
+        assert!(ops.names.contains("extended"), "{ops:?}");
+        assert!(!ops.names.contains("notAnExtension"), "{ops:?}");
+
+        let env = AssemblyEnv::from_entities(vec![module(vec![skipped("AsyncBuilder.Hidden")])]);
+        assert!(env.extension_custom_operations().unlisted);
     }
 
     /// A referenced abbreviation renames a core attribute wherever its

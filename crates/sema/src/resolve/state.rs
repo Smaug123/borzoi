@@ -1361,9 +1361,14 @@ pub(super) struct Resolver<'a> {
     /// stack, innermost last: every frame above the innermost holds
     /// expression-local bindings.
     pub(super) module_frames: Vec<usize>,
-    /// How many computation expressions the walk is inside
-    /// ([`Resolver::computation_expression_decline`]).
-    pub(super) ce_depth: usize,
+    /// The bare identifiers a computation expression's custom operations
+    /// take by name alone, whatever is bound, and why each declines
+    /// ([`Resolver::custom_operation_clause_decline`]).
+    pub(super) custom_operation_clauses: HashMap<TextRange, DeclineCause>,
+    /// The applications of a bare name that construct a type of this file,
+    /// keyed by the name's range ([`Resolver::note_in_file_construction`]):
+    /// what a builder bound as `let b = T()` is.
+    pub(super) in_file_constructions: HashMap<TextRange, DefId>,
     /// The active `rec` blocks' contributions, re-pushed where FCS's
     /// `TcMutRecDefns_Phase1` order puts them above what the walk just pushed:
     /// every binder after each `open`, and the nested modules' `[<AutoOpen>]`

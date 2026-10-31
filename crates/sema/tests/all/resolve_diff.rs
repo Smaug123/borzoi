@@ -332,6 +332,32 @@ fn span(start: usize, end: usize) -> TextRange {
 /// generating programs can intersect this with the occurrences it meant to
 /// exercise, and so tell "the oracle agreed" from "the oracle said nothing".
 fn assert_matches_fcs(source: &str) -> HashSet<TextRange> {
+    assert_matches_fcs_under(source, &AssemblyEnv::default())
+}
+
+/// Whether `source` runs a computation expression over one of FSharp.Core's
+/// builders. A name inside one commits only once the builder is known to
+/// offer no custom operation of it, which an empty environment cannot say of
+/// `async`, so such a snippet is resolved with FSharp.Core referenced.
+fn runs_an_fsharp_core_builder(source: &str) -> bool {
+    ["async {", "seq {", "task {", "query {"]
+        .iter()
+        .any(|b| source.contains(b))
+}
+
+/// The environment a corpus snippet is resolved under
+/// ([`runs_an_fsharp_core_builder`]).
+fn corpus_env(source: &str) -> &'static AssemblyEnv {
+    static EMPTY: std::sync::OnceLock<AssemblyEnv> = std::sync::OnceLock::new();
+    if runs_an_fsharp_core_builder(source) {
+        crate::common::full_bcl_env()
+    } else {
+        EMPTY.get_or_init(AssemblyEnv::default)
+    }
+}
+
+/// [`assert_matches_fcs`] under `env`.
+fn assert_matches_fcs_under(source: &str, env: &AssemblyEnv) -> HashSet<TextRange> {
     // Our resolution (parse first — a cheap failure before the costly FCS run).
     let parsed = parse(source);
     assert!(
@@ -341,12 +367,7 @@ fn assert_matches_fcs(source: &str) -> HashSet<TextRange> {
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(
-        &file,
-        &ProjectItems::default(),
-        &AssemblyEnv::default(),
-        &recovery,
-    );
+    let rf = resolve_file(&file, &ProjectItems::default(), env, &recovery);
 
     // FCS oracle.
     let path = temp_fs_file(source);
@@ -415,7 +436,7 @@ fn assert_matches_fcs(source: &str) -> HashSet<TextRange> {
 #[test]
 fn resolution_agrees_with_fcs_over_the_corpus() {
     for source in CORPUS {
-        assert_matches_fcs(source);
+        assert_matches_fcs_under(source, corpus_env(source));
     }
 }
 
@@ -429,8 +450,8 @@ fn resolution_agrees_with_fcs_over_the_corpus() {
 fn a_byte_order_mark_moves_no_verdict_over_the_corpus() {
     const BOM: &str = "\u{feff}";
     for source in CORPUS {
-        let plain = assert_matches_fcs(source);
-        let marked = assert_matches_fcs(&format!("{BOM}{source}"));
+        let plain = assert_matches_fcs_under(source, corpus_env(source));
+        let marked = assert_matches_fcs_under(&format!("{BOM}{source}"), corpus_env(source));
         let shift = rowan::TextSize::of(BOM);
         let mut expected: Vec<_> = plain.iter().map(|r| *r + shift).collect();
         let mut marked: Vec<_> = marked.into_iter().collect();
