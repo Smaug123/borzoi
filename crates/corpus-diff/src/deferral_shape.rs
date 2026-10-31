@@ -256,7 +256,12 @@ pub fn classify(root: &SyntaxNode, rf: &ResolvedFile, record: TextRange) -> Opti
             committed => Some(committed),
         });
     match receiver {
-        Some(Resolution::Local(_) | Resolution::Item(_) | Resolution::Member { .. }) => {
+        Some(
+            Resolution::Local(_)
+            | Resolution::Item(_)
+            | Resolution::Member { .. }
+            | Resolution::UnionCase { .. },
+        ) => {
             return Some(DeferralShape::MemberAccessOnValue);
         }
         Some(Resolution::Entity(_)) => return Some(DeferralShape::AssemblyTypeMember),

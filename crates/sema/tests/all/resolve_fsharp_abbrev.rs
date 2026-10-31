@@ -1205,8 +1205,8 @@ fn qualified_case_pattern_resolves_into_an_assembly_union() {
         .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
         .expect("Demo.CasePat.Shape union in env");
     let circle = env
-        .nested(shape, "Circle", 0)
-        .expect("Shape.Circle compiles to a nested case type");
+        .union_case_index(shape, "Circle")
+        .expect("Shape declares Circle");
 
     // Head `Shape` (first occurrence, in `Shape.Circle`) → the union entity.
     assert_eq!(
@@ -1214,19 +1214,21 @@ fn qualified_case_pattern_resolves_into_an_assembly_union() {
         Some(Resolution::Entity(shape)),
         "the qualified case-pattern head must resolve to the assembly union"
     );
-    // Whole `Shape.Circle` span → the field-carrying case's nested type.
+    // Whole `Shape.Circle` span → the case itself, not its nested carrier type.
     assert_eq!(
         rf.resolution_at(at(src, "Shape.Circle")),
-        Some(Resolution::Entity(circle)),
-        "a field-carrying case tail resolves to its nested IL type"
+        Some(Resolution::UnionCase {
+            union: shape,
+            case: circle
+        }),
+        "a field-carrying case tail resolves to the case"
     );
 }
 
-/// A *nullary* case has no nested IL type (it is a singleton), so the case tail
-/// defers — but the head still resolves to the union, exactly as an opened
-/// assembly case is a known case *reference* with an opaque target.
+/// A *nullary* case has no nested IL type (it is a singleton), and the case
+/// tail still names it: the target is the case, not a carrier.
 #[test]
-fn qualified_nullary_case_pattern_resolves_head_defers_tail() {
+fn qualified_nullary_case_pattern_resolves_head_and_case() {
     let env = fixture_env();
     let src = "namespace Consumer\n\
                open Demo.CasePat\n\
@@ -1250,8 +1252,13 @@ fn qualified_nullary_case_pattern_resolves_head_defers_tail() {
     );
     assert_eq!(
         rf.resolution_at(whole),
-        Some(Resolution::Deferred(DeferredReason::QualifiedAccess)),
-        "a nullary case has no nested type, so the case tail defers"
+        Some(Resolution::UnionCase {
+            union: shape,
+            case: env
+                .union_case_index(shape, "Dot")
+                .expect("Shape declares Dot"),
+        }),
+        "a nullary case tail names the case"
     );
 }
 
@@ -1278,9 +1285,12 @@ fn qualified_case_pattern_sees_past_a_shadowing_module() {
     let union = env
         .lookup_type(&["Demo".into(), "CasePat".into()], "ShadowedUnion", 0)
         .expect("Demo.CasePat.ShadowedUnion union in env");
-    let shaded = env
-        .nested(union, "Shaded", 0)
-        .expect("ShadowedUnion.Shaded nested case type");
+    let shaded = Resolution::UnionCase {
+        union,
+        case: env
+            .union_case_index(union, "Shaded")
+            .expect("ShadowedUnion declares Shaded"),
+    };
 
     assert_eq!(
         rf.resolution_at(at(src, "ShadowedUnion")),
@@ -1289,7 +1299,7 @@ fn qualified_case_pattern_sees_past_a_shadowing_module() {
     );
     assert_eq!(
         rf.resolution_at(at(src, "ShadowedUnion.Shaded")),
-        Some(Resolution::Entity(shaded)),
+        Some(shaded),
         "the case tail resolves to the union case, not through the module"
     );
 }
@@ -1508,8 +1518,8 @@ fn qualified_case_pattern_resolves_at_the_enclosing_namespace() {
         .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
         .expect("Demo.CasePat.Shape union in env");
     let circle = env
-        .nested(shape, "Circle", 0)
-        .expect("Shape.Circle compiles to a nested case type");
+        .union_case_index(shape, "Circle")
+        .expect("Shape declares Circle");
     assert_eq!(
         rf.resolution_at(at(src, "Shape")),
         Some(Resolution::Entity(shape)),
@@ -1517,7 +1527,10 @@ fn qualified_case_pattern_resolves_at_the_enclosing_namespace() {
     );
     assert_eq!(
         rf.resolution_at(at(src, "Shape.Circle")),
-        Some(Resolution::Entity(circle))
+        Some(Resolution::UnionCase {
+            union: shape,
+            case: circle
+        })
     );
 }
 

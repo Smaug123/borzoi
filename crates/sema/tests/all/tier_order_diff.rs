@@ -2897,7 +2897,12 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
         // means it bound a *value* for a type-position name. A catch-all arm
         // would launder all three into "no claim", which is exactly the
         // collapse this sweep exists to prevent.
-        Some(res @ (Resolution::Local(_) | Resolution::Item(_) | Resolution::Member { .. })) => {
+        Some(
+            res @ (Resolution::Local(_)
+            | Resolution::Item(_)
+            | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }),
+        ) => {
             panic!(
                 "tier probe {}: type position resolved to {res:?}",
                 plant.name

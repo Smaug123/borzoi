@@ -262,6 +262,12 @@ fn project_definition(state: &mut State, uri: &Uri, byte: usize) -> Option<Locat
     if let Resolution::Entity(handle) = res {
         return assembly_entity_location(semantic, workspace, &project, handle);
     }
+    // A union case has no source position of its own in the projection — the
+    // pickle's ranges are the union's — so it navigates to its union, the
+    // declaration the case is written in.
+    if let Resolution::UnionCase { union, .. } = res {
+        return assembly_entity_location(semantic, workspace, &project, union);
+    }
     location_for_resolution(&parses, file_idx, &resolved, res, uri, docs).map(Located::Ready)
 }
 
@@ -665,7 +671,7 @@ fn location_for_resolution(
         // `assembly_entity_location` / `assembly_member_location`, which read
         // the DLL's portable-PDB source). The arm is kept only to make the match
         // exhaustive — there is no `file://` def range to translate to here.
-        Resolution::Entity(_) | Resolution::Member { .. } => None,
+        Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => None,
         Resolution::Deferred(_) | Resolution::Unresolved => None,
     }
 }

@@ -73,7 +73,7 @@ pinned in `crates/sema/tests/manifests/unmodelled_contributor_grid.txt`.
 | 7 | A `module rec` / `namespace rec` block, a nested `module rec`, and every module inside one: every binder, from the block's start | `TcMutRecDefns_Phase1` | marks at the block's start. The binders are re-asserted after each `open`, because FCS adds them after every open. The nested modules' `[<AutoOpen>]` contents are re-asserted after each type or exception, because FCS adds modules after tycons and exceptions. |
 | 8 | A constructible type (class, struct, enum, delegate, or an abbreviation of one) taking the unqualified slot from an earlier value or case: in the same file, from an earlier file's own or opened namespace, or from a contributor | `AddTyconRefsToNameEnv` (types with "potential use as a constructor") | the head-slot ordering (`value_slot`), asked at a bare use as well as at a dotted head, with the enclosing namespace's earlier-file types. A parameter or pattern local always holds: the types in scope where it is bound entered first. A contributor's own constructible types are marks. |
 | 9 | An `extern` prototype | `AddLocalVals` | an `Expression` mark at the prototype, which the walk does not intern |
-| 10 | `open type` statics the projection drops | `OpenTypeContent` → `AddStaticContentOfTypeToNameEnv` | `Expression` marks after the type's listed statics, for each `skipped_members` name |
+| 10 | What `open type` brings beside the statics the projection lists: the statics it drops, its nested types, and the extension members in scope for the type, whether the project's own augmentations or a referenced assembly's | `OpenTypeContent` → `AddStaticContentOfTypeToNameEnv` | `Expression` marks after the listed statics: each `skipped_members` name, each nested type's name, and every augmentation member name keyed by the augmented type's simple name (`AssemblyEnv::augmentation_members_on`, `FileContributions::extension_statics`) |
 | 11 | A union whose `[<RequireQualifiedAccess>]` may be spelled through an abbreviation | `AddTyconRefsToNameEnv` (RQA cases are not bare) | `Both` marks after the cases the walk put in bare scope, and at an `open` of the container |
 | 12 | A computation expression's custom operations, which take bare names in the expression ahead of every binding outside it, and a clause's head whatever is bound | `TcComputationExpression` → `AddFakeNameToNameEnv`, `CustomOperationClause` | an `Expression` mark per name the builder's operations may take, in a frame of the expression's own, and each clause head of those names declined outright (`crates/sema/src/resolve/custom_operations.rs`; below) |
 
@@ -86,7 +86,6 @@ committing through:
 - an `[<AutoOpen>]` class's or an `open type`'s *inherited* statics;
 - an earlier file's plain top-level module, not opened;
 - the project's own `[<assembly: AutoOpen>]` (`AddCcuToTcEnv` applies it to referenced assemblies only);
-- extension members of an `open type` target;
 - a member parameter named like a later type of its own type group.
 
 Each of these must commit: the grid holds them to the unshadowed answer.

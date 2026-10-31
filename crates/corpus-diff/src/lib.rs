@@ -3372,6 +3372,12 @@ impl ProjectDiscoveryOperation {
 pub struct AssemblyDecl {
     pub assembly: String,
     pub full_name: String,
+    /// The oracle's `SymbolKind` for the use (`unioncase`, `member`, …), or
+    /// `None` on our own side and wherever the oracle reported none. It is what
+    /// tells a union case from a same-named member or type — a full name alone
+    /// cannot, since FCS renders a case under its union exactly as it renders a
+    /// member under its type.
+    pub kind: Option<String>,
     /// The same declaration named from the oracle's *structural* facts rather
     /// than its rendering — `None` on our own side, and for an oracle use with
     /// no declaring entity. See [`DeclaringEntity`].
@@ -3548,7 +3554,8 @@ fn served_answer(
             res @ (Resolution::Local(_)
             | Resolution::Item(_)
             | Resolution::Entity(_)
-            | Resolution::Member { .. }),
+            | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }),
         )) => {
             let surface = if rf.resolution_at(range) == Some(res) {
                 AnswerSurface::Resolver
@@ -3790,7 +3797,9 @@ fn grade_use(
             range: (u.start, u.end),
             name: u.name.clone(),
             actual: match res {
-                Resolution::Entity(_) | Resolution::Member { .. } => {
+                Resolution::Entity(_)
+                | Resolution::Member { .. }
+                | Resolution::UnionCase { .. } => {
                     let actual = assembly_resolution_decl(&loaded.assembly_env, res);
                     format!(
                         "assembly {} full_name {}",
@@ -3821,9 +3830,13 @@ fn served_answer_agrees(
                     && range_pair(def.range) == (expected.start, expected.end)
             })
         }
-        (Resolution::Entity(_) | Resolution::Member { .. }, Err(expected)) => {
+        (
+            Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. },
+            Err(expected),
+        ) => {
             let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-            assembly_names_agree(&loaded.assembly_env, res, &actual, expected)
+            kind_admits(res, expected)
+                && assembly_names_agree(&loaded.assembly_env, res, &actual, expected)
                 && assembly_full_name_agrees_for(
                     &loaded.assembly_env,
                     res,
@@ -3836,10 +3849,30 @@ fn served_answer_agrees(
             | Resolution::Item(_)
             | Resolution::Entity(_)
             | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }
             | Resolution::Deferred(_)
             | Resolution::Unresolved,
             Ok(_) | Err(_),
         ) => false,
+    }
+}
+
+/// Whether the oracle's symbol kind admits `res` at all, before any name is
+/// compared. A [`Resolution::UnionCase`] names a case and nothing else, so it
+/// agrees only with a record FCS reports as a union case: its full name is
+/// rendered under its union exactly as a member's is under its type, and a
+/// name match alone would score a case committed where FCS bound a same-named
+/// static as agreement. The other assembly variants keep the name comparison
+/// they always had.
+fn kind_admits(res: Resolution, expected: &AssemblyDecl) -> bool {
+    match res {
+        Resolution::UnionCase { .. } => expected.kind.as_deref() == Some("unioncase"),
+        Resolution::Entity(_)
+        | Resolution::Member { .. }
+        | Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => true,
     }
 }
 
@@ -3952,6 +3985,7 @@ fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
     match (&use_.assembly, &use_.full_name) {
         (Some(assembly), Some(full_name)) => Some(AssemblyDecl {
             assembly: assembly.clone(),
+            kind: use_.symbol_kind.clone(),
             // Our names are logical (`op_Addition`), FCS's rendering is not
             // (`Operators.(+)`): compare in our domain.
             full_name: logical_full_name(full_name, &use_.name, use_.logical_name.as_deref()),
@@ -3971,14 +4005,26 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
             let entity = env.entity(handle);
             AssemblyDecl {
                 assembly: entity.assembly.name.clone(),
+                kind: None,
                 full_name: env.entity_full_name(handle),
                 structural: None,
             }
         }
+        Resolution::UnionCase { union, case } => AssemblyDecl {
+            assembly: env.entity(union).assembly.name.clone(),
+            kind: None,
+            full_name: format!(
+                "{}.{}",
+                env.entity_full_name(union),
+                env.union_case_name(union, case)
+            ),
+            structural: None,
+        },
         Resolution::Member { parent, idx } => {
             let entity = env.entity(parent);
             AssemblyDecl {
                 assembly: entity.assembly.name.clone(),
+                kind: None,
                 full_name: format!(
                     "{}.{}",
                     env.entity_full_name(parent),
@@ -4109,6 +4155,7 @@ fn is_concrete_resolution(res: Resolution) -> bool {
             | Resolution::Item(_)
             | Resolution::Entity(_)
             | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }
     )
 }
 
@@ -4133,7 +4180,7 @@ fn fcs_use_confirms_resolution(
                     && range_pair(def.range) == (expected.start, expected.end)
             })
         }
-        Resolution::Entity(_) | Resolution::Member { .. } => {
+        Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
             assembly_decl(use_).is_some_and(|expected| {
                 assembly_resolution_confirms_decl(&loaded.assembly_env, res, &expected)
             })
@@ -4184,7 +4231,9 @@ fn assembly_names_agree(
         return true;
     }
     let declaring = match res {
-        Resolution::Entity(handle) | Resolution::Member { parent: handle, .. } => handle,
+        Resolution::Entity(handle)
+        | Resolution::Member { parent: handle, .. }
+        | Resolution::UnionCase { union: handle, .. } => handle,
         Resolution::Local(_)
         | Resolution::Item(_)
         | Resolution::Deferred(_)
@@ -4230,7 +4279,7 @@ fn assembly_resolution_confirms_decl(
     expected: &AssemblyDecl,
 ) -> bool {
     let actual = assembly_resolution_decl(env, res);
-    if !assembly_names_agree(env, res, &actual, expected) {
+    if !kind_admits(res, expected) || !assembly_names_agree(env, res, &actual, expected) {
         return false;
     }
     // The oracle's rendered name and the structural one it certifies are both
@@ -4247,7 +4296,9 @@ fn assembly_resolution_confirms_decl(
                     .strip_prefix(&actual.full_name)
                     .is_some_and(|tail| tail.starts_with('.'))
         }
-        Resolution::Member { .. } => assembly_full_name_agrees(&actual.full_name, expected_full),
+        Resolution::Member { .. } | Resolution::UnionCase { .. } => {
+            assembly_full_name_agrees(&actual.full_name, expected_full)
+        }
         Resolution::Local(_)
         | Resolution::Item(_)
         | Resolution::Deferred(_)
@@ -4299,7 +4350,7 @@ fn resolution_summary(loaded: &LoadedProject, file_idx: usize, res: Resolution) 
             ),
             None => format!("{res:?} (no project def)"),
         },
-        Resolution::Entity(_) | Resolution::Member { .. } => {
+        Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
             let actual = assembly_resolution_decl(&loaded.assembly_env, res);
             format!(
                 "assembly {} full_name {}",
@@ -5483,6 +5534,7 @@ mod tests {
     ) -> AssemblyDecl {
         AssemblyDecl {
             assembly: "Demo".to_string(),
+            kind: None,
             full_name: rendered.to_string(),
             structural: Some(StructuralName {
                 declaring: DeclaringEntity {
@@ -5736,6 +5788,7 @@ mod tests {
         assert_eq!(ours, "Demo.Outer.Inner");
         let ctor = AssemblyDecl {
             assembly: "Demo".to_string(),
+            kind: None,
             full_name: "Demo.Outer`2.Inner".to_string(),
             structural: Some(StructuralName {
                 declaring: DeclaringEntity {
@@ -5773,6 +5826,7 @@ mod tests {
         assert_eq!(ours, "Demo.SourceHolder.Case");
         let case = AssemblyDecl {
             assembly: "Demo".to_string(),
+            kind: None,
             full_name: "Demo.SourceHolder<_>.Case".to_string(),
             structural: Some(StructuralName {
                 declaring: DeclaringEntity {
@@ -5789,6 +5843,44 @@ mod tests {
             Some("Demo.SourceHolder.Case")
         );
         assert!(assembly_full_name_agrees_for(&env, res, &ours, &case));
+    }
+
+    /// A union case agrees only with a record FCS reports **as a union case**.
+    /// Its full name is rendered under its union exactly as a member's is under
+    /// its type, so with the kind ignored a case committed where FCS bound a
+    /// same-named static would read as agreement.
+    #[test]
+    fn a_union_case_agrees_only_with_a_union_case_record() {
+        let mut union = fixture_entity("Holder", EntityKind::Union, 1, &[]);
+        union.union_cases = UnionCases::Known(vec!["Case".to_string()]);
+        let env = AssemblyEnv::from_entities(vec![union]);
+        let holder = fixture_handle(&env, "Holder", 1, false);
+        let res = Resolution::UnionCase {
+            union: holder,
+            case: env.union_case_index(holder, "Case").expect("Holder.Case"),
+        };
+        let ours = assembly_resolution_decl(&env, res);
+        assert_eq!(ours.full_name, "Demo.Holder.Case");
+        let record = |kind: &str| AssemblyDecl {
+            kind: Some(kind.to_string()),
+            ..oracle_decl("Demo.Holder<_>.Case", &[("Holder`1", 1)], "Case", false)
+        };
+        assert!(kind_admits(res, &record("unioncase")));
+        assert!(assembly_resolution_confirms_decl(
+            &env,
+            res,
+            &record("unioncase")
+        ));
+        for other in ["member", "type", "field"] {
+            assert!(!kind_admits(res, &record(other)), "{other}");
+            assert!(
+                !assembly_resolution_confirms_decl(&env, res, &record(other)),
+                "{other}"
+            );
+        }
+        // An oracle that reported no kind cannot vouch for a case either.
+        let unkinded = oracle_decl("Demo.Holder<_>.Case", &[("Holder`1", 1)], "Case", false);
+        assert!(!kind_admits(res, &unkinded));
     }
 
     /// A nested type's arity mangling is a **delta** per segment, so
@@ -5861,6 +5953,7 @@ mod tests {
         let res = Resolution::Entity(inner);
         let nested = |leaf_arity: usize| AssemblyDecl {
             assembly: "Demo".to_string(),
+            kind: None,
             full_name: "Demo.Outer<_>.Inner".to_string(),
             structural: Some(StructuralName {
                 declaring: DeclaringEntity {
@@ -5929,6 +6022,7 @@ mod tests {
         let (res, ours) = fixture_member(&env, "Holder", 1, false, "Empty");
         let bare = AssemblyDecl {
             assembly: "Demo".to_string(),
+            kind: None,
             full_name: "Demo.Holder.Empty".to_string(),
             structural: None,
         };
@@ -6009,6 +6103,7 @@ mod tests {
 
             let expected = AssemblyDecl {
                 assembly: "Demo".to_string(),
+                kind: None,
                 full_name: fcs_rendering(&theirs, instantiate),
                 structural: Some(StructuralName {
                     declaring: DeclaringEntity {
@@ -6463,6 +6558,7 @@ mod tests {
                 name: "Value".to_string(),
                 expected: AssemblyDecl {
                     assembly: "Synthetic.Assembly".to_string(),
+                    kind: None,
                     full_name: "Demo.Widget.Value".to_string(),
                     structural: None,
                 },

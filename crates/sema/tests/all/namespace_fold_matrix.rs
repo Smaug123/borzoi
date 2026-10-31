@@ -43,8 +43,9 @@
 //! FCS resolves nothing ⟺ we resolve nothing. The soundness direction — **we commit
 //! `X` ⟹ FCS agrees** — is the no-wrong-target invariant; the availability direction —
 //! **FCS resolves ⟹ we resolve or it is a listed [`KNOWN_GAPS`] deferral** — ratchets
-//! the conservative losses this slice makes on purpose (an opaque union case, an
-//! active-pattern tag, a reference-order collision, a residue-poisoned group). A gap
+//! the conservative losses this slice makes on purpose (a union case whose slot an
+//! unreadable auto-open may contest, an active-pattern tag, a reference-order
+//! collision, a residue-poisoned group). A gap
 //! that starts naming a target, or that FCS stops resolving, fails: the ratchet only
 //! tightens.
 
@@ -540,11 +541,9 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ),
     (
         "union / unique case, expression",
-        "an assembly union case folds opaque (Q1): in scope, naming no target",
-    ),
-    (
-        "union / unique case, pattern",
-        "an assembly union case folds opaque (Q1): in scope, naming no target",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         could supply a constructible type of the name, which would evict the case from \
+         FCS's bare constructor slot (`assembly_case_slot_contested`)",
     ),
     (
         "union / colliding case-vs-value, expression",
@@ -552,11 +551,9 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ),
     (
         "struct-union / unique case, expression",
-        "an assembly union case folds opaque (Q1)",
-    ),
-    (
-        "struct-union / unique case, pattern",
-        "an assembly union case folds opaque (Q1)",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         could supply a constructible type of the name, which would evict the case from \
+         FCS's bare constructor slot (`assembly_case_slot_contested`)",
     ),
     (
         "class / colliding value-vs-type, expression",
@@ -585,24 +582,16 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
          and that order is reference-order — `head_value_slot` is Unordered, so we defer",
     ),
     (
-        "union-dotted / type-qualified case, expression",
-        "an assembly union case folds opaque (Q1) and is not a static member of its type \
-         in the entity model, so the type-qualified reading defers the same way",
-    ),
-    (
         "union-dotted / type-qualified case, bare pattern",
-        "an assembly union case folds opaque (Q1) and is not a static member of its type \
-         in the entity model, so the type-qualified reading defers the same way",
-    ),
-    (
-        "rqa-dotted / required-qualified case, expression",
-        "an assembly union case folds opaque (Q1) even when RQA makes the qualified \
-         channel the ONLY one — the sharpest availability edge of the opaque-case fold",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         makes the manifest auto-open surface uncertain, so the type-qualified pattern head \
+         declines (`ManifestSurfaceUncertain`)",
     ),
     (
         "rqa-dotted / required-qualified case, bare pattern",
-        "an assembly union case folds opaque (Q1) even when RQA makes the qualified \
-         channel the ONLY one — the sharpest availability edge of the opaque-case fold",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         makes the manifest auto-open surface uncertain, so the type-qualified pattern head \
+         declines (`ManifestSurfaceUncertain`)",
     ),
     (
         "evict / earlier module-half value under a later cross-kind bump",

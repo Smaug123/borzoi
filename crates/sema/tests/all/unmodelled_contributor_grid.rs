@@ -39,6 +39,7 @@ use crate::common::{
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_oracle_harness::manifest::Manifest;
+use borzoi_sema::test_support::{DeclaringEntity, StructuralName, certified_expected};
 use borzoi_sema::{AssemblyEnv, Resolution, ResolvedProject, resolve_project_files};
 use rowan::TextRange;
 
@@ -257,6 +258,12 @@ enum Route {
     OpenTypeInherited,
     /// `open type` of a referenced type whose static the projection drops.
     OpenTypeDropped,
+    /// `open type` of a referenced type the probe file augments with the
+    /// static: FCS opens the extension members in scope for the type.
+    OpenTypeSourceExtension,
+    /// `open type` of a referenced type a referenced `[<AutoOpen>]` module
+    /// augments with the static, in scope through an `open`.
+    OpenTypeAssemblyExtension,
     /// A constructible type of the name.
     ConstructibleType,
     /// A record of the name that a `StructAttribute` spelled through an
@@ -329,7 +336,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 70] = [
+    const ALL: [Route; 72] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -375,6 +382,8 @@ impl Route {
         Route::OpenTypeDeclared,
         Route::OpenTypeInherited,
         Route::OpenTypeDropped,
+        Route::OpenTypeSourceExtension,
+        Route::OpenTypeAssemblyExtension,
         Route::ConstructibleType,
         Route::AutoOpenAliasedStructRecord,
         Route::AliasedStructRecord,
@@ -720,6 +729,14 @@ impl Route {
                 vec![],
                 "module GridProbe\n@OWN\ntype GridS = StructAttribute\n[<GridS>]\ntype @NAME = { GridF: int }\n@USE\n",
             ),
+            Route::OpenTypeSourceExtension => (
+                vec![],
+                "module GridProbe\n@OWN\ntype GridFix.Plain with\n    @STATIC\nopen type GridFix.Plain\n@USE\n",
+            ),
+            Route::OpenTypeAssemblyExtension => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFix\nopen type GridFix.Plain2\n@USE\n",
+            ),
             Route::ConstructibleType => (vec![], "module GridProbe\n@OWN\n@CTOR\n@USE\n"),
             Route::ConstructibleAbbrev => (vec![], "module GridProbe\n@OWN\n@OBJ\n@USE\n"),
             Route::GenericClassThenUnion => (
@@ -932,13 +949,8 @@ fn cells(fixture: &'static Path) -> Vec<Cell> {
                     label: format!("{kind:?} / {route:?} / {use_:?}"),
                     files,
                     probe: probe.expect("every probe template has a use"),
-                    // FSharp.Core's union cases are not folded into the
-                    // implicit surface, so its unshadowed cells decline.
-                    // A union case heading a dotted path is not committed
-                    // either.
-                    control: route.adds_nothing()
-                        && kind != Kind::ImplicitCase
-                        && !(use_ == Use::Head && kind.is_case()),
+                    // A union case heading a dotted path is not committed.
+                    control: route.adds_nothing() && !(use_ == Use::Head && kind.is_case()),
                     refs: vec![fixture],
                     clean: None,
                     shadowed: !route.adds_nothing(),
@@ -1015,6 +1027,34 @@ pub(crate) fn agrees(
             };
             paths[file_idx].file_name() == decl.file.file_name()
                 && (usize::from(range.start()), usize::from(range.end())) == (decl.start, decl.end)
+        }
+        Resolution::UnionCase { union, case } => {
+            let entity = env.entity(union);
+            let Some(path) = &u.declaring_path else {
+                return false;
+            };
+            let structural = StructuralName {
+                declaring: DeclaringEntity {
+                    namespace: u
+                        .declaring_namespace
+                        .as_deref()
+                        .map(|ns| ns.split('.').map(str::to_string).collect())
+                        .unwrap_or_default(),
+                    path: path.clone(),
+                    is_constructor: false,
+                },
+                leaf: u.name.clone(),
+                leaf_arity: None,
+            };
+            let ours = format!(
+                "{}.{}",
+                env.entity_full_name(union),
+                env.union_case_name(union, case)
+            );
+            u.decl.is_none()
+                && u.kind.as_deref() == Some("unioncase")
+                && u.assembly.as_deref() == Some(entity.assembly.name.as_str())
+                && certified_expected(env, res, &structural).as_deref() == Some(ours.as_str())
         }
         Resolution::Entity(_) | Resolution::Member { .. } => {
             let Some(full_name) = &u.full_name else {
@@ -1182,8 +1222,10 @@ fn grade(all: &[Cell], manifest: &str, test: &str) {
             None => {
                 if cell.control {
                     failures.push(format!(
-                        "  {} [MUST COMMIT]\n    FCS:  {rendered}\n    files: {:?}",
-                        cell.label, cell.files
+                        "  {} [MUST COMMIT]\n    FCS:  {rendered}\n    ours: {:?}\n    files: {:?}",
+                        cell.label,
+                        proj.file(probe_idx).decline_site(cell.probe),
+                        cell.files
                     ));
                 }
                 "decline"

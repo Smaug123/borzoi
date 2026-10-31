@@ -204,37 +204,33 @@ let value = 1
 }
 
 /// A **bare** name no scope entry binds, though an assembly surface F# opens
-/// with no source `open` supplies it, names that: `Some` and `None` are cases
-/// of the implicitly opened `Microsoft.FSharp.Core`, which sema folds no entry
-/// for, in expression and pattern position alike. Recorded at the name, since a
-/// bare name is the whole of its own path.
+/// with no source `open` supplies it, names that: `MatchFailureException` is an
+/// exception of the implicitly opened `Microsoft.FSharp.Core`, whose exceptions
+/// sema folds no entry for (its union cases it does fold — `Some` beside it
+/// commits). Recorded at the name, since a bare name is the whole of its own
+/// path.
 #[test]
-fn an_implicitly_opened_union_case_names_the_surface_sema_does_not_fold() {
+fn an_implicitly_opened_exception_names_the_surface_sema_does_not_fold() {
     let src = "\
 module DeclineCase
 
+let e = MatchFailureException (\"f\", 1, 2)
 let o = Some 1
-let n =
-    match o with
-    | Some x -> x
-    | None -> 0
 ";
     let resolved = resolve_in(src, &fsharp_core_env());
-    let unfolded = Some(DeclineSite {
-        cause: DeclineCause::ImplicitSurfaceUnfolded,
-        tier: DeclineTier::PreWalk,
-    });
-    for (context, needle) in [
-        ("= Some 1", "Some"),
-        ("| Some x", "Some"),
-        ("| None", "None"),
-    ] {
-        assert_eq!(
-            site_at(&resolved, src, context, needle),
-            unfolded,
-            "{needle} in {context:?}"
-        );
-    }
+    assert_eq!(
+        site_at(
+            &resolved,
+            src,
+            "= MatchFailureException",
+            "MatchFailureException"
+        ),
+        Some(DeclineSite {
+            cause: DeclineCause::ImplicitSurfaceUnfolded,
+            tier: DeclineTier::PreWalk,
+        }),
+    );
+    assert_eq!(site_at(&resolved, src, "= Some 1", "Some"), None);
 }
 
 /// An entry an explicit `open` put in scope **declining** names why the open

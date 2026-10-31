@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::{TextRange, TextSize};
 
-use borzoi_assembly::EntityKind;
+use borzoi_assembly::{EntityKind, UnionCases};
 
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
@@ -253,24 +253,190 @@ impl<'a> Resolver<'a> {
         // The members the projection dropped are statics FCS still opens, by
         // names the entries above do not list. An accessor's IL name carries
         // its property's.
+        let dropped = self
+            .assemblies
+            .entity(handle)
+            .skipped_members
+            .iter()
+            .map(|m| {
+                let name = m.name.as_str();
+                ["get_", "set_", "add_", "remove_"]
+                    .iter()
+                    .find_map(|p| name.strip_prefix(p))
+                    .unwrap_or(name)
+                    .to_string()
+            });
         let dropped = Contribution {
-            values: self
-                .assemblies
-                .entity(handle)
-                .skipped_members
-                .iter()
-                .map(|m| {
-                    let name = m.name.as_str();
-                    ["get_", "set_", "add_", "remove_"]
-                        .iter()
-                        .find_map(|p| name.strip_prefix(p))
-                        .unwrap_or(name)
-                        .to_string()
-                })
-                .collect(),
+            values: dropped.collect(),
             ..Contribution::default()
         };
         self.push_contribution(&dropped, open_pos);
+    }
+
+    /// What an `open type` of `handle` brings beside its own statics
+    /// (`AddStaticContentOfTypeToNameEnv`), after them: its nested types, and
+    /// the extension members in scope for it — the project's own
+    /// augmentations and any referenced assembly's, keyed by name alone.
+    pub(super) fn open_type_unlisted(&mut self, handle: EntityHandle, open_pos: u32) {
+        let mut beside = Contribution {
+            values: self
+                .assemblies
+                .children(handle)
+                .iter()
+                .map(|&c| self.assemblies.entity(c).name.clone())
+                .collect(),
+            ..Contribution::default()
+        };
+        let entity = self.assemblies.entity(handle);
+        let target = entity.name.split('`').next().unwrap_or(&entity.name);
+        let source = entity.source_name.as_deref().unwrap_or(target);
+        for name in [target, source] {
+            beside.values.extend(
+                self.assemblies
+                    .augmentation_members_on(name)
+                    .into_iter()
+                    .map(str::to_string),
+            );
+            for statics in [
+                &self.preceding.extension_statics,
+                &self.own_extension_statics,
+            ] {
+                if let Some(names) = statics.get(name) {
+                    beside.values.extend(names.iter().cloned());
+                }
+            }
+        }
+        self.push_contribution(&beside, open_pos);
+    }
+
+    /// Push the union cases `open type T` brings into bare scope when `T` is a
+    /// union — both namespaces, as an `open` of its container would, and before
+    /// the statics (`AddStaticContentOfTypeToNameEnv` adds a type's static parts
+    /// ahead of its members, so a same-named static wins by position on both
+    /// sides). A `[<RequireQualifiedAccess>]` union contributes none: FCS adds
+    /// a referenced type's cases only when it is not RQA.
+    ///
+    /// A union whose cases cannot be listed — or that is not one we may act on
+    /// ([`AssemblyEnv::union_case_index`](crate::AssemblyEnv::union_case_index))
+    /// — hides names that may shadow any earlier case, so the open is treated
+    /// as opaque, as an `open type` of a target we cannot enumerate is.
+    pub(super) fn open_type_union_cases(&mut self, handle: EntityHandle, open_pos: u32) {
+        let entity = self.assemblies.entity(handle);
+        if entity.kind != EntityKind::Union || entity.is_require_qualified_access {
+            return;
+        }
+        let cases: Option<Vec<(String, Resolution)>> = match &entity.union_cases {
+            UnionCases::Known(names) => names
+                .iter()
+                .map(|name| {
+                    self.assemblies.union_case_index(handle, name).map(|case| {
+                        (
+                            name.clone(),
+                            Resolution::UnionCase {
+                                union: handle,
+                                case,
+                            },
+                        )
+                    })
+                })
+                .collect(),
+            UnionCases::Unknowable => None,
+        };
+        let Some(cases) = cases else {
+            self.opaque_value_open = true;
+            self.open_generation += 1;
+            return;
+        };
+        let generation = self.open_generation;
+        let entries: Vec<ScopeEntry> = cases
+            .into_iter()
+            .map(|(name, res)| {
+                let mut entry = ScopeEntry::opened(name, res, generation, open_pos);
+                entry.opened_case = true;
+                entry
+            })
+            .collect();
+        self.module_frame().entries.extend(entries);
+    }
+
+    /// Push the implicitly opened union cases
+    /// ([`AssemblyEnv::implicit_union_cases`](crate::AssemblyEnv::implicit_union_cases))
+    /// into the current frame at position 0 — `Some`, `None`, `Ok` and the rest,
+    /// which every file sees with no `open`.
+    ///
+    /// Called twice at the start of each top-level block, around the implicit
+    /// auto-open modules' statics, with `definite` selecting which half:
+    ///
+    /// - `true`, **before** the statics: the cases with a definite target. FCS
+    ///   folds a namespace's tycon tier before its `[<AutoOpen>]` modules, so a
+    ///   same-surface val of the name wins by position on both sides; and a
+    ///   definite case has no same-named rival on any other implicit surface.
+    /// - `false`, **after** the statics: the opaque ones. A case is opaque when
+    ///   its order against a same-named implicit name is not known, so it must
+    ///   shadow that name rather than let whichever was pushed last win — an
+    ///   opaque entry defers both positions, which is sound in every order.
+    pub(super) fn fold_implicit_union_cases(&mut self, definite: bool) {
+        let generation = self.open_generation;
+        let entries: Vec<ScopeEntry> = self
+            .assemblies
+            .implicit_union_cases()
+            .iter()
+            .filter_map(|case| {
+                let mut entry = match case.target {
+                    OpenFoldTarget::UnionCase { union, case: idx } if definite => {
+                        ScopeEntry::opened(
+                            case.name.clone(),
+                            Resolution::UnionCase { union, case: idx },
+                            generation,
+                            0,
+                        )
+                    }
+                    OpenFoldTarget::Opaque(cause) if !definite => {
+                        ScopeEntry::opened_declined(case.name.clone(), cause, generation, 0)
+                    }
+                    OpenFoldTarget::UnionCase { .. }
+                    | OpenFoldTarget::Opaque(_)
+                    | OpenFoldTarget::Member { .. }
+                    | OpenFoldTarget::Entity(_) => return None,
+                };
+                entry.opened_case = true;
+                Some(entry)
+            })
+            .collect();
+        self.module_frame().entries.extend(entries);
+    }
+
+    /// Whether a **constructible type** named `name` may hold FCS's unqualified
+    /// constructor slot at this use — which, in expression position, evicts a
+    /// same-named union case that an `open` (or the implicit fold) put in scope
+    /// before it (`AddPartsOfTyconRefToNameEnv`, latest write wins).
+    ///
+    /// A project type's slot is ordered at the use
+    /// ([`Self::bare_value_evicted`]); an *assembly* type's is answered here,
+    /// position-blind and name-keyed, over every assembly namespace this file
+    /// reads bare — each open reading in scope (the implicit opens among them)
+    /// and the enclosing namespace — and the surfaces F# opens with no reading
+    /// at all
+    /// ([`AssemblyEnv::implicit_surface_could_supply_slot_type`](crate::AssemblyEnv)).
+    ///
+    /// An opened assembly *module*'s nested types are not here because they are
+    /// entries already: the module fold pushes their names, and a later one
+    /// shadows the case by position.
+    ///
+    /// Position-blind, so a type that provably cannot reach the use still
+    /// declines it. That is availability only; the other direction would be a
+    /// wrong target.
+    pub(super) fn assembly_case_slot_contested(&self, name: &str) -> bool {
+        self.open_reading_prefixes()
+            .map(|(_, prefix)| prefix)
+            .chain(std::iter::once(self.enclosing_namespace()))
+            .any(|prefix| {
+                self.assemblies
+                    .namespace_could_supply_slot_type(prefix, name)
+            })
+            || self
+                .assemblies
+                .implicit_surface_could_supply_slot_type(name)
     }
 
     /// Collect one open-fold **group**'s assembly-side surfaces at path `gp`,
@@ -531,6 +697,9 @@ impl<'a> Resolver<'a> {
                         Ok(Resolution::Member { parent, idx })
                     }
                     (None, OpenFoldTarget::Entity(h)) => Ok(Resolution::Entity(h)),
+                    (None, OpenFoldTarget::UnionCase { union, case }) => {
+                        Ok(Resolution::UnionCase { union, case })
+                    }
                 };
                 let mut entry = match answer {
                     Ok(res) => ScopeEntry::opened(e.name.clone(), res, generation, open_pos),
@@ -2328,6 +2497,7 @@ impl<'a> Resolver<'a> {
         name: &str,
         constant_shadow_defers: bool,
     ) -> Result<&ScopeEntry, Option<DeclineCause>> {
+        let mut skipped_literal = false;
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
@@ -2377,7 +2547,30 @@ impl<'a> Resolver<'a> {
                 // *reference* — the name provably occupies the constructor
                 // namespace — just one with no committed target.
                 if entry.opened_case {
+                    // An applied head skips a maybe-literal value met first (an
+                    // applied literal pattern is illegal) — but FCS still binds
+                    // the literal there and reports the misuse, so an assembly
+                    // case found past one is not what FCS names. A project case
+                    // keeps the old exemption below; this one has no def to
+                    // tell a recovered buffer's intent by.
+                    if skipped_literal && matches!(entry.resolution, Resolution::UnionCase { .. }) {
+                        return Err(None);
+                    }
                     return Ok(entry);
+                }
+                // An opened entry that declines — one an open withdrew, a block's
+                // own declaration demoted — no longer says whether it is a case,
+                // and may be one shadowing everything earlier in the scan. A type
+                // name is the exception: it takes the value slot only, and never
+                // the constructor namespace.
+                if entry.from_open
+                    && entry.decline.is_some()
+                    && entry.decline != Some(DeclineCause::OpenedTypeName)
+                {
+                    return Err(entry.decline);
+                }
+                if entry.maybe_constant_pattern && !constant_shadow_defers {
+                    skipped_literal = true;
                 }
                 match self.case_classification(entry.resolution) {
                     Some(true) => return Ok(entry),
@@ -2448,6 +2641,8 @@ impl<'a> Resolver<'a> {
                 // the exported case-id set instead.
                 None => return Some(self.preceding.is_case_item(id)),
             },
+            // An assembly union case is a constructor case by construction.
+            Resolution::UnionCase { .. } => return Some(true),
             // An opened type static (`Member`, or `Deferred` for an overloaded one)
             // and any other in-scope resolution are definitely *not* constructor
             // cases — they are values, so member access applies (`Some(false)`).
@@ -4404,6 +4599,7 @@ impl<'a> Resolver<'a> {
             // entries; other kinds have no in-file value range to compare.
             Resolution::Entity(_)
             | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }
             | Resolution::Deferred(_)
             | Resolution::Unresolved => None,
         }

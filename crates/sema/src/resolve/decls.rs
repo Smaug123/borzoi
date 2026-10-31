@@ -910,7 +910,9 @@ impl<'a> Resolver<'a> {
                         // through the ordinary latest-wins `lookup`.
                         Some(handle) => {
                             let pos = u32::from(open.syntax().text_range().start());
-                            self.open_type_statics(handle, pos, true)
+                            self.open_type_union_cases(handle, pos);
+                            self.open_type_statics(handle, pos, true);
+                            self.open_type_unlisted(handle, pos);
                         }
                         // An in-project / project-shadowed / exotic target whose
                         // statics we cannot enumerate (or an abbreviation marker,

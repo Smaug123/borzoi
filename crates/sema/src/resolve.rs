@@ -126,6 +126,17 @@ pub fn resolve_file(
         if custom_operations::type_defn_renames_custom_operation(&defn) {
             r.contributions.declares_custom_operation_alias = true;
         }
+        if is_type_augmentation(&defn)
+            && let Some(target) = defn.long_id().and_then(|li| li.idents().last())
+        {
+            let target = id_text(&target).to_string();
+            let names = contributors::declared_identifiers(defn.syntax());
+            r.own_extension_statics
+                .entry(target.clone())
+                .or_default()
+                .extend(names.iter().cloned());
+            r.contributions.extension_statics.push((target, names));
+        }
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
             // A generic declaration of the name disqualifies an in-file
@@ -475,10 +486,26 @@ pub fn resolve_file(
         // `printfn` / `id` / operators resolve. Like every open these are
         // `from_open` and dropped by the per-block leak guard below; nested
         // modules see them through the live scope stack.
+        //
+        // The implicitly opened namespaces' own union cases (`Some`, `None`,
+        // `Ok`, …) fold around them: those with a definite target first, as
+        // FCS folds a namespace's tycon tier before its auto-open modules, and
+        // the opaque ones last, so a name whose order is unknown shadows rather
+        // than loses ([`Resolver::fold_implicit_union_cases`]).
+        //
+        // All of it goes *below* what the frame already holds: a later
+        // same-named `namespace N` block re-takes the bindings of the earlier
+        // ones, which FCS adds after its implicit opens, so they must keep
+        // winning over the seed.
+        let retained = r.module_frame().entries.len();
+        r.fold_implicit_union_cases(true);
         for ns in implicit_open_namespaces(r.assemblies) {
             // Implicit auto-opens precede every declaration: slot position 0.
             r.open_auto_open_modules_in(&ns, 0, true);
         }
+        r.fold_implicit_union_cases(false);
+        let seeded = r.module_frame().entries.len() - retained;
+        r.module_frame().entries.rotate_right(seeded);
         // …then what earlier files put in the root scope, and the block's
         // **own** enclosing namespace, which FCS opens implicitly as well
         // (`ImplicitlyOpenOwnNamespace`) — that is how a referenced assembly's
@@ -1892,6 +1919,7 @@ impl<'a> Resolver<'a> {
             opaque_dotted_open: false,
             recursive_module_active: false,
             contributions: FileContributions::default(),
+            own_extension_statics: HashMap::new(),
             rec_contribution: None,
             declares_core_attribute_alias: false,
             custom_operation_clauses: HashMap::new(),
@@ -2397,6 +2425,11 @@ pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
 /// ([`model::SigScreen::auto_open_type_containers`]). Resolving attribute
 /// identity properly is the fix; treating unrecognised attributes as
 /// possibly-auto-open would defer across ordinary code instead.
+/// The case screen a **signature** file hands later files: every identifier
+/// it spells. A signature declares and annotates and never evaluates, so this
+/// is a superset of the names it can put in bare scope — through whatever
+/// channel, an `[<AutoOpen>]` only the signature carries among them — and a
+/// later file commits no assembly union case of any of them.
 fn attrs_auto_open(attrs: impl Iterator<Item = AttributeList>) -> bool {
     attrs
         .flat_map(|list| list.attributes().collect::<Vec<_>>())

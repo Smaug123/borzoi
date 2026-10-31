@@ -14,7 +14,9 @@ use std::path::Path;
 use crate::common::{ensure_fsharp_core_dll, ensure_system_runtime_dll, runtime_project_state};
 use borzoi::handlers::definition::{entity_definition_document, member_definition_document};
 use borzoi::handlers::hover;
-use borzoi::handlers::hover::{entity_hover_label, member_hover_label};
+use borzoi::handlers::hover::{
+    assembly_union_case_hover_label, entity_hover_label, member_hover_label,
+};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::SemanticState;
 use borzoi::server::State;
@@ -633,6 +635,34 @@ fn union_case_entity_renders_as_a_case_of_its_union() {
         lines.next(),
         Some("in `Microsoft.FSharp.Core.Choice<'T1, 'T2>`")
     );
+    assert!(
+        body.contains("\n\nfrom FSharp.Core v"),
+        "expected an FSharp.Core provenance line, got:\n{body}"
+    );
+}
+
+/// A union case named by its union and position
+/// ([`borzoi_sema::Resolution::UnionCase`]) renders exactly as a carrier-backed
+/// case does — FSharp.Core's `Option` has no carrier for `Some` at all, since
+/// fsc compiles a union with one field-carrying case to a single class, so the
+/// case is reachable only this way.
+#[test]
+fn a_union_case_without_a_carrier_renders_as_a_case_of_its_union() {
+    let env = fsharp_core_env();
+    let option = env
+        .lookup_type(&ns(&["Microsoft", "FSharp", "Core"]), "Option", 1)
+        .expect("Option<'T> resolves");
+    assert!(
+        env.nested(option, "Some", 1).is_none(),
+        "the premise: `Some` has no carrier class"
+    );
+    let some = env
+        .union_case_index(option, "Some")
+        .expect("Option declares Some");
+    let body = assembly_union_case_hover_label(&env, option, some);
+    let mut lines = body.split("\n\n");
+    assert_eq!(lines.next(), Some("`union case Some`"));
+    assert_eq!(lines.next(), Some("in `Microsoft.FSharp.Core.Option<'T>`"));
     assert!(
         body.contains("\n\nfrom FSharp.Core v"),
         "expected an FSharp.Core provenance line, got:\n{body}"

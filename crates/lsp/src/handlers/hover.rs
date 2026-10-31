@@ -44,7 +44,8 @@ use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, DefKind, EntityHandle, InferredFile, MemberIndex, ProjectItems, Resolution,
-    ResolvedFile, ResolvedProject, SemanticClass, SyntaxRecovery, Ty, infer_file, resolve_file,
+    ResolvedFile, ResolvedProject, SemanticClass, SyntaxRecovery, Ty, UnionCaseIndex, infer_file,
+    resolve_file,
 };
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use rowan::TextRange;
@@ -319,7 +320,10 @@ fn project_hover(
         // local/value renders its inferred type. The `resolved`/`parses` handles
         // above are an `Arc` + owned clone, so `semantic`/`workspace` are free to
         // re-borrow here — the same discipline `project_definition` uses.
-        let body = if matches!(res, Resolution::Entity(_) | Resolution::Member { .. }) {
+        let body = if matches!(
+            res,
+            Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. }
+        ) {
             hover_body(semantic, &resolved, file, res, &env, None)
         } else {
             let ty = file
@@ -444,6 +448,13 @@ fn hover_body(
                 documentation: documentation(semantic, env, DocTarget::Member { parent, idx }),
             })
         }
+        // No definition document: the pickle records where the *union* is
+        // declared, not the case, and naming the union's line as the case's
+        // would be a confident wrong answer.
+        Resolution::UnionCase { union, case } => Some(HoverBody {
+            signature: assembly_union_case_hover_label(env, union, case),
+            documentation: None,
+        }),
         Resolution::Deferred(_) | Resolution::Unresolved => None,
     }
 }
@@ -715,6 +726,27 @@ fn union_case_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
         entity.obsolete.as_ref(),
         entity.experimental.as_ref(),
     )
+}
+
+/// Hover body for a [`Resolution::UnionCase`] — a case named by its union and
+/// its position in the published case list, which every case has whether or
+/// not fsc gave it a carrier class (a nullary case, and every case of a union
+/// fsc compiles to one class, `Option`'s among them, have none). The same
+/// rendering as `union_case_hover_label`, for the same reasons: no payload,
+/// and no case-level `[<Obsolete>]`, which fsc puts on a maker method the
+/// projection does not carry. The union's own markers do not describe the
+/// case, so none are shown.
+pub fn assembly_union_case_hover_label(
+    env: &AssemblyEnv,
+    union: EntityHandle,
+    case: UnionCaseIndex,
+) -> String {
+    let head = code_span(&format!(
+        "union case {}",
+        format_fsharp_name(env.union_case_name(union, case))
+    ));
+    let context = format!("in {}", code_span(&entity_fqn(env, union)));
+    assemble_body(head, Some(context), &env.entity(union).assembly, None, None)
 }
 
 /// The union a case carrier is nested in — the last entity before `handle` on

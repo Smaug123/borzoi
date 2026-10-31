@@ -117,6 +117,7 @@ fn resolution_kind(resolution: Resolution) -> &'static str {
         Resolution::Item(_) => "item",
         Resolution::Entity(_) => "entity",
         Resolution::Member { .. } => "member",
+        Resolution::UnionCase { .. } => "union-case",
         Resolution::Deferred(_) => "deferred",
         Resolution::Unresolved => "unresolved",
     }
@@ -206,7 +207,7 @@ fn declaration_anchor(
             let (file_idx, def) = resolved.item_def(target_res)?;
             Some((file_idx, def.range))
         }
-        Resolution::Entity(_) | Resolution::Member { .. } => None,
+        Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => None,
         Resolution::Deferred(_) | Resolution::Unresolved => None,
     }
 }
