@@ -1471,10 +1471,8 @@ impl DeclineCensus {
     /// the bulk of the plottable metric namespace, but that is a *rendering*
     /// cost and belongs to the dashboard, which can collapse a series that is
     /// zero across all of history reversibly and without claiming anything
-    /// about the resolver. Retiring them here is neither: each retired key
-    /// needs a permanent `retired_statistics` entry (see
-    /// `docs/continuous-measurements.md`), so a narrowing that later proves
-    /// wrong cannot be quietly undone.
+    /// about the resolver. Narrowing them here is neither: it claims the
+    /// dropped pairs cannot occur, and ends their series.
     pub fn pairs(&self) -> BTreeMap<&'static str, BTreeMap<&'static str, usize>> {
         DeclineCause::ALL
             .iter()
@@ -3044,13 +3042,11 @@ enum GeneratorSelection {
 /// The metric namespace this measurement publishes: one plottable metric per
 /// nested number, named by its dotted path.
 ///
-/// **Removing or renaming a field here retires a metric**, and the recorder
-/// refuses the next observation unless the generator declares it — a key that
-/// vanishes silently leaves the dashboard offering it with a stale value
-/// reading as "Latest", which is indistinguishable from a run that failed to
-/// measure. Adding one is free; the chart simply starts where the metric does.
-/// See "Retiring a metric" in `docs/continuous-measurements.md` for the
-/// `retired_statistics` declaration to add in the same commit.
+/// **Removing or renaming a field here retires a metric**, which the dashboard
+/// labels as retired from the next observation on; adding one starts its chart
+/// where the metric starts. Either moves `manifests/generator_metrics.txt`,
+/// which `the_metric_namespace_is_pinned` checks, so the change is visible in
+/// review.
 #[derive(Debug, Serialize)]
 struct GeneratorStatistics {
     projects: CorpusProjectCounts,
@@ -7390,6 +7386,161 @@ mod tests {
             )
             .expect("valid JSON");
             assert_all_numbers(&json["statistics"], "");
+        }
+    }
+
+    /// The metric namespace this generator publishes, one line per metric.
+    ///
+    /// A metric that stops being emitted shows on the dashboard as retired, so
+    /// a deliberate drop needs no ceremony beyond this file's diff. What the
+    /// pin catches is the accidental one, which is otherwise invisible until
+    /// someone wonders where a chart went.
+    #[test]
+    fn the_metric_namespace_is_pinned() {
+        let emitted = generator_metric_paths(&CorpusSummary::new(0));
+        let manifest = borzoi_oracle_harness::manifest::Manifest::from_entries(emitted)
+            .expect("metric paths are manifest entries");
+        borzoi_oracle_harness::manifest::check(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("manifests/generator_metrics.txt"),
+            &manifest,
+            "BORZOI_UPDATE_MANIFESTS=1 cargo test -p borzoi-corpus-diff --lib the_metric_namespace_is_pinned",
+        );
+    }
+
+    fn generator_metric_paths(summary: &CorpusSummary) -> std::collections::BTreeSet<String> {
+        let json: serde_json::Value = serde_json::from_str(
+            &render_generator_summary(summary, &generator_settings()).expect("render"),
+        )
+        .expect("valid JSON");
+        borzoi_stats::metric_paths(&json["statistics"])
+    }
+
+    fn every_deferral_cause() -> Vec<DeferralCause> {
+        let guards = DeclineCause::ALL.iter().flat_map(|&cause| {
+            DeclineTier::ALL
+                .iter()
+                .map(move |&tier| DeferralCause::Guard(DeclineSite { cause, tier }))
+        });
+        let shapes = DeferralShape::ALL.iter().map(|&s| DeferralCause::Shape(s));
+        guards
+            .chain(shapes)
+            .chain([DeferralCause::Unexplained])
+            .collect()
+    }
+
+    fn every_hover_type() -> Vec<handler_diff::HoverType> {
+        handler_diff::SymbolClass::ALL
+            .iter()
+            .flat_map(|&class| {
+                handler_diff::TypeVerdict::all()
+                    .into_iter()
+                    .map(move |verdict| handler_diff::HoverType { class, verdict })
+            })
+            .collect()
+    }
+
+    fn comparison_strategy() -> impl Strategy<Value = Comparison> {
+        (
+            (0..3usize, 0..4usize, 0..4usize, 0..4usize),
+            prop::collection::vec(prop::sample::select(every_deferral_cause()), 0..6),
+            prop::collection::vec(prop::sample::select(every_deferral_cause()), 0..6),
+            (0..3usize, 0..3usize),
+        )
+            .prop_map(
+                |((files, considered, matches, deferrals), project, assembly, skipped)| {
+                    let mut comparison = Comparison {
+                        files_compared: files,
+                        uses_considered: considered,
+                        assembly_uses_considered: considered / 2,
+                        matches: matches.min(considered),
+                        assembly_matches: matches.min(considered / 2),
+                        deferrals,
+                        skipped_uses: SkippedUses {
+                            definitions: skipped.0,
+                            zero_width: skipped.1,
+                            ..SkippedUses::default()
+                        },
+                        ..Comparison::default()
+                    };
+                    for cause in project {
+                        comparison.project_decline_census.observe(cause);
+                    }
+                    for cause in assembly {
+                        comparison.assembly_decline_census.observe(cause);
+                    }
+                    comparison
+                },
+            )
+    }
+
+    fn assets_status(index: usize) -> ProjectAssetsStatus {
+        let path = PathBuf::from("/obj/project.assets.json");
+        match index {
+            0 => ProjectAssetsStatus::NotChecked,
+            1 => ProjectAssetsStatus::ProjectDirectoryUnavailable,
+            2 => ProjectAssetsStatus::DotnetRootUnavailable { path },
+            3 => ProjectAssetsStatus::Missing { path },
+            4 => ProjectAssetsStatus::Resolved {
+                path,
+                package_dlls: 1,
+                framework_dlls: 1,
+                project_refs: 0,
+            },
+            _ => ProjectAssetsStatus::ResolutionFailed {
+                path,
+                message: "boom".into(),
+            },
+        }
+    }
+
+    proptest! {
+        /// Which metrics a run publishes is a function of the code alone. A
+        /// map keyed by what occurred, or a ratio that turns `null` on an
+        /// empty denominator, makes it depend on the run instead — and then a
+        /// metric vanishes from one observation with nothing in the diff to
+        /// say so, which [`the_metric_namespace_is_pinned`] cannot see because
+        /// it renders only one run.
+        #[test]
+        fn the_metric_namespace_does_not_depend_on_the_run(
+            discovered in 0..4usize,
+            visited in 0..4usize,
+            skips in prop::collection::vec(0..3usize, 0..3),
+            assets in prop::collection::vec(0..6usize, 0..4),
+            discovery_errors in prop::collection::vec(0..3usize, 0..3),
+            comparisons in prop::collection::vec(comparison_strategy(), 0..3),
+            hovers in prop::collection::vec(prop::sample::select(every_hover_type()), 0..6),
+        ) {
+            let mut summary = CorpusSummary::new(discovered);
+            for _ in 0..visited {
+                summary.record_project_visited();
+            }
+            for reason in skips {
+                summary.record_skip("/A.fsproj", format!("reason {reason}"));
+            }
+            for status in assets {
+                summary.record_project_assets("/A.fsproj", assets_status(status));
+            }
+            summary.record_project_discovery_errors(discovery_errors.into_iter().map(|i| {
+                ProjectDiscoveryError {
+                    path: PathBuf::from("/corpus"),
+                    operation: [
+                        ProjectDiscoveryOperation::ReadDir,
+                        ProjectDiscoveryOperation::ReadEntry,
+                        ProjectDiscoveryOperation::FileType,
+                    ][i],
+                    message: "denied".into(),
+                }
+            }));
+            for comparison in &comparisons {
+                summary.record_comparison(comparison);
+            }
+            for grade in hovers {
+                summary.hover_types.record(grade);
+            }
+            prop_assert_eq!(
+                generator_metric_paths(&summary),
+                generator_metric_paths(&CorpusSummary::new(0))
+            );
         }
     }
 
