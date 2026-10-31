@@ -37,6 +37,10 @@ fn write_unrestored_project(tag: &str) -> std::path::PathBuf {
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-nuget-{tag}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
+    // By its real path: the on-demand restore declines a project whose
+    // directory is reached through a symlink, and the temporary directory is
+    // one on macOS.
+    let root = std::fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         format!(
@@ -188,6 +192,149 @@ fn on_demand_restore_is_off_by_default() {
         !env.has_namespace(&namespace(&["Microsoft", "FSharp", "Core"])),
         "with the opt-in off, an assets-absent project must not restore (env len = {})",
         env.len()
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// An un-restored `App` whose only route to `FSharp.Core` is a
+/// `<ProjectReference>` to `lib/Lib.fsproj`, which pins it: `App`'s env has
+/// `Microsoft.FSharp.Core` exactly when the restore kept the reference. Laid out
+/// under `<root>/real`, with `<root>/link` a symlink to it. Returns the real
+/// `<root>`; the caller removes it.
+#[cfg(unix)]
+fn write_unrestored_pair_behind_a_symlink(tag: &str) -> std::path::PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("borzoi-nuget-{tag}-{unique}"));
+    let real = root.join("real");
+    std::fs::create_dir_all(real.join("lib")).unwrap();
+    // By its real path, so `<root>/real` is the only symlink-free spelling.
+    let root = std::fs::canonicalize(&root).unwrap();
+    let real = root.join("real");
+    std::fs::write(
+        real.join("App.fsproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="App.fs" />
+    <ProjectReference Include="lib/Lib.fsproj" />
+  </ItemGroup>
+</Project>
+"#,
+    )
+    .unwrap();
+    std::fs::write(real.join("App.fs"), "module App\n").unwrap();
+    std::fs::write(
+        real.join("lib").join("Lib.fsproj"),
+        format!(
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="{FSHARP_CORE_VERSION}" />
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(real.join("lib").join("Lib.fs"), "module Lib\n").unwrap();
+    std::os::unix::fs::symlink(&real, root.join("link")).unwrap();
+    root
+}
+
+/// Whether the env `state` serves for `fsproj` has (`System`, the framework)
+/// and (`Microsoft.FSharp.Core`, flowed through the project reference).
+fn framework_and_flowed(state: &mut State, fsproj: &std::path::Path) -> (bool, bool) {
+    let dotnet_root = state.workspace.dotnet_root_for_project(fsproj);
+    assert!(
+        dotnet_root.is_some(),
+        "test needs a resolvable dotnet_root — run under `nix develop`"
+    );
+    let tfm = state.workspace.served_tfm_for_project(fsproj);
+    let env = state.semantic.assembly_env_for_project(
+        fsproj,
+        dotnet_root.as_deref(),
+        &tfm,
+        &state.workspace,
+    );
+    (
+        env.has_namespace(&namespace(&["System"])),
+        env.has_namespace(&namespace(&["Microsoft", "FSharp", "Core"])),
+    )
+}
+
+/// A project named through a symlinked directory must not be served an env
+/// that silently lacks what its `<ProjectReference>` brings. MSBuild runs a
+/// project's targets with the process's working directory set to the project's
+/// directory, which the OS reports by its real path, so `dotnet restore` of
+/// that spelling resolves the reference by a spelling the evaluation never
+/// used, and drops it: the restored framework would be there, the flowed
+/// package not. So the restore declines, and nothing is claimed.
+#[cfg(unix)]
+#[test]
+fn a_symlink_spelt_project_never_loses_its_references_packages() {
+    let root = write_unrestored_pair_behind_a_symlink("symlink-spelt");
+    let mut state = State::default();
+    state.semantic.set_on_demand_restore_enabled(true);
+
+    let (framework, flowed) =
+        framework_and_flowed(&mut state, &root.join("link").join("App.fsproj"));
+    assert!(
+        !framework || flowed,
+        "an env with the framework but without the package `lib/Lib.fsproj` \
+         brings has lost the project reference"
+    );
+    assert!(!framework, "the restore declines a symlinked directory");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// The control for the two symlink tests: by its real path, the fixture's
+/// reference survives the restore and brings its package.
+#[cfg(unix)]
+#[test]
+fn by_its_real_path_the_reference_brings_its_package() {
+    let root = write_unrestored_pair_behind_a_symlink("symlink-control");
+    let mut state = State::default();
+    state.semantic.set_on_demand_restore_enabled(true);
+
+    let (framework, flowed) =
+        framework_and_flowed(&mut state, &root.join("real").join("App.fsproj"));
+    assert!(
+        framework && flowed,
+        "framework: {framework}, flowed package: {flowed}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// One file, two spellings: whatever the symlinked spelling is served must not
+/// decide what the real one is. The real spelling restores with its reference
+/// whichever spelling was asked about first.
+#[cfg(unix)]
+#[test]
+fn the_real_spelling_keeps_its_reference_after_a_symlinked_one() {
+    let root = write_unrestored_pair_behind_a_symlink("symlink-first");
+    let mut state = State::default();
+    state.semantic.set_on_demand_restore_enabled(true);
+
+    framework_and_flowed(&mut state, &root.join("link").join("App.fsproj"));
+    let (framework, flowed) =
+        framework_and_flowed(&mut state, &root.join("real").join("App.fsproj"));
+    assert!(
+        framework && flowed,
+        "by its real path the project restores with its reference \
+         (framework: {framework}, flowed package: {flowed})"
     );
 
     std::fs::remove_dir_all(&root).ok();
