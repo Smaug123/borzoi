@@ -64,13 +64,6 @@ impl CeOps {
 pub(super) const CUSTOM_OPERATION_SPELLINGS: &[&str] =
     &["CustomOperation", "CustomOperationAttribute"];
 
-/// Whether `names` holds a type F# may find for an attribute written
-/// `spelling`: one spelled so, or spelled so with `Attribute` after it, the
-/// suffix F# also looks up (`[<CO>]` finds `COAttribute`).
-pub(super) fn spelling_may_name(names: &std::collections::HashSet<String>, spelling: &str) -> bool {
-    names.contains(spelling) || names.contains(&format!("{spelling}Attribute"))
-}
-
 /// Whether `defn` declares a type spelled like `CustomOperationAttribute`, or
 /// an abbreviation that mentions it: after one, an attribute spelled any way
 /// may be a custom operation.
@@ -672,15 +665,19 @@ impl Resolver<'_> {
     }
 
     /// Whether an attribute written `spelling` may be `[<CustomOperation>]`:
-    /// it is spelled so, or some file so far or a referenced assembly may
-    /// rename it.
+    /// it is spelled so, or the
+    /// [`core_attribute_spellings_trusted`](super::contributors::core_attribute_spellings_trusted)
+    /// rule cannot trust it over `CustomOperationAttribute`'s renames — some
+    /// file so far declares one, or a referenced assembly may, under any name
+    /// F# looks the spelling up as.
     pub(super) fn may_be_custom_operation(&self, spelling: &str) -> bool {
-        let aliases = self.assemblies.custom_operation_aliases();
         CUSTOM_OPERATION_SPELLINGS.contains(&spelling)
-            || aliases.certain
-            || spelling_may_name(&aliases.possible, spelling)
-            || self.preceding.custom_operation_alias_declared
-            || self.contributions.declares_custom_operation_alias
+            || !super::contributors::core_attribute_spellings_trusted(
+                self.preceding.custom_operation_alias_declared
+                    || self.contributions.declares_custom_operation_alias,
+                self.assemblies.custom_operation_aliases(),
+                [spelling],
+            )
     }
 
     /// The def a resolution into this file names.
