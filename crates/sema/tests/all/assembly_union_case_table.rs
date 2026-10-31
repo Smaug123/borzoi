@@ -1072,6 +1072,22 @@ const ROWS: &[Row] = &[
         ],
     },
     Row {
+        label: "a join's range variables bound by a tuple",
+        decls: &[],
+        src: "module UcR30c\n\
+              let q =\n    query {\n        for i in [ 1 ] do\n        join (Some, y) in [ (1, 1) ] on (i = y)\n        select Some\n    }\n\
+              let s = Some 1\n",
+        probes: &[
+            defer(
+                "Some",
+                1,
+                "proj:Some:member",
+                "a query range variable is a value binder the walk does not intern",
+            ),
+            commit("Some", 2, SOME),
+        ],
+    },
+    Row {
         label: "an auto-open type abbreviation borrowing statics",
         decls: &[],
         src: "namespace UcR31\n\

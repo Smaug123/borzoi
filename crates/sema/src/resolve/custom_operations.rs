@@ -345,9 +345,10 @@ fn string_literal_text(tok: &SyntaxToken) -> Option<Option<String>> {
 struct ClauseIdentifiers {
     /// Every identifier a clause's translation may read by name alone.
     read: Vec<SyntaxToken>,
-    /// The identifiers a clause applies that may bind a range variable, which
-    /// the walk does not intern: every one a join applies (`join v in …`),
-    /// its condition word among them, and every one after an `into`
+    /// The identifiers that may bind a range variable, which the walk does
+    /// not intern: every one in what a join applies on its pattern side
+    /// (`join (a, b) in …`), the identifiers its sources side applies (the
+    /// condition word among them), and every one after an `into`
     /// (`groupBy k into g`).
     range_variables: Vec<SyntaxToken>,
 }
@@ -439,9 +440,7 @@ fn clause_spine(e: &Expr, out: &mut ClauseIdentifiers) {
     loop {
         match head {
             Expr::App(app) if !app.is_infix() => {
-                if let Some(Expr::Ident(i)) = app.arg() {
-                    args.extend(i.ident());
-                }
+                args.extend(app.arg());
                 match app.func() {
                     Some(f) => head = f,
                     None => break,
@@ -451,15 +450,26 @@ fn clause_spine(e: &Expr, out: &mut ClauseIdentifiers) {
                 joins = true;
                 // The sources side applies the condition word, and the range
                 // variable an `into` binds.
+                let mut sources_args = Vec::new();
                 let mut sources = j.rhs();
                 while let Some(Expr::App(app)) = sources {
                     if app.is_infix() {
                         break;
                     }
-                    if let Some(Expr::Ident(i)) = app.arg() {
-                        out.range_variables.extend(i.ident());
-                    }
+                    sources_args.extend(app.arg());
                     sources = app.func();
+                }
+                sources_args.reverse();
+                let mut after_into = false;
+                for arg in sources_args {
+                    match &arg {
+                        Expr::Ident(i) => {
+                            after_into |= i.ident().is_some_and(|t| &*id_text(&t) == "into");
+                            out.range_variables.extend(i.ident());
+                        }
+                        _ if after_into => out.range_variables.extend(identifiers(&arg)),
+                        _ => {}
+                    }
                 }
                 match j.lhs() {
                     Some(l) => head = l,
@@ -483,20 +493,38 @@ fn clause_spine(e: &Expr, out: &mut ClauseIdentifiers) {
         }
     }
     // Peeled outermost first: back into source order, so `into` precedes
-    // what it binds.
+    // what it binds. A join's pattern side and whatever follows an `into`
+    // may bind through any pattern (`join (a, b) in …`), so every
+    // identifier in them counts.
     args.reverse();
     let mut after_into = false;
     for arg in args {
-        if &*id_text(&arg) == "into" {
-            out.read.push(arg);
+        let ident = match &arg {
+            Expr::Ident(i) => i.ident(),
+            _ => None,
+        };
+        if let Some(tok) = &ident
+            && &*id_text(tok) == "into"
+        {
+            out.read.push(tok.clone());
             after_into = true;
-        } else if joins {
-            out.read.push(arg.clone());
-            out.range_variables.push(arg);
-        } else if after_into {
-            out.range_variables.push(arg);
+            continue;
+        }
+        if joins {
+            out.read.extend(ident);
+        }
+        if joins || after_into {
+            out.range_variables.extend(identifiers(&arg));
         }
     }
+}
+
+/// Every identifier token under `e`.
+fn identifiers(e: &Expr) -> impl Iterator<Item = SyntaxToken> + use<> {
+    e.syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
 }
 
 /// The token of the name an expression applies or constructs from, for
