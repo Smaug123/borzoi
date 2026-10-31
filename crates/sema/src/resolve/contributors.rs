@@ -35,7 +35,7 @@ use super::decls::type_slot_class;
 use super::model::DeclineCause;
 use super::model::SlotClass;
 use super::state::{MarkReach, ScopeEntry};
-use super::{Resolver, abbrev_target_single_ident, attrs_auto_open};
+use super::{Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation};
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
 
@@ -49,9 +49,6 @@ pub(super) struct Contribution {
     /// Values that cannot be literals: they contest expression position only
     /// ([`MarkReach::Expression`]).
     pub(super) values: BTreeSet<String>,
-    /// Constructible types' names: they contest a bare use only
-    /// ([`MarkReach::Bare`]).
-    pub(super) type_names: BTreeSet<String>,
     pub(super) unlisted: bool,
 }
 
@@ -67,15 +64,11 @@ impl Contribution {
     pub(super) fn merge(&mut self, other: &Contribution) {
         self.names.extend(other.names.iter().cloned());
         self.values.extend(other.values.iter().cloned());
-        self.type_names.extend(other.type_names.iter().cloned());
         self.unlisted |= other.unlisted;
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.names.is_empty()
-            && self.values.is_empty()
-            && self.type_names.is_empty()
-            && !self.unlisted
+        self.names.is_empty() && self.values.is_empty() && !self.unlisted
     }
 }
 
@@ -232,6 +225,11 @@ impl Resolver<'_> {
                         if self.may_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
                             out.merge(&type_contribution(&defn));
                         }
+                        // An intrinsic augmentation's statics join its type's
+                        // surface, which an `[<AutoOpen>]` type folds.
+                        if is_type_augmentation(&defn) {
+                            out.values.extend(declared_identifiers(defn.syntax()));
+                        }
                     }
                 }
                 ModuleDecl::Exception(exn) => {
@@ -261,13 +259,14 @@ impl Resolver<'_> {
 
     /// The names a type definition itself puts in bare scope: its own name,
     /// if it is constructible and so takes the unqualified slot, and its union
-    /// cases.
+    /// cases. The name contests a dotted head too: the head reads types
+    /// through the walk's type tables, which hold no contributor's.
     fn type_names(&self, defn: &TypeDefn) -> Contribution {
         let mut out = Contribution::default();
         if type_slot_class(defn) != SlotClass::Keeps
             && let Some(name) = defn.long_id().and_then(|li| li.idents().last())
         {
-            out.type_names.insert(id_text(&name).to_string());
+            out.values.insert(id_text(&name).to_string());
         }
         for case in defn.syntax().descendants().filter_map(UnionCase::cast) {
             if let Some(name) = case.ident() {
@@ -295,15 +294,9 @@ impl Resolver<'_> {
         }
         let generation = self.open_generation;
         let marks: Vec<ScopeEntry> = contribution
-            .type_names
+            .values
             .iter()
-            .map(|name| (name, MarkReach::Bare))
-            .chain(
-                contribution
-                    .values
-                    .iter()
-                    .map(|name| (name, MarkReach::Expression)),
-            )
+            .map(|name| (name, MarkReach::Expression))
             .chain(
                 contribution
                     .names
@@ -392,10 +385,34 @@ impl Resolver<'_> {
     pub(super) fn type_group_contributions(&mut self, types: &TypeDefnsDecl) {
         let pos = u32::from(types.syntax().text_range().start());
         for defn in types.defns() {
+            let name = defn
+                .long_id()
+                .and_then(|li| li.idents().last())
+                .map(|t| id_text(&t).to_string());
             if self.may_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
                 let contribution = type_contribution(&defn);
                 self.push_contribution(&contribution, pos);
                 self.record_open_contribution(&contribution, false);
+                if let Some(name) = name {
+                    let mut path = self.container_path.clone();
+                    path.push(name);
+                    self.auto_open_type_paths.insert(path);
+                }
+            } else if is_type_augmentation(&defn)
+                && let Some(name) = name
+            {
+                // An intrinsic augmentation of an `[<AutoOpen>]` type extends
+                // the statics that type folds into its container.
+                let mut path = self.container_path.clone();
+                path.push(name);
+                if self.auto_open_type_paths.contains(&path) {
+                    let contribution = Contribution {
+                        values: declared_identifiers(defn.syntax()),
+                        ..Contribution::default()
+                    };
+                    self.push_contribution(&contribution, pos);
+                    self.record_open_contribution(&contribution, false);
+                }
             }
         }
     }
@@ -559,7 +576,7 @@ impl Resolver<'_> {
         if self.ce_depth == 0 {
             return None;
         }
-        let entry = self.lookup_bare_entry(name)?;
+        let entry = self.lookup_entry(name)?;
         (entry.from_open && entry.open_pos == 0)
             .then_some(DeclineCause::ComputationExpressionImplicit)
     }

@@ -127,14 +127,9 @@ pub(super) enum MarkReach {
     /// or exception case, an active-pattern case or a literal.
     Both,
     /// Expression position, bare or as a dotted head: the contributor
-    /// supplies a value that cannot be a literal, which never enters FCS's
-    /// pattern table.
+    /// supplies a value that cannot be a literal, or a constructible type,
+    /// neither of which enters FCS's pattern table.
     Expression,
-    /// A bare expression use only: the contributor is a constructible type,
-    /// whose name enters FCS's unqualified table for construction but never
-    /// its pattern table, and which a dotted head reaches through the type
-    /// namespace the walk models.
-    Bare,
 }
 
 impl ScopeEntry {
@@ -1348,6 +1343,10 @@ pub(super) struct Resolver<'a> {
     /// every written attribute name untrustworthy for those two
     /// ([`Resolver::attribute_spellings_trusted`]).
     pub(super) declares_core_attribute_alias: bool,
+    /// The same-file `[<AutoOpen>]` types, by container path and name, whose
+    /// intrinsic augmentations extend what they fold
+    /// ([`Resolver::type_group_contributions`]).
+    pub(super) auto_open_type_paths: HashSet<Vec<String>>,
     /// How many computation expressions the walk is inside
     /// ([`Resolver::computation_expression_decline`]).
     pub(super) ce_depth: usize,

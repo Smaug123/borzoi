@@ -1878,6 +1878,7 @@ impl<'a> Resolver<'a> {
             rec_contribution: None,
             declares_core_attribute_alias: false,
             ce_depth: 0,
+            auto_open_type_paths: HashSet::new(),
             rec_module_names: HashSet::new(),
             auto_open_type_shadow_names: HashMap::new(),
             anonymous_root: false,

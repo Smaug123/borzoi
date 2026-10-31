@@ -2340,7 +2340,7 @@ impl<'a> Resolver<'a> {
                     Some(MarkReach::Both) => {
                         return Err(Some(DeclineCause::UnmodelledContributor));
                     }
-                    Some(MarkReach::Bare | MarkReach::Expression) => continue,
+                    Some(MarkReach::Expression) => continue,
                     None => {}
                 }
                 // An opened entry that an unmodelled open could shadow with a *case*
@@ -2607,11 +2607,17 @@ impl<'a> Resolver<'a> {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
             if head_is_value {
-                match self.value_def_range(head) {
+                // A contributor mark sits where its contributor added the name.
+                let mark_pos = self
+                    .lookup_entry(head)
+                    .filter(|e| e.mark.is_some())
+                    .map(|e| rowan::TextSize::from(e.open_pos));
+                let value_pos = self.value_def_range(head).map(|vr| vr.start()).or(mark_pos);
+                match value_pos {
                     // A later value takes the qualifier: member access on the
                     // value — the intra-file fallback below resolves the head to
                     // it (M2c). An earlier value lost it to the type (M2d).
-                    Some(vr) if vr.start() > self.defs[type_id.index()].range.start() => {}
+                    Some(vr) if vr > self.defs[type_id.index()].range.start() => {}
                     Some(_) => {
                         self.record_type_qualifier(
                             first,
@@ -4628,8 +4634,21 @@ impl<'a> Resolver<'a> {
     /// one slot serves a bare use and a dotted head alike).
     pub(super) fn bare_value_evicted(&self, name: &str) -> Option<DeclineCause> {
         // No value to evict: whatever committed came from the type itself.
-        self.lookup_entry(name)
+        let entry = self
+            .lookup_entry(name)
             .filter(|e| !matches!(e.resolution, Resolution::Deferred(_)))?;
+        // A parameter or pattern local enters scope after every type that is
+        // in scope where it is bound — a type group's types enter ahead of
+        // its members' bodies, whatever their text order — so no type evicts
+        // it.
+        if let Resolution::Local(id) = entry.resolution
+            && matches!(
+                self.defs[id.index()].kind,
+                DefKind::Parameter | DefKind::PatternLocal
+            )
+        {
+            return None;
+        }
         match self.value_slot(name, true) {
             HeadSlot::Held => None,
             HeadSlot::Evicted => Some(DeclineCause::ValueEvicted),
@@ -4984,21 +5003,8 @@ impl<'a> Resolver<'a> {
     /// Filtering the latest match is equivalent to skipping and scanning on:
     /// generations only grow along push order and the walk meets entries
     /// newest-first, so everything past a stale match is at least as stale.
-    fn lookup_entry(&self, name: &str) -> Option<&ScopeEntry> {
+    pub(super) fn lookup_entry(&self, name: &str) -> Option<&ScopeEntry> {
         self.latest_entry(name)
-            .filter(|e| e.generation == self.open_generation)
-    }
-
-    /// [`Self::lookup`] for a **bare** expression use — the one position a
-    /// constructible type's name contests ([`MarkReach::Bare`]).
-    pub(super) fn lookup_bare(&self, name: &str) -> Option<Resolution> {
-        self.lookup_bare_entry(name).map(|entry| entry.resolution)
-    }
-
-    /// The entry [`Self::lookup_bare`] resolves to.
-    pub(super) fn lookup_bare_entry(&self, name: &str) -> Option<&ScopeEntry> {
-        self.latest_entry_noting_withdrawals(name, true)
-            .0
             .filter(|e| e.generation == self.open_generation)
     }
 
@@ -5008,29 +5014,20 @@ impl<'a> Resolver<'a> {
     /// rules). Exists so [`Self::head_entry_staled`] can distinguish "no entry
     /// at all" from "an entry the barrier staled".
     fn latest_entry(&self, name: &str) -> Option<&ScopeEntry> {
-        self.latest_entry_noting_withdrawals(name, false).0
+        self.latest_entry_noting_withdrawals(name).0
     }
 
     /// [`Self::latest_entry`], and whether the walk passed over an **opened**
     /// entry of the name because an [`opaque_value_open`](Self::opaque_value_open)
     /// is in scope — the one skip that withdraws a name the walk would
     /// otherwise have found. One walk, so the census
-    /// ([`Self::bare_value_decline`]) cannot disagree with the lookup. `bare`
-    /// says the name is used bare rather than as a dotted head, which only a
-    /// [`MarkReach::Bare`] mark distinguishes.
-    fn latest_entry_noting_withdrawals(
-        &self,
-        name: &str,
-        bare: bool,
-    ) -> (Option<&ScopeEntry>, bool) {
+    /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
+    fn latest_entry_noting_withdrawals(&self, name: &str) -> (Option<&ScopeEntry>, bool) {
         let mut withdrawn_by_opaque_open = false;
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
                     continue;
-                }
-                if entry.mark == Some(MarkReach::Bare) && !bare {
-                    continue; // a type's name, which a dotted head reads by type
                 }
                 if entry.pattern_only {
                     continue; // constructor namespace only — not a value here
@@ -5061,7 +5058,7 @@ impl<'a> Resolver<'a> {
     /// in scope binds at all is not attributed — an opaque `open` being live is
     /// no evidence that it is why *this* name found nothing.
     pub(super) fn bare_value_decline(&self, name: &str) -> Option<DeclineCause> {
-        let (entry, withdrawn_by_opaque_open) = self.latest_entry_noting_withdrawals(name, true);
+        let (entry, withdrawn_by_opaque_open) = self.latest_entry_noting_withdrawals(name);
         if withdrawn_by_opaque_open {
             return Some(DeclineCause::OpaqueOpen);
         }

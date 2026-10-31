@@ -834,7 +834,7 @@ impl<'a> Resolver<'a> {
     /// Resolve a **bare** name use, and where it declines, record which guard
     /// declined it if one did ([`Self::bare_value_decline`]).
     pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) {
-        if self.record_name_use(tok, allow_opened_type, true) {
+        if self.record_name_use(tok, allow_opened_type) {
             if let Some(cause) = self.bare_value_decline(&id_text(tok)) {
                 self.record_decline(tok.text_range(), DeclineSite::pre_walk(cause));
             }
@@ -857,12 +857,12 @@ impl<'a> Resolver<'a> {
     /// and whatever value entry its name meets says nothing about why the path
     /// it heads declined.
     pub(super) fn resolve_path_head_use(&mut self, tok: &SyntaxToken) {
-        self.record_name_use(tok, false, false);
+        self.record_name_use(tok, false);
     }
 
     /// The lookup behind [`Self::resolve_name_use`]; whether it recorded a
     /// decline.
-    fn record_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool, bare: bool) -> bool {
+    fn record_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) -> bool {
         // The `base` keyword reaches here as the receiver of a direct
         // `base.[i]` indexer (parsed as a bare `Ident("base")` head). Like the
         // `base`-headed long-ident path, it is the reserved base-class receiver,
@@ -891,12 +891,8 @@ impl<'a> Resolver<'a> {
         // frame — resolves opened statics, opened module values, locals, and cases
         // uniformly by source order, the latest in scope winning.
         let name = &*id_text(tok);
-        let found = if bare {
-            self.lookup_bare(name)
-        } else {
-            self.lookup(name)
-        };
-        let res = found
+        let res = self
+            .lookup(name)
             .or_else(|| self.opened_constructor_target(name, allow_opened_type))
             // An unbound name (or one shadowed away by an opaque open) falls back
             // to `Deferred`.

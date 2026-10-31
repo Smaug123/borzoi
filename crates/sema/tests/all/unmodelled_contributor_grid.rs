@@ -113,6 +113,8 @@ enum Use {
     Nested,
     /// `let probe x = match x with N _ -> 1 | _ -> 0`: a pattern head.
     Pattern,
+    /// `let probe = N.GetType ()`: the head of a dotted path.
+    Head,
     /// `let probe = gridB { N 1 }`: a computation expression's statement.
     CeStatement,
     /// `let probe = gridB { return N 1 }`: inside a computation expression.
@@ -120,8 +122,9 @@ enum Use {
 }
 
 impl Use {
-    const ALL: [Use; 7] = [
+    const ALL: [Use; 8] = [
         Use::Applied,
+        Use::Head,
         Use::FunctionValue,
         Use::Local,
         Use::Nested,
@@ -132,6 +135,9 @@ impl Use {
 
     fn applies_to(self, kind: Kind, route: Route) -> bool {
         let in_ce = matches!(self, Use::CeStatement | Use::CeReturn);
+        if route.probes_itself() {
+            return self == Use::Applied;
+        }
         (self != Use::Pattern || kind.is_case()) && in_ce == route.is_builder()
     }
 
@@ -143,6 +149,7 @@ impl Use {
             Use::Local => vec!["let probe () = @N 1"],
             Use::Nested => vec!["module GridUse =", "    let probe = @N 1"],
             Use::Pattern => vec!["let probe x = match x with @N _ -> 1 | _ -> 0"],
+            Use::Head => vec!["let probe = @N.GetType ()"],
             Use::CeStatement => vec!["let probe = gridB { @N 1 }"],
             Use::CeReturn => vec!["let probe = gridB { return @N 1 }"],
         }
@@ -276,10 +283,19 @@ enum Route {
     CeCustomOperation,
     /// A builder with no custom operation of the name.
     CeNoOperation,
+    /// An intrinsic augmentation of an `[<AutoOpen>]` type, adding the
+    /// static: FCS folds the completed type.
+    AutoOpenTypeAugmented,
+    /// The same, in an `[<AutoOpen>]` module.
+    AutoOpenTypeAugmentedInModule,
+    /// A member parameter of the name, used in its body, in a type group
+    /// whose later `and` type is named so: the group's types enter scope
+    /// before its members' bodies, so the parameter holds.
+    TypeGroupParameter,
 }
 
 impl Route {
-    const ALL: [Route; 53] = [
+    const ALL: [Route; 56] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -333,7 +349,32 @@ impl Route {
         Route::ActivePattern,
         Route::CeCustomOperation,
         Route::CeNoOperation,
+        Route::AutoOpenTypeAugmented,
+        Route::AutoOpenTypeAugmentedInModule,
+        Route::TypeGroupParameter,
     ];
+
+    /// Whether the route adds nothing the probe could bind — FCS's answer is
+    /// the unshadowed one, and the walk must commit it.
+    fn adds_nothing(self) -> bool {
+        matches!(
+            self,
+            Route::Nothing
+                | Route::AutoOpenAfterUse
+                | Route::AutoOpenHidesNested
+                | Route::AutoOpenGenericType
+                | Route::AutoOpenTypeInherits
+                | Route::OpenTypeInherited
+                | Route::OwnAssemblyAutoOpen
+                | Route::EarlierTopUnopened
+                | Route::TypeGroupParameter
+        )
+    }
+
+    /// Whether the route writes its probe itself (`@P`), so it has one use.
+    fn probes_itself(self) -> bool {
+        matches!(self, Route::TypeGroupParameter)
+    }
 
     /// Whether the route declares the `gridB` builder its uses run inside.
     fn is_builder(self) -> bool {
@@ -349,6 +390,8 @@ impl Route {
             | Route::RqaAliased
             | Route::EarlierNamespaceRqaAliased
             | Route::AutoOpenBarlessUnion => kind.is_case(),
+            // A capitalised parameter is a pattern, not a binder.
+            Route::TypeGroupParameter => !kind.is_case(),
             _ => true,
         }
     }
@@ -601,6 +644,18 @@ impl Route {
                 vec![],
                 "module GridProbe\n@OWN\ntype GridB() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\n    [<CustomOperation(\"@NAME\")>]\n    member _.GridOp(state: int, v: int) = state + v\nlet gridB = GridB()\n@USE\n",
             ),
+            Route::AutoOpenTypeAugmented => (
+                vec![],
+                "module GridProbe\n@OWN\n[<AutoOpen>]\ntype GridT = class end\ntype GridT with\n    @STATIC\n@USE\n",
+            ),
+            Route::AutoOpenTypeAugmentedInModule => (
+                vec![],
+                "module GridProbe\n@OWN\n[<AutoOpen>]\nmodule GridAuto =\n    [<AutoOpen>]\n    type GridT = class end\n    type GridT with\n        @STATIC\n@USE\n",
+            ),
+            Route::TypeGroupParameter => (
+                vec![],
+                "module GridProbe\n@OWN\ntype GridM() =\n    member _.M(@NAME: int) = @P + 1\nand @NAME() =\n    member _.X = 0\n",
+            ),
             Route::CeNoOperation => (
                 vec![],
                 "module GridProbe\n@OWN\ntype GridB() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\nlet gridB = GridB()\n@USE\n",
@@ -664,6 +719,17 @@ fn expand(template: &str, kind: Kind, use_: Use) -> (String, Option<TextRange>) 
                 }
                 lines
             }
+            _ if line.contains("@P") => {
+                // A probe written into the route's own text.
+                let text = line.trim_start().replace("@NAME", name);
+                let at = text.find("@P").expect("contains @P");
+                let start = out.len() + indent.len() + at;
+                probe = Some(TextRange::new(
+                    u32::try_from(start).unwrap().into(),
+                    u32::try_from(start + name.len()).unwrap().into(),
+                ));
+                vec![text.replacen("@P", name, 1)]
+            }
             _ => vec![line.trim_start().replace("@NAME", name)],
         };
         for l in lines {
@@ -681,7 +747,8 @@ struct Cell {
     /// `(relative path, source)` in Compile order, the probe file last.
     files: Vec<(String, String)>,
     probe: TextRange,
-    /// No contributor anywhere: we must commit.
+    /// No contributor reaches the probe ([`Route::adds_nothing`]): we must
+    /// commit.
     control: bool,
     /// A cell of the one wrong-answer class the walk leaves standing
     /// ([`is_known_wrong`]).
@@ -724,7 +791,11 @@ fn cells() -> Vec<Cell> {
                     probe: probe.expect("every probe template has a use"),
                     // FSharp.Core's union cases are not folded into the
                     // implicit surface, so its unshadowed cells decline.
-                    control: route == Route::Nothing && kind != Kind::ImplicitCase,
+                    // A union case heading a dotted path is not committed
+                    // either.
+                    control: route.adds_nothing()
+                        && kind != Kind::ImplicitCase
+                        && !(use_ == Use::Head && kind.is_case()),
                     known_wrong: is_known_wrong(kind, route),
                 });
             }

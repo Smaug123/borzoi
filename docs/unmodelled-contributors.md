@@ -27,8 +27,7 @@ A mark's reach follows FCS's two tables:
 | Mark | Where it shadows | Supplied by |
 |---|---|---|
 | `Both` | bare use, dotted head, and pattern | cases, active-pattern cases, attributed `let`s (which may be `[<Literal>]`) |
-| `Expression` | bare use and dotted head | values that cannot be literals (an unattributed `let`, an `extern`, a static) |
-| `Bare` | bare use only | a constructible type's name (a dotted head reads it through the type namespace, which the walk models) |
+| `Expression` | bare use and dotted head | values that cannot be literals (an unattributed `let`, an `extern`, a static), and constructible types' names |
 
 ## The closed list
 
@@ -45,19 +44,20 @@ findings. The sources are `CheckDeclarations.fs` (`AddLocalSubModule`,
 Every route has a row in `crates/sema/tests/all/unmodelled_contributor_grid.rs`.
 The grid crosses each route with four kinds of shadowed name (an implicit value,
 an own value, an implicit union case, an own union case) and with each way of
-using the name. Every cell is graded against FCS, and FCS's answer and ours are
+using the name: applied, as a first-class value, under a local scope, in a nested
+module, as a dotted head, and as a pattern. Every cell is graded against FCS, and FCS's answer and ours are
 pinned in `crates/sema/tests/manifests/unmodelled_contributor_grid.txt`.
 
 | # | Route | FCS source | How the walk answers it |
 |---|---|---|---|
 | 1 | Same-file `[<AutoOpen>]` module, at any depth, `private` included, after it closes | `AddLocalSubModule` → `AddModuleOrNamespaceRefToNameEnv` (recursive) | marks at the module's end, in the enclosing frame |
 | 2 | The attribute spelled any way: qualified, `…Attribute`, in a shared list, through an abbreviation | `CheckDeclarations` honours an aliased `AutoOpenAttribute` (and warns) | `may_auto_open`: any attribute counts while written names cannot be trusted (`attribute_spellings_trusted`: no file so far declares a type spelled like the attribute or an abbreviation of it, and no referenced assembly may) |
-| 3 | Same-file `[<AutoOpen>]` non-generic type: its own statics, not a base class's | `AddLocalTycons` → `CanAutoOpenTyconRef`, `AddStaticContentOfTypeToNameEnv` | marks at the type group's start. An abbreviation, a delegate or inline IL is unlisted. |
+| 3 | Same-file `[<AutoOpen>]` non-generic type: its own statics, not a base class's, including an intrinsic augmentation's | `AddLocalTycons` → `CanAutoOpenTyconRef`, `AddStaticContentOfTypeToNameEnv` | marks at the type group's start, and at each later augmentation of it. An abbreviation, a delegate or inline IL is unlisted. |
 | 4 | An `open` of a project module: its `[<AutoOpen>]` children | `OpenModuleOrNamespaceRefs` → `AddModuleOrNamespaceContentsToNameEnv` | marks after the module's folded values (`FileContributions::module_opens`) |
 | 5 | An `open`, or the implicit open, of a project namespace: aliased `[<AutoOpen>]` children and `[<AutoOpen>]` types | same | marks after the namespace fold (`FileContributions::namespace_opens`) |
 | 6 | An earlier file's root: a top-level `[<AutoOpen>] module X`, and everything `namespace global` declares | `AddLocalRootModuleOrNamespace` | marks at every later block's start, after the implicit auto-opens and before its own namespace (`FileContributions::root`) |
 | 7 | A `module rec` / `namespace rec` block, a nested `module rec`, and every module inside one: every binder, from the block's start | `TcMutRecDefns_Phase1` | marks at the block's start. The binders are re-asserted after each `open`, because FCS adds them after every open. The nested modules' `[<AutoOpen>]` contents are re-asserted after each type or exception, because FCS adds modules after tycons and exceptions. |
-| 8 | A constructible type (class, struct, enum, delegate, or an abbreviation of one) taking the unqualified slot from an earlier value or case: in the same file, from an earlier file's own or opened namespace, or from a contributor | `AddTyconRefsToNameEnv` (types with "potential use as a constructor") | the head-slot ordering (`value_slot`), now also asked at a bare use, with the enclosing namespace's earlier-file types. A contributor's own constructible types are `Bare` marks. |
+| 8 | A constructible type (class, struct, enum, delegate, or an abbreviation of one) taking the unqualified slot from an earlier value or case: in the same file, from an earlier file's own or opened namespace, or from a contributor | `AddTyconRefsToNameEnv` (types with "potential use as a constructor") | the head-slot ordering (`value_slot`), asked at a bare use as well as at a dotted head, with the enclosing namespace's earlier-file types. A parameter or pattern local always holds: the types in scope where it is bound entered first. A contributor's own constructible types are marks. |
 | 9 | An `extern` prototype | `AddLocalVals` | an `Expression` mark at the prototype, which the walk does not intern |
 | 10 | `open type` statics the projection drops | `OpenTypeContent` → `AddStaticContentOfTypeToNameEnv` | `Expression` marks after the type's listed statics, for each `skipped_members` name |
 | 11 | A union whose `[<RequireQualifiedAccess>]` may be spelled through an abbreviation | `AddTyconRefsToNameEnv` (RQA cases are not bare) | `Both` marks after the cases the walk put in bare scope, and at an `open` of the container |
@@ -72,7 +72,10 @@ committing through:
 - an `[<AutoOpen>]` class's or an `open type`'s *inherited* statics;
 - an earlier file's plain top-level module, not opened;
 - the project's own `[<assembly: AutoOpen>]` (`AddCcuToTcEnv` applies it to referenced assemblies only);
-- extension members of an `open type` target.
+- extension members of an `open type` target;
+- a member parameter named like a later type of its own type group.
+
+Each of these must commit: the grid holds them to the unshadowed answer.
 
 Routes the walk already modelled are in the grid too, because "modelled" is
 exactly the claim each cell checks. These are `open type` of a declared static,
