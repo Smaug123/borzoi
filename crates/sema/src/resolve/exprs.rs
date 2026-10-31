@@ -6,7 +6,7 @@ use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
-use super::model::{DeclineSite, DeferredReason, Resolution};
+use super::model::{DeclineCause, DeclineSite, DeferredReason, Resolution};
 use super::state::{AliasTargets, Frame, Resolver, ScopeEntry};
 use super::types::TypePathResolution;
 
@@ -906,6 +906,20 @@ impl<'a> Resolver<'a> {
             // An unbound name (or one shadowed away by an opaque open) falls back
             // to `Deferred`.
             .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
+        // An assembly union case an `open` put in scope loses FCS's unqualified
+        // slot to any later constructible type of its name, which the lookup
+        // cannot order (the type is not an entry). Expression position only: a
+        // type never contests the pattern namespace.
+        let res = match res {
+            Resolution::UnionCase { .. } if self.assembly_case_slot_contested(name) => {
+                self.record_decline(
+                    tok.text_range(),
+                    DeclineSite::pre_walk(DeclineCause::AssemblyCaseSlotContested),
+                );
+                Resolution::Deferred(DeferredReason::UnboundName)
+            }
+            other => other,
+        };
         self.record(tok.text_range(), res);
         matches!(res, Resolution::Deferred(_))
     }

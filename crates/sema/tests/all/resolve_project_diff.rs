@@ -107,6 +107,7 @@ fn assert_matches_fcs(project: &Project) {
                         // arm already handled Deferred/Unresolved.
                         Resolution::Entity(_)
                         | Resolution::Member { .. }
+                        | Resolution::UnionCase { .. }
                         | Resolution::Deferred(_)
                         | Resolution::Unresolved => unreachable!(),
                     };

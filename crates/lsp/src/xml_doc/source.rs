@@ -988,6 +988,7 @@ impl<'a> ProjectDocs<'a> {
             Resolution::Item(_) => self.resolved.item_def(res)?,
             Resolution::Entity(_)
             | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }
             | Resolution::Deferred(_)
             | Resolution::Unresolved => return None,
         };

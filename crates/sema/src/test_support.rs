@@ -122,6 +122,9 @@ pub fn certified_expected(
     let chain = match res {
         Resolution::Entity(handle) => env.enclosing_chain(handle),
         Resolution::Member { parent, .. } => env.enclosing_chain(parent),
+        // A case's declaring entity is its union, exactly as a member's is its
+        // parent.
+        Resolution::UnionCase { union, .. } => env.enclosing_chain(union),
         Resolution::Local(_)
         | Resolution::Item(_)
         | Resolution::Deferred(_)

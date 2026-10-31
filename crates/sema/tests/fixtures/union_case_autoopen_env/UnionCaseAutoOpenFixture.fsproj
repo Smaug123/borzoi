@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for the implicit half of the assembly union-case table
+       (`crates/sema/tests/all/assembly_union_case_table.rs`): a referenced
+       F# library that auto-opens a namespace of its own into every consumer
+       (`[<assembly: AutoOpen>]`), so its union cases sit beside
+       FSharp.Core's with no `open` written — one colliding with `Ok`, one
+       unique to it, two that collide with each other, and a class taking
+       `Error`'s constructor slot. A separate assembly from the shadow
+       fixture because an implicit open reaches every file of the project. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaUnionCaseAutoOpenFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

@@ -53,7 +53,7 @@ mod unify;
 pub use assembly_env::{
     AbbreviationVisibility, AssemblyEnv, AssemblyProjectionInput, EntityHandle, ExtensionMembers,
     IlTypeDefinition, MemberIndex, OpenFoldName, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget,
-    StaticLookup, ValueSurface, fsharp_core_intrinsic_tycons,
+    StaticLookup, UnionCaseIndex, ValueSurface, fsharp_core_intrinsic_tycons,
 };
 pub use binders::{BinderRole, PatternName, pattern_names};
 pub use def::{Def, DefId, DefKind, SemanticClass};

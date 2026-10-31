@@ -557,11 +557,9 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ),
     (
         "union / unique case, expression",
-        "an assembly union case folds opaque (Q1): in scope, naming no target",
-    ),
-    (
-        "union / unique case, pattern",
-        "an assembly union case folds opaque (Q1): in scope, naming no target",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         could supply a constructible type of the name, which would evict the case from \
+         FCS's bare constructor slot (`assembly_case_slot_contested`)",
     ),
     (
         "union / colliding case-vs-value, expression",
@@ -569,8 +567,9 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ),
     (
         "module-header / unique case, expression",
-        "an assembly union case folds opaque (Q1) — the `module A.B.M` header reaches the \
-         same fold as the `namespace A.B` one, so it inherits the same gap",
+        "the matrix env's unreadable `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` \
+         could supply a constructible type of the name, which would evict the case from \
+         FCS's bare constructor slot (`assembly_case_slot_contested`)",
     ),
     (
         "class / unique type, expression",

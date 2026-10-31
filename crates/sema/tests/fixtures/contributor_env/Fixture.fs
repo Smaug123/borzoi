@@ -90,3 +90,20 @@ module FixBuilders =
     let fixBMethodName = FixBMethodName()
     let fixBNoOp = FixBNoOp()
     let fixBDerived = FixBDerived()
+
+/// No probed statics of its own: the grid's source extensions add them.
+type Plain =
+    static member Marker = 0
+
+/// No probed statics of its own either: `PlainExt` adds them as extension
+/// members, in scope wherever `GridFix` is opened.
+type Plain2 =
+    static member Marker = 0
+
+[<AutoOpen>]
+module PlainExt =
+    type Plain2 with
+        static member id(x: int) = x + 1
+        static member gridV(x: int) = x + 1
+        static member Some(x: int) = x + 1
+        static member GridC(x: int) = x + 1

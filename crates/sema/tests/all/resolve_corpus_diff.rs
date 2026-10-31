@@ -459,9 +459,11 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
                     Some(Resolution::Unresolved) => Some("unresolved".to_string()),
                     // Unreachable under `AssemblyEnv::default()`, which holds no
                     // entity to point at; graded rather than assumed.
-                    Some(Resolution::Entity(_) | Resolution::Member { .. }) => {
-                        Some("assembly".to_string())
-                    }
+                    Some(
+                        Resolution::Entity(_)
+                        | Resolution::Member { .. }
+                        | Resolution::UnionCase { .. },
+                    ) => Some("assembly".to_string()),
                 };
                 tally.external_graded += 1;
                 if let Some(ours) = wrong {

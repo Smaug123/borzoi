@@ -93,6 +93,10 @@ pub(super) struct FileContributions {
     /// (`AddLocalRootModuleOrNamespace`): its root-level `[<AutoOpen>]`
     /// modules, and the declarations of its `namespace global` blocks.
     pub(super) root: Contribution,
+    /// Every name the file's type augmentations (`type T with …`) declare,
+    /// by the augmented type's simple name: an `open type` of `T` brings its
+    /// extension members in scope.
+    pub(super) extension_statics: Vec<(String, BTreeSet<String>)>,
     /// For a project module, what an `open` of it adds beyond the values the
     /// walk folds ([`Resolver::open_module_values`]): its `[<AutoOpen>]`
     /// children, at any depth through `[<AutoOpen>]` ones.
@@ -116,7 +120,7 @@ pub(super) struct FileContributions {
 /// accessor names a property or event of that name brings (`get_P`, `set_P`,
 /// `add_E`, `remove_E`), and the compiled names of operator-named union cases
 /// (`op_Nil`, `op_ColonColon`), which are spelled with no identifier at all.
-fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
+pub(super) fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
     let idents: Vec<String> = node
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())

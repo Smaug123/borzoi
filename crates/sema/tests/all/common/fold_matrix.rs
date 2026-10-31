@@ -251,6 +251,13 @@ fn our_resolved(env: &AssemblyEnv, decls: &[&str], src: &str, probe: TextRange) 
             };
             Some(format!("{}.{}", env.entity_full_name(parent), member))
         }
+        // A union case is named under its union, as FCS renders it (the fixture
+        // unions are non-generic, so no `<_>` decoration separates the two).
+        Some(Resolution::UnionCase { union, case }) => Some(format!(
+            "{}.{}",
+            env.entity_full_name(union),
+            env.union_case_name(union, case)
+        )),
         None | Some(Resolution::Deferred(_)) => None,
         // An `Item` into one of the cell's DECL files is a project-half target
         // and joins the currency; the probe file's own items (a contest `let`)

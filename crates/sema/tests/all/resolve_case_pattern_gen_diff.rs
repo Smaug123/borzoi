@@ -355,6 +355,21 @@ fn run_probes(
                         asm,
                         "{ctx}: whole-span assembly mismatch (FCS: {full})"
                     ),
+                    // The case itself: its union's assembly and full name, then
+                    // the case. FCS renders a generic union's arity between the
+                    // two (`Target<_>.Carrier`), which our names do not carry.
+                    Some(Resolution::UnionCase { union, case }) => assert_eq!(
+                        (
+                            env.entity(union).assembly.name.clone(),
+                            format!(
+                                "{}.{}",
+                                env.entity_full_name(union),
+                                env.union_case_name(union, case)
+                            ),
+                        ),
+                        (asm.to_string(), full.replace("<_>", "")),
+                        "{ctx}: whole-span case mismatch"
+                    ),
                     Some(res) => {
                         panic!("{ctx}: FCS bound the case to {asm}!{full}, we gave {res:?}")
                     }
@@ -362,11 +377,10 @@ fn run_probes(
             }
             Verdict::InProject => {
                 compared += 1;
-                if let Some(Resolution::Entity(h)) = rf.resolution_at(probe.whole) {
-                    panic!(
-                        "{ctx}: FCS bound the case in-project, we gave the assembly entity {:?}",
-                        env.entity(h).name
-                    );
+                if let Some(res @ (Resolution::Entity(_) | Resolution::UnionCase { .. })) =
+                    rf.resolution_at(probe.whole)
+                {
+                    panic!("{ctx}: FCS bound the case in-project, we gave the assembly {res:?}");
                 }
             }
         }
