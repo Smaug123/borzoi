@@ -324,10 +324,17 @@ enum Route {
     /// with a name the group declares as a type and a later `[<AutoOpen>]`
     /// module declares as a value: modules enter after the group's types.
     RecTypeGroupQualifier,
+    /// A static property of an `[<AutoOpen>]` type brings its accessor
+    /// `get_GridP` into bare scope too, in front of an earlier binder of that
+    /// name.
+    AutoOpenTypeAccessor,
+    /// An operator-named union case (`([])`, compiled `op_Nil`) of an
+    /// `[<AutoOpen>]` module, in front of an earlier binder of that name.
+    AutoOpenOperatorCase,
 }
 
 impl Route {
-    const ALL: [Route; 67] = [
+    const ALL: [Route; 69] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -395,6 +402,8 @@ impl Route {
         Route::EnumQualifierAfterMark,
         Route::RecordQualifierAfterMark,
         Route::RecTypeGroupQualifier,
+        Route::AutoOpenTypeAccessor,
+        Route::AutoOpenOperatorCase,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -426,6 +435,8 @@ impl Route {
                 | Route::EnumQualifierAfterMark
                 | Route::RecordQualifierAfterMark
                 | Route::RecTypeGroupQualifier
+                | Route::AutoOpenTypeAccessor
+                | Route::AutoOpenOperatorCase
         )
     }
 
@@ -450,6 +461,8 @@ impl Route {
             | Route::EnumQualifierAfterMark
             | Route::RecordQualifierAfterMark
             | Route::RecTypeGroupQualifier => !kind.is_case(),
+            // The probe is a fixed name, not the kind's: one kind runs it.
+            Route::AutoOpenTypeAccessor | Route::AutoOpenOperatorCase => kind == Kind::OwnValue,
             _ => true,
         }
     }
@@ -782,6 +795,14 @@ impl Route {
                 vec![],
                 "module rec GridProbe\ntype @NAME() =\n    static member Length = 0\nand GridX() =\n    static member Test() = @P.Length\n[<AutoOpen>]\nmodule GridAuto =\n    let @NAME = \"contributed\"\n",
             ),
+            Route::AutoOpenTypeAccessor => (
+                vec![],
+                "module GridProbe\nlet get_GridP () = 1\n[<AutoOpen>]\ntype GridT =\n    static member GridP = 42\nlet probe = @P{get_GridP} ()\n",
+            ),
+            Route::AutoOpenOperatorCase => (
+                vec![],
+                "module GridProbe\nlet op_Nil = 0\n[<AutoOpen>]\nmodule GridAuto =\n    type GridL =\n        | ([])\n        | (::) of int * GridL\nlet probe = @P{op_Nil}\n",
+            ),
             Route::CeNoOperation => (
                 vec![],
                 "module GridProbe\n@OWN\ntype GridB() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\nlet gridB = GridB()\n@USE\n",
@@ -847,14 +868,22 @@ fn expand(template: &str, kind: Kind, use_: Use) -> (String, Option<TextRange>) 
             }
             _ if line.contains("@P") => {
                 // A probe written into the route's own text.
+                // `@P{text}` probes `text` rather than the kind's name.
                 let text = line.trim_start().replace("@NAME", name);
                 let at = text.find("@P").expect("contains @P");
+                let (probed, rest) = match text[at + 2..].strip_prefix('{') {
+                    Some(braced) => {
+                        let end = braced.find('}').expect("closing brace");
+                        (braced[..end].to_string(), at + 2 + end + 2)
+                    }
+                    None => (name.to_string(), at + 2),
+                };
                 let start = out.len() + indent.len() + at;
                 probe = Some(TextRange::new(
                     u32::try_from(start).unwrap().into(),
-                    u32::try_from(start + name.len()).unwrap().into(),
+                    u32::try_from(start + probed.len()).unwrap().into(),
                 ));
-                vec![text.replacen("@P", name, 1)]
+                vec![format!("{}{probed}{}", &text[..at], &text[rest..])]
             }
             _ => vec![line.trim_start().replace("@NAME", name)],
         };

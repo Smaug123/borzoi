@@ -103,10 +103,14 @@ pub(super) struct FileContributions {
     pub(super) namespace_opens: Vec<(Vec<String>, Contribution)>,
 }
 
-/// Every identifier `node` declares, outside an expression, a type annotation
-/// or an attribute — the names anything declared in `node` can bear.
+/// Every name anything declared in `node` can bear: each identifier written
+/// outside an expression, a type annotation or an attribute, with the
+/// accessor names a property or event of that name brings (`get_P`, `set_P`,
+/// `add_E`, `remove_E`), and the compiled names of operator-named union cases
+/// (`op_Nil`, `op_ColonColon`), which are spelled with no identifier at all.
 fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
-    node.descendants_with_tokens()
+    let idents: Vec<String> = node
+        .descendants_with_tokens()
         .filter_map(|el| el.into_token())
         .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
         .filter(|tok| {
@@ -117,7 +121,24 @@ fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
             })
         })
         .map(|tok| id_text(&tok).to_string())
-        .collect()
+        .collect();
+    let mut names: BTreeSet<String> = idents
+        .iter()
+        .flat_map(|name| {
+            ["", "get_", "set_", "add_", "remove_"]
+                .into_iter()
+                .map(move |prefix| format!("{prefix}{name}"))
+        })
+        .collect();
+    names.extend(operator_case_names(node));
+    names
+}
+
+/// The compiled names of the operator-named union cases declared in `node`.
+fn operator_case_names(node: &SyntaxNode) -> impl Iterator<Item = String> + '_ {
+    node.descendants()
+        .filter_map(UnionCase::cast)
+        .filter_map(|case| case.operator_name().map(|(name, _)| name.to_string()))
 }
 
 impl Resolver<'_> {
@@ -277,6 +298,7 @@ impl Resolver<'_> {
                 out.names.insert(id_text(&name).to_string());
             }
         }
+        out.names.extend(operator_case_names(defn.syntax()));
         // `type T = Nn` is a single-case union when `Nn` names no type in
         // scope (`TyconCoreAbbrevThatIsReallyAUnion`), which the syntax
         // cannot decide.
@@ -438,6 +460,7 @@ impl Resolver<'_> {
                 .filter_map(UnionCase::cast)
                 .filter_map(|c| c.ident())
                 .map(|t| id_text(&t).to_string())
+                .chain(operator_case_names(defn.syntax()))
                 .collect(),
             ..Contribution::default()
         };
