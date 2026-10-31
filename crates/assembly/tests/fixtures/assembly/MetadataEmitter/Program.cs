@@ -23,6 +23,8 @@ internal static class Program
             "currentmodule_typeref_base" => EmitCurrentModuleTypeRefBase(),
             "linked_file_resource" => EmitLinkedFileResource(),
             "manifest_cultures_and_forwarder" => EmitManifestCulturesAndForwarder(),
+            "self_reference_cultures" => EmitSelfReferenceCultures(),
+            "manifest_flagged_identities" => EmitManifestFlaggedIdentities(),
             "param_custom_modifier" => EmitParamCustomModifier(),
             "return_custom_modifier" => EmitReturnCustomModifier(),
             "param_optional_modifier" => EmitParamOptionalModifier(),
@@ -705,6 +707,103 @@ internal static class Program
             target,
             typeDefinitionId: 0);
         AddModuleType(mb);
+        return Finish(mb);
+    }
+
+    // A neutral `FlaggedFixture` whose own row is retargetable, referencing a
+    // `WinRt` whose row's content type is WindowsRuntime, a retargetable
+    // `Retarget`, a strong-named `Keyed` spelled by its full key (the
+    // `PublicKey` flag), a `Hinted` with only processor-architecture and JIT
+    // bits, and a plain `Plain`: which flags a binder matches beyond simple
+    // name, version, culture and token.
+    private static BlobBuilder EmitManifestFlaggedIdentities()
+    {
+        var mb = new MetadataBuilder();
+        mb.AddModule(
+            generation: 0,
+            moduleName: mb.GetOrAddString("FlaggedFixture.dll"),
+            mvid: mb.GetOrAddGuid(MvidFor("flagged")),
+            encId: default,
+            encBaseId: default);
+        mb.AddAssembly(
+            name: mb.GetOrAddString("FlaggedFixture"),
+            version: new Version(1, 0, 0, 0),
+            culture: default,
+            publicKey: default,
+            flags: AssemblyFlags.Retargetable,
+            hashAlgorithm: AssemblyHashAlgorithm.None);
+        foreach (var (name, flags, key) in new (string, AssemblyFlags, byte[]?)[]
+        {
+            ("WinRt", AssemblyFlags.WindowsRuntime, null),
+            ("Retarget", AssemblyFlags.Retargetable, null),
+            ("Keyed", AssemblyFlags.PublicKey, new byte[160]),
+            ("Plain", 0, null),
+            ("Hinted", (AssemblyFlags)0x8070, null), // processor architecture, JIT tracking
+        })
+        {
+            mb.AddAssemblyReference(
+                mb.GetOrAddString(name),
+                new Version(1, 0, 0, 0),
+                culture: default,
+                publicKeyOrToken: key is null ? default : mb.GetOrAddBlob(key),
+                flags: flags,
+                hashValue: default);
+        }
+        AddModuleType(mb);
+        return Finish(mb);
+    }
+
+    // A culture-neutral `SelfCultureFixture` 1.0.0.0 defining `App.Helper`,
+    // with two `AssemblyRef`s spelling its own name, version and (absent)
+    // token: one neutral, one `fr`. `Neutral` extends `App.Helper` through the
+    // first, `Localised` through the second. Only the first is a reference to
+    // this assembly; a binder matching culture sends the second to a
+    // satellite of that name.
+    private static BlobBuilder EmitSelfReferenceCultures()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "SelfCultureFixture", "selfcult");
+        AssemblyReferenceHandle neutral = mb.AddAssemblyReference(
+            mb.GetOrAddString("SelfCultureFixture"),
+            new Version(1, 0, 0, 0),
+            culture: default,
+            publicKeyOrToken: default,
+            flags: 0,
+            hashValue: default);
+        AssemblyReferenceHandle french = mb.AddAssemblyReference(
+            mb.GetOrAddString("SelfCultureFixture"),
+            new Version(1, 0, 0, 0),
+            culture: mb.GetOrAddString("fr"),
+            publicKeyOrToken: default,
+            flags: 0,
+            hashValue: default);
+        TypeReferenceHandle viaNeutral = mb.AddTypeReference(
+            neutral, mb.GetOrAddString("App"), mb.GetOrAddString("Helper"));
+        TypeReferenceHandle viaFrench = mb.AddTypeReference(
+            french, mb.GetOrAddString("App"), mb.GetOrAddString("Helper"));
+
+        AddModuleType(mb);
+        mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Class,
+            mb.GetOrAddString("App"),
+            mb.GetOrAddString("Helper"),
+            baseType: default,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+        mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Class,
+            mb.GetOrAddString("App"),
+            mb.GetOrAddString("Neutral"),
+            baseType: viaNeutral,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+        mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Class,
+            mb.GetOrAddString("App"),
+            mb.GetOrAddString("Localised"),
+            baseType: viaFrench,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
         return Finish(mb);
     }
 

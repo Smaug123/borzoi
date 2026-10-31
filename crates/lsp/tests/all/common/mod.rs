@@ -1035,6 +1035,8 @@ pub fn doc_key_env_of(
                 manifest_identity: None,
                 type_forwarders: Vec::new(),
                 doc_id_dialect: Some(dialect),
+                has_assembly_references: None,
+                qualified_names: None,
             },
         )
         .collect();

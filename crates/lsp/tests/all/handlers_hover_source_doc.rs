@@ -112,7 +112,9 @@ fn a_use_outside_a_signed_file_shows_the_signature_doc() {
         Some("From the signature.")
     );
     // Inside the implementation, FCS falls back from the blank doc to the
-    // signature's, which hover does not locate: it shows none rather than the
-    // implementation's.
-    assert_eq!(doc_at(&files, 1, "v", 1), None);
+    // signature's.
+    assert_eq!(
+        doc_at(&files, 1, "v", 1).as_deref(),
+        Some("From the signature.")
+    );
 }
