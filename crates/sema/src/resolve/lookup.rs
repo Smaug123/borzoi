@@ -899,8 +899,13 @@ impl<'a> Resolver<'a> {
     /// fold position for it, while re-running it at a later `open`'s text
     /// position would wrongly override a binding declared in between.
     ///
+    /// After the fold, what the open adds that the fold does not model
+    /// ([`Self::namespace_open_contributions`]), at the same position.
+    ///
     /// `header` is the block header's namespace path, the range the
-    /// resolution-explain trace records this implicit open at.
+    /// resolution-explain trace records this implicit open at; the trace
+    /// covers the fold and the contributions both, as an explicit `open`'s
+    /// does.
     pub(super) fn open_own_enclosing_namespace(&mut self, header: TextRange) {
         let namespace = self.enclosing_namespace().to_vec();
         if namespace.is_empty() {
@@ -908,6 +913,7 @@ impl<'a> Resolver<'a> {
         }
         let trace_before = self.open_trace_snapshot();
         self.fold_own_enclosing_namespace(&namespace);
+        self.namespace_open_contributions(&namespace, 0);
         let opacity = self.open_opacity_since(&trace_before);
         self.trace_opens.push(OpenTrace {
             range: header,

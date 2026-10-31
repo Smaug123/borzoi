@@ -714,6 +714,44 @@ fn the_implicit_namespace_open_is_traced() {
     }
 }
 
+/// The implicit open's trace covers what the open adds through routes the
+/// namespace fold does not model, not just the fold: an earlier file's
+/// `[<AO>] module N.M` may be auto-open once `AO` may rename `AutoOpen`, so
+/// the implicit open of `N` pushes a mark for its `ref`, and the trace must
+/// say so, as it does for an explicit `open N`.
+#[test]
+fn the_implicit_namespace_open_traces_its_unmodelled_contributions() {
+    let rows = [
+        (
+            "/p/Alias.fs",
+            "module Alias
+
+type AO = AutoOpenAttribute
+",
+        ),
+        ("/p/A.fs", "[<Alias.AO>]\nmodule N.M\n\nlet ref = 1\n"),
+        (
+            "/p/Use.fs",
+            "namespace N\n\nmodule U =\n    let x = ref 0\n",
+        ),
+    ];
+    let written: Vec<(PathBuf, String)> = rows
+        .iter()
+        .map(|(p, s)| (PathBuf::from(p), (*s).to_string()))
+        .collect();
+    let rels: Vec<String> = rows.iter().map(|(p, _)| (*p).to_string()).collect();
+    let proj = resolve(&written, &rels);
+    let opens = &proj.file(2).resolution_trace().opens;
+    let implicit: Vec<_> = opens.iter().filter(|o| o.implicit).collect();
+    assert_eq!(implicit.len(), 1, "one block, one implicit open: {opens:?}");
+    assert!(
+        implicit[0].opacity.imported_deferred,
+        "the contribution's mark is the implicit open's: {:?}",
+        implicit[0].opacity
+    );
+    assert!(implicit[0].opacity.perturbs_resolution());
+}
+
 /// One namespace-level declaration that puts `Ok` somewhere — a pairwise
 /// grid's alphabet. Every one is known by name, so every pair must keep the
 /// FSharp.Core names it does not spell committed, unless it renames a core

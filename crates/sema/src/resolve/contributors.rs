@@ -628,14 +628,12 @@ impl Resolver<'_> {
     pub(super) fn block_start_contributions(&mut self, module: &ModuleOrNamespace) {
         let root = self.preceding.root_contribution.clone();
         self.push_contribution(&root, 0);
+        // The implicit open pushes its unmodelled contributions itself, inside
+        // its resolution-explain trace.
         self.open_own_enclosing_namespace(module.long_id().map_or_else(
             || module.syntax().text_range(),
             |li| li.syntax().text_range(),
         ));
-        let enclosing = self.enclosing_namespace().to_vec();
-        if !enclosing.is_empty() {
-            self.namespace_open_contributions(&enclosing, 0);
-        }
         match module.kind() {
             ModuleOrNamespaceKind::GlobalNamespace => {
                 let contribution = self.decls_contribution(module.decls());
