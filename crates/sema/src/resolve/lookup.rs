@@ -2221,18 +2221,17 @@ impl<'a> Resolver<'a> {
         // FCS's unqualified slot from a same-named value already visible — an
         // implicit FSharp.Core auto-open's `ref` in any enclosing frame, a
         // local bound before the open — so a bare `ref ()` is its
-        // constructor, which sema does not model. Before signatured
-        // namespaces shadowed by name, every one of them raised the barrier
-        // and stood behind it; it still goes up here wherever a collision is
-        // possible — an entry of the name visible here, in any frame —
-        // since a type whose name nothing in scope claims evicts nothing. A
-        // binder after the open shadows the type by position as usual. (An
-        // unsigned namespace never raised it, and its bare constructor
+        // constructor, which sema does not model. The eviction is that name's
+        // alone, so each such name with an entry visible here, in any frame,
+        // is marked in expression position at the open, and nothing else is
+        // staled: a type whose name nothing in scope claims evicts nothing,
+        // and an implicitly opened union case of the name (`Ok`) is one more
+        // entry it evicts. A binder after the open shadows the type by
+        // position as usual. (An unsigned namespace's bare constructor
         // contest is unmodelled: see
         // `sig_namespace_fold_diff::unsigned_constructor_slot_contest`.)
-        if is_namespace
-            && self.preceding.signatured_namespaces.contains(namespace)
-            && self
+        if is_namespace && self.preceding.signatured_namespaces.contains(namespace) {
+            let mut contested: Vec<String> = self
                 .direct_project_type_contestants(namespace)
                 .iter()
                 .chain(
@@ -2242,9 +2241,19 @@ impl<'a> Resolver<'a> {
                         .into_iter()
                         .flatten(),
                 )
-                .any(|name| self.latest_entry(name).is_some())
-        {
-            self.open_generation += 1;
+                .filter(|name| self.latest_entry(name).is_some())
+                .cloned()
+                .collect();
+            contested.sort();
+            contested.dedup();
+            let generation = self.open_generation;
+            let marks: Vec<ScopeEntry> = contested
+                .into_iter()
+                .map(|name| {
+                    ScopeEntry::contributor_mark(name, MarkReach::Expression, generation, open_pos)
+                })
+                .collect();
+            self.module_frame().entries.extend(marks);
         }
         let direct_tier = if is_namespace {
             self.direct_tier_ids_at(namespace)
