@@ -99,3 +99,23 @@ fn projects_interfaces_implemented_by_type() {
         thing.interfaces[0],
     );
 }
+
+/// A type carrying `[TypeIdentifier]` is a No-PIA local type, recorded as
+/// such (Roslyn's importer hides it from name lookup); a type without one is
+/// not.
+#[test]
+fn a_type_identifier_marks_a_no_pia_local_type() {
+    use borzoi_assembly::{Ecma335Assembly, EcmaView};
+    let bytes = crate::common::emit_metadata_fixture("type_identifier_local_type");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse");
+    let entities = view.enumerate_type_defs().expect("project");
+    let subject = entities
+        .iter()
+        .find(|e| e.name == "Subject")
+        .expect("Subject");
+    assert!(subject.is_no_pia_local);
+    let bytes = crate::common::emit_metadata_fixture("default_member_named_args");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse");
+    let (entities, _) = view.enumerate_type_defs_with_skips().expect("project");
+    assert!(entities.iter().all(|e| !e.is_no_pia_local));
+}

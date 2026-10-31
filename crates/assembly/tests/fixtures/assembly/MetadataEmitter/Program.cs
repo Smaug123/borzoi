@@ -51,6 +51,7 @@ internal static class Program
             "cfr_non_bool_is_optional" => EmitCfrNonBoolIsOptional(),
             "default_member_named_args" => EmitDefaultMemberNamedArgs(),
             "default_member_null_ctor_arg" => EmitDefaultMemberNullCtorArg(),
+            "type_identifier_local_type" => EmitTypeIdentifierLocalType(),
             "property_generic_accessor" => EmitPropertyGenericGetter(),
             "property_init_only_setter" => EmitPropertyInitOnlySetter(),
             "property_index_modopt" => EmitPropertyIndexModopt(),
@@ -1185,6 +1186,18 @@ internal static class Program
             });
 
     // `[DefaultMember((string)null)]` — a null member name.
+    // `[TypeIdentifier("scope", "id")] class Subject`: a No-PIA local type.
+    private static BlobBuilder EmitTypeIdentifierLocalType() =>
+        EmitAttrOnType("TypeIdentifierFixture", "typeid",
+            "System.Runtime.InteropServices", "TypeIdentifierAttribute",
+            new[] { CtorString, CtorString },
+            b =>
+            {
+                WriteSerString(b, "scope");
+                WriteSerString(b, "id");
+                b.WriteUInt16(0);
+            });
+
     private static BlobBuilder EmitDefaultMemberNullCtorArg() =>
         EmitAttrOnType("DefMemberNullFixture", "dmnull",
             "System.Reflection", "DefaultMemberAttribute",

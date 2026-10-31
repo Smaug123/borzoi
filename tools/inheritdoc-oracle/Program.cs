@@ -291,7 +291,12 @@ internal static class Program
                 var outDir = (string)request["outDir"]!;
                 var parse = new CSharpParseOptions(LanguageVersion.Preview, DocumentationMode.Diagnose);
                 var tree = CSharpSyntaxTree.ParseText((string)request["source"]!, parse);
-                var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable);
+                // Unsafe code allowed, for fixtures whose members the projector
+                // refuses (function pointers).
+                var options = new CSharpCompilationOptions(
+                    OutputKind.DynamicallyLinkedLibrary,
+                    nullableContextOptions: NullableContextOptions.Enable,
+                    allowUnsafe: true);
                 // Strong-named by public signing with another assembly's key,
                 // so a reference to this one carries that key's token.
                 if (request["publicKeyFrom"] is { } keySource)

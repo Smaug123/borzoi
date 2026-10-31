@@ -4378,6 +4378,22 @@ impl AssemblyEnv {
         !self.namespaces_with_dropped_types.is_empty()
     }
 
+    /// Whether every loaded DLL's identity was read and no two share a simple
+    /// name (compared ignoring case, as a binder compares them). A consumer
+    /// reproducing a compilation over the same references needs this: given
+    /// two DLLs of one identity, a compiler keeps one of them, and which one
+    /// is not modelled.
+    pub fn assembly_names_unique(&self) -> bool {
+        if self.assembly_identities_incomplete || self.assembly_identities.is_empty() {
+            return false;
+        }
+        let mut seen = HashSet::new();
+        self.assembly_identities.iter().all(|a| {
+            a.as_ref()
+                .is_some_and(|a| seen.insert(a.name.to_lowercase()))
+        })
+    }
+
     /// Whether a dropped type sits in **any namespace this module path could be split
     /// at** — the question [`Self::namespace_has_dropped_type`] asks, over the whole space
     /// the *lookup* walks rather than the one namespace the visible encoding happens to
@@ -7194,6 +7210,7 @@ pub(crate) mod from_views_tests {
             is_structural_equality: false,
             is_structural_comparison: false,
             is_allow_null_literal: false,
+            is_no_pia_local: false,
             obsolete: None,
             compiler_message: None,
             experimental: None,

@@ -1001,6 +1001,10 @@ pub struct Entity {
     /// the bool so this field stays semantically honest;
     /// `fcs-dump` mirrors the same decode.
     pub is_allow_null_literal: bool,
+    /// Whether the type carries
+    /// `[System.Runtime.InteropServices.TypeIdentifierAttribute]`: a No-PIA
+    /// local type, which Roslyn's importer does not expose to name lookup.
+    pub is_no_pia_local: bool,
     /// `Some` when the entity carries `[System.ObsoleteAttribute]`; the
     /// payload is the (optional) deprecation message + the
     /// warning-vs-error flag. The importer decodes ECMA-335 II.23.3 from
