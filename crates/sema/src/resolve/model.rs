@@ -406,6 +406,10 @@ pub struct ProjectItems {
     /// The names earlier files' type augmentations declare
     /// ([`FileContributions::extension_statics`]).
     pub(super) extension_statics: BTreeSet<String>,
+    /// Whether some earlier file declares a type spelled like
+    /// `StructAttribute` or `MeasureAttribute` or an abbreviation of one
+    /// ([`FileContributions::declares_slot_attribute_alias`]).
+    pub(super) slot_attribute_alias_declared: bool,
     /// Whether some file folded so far declares a type spelled like
     /// `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`, or an abbreviation of
     /// one ([`ResolvedFile::declares_core_attribute_alias`]).
@@ -1263,6 +1267,7 @@ impl ProjectItems {
         self.custom_operation_alias_declared |= file.contributions.declares_custom_operation_alias;
         self.extension_statics
             .extend(file.contributions.extension_statics.iter().cloned());
+        self.slot_attribute_alias_declared |= file.contributions.declares_slot_attribute_alias;
         for (path, c) in &file.contributions.module_opens {
             self.module_open_contributions
                 .entry(path.clone())
