@@ -329,6 +329,9 @@ pub struct ProjectItems {
     /// a target of its own. Known by name, so unlike a hidden-value marker it
     /// stales nothing else.
     pub(super) namespace_shadow_names: HashMap<Vec<String>, HashSet<String>>,
+    /// The namespaces some paired signature folded so far declares
+    /// ([`SigScreen::namespaces`]).
+    pub(super) signatured_namespaces: HashSet<Vec<String>>,
     /// [`AssemblyEnv::core_attribute_aliases`](crate::AssemblyEnv::core_attribute_aliases)
     /// for the env the fold resolves against, set when the fold starts.
     pub(super) assembly_core_attribute_aliases: Arc<crate::assembly_env::CoreAttributeAliases>,
@@ -1181,6 +1184,10 @@ impl ProjectItems {
         self.core_attribute_alias_declared |= file.declares_core_attribute_alias;
         let trust_attribute_spellings =
             paired_screen.is_some_and(|screen| self.trusts_attribute_spellings_of(screen));
+        if let Some(screen) = paired_screen {
+            self.signatured_namespaces
+                .extend(screen.namespaces.iter().cloned());
+        }
         let idx = match paired_screen {
             None => FileExportIndices::from_decls(file),
             Some(screen) => {

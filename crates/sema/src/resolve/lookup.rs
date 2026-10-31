@@ -2048,9 +2048,29 @@ impl<'a> Resolver<'a> {
         // is always brought in, a submodule's members only through auto-open
         // fragments.
         let is_namespace = self.is_project_namespace_path(namespace);
-        // Everything in the frame before this fold — what a type it brings
-        // may evict (see the end of this function).
-        let entries_before = self.module_frame().entries.len();
+        // A constructible type directly under a signatured namespace takes
+        // FCS's unqualified slot from a same-named value already visible — an
+        // implicit FSharp.Core auto-open's `ref` in any enclosing frame, a
+        // local bound before the open — so a bare `ref ()` is its
+        // constructor, which sema does not model. Before signatured
+        // namespaces shadowed by name, every one of them raised the barrier
+        // and stood behind it; it still goes up here wherever a collision is
+        // possible — a visible entry of the name, or a binder of it anywhere
+        // in this file — since a type whose name nothing else claims evicts
+        // nothing. (An unsigned namespace never raised it, and its bare
+        // constructor contest is unmodelled: see
+        // `sig_namespace_fold_diff::unsigned_constructor_slot_contest`.)
+        if is_namespace
+            && self.preceding.signatured_namespaces.contains(namespace)
+            && self
+                .direct_project_type_contestants(namespace)
+                .iter()
+                .any(|name| {
+                    self.latest_entry(name).is_some() || self.own_binder_simple_names.contains(name)
+                })
+        {
+            self.open_generation += 1;
+        }
         let direct_tier = if is_namespace {
             self.direct_tier_ids_at(namespace)
         } else {
@@ -2251,28 +2271,6 @@ impl<'a> Resolver<'a> {
             entry.opened_case = true;
             self.module_frame().entries.push(entry);
             count += 1;
-        }
-        // A constructible type directly under this namespace takes FCS's
-        // unqualified slot from a same-named value an earlier open put in
-        // scope — an implicit FSharp.Core auto-open's `ref` — so `ref ()` is
-        // its constructor. Sema models no project type constructor, so the
-        // opened value is withdrawn in place: still in scope, naming nothing.
-        // Withdrawn rather than shadowed by a new entry, which would turn a
-        // same-named module qualifier (`Color.Red`) into member access on a
-        // value; only opened entries, since a local's contest with a type is
-        // [`Self::head_value_slot`]'s to order.
-        if is_namespace {
-            let evicting: HashSet<String> = self
-                .direct_project_type_contestants(namespace)
-                .into_iter()
-                .collect();
-            if !evicting.is_empty() {
-                for entry in self.module_frame().entries[..entries_before].iter_mut() {
-                    if entry.from_open && evicting.contains(&entry.name) {
-                        entry.withdraw(DeclineCause::ProjectTypeShadow);
-                    }
-                }
-            }
         }
         // A signatured fragment's bare names with no exported identity
         // ([`ProjectItems::namespace_shadow_names`](super::model::ProjectItems)):
