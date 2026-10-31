@@ -2474,6 +2474,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeig
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:12:29-12:35	height Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:12:36-12:41	nodes Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:130:17-130:21	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:131:17-131:32	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:133:12-133:16	node Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:134:12-134:27	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:136:9-136:13	node Value { is_function: false } use agree-none
@@ -2550,8 +2551,10 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeig
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:185:25-185:42	removeMinThrowing Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:185:43-185:44	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:188:31-188:36	child Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:189:24-189:46	isInRecomputeHeap Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:189:47-189:52	child Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:18:22-18:26	node Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:190:25-190:53	increaseHeight Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:190:54-190:67	recomputeHeap Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:190:68-190:73	child Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:192:24-192:29	child Parameter use agree-none
@@ -2579,9 +2582,14 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeig
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:204:69-204:70	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:204:71-204:84	originalChild Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:204:85-204:99	originalParent Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:205:48-205:63	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:207:40-207:46	parent Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:208:40-208:55	toUnit Value { is_function: true } cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:210:33-210:48	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:212:28-212:34	parent Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:213:28-213:43	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:215:27-215:32	child Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:216:23-216:41	BindLhsChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:216:43-216:47	bind PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:218:43-218:47	bind Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:219:45-219:46	r Value { is_function: false } def agree-none
@@ -2594,6 +2602,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeig
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:225:55-225:64	nodeOnRhs Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:226:45-226:46	r Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:226:50-226:59	nodeOnRhs Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:228:48-228:71	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:228:72-228:81	nodeOnRhs Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:229:104-229:109	child Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:229:110-229:119	nodeOnRhs Parameter use agree-none
@@ -2601,8 +2610,12 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeig
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:229:73-229:74	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:229:75-229:88	originalChild Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:229:89-229:103	originalParent Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:231:45-231:60	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:233:40-233:49	nodeOnRhs Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:234:40-234:55	toUnit Value { is_function: true } cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:236:33-236:48	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:238:28-238:32	bind PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:239:28-239:43	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:241:16-241:21	child Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:242:16-242:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:244:12-244:28	globalFlag Value { is_function: false } cross-file-use agree-doc
@@ -2699,13 +2712,17 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValue
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:10:11-10:36	Snapshot UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:10:37-10:45	snapshot PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:12:31-12:39	snapshot Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:13:21-13:39	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:13:47-13:55	snapshot Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:13:59-13:74	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:15:16-15:24	snapshot PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:16:16-16:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:17:11-17:40	StepFunction UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:17:41-17:45	node PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:19:31-19:35	node Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:20:21-20:47	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:20:55-20:59	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:20:63-20:78	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:22:16-22:20	node PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:23:16-23:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AlarmValueAction.fs:6:20-6:21	t Parameter def agree-none
@@ -2793,6 +2810,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:19
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:19:26-19:35	nodeOnRhs Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:21:21-21:22	f Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:21:39-21:48	nodeOnRhs Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:22:21-22:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:24:16-24:17	r Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:25:16-25:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:27:20-27:25	_invA Parameter def agree-none
@@ -2807,6 +2825,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:32
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:33:29-33:37	physSame Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:33:38-33:39	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:33:40-33:42	t' Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:36:21-36:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:38:16-38:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:39:16-39:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:40:11-40:12	k PatternLocal def agree-none
@@ -2819,6 +2838,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:46
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:47:29-47:37	physSame Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:47:38-47:39	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:47:40-47:42	t' Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:50:21-50:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:52:16-52:18	t' PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:53:16-53:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:55:9-55:30	iterNodesCreatedOnRhs Value { is_function: true } use agree-none
@@ -2827,9 +2847,11 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:57
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:59:35-59:39	node Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:60:34-60:38	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:60:66-60:67	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:63:28-63:51	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:63:52-63:56	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:64:32-64:33	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:64:54-64:58	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:67:25-67:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:69:20-69:24	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:6:18-6:19	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:6:9-6:16	isValid Value { is_function: true } def agree-doc
@@ -2845,6 +2867,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:81
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:82:33-82:41	physSame Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:82:42-82:43	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:82:44-82:46	t' Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:85:25-85:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:87:20-87:24	node PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:88:20-88:35	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Bind.fs:89:15-89:16	k PatternLocal def agree-none
@@ -3117,6 +3140,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:126:25-126:26	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:126:37-126:48	childIndex2 Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:126:53-126:56	tmp Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:127:25-127:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:129:20-129:21	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:129:32-129:43	childIndex2 Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:12:7-12:14	Invalid UnionCase def agree-none
@@ -3145,12 +3169,14 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:144:16-144:29	packedEdgeOpt Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:147:27-147:31	edge Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:148:17-148:21	edge Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:149:17-149:32	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:151:12-151:25	packedEdgeOpt Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:152:12-152:27	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:154:17-154:32	runOnChangeEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:156:27-156:28	r Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:157:17-157:18	r Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:157:28-157:29	r Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:158:17-158:32	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:161:32-161:33	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:161:50-161:77	BeforeMainComputationResult Type use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:161:9-161:30	beforeMainComputation Value { is_function: true } def agree-none
@@ -3186,6 +3212,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:192:29-192:30	v PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:192:34-192:35	r Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:192:45-192:46	v PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:194:20-194:35	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:197:26-197:27	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:197:43-197:53	childIndex Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:197:9-197:24	runEdgeCallback Value { is_function: true } def agree-none
@@ -3206,6 +3233,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:31:35-31:36	e Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:32:33-32:34	e Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:32:49-32:50	i Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:33:25-33:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:35:20-35:23	opt Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:36:20-36:35	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:38:24-38:27	opt Parameter use agree-none
@@ -3222,10 +3250,12 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:54:17-54:18	i PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:54:26-54:37	numChildren Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:56:35-56:36	r Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:57:33-57:52	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:57:53-57:54	r Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:58:29-58:49	countInvalidChildren Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:58:53-58:73	countInvalidChildren Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:5:15-5:26	StaleResult Type def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:60:25-60:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:62:20-62:28	children Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:62:30-62:31	i PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Expert.fs:63:20-63:35	toUnit Value { is_function: true } cross-file-use agree-none
@@ -3367,18 +3397,23 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyze
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:10:11-10:17	Always UnionCase def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:111:27-111:31	node Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:112:23-112:27	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:113:19-113:58	BindLhsChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:113:60-113:64	bind PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:115:39-115:43	bind Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:116:29-116:55	iterNodesCreatedOnRhs Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:116:56-116:60	bind Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:116:61-116:62	f Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:117:29-117:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:119:24-119:28	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:11:11-11:16	Never UnionCase def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:120:24-120:39	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:122:12-122:16	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:123:12-123:27	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:125:17-125:25	kindEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:125:37-125:41	Kind Type use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:127:27-127:28	n Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:127:31-127:32	n Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:127:41-127:52	ofKind Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:12:11-12:20	PhysEqual UnionCase def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:130:17-130:21	kind Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:130:23-130:24	n Parameter def agree-none
@@ -3388,6 +3423,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyze
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:132:39-132:45	Cutoff Type use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:134:27-134:28	n Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:134:31-134:32	n Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:134:43-134:58	ofCutoff Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:137:17-137:23	cutoff Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:137:25-137:26	n Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ForAnalyzer.fs:137:42-137:43	n Parameter use agree-none
@@ -3641,6 +3677,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse.fs:26:33-26:41	physSame Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse.fs:26:42-26:43	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse.fs:26:44-26:46	t' Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse.fs:29:25-29:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse.fs:31:20-31:22	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse.fs:32:20-32:35	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj IfThenElse.fs:33:15-33:16	k PatternLocal def agree-none
@@ -3830,11 +3867,13 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incrementa
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:193:15-193:19	IVar Type use declined ConstructorCall fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:194:20-194:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:194:32-194:33	x Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:194:36-194:51	createVar Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:194:52-194:57	state Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:194:63-194:64	x Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:196:20-196:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:196:33-196:48	useCurrentScope Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:196:49-196:50	x Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:197:17-197:32	createVar Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:197:33-197:38	state Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:197:45-197:60	useCurrentScope Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:197:62-197:63	x Parameter use agree-none
@@ -3845,23 +3884,28 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incrementa
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:200:20-200:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:200:29-200:32	var Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:200:33-200:34	a Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:200:37-200:49	setVar Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:200:50-200:53	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:200:54-200:55	a Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:202:20-202:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:202:33-202:36	var Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:202:37-202:38	f Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:203:17-203:29	setVar Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:203:30-203:33	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:203:35-203:36	f Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:203:38-203:53	latestValue Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:203:54-203:57	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:205:20-205:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:205:31-205:34	var Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:205:37-205:40	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:206:20-206:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:206:37-206:40	var Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:206:43-206:58	latestValue Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:206:59-206:62	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:209:9-209:15	expert Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:20:15-20:47	Disallowed UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:210:15-210:33	IExpertIncremental Type use declined ConstructorCall fcs-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:211:48-211:74	doOneStepOfStabilize Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:211:75-211:80	state Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:214:9-214:14	clock Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:215:13-215:26	defaultConfig Value { is_function: false } def agree-none
@@ -3899,27 +3943,33 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incrementa
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:232:20-232:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:232:28-232:33	clock Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:232:34-232:38	time Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:232:41-232:49	at Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:232:50-232:55	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:232:56-232:60	time Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:233:20-233:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:233:37-233:42	clock Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:233:43-233:47	time Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:233:50-233:67	atIntervals Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:233:68-233:73	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:233:74-233:78	time Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:234:20-234:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:234:38-234:43	clock Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:234:44-234:48	time Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:234:51-234:69	advanceClock Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:234:70-234:75	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:234:76-234:80	time Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:235:20-235:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:235:31-235:36	clock Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:235:37-235:41	time Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:235:44-235:55	after Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:235:56-235:61	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:235:62-235:66	time Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:237:20-237:24	this Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:237:40-237:45	clock Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:237:46-237:50	span Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:238:17-238:35	advanceClock Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:238:36-238:41	clock Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:238:55-238:64	now Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:238:65-238:70	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:238:72-238:76	span Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:23:23-23:27	this PatternLocal use agree-none
@@ -3928,6 +3978,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incrementa
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:240:40-240:41	v Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:240:42-240:44	at Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:240:45-240:51	before Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:240:54-240:68	snapshot Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:240:69-240:74	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:240:75-240:76	v Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:240:77-240:79	at Parameter use agree-none
@@ -3942,12 +3993,17 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incrementa
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:250:35-250:40	clock Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:250:41-250:45	init Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:250:46-250:51	steps Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:251:17-251:36	create Value { is_function: true } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:251:37-251:41	init Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:251:42-251:47	steps Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:252:20-252:31	konst Value { is_function: true } cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:252:33-252:48	incrState Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:252:49-252:54	clock Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:253:20-253:49	incrementalStepFunction Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:253:50-253:55	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:255:46-255:51	clock Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:255:52-255:56	node Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:256:17-256:46	incrementalStepFunction Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:256:47-256:52	clock Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:256:53-256:57	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Incremental.fs:259:15-259:26	Incremental Type use agree-none
@@ -4475,6 +4531,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalOb
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:10:27-10:28	i Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:10:32-10:33	i Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:10:47-10:48	v Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:10:53-10:68	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:110:22-110:23	i Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:110:24-110:25	j Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:110:28-110:58	setPrevInAll' Value { is_function: true } use agree-none
@@ -4496,6 +4553,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalOb
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:17:27-17:28	i Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:17:32-17:33	i Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:17:47-17:48	v Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:17:53-17:68	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:19:12-19:13	i Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:20:12-20:27	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserver.fs:22:24-22:25	t Parameter def agree-none
@@ -4599,6 +4657,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalOb
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:30-5:31	a Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:5:57-5:58	b Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:27-7:28	b Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:31-7:52	same Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:53-7:54	a Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:7:55-7:56	b Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj InternalObserverInvariant.fs:9:12-9:13	b Parameter use agree-none
@@ -4618,6 +4677,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:21
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:22:29-22:37	physSame Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:22:38-22:39	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:22:40-22:42	t' Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:25:21-25:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:27:16-27:18	t' PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:28:16-28:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Join.fs:29:11-29:12	k PatternLocal def agree-none
@@ -4645,6 +4705,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:10
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:107:38-107:45	visitor Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:107:71-107:72	b PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:107:74-107:79	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:109:21-109:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:10:11-10:27	AtIntervals UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:111:16-111:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:112:16-112:31	toUnit Value { is_function: true } cross-file-use agree-none
@@ -4658,6 +4719,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:11
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:118:40-118:41	i PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:118:58-118:62	edge Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:118:70-118:75	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:118:80-118:95	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:11:11-11:29	BindLhsChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:120:20-120:26	expert PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:120:37-120:38	i PatternLocal use agree-none
@@ -4673,6 +4735,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:12
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:126:21-126:28	visitor Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:126:54-126:57	iTE Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:126:64-126:69	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:126:74-126:89	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:128:16-128:19	iTC PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:129:16-129:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:12:11-12:24	BindMain UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4694,6 +4757,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:13
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:140:21-140:28	visitor Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:140:54-140:55	e Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:140:61-140:66	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:140:71-140:86	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:142:16-142:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:143:16-143:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:144:11-144:24	JoinMain UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4727,6 +4791,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:16
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:160:58-160:59	e Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:160:70-160:71	i PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:160:74-160:79	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:162:21-162:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:164:16-164:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:165:16-165:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:166:11-166:19	Var UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4737,6 +4802,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:16
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:170:21-170:28	visitor Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:170:54-170:58	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:170:60-170:65	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:170:70-170:85	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:172:16-172:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:173:16-173:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:174:11-174:20	Map2 UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4749,6 +4815,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:17
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:178:21-178:28	visitor Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:178:54-178:59	node1 Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:178:61-178:66	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:179:21-179:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:17:11-17:26	IfThenElse UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:181:16-181:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:182:16-182:31	toUnit Value { is_function: true } cross-file-use agree-none
@@ -4819,8 +4886,10 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:23
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:234:11-234:25	ArrayFold UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:234:26-234:35	arrayFold PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:236:31-236:40	arrayFold Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:237:21-237:40	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:237:48-237:51	inv Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:237:52-237:61	arrayFold Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:237:65-237:80	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:239:16-239:25	arrayFold PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:23:11-23:24	Snapshot UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:240:16-240:31	toUnit Value { is_function: true } cross-file-use agree-none
@@ -4835,15 +4904,19 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:24
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:243:11-243:29	BindLhsChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:243:31-243:35	bind PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:245:31-245:35	bind Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:246:21-246:35	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:246:50-246:54	bind Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:246:58-246:73	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:248:16-248:20	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:249:16-249:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:24:11-24:28	StepFunction UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:250:11-250:24	BindMain UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:250:25-250:29	bind PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:252:31-252:35	bind Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:253:21-253:35	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:253:43-253:46	inv Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:253:47-253:51	bind Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:253:55-253:70	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:255:16-255:20	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:256:16-256:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:257:11-257:21	Const UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4864,7 +4937,9 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:25
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:260:11-260:28	IfTestChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:260:30-260:40	ifThenElse PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:262:31-262:34	iTE Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:263:21-263:41	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:263:49-263:52	iTE Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:263:56-263:71	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:265:16-265:26	ifThenElse PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:266:16-266:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:267:11-267:26	IfThenElse UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4877,7 +4952,9 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:26
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:269:31-269:35	join PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:26:11-26:34	UnorderedArrayFold UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:271:31-271:35	join Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:272:21-272:35	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:272:43-272:47	join Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:272:51-272:66	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:274:16-274:20	join PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:275:16-275:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:276:11-276:24	JoinMain UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4902,8 +4979,10 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:28
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:282:11-282:34	UnorderedArrayFold UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:282:35-282:39	fold PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:284:31-284:35	fold Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:285:21-285:49	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:285:57-285:60	inv Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:285:61-285:65	fold Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:285:69-285:84	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:287:16-287:20	fold PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:288:16-288:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:289:11-289:19	Var UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -4973,6 +5052,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:85
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:85:58-85:62	fold Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:85:73-85:74	i PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:85:77-85:82	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:87:21-87:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:89:16-89:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:8:11-8:25	ArrayFold UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:90:16-90:31	toUnit Value { is_function: true } cross-file-use agree-none
@@ -4984,6 +5064,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:95
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:96:21-96:28	visitor Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:96:54-96:58	bind Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:96:64-96:69	state Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:96:74-96:89	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:98:16-98:20	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:99:16-99:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Kind.fs:9:11-9:18	At UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -5175,11 +5256,13 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:19
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:201:11-201:29	BindLhsChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:201:31-201:33	cr PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:203:31-203:33	cr Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:203:36-203:55	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:203:56-203:58	cr Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:205:16-205:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:206:11-206:28	IfTestChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:206:30-206:32	cr PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:208:31-208:33	cr Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:208:41-208:60	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:208:61-208:63	cr Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:20:27-20:28	n Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:20:31-20:32	n Parameter use agree-none
@@ -5187,11 +5270,13 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:21
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:211:11-211:29	JoinLhsChange UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:211:31-211:33	cr PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:213:31-213:33	cr Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:213:41-213:60	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:213:61-213:63	cr Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:215:16-215:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:219:11-219:24	BindMain UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:219:25-219:27	cr PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:221:31-221:33	cr Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:221:41-221:60	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:221:61-221:63	cr Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:223:16-223:18	cr PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:224:11-224:26	IfThenElse UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -5249,6 +5334,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:25
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:256:15-256:16	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:257:11-257:21	Const UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:25:27-25:28	n Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:25:31-25:50	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:25:51-25:52	n Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:260:19-260:20	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:260:34-260:49	onUpdateHandler Parameter def agree-none
@@ -5334,6 +5420,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:31
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:315:37-315:46	hasParent Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:315:47-315:52	child Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:315:53-315:54	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:318:29-318:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:31:17-31:33	changedAtOfCrate Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:31:35-31:36	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:31:52-31:53	t Parameter use agree-none
@@ -5353,9 +5440,11 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:33
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:332:33-332:41	hasChild Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:332:42-332:48	parent Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:332:49-332:50	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:335:33-335:56	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:335:57-335:63	parent Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:338:28-338:29	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:338:40-338:46	parent Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:341:25-341:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:343:20-343:26	parent Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:344:20-344:35	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:347:26-347:27	t Parameter use agree-none
@@ -5451,6 +5540,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:42
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:426:63-426:67	prev Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:429:28-429:29	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:429:55-429:59	prev Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:432:25-432:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:434:20-434:24	prev PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:435:20-435:35	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:438:21-438:38	isInRecomputeHeap Value { is_function: true } use agree-none
@@ -5470,6 +5560,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:44
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:44:19-44:21	'a TypeParam use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:450:28-450:29	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:450:55-450:59	next Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:453:25-453:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:455:20-455:24	next PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:456:20-456:35	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:459:16-459:17	t Parameter use agree-none
@@ -5489,6 +5580,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:47
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:473:59-473:63	next Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:476:32-476:33	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:476:63-476:67	next Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:479:29-479:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:481:24-481:28	next PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:482:24-482:39	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:484:43-484:47	invA Parameter use agree-none
@@ -5525,6 +5617,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:51
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:516:56-516:61	child Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:516:62-516:63	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:516:93-516:103	childIndex Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:521:33-521:48	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:523:28-523:33	child Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:524:28-524:43	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:527:16-527:32	globalFlag Value { is_function: false } cross-file-use agree-doc
@@ -5546,11 +5639,13 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:54
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:543:37-543:47	packedSame Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:544:57-544:58	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:545:103-545:114	parentIndex Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:545:42-545:59	slowGetChild Value { is_function: true } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:545:60-545:66	parent Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:545:72-545:73	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:54:38-54:39	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:54:45-54:46	f Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:54:9-54:37	iteriChildrenAllocating Value { is_function: true } cross-file-use agree-doc
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:550:29-550:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:552:24-552:30	parent Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:553:24-553:39	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:556:16-556:32	globalFlag Value { is_function: false } cross-file-use agree-doc
@@ -5717,6 +5812,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:63
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:639:67-639:82	lastParentIndex Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:639:84-639:90	parent Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:639:91-639:102	parentIndex Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:640:24-640:39	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:642:16-642:21	child Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:642:40-642:55	lastParentIndex Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:643:16-643:31	toUnit Value { is_function: true } cross-file-use agree-none
@@ -5805,7 +5901,9 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:70
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:70:54-70:58	new' Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:714:17-714:30	invariantEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:716:27-716:28	x Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:717:17-717:31	invariant Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:717:39-717:40	x Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:717:44-717:59	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:720:20-720:21	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:720:9-720:18	invariant Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:721:17-721:30	invariantEval Value { is_function: false } use agree-none
@@ -5892,10 +5990,12 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:75
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:756:34-756:35	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:757:25-757:26	f Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:757:27-757:36	nodeCrate Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:758:25-758:53	iteriChildrenAllocating Value { is_function: true } use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:758:54-758:55	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:758:63-758:73	childCrate Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:758:77-758:92	iterDescendants Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:758:93-758:103	childCrate Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:760:21-760:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:762:16-762:25	nodeCrate Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:763:16-763:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:765:19-765:34	iterDescendants Value { is_function: true } use agree-none
@@ -5914,9 +6014,11 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:77
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:770:79-770:84	attrs Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:770:9-770:31	appendUserInfoGraphviz Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:772:28-772:29	t Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:773:17-773:44	appendUserInfoGraphviz Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:773:45-773:46	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:773:47-773:52	label Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:773:53-773:58	attrs Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:773:62-773:77	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:775:12-775:21	nodeCrate Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:776:12-776:27	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:778:17-778:31	numParentsEval Value { is_function: false } def agree-none
@@ -5954,8 +6056,10 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:80
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:806:50-806:51	f Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:806:9-806:32	iteriChildrenAllocating Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:808:27-808:31	node Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:809:17-809:45	iteriChildrenAllocating Value { is_function: true } use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:809:46-809:50	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:809:51-809:52	f Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:809:56-809:71	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:80:9-80:32	iteriChildrenAllocating Value { is_function: true } use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:811:12-811:13	c Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:812:12-812:27	toUnit Value { is_function: true } cross-file-use agree-none
@@ -6016,6 +6120,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:86
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:861:9-861:28	prevInRecomputeHeap Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:863:17-863:38	isInRecomputeHeapEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:865:27-865:28	n Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:865:31-865:53	isInRecomputeHeap Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:865:54-865:55	n Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:868:28-868:29	n Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:868:52-868:53	n Parameter use agree-none
@@ -6023,6 +6128,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:86
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:868:9-868:26	isInRecomputeHeap Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:870:17-870:38	needsToBeComputedEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:872:27-872:28	n Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:872:31-872:53	needsToBeComputed Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:872:54-872:55	n Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:875:28-875:29	n Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:875:52-875:53	n Parameter use agree-none
@@ -6030,6 +6136,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:87
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:875:9-875:26	needsToBeComputed Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:877:17-877:32	isNecessaryEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:879:27-879:28	n Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:879:31-879:54	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:879:55-879:56	n Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:87:9-87:16	isStale Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:882:22-882:23	n Parameter def agree-none
@@ -6038,6 +6145,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:88
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:882:9-882:20	isNecessary Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:884:17-884:28	isValidEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:886:27-886:28	n Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:886:31-886:50	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:886:51-886:52	n Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:889:18-889:19	n Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:889:42-889:43	n Parameter use agree-none
@@ -6565,6 +6673,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeH
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:215:17-215:41	clearNextInRecomputeHeap Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:217:27-217:31	node Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:218:17-218:21	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:219:17-219:32	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:21:32-21:36	node Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:222:20-222:21	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:222:9-222:18	removeMin Value { is_function: true } def agree-none
@@ -6711,7 +6820,9 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBala
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs:9:32-9:40	children Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:10:27-10:31	node Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:10:32-10:39	_update Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:11:17-11:31	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:11:39-11:43	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:11:47-11:62	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:13:12-13:13	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:14:12-14:27	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RunOnUpdateHandlers.fs:16:14-16:16	'a TypeParam def agree-none
@@ -6744,6 +6855,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:28:11-28:15	Bind UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:28:16-28:20	bind PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:30:31-30:32	e Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:30:35-30:47	isValid Value { is_function: true } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:30:48-30:49	e Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:32:16-32:20	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:34:22-34:23	s Parameter def agree-none
@@ -6754,6 +6866,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:3
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:37:16-37:20	bind PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:39:31-39:35	bind Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:39:38-39:42	bind Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:39:51-39:74	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:41:16-41:20	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:43:18-43:19	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:43:30-43:34	node Parameter def agree-none
@@ -6769,6 +6882,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:5
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:51:49-51:53	bind Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:52:21-52:25	bind Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:52:76-52:80	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:53:21-53:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:55:16-55:20	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:56:16-56:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:58:20-58:21	s Parameter def agree-none
@@ -6778,7 +6892,9 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:6
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:61:11-61:21	Bind UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:61:22-61:26	bind PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:63:31-63:35	bind Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:64:21-64:35	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:64:50-64:54	bind Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:64:58-64:73	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:66:16-66:20	bind PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:67:16-67:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Scope.fs:69:16-69:18	s1 Parameter def agree-none
@@ -7806,9 +7922,12 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1177:17-1177:30	recomputeEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1179:27-1179:31	node Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:117:11-117:32	NotStabilizing UnionCase cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:20-1180:36	globalFlag Value { is_function: false } cross-file-use agree-doc
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:45-1180:67	needsToBeComputed Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:68-1180:72	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1183:17-1183:26	recompute Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1183:27-1183:31	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1183:35-1183:50	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1186:44-1186:45	r Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1186:9-1186:42	recomputeFirstNodeThatIsNecessary Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1187:13-1187:17	node Value { is_function: false } def agree-none
@@ -7827,19 +7946,24 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1193:26-1193:35	pop Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1193:36-1193:37	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1196:31-1196:47	internalObserver Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1197:24-1197:40	globalFlag Value { is_function: false } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1198:32-1198:48	internalObserver Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:119:13-119:47	reraiseWithMessage Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:119:48-119:54	raised PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:11:15-11:25	StateStats Type def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1200:21-1200:37	internalObserver Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1200:47-1200:77	Unlinked UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1203:39-1203:51	allObservers Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1204:32-1204:53	same Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1204:54-1204:70	internalObserver Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1204:71-1204:83	allObservers Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1205:33-1205:34	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1205:51-1205:67	internalObserver Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1207:29-1207:52	unlink Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1207:53-1207:69	internalObserver Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1208:29-1208:47	checkIfUnnecessary Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1208:48-1208:64	internalObserver Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1209:29-1209:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1211:24-1211:25	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1213:16-1213:22	packed Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1214:16-1214:31	toUnit Value { is_function: true } cross-file-use agree-none
@@ -7873,6 +7997,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1234:33-1234:49	internalObserver Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1235:21-1235:38	disallowFutureUse Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1235:39-1235:55	internalObserver Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1237:17-1237:32	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:123:11-123:43	StabilizePreviouslyRaised UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1240:37-1240:38	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1240:9-1240:35	disallowFinalizedObservers Value { is_function: true } def agree-none
@@ -7930,14 +8055,20 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1281:36-1281:37	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1284:31-1284:47	internalObserver Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1285:27-1285:43	internalObserver Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1286:23-1286:50	InUse UnionCase cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1287:23-1287:55	Disallowed UnionCase cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1288:23-1288:53	Unlinked UnionCase cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1289:23-1289:52	Created UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:128:17-128:18	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1290:25-1290:41	internalObserver Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1290:51-1290:78	InUse UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1291:29-1291:44	oldAllObservers Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1291:47-1291:48	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1293:31-1293:46	oldAllObservers Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1294:37-1294:53	oldAllObservers' PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1295:29-1295:45	internalObserver Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1295:59-1295:74	oldAllObservers Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1296:29-1296:63	setPrevInAll Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1296:64-1296:80	oldAllObservers' PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1296:92-1296:98	packed Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1299:25-1299:26	t Parameter use agree-none
@@ -7946,6 +8077,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1300:29-1300:38	observing Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1300:41-1300:57	internalObserver Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1301:29-1301:41	wasNecessary Value { is_function: false } def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1301:44-1301:67	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1301:68-1301:77	observing Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1303:25-1303:34	observing Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1304:29-1304:38	observing Value { is_function: false } use agree-none
@@ -7963,10 +8095,13 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1318:25-1318:49	handleAfterStabilization Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1318:50-1318:59	observing Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:131:39-131:42	obs Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1320:28-1320:44	globalFlag Value { is_function: false } cross-file-use agree-doc
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1321:37-1321:60	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1321:61-1321:70	observing Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1323:32-1323:44	wasNecessary Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1324:29-1324:44	becameNecessary Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1324:45-1324:54	observing Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1326:21-1326:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1328:16-1328:22	packed Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1329:16-1329:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:132:35-132:38	obs Parameter use agree-none
@@ -7985,6 +8120,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1338:13-1338:47	reraiseWithMessage Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1338:48-1338:51	exn PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1339:11-1339:29	Stabilizing UnionCase cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:133:31-133:58	InUse UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1341:24-1341:32	observer Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1341:9-1341:22	observerValue Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1343:17-1343:38	observerValueThrowing Value { is_function: true } use agree-none
@@ -8004,6 +8140,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1349:52-1349:53	f Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1349:54-1349:55	t Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1349:9-1349:22	onUpdate Value { is_function: true } cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:134:31-134:63	Disallowed UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1350:34-1350:38	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1350:9-1350:33	handleAfterStabilization Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1352:34-1352:42	observer Parameter def agree-none
@@ -8028,6 +8165,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1358:31-1358:34	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1359:25-1359:26	t Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1359:9-1359:10	t Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:135:31-135:60	Created UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1360:22-1360:27	value Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1360:9-1360:12	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1362:12-1362:15	var Parameter use agree-none
@@ -8043,6 +8181,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1369:40-1369:45	watch Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1369:54-1369:76	isInRecomputeHeap Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1369:77-1369:82	watch Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:136:31-136:61	Unlinked UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1370:17-1370:34	add Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1370:35-1370:36	t Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1370:51-1370:56	watch Value { is_function: false } use agree-none
@@ -8073,6 +8212,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1386:17-1386:28	reclaimEval Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1388:27-1388:28	w Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1389:65-1389:66	w Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1389:70-1389:85	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:138:63-138:66	obs Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1392:39-1392:40	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1392:9-1392:37	reclaimSpaceInWeakHashTables Value { is_function: true } def agree-none
@@ -8090,6 +8230,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1398:9-1398:10	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1399:36-1399:37	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1399:9-1399:35	disallowFinalizedObservers Value { is_function: true } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:139:29-139:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1402:25-1402:26	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1402:9-1402:24	addNewObservers Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1403:35-1403:36	t Parameter use agree-none
@@ -8105,6 +8246,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1413:17-1413:42	setVarWhileNotStabilizing Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1413:43-1413:46	var Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1413:47-1413:52	value Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1414:17-1414:32	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1417:23-1417:24	t Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1417:9-1417:21	stabilizeEnd Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1418:12-1418:28	globalFlag Value { is_function: false } cross-file-use agree-doc
@@ -8134,7 +8276,9 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1438:36-1438:40	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1439:21-1439:25	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1441:25-1441:35	nodeUpdate Value { is_function: false } def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1442:33-1442:52	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1442:53-1442:57	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1444:38-1444:61	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1444:62-1444:66	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1447:33-1447:42	new_value Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1447:45-1447:49	node Parameter use agree-none
@@ -8143,9 +8287,12 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1451:41-1451:49	oldValue PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1451:62-1451:70	oldValue PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1451:72-1451:81	new_value Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1453:21-1453:31	push Value { is_function: true } cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1453:33-1453:57	make Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1453:58-1453:62	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1453:63-1453:73	nodeUpdate Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1453:75-1453:76	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1454:21-1454:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1456:16-1456:20	node Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1457:16-1457:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1459:21-1459:51	RunningOnUpdateHandlers UnionCase cross-file-use agree-none
@@ -8160,9 +8307,11 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1463:49-1463:58	pop Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1466:31-1466:35	node Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1466:36-1466:46	nodeUpdate Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1467:21-1467:45	runOnUpdateHandlers Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1467:46-1467:50	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1467:51-1467:61	nodeUpdate Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1467:62-1467:65	now Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1467:69-1467:84	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1469:16-1469:20	rouh Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:146:17-146:18	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1470:16-1470:31	toUnit Value { is_function: true } cross-file-use agree-none
@@ -8224,6 +8373,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1508:21-1508:31	StepResult Type use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1508:21-1508:36	Done UnionCase use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1509:15-1509:45	RunningOnUpdateHandlers UnionCase cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:150:29-150:43	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:150:51-150:55	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1510:15-1510:47	StabilizePreviouslyRaised UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1511:17-1511:37	ensureNotStabilizing Value { is_function: true } use agree-none
@@ -8357,6 +8507,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1569:27-1569:32	input Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1569:9-1569:25	necessaryIfAlive Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:156:32-156:36	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:156:46-156:77	maxHeightSeen Value { is_function: true } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:156:78-156:79	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1575:13-1575:21	observer Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1575:24-1575:38	createObserver Value { is_function: true } use agree-none
@@ -8390,6 +8541,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1596:23-1596:26	lhs Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1597:29-1597:38	lhsChange Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1599:28-1599:37	top Value { is_function: false } cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:159:29-159:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1606:24-1606:33	lhsChange Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1606:34-1606:46	never Value { is_function: false } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1606:9-1606:23	setCutoff Value { is_function: true } cross-file-use agree-none
@@ -9058,12 +9210,15 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2012:40-2012:44	snap Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2013:33-2013:40	valueAt Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2013:43-2013:47	snap Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2015:32-2015:48	globalFlag Value { is_function: false } cross-file-use agree-doc
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2016:41-2016:60	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2016:61-2016:65	main Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2018:29-2018:38	setFreeze Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2018:39-2018:43	main Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2018:44-2018:51	valueAt Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2019:29-2019:38	makeStale Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2019:39-2019:43	main Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2019:47-2019:62	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2021:24-2021:28	snap PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2022:24-2022:39	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2023:19-2023:48	StepFunction UnionCase cross-file-use agree-none
@@ -9071,9 +9226,11 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2025:39-2025:41	sf Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2026:33-2026:37	main Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2026:40-2026:42	sf Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2028:32-2028:51	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2028:52-2028:56	main Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2029:33-2029:42	makeStale Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2029:43-2029:47	main Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2031:29-2031:44	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2033:24-2033:26	sf PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2034:24-2034:39	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2036:16-2036:32	globalFlag Value { is_function: false } cross-file-use agree-doc
@@ -9221,9 +9378,11 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2148:62-2148:66	name Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:214:23-214:55	Disallowed UnionCase cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2151:31-2151:38	current Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2152:29-2152:42	hasChild Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2152:43-2152:47	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2152:48-2152:55	current Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2153:53-2153:57	name Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2155:21-2155:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2157:16-2157:23	current Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2158:16-2158:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2160:13-2160:47	assertCurrentlyRunningNodeIsParent Value { is_function: true } def agree-none
@@ -9235,9 +9394,11 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2161:56-2161:61	state Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2161:62-2161:66	name Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2164:31-2164:38	current Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2165:29-2165:43	hasParent Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2165:44-2165:48	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2165:49-2165:56	current Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2166:53-2166:57	name Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2168:21-2168:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2170:16-2170:23	current Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2171:16-2171:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2173:13-2173:22	makeStale Value { is_function: true } def agree-none
@@ -9336,8 +9497,10 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2244:45-2244:53	lastEdge Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2246:28-2246:37	edgeIndex Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2246:41-2246:54	lastEdgeIndex Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2247:32-2247:55	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2247:56-2247:60	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2248:104-2248:117	lastEdgeIndex Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2248:33-2248:62	swapChildrenExceptInKind Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2248:63-2248:67	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2248:68-2248:72	edge Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2248:79-2248:88	edgeIndex Value { is_function: false } use agree-none
@@ -9345,20 +9508,29 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2250:49-2250:50	e PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2250:51-2250:60	edgeIndex Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2250:61-2250:74	lastEdgeIndex Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2252:32-2252:48	globalFlag Value { is_function: false } cross-file-use agree-doc
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2253:33-2253:47	invariant Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2253:55-2253:59	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2255:60-2255:61	e PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2257:28-2257:44	globalFlag Value { is_function: false } cross-file-use agree-doc
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2258:37-2258:49	isStale Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2258:50-2258:54	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:225:19-225:37	Stabilizing UnionCase cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2260:28-2260:51	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2260:52-2260:56	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2261:29-2261:40	removeChild Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2261:41-2261:45	edge Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2261:52-2261:56	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2261:57-2261:70	lastEdgeIndex Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2263:37-2263:59	isInRecomputeHeap Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2263:60-2263:64	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2264:33-2264:50	add Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2264:51-2264:56	state Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2264:71-2264:75	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2266:37-2266:56	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2266:57-2266:61	edge Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2267:60-2267:61	e PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2269:25-2269:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:226:21-226:22	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2271:20-2271:28	lastEdge Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2272:20-2272:35	toUnit Value { is_function: true } cross-file-use agree-none
@@ -9367,6 +9539,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:229:43-229:46	var Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:22:7-22:16	KeepGoing UnionCase def agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:230:36-230:39	var Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:233:33-233:48	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:235:28-235:29	v Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:236:28-236:43	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:239:13-239:28	invariant Value { is_function: true } cross-file-use agree-none
@@ -9473,7 +9646,9 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:291:15-291:38	UnorderedArrayFold UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:291:39-291:40	u PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:293:35-293:36	u Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:294:25-294:60	forceFullCompute Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:294:61-294:62	u Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:294:66-294:81	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:296:20-296:21	u PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:297:20-297:35	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:298:15-298:26	Expert UnionCase cross-file-use declined QualifierArityMismatch fcs-none
@@ -9715,24 +9890,39 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:4
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:48:35-48:36	f Parameter def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:48:9-48:22	iterObservers Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:491:31-491:35	node Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:492:29-492:48	isValid Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:492:49-492:53	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:493:25-493:40	ofUnit Value { is_function: true } cross-file-use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:494:29-494:53	shouldBeInvalidated Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:494:54-494:58	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:495:25-495:39	invalidateNode Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:495:40-495:44	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:495:48-495:63	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:49:21-49:22	r Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:49:25-49:26	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:510:24-510:40	globalFlag Value { is_function: false } cross-file-use agree-doc
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:511:33-511:55	needsToBeComputed Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:511:56-511:60	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:513:27-513:31	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:514:23-514:34	Expert UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:514:35-514:41	expert PatternLocal def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:517:25-517:51	incrInvalidChildren Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:517:52-517:58	expert PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:518:23-518:27	kind PatternLocal def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:519:28-519:44	globalFlag Value { is_function: false } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:51:15-51:16	r Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:520:35-520:39	kind PatternLocal use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:521:31-521:44	BindMain UnionCase cross-file-use declined QualifierArityMismatch fcs-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:522:31-522:46	IfThenElse UnionCase cross-file-use declined QualifierArityMismatch fcs-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:523:31-523:44	JoinMain UnionCase cross-file-use declined QualifierArityMismatch fcs-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:528:29-528:51	isInRecomputeHeap Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:528:52-528:56	node Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:529:25-529:42	add Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:529:43-529:44	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:529:59-529:63	node Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:52:17-52:25	observer Value { is_function: false } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:52:28-52:29	r Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:531:21-531:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:533:16-533:20	node Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:534:16-534:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:53:13-53:14	r Value { is_function: false } use agree-none
@@ -9905,6 +10095,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:6
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:657:12-657:28	globalFlag Value { is_function: false } cross-file-use agree-doc
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:658:21-658:44	isNecessary Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:658:45-658:51	parent Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:65:25-65:40	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:661:19-661:41	isInRecomputeHeap Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:661:42-661:48	parent Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:662:17-662:40	isNone Value { is_function: true } cross-file-use agree-doc
@@ -10035,12 +10226,14 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:7
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:758:19-758:42	UnorderedArrayFold UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:758:43-758:44	u PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:760:39-760:40	u Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:761:29-761:60	childChanged Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:762:33-762:34	u Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:763:33-763:37	node Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:764:33-764:37	node Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:764:67-764:78	parentIndex Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:765:33-765:44	oldValueOpt Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:766:33-766:41	newValue Value { is_function: false } use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:767:32-767:47	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:769:24-769:25	u PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:76:18-76:23	stats Value { is_function: true } def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:76:25-76:26	t Parameter def agree-none
@@ -10092,12 +10285,14 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:8
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:811:19-811:42	UnorderedArrayFold UnionCase cross-file-use declined QualifierArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:811:43-811:44	u PatternLocal def agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:813:39-813:40	u Parameter def agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:814:29-814:60	childChanged Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:815:33-815:34	u Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:816:33-816:37	node Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:817:33-817:37	node Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:818:33-818:44	oldValueOpt Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:819:33-819:41	newValue Value { is_function: false } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:81:13-81:14	t Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:820:32-820:47	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:822:24-822:25	u PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:823:24-823:39	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:826:20-826:36	globalFlag Value { is_function: false } cross-file-use agree-doc
@@ -10447,6 +10642,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFuncti
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunctionNode.fs:37:29-37:37	physSame Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunctionNode.fs:37:38-37:39	t Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunctionNode.fs:37:40-37:42	t2 Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunctionNode.fs:40:21-40:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunctionNode.fs:42:16-42:18	t2 PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunctionNode.fs:43:16-43:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj StepFunctionNode.fs:44:11-44:12	k PatternLocal def agree-none
@@ -11288,6 +11484,7 @@ WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedA
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:93:29-93:33	same Value { is_function: true } use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:93:34-93:35	f Parameter use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:93:36-93:38	t' Parameter use agree-none
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:96:21-96:36	ofUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:98:16-98:18	t' PatternLocal use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:99:16-99:31	toUnit Value { is_function: true } cross-file-use agree-none
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:10:15-10:16	t Parameter use agree-none
