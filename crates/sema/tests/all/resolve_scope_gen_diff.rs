@@ -107,13 +107,16 @@ const MUST_COMMIT: &[RefKind] = &[
     RefKind::SelfIdentifier,
     RefKind::MemberParam,
     RefKind::StaticMemberParam,
+    RefKind::AugmentationSelfIdentifier,
+    RefKind::AugmentationMemberParam,
+    RefKind::AugmentationStaticMemberParam,
     RefKind::UnionCase,
 ];
 
 /// How many uses of the known fold-back class (below) the default seeds
 /// produce. Two-sided: fewer means the defect is (partly) fixed — #233 has
 /// landed — and the classifier should go.
-const KNOWN_FOLD_BACK_AT_DEFAULT: usize = 9;
+const KNOWN_FOLD_BACK_AT_DEFAULT: usize = 10;
 
 /// Whether our answer at `r` is exactly the known defect that open PR #233
 /// fixes: sema does not fold an in-file `[<AutoOpen>]` module's values back

@@ -146,34 +146,28 @@ fn an_attribute_after_the_doc_keeps_it_and_one_before_loses_it() {
     assert_attached(after, "v", &[]);
 }
 
-/// Asserts that the occurrence at `at` is no graded site: resolution declined
-/// it, so no doc is looked up there.
-#[track_caller]
-fn assert_not_a_site(sites: &[(usize, Verdict, Vec<String>)], at: usize) {
-    assert!(
-        sites.iter().all(|(offset, _, _)| *offset != at),
-        "resolution committed the occurrence at {at}: {sites:?}"
-    );
-}
-
 #[test]
-fn a_type_name_declared_at_two_arities_is_no_doc_site() {
+fn same_named_types_of_two_arities_each_keep_their_doc() {
     // FCS binds `CT<int>` to the generic `CT` and the bare `CT` to the plain
-    // one; resolution keeps one declaration per name, so it declines both
-    // rather than choose by arity.
+    // one, whatever their order; resolution chooses by arity too, so each
+    // keeps its own doc.
     let src = "module M\n/// generic\ntype CT<'T> = int -> 'T\n/// plain\ntype CT = int -> unit\nlet f (x: CT<int>) = x\nlet g (x: CT) = x\n";
     let sites = occurrences(src, "CT");
-    assert_not_a_site(&sites, src.find("CT<int>").unwrap());
-    assert_not_a_site(&sites, src.find("CT) =").unwrap());
+    let (verdict, fcs) = site(&sites, src.find("CT<int>").unwrap());
+    assert_eq!(fcs, [" generic"]);
+    assert_eq!(verdict, Verdict::Agree { attached: true });
+    let (verdict, fcs) = site(&sites, src.find("CT) =").unwrap());
+    assert_eq!(fcs, [" plain"]);
+    assert_eq!(verdict, Verdict::Agree { attached: true });
 }
 
 #[test]
 fn an_assembly_namesake_of_another_arity_is_not_shown_the_source_doc() {
     // `Action<int>` is `System.Action<'T>` to FCS, not the project's `Action`,
-    // and resolution declines an application of another arity.
+    // and resolution declines it rather than take the in-file namesake.
     let src = "module M\nopen System\n/// mine\ntype Action = int\nlet f (x: Action<int>) = x\n";
     let sites = occurrences(src, "Action");
-    assert_not_a_site(&sites, src.find("Action<int>").unwrap());
+    assert_ungraded(&sites, src.find("Action<int>").unwrap());
 }
 
 /// Asserts that a named argument's label in `src` is no hover site — FCS binds
@@ -228,10 +222,12 @@ fn an_equality_operand_in_a_function_argument_shows_its_doc() {
 }
 
 #[test]
-fn arity_mismatch_declines_across_reopened_namespaces_and_files() {
+fn arity_namesakes_across_reopened_namespaces_and_files_keep_their_docs() {
     let src = "namespace N\n/// generic\ntype T<'a> = int -> 'a\nnamespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
     let sites = occurrences(src, "T");
-    assert_not_a_site(&sites, src.find("T<int>").unwrap());
+    let (verdict, fcs) = site(&sites, src.find("T<int>").unwrap());
+    assert_eq!(fcs, [" generic"]);
+    assert_eq!(verdict, Verdict::Agree { attached: true });
 
     let a = "namespace N\n/// generic\ntype T<'a> = int -> 'a\n";
     let b = "namespace N\n/// plain\ntype T = int -> unit\nmodule M =\n    let f (x: T<int>) = x\n";
@@ -354,6 +350,16 @@ fn occurrences(src: &str, name: &str) -> Vec<(usize, Verdict, Vec<String>)> {
             )
         })
         .collect()
+}
+
+/// Asserts that nothing is graded at byte `at`: resolution declined the
+/// occurrence, so no doc can be shown there.
+#[track_caller]
+fn assert_ungraded(sites: &[(usize, Verdict, Vec<String>)], at: usize) {
+    assert!(
+        sites.iter().all(|(offset, _, _)| *offset != at),
+        "resolution should decline the occurrence at {at}: {sites:?}"
+    );
 }
 
 /// The verdict at the occurrence of a type name starting at byte `at`, with
@@ -512,11 +518,20 @@ fn a_light_directive_inside_a_doc_block_declines() {
 
 #[test]
 fn a_parenthesised_tuple_postfix_argument_is_one_type_argument() {
-    // `(int * string) T` applies `T` to one argument, so FCS binds `T<'a>`;
-    // the source-doc arity guard must count it as one too.
+    // `(int * string) T` applies `T` to one argument, so it is `T<'a>` and
+    // keeps its doc; counting the tuple's two elements would decline it.
     let src = "module M\n/// one\ntype T<'a> = 'a list\nlet x : (int * string) T = []\n";
     let sites = every(src, "T");
     let use_site = src.rfind("T = []").unwrap();
-    let (_, _, _, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
     assert_eq!(fcs, &[" one"]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
+    // Beside a two-parameter `T`, FCS still binds `T<'a>`, and so does
+    // resolution.
+    let src = "module M\n/// one\ntype T<'a> = 'a list\n/// two\ntype T<'a, 'b> = 'a * 'b\nlet x : (int * string) T = []\n";
+    let sites = every(src, "T");
+    let use_site = src.rfind("T = []").unwrap();
+    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
+    assert_eq!(fcs, &[" one"]);
+    assert_eq!(verdict, &Verdict::Agree { attached: true });
 }

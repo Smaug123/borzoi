@@ -61,6 +61,7 @@ Both halves exist for every axis, and the split is:
 | parser on adversarial input | `parser_panic_sweep` | — |
 | in-file resolution | `resolve_corpus_diff` | `resolution-divergence` |
 | attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
+| resolver walk coverage | `silent_region_sweep` | — |
 | inferred types | `infer_corpus_diff` | — |
 | find references | the crate's own suite | `find-references-differential` |
 | whole project | `corpus-diff` job | `project-corpus-diff` |
@@ -217,6 +218,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `resolve_corpus_diff` | one per sampled file (compared or skipped and why; whether FCS's check errored; its match count; its count of graded uses FCS resolves outside the file) and one per gap, alt-binder or divergence use. Matches are counted per file rather than listed — ~22k of them — which loses no movement, since every non-match use is listed by key. External-target uses (~18k) are counted likewise: any of them not declined is a divergence, which fails first. |
 | `infer_corpus_diff` | one per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
+| `silent_region_sweep` | per clean-parsing corpus file, one per container bucket (`member-of-object-expression`, `attribute`, `let_decl`, …) holding an expression-position name the resolver recorded nothing at, with its count. The run prints a sample of each bucket's names. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
 | `project_corpus` (`crates/corpus-diff/manifests/`) | one per pinned project (comparable, with its assets counts, or skipped and why — an erroring project with each FCS error), one per Compile file (compared, with its match counts, or unreported), and one per graded record that is not a match: each deferral with what the LSP served and which guard declined, and each record set aside; and, per file, the request handlers' probe counts for the plain and the perturbed copy, with every probe whose answer is not the one the comparator's verdict implies (`handler_diff.rs`). |
 | `parser_corpus` (cst) | one per file that parses with errors or is not UTF-8, and one line counting the clean parses (~5.6k). |

@@ -23,8 +23,8 @@ WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:58:11 Sequence Type use de
 WoofWare.Incremental/WoofWare.Incremental/Sequence.fs:78:9 Sequence Type use declined ArityMismatch fcs-doc
 WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined ArityMismatch fcs-none
 WoofWare.Incremental/WoofWare.Incremental/Staged.fs declined QualifierArityMismatch fcs-none
-WoofWare.Incremental/WoofWare.Incremental/Types.fs declined ConstructorCall fcs-none x7
-WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj oracle-errors=0 agree-doc=169 cross-file-doc=3 agree-none=6738
+WoofWare.Incremental/WoofWare.Incremental/Types.fs declined ConstructorCall fcs-none x8
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj oracle-errors=0 agree-doc=169 cross-file-doc=3 agree-none=6782
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj oracle-errors=0 agree-doc=98 cross-file-doc=8 agree-none=758
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:156:11 InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/IlFormatting.fs:157:11 PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
