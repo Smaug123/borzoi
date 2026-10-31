@@ -10,8 +10,9 @@
 //! root, a signature-only `[<AutoOpen>]`) holding random declarations of every
 //! kind (values, functions, literals, patterns, active patterns, unions,
 //! operator cases, records, classes and structs with every kind of static,
-//! enums, exceptions, abbreviations, delegates, externs, nested modules,
-//! augmentations).
+//! enums, exceptions, abbreviations, delegates, externs, nested modules, and
+//! augmentations of every kind of type an augmentation can name, with and
+//! without `[<AutoOpen>]`, with every member kind).
 //!
 //! Each program binds every candidate name before the contributor, then uses
 //! each bare after it. The candidates are the names the generator wrote, their
@@ -34,16 +35,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::common::{
-    ensure_fsharp_core_dll, env_usize_or, invoke_fcs_dump_project_with_refs,
-    parse_fcs_uses_project, temp_fs_tree,
+    ensure_fsharp_core_dll, env_usize_or, invoke_fcs_dump_census,
+    invoke_fcs_dump_project_with_refs, parse_census_jsonl, parse_fcs_uses_project, temp_fs_file,
+    temp_fs_tree,
 };
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
+use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::{AstNode, TypeDefn, TypeDefnRepr};
 use borzoi_sema::{Resolution, resolve_project_files};
 use rowan::TextRange;
 
 /// Seeds checked against FCS by default.
-const DEFAULT_SEEDS: usize = 48;
+const DEFAULT_SEEDS: usize = 72;
 
 /// A small deterministic generator (xorshift64*).
 struct Rng(u64);
@@ -92,19 +96,148 @@ enum DeclKind {
     Extern,
     NestedAutoOpen,
     NestedPlain,
-    /// An `[<AutoOpen>]` class, then an intrinsic augmentation of it holding
-    /// every member kind ([`Unit::AugmentationMember`]).
-    Augmentation,
-    /// A class that is not `[<AutoOpen>]`, then an intrinsic augmentation of
-    /// it holding every member kind: nothing it declares is bare.
-    PlainAugmentation,
+    /// A declaration of a [`Target`] kind, written with an [`AutoOpenAttr`],
+    /// then an augmentation of it holding every member kind the target
+    /// accepts ([`Unit::AugmentationMember`]).
+    Augmentation(Target, AutoOpenAttr),
     /// An optional augmentation (an extension) of a referenced type: its
     /// members are reachable only through the type.
     ExtensionAugmentation,
 }
 
+/// Every kind of type an augmentation can name. The closed list
+/// `borzoi_sema`'s contributor scan must agree with: an intrinsic
+/// augmentation of an `[<AutoOpen>]` one of these adds its statics to the
+/// type's fold. A type abbreviation is not here: FCS refuses to augment one
+/// (FS0964), which `an_abbreviation_cannot_be_augmented` pins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Target {
+    Class,
+    Union,
+    Record,
+    Struct,
+    Exception,
+    Interface,
+    Delegate,
+    Enum,
+}
+
+impl Target {
+    const ALL: [Target; 8] = [
+        Target::Class,
+        Target::Union,
+        Target::Record,
+        Target::Struct,
+        Target::Exception,
+        Target::Interface,
+        Target::Delegate,
+        Target::Enum,
+    ];
+
+    /// The declaration's lines (unindented, attribute excluded), the type's
+    /// name, and the names it declares.
+    fn decl(self, i: usize) -> (Vec<String>, String, Vec<String>) {
+        let name = format!("OraT{self:?}{i}");
+        let (lines, mut names) = match self {
+            Target::Class => (
+                vec![
+                    format!("type {name}() ="),
+                    format!("    static member {name}s = {i}"),
+                ],
+                vec![format!("{name}s")],
+            ),
+            Target::Union => (
+                vec![
+                    format!("type {name} ="),
+                    format!("    | {name}c of int"),
+                    format!("    | {name}d"),
+                ],
+                vec![format!("{name}c"), format!("{name}d")],
+            ),
+            Target::Record => (
+                vec![format!("type {name} = {{ {name}f: int }}")],
+                vec![format!("{name}f")],
+            ),
+            Target::Struct => (
+                vec![
+                    "[<Struct>]".to_string(),
+                    format!("type {name} ="),
+                    format!("    val {name}v: int"),
+                ],
+                vec![format!("{name}v")],
+            ),
+            Target::Exception => (vec![format!("exception {name} of int")], vec![]),
+            Target::Interface => (
+                vec![
+                    format!("type {name} ="),
+                    format!("    abstract {name}a: int"),
+                ],
+                vec![format!("{name}a")],
+            ),
+            Target::Delegate => (
+                vec![format!("type {name} = delegate of int -> int")],
+                vec![],
+            ),
+            Target::Enum => (
+                vec![
+                    format!("type {name} ="),
+                    format!("    | {name}a = 0"),
+                    format!("    | {name}b = 1"),
+                ],
+                vec![format!("{name}a"), format!("{name}b")],
+            ),
+        };
+        names.push(name.clone());
+        (lines, name, names)
+    }
+
+    /// FCS accepts an augmentation of a delegate or an enum only in another
+    /// module than the type's (FS0956), where it is an extension.
+    fn augmented_elsewhere(self) -> bool {
+        matches!(self, Target::Delegate | Target::Enum)
+    }
+
+    /// Whether an augmentation of the kind may declare `member kind`: FCS
+    /// refuses a `static member val` in an exception's (FS0971) and in an
+    /// extrinsic one (FS3573), which an interface's always is.
+    fn accepts(self, kind: MemberKind) -> bool {
+        kind != MemberKind::StaticAuto
+            || !matches!(
+                self,
+                Target::Exception | Target::Interface | Target::Delegate | Target::Enum
+            )
+    }
+
+    /// Whether an `[<AutoOpen>]` declaration of the kind folds its intrinsic
+    /// augmentation's statics into bare scope, by the generator's model.
+    /// An interface's augmentation is extrinsic even beside it, and a
+    /// delegate's or an enum's is in another module.
+    fn folds_augmentation(self) -> bool {
+        !matches!(self, Target::Interface | Target::Delegate | Target::Enum)
+    }
+}
+
+/// How a generated augmentation target is attributed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum AutoOpenAttr {
+    /// No attribute.
+    Plain,
+    /// `[<AutoOpen>]`.
+    AutoOpen,
+    /// The attribute spelled through a same-module abbreviation.
+    Aliased,
+}
+
+impl AutoOpenAttr {
+    const ALL: [AutoOpenAttr; 3] = [
+        AutoOpenAttr::Plain,
+        AutoOpenAttr::AutoOpen,
+        AutoOpenAttr::Aliased,
+    ];
+}
+
 impl DeclKind {
-    const ALL: [DeclKind; 27] = [
+    const BASE: [DeclKind; 25] = [
         DeclKind::LetValue,
         DeclKind::LetFunction,
         DeclKind::LetLiteral,
@@ -129,10 +262,23 @@ impl DeclKind {
         DeclKind::Extern,
         DeclKind::NestedAutoOpen,
         DeclKind::NestedPlain,
-        DeclKind::Augmentation,
-        DeclKind::PlainAugmentation,
         DeclKind::ExtensionAugmentation,
     ];
+
+    /// Every augmentation kind: each target, with each attribute.
+    fn augmentations() -> Vec<DeclKind> {
+        Target::ALL
+            .into_iter()
+            .flat_map(|t| AutoOpenAttr::ALL.map(|a| DeclKind::Augmentation(t, a)))
+            .collect()
+    }
+
+    /// Every kind.
+    fn all() -> Vec<DeclKind> {
+        let mut all = DeclKind::BASE.to_vec();
+        all.extend(DeclKind::augmentations());
+        all
+    }
 
     /// Whether the kind writes a signature for itself, so it can sit in a
     /// signature-only `[<AutoOpen>]` contributor.
@@ -164,8 +310,7 @@ impl DeclKind {
                 | DeclKind::Class
                 | DeclKind::AutoOpenClass
                 | DeclKind::StructType
-                | DeclKind::Augmentation
-                | DeclKind::PlainAugmentation
+                | DeclKind::Augmentation(..)
                 | DeclKind::ExtensionAugmentation
         )
     }
@@ -185,6 +330,14 @@ impl DeclKind {
                 | DeclKind::Abbreviation
                 | DeclKind::NestedPlain
                 | DeclKind::ExtensionAugmentation
+                | DeclKind::Augmentation(
+                    Target::Record
+                        | Target::Struct
+                        | Target::Interface
+                        | Target::Delegate
+                        | Target::Enum,
+                    _
+                )
         )
     }
 }
@@ -230,8 +383,22 @@ impl MemberKind {
 enum Unit {
     Decl(DeclKind),
     Member(MemberKind),
-    /// A member of an intrinsic augmentation of an `[<AutoOpen>]` class.
-    AugmentationMember(MemberKind),
+    /// A member of an augmentation of a generated [`Target`].
+    AugmentationMember(Target, AutoOpenAttr, MemberKind),
+}
+
+impl Unit {
+    /// Whether the unit puts some bare name in scope where its contributor is
+    /// folded, by the generator's model.
+    fn introduces(self) -> bool {
+        match self {
+            Unit::Decl(kind) => kind.introduces(),
+            Unit::Member(kind) => kind.introduces(),
+            Unit::AugmentationMember(target, attr, kind) => {
+                attr != AutoOpenAttr::Plain && target.folds_augmentation() && kind.introduces()
+            }
+        }
+    }
 }
 
 /// Where the contributor sits.
@@ -558,40 +725,48 @@ fn decl(kind: DeclKind, i: usize, rng: &mut Rng) -> Decl {
             );
             d.names.push(format!("oraNpv{i}"));
         }
-        DeclKind::Augmentation | DeclKind::PlainAugmentation => {
+        DeclKind::Augmentation(target, attr) => {
             // The event's source is a module value: a static initialiser in
-            // the class as well as the augmentation's `static member val`
+            // the type as well as the augmentation's `static member val`
             // duplicates the type's `.cctor`.
             lines(&mut d, &[format!("let oraGev{i} = Event<int>()")]);
-            if kind == DeclKind::Augmentation {
-                lines(&mut d, &["[<AutoOpen>]".to_string()]);
+            match attr {
+                AutoOpenAttr::Plain => {}
+                AutoOpenAttr::AutoOpen => lines(&mut d, &["[<AutoOpen>]".to_string()]),
+                AutoOpenAttr::Aliased => lines(
+                    &mut d,
+                    &[
+                        format!("type OraTAO{i} = AutoOpenAttribute"),
+                        format!("[<OraTAO{i}>]"),
+                    ],
+                ),
             }
-            lines(
-                &mut d,
-                &[
-                    format!("type OraG{i}() ="),
-                    format!("    static member OraGs{i} = {i}"),
-                    format!("type OraG{i} with"),
-                    format!("    static member OraGa{i} = {i}"),
-                ],
-            );
-            d.names
-                .extend([format!("OraG{i}"), format!("OraGs{i}"), format!("OraGa{i}")]);
-            // Every member kind in the augmentation, so each is graded where
-            // the class is folded, and where it is not.
-            let member_unit = |m| {
-                if kind == DeclKind::Augmentation {
-                    Unit::AugmentationMember(m)
-                } else {
-                    unit
-                }
+            let (target_lines, name, names) = target.decl(i);
+            lines(&mut d, &target_lines);
+            d.names.extend(names);
+            // Beside its type, or in an `[<AutoOpen>]` module of its own,
+            // where it is an extension.
+            let indent = if target.augmented_elsewhere() {
+                lines(
+                    &mut d,
+                    &["[<AutoOpen>]".to_string(), format!("module OraTm{i} =")],
+                );
+                "    "
+            } else {
+                ""
             };
+            lines(&mut d, &[format!("{indent}type {name} with")]);
             let start = d.lines.len();
             for (n, m) in MemberKind::ALL.into_iter().enumerate() {
-                member(m, i, n, &mut d, member_unit(m));
+                if target.accepts(m) {
+                    member(m, i, n, &mut d, Unit::AugmentationMember(target, attr, m));
+                }
             }
             for (line, _) in &mut d.lines[start..] {
-                *line = line.replace(&format!("oraEv{i}.Publish"), &format!("oraGev{i}.Publish"));
+                *line = format!(
+                    "{indent}{}",
+                    line.replace(&format!("oraEv{i}.Publish"), &format!("oraGev{i}.Publish"))
+                );
             }
         }
         DeclKind::ExtensionAugmentation => {
@@ -657,8 +832,26 @@ fn generate(seed: u64, extra_names: &BTreeSet<String>) -> Program {
     let count = 3 + rng.below(6);
     let mut decls = Vec::new();
     let mut operator_cases = false;
+    // Where the context takes an augmentation, the last declaration is one,
+    // cycling through every target and attribute over the seeds, so the
+    // default run builds each. Last, so its members are the latest of their
+    // names (an indexer is always `Item`) and a probe can bind them.
+    let augmentations = DeclKind::augmentations();
+    // Not in an earlier file's root: the probe file's own binders follow its
+    // implicit open, so no probe can bind what it contributes.
+    const FORCED: [Context; 3] = [Context::Module, Context::Aliased, Context::Nested];
+    let forced = FORCED.iter().position(|c| *c == context).map(|rank| {
+        let round = usize::try_from(seed).unwrap() / Context::ALL.len();
+        augmentations[(round * FORCED.len() + rank) % augmentations.len()]
+    });
     for i in 0..count {
-        let mut kind = DeclKind::ALL[rng.below(DeclKind::ALL.len())];
+        // The other declarations draw an augmentation one time in four, so
+        // the base kinds keep their share of the run.
+        let mut kind = match forced {
+            Some(kind) if i + 1 == count => kind,
+            _ if rng.below(4) == 0 => augmentations[rng.below(augmentations.len())],
+            _ => DeclKind::BASE[rng.below(DeclKind::BASE.len())],
+        };
         if context == Context::Signature && !kind.has_signature() {
             kind = DeclKind::LetValue;
         }
@@ -999,7 +1192,7 @@ fn every_name_fcs_says_a_contributor_introduces_is_marked() {
     // The absolute property: every kind the generator says introduces a bare
     // name does, in FCS, somewhere in the run — and every kind is generated.
     let mut model_wrong = Vec::new();
-    for kind in DeclKind::ALL {
+    for kind in DeclKind::all() {
         let (generated, bound) = census.get(&Unit::Decl(kind)).copied().unwrap_or_default();
         if generated == 0 {
             model_wrong.push(format!("  {kind:?} was never generated"));
@@ -1007,19 +1200,22 @@ fn every_name_fcs_says_a_contributor_introduces_is_marked() {
             model_wrong.push(format!("  {kind:?} introduced no probed name in FCS"));
         }
     }
-    for kind in MemberKind::ALL {
-        for (unit, label) in [
-            (Unit::Member(kind), "member"),
-            (Unit::AugmentationMember(kind), "augmentation member"),
-        ] {
-            let (generated, bound) = census.get(&unit).copied().unwrap_or_default();
-            if generated == 0 {
-                model_wrong.push(format!("  {label} {kind:?} was never generated"));
-            } else if kind.introduces() && bound == 0 {
-                model_wrong.push(format!(
-                    "  {label} {kind:?} introduced no probed name in FCS"
-                ));
+    let mut units: Vec<Unit> = MemberKind::ALL.into_iter().map(Unit::Member).collect();
+    for target in Target::ALL {
+        for attr in AutoOpenAttr::ALL {
+            for kind in MemberKind::ALL {
+                if target.accepts(kind) {
+                    units.push(Unit::AugmentationMember(target, attr, kind));
+                }
             }
+        }
+    }
+    for unit in units {
+        let (generated, bound) = census.get(&unit).copied().unwrap_or_default();
+        if generated == 0 {
+            model_wrong.push(format!("  {unit:?} was never generated"));
+        } else if unit.introduces() && bound == 0 {
+            model_wrong.push(format!("  {unit:?} introduced no probed name in FCS"));
         }
     }
     assert!(
@@ -1028,4 +1224,68 @@ fn every_name_fcs_says_a_contributor_introduces_is_marked() {
         model_wrong.join("\n")
     );
     eprintln!("contributor oracle: {seeds} programs, {probes_graded} probes graded");
+}
+
+/// The representation a [`Target`] declares, for every representation a type
+/// definition can have. Exhaustive, so a new one does not compile until it is
+/// generated as a target or excluded here with FCS's reason. An exception is
+/// a declaration of its own, [`Target::Exception`].
+fn target_family(repr: &TypeDefnRepr) -> Option<&'static [Target]> {
+    match repr {
+        TypeDefnRepr::Record(_) => Some(&[Target::Record]),
+        TypeDefnRepr::Union(_) => Some(&[Target::Union]),
+        TypeDefnRepr::Enum(_) => Some(&[Target::Enum]),
+        TypeDefnRepr::ObjectModel(_) => Some(&[Target::Class, Target::Struct, Target::Interface]),
+        TypeDefnRepr::Delegate(_) => Some(&[Target::Delegate]),
+        // FS0964: FCS augments no abbreviation
+        // (`an_abbreviation_cannot_be_augmented`).
+        TypeDefnRepr::Abbrev(_) => None,
+        // `(# … #)` representations are FSharp.Core's own.
+        TypeDefnRepr::InlineIl(_) => None,
+    }
+}
+
+/// Each generated [`Target`] declares the representation it is named for, so
+/// [`target_family`] and the generator agree on the closed list of kinds.
+#[test]
+fn every_augmentable_representation_is_a_generated_target() {
+    for target in Target::ALL {
+        if target == Target::Exception {
+            continue;
+        }
+        let (lines, _, _) = target.decl(0);
+        let src = format!("module M\n{}\n", lines.join("\n"));
+        let parsed = parse(&src);
+        assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+        let defn = parsed
+            .root
+            .descendants()
+            .find_map(TypeDefn::cast)
+            .expect("one type definition");
+        let family = defn
+            .repr()
+            .as_ref()
+            .and_then(target_family)
+            .unwrap_or_else(|| panic!("{target:?} declares no augmentable representation: {src}"));
+        assert!(
+            family.contains(&target),
+            "{target:?} parses as another kind: {src}"
+        );
+    }
+}
+
+/// FCS refuses to augment a type abbreviation (FS0964), which is why
+/// [`Target`] has no abbreviation. Should it ever accept one, this fails and
+/// the abbreviation joins the generator.
+#[test]
+fn an_abbreviation_cannot_be_augmented() {
+    let src =
+        "module M\ntype A = System.Text.StringBuilder\ntype A with\n    static member S = 1\n";
+    let path = temp_fs_file("augmented_abbreviation", src);
+    let census = parse_census_jsonl(&invoke_fcs_dump_census(std::slice::from_ref(&path)));
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        census.len() == 1 && census[0].ok && census[0].has_check_errors,
+        "FCS accepted an augmentation of an abbreviation"
+    );
 }

@@ -289,27 +289,46 @@ impl Resolver<'_> {
         decls: impl Iterator<Item = ModuleDecl>,
     ) -> Contribution {
         let decls: Vec<ModuleDecl> = decls.collect();
-        // The block's own types that may be `[<AutoOpen>]`: an intrinsic
-        // augmentation of one adds to the statics its fold brings. An
-        // augmentation of any other type adds nothing bare: an intrinsic
+        // The block's own types and exceptions that may be `[<AutoOpen>]`: an
+        // intrinsic augmentation of one adds to the statics its fold brings.
+        // An augmentation of any other type adds nothing bare: an intrinsic
         // augmentation sits in its type's own module, so one of a type
         // declared elsewhere is an extension, whose members are reachable
-        // only through the type.
-        let auto_open_types: HashSet<String> = decls
-            .iter()
-            .filter_map(|d| match d {
-                ModuleDecl::Types(types) => Some(types.defns()),
-                _ => None,
-            })
-            .flatten()
-            .filter(|defn| {
-                !is_type_augmentation(defn)
-                    && defn.typar_decls().is_none()
-                    && self.may_auto_open(defn.attributes())
-            })
-            .filter_map(|defn| defn.long_id().and_then(|li| li.idents().last()))
-            .map(|name| id_text(&name).to_string())
-            .collect();
+        // only through the type. The match is exhaustive so that a new kind
+        // of declaration has to be classified here.
+        let mut auto_open_types: HashSet<String> = HashSet::new();
+        for decl in &decls {
+            match decl {
+                ModuleDecl::Types(types) => {
+                    auto_open_types.extend(
+                        types
+                            .defns()
+                            .filter(|defn| {
+                                !is_type_augmentation(defn)
+                                    && defn.typar_decls().is_none()
+                                    && self.may_auto_open(defn.attributes())
+                            })
+                            .filter_map(|defn| defn.long_id().and_then(|li| li.idents().last()))
+                            .map(|name| id_text(&name).to_string()),
+                    );
+                }
+                ModuleDecl::Exception(exn) => {
+                    if self.may_auto_open(exn.attributes())
+                        && let Some(name) = exn.union_case().and_then(|c| c.ident())
+                    {
+                        auto_open_types.insert(id_text(&name).to_string());
+                    }
+                }
+                ModuleDecl::Expr(_)
+                | ModuleDecl::Let(_)
+                | ModuleDecl::Open(_)
+                | ModuleDecl::NestedModule(_)
+                | ModuleDecl::ModuleAbbrev(_)
+                | ModuleDecl::Extern(_)
+                | ModuleDecl::Attributes(_)
+                | ModuleDecl::HashDirective(_) => {}
+            }
+        }
         let mut out = Contribution::default();
         for decl in decls {
             match decl {
