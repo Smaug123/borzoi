@@ -118,6 +118,13 @@ pub(super) struct ScopeEntry {
     /// into a top-level container's frame: a mark records a position in one
     /// block's walk.
     pub(super) mark: Option<MarkReach>,
+    /// `true` for a source entry standing for a name that may be a union case
+    /// the walk cannot decide: `type T = X`'s case `X`, when FCS may read the
+    /// abbreviation as a union ([`Resolver::shadow_abbreviation_case`]). It
+    /// declines in expression position like any `Deferred` entry, and in
+    /// pattern position too ([`Resolver::case_reference`]), where a plain
+    /// value would be skipped: the case would shadow an earlier one there.
+    pub(super) undecided_case: bool,
 }
 
 /// Which namespaces a contributor mark ([`ScopeEntry::mark`]) shadows in.
@@ -151,6 +158,7 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: None,
             mark: None,
+            undecided_case: false,
         }
     }
 
@@ -213,6 +221,21 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: Some(DeclineCause::UnmodelledContributor),
             mark: Some(reach),
+            undecided_case: false,
+        }
+    }
+
+    /// A source entry for a name that may be a union case the walk cannot
+    /// decide ([`Self::undecided_case`]): in scope, shadowing by position in
+    /// both namespaces, naming nothing.
+    pub(super) fn undecided_case(name: String, generation: usize) -> Self {
+        ScopeEntry {
+            undecided_case: true,
+            ..ScopeEntry::binding(
+                name,
+                Resolution::Deferred(DeferredReason::UnboundName),
+                generation,
+            )
         }
     }
 
@@ -241,6 +264,7 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: None,
             mark: None,
+            undecided_case: false,
         }
     }
 
@@ -268,6 +292,7 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: None,
             mark: None,
+            undecided_case: false,
         }
     }
 }
