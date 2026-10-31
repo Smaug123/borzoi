@@ -32,8 +32,9 @@ use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    FileUses, NormalisedProjectUse, ensure_contributor_fixture_built, ensure_fsharp_core_dll,
-    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
+    FileUses, NormalisedProjectUse, ensure_ce_extension_fixture_built,
+    ensure_contributor_fixture_built, ensure_fsharp_core_dll, invoke_fcs_dump_project_with_refs,
+    parse_fcs_uses_project, temp_fs_tree,
 };
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
@@ -115,30 +116,23 @@ enum Use {
     Pattern,
     /// `let probe = N.GetType ()`: the head of a dotted path.
     Head,
-    /// `let probe = gridB { N 1 }`: a computation expression's statement.
-    CeStatement,
-    /// `let probe = gridB { return N 1 }`: inside a computation expression.
-    CeReturn,
 }
 
 impl Use {
-    const ALL: [Use; 8] = [
+    const ALL: [Use; 6] = [
         Use::Applied,
         Use::Head,
         Use::FunctionValue,
         Use::Local,
         Use::Nested,
         Use::Pattern,
-        Use::CeStatement,
-        Use::CeReturn,
     ];
 
     fn applies_to(self, kind: Kind, route: Route) -> bool {
-        let in_ce = matches!(self, Use::CeStatement | Use::CeReturn);
         if route.probes_itself() {
             return self == Use::Applied;
         }
-        (self != Use::Pattern || kind.is_case()) && in_ce == route.is_builder()
+        self != Use::Pattern || kind.is_case()
     }
 
     /// The use's lines, unindented, with `@N` where the probed name goes.
@@ -150,8 +144,6 @@ impl Use {
             Use::Nested => vec!["module GridUse =", "    let probe = @N 1"],
             Use::Pattern => vec!["let probe x = match x with @N _ -> 1 | _ -> 0"],
             Use::Head => vec!["let probe = @N.GetType ()"],
-            Use::CeStatement => vec!["let probe = gridB { @N 1 }"],
-            Use::CeReturn => vec!["let probe = gridB { return @N 1 }"],
         }
     }
 }
@@ -297,11 +289,6 @@ enum Route {
     Exception,
     /// An active pattern whose case is the name.
     ActivePattern,
-    /// A computation-expression builder with a custom operation of the name,
-    /// used inside its expression.
-    CeCustomOperation,
-    /// A builder with no custom operation of the name.
-    CeNoOperation,
     /// An intrinsic augmentation of an `[<AutoOpen>]` type, adding the
     /// static: FCS folds the completed type.
     AutoOpenTypeAugmented,
@@ -342,7 +329,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 72] = [
+    const ALL: [Route; 70] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -401,8 +388,6 @@ impl Route {
         Route::Extern,
         Route::Exception,
         Route::ActivePattern,
-        Route::CeCustomOperation,
-        Route::CeNoOperation,
         Route::AutoOpenTypeAugmented,
         Route::AutoOpenTypeAugmentedInModule,
         Route::TypeGroupParameter,
@@ -449,11 +434,6 @@ impl Route {
                 | Route::AutoOpenTypeAccessor
                 | Route::AutoOpenOperatorCase
         )
-    }
-
-    /// Whether the route declares the `gridB` builder its uses run inside.
-    fn is_builder(self) -> bool {
-        matches!(self, Route::CeCustomOperation | Route::CeNoOperation)
     }
 
     /// Whether the route can declare a name of `kind` at all: F# requires an
@@ -774,10 +754,6 @@ impl Route {
                 "module GridProbe\n@OWN\n[<System.Runtime.InteropServices.DllImport(\"grid\")>]\n@EXTERN\n@USE\n",
             ),
             Route::Exception => (vec![], "module GridProbe\n@OWN\n@EXN\n@USE\n"),
-            Route::CeCustomOperation => (
-                vec![],
-                "module GridProbe\n@OWN\ntype GridB() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\n    [<CustomOperation(\"@NAME\")>]\n    member _.GridOp(state: int, v: int) = state + v\nlet gridB = GridB()\n@USE\n",
-            ),
             Route::AutoOpenTypeAugmented => (
                 vec![],
                 "module GridProbe\n@OWN\n[<AutoOpen>]\ntype GridT = class end\ntype GridT with\n    @STATIC\n@USE\n",
@@ -825,10 +801,6 @@ impl Route {
             Route::AutoOpenException => (
                 vec![],
                 "module GridProbe\n@OWN\n[<AutoOpen>]\nexception GridEx of int with\n    @STATIC\n@USE\n",
-            ),
-            Route::CeNoOperation => (
-                vec![],
-                "module GridProbe\n@OWN\ntype GridB() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\nlet gridB = GridB()\n@USE\n",
             ),
             Route::ActivePattern => (vec![], "module GridProbe\n@OWN\n@AP\n@USE\n"),
         }
@@ -925,27 +897,20 @@ struct Cell {
     /// `(relative path, source)` in Compile order, the probe file last.
     files: Vec<(String, String)>,
     probe: TextRange,
-    /// No contributor reaches the probe ([`Route::adds_nothing`]): we must
-    /// commit.
+    /// Nothing takes the probe from the unshadowed reading, and the walk can
+    /// prove it: we must commit.
     control: bool,
-    /// A cell of the one wrong-answer class the walk leaves standing
-    /// ([`is_known_wrong`]).
-    known_wrong: bool,
+    /// The referenced assemblies beside FSharp.Core.
+    refs: Vec<&'static Path>,
+    /// Whether FCS must check the cell cleanly, where the grid says.
+    clean: Option<bool>,
+    /// Something stands in front of the unshadowed reading — a contributor,
+    /// or a builder offering an operation of the name — so a commit here is
+    /// the walk deciding it does not take the probe.
+    shadowed: bool,
 }
 
-/// The project's own binding of a name used inside a computation expression,
-/// whose builder may have a custom operation of the name. The walk withholds
-/// only the names an implicit open supplies there: withholding the project's
-/// too costs every parameter used in an `async { … }` (320 of the 22,247
-/// matches `resolve_corpus_diff` grades), so this class is pinned rather than
-/// fixed — the manifest records each cell's verdict, and the WRONG check
-/// skips exactly these (`docs/unmodelled-contributors.md`, "Not on the
-/// list").
-fn is_known_wrong(kind: Kind, route: Route) -> bool {
-    matches!(kind, Kind::OwnValue | Kind::OwnCase) && route.is_builder()
-}
-
-fn cells() -> Vec<Cell> {
+fn cells(fixture: &'static Path) -> Vec<Cell> {
     let mut cells = Vec::new();
     for kind in Kind::ALL {
         for route in Route::ALL {
@@ -974,7 +939,9 @@ fn cells() -> Vec<Cell> {
                     control: route.adds_nothing()
                         && kind != Kind::ImplicitCase
                         && !(use_ == Use::Head && kind.is_case()),
-                    known_wrong: is_known_wrong(kind, route),
+                    refs: vec![fixture],
+                    clean: None,
+                    shadowed: !route.adds_nothing(),
                 });
             }
         }
@@ -1091,14 +1058,45 @@ pub(crate) fn env_of(dlls: &[&Path]) -> AssemblyEnv {
 /// every way of using the name, graded against FCS.
 #[test]
 fn every_contributor_route_agrees_with_fcs() {
-    let fsharp_core = ensure_fsharp_core_dll();
     let fixture = ensure_contributor_fixture_built();
-    let env = env_of(&[fsharp_core.as_path(), fixture]);
+    grade(
+        &cells(fixture),
+        "unmodelled_contributor_grid",
+        "every_contributor_route",
+    );
+}
+
+/// Every way a computation expression's builder can offer a custom operation,
+/// crossed with every kind of name it can take and every position the name
+/// can sit in, graded against FCS.
+#[test]
+fn every_computation_expression_cell_agrees_with_fcs() {
+    let fixture = ensure_contributor_fixture_built();
+    let extension = ensure_ce_extension_fixture_built();
+    grade(
+        &ce_cells(fixture, extension),
+        "unmodelled_contributor_grid_ce",
+        "every_computation_expression_cell",
+    );
+}
+
+/// Grade `all` against FCS, and pin each cell's two answers in the manifest
+/// `manifest`.
+fn grade(all: &[Cell], manifest: &str, test: &str) {
+    let fsharp_core = ensure_fsharp_core_dll();
+    let mut envs: Vec<(Vec<&Path>, AssemblyEnv)> = Vec::new();
+    for cell in all {
+        if !envs.iter().any(|(refs, _)| *refs == cell.refs) {
+            let dlls: Vec<&Path> = std::iter::once(fsharp_core.as_path())
+                .chain(cell.refs.iter().copied())
+                .collect();
+            envs.push((cell.refs.clone(), env_of(&dlls)));
+        }
+    }
 
     let mut failures = Vec::new();
     let mut entries = Vec::new();
     let mut shadowed_commits = 0;
-    let all = cells();
     // Each cell is its own FCS project; the resident pool serves several at
     // once, so ask in parallel and grade in order.
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -1117,7 +1115,7 @@ fn every_contributor_route_agrees_with_fcs() {
                         .collect();
                     let (root, written) = temp_fs_tree("contributor_grid", &rel);
                     let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
-                    let json = invoke_fcs_dump_project_with_refs(&paths, &[fixture]);
+                    let json = invoke_fcs_dump_project_with_refs(&paths, &cell.refs);
                     let fcs = parse_fcs_uses_project(&json, &written);
                     let _ = std::fs::remove_dir_all(&root);
                     *answers[i].lock().unwrap() = Some((written, fcs));
@@ -1127,6 +1125,11 @@ fn every_contributor_route_agrees_with_fcs() {
     });
     for (cell, answer) in all.iter().zip(answers) {
         let (written, fcs) = answer.into_inner().unwrap().expect("every cell was asked");
+        let env = &envs
+            .iter()
+            .find(|(refs, _)| *refs == cell.refs)
+            .expect("an env per reference set")
+            .1;
         let rel: Vec<(&str, &str)> = cell
             .files
             .iter()
@@ -1142,8 +1145,22 @@ fn every_contributor_route_agrees_with_fcs() {
         let errors: Vec<&String> = fcs.iter().flat_map(|f| &f.errors).collect();
         let theirs = fcs_at(fu, cell.probe);
         let rendered = render_fcs(theirs);
+        if let Some(clean) = cell.clean
+            && clean != errors.is_empty()
+        {
+            failures.push(format!(
+                "  {} [{}]\n    FCS:  {rendered}\n    errors: {errors:?}\n    files: {:?}",
+                cell.label,
+                if clean {
+                    "EXPECTED CLEAN"
+                } else {
+                    "EXPECTED RECOVERED"
+                },
+                cell.files
+            ));
+        }
 
-        let proj = resolve_project_files(&project(&rel), &env);
+        let proj = resolve_project_files(&project(&rel), env);
         let ours = proj
             .file(probe_idx)
             .resolution_at(cell.probe)
@@ -1151,12 +1168,10 @@ fn every_contributor_route_agrees_with_fcs() {
         let file_paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
         let verdict = match ours {
             Some(res) => {
-                if !cell.control {
+                if cell.shadowed {
                     shadowed_commits += 1;
                 }
-                if !cell.known_wrong
-                    && !theirs.is_some_and(|u| agrees(&env, &proj, &file_paths, probe_idx, res, u))
-                {
+                if !theirs.is_some_and(|u| agrees(env, &proj, &file_paths, probe_idx, res, u)) {
                     failures.push(format!(
                         "  {} [WRONG]\n    FCS:  {rendered}\n    ours: {res:?}\n    files: {:?}",
                         cell.label, cell.files
@@ -1191,7 +1206,7 @@ fn every_contributor_route_agrees_with_fcs() {
     }
     assert!(
         failures.is_empty(),
-        "{} of {} contributor cells disagree with FCS:\n{}",
+        "{} of {} cells disagree with FCS:\n{}",
         failures.len(),
         all.len(),
         failures.join("\n")
@@ -1203,10 +1218,787 @@ fn every_contributor_route_agrees_with_fcs() {
         shadowed_commits > 0,
         "no shadowed cell commits: the grid has stopped exercising its routes"
     );
-    let manifest = Manifest::from_entries(entries).expect("manifest entries");
+    let manifest_entries = Manifest::from_entries(entries).expect("manifest entries");
     check_manifest(
-        "unmodelled_contributor_grid",
-        &manifest,
-        &regenerate("unmodelled_contributor_grid::"),
+        manifest,
+        &manifest_entries,
+        &regenerate(&format!("unmodelled_contributor_grid::{test}")),
     );
+}
+
+// ---------------------------------------------------------------------------
+// The computation-expression axis.
+//
+// Inside `b { … }`, FCS adds a name-environment entry for each of the
+// builder's custom operations (`[<CustomOperation>]`) ahead of the
+// expression's body (`TcComputationExpression`, `AddFakeNameToNameEnv`), so a
+// bare use of an operation's name finds the operation rather than any binding
+// made outside the expression. Bindings made inside it come later and win —
+// except where the translation reads a clause by its name alone
+// (`CustomOperationClause`), whatever is bound. The operations are those of
+// the builder's type, its base types, and every extension of it in scope
+// (`getCustomOperationMethods`), named by the attribute's argument or, with
+// none, by the method. The cells cross every way of supplying an operation
+// with every kind of name it can take and every position the name can sit in.
+// ---------------------------------------------------------------------------
+
+/// What a bare name inside a computation expression binds when no custom
+/// operation takes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CeKind {
+    /// FSharp.Core's implicitly opened `id`.
+    ImplicitValue,
+    /// FSharp.Core's implicitly opened union case `Some`.
+    ImplicitCase,
+    /// A module-level `let` of the probe file's own.
+    OwnValue,
+    /// A union case of the probe file's own.
+    OwnCase,
+    /// A parameter of the function the expression is in.
+    Parameter,
+    /// A local `let` before the expression.
+    OuterLocal,
+    /// A `let` inside the expression, before the use.
+    InnerLocal,
+}
+
+impl CeKind {
+    const ALL: [CeKind; 7] = [
+        CeKind::ImplicitValue,
+        CeKind::ImplicitCase,
+        CeKind::OwnValue,
+        CeKind::OwnCase,
+        CeKind::Parameter,
+        CeKind::OuterLocal,
+        CeKind::InnerLocal,
+    ];
+
+    fn is_case(self) -> bool {
+        matches!(self, CeKind::ImplicitCase | CeKind::OwnCase)
+    }
+
+    /// The name probed, absent a builder that needs its own.
+    fn name(self) -> &'static str {
+        match self {
+            CeKind::ImplicitValue => "id",
+            CeKind::ImplicitCase => "Some",
+            CeKind::OwnCase => "GridC",
+            CeKind::OwnValue | CeKind::Parameter | CeKind::OuterLocal | CeKind::InnerLocal => {
+                "gridV"
+            }
+        }
+    }
+}
+
+/// The builder the expression runs on, and so the custom operations it
+/// offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CeBuilder {
+    /// FSharp.Core's `async`: no custom operations.
+    Async,
+    /// FSharp.Core's `task`: no custom operations, and extension members of
+    /// its base type in FSharp.Core.
+    Task,
+    /// FSharp.Core's `seq`: a function, so the braces are a sequence
+    /// expression, which has no custom operations at all.
+    Seq,
+    /// FSharp.Core's `query`, with a name none of its operations has.
+    Query,
+    /// `query` with a name one of its operations has (`skip`).
+    QueryOp,
+    /// A project builder with no custom operations.
+    Plain,
+    /// A project builder whose one custom operation is named otherwise.
+    OtherOp,
+    /// `[<CustomOperation("N")>]` on a differently named method.
+    Op,
+    /// `[<CustomOperation>]` on a method named `N`.
+    OpMethodName,
+    /// `[<CustomOperation("")>]` on a method named `N`.
+    OpEmptyName,
+    /// `[<CustomOperation("", JoinConditionWord = "equals")>]` on a method
+    /// named `N`: a named argument's string is no name.
+    OpEmptyNameJoinWord,
+    /// The attribute spelled through an abbreviation.
+    OpAliased,
+    /// The attribute spelled fully qualified, with its `Attribute` suffix.
+    OpQualified,
+    /// The operation declared on the builder's base class.
+    OpInherited,
+    /// The builder constructed through an abbreviation of its type.
+    OpAbbreviated,
+    /// The builder constructed `new GridB<GridArg>()`, its type argument a
+    /// type of the file's own.
+    OpNewGeneric,
+    /// The operation added by an intrinsic augmentation.
+    OpAugmented,
+    /// The operation added by an extension in a module the file opens.
+    OpExtension,
+    /// The same extension, its module not opened: out of scope.
+    OpExtensionUnopened,
+    /// The operation added by a C#-style `[<Extension>]` static method.
+    OpCSharpExtension,
+    /// The operation added to FSharp.Core's `AsyncBuilder` by an extension of
+    /// the probe file's own, on `async`.
+    AsyncExtension,
+    /// The same extension in an earlier file, `[<AutoOpen>]`, whose signature
+    /// alone carries the attribute: the signature's is the one later files
+    /// see.
+    SignatureExtension,
+    /// A generic builder with the operation.
+    Generic,
+    /// A generic builder without it.
+    GenericNoOp,
+    /// A builder value whose type the walk does not know, with the operation.
+    Unknown,
+    /// The same, without it.
+    UnknownNoOp,
+    /// A builder declared in an earlier file, with the operation.
+    CrossFile,
+    /// The same, without it.
+    CrossFileNoOp,
+    /// A referenced assembly's builder with the operation.
+    Fixture,
+    /// A referenced assembly's builder without it.
+    FixtureNoOp,
+    /// A referenced assembly's builder inheriting the operation.
+    FixtureInherited,
+    /// A referenced assembly's builder whose operation takes its method's
+    /// name.
+    FixtureMethodName,
+    /// A referenced assembly's extension adding the operation to `async`, in
+    /// a namespace the file opens.
+    FixtureExtension,
+    /// The same, the namespace not opened: out of scope.
+    FixtureExtensionUnopened,
+}
+
+/// How a builder's expression yields a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CeForm {
+    Return,
+    Yield,
+    Query,
+}
+
+impl CeBuilder {
+    const ALL: [CeBuilder; 34] = [
+        CeBuilder::Async,
+        CeBuilder::Task,
+        CeBuilder::Seq,
+        CeBuilder::Query,
+        CeBuilder::QueryOp,
+        CeBuilder::Plain,
+        CeBuilder::OtherOp,
+        CeBuilder::Op,
+        CeBuilder::OpMethodName,
+        CeBuilder::OpEmptyName,
+        CeBuilder::OpEmptyNameJoinWord,
+        CeBuilder::OpAliased,
+        CeBuilder::OpQualified,
+        CeBuilder::OpInherited,
+        CeBuilder::OpAbbreviated,
+        CeBuilder::OpNewGeneric,
+        CeBuilder::OpAugmented,
+        CeBuilder::OpExtension,
+        CeBuilder::OpExtensionUnopened,
+        CeBuilder::OpCSharpExtension,
+        CeBuilder::AsyncExtension,
+        CeBuilder::SignatureExtension,
+        CeBuilder::Generic,
+        CeBuilder::GenericNoOp,
+        CeBuilder::Unknown,
+        CeBuilder::UnknownNoOp,
+        CeBuilder::CrossFile,
+        CeBuilder::CrossFileNoOp,
+        CeBuilder::Fixture,
+        CeBuilder::FixtureNoOp,
+        CeBuilder::FixtureInherited,
+        CeBuilder::FixtureMethodName,
+        CeBuilder::FixtureExtension,
+        CeBuilder::FixtureExtensionUnopened,
+    ];
+
+    /// Whether FCS finds a custom operation of the probed name: the premise
+    /// each cell's expected cleanliness rests on.
+    fn offers(self) -> bool {
+        !matches!(
+            self,
+            CeBuilder::Async
+                | CeBuilder::Task
+                | CeBuilder::Seq
+                | CeBuilder::Query
+                | CeBuilder::Plain
+                | CeBuilder::OtherOp
+                | CeBuilder::OpExtensionUnopened
+                | CeBuilder::GenericNoOp
+                | CeBuilder::UnknownNoOp
+                | CeBuilder::CrossFileNoOp
+                | CeBuilder::FixtureNoOp
+                | CeBuilder::FixtureExtensionUnopened
+        )
+    }
+
+    /// Whether the walk can prove the builder offers no operation of the
+    /// name: its type is known, and so is every way an operation could be
+    /// added to it.
+    fn provably_lacks(self) -> bool {
+        matches!(
+            self,
+            CeBuilder::Async
+                | CeBuilder::Task
+                | CeBuilder::Seq
+                | CeBuilder::Query
+                | CeBuilder::Plain
+                | CeBuilder::OtherOp
+                | CeBuilder::GenericNoOp
+                | CeBuilder::FixtureNoOp
+        )
+    }
+
+    /// Whether the builder declares nothing but `Yield` and `Return`: a
+    /// statement after a `let` cannot be typed against it.
+    fn minimal(self) -> bool {
+        self.expr() == "gridB" || self.expr().starts_with("GridFix.")
+    }
+
+    /// Whether the builder types a statement that is not a custom
+    /// operation: FSharp.Core's discard it or yield it. Against the others it
+    /// is an error unrelated to custom operations, for which FCS records no
+    /// symbol, so those cells are not generated.
+    fn types_plain_statements(self) -> bool {
+        matches!(self.expr(), "async" | "task" | "seq")
+    }
+
+    /// Whether the operation is one of `async`'s, so a nested `async { … }`
+    /// offers it too.
+    fn offers_on_async(self) -> bool {
+        matches!(
+            self,
+            CeBuilder::AsyncExtension | CeBuilder::SignatureExtension | CeBuilder::FixtureExtension
+        )
+    }
+
+    /// Whether the walk takes the name from a nested `async { … }` too,
+    /// which FCS does not: it counts an operation an extension supplies as
+    /// one of every builder's, and an expression over a builder it cannot
+    /// list marks every name in it, the nested builder's own included. The
+    /// walk does not resolve a base class an `inherit` names, so it cannot
+    /// list an inheriting builder's operations, nor an abbreviation's.
+    fn walk_reaches_async(self) -> bool {
+        matches!(
+            self,
+            CeBuilder::OpInherited
+                | CeBuilder::OpAbbreviated
+                | CeBuilder::OpAugmented
+                | CeBuilder::SignatureExtension
+                | CeBuilder::OpExtension
+                | CeBuilder::OpExtensionUnopened
+                | CeBuilder::OpCSharpExtension
+                | CeBuilder::AsyncExtension
+                | CeBuilder::FixtureExtension
+                | CeBuilder::FixtureExtensionUnopened
+                | CeBuilder::Unknown
+                | CeBuilder::UnknownNoOp
+                | CeBuilder::CrossFile
+                | CeBuilder::CrossFileNoOp
+        )
+    }
+
+    fn form(self) -> CeForm {
+        match self {
+            CeBuilder::Seq => CeForm::Yield,
+            CeBuilder::Query | CeBuilder::QueryOp => CeForm::Query,
+            _ => CeForm::Return,
+        }
+    }
+
+    /// The builder expression.
+    fn expr(self) -> &'static str {
+        match self {
+            CeBuilder::Async
+            | CeBuilder::AsyncExtension
+            | CeBuilder::SignatureExtension
+            | CeBuilder::FixtureExtension
+            | CeBuilder::FixtureExtensionUnopened => "async",
+            CeBuilder::Task => "task",
+            CeBuilder::Seq => "seq",
+            CeBuilder::Query | CeBuilder::QueryOp => "query",
+            CeBuilder::Fixture => "GridFix.FixBuilders.fixB",
+            CeBuilder::FixtureNoOp => "GridFix.FixBuilders.fixBNoOp",
+            CeBuilder::FixtureInherited => "GridFix.FixBuilders.fixBDerived",
+            CeBuilder::FixtureMethodName => "GridFix.FixBuilders.fixBMethodName",
+            _ => "gridB",
+        }
+    }
+
+    /// The probed name for `kind`, or `None` where the builder cannot probe
+    /// it: `query`'s operations are named like no implicit value or case.
+    fn name(self, kind: CeKind) -> Option<&'static str> {
+        match self {
+            CeBuilder::QueryOp if kind.is_case() || kind == CeKind::ImplicitValue => None,
+            CeBuilder::QueryOp => Some("skip"),
+            _ => Some(kind.name()),
+        }
+    }
+
+    /// Whether the cell needs the extension fixture rather than the shared
+    /// one: its extension reaches every `async` in the project.
+    fn needs_extension_fixture(self) -> bool {
+        matches!(
+            self,
+            CeBuilder::FixtureExtension | CeBuilder::FixtureExtensionUnopened
+        )
+    }
+
+    /// Earlier files, as `(relative path, source)`, with `@N` for the name.
+    fn earlier(self) -> Vec<(&'static str, String)> {
+        match self {
+            CeBuilder::CrossFile => vec![(
+                "GridBuilders.fs",
+                lines_of(
+                    ["module GridBuilders".to_string()]
+                        .into_iter()
+                        .chain(grid_builder("type GridB() =", op_lines("@N", "")))
+                        .chain(["let gridB = GridB()".to_string()]),
+                ),
+            )],
+            CeBuilder::SignatureExtension => vec![
+                (
+                    "GridSigExt.fsi",
+                    lines_of([
+                        "[<AutoOpen>]".to_string(),
+                        "module GridSigExt".to_string(),
+                        "type Microsoft.FSharp.Control.AsyncBuilder with".to_string(),
+                        "    [<CustomOperation(\"@N\")>]".to_string(),
+                        "    member GridOp: state: int * v: int -> int".to_string(),
+                    ]),
+                ),
+                (
+                    "GridSigExt.fs",
+                    lines_of([
+                        "[<AutoOpen>]".to_string(),
+                        "module GridSigExt".to_string(),
+                        "type Microsoft.FSharp.Control.AsyncBuilder with".to_string(),
+                        "    member _.GridOp(state: int, v: int) = state + v".to_string(),
+                    ]),
+                ),
+            ],
+            CeBuilder::CrossFileNoOp => vec![(
+                "GridBuilders.fs",
+                lines_of(
+                    ["module GridBuilders".to_string()]
+                        .into_iter()
+                        .chain(grid_builder("type GridB() =", vec![]))
+                        .chain(["let gridB = GridB()".to_string()]),
+                ),
+            )],
+            _ => vec![],
+        }
+    }
+
+    /// The probe file's declarations of the builder, with `@N` for the name.
+    fn decls(self) -> Vec<String> {
+        let let_b = || "let gridB = GridB()".to_string();
+        let plain = || grid_builder("type GridB() =", vec![]);
+        let mut out: Vec<String> = match self {
+            CeBuilder::Async
+            | CeBuilder::Task
+            | CeBuilder::Seq
+            | CeBuilder::Query
+            | CeBuilder::QueryOp
+            | CeBuilder::Fixture
+            | CeBuilder::FixtureNoOp
+            | CeBuilder::FixtureInherited
+            | CeBuilder::FixtureMethodName
+            | CeBuilder::FixtureExtensionUnopened => vec![],
+            CeBuilder::Plain => plain().into_iter().chain([let_b()]).collect(),
+            CeBuilder::OtherOp => grid_builder("type GridB() =", op_lines("gridOther", ""))
+                .into_iter()
+                .chain([let_b()])
+                .collect(),
+            CeBuilder::Op => grid_builder("type GridB() =", op_lines("@N", ""))
+                .into_iter()
+                .chain([let_b()])
+                .collect(),
+            CeBuilder::OpMethodName => grid_builder(
+                "type GridB() =",
+                vec![
+                    "[<CustomOperation>]".to_string(),
+                    "member _.@N(state: int, v: int) = state + v".to_string(),
+                ],
+            )
+            .into_iter()
+            .chain([let_b()])
+            .collect(),
+            CeBuilder::OpEmptyName => grid_builder(
+                "type GridB() =",
+                vec![
+                    "[<CustomOperation(\"\")>]".to_string(),
+                    "member _.@N(state: int, v: int) = state + v".to_string(),
+                ],
+            )
+            .into_iter()
+            .chain([let_b()])
+            .collect(),
+            CeBuilder::OpEmptyNameJoinWord => grid_builder(
+                "type GridB() =",
+                vec![
+                    "[<CustomOperation(\"\", JoinConditionWord = \"equals\")>]".to_string(),
+                    "member _.@N(state: int, v: int) = state + v".to_string(),
+                ],
+            )
+            .into_iter()
+            .chain([let_b()])
+            .collect(),
+            CeBuilder::OpAbbreviated => grid_builder("type GridB0() =", op_lines("@N", ""))
+                .into_iter()
+                .chain(["type GridB = GridB0".to_string(), let_b()])
+                .collect(),
+            CeBuilder::OpNewGeneric => ["type GridArg() = class end".to_string()]
+                .into_iter()
+                .chain(grid_builder("type GridB<'T>() =", op_lines("@N", "")))
+                .chain(["let gridB = new GridB<GridArg>()".to_string()])
+                .collect(),
+            CeBuilder::OpCSharpExtension => plain()
+                .into_iter()
+                .chain([
+                    let_b(),
+                    "[<System.Runtime.CompilerServices.Extension>]".to_string(),
+                    "type GridExtensions =".to_string(),
+                    "    [<System.Runtime.CompilerServices.Extension; CustomOperation(\"@N\")>]"
+                        .to_string(),
+                    "    static member GridOp(b: GridB, state: int, v: int) = state + v"
+                        .to_string(),
+                ])
+                .collect(),
+            CeBuilder::OpAliased => ["type GridCO = CustomOperationAttribute".to_string()]
+                .into_iter()
+                .chain(grid_builder(
+                    "type GridB() =",
+                    vec![
+                        "[<GridCO(\"@N\")>]".to_string(),
+                        "member _.GridOp(state: int, v: int) = state + v".to_string(),
+                    ],
+                ))
+                .chain([let_b()])
+                .collect(),
+            CeBuilder::OpQualified => grid_builder(
+                "type GridB() =",
+                vec![
+                    "[<Microsoft.FSharp.Core.CustomOperationAttribute(\"@N\")>]".to_string(),
+                    "member _.GridOp(state: int, v: int) = state + v".to_string(),
+                ],
+            )
+            .into_iter()
+            .chain([let_b()])
+            .collect(),
+            CeBuilder::OpInherited => ["type GridBase() =".to_string()]
+                .into_iter()
+                .chain(op_lines("@N", "    "))
+                .chain([
+                    "type GridB() =".to_string(),
+                    "    inherit GridBase()".to_string(),
+                    "    member _.Yield(()) = 0".to_string(),
+                    "    member _.Return(_: 'a) = 0".to_string(),
+                    let_b(),
+                ])
+                .collect(),
+            CeBuilder::OpAugmented => plain()
+                .into_iter()
+                .chain(["type GridB with".to_string()])
+                .chain(op_lines("@N", "    "))
+                .chain([let_b()])
+                .collect(),
+            CeBuilder::OpExtension | CeBuilder::OpExtensionUnopened => plain()
+                .into_iter()
+                .chain([
+                    let_b(),
+                    "module GridExt =".to_string(),
+                    "    type GridB with".to_string(),
+                ])
+                .chain(op_lines("@N", "        "))
+                .collect(),
+            CeBuilder::SignatureExtension => vec![],
+            CeBuilder::AsyncExtension => {
+                ["type Microsoft.FSharp.Control.AsyncBuilder with".to_string()]
+                    .into_iter()
+                    .chain(op_lines("@N", "    "))
+                    .collect()
+            }
+            CeBuilder::Generic => grid_builder("type GridB<'T>() =", op_lines("@N", ""))
+                .into_iter()
+                .chain(["let gridB = GridB<int>()".to_string()])
+                .collect(),
+            CeBuilder::GenericNoOp => grid_builder("type GridB<'T>() =", vec![])
+                .into_iter()
+                .chain(["let gridB = GridB<int>()".to_string()])
+                .collect(),
+            CeBuilder::Unknown | CeBuilder::UnknownNoOp => {
+                let ops = if self == CeBuilder::Unknown {
+                    op_lines("@N", "")
+                } else {
+                    vec![]
+                };
+                grid_builder("type GridB() =", ops)
+                    .into_iter()
+                    .chain([
+                        "let makeGridB () = GridB()".to_string(),
+                        "let gridB = makeGridB ()".to_string(),
+                    ])
+                    .collect()
+            }
+            CeBuilder::CrossFile | CeBuilder::CrossFileNoOp => {
+                vec!["open GridBuilders".to_string()]
+            }
+            CeBuilder::FixtureExtension => vec!["open GridCeExt".to_string()],
+        };
+        if self == CeBuilder::OpExtension {
+            out.push("open GridExt".to_string());
+        }
+        out
+    }
+}
+
+/// `[<CustomOperation(name)>]` on a method, indented by `indent`.
+fn op_lines(name: &str, indent: &str) -> Vec<String> {
+    vec![
+        format!("{indent}[<CustomOperation(\"{name}\")>]"),
+        format!("{indent}member _.GridOp(state: int, v: int) = state + v"),
+    ]
+}
+
+/// A builder type: `header`, the members every builder here has, then
+/// `extra` members.
+fn grid_builder(header: &str, extra: Vec<String>) -> Vec<String> {
+    [
+        header.to_string(),
+        "    member _.Yield(()) = 0".to_string(),
+        "    member _.Return(_: 'a) = 0".to_string(),
+    ]
+    .into_iter()
+    .chain(extra.into_iter().map(|l| format!("    {l}")))
+    .collect()
+}
+
+fn lines_of(lines: impl IntoIterator<Item = String>) -> String {
+    let mut out = String::new();
+    for l in lines {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
+/// Where in the expression the name is used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CeUse {
+    /// `b { N 1 }`: a statement, which the translation reads as a custom
+    /// operation clause by the name alone.
+    Statement,
+    /// `b { return N 1 }`.
+    Return,
+    /// `b { return (fun () -> N 1) () }`: under a lambda.
+    Lambda,
+    /// `b { return List.map N [ 1 ] }`: as a first-class value.
+    FunctionValue,
+    /// `b { return N.GetType () }`: heading a dotted path.
+    Head,
+    /// `b { return async { return N 1 } }`: in a nested expression over
+    /// another builder.
+    InnerCe,
+    /// `async { let r = b { return N 1 } … }`: the expression nested in one
+    /// over another builder.
+    OuterCe,
+    /// `b { let r = N 1 … }`: a `let` right-hand side.
+    LetBound,
+    /// `b { return (match … with N _ -> 1 | _ -> 0) }`: a pattern, which
+    /// custom operations do not reach.
+    Pattern,
+    /// `query { for … do select N }`: the argument of another operation's
+    /// clause, which the translation does not read by name.
+    ClauseArgument,
+}
+
+impl CeUse {
+    const ALL: [CeUse; 10] = [
+        CeUse::Statement,
+        CeUse::Return,
+        CeUse::Lambda,
+        CeUse::FunctionValue,
+        CeUse::Head,
+        CeUse::InnerCe,
+        CeUse::OuterCe,
+        CeUse::LetBound,
+        CeUse::Pattern,
+        CeUse::ClauseArgument,
+    ];
+
+    fn applies_to(self, kind: CeKind, builder: CeBuilder) -> bool {
+        match self {
+            CeUse::Statement => builder.offers() || builder.types_plain_statements(),
+            CeUse::Head => !kind.is_case(),
+            CeUse::Pattern => kind.is_case(),
+            CeUse::ClauseArgument => builder.form() == CeForm::Query,
+            _ => true,
+        }
+    }
+}
+
+/// The probe file's text for one cell, with `@N` for the name and `@P` for
+/// the probed occurrence of it.
+fn ce_probe_template(kind: CeKind, builder: CeBuilder, use_: CeUse) -> String {
+    let mut lines: Vec<String> = vec!["module GridProbe".to_string()];
+    match kind {
+        CeKind::OwnValue => lines.push("let @N (x: int) = x * 2".to_string()),
+        CeKind::OwnCase => lines.push("type GridE = GridC of int | GridEOther".to_string()),
+        _ => {}
+    }
+    lines.extend(builder.decls());
+
+    // The value the expression yields.
+    let value = match use_ {
+        CeUse::Statement | CeUse::Return | CeUse::OuterCe => "@P 1".to_string(),
+        CeUse::Lambda => "(fun () -> @P 1) ()".to_string(),
+        CeUse::FunctionValue => "List.map @P [ 1 ]".to_string(),
+        CeUse::Head => "@P.GetType ()".to_string(),
+        CeUse::InnerCe => "async { return @P 1 }".to_string(),
+        CeUse::LetBound => "gridR".to_string(),
+        CeUse::ClauseArgument => "@P".to_string(),
+        CeUse::Pattern => {
+            let subject = if kind == CeKind::OwnCase {
+                "GridEOther"
+            } else {
+                "Option.Some 1"
+            };
+            format!("(match {subject} with @P _ -> 1 | _ -> 0)")
+        }
+    };
+    let mut body: Vec<String> = Vec::new();
+    if kind == CeKind::InnerLocal {
+        body.push("let @N (x: int) = x * 2".to_string());
+    }
+    if use_ == CeUse::LetBound {
+        body.push("let gridR = @P 1".to_string());
+    }
+    body.push(match (use_, builder.form()) {
+        (CeUse::Statement, _) => value,
+        (CeUse::ClauseArgument, _) => format!("select {value}"),
+        (_, CeForm::Return) => format!("return {value}"),
+        (_, CeForm::Yield) => format!("yield {value}"),
+        (_, CeForm::Query) => format!("select ({value})"),
+    });
+    let mut ce: Vec<String> = vec![format!("{} {{", builder.expr())];
+    let indent = match builder.form() {
+        CeForm::Query => {
+            ce.push("    for gridX in [ 1 ] do".to_string());
+            "        "
+        }
+        _ => "    ",
+    };
+    ce.extend(body.into_iter().map(|l| format!("{indent}{l}")));
+    ce.push("}".to_string());
+    if use_ == CeUse::OuterCe {
+        let inner = ce;
+        ce = vec!["async {".to_string(), "    let gridO =".to_string()];
+        ce.extend(inner.into_iter().map(|l| format!("        {l}")));
+        ce.push("    return gridO".to_string());
+        ce.push("}".to_string());
+    }
+
+    lines.push(match kind {
+        CeKind::Parameter => "let probe (@N: int -> int) =".to_string(),
+        // A generic value selected is generic: a function, not a value, can be.
+        _ if use_ == CeUse::ClauseArgument => "let probe () =".to_string(),
+        _ => "let probe =".to_string(),
+    });
+    if kind == CeKind::OuterLocal {
+        lines.push("    let @N (x: int) = x * 2".to_string());
+    }
+    lines.extend(ce.into_iter().map(|l| format!("    {l}")));
+    lines_of(lines)
+}
+
+/// Substitute `name` for `@N` and `@P`, returning the text and the span of
+/// the `@P` occurrence.
+fn place_probe(template: &str, name: &str) -> (String, Option<TextRange>) {
+    let text = template.replace("@N", name);
+    let probe = text.find("@P").map(|at| {
+        TextRange::new(
+            u32::try_from(at).unwrap().into(),
+            u32::try_from(at + name.len()).unwrap().into(),
+        )
+    });
+    (text.replace("@P", name), probe)
+}
+
+fn ce_cells(fixture: &'static Path, extension: &'static Path) -> Vec<Cell> {
+    let mut cells = Vec::new();
+    for kind in CeKind::ALL {
+        for builder in CeBuilder::ALL {
+            let Some(name) = builder.name(kind) else {
+                continue;
+            };
+            for use_ in CeUse::ALL {
+                if !use_.applies_to(kind, builder) {
+                    continue;
+                }
+                let mut files: Vec<(String, String)> = builder
+                    .earlier()
+                    .into_iter()
+                    .map(|(path, t)| (path.to_string(), place_probe(&t, name).0))
+                    .collect();
+                let (src, probe) = place_probe(&ce_probe_template(kind, builder, use_), name);
+                files.push(("GridProbe.fs".to_string(), src));
+                let refs = if builder.needs_extension_fixture() {
+                    vec![fixture, extension]
+                } else {
+                    vec![fixture]
+                };
+                cells.push(Cell {
+                    label: format!("{kind:?} / {builder:?} / {use_:?}"),
+                    files,
+                    probe: probe.expect("every computation-expression cell has a probe"),
+                    control: ce_control(kind, builder, use_),
+                    refs,
+                    clean: Some(ce_expect_clean(kind, builder, use_)),
+                    shadowed: builder.offers(),
+                });
+            }
+        }
+    }
+    cells
+}
+
+/// Whether FCS must check the cell cleanly. A custom operation used as a
+/// value is an error, and so is one used as a statement after a `let` in a
+/// builder with nothing but `Yield` and `Return`, though FCS still records
+/// the operation there.
+fn ce_expect_clean(kind: CeKind, builder: CeBuilder, use_: CeUse) -> bool {
+    match use_ {
+        CeUse::Statement => !(builder.offers() && kind == CeKind::InnerLocal && builder.minimal()),
+        CeUse::Pattern => true,
+        // The nested `async { … }` adds its own operations after the local.
+        CeUse::InnerCe if kind == CeKind::InnerLocal => !builder.offers_on_async(),
+        _ => !builder.offers() || kind == CeKind::InnerLocal,
+    }
+}
+
+/// Whether the walk must commit: FCS binds the unshadowed reading, and the
+/// walk can prove nothing takes it.
+fn ce_control(kind: CeKind, builder: CeBuilder, use_: CeUse) -> bool {
+    if !ce_expect_clean(kind, builder, use_) {
+        return false;
+    }
+    match kind {
+        // FSharp.Core's union cases are not folded into the implicit surface.
+        CeKind::ImplicitCase => false,
+        // A custom operation reaches no pattern.
+        CeKind::OwnCase if use_ == CeUse::Pattern => true,
+        // A binding inside the expression comes after its operations, except
+        // where a statement is read as a clause by its name alone.
+        CeKind::InnerLocal if use_ == CeUse::InnerCe => !builder.walk_reaches_async(),
+        CeKind::InnerLocal if use_ != CeUse::Statement => true,
+        _ => builder.provably_lacks(),
+    }
 }

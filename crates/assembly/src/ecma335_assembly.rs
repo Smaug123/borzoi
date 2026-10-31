@@ -14,12 +14,13 @@ use crate::fsharp_resource::{
 };
 use crate::model::{
     Access, AccessorSlot, ArgGroups, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
-    CompilerFeatureRequired, CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind,
-    Event, Experimental, FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember,
-    IndexParameter, InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature,
-    ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
-    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef,
-    UnclassifiedMethodImpl, UnionCases, ValFacts, Variance, Version,
+    CompilerFeatureRequired, CompilerMessage, ConstantValue, CustomOperation, CustomOperationName,
+    DefaultMember, Entity, EntityKind, Event, Experimental, FSharpConstraints, Field,
+    FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
+    MemberMeasures, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete,
+    ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember,
+    SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, ValFacts,
+    Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -1118,6 +1119,53 @@ impl Ecma335Assembly {
             }
         }
         Ok(Some(Obsolete { message, is_error }))
+    }
+
+    /// `[Microsoft.FSharp.Core.CustomOperationAttribute]`, if present
+    /// ([`CustomOperation`]). Never refuses the method: an attribute whose
+    /// payload does not decode, or whose owning type cannot be read and so
+    /// may be this one, is a [`CustomOperationName::Unreadable`] operation.
+    fn detect_custom_operation(&self, attributes: &[RawAttribute]) -> Option<CustomOperation> {
+        let unreadable = || CustomOperation {
+            name: CustomOperationName::Unreadable,
+            join_condition_word: None,
+        };
+        let mut found = None;
+        for raw in attributes {
+            match self.image.attribute_owning_type(raw) {
+                Ok(owning)
+                    if owning.namespace == "Microsoft.FSharp.Core"
+                        && owning.name == "CustomOperationAttribute" =>
+                {
+                    found = Some(raw);
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => return Some(unreadable()),
+            }
+        }
+        let raw = found?;
+        let Ok(decoded) = self.image.decode_attribute(raw, &EnumWidths::new()) else {
+            return Some(unreadable());
+        };
+        let name = match decoded.fixed_args.as_slice() {
+            [] => CustomOperationName::MethodName,
+            [FixedArg::String(Some(s))] if s.is_empty() => CustomOperationName::MethodName,
+            [FixedArg::String(Some(s))] => CustomOperationName::Named(s.clone()),
+            _ => CustomOperationName::Unreadable,
+        };
+        let join_condition_word =
+            decoded
+                .named_args
+                .iter()
+                .find_map(|na| match (na.name.as_str(), &na.value) {
+                    ("JoinConditionWord", FixedArg::String(s)) => s.clone(),
+                    _ => None,
+                });
+        Some(CustomOperation {
+            name,
+            join_condition_word,
+        })
     }
 
     /// `[Microsoft.FSharp.Core.CompilerMessageAttribute]`, if present.
@@ -2641,6 +2689,7 @@ impl Ecma335Assembly {
             xml_doc_sig: None,
             has_other_method_impl,
             drops_optional_modifier,
+            custom_operation: self.detect_custom_operation(&m.attributes),
         })
     }
 

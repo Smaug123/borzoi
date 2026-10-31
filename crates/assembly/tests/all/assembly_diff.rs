@@ -887,6 +887,7 @@ fn sort_tiebreaks_on_generic_arity() {
         unclassified_impls: Vec::new(),
         xml_doc_sig: None,
         drops_optional_modifier: false,
+        custom_operation: None,
         has_other_method_impl: false,
     };
     let generic = MethodLike {
@@ -1201,6 +1202,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
                 drops_optional_modifier: false,
+                custom_operation: None,
                 has_other_method_impl: false,
             })),
             Member::Method(Box::new(MethodLike {
@@ -1238,6 +1240,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
                 drops_optional_modifier: false,
+                custom_operation: None,
                 has_other_method_impl: false,
             })),
             Member::Method(Box::new(MethodLike {
@@ -1275,6 +1278,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
                 drops_optional_modifier: false,
+                custom_operation: None,
                 has_other_method_impl: false,
             })),
             Member::Method(Box::new(MethodLike {
@@ -1315,6 +1319,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
                 drops_optional_modifier: false,
+                custom_operation: None,
                 has_other_method_impl: false,
             })),
         ],
@@ -1456,6 +1461,7 @@ fn fixture_my_lib() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
                 xml_doc_sig: None,
                 drops_optional_modifier: false,
+                custom_operation: None,
                 has_other_method_impl: false,
             })),
         ],

@@ -1292,6 +1292,31 @@ pub fn ensure_contributor_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **computation-expression extension** fixture
+/// (`tests/fixtures/ce_extension_env`, `SemaCeExtensionFixture.dll`) once per
+/// test binary and return its `.dll` path: extension members adding custom
+/// operations to FSharp.Core's `AsyncBuilder`. Behind the shared
+/// [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_ce_extension_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ce_extension_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(
+                &project,
+                "dotnet build computation-expression extension fixture",
+            );
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaCeExtensionFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **active-pattern** fixture (`tests/fixtures/active_pattern_env`,
 /// `SemaActivePatternFixture.dll`) once per test binary and return its `.dll`
 /// path. A referenced F# library exposing active-pattern recognizers of every

@@ -52,7 +52,8 @@ findings. The sources are `CheckDeclarations.fs` (`AddLocalSubModule`,
 (`AddModuleOrNamespaceRefToNameEnv`'s recursive `[<AutoOpen>]` fold,
 `CanAutoOpenTyconRef`, `AddStaticContentOfTypeToNameEnv`,
 `AddTyconRefsToNameEnv`), and `CheckComputationExpressions.fs`
-(`customOperationMethodsIndexedByKeyword`).
+(`TcComputationExpression`, `getCustomOperationMethods`,
+`CustomOperationClause`).
 
 Every route has a row in `crates/sema/tests/all/unmodelled_contributor_grid.rs`.
 The grid crosses each route with four kinds of shadowed name (an implicit value,
@@ -74,7 +75,7 @@ pinned in `crates/sema/tests/manifests/unmodelled_contributor_grid.txt`.
 | 9 | An `extern` prototype | `AddLocalVals` | an `Expression` mark at the prototype, which the walk does not intern |
 | 10 | `open type` statics the projection drops | `OpenTypeContent` → `AddStaticContentOfTypeToNameEnv` | `Expression` marks after the type's listed statics, for each `skipped_members` name |
 | 11 | A union whose `[<RequireQualifiedAccess>]` may be spelled through an abbreviation | `AddTyconRefsToNameEnv` (RQA cases are not bare) | `Both` marks after the cases the walk put in bare scope, and at an `open` of the container |
-| 12 | A computation expression's custom operations, which take bare names in the expression ahead of every binding outside it | `customOperationMethodsIndexedByKeyword` | a committed bare use inside a CE declines when an implicit open supplies it (`computation_expression_decline`); the project's own bindings are the one known gap below |
+| 12 | A computation expression's custom operations, which take bare names in the expression ahead of every binding outside it, and a clause's head whatever is bound | `TcComputationExpression` → `AddFakeNameToNameEnv`, `CustomOperationClause` | an `Expression` mark per name the builder's operations may take, in a frame of the expression's own, and each clause head of those names declined outright (`crates/sema/src/resolve/custom_operations.rs`; below) |
 
 Routes the grid checks that add nothing, and which the walk must keep
 committing through:
@@ -96,19 +97,62 @@ an earlier file's `[<AutoOpen>]` module in the probe's own or an opened
 namespace, a same-file earlier block of the same namespace, an exception, and an
 active pattern.
 
-## Not on the list
+## Computation expressions
 
-- **The project's own binding of a name a custom operation takes.** Inside
-  `builder { … }`, a custom operation of the builder takes its name ahead of
-  every binding outside the expression, the project's included. The walk does
-  not know the builder's type, so it cannot list those operations. Withholding
-  every name bound outside a computation expression is sound, but it costs
-  every parameter used in an `async { … }`: 320 of the 22,247 matches
-  `resolve_corpus_diff` grades, and 2 on the whole-project gate. So the walk
-  withholds only the names an implicit open supplies, which costs nothing
-  measurable. The grid pins the rest as its one known-wrong class
-  (`is_known_wrong`). Closing it needs the builder's custom operations, which
-  means projecting `CustomOperationAttribute` from referenced assemblies.
+Inside `b { … }`, FCS adds a name-environment entry for each of the builder's
+custom operations before it checks the body, so an operation's name hides every
+binding made outside the expression, the project's own included. A binding made
+inside the expression comes later and wins, except at a clause head: the
+translation reads `op args` at a statement position as the operation by name
+alone (`CustomOperationClause`), and an `into` it applies and a join's
+condition word the same way; a clause's other arguments are ordinary
+expressions. Patterns are untouched (`ePatItems`), and a dotted head loses its
+value. A nested expression over another builder adds that builder's operations
+on top.
+
+The walk lists the names a builder's operations may take, and marks them all:
+
+- **The builder's type.** A referenced module value has the type its getter
+  returns (`async`, `task`, `query`); a referenced function makes the braces a
+  sequence expression, which has no custom operations (`seq`). A value of this
+  file bound `let b = T()` with `T` a type of this file has `T`, decided by the
+  type-position resolver behind the same guards as an assembly type used as a
+  constructor. Anything else is unknown.
+- **The operations.** A referenced type's are its methods' and its base types',
+  read off `[<CustomOperation>]` (`MethodLike::custom_operation`); a project
+  type's are its members' attributes and its base types'. The walk does not
+  resolve a project type's `inherit`, so a project builder with a base class is
+  unknown, and so is an abbreviation's.
+- **Every extension, counted for every builder.** F# adds the operations of
+  every extension of the builder in scope. The walk does not ask which extensions
+  are in scope or what they extend: every `[<CustomOperation>]` a project type
+  augmentation declares, or a project type's static member (which may be a
+  C#-style `[<Extension>]` method), earlier files' and this one's, every one an
+  earlier signature file declares anywhere (a signature's attributes are the
+  ones later files see), and every one a referenced assembly declares on an
+  extension member, is an operation of every builder.
+
+The list is unknown — and every name spelled in the expression is marked —
+when the builder's type is, when a referenced type dropped a member or has a
+base that cannot be proven, when an F# module dropped a member mangled like an
+augmentation, when a type was dropped, when the extension surface is
+unknowable, or when an attribute's name cannot be read (a non-literal argument,
+an escape). An attribute spelled any way may be `[<CustomOperation>]` once a
+file or an assembly may rename it.
+
+The grid's computation-expression axis
+(`every_computation_expression_cell_agrees_with_fcs`) crosses each way of
+supplying an operation with seven kinds of name (an implicit value and case, an
+own value and case, a parameter, an outer local, an inner local) and nine
+positions (a statement, `return`, under a lambda, as a first-class value, as a
+dotted head, in a nested expression over `async`, nested in one, a `let`
+right-hand side, a pattern). Each cell is graded against FCS and must check
+cleanly or be marked recovered.
+
+The empty-environment sweep `resolve_corpus_diff` cannot identify any
+FSharp.Core builder, so every expression there is over an unknown builder.
+
+## Not on the list
 
 - **Signature files** restrict what an implementation exports. The earlier-file
   routes read the implementation's declarations, which over-approximate what the

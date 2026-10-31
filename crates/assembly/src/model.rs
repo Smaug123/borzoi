@@ -1760,6 +1760,43 @@ pub struct MethodLike {
     /// one without it (#339).
     #[cfg_attr(feature = "serde", serde(default))]
     pub drops_optional_modifier: bool,
+    /// What `[Microsoft.FSharp.Core.CustomOperationAttribute]` on this method
+    /// says, or `None` when it carries none ([`CustomOperation`]).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub custom_operation: Option<CustomOperation>,
+}
+
+/// What `[Microsoft.FSharp.Core.CustomOperationAttribute]` declares a method
+/// to be: a custom operation of a computation-expression builder. Inside
+/// `b { … }`, F# puts the name of each of the builder's custom operations in
+/// front of every binding made outside the expression
+/// (`CheckComputationExpressions.fs`, `getCustomOperationMethods`), so a
+/// consumer resolving names there must know them.
+///
+/// F# reads the attribute from an F# method's signature data, and ignores it
+/// on a method of a non-F# assembly. The projection reads the IL attribute,
+/// which fsc emits beside the pickled one, and records it whatever the
+/// assembly: a consumer that over-counts operations declines more, never
+/// answers wrongly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CustomOperation {
+    pub name: CustomOperationName,
+    /// The `JoinConditionWord` named argument: the keyword a join-like
+    /// operation reads between its sources (F# defaults it to `on`).
+    pub join_condition_word: Option<String>,
+}
+
+/// The name a [`CustomOperation`] takes in a computation expression.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CustomOperationName {
+    /// The attribute's string argument.
+    Named(String),
+    /// No argument, or an empty one: the method's own F# name.
+    MethodName,
+    /// The payload could not be read, so the name is unknown.
+    Unreadable,
 }
 
 /// The vtable facts of one property or event accessor. C# reads a property

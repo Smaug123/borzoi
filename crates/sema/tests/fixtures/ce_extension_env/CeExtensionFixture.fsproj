@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's unmodelled-contributor grid
+       (tests/all/unmodelled_contributor_grid.rs): a referenced assembly whose
+       extension members add custom operations to FSharp.Core's `async`
+       builder. It is its own assembly because such an extension reaches every
+       computation expression over that builder in the project, which the
+       grid's other cells must not see. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaCeExtensionFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

@@ -5105,4 +5105,9 @@ impl<'a> Resolver<'a> {
         self.latest_entry(head)
             .is_some_and(|e| e.generation != self.open_generation)
     }
+
+    /// Whether any entry for `name` is in scope, staled or not.
+    pub(super) fn latest_entry_exists(&self, name: &str) -> bool {
+        self.latest_entry(name).is_some()
+    }
 }

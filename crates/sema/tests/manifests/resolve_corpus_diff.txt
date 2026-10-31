@@ -1,7 +1,11 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored
-.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs compared fcs-clean match=25 external=52
+.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs compared fcs-clean match=21 external=52
+.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs:25:13 "config" gap
+.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs:29:45 "fsprojPath" gap
+.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs:38:276 "config" gap
+.github/skills/fsharp-diagnostics/server/DesignTimeBuild.fs:38:34 "fsprojPath" gap
 buildtools/fslex/fslexpars.fs compared fcs-check-errors match=222 external=391
 buildtools/fslex/fslexpars.fs:261:20 "'gentype__startspec" gap
 buildtools/fslex/fslexpars.fs:264:49 "'gentype_codeopt" gap
@@ -163,7 +167,7 @@ src/Compiler/Optimize/LowerStateMachines.fs:826:74 "TTarget(vs, _, _)" gap
 src/Compiler/Optimize/LowerStateMachines.fs:960:5 "LowerStateMachine" gap
 src/Compiler/Service/QuickParse.fs compared fcs-check-errors match=518 external=322
 src/Compiler/Service/QuickParse.fs:238:55 "prior, residue" gap
-src/Compiler/Service/ServiceParseTreeWalk.fs compared fcs-check-errors match=1157 external=701
+src/Compiler/Service/ServiceParseTreeWalk.fs compared fcs-check-errors match=1144 external=701
 src/Compiler/Service/ServiceParseTreeWalk.fs:105:15 "SyntaxVisitorPath" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:106:13 "'T" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:1072:34 "SynValSig(synType = t; attributes = attributes; synExpr = expr; range = m)" gap
@@ -739,7 +743,20 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:329:11 "'T" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:35:11 "SynPat" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:36:11 "SynType" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:37:11 "SynExpr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:385:27 "expr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:387:36 "SyntaxNode" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:387:36 "SyntaxNode.SynExpr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:387:55 "expr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:387:63 "path" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:388:31 "dive" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:388:55 "traverseSynExpr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:389:32 "traverseSequentials" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:38:11 "SynModule" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:394:31 "dive" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:394:36 "expr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:394:41 "expr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:394:53 "traverseSynExpr" gap
+src/Compiler/Service/ServiceParseTreeWalk.fs:394:69 "path" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:39:11 "SynModuleOrNamespace" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:40:11 "SynTypeDefn" gap
 src/Compiler/Service/ServiceParseTreeWalk.fs:41:11 "SynMemberDefn" gap
@@ -2201,7 +2218,9 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/UnionOrderOfExecution.fs compared fcs-clean match=6 external=7
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/UnionOrderOfExecution.fs:21:1 "InnerModule" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/StaticLet/UnionOrderOfExecution.fs:22:1 "InnerModule" gap
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs compared fcs-clean match=55 external=58
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs compared fcs-clean match=53 external=58
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:28:23 "resource" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:29:21 "f" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:37:25 "DisposableBuilder" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:43:25 "isposable" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang03.fs:44:24 "isposable" gap
@@ -2219,21 +2238,35 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/Com
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs compared fcs-check-errors match=1 external=9
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:9 "this" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs compared fcs-clean match=4 external=10
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs compared fcs-check-errors match=9 external=13
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs compared fcs-check-errors match=30 external=62
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs compared fcs-check-errors match=6 external=13
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs:16:18 "ds" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs:23:18 "ds" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs:9:18 "ds" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs compared fcs-check-errors match=25 external=62
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:14:18 "numbers" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:16:17 "g" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:16:24 "g" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:25:18 "words" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:27:17 "g" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:27:24 "g" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:36:18 "products" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:38:17 "g" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:38:24 "g" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:48:18 "customers" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:51:26 "c" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:55:34 "yg" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:57:33 "mg" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:57:41 "mg" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:59:25 "yg" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/UppercaseIdentifier04.fs unreadable
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/IfThenElse05.fs compared fcs-clean match=1 external=3
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs compared fcs-clean match=7 external=11
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs compared fcs-clean match=1 external=11
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs:6:32 "x" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs:6:42 "rwalk2" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs:6:50 "x" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs:7:32 "x" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs:7:42 "rwalk1" gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/tailcalls02.fs:7:50 "x" gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/Applications.fs compared fcs-check-errors match=9 external=39
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/FieldSet.fs compared fcs-check-errors match=4 external=31
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Baselines/FieldSet.fs:9:12 "S" gap
@@ -2449,13 +2482,25 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/EqualsOnUnions01.fs compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/NonEscapingArguments02.fs compared fcs-clean match=4 external=3
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ExceptionType.fs compared fcs-clean match=0 external=29
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs compared fcs-clean match=11 external=30
-tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs compared fcs-check-errors match=20 external=36
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs compared fcs-check-errors match=8 external=36
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:13:18 "categories" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:14:19 "products" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:14:32 "c" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:14:36 "p" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:15:20 "p" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:21:18 "categories" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:22:24 "products" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:22:37 "c" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:22:41 "p" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:23:20 "ps" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:29:18 "categories" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:30:24 "products" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:30:37 "c" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:30:41 "p" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:31:18 "ps" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:38:18 "categories" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:24 "products" gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:37 "c" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:41 "p" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:40:18 "ps" gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/RealInternalSignature/ClassTypeVisibilityNamespaceRoot.fs compared fcs-check-errors match=29 external=117
@@ -2506,8 +2551,21 @@ tests/FSharp.Compiler.ComponentTests/Language/SequenceExpressions/SequenceExpres
 tests/FSharp.Compiler.ComponentTests/Miscellaneous/MigratedMisc.fs compared fcs-check-errors match=13 external=83
 tests/FSharp.Compiler.ComponentTests/Signatures/MemberTests.fs compared fcs-check-errors match=0 external=6
 tests/FSharp.Compiler.ComponentTests/SkipLocalsInit.fs compared fcs-check-errors match=0 external=27
-tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs compared fcs-check-errors match=87 external=150
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs compared fcs-check-errors match=74 external=150
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:110:32 "projectArgumentsFilePath" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:113:42 "projectArgumentsFilePath" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:139:46 "graphFromTypedTree" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:139:65 "checker" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:195:45 "previousDir" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:65:13 "projectOptions" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:68:80 "fileName" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:69:53 "checker" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:75:50 "projectOptions" gap
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:76:41 "DepCollector" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:79:29 "collectFromSymbol" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:88:25 "files" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:92:54 "projectOptions" gap
+tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/TypedTreeGraph.fs:94:33 "idx" gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/CompilerOptions/fsc/optimize/optimize01.fs compared fcs-clean match=0 external=1
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/SanityCheck01.fs compared fcs-clean match=8 external=7
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/SanityCheck01.fs:12:18 "oo" gap
@@ -2605,18 +2663,85 @@ tests/FSharp.Compiler.Service.Tests/SynExprTests.fs compared fcs-check-errors ma
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:68:40 "this" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/DiscriminatedUnionType.fs compared fcs-check-errors match=138 external=167
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs compared fcs-check-errors match=23 external=112
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs compared fcs-check-errors match=293 external=704
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs compared fcs-check-errors match=226 external=704
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:101:27 "ops" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:106:23 "cancelAfter" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:150:28 "'a" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:171:41 "exitContext" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:179:21 "cts" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:20:104 "'b" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:20:72 "'a" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:21:17 "'a" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:273:54 "wh" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:288:60 "flag" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:288:75 "flag" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:289:25 "cancelHandlerRegistered" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:310:17 "cts" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:312:44 "flag" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:312:52 "flag" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:327:48 "e" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:328:57 "flag" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:390:17 "started" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:391:48 "wh" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:468:43 "ummy" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:481:40 "started" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:483:25 "failOnlyOne" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:487:48 "cancelled" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:506:54 "wh" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:523:21 "finalTid" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:527:21 "cnt" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:527:28 "cnt" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:529:25 "f" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:529:28 "n" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:539:44 "wh" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:53:20 "ChoiceWorkflow(ops, cancelAfter)" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:549:33 "cts" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:550:33 "wh" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:571:21 "r" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:623:13 "x" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:623:18 "x" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:626:49 "Utils" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:630:17 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:631:17 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:632:17 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:633:50 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:638:30 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:639:30 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:641:17 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:642:17 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:645:30 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:648:50 "memFunc" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:659:13 "i" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:659:18 "i" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:669:51 "i" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:67:20 "ChoiceWorkflow(ops, cancelAfter)" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:681:51 "i" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:708:24 "i" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:710:25 "counter" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:710:36 "counter" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:71:29 "time" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:72:43 "completed" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:731:30 "gate" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:731:90 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:735:29 "semaphore" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:73:20 "f" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:745:32 "gate" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:745:84 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:746:50 "acquiredCount" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:747:30 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:748:36 "gate" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:748:97 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:752:34 "gate" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:752:86 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:753:32 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:754:38 "gate" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:754:77 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:758:29 "semaphore" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:760:52 "releaseCount" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:761:34 "gate" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:761:86 "index" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:775:16 "i" gap
+tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/AsyncModule.fs:775:44 "i" gap
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/ExtraTopLevelOperatorsTests.fs compared fcs-check-errors match=24 external=70
 tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleChecked.fs compared fcs-check-errors match=0 external=133
 tests/FSharp.Test.Utilities/CompilerAssert.fs compared fcs-check-errors match=795 external=830
@@ -2781,7 +2906,7 @@ tests/FSharp.Test.Utilities/Utilities.fs:83:27 "ts" gap
 tests/FSharp.Test.Utilities/Utilities.fs:84:17 "cancellationToken" gap
 tests/FSharp.Test.Utilities/Utilities.fs:85:13 "task" gap
 tests/benchmarks/CompiledCodeBenchmarks/MicroPerf/Conditions.fs compared fcs-check-errors match=6 external=15
-tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs compared fcs-check-errors match=385 external=349
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs compared fcs-check-errors match=380 external=349
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:39 "Build" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:39 "Build.MSBuildProps.makeNuGet" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:175:45 "MSBuildProps" gap
@@ -2805,7 +2930,12 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:429:21 "Git" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:431:21 "NuGet" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:457:21 "Git" gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:457:21 "Git.checkoutAndBuild" gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:457:42 "config" gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:457:65 "revision" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:459:43 "Git" gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:459:43 "Git.prepareRevisionCheckout" gap
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:459:74 "revision" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:77:9 "Utils" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:81:9 "Utils" gap
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:82:9 "Utils" gap
@@ -3018,8 +3148,15 @@ tests/fsharp/typecheck/sigs/neg36.fs:31:18 "C" gap
 tests/fsharp/typecheck/sigs/neg36.fs:6:22 "'T" gap
 tests/fsharp/typecheck/sigs/neg36.fs:7:22 "'U" gap
 tests/fsharp/typecheck/sigs/neg48.fs compared fcs-check-errors match=0 external=56
-tests/fsharp/typecheck/sigs/neg59.fs compared fcs-check-errors match=11 external=55
+tests/fsharp/typecheck/sigs/neg59.fs compared fcs-check-errors match=4 external=55
+tests/fsharp/typecheck/sigs/neg59.fs:13:22 "dbOne" gap
+tests/fsharp/typecheck/sigs/neg59.fs:15:30 "dbOne" gap
+tests/fsharp/typecheck/sigs/neg59.fs:15:40 "i" gap
 tests/fsharp/typecheck/sigs/neg59.fs:16:24 "group" gap
+tests/fsharp/typecheck/sigs/neg59.fs:19:22 "dbOne" gap
+tests/fsharp/typecheck/sigs/neg59.fs:7:22 "dbOne" gap
+tests/fsharp/typecheck/sigs/neg59.fs:9:25 "dbOne" gap
+tests/fsharp/typecheck/sigs/neg59.fs:9:35 "i" gap
 tests/fsharp/typecheck/sigs/neg95.fs fcs-not-ok
 tests/fsharp/typecheck/sigs/neg_byref_14.fs compared fcs-check-errors match=0 external=2
 tests/fsharp/typecheck/sigs/neg_byref_5.fs compared fcs-check-errors match=0 external=4

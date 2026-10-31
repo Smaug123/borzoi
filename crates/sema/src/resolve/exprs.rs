@@ -84,6 +84,9 @@ impl<'a> Resolver<'a> {
                 let func = e.func();
                 if let Some(f) = &func {
                     self.resolve_expr(f);
+                    if !e.is_infix() {
+                        self.note_in_file_construction(f);
+                    }
                 }
                 if let Some(a) = e.arg() {
                     // Resolved after the function, so the head's resolution is
@@ -444,13 +447,14 @@ impl<'a> Resolver<'a> {
                 // are now modelled as `Expr::LetOrUse` (their bound names
                 // resolve to locals); other CE-specific constructs still fall
                 // through to `Deferred`, never to a wrong resolution. The
-                // builder's custom operations are names the walk does not
-                // model ([`Self::computation_expression_decline`]).
-                self.ce_depth += 1;
+                // builder's custom operations take their names ahead of every
+                // binding outside the expression
+                // ([`Self::enter_computation_expression`]).
+                let pushed = self.enter_computation_expression(e);
                 if let Some(inner) = e.inner() {
                     self.resolve_expr(&inner);
                 }
-                self.ce_depth -= 1;
+                self.leave_computation_expression(pushed);
             }
             Expr::Record(e) => {
                 // `{ src with F = e; … }` — resolve the copy source (if any) and
@@ -834,14 +838,19 @@ impl<'a> Resolver<'a> {
     /// Resolve a **bare** name use, and where it declines, record which guard
     /// declined it if one did ([`Self::bare_value_decline`]).
     pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) {
+        if let Some(cause) = self.custom_operation_clause_decline(tok) {
+            self.record(
+                tok.text_range(),
+                Resolution::Deferred(DeferredReason::UnboundName),
+            );
+            self.record_decline(tok.text_range(), DeclineSite::pre_walk(cause));
+            return;
+        }
         if self.record_name_use(tok, allow_opened_type) {
             if let Some(cause) = self.bare_value_decline(&id_text(tok)) {
                 self.record_decline(tok.text_range(), DeclineSite::pre_walk(cause));
             }
-        } else if let Some(cause) = self
-            .bare_value_evicted(&id_text(tok))
-            .or_else(|| self.computation_expression_decline(&id_text(tok)))
-        {
+        } else if let Some(cause) = self.bare_value_evicted(&id_text(tok)) {
             // A constructible type of the name took the unqualified slot after
             // the value the lookup found: a bare use constructs the type.
             self.record(
@@ -1165,8 +1174,25 @@ impl<'a> Resolver<'a> {
     }
 
     fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
-        if !allow_opened_type
-            || self.own_binder_simple_names.contains(name)
+        if !allow_opened_type || !self.bare_constructor_unshadowed(name) {
+            return None;
+        }
+        match self.decide_type_path(std::slice::from_ref(&name.to_string()), 0) {
+            TypePathResolution::Assembly {
+                leaf: Some(handle), ..
+            } if self.assemblies.bare_expr_constructible(handle) => {
+                Some(Resolution::Entity(handle))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether no value the value frame misses could take the bare name
+    /// `name` from a type used as a constructor — the guards
+    /// [`Self::opened_constructor_target`] applies before asking which type it
+    /// is.
+    pub(super) fn bare_constructor_unshadowed(&self, name: &str) -> bool {
+        !(self.own_binder_simple_names.contains(name)
             || self.head_entry_staled(name)
             // Every assembly-side surface F# makes bare-visible without an
             // explicit `open` — auto-opened module values, contested contributor
@@ -1199,18 +1225,7 @@ impl<'a> Resolver<'a> {
             // does the same for its own names. Nothing here *declares* them, so
             // `own_binder_simple_names` is empty for them; the container's hidden
             // marker is the only evidence, exactly as for a preceding file.
-            || self.container_and_ancestors_hide_values()
-        {
-            return None;
-        }
-        match self.decide_type_path(std::slice::from_ref(&name.to_string()), 0) {
-            TypePathResolution::Assembly {
-                leaf: Some(handle), ..
-            } if self.assemblies.bare_expr_constructible(handle) => {
-                Some(Resolution::Entity(handle))
-            }
-            _ => None,
-        }
+            || self.container_and_ancestors_hide_values())
     }
 }
 
