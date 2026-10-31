@@ -191,7 +191,8 @@ test_concurrency() {
 
   : >"$tmp/log"
   run_gate d "$tmp/plan1" "$rev1" "$step" &
-  sleep 1
+  # Until d is reading: e must arrive at a corpus in use, not race d to it.
+  until [ -n "$(ls "$tmp/cache/readers")" ] || [ -e "$tmp/d.status" ]; do sleep 0.1; done
   run_gate e "$tmp/plan2" "$rev2" "$step" &
   wait
   assert_eq "a run of another pin beside a reader: reader succeeds" 0 "$(cat "$tmp/d.status")"
