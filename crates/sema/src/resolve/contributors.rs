@@ -94,9 +94,9 @@ pub(super) struct FileContributions {
     /// modules, and the declarations of its `namespace global` blocks.
     pub(super) root: Contribution,
     /// Every name the file's type augmentations (`type T with …`) declare,
-    /// by the augmented type's simple name: an `open type` of `T` brings its
-    /// extension members in scope.
-    pub(super) extension_statics: Vec<(String, BTreeSet<String>)>,
+    /// whatever `T`: an `open type` brings the extension members in scope for
+    /// the type it opens, and which type that is the name does not prove.
+    pub(super) extension_statics: BTreeSet<String>,
     /// For a project module, what an `open` of it adds beyond the values the
     /// walk folds ([`Resolver::open_module_values`]): its `[<AutoOpen>]`
     /// children, at any depth through `[<AutoOpen>]` ones.

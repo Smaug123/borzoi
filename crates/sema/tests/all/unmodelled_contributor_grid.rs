@@ -33,8 +33,8 @@ use std::path::{Path, PathBuf};
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
     FileUses, NormalisedProjectUse, ensure_ce_extension_fixture_built,
-    ensure_contributor_fixture_built, ensure_fsharp_core_dll, invoke_fcs_dump_project_with_refs,
-    parse_fcs_uses_project, temp_fs_tree,
+    ensure_contributor_ext_fixture_built, ensure_contributor_fixture_built, ensure_fsharp_core_dll,
+    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
 };
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
@@ -266,6 +266,11 @@ enum Route {
     OpenTypeAssemblyExtension,
     /// The same with extension *properties*, whose accessors carry the name.
     OpenTypeAssemblyExtensionProperty,
+    /// The same with extension methods whose compiled names name another
+    /// type.
+    OpenTypeAssemblyExtensionRenamed,
+    /// The same with extensions the projection drops.
+    OpenTypeAssemblyExtensionDropped,
     /// `open type` of a type whose static of the name is an overload set, in
     /// front of a union case of it: methods never contest a pattern.
     OpenTypeOverloadPattern,
@@ -341,7 +346,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 74] = [
+    const ALL: [Route; 76] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -390,6 +395,8 @@ impl Route {
         Route::OpenTypeSourceExtension,
         Route::OpenTypeAssemblyExtension,
         Route::OpenTypeAssemblyExtensionProperty,
+        Route::OpenTypeAssemblyExtensionRenamed,
+        Route::OpenTypeAssemblyExtensionDropped,
         Route::OpenTypeOverloadPattern,
         Route::ConstructibleType,
         Route::AutoOpenAliasedStructRecord,
@@ -435,6 +442,19 @@ impl Route {
                 | Route::TypeGroupLocalLet
                 | Route::TypeGroupLocalHead
                 | Route::OpenTypeOverloadPattern
+        )
+    }
+
+    /// Whether the route references the extension fixture: any extension
+    /// member of a probed name is a candidate at every `open type`, so the
+    /// other routes run without it.
+    fn needs_extensions(self) -> bool {
+        matches!(
+            self,
+            Route::OpenTypeAssemblyExtension
+                | Route::OpenTypeAssemblyExtensionProperty
+                | Route::OpenTypeAssemblyExtensionRenamed
+                | Route::OpenTypeAssemblyExtensionDropped
         )
     }
 
@@ -745,7 +765,15 @@ impl Route {
             ),
             Route::OpenTypeAssemblyExtensionProperty => (
                 vec![],
-                "module GridProbe\n@OWN\nopen GridFix\nopen type GridFix.Plain3\n@USE\n",
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain3\n@USE\n",
+            ),
+            Route::OpenTypeAssemblyExtensionRenamed => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain4\n@USE\n",
+            ),
+            Route::OpenTypeAssemblyExtensionDropped => (
+                vec![],
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain5\n@USE\n",
             ),
             Route::OpenTypeOverloadPattern => (
                 vec![],
@@ -753,7 +781,7 @@ impl Route {
             ),
             Route::OpenTypeAssemblyExtension => (
                 vec![],
-                "module GridProbe\n@OWN\nopen GridFix\nopen type GridFix.Plain2\n@USE\n",
+                "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain2\n@USE\n",
             ),
             Route::ConstructibleType => (vec![], "module GridProbe\n@OWN\n@CTOR\n@USE\n"),
             Route::ConstructibleAbbrev => (vec![], "module GridProbe\n@OWN\n@OBJ\n@USE\n"),
@@ -945,7 +973,7 @@ struct Cell {
     shadowed: bool,
 }
 
-fn cells(fixture: &'static Path) -> Vec<Cell> {
+fn cells(fixture: &'static Path, ext_fixture: &'static Path) -> Vec<Cell> {
     let mut cells = Vec::new();
     for kind in Kind::ALL {
         for route in Route::ALL {
@@ -969,7 +997,11 @@ fn cells(fixture: &'static Path) -> Vec<Cell> {
                     probe: probe.expect("every probe template has a use"),
                     // A union case heading a dotted path is not committed.
                     control: route.adds_nothing() && !(use_ == Use::Head && kind.is_case()),
-                    refs: vec![fixture],
+                    refs: if route.needs_extensions() {
+                        vec![fixture, ext_fixture]
+                    } else {
+                        vec![fixture]
+                    },
                     clean: None,
                     shadowed: !route.adds_nothing(),
                 });
@@ -1117,8 +1149,9 @@ pub(crate) fn env_of(dlls: &[&Path]) -> AssemblyEnv {
 #[test]
 fn every_contributor_route_agrees_with_fcs() {
     let fixture = ensure_contributor_fixture_built();
+    let ext_fixture = ensure_contributor_ext_fixture_built();
     grade(
-        &cells(fixture),
+        &cells(fixture, ext_fixture),
         "unmodelled_contributor_grid",
         "every_contributor_route",
     );

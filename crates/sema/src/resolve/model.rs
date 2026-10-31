@@ -352,9 +352,9 @@ pub struct ProjectItems {
     /// `CustomOperationAttribute` or an abbreviation of it
     /// ([`FileContributions::declares_custom_operation_alias`]).
     pub(super) custom_operation_alias_declared: bool,
-    /// The names earlier files' type augmentations declare, by the augmented
-    /// type's simple name ([`FileContributions::extension_statics`]).
-    pub(super) extension_statics: HashMap<String, BTreeSet<String>>,
+    /// The names earlier files' type augmentations declare
+    /// ([`FileContributions::extension_statics`]).
+    pub(super) extension_statics: BTreeSet<String>,
     /// Whether some file folded so far declares a type spelled like
     /// `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`, or an abbreviation of
     /// one ([`ResolvedFile::declares_core_attribute_alias`]).
@@ -1179,12 +1179,8 @@ impl ProjectItems {
         self.custom_operations
             .merge(&file.contributions.custom_operations);
         self.custom_operation_alias_declared |= file.contributions.declares_custom_operation_alias;
-        for (target, names) in &file.contributions.extension_statics {
-            self.extension_statics
-                .entry(target.clone())
-                .or_default()
-                .extend(names.iter().cloned());
-        }
+        self.extension_statics
+            .extend(file.contributions.extension_statics.iter().cloned());
         for (path, c) in &file.contributions.module_opens {
             self.module_open_contributions
                 .entry(path.clone())

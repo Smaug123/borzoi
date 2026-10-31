@@ -126,16 +126,10 @@ pub fn resolve_file(
         if custom_operations::type_defn_renames_custom_operation(&defn) {
             r.contributions.declares_custom_operation_alias = true;
         }
-        if is_type_augmentation(&defn)
-            && let Some(target) = defn.long_id().and_then(|li| li.idents().last())
-        {
-            let target = id_text(&target).to_string();
+        if is_type_augmentation(&defn) {
             let names = contributors::declared_identifiers(defn.syntax());
-            r.own_extension_statics
-                .entry(target.clone())
-                .or_default()
-                .extend(names.iter().cloned());
-            r.contributions.extension_statics.push((target, names));
+            r.own_extension_statics.extend(names.iter().cloned());
+            r.contributions.extension_statics.extend(names);
         }
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
@@ -1919,7 +1913,7 @@ impl<'a> Resolver<'a> {
             opaque_dotted_open: false,
             recursive_module_active: false,
             contributions: FileContributions::default(),
-            own_extension_statics: HashMap::new(),
+            own_extension_statics: std::collections::BTreeSet::new(),
             rec_contribution: None,
             declares_core_attribute_alias: false,
             custom_operation_clauses: HashMap::new(),

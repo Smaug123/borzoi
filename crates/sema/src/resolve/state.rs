@@ -1348,11 +1348,11 @@ pub(super) struct Resolver<'a> {
     /// What this file's declarations contribute to later files through routes
     /// the walk does not model ([`FileContributions`]), accumulated by the walk.
     pub(super) contributions: FileContributions,
-    /// Every name this file's type augmentations declare, by the augmented
-    /// type's simple name, pre-scanned: what an `open type` may bring as
-    /// extension members ([`FileContributions::extension_statics`] is the
-    /// same, for later files).
-    pub(super) own_extension_statics: HashMap<String, BTreeSet<String>>,
+    /// Every name this file's type augmentations declare, pre-scanned: what
+    /// an `open type` may bring as extension members
+    /// ([`FileContributions::extension_statics`] is the same, for later
+    /// files).
+    pub(super) own_extension_statics: BTreeSet<String>,
     /// Whether this file declares a type spelled like `[<AutoOpen>]` or
     /// `[<RequireQualifiedAccess>]`, or an abbreviation of one — which makes
     /// every written attribute name untrustworthy for those two

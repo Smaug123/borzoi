@@ -287,24 +287,18 @@ impl<'a> Resolver<'a> {
                 .collect(),
             ..Contribution::default()
         };
-        let entity = self.assemblies.entity(handle);
-        let target = entity.name.split('`').next().unwrap_or(&entity.name);
-        let source = entity.source_name.as_deref().unwrap_or(target);
-        for name in [target, source] {
-            beside.values.extend(
-                self.assemblies
-                    .augmentation_members_on(name)
-                    .into_iter()
-                    .map(str::to_string),
-            );
-            for statics in [
-                &self.preceding.extension_statics,
-                &self.own_extension_statics,
-            ] {
-                if let Some(names) = statics.get(name) {
-                    beside.values.extend(names.iter().cloned());
-                }
-            }
+        // Every extension name, of whatever target: nothing proves which
+        // type an extension extends but the extension itself.
+        let assembly = self.assemblies.augmentation_member_names();
+        beside.values.extend(assembly.names.iter().cloned());
+        // A dropped member, or a dropped type, may be an extension of any
+        // name.
+        beside.unlisted |= assembly.unlisted || self.assemblies.dropped_any_type();
+        for statics in [
+            &self.preceding.extension_statics,
+            &self.own_extension_statics,
+        ] {
+            beside.values.extend(statics.iter().cloned());
         }
         self.push_contribution(&beside, open_pos);
     }
