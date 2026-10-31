@@ -51,6 +51,8 @@ struct Kind {
     /// The declaration in the `Host::Own` programs, where it differs
     /// (`type T = T with`, which takes members only so).
     own_decl: Option<&'static str>,
+    /// What follows the member in the `Host::Own` programs (a later `and`).
+    own_after: &'static str,
     values: &'static str,
     /// The augmentation head, and a renaming of its parameters if generic.
     header: &'static str,
@@ -81,6 +83,7 @@ const KINDS: &[Kind] = &[
     Kind {
         label: "rqa-union",
         own_decl: None,
+        own_after: "",
         decl: "[<RequireQualifiedAccess>]\ntype T<'a> =\n    | A\n    | B of 'a\n",
         values: "let A = 1\nlet B = 2\n",
         header: "T<'a>",
@@ -97,6 +100,7 @@ const KINDS: &[Kind] = &[
     Kind {
         label: "union",
         own_decl: None,
+        own_after: "",
         decl: "type T<'a> =\n    | A\n    | B of 'a\n",
         values: "let A = 1\nlet B = 2\n",
         header: "T<'a>",
@@ -113,6 +117,7 @@ const KINDS: &[Kind] = &[
     Kind {
         label: "class",
         own_decl: None,
+        own_after: "",
         decl: "type T<'a>(a: 'a) =\n    let b = 3\n    member _.X = (a, b)\n",
         values: "let a = 1\nlet b = 2\n",
         header: "T<'a>",
@@ -129,6 +134,7 @@ const KINDS: &[Kind] = &[
     Kind {
         label: "plain-class",
         own_decl: None,
+        own_after: "",
         decl: "type T(a: int) =\n    let b = 3\n    member _.X = (a, b)\n",
         values: "let a = 1\nlet b = 2\n",
         header: "T",
@@ -145,6 +151,7 @@ const KINDS: &[Kind] = &[
     Kind {
         label: "interface",
         own_decl: None,
+        own_after: "",
         decl: "type T<'a> =\n    abstract X: 'a\n",
         values: "",
         header: "T<'a>",
@@ -162,6 +169,7 @@ const KINDS: &[Kind] = &[
         // FCS reads `type T = T` as a union with the case `T`.
         label: "abbreviation-union",
         own_decl: Some("type T = T with\n"),
+        own_after: "",
         decl: "type T = T\n",
         values: "let T = 1\n",
         header: "T",
@@ -179,6 +187,7 @@ const KINDS: &[Kind] = &[
         // A `[<RequireQualifiedAccess>]` case shadows no module value.
         label: "rqa-abbreviation-union",
         own_decl: Some("[<RequireQualifiedAccess>]\ntype T = T with\n"),
+        own_after: "",
         decl: "[<RequireQualifiedAccess>]\ntype T = T\n",
         values: "let T = 1\n",
         header: "T",
@@ -193,10 +202,30 @@ const KINDS: &[Kind] = &[
         body_t_commits: true,
     },
     Kind {
+        // `type T = T`'s case belongs to it, not to a same-named type of
+        // another arity later in its group.
+        label: "rqa-abbreviation-union-and-generic",
+        own_decl: Some("[<RequireQualifiedAccess>]\ntype T = T with\n"),
+        own_after: "and T<'a> =\n    | B of 'a\n",
+        decl: "[<RequireQualifiedAccess>]\ntype T = T\nand T<'a> =\n    | B of 'a\n",
+        values: "let T = 1\n",
+        header: "T",
+        renamed: None,
+        member: "member this.M (p: int) : int =",
+        body: "(ignore T; ignore p; 0)",
+        annotation: "T",
+        own_members: true,
+        pinned: false,
+        static_let: false,
+        extension_member: true,
+        body_t_commits: false,
+    },
+    Kind {
         // A class's own name is its constructor in its intrinsic
         // augmentation, ahead of a module value of the name.
         label: "constructor-class",
         own_decl: None,
+        own_after: "",
         decl: "type T() =\n    member _.X = 1\n",
         values: "let T () = 42\n",
         header: "T",
@@ -214,6 +243,7 @@ const KINDS: &[Kind] = &[
         // A secondary constructor's `as self` binds its own self identifier.
         label: "constructor-as-self",
         own_decl: None,
+        own_after: "",
         decl: "type T() =\n    member _.X = 1\n",
         values: "let self = 42\nlet x = 1\n",
         header: "T",
@@ -328,6 +358,7 @@ fn program(kind: &Kind, host: Host, values: Values) -> Option<String> {
     };
     if let Host::Own = host {
         s += &format!("    {}\n        {}\n", kind.member, kind.body);
+        s += kind.own_after;
     }
     if let Values::AfterType = values {
         s += kind.values;
