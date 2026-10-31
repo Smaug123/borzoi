@@ -408,6 +408,7 @@ pub fn resolve_file(
         r.assembly_open_prefixes = Vec::new();
         r.open_generation = 0;
         r.latest_open_pos = 0;
+        r.block_type_defs = HashSet::new();
         r.pattern_suppressed_case_ids = HashSet::new();
         r.unmodelled_open_active = false;
         r.opaque_value_open = false;
@@ -2223,6 +2224,8 @@ impl<'a> Resolver<'a> {
             augmentation_static_names: HashSet::new(),
             augmentation_names_unknowable: false,
             latest_open_pos: 0,
+            block_type_defs: HashSet::new(),
+            augmentable_types: HashSet::new(),
             module_aliases: HashMap::new(),
             unmodelled_open_active: false,
             opaque_value_open: false,

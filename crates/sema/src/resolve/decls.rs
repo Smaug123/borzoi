@@ -573,6 +573,28 @@ impl<'a> Resolver<'a> {
                             self.export_access_root_len(type_header_is_private(defn));
                         let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
                         self.define_type(&name, arity, slot, type_access_root);
+                        if let Some(own) = self
+                            .type_defs_by_arity
+                            .get(&self.container_path)
+                            .and_then(|m| m.get(&(id_text(&name).to_string(), arity)))
+                            .copied()
+                        {
+                            self.block_type_defs.insert(own);
+                            let covered_kind = match defn.repr() {
+                                Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => true,
+                                Some(TypeDefnRepr::ObjectModel(om)) => {
+                                    om.is_class()
+                                        || defn.implicit_ctor().is_some()
+                                            && !om.is_struct()
+                                            && !om.is_interface()
+                                }
+                                _ => false,
+                            };
+                            if arity == 0 && covered_kind && !self.may_auto_open(defn.attributes())
+                            {
+                                self.augmentable_types.insert(own);
+                            }
+                        }
                         // The cross-file type index: any genuine non-abbreviation
                         // repr's cases are fully indexed below (a union/enum's by
                         // `define_union_cases` / `define_enum_cases`; other reprs

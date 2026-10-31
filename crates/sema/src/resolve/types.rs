@@ -24,6 +24,7 @@ use super::model::{
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
 };
+use crate::recovery::SyntaxRecovery;
 
 /// Which names a type definition's member bodies see beyond the module scope,
 /// their self identifier and their parameters ([`Resolver::member_scope_of`]).
@@ -38,13 +39,9 @@ pub(super) enum MemberScope {
     /// Like every augmentation, not `T`'s constructor parameters or fields,
     /// which are scoped to `T`'s own definition.
     Intrinsic { own: DefId },
-    /// An augmentation that sees its header's type parameters and the module
-    /// scope alone: an optional extension, or an intrinsic augmentation of a
-    /// type that is neither generic nor a union, where the two coincide.
-    Optional,
-    /// An augmentation that may be intrinsic to a generic or union type of
-    /// this file without being pinned to it ([`Resolver::member_scope_of`]):
-    /// not walked.
+    /// An augmentation outside the subset whose scope is proven
+    /// ([`Resolver::member_scope_of`]): its member bodies are not walked, and
+    /// every name in them declines.
     Unwalked,
 }
 
@@ -932,18 +929,16 @@ impl<'a> Resolver<'a> {
         if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
             members.extend(om.members());
         }
+        // An augmentation's own `static let` / `do` fields are a scope we do
+        // not build, so one declaring any is outside the proven subset too.
+        let own_fields = members
+            .iter()
+            .any(|m| matches!(m, MemberDefn::LetBindings(_) | MemberDefn::Do(_)));
         let own = match scope {
             MemberScope::Genuine { own } => *own,
-            MemberScope::Intrinsic { own } => Some(*own),
-            MemberScope::Optional => None,
-            MemberScope::Unwalked => {
-                // The walk does not enter these members, so it commits no use
-                // there that their binders could capture.
-                self.opaque_regions.extend(
-                    members
-                        .iter()
-                        .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
-                );
+            MemberScope::Intrinsic { own } if !own_fields => Some(*own),
+            MemberScope::Intrinsic { .. } | MemberScope::Unwalked => {
+                self.skip_unproven_augmentation(&members);
                 return;
             }
         };
@@ -986,15 +981,9 @@ impl<'a> Resolver<'a> {
             self.scopes.push(Frame { entries: cases });
         }
         if super::is_type_augmentation(defn) {
-            // An augmentation's own `static let` / `do` fields are a scope we
-            // do not build, so one declaring any leaves its members unwalked.
-            let own_fields = members
-                .iter()
-                .any(|m| matches!(m, MemberDefn::LetBindings(_) | MemberDefn::Do(_)));
-            if !own_fields {
-                // Whether the augmented type has a base receiver is not
-                // decided here, so `base` is taken to be one: it hides an
-                // enclosing value of the name and declines.
+            {
+                // `base` is taken to be a receiver whatever the type's kind:
+                // it hides an enclosing value of the name and declines.
                 for m in &members {
                     self.resolve_member_body(m, &[], &[], true);
                 }
@@ -1005,6 +994,18 @@ impl<'a> Resolver<'a> {
         if pushed_cases {
             self.scopes.pop();
         }
+    }
+
+    /// An unproven augmentation's member bodies are not walked: each is an
+    /// opaque region ([`super::model::OpaqueRegion`]), in which the walk
+    /// records nothing, so every use there stays a deferral and binder
+    /// completeness reads its binders as unmodelled.
+    fn skip_unproven_augmentation(&mut self, members: &[MemberDefn]) {
+        self.opaque_regions.extend(
+            members
+                .iter()
+                .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
+        );
     }
 
     /// Whether a type of `name` declared along the container chain may take
@@ -1037,74 +1038,53 @@ impl<'a> Resolver<'a> {
                     .and_then(|t| here(&id_text(&t), header)),
             };
         }
-        let Some(segs) = defn.long_id().map(|li| li.idents().collect::<Vec<_>>()) else {
-            return MemberScope::Unwalked;
+        match self.proven_augmentation_target(defn, header) {
+            Some(own) => MemberScope::Intrinsic { own },
+            None => MemberScope::Unwalked,
+        }
+    }
+
+    /// The type an augmentation is proven intrinsic to, when its member
+    /// bodies see exactly the module scope, that type's union cases and its
+    /// constructor's name: the positive subset `augmentation_scope_diff`,
+    /// `abbreviation_case_diff` and `unmodelled_contributor_grid` hold to FCS.
+    /// Each condition says the shape is in the subset; anything not shown to
+    /// be is `None`, and its bodies are left unwalked as opaque regions
+    /// ([`super::model::OpaqueRegion`]).
+    fn proven_augmentation_target(&self, defn: &TypeDefn, header: usize) -> Option<DefId> {
+        // The file parsed without recovery.
+        let clean = matches!(&self.recovery, SyntaxRecovery::Reported(spans) if spans.is_empty());
+        // A source-ordered, named container: not a `rec` block, and not
+        // `namespace global` or an anonymous module.
+        let ordered = !self.recursive_module_active && !self.container_path.is_empty();
+        if !(clean && ordered) {
+            return None;
+        }
+        // A single-segment, non-generic header.
+        let segs: Vec<SyntaxToken> = defn.long_id()?.idents().collect();
+        let [head] = segs.as_slice() else {
+            return None;
         };
-        let Some(last) = segs.last() else {
-            return MemberScope::Unwalked;
-        };
-        let name = id_text(last).to_string();
-        // A `rec` block's members see its later values and types, which the
-        // source-ordered walk has not reached.
-        if self.recursive_module_active {
-            return MemberScope::Unwalked;
+        if header != 0 {
+            return None;
         }
-        // An `[<AutoOpen>]` type's or exception's statics enter scope again
-        // at its intrinsic augmentation, ahead of the module values, and the
-        // walk does not list them.
-        if (0..=self.container_path.len()).any(|k| {
-            let mut path = self.container_path[..k].to_vec();
-            path.push(name.clone());
-            self.auto_open_type_paths.contains(&path)
-        }) {
-            return MemberScope::Unwalked;
-        }
-        // No type of the name in this file is generic or could declare union
-        // cases (or none is declared here at all), so the intrinsic and the
-        // optional reading see the same scope: walk without choosing.
-        if !self
-            .own_type_scoped
-            .get(&(name.clone(), header))
-            .copied()
-            .unwrap_or(false)
-        {
-            // A header that misses a scoped type's arity (`type T with` for
-            // `type T<'a>`) is FS0957, and FCS still reads the members
-            // against that type's cases.
-            let scoped_at_other_arity = self
-                .own_type_scoped
-                .iter()
-                .any(|((n, _), scoped)| *n == name && *scoped);
-            return if scoped_at_other_arity {
-                MemberScope::Unwalked
-            } else {
-                MemberScope::Optional
-            };
-        }
-        // An augmentation is intrinsic only in the container declaring its
-        // type, which (outside `rec`) precedes it, so a name this container
-        // has not declared makes it optional.
-        let declared_here = self
-            .type_defs
+        let name = id_text(head).to_string();
+        // The file's only type or exception of the name, declared in this
+        // container and this block, at arity 0, of a covered kind and
+        // certainly not `[<AutoOpen>]`.
+        let only_declaration = self.own_type_decl_counts.get(&name) == Some(&1);
+        let own = self
+            .type_defs_by_arity
             .get(&self.container_path)
-            .is_some_and(|m| m.contains_key(&name));
-        if !declared_here {
-            return MemberScope::Optional;
-        }
-        // Otherwise only an augmentation pinned to a union of this container
-        // is walked: a single-segment head at the union's own arity, which no
-        // later `open` or same-named `[<AutoOpen>]` type can redirect. Pinning anything else would mean knowing
-        // which declaration FCS takes the head to and whether it reads the
-        // augmentation as intrinsic (an interface's never is).
-        let Some(own) = here(&name, header).filter(|_| segs.len() == 1) else {
-            return MemberScope::Unwalked;
-        };
-        let contested = self.opened_after(own) || self.own_auto_open_type_names.contains(&name);
-        if self.own_union_cases.contains_key(&own) && !contested {
-            MemberScope::Intrinsic { own }
-        } else {
-            MemberScope::Unwalked
-        }
+            .and_then(|m| m.get(&(name.clone(), 0)))
+            .copied()?;
+        let pinned = only_declaration
+            && self.block_type_defs.contains(&own)
+            && self.augmentable_types.contains(&own);
+        // No `open` since the declaration, and no `[<AutoOpen>]` module of the
+        // file declaring a type of the name.
+        let unopened = !self.opened_after(own) && !self.own_auto_open_type_names.contains(&name);
+        (pinned && unopened).then_some(own)
     }
 
     /// Intern a type definition's header type parameters and push the frame its
@@ -1126,7 +1106,7 @@ impl<'a> Resolver<'a> {
             MemberScope::Intrinsic { own } => {
                 header.map(|_| self.type_typar_frames.get(own).cloned().unwrap_or_default())
             }
-            MemberScope::Optional | MemberScope::Unwalked => header,
+            MemberScope::Unwalked => header,
         };
         match frame {
             Some(f) => {

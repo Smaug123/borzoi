@@ -78,7 +78,9 @@ enum Grade {
 /// committed, not merely never contradicted. Without this, a resolver that
 /// declined everything would pass both soundness properties. The rest —
 /// qualified values, static members, constructions — are census-only, and an
-/// external use must be declined.
+/// external use must be declined. A use in an augmentation's member body is
+/// exempt: sema commits there only inside the subset of augmentations whose
+/// scope it has proven, which `augmentation_scope_diff` holds to FCS.
 const MUST_COMMIT: &[RefKind] = &[
     RefKind::ModuleValue,
     RefKind::LetRecSibling,
@@ -99,9 +101,6 @@ const MUST_COMMIT: &[RefKind] = &[
     RefKind::StaticMemberParam,
     RefKind::ObjectSelfIdentifier,
     RefKind::ObjectMemberParam,
-    RefKind::AugmentationSelfIdentifier,
-    RefKind::AugmentationMemberParam,
-    RefKind::AugmentationStaticMemberParam,
     RefKind::UnionCase,
 ];
 
@@ -143,7 +142,7 @@ fn check_against_generator(g: &Generated) -> Result<Vec<(RefKind, Grade)>, Strin
     let mut grades = Vec::new();
     for r in &g.refs {
         match grade(g, &rf, r.range, r.expected) {
-            Ok(Grade::Declined) if MUST_COMMIT.contains(&r.kind) => {
+            Ok(Grade::Declined) if MUST_COMMIT.contains(&r.kind) && !r.in_augmentation => {
                 return Err(format!(
                     "{:?} use {:?} at {:?} was declined; sema models this kind \
                      completely\n{}",
@@ -257,7 +256,7 @@ fn generated_programs_agree_with_fcs() {
             entry.0 += 1;
             match grade(g, &rf, r.range, r.expected) {
                 Ok(Grade::Agrees) => entry.1 += 1,
-                Ok(Grade::Declined) if MUST_COMMIT.contains(&r.kind) => {
+                Ok(Grade::Declined) if MUST_COMMIT.contains(&r.kind) && !r.in_augmentation => {
                     undercommitted.push(format!(
                         "seed {seed}: {:?} use {:?} at {:?}",
                         r.kind, &g.src[r.range], r.range

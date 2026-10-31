@@ -1411,6 +1411,15 @@ pub(super) struct Resolver<'a> {
     /// `System.ObsoleteAttribute` in FCS). Reset per top-level block with the
     /// rest of the open state.
     pub(super) latest_open_pos: u32,
+    /// The in-file types the current top-level block declares. Reset per
+    /// block: a namespace reopened in a later block, `namespace global`
+    /// included, makes an augmentation there an extension to FCS.
+    pub(super) block_type_defs: HashSet<DefId>,
+    /// The in-file types an augmentation of which may be walked
+    /// ([`Resolver::member_scope_of`]): non-generic, of a kind the scope
+    /// tables cover (a class, a union or a record), and certainly not
+    /// `[<AutoOpen>]`.
+    pub(super) augmentable_types: HashSet<DefId>,
     /// `true` while walking a `module rec` / `namespace rec` block. Later type
     /// declarations are in scope for earlier type annotations there, so a bare
     /// single-segment type name must defer unless already resolved in-file.

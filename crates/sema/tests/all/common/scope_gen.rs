@@ -278,6 +278,9 @@ pub struct PlantedRef {
     pub range: TextRange,
     pub expected: Expected,
     pub kind: RefKind,
+    /// Planted in an augmentation's member body, whose scope sema commits
+    /// only inside a proven subset of augmentations, so it may decline.
+    pub in_augmentation: bool,
 }
 
 /// The product of generation.
@@ -304,6 +307,7 @@ pub fn generate(nums: Vec<u32>) -> Generated {
         next_module: 0,
         next_type: 0,
         next_augmentation: 0,
+        augmentation_depth: 0,
         augmented_class_names: Vec::new(),
         binder_ranges: HashMap::new(),
         refs: Vec::new(),
@@ -480,6 +484,8 @@ struct Gen {
     next_module: usize,
     next_type: usize,
     next_augmentation: usize,
+    /// How many augmentation member bodies enclose the text being emitted.
+    augmentation_depth: usize,
     /// While an augmentation's members are generated: the augmented class's
     /// constructor-parameter and field names, which its bodies do not see.
     augmented_class_names: Vec<String>,
@@ -559,6 +565,7 @@ impl Gen {
             range: span(start, self.out.len()),
             expected,
             kind,
+            in_augmentation: self.augmentation_depth > 0,
         });
     }
 
@@ -1020,6 +1027,7 @@ impl Gen {
         });
         let k = self.next_augmentation;
         self.next_augmentation += 1;
+        self.augmentation_depth += 1;
         self.augmented_class_names = self.types[t].class_names.clone();
         // FCS reports no use at the head, so nothing is planted there.
         self.s("type ");
@@ -1064,6 +1072,7 @@ impl Gen {
         self.augmentation_hazard(&static_scope, indent + 8);
         self.block(&mut static_scope, indent + 8, 1);
         self.augmented_class_names.clear();
+        self.augmentation_depth -= 1;
     }
 
     /// Sometimes, `ignore v` on its own line, where `v` is a module value

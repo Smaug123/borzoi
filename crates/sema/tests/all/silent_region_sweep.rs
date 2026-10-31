@@ -251,7 +251,8 @@ fn silent_regions_over_corpus() {
 }
 
 /// Every head in a body the walk enters has a record: a genuine type's
-/// member, an augmentation's (intrinsic and optional) and a module `let`.
+/// member, an intrinsic augmentation's inside the proven subset and a module
+/// `let`.
 #[test]
 fn walked_bodies_have_no_silent_heads() {
     let src = "\
@@ -262,6 +263,22 @@ type T() =
 type T with
     member _.N (q : int) = f q
     static member S (r : int) = f r
+";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let silent = silent_heads(src, &parsed);
+    assert!(silent.is_empty(), "{silent:#?}");
+}
+
+/// An augmentation outside the proven subset, here an optional extension in
+/// another module, is not walked: its heads are silent, bucketed by their host.
+#[test]
+fn unproven_augmentation_bodies_are_silent() {
+    let src = "\
+module M
+let f (a : int) = a
+type T() =
+    member _.M (p : int) = f p
 module N =
     type T with
         member this.O (s : int) = f (this.M s)
@@ -269,7 +286,10 @@ module N =
     let parsed = parse(src);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let silent = silent_heads(src, &parsed);
-    assert!(silent.is_empty(), "{silent:#?}");
+    assert!(
+        !silent.is_empty() && silent.iter().all(|h| h.bucket == "member-of-augmentation"),
+        "{silent:#?}"
+    );
 }
 
 /// A head is attributed to the innermost container, and a member to its host.

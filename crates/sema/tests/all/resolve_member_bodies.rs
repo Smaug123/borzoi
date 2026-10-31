@@ -299,10 +299,12 @@ type T with
 }
 
 #[test]
-fn optional_extension_member_body_binds_its_params_and_self() {
+fn optional_extension_member_body_is_left_unwalked() {
     // The shape of WoofWare.Incremental's `InternalObserverInvariant.fs`: an
     // optional extension of a generic type, in an `[<AutoOpen>]` module, whose
-    // static member calls a module function of the same module.
+    // static member calls a module function of the same module. It is outside
+    // the subset whose scope is proven (a generic target, declared in another
+    // container), so its bodies are opaque regions that record nothing.
     let src = "\
 namespace N
 
@@ -318,31 +320,23 @@ module internal ObsInvariant =
         member this.Self (u : int) : int = (if check this then u else u)
 ";
     let rf = resolve(src);
-    let check_def = ident_at(src, "let private check", "check");
-    assert_binds(
-        &rf,
-        ident_at(src, "(check t)", "check"),
-        check_def,
-        "static member calls the module function",
-    );
-    assert_binds(
-        &rf,
-        ident_at(src, "(check t)", "t"),
-        ident_at(src, "(t : 'a Obs)", "t"),
-        "static member parameter",
-    );
-    assert_binds(
-        &rf,
-        ident_at(src, "check this", "this"),
-        ident_at(src, "member this.Self", "this"),
-        "self identifier",
-    );
-    assert_binds(
-        &rf,
-        ident_at(src, "then u else", "u"),
-        ident_at(src, "(u : int)", "u"),
-        "instance member parameter",
-    );
+    for (context, ident) in [
+        ("(check t)", "check"),
+        ("(check t)", "t"),
+        ("check this", "this"),
+        ("then u else", "u"),
+    ] {
+        let at = ident_at(src, context, ident);
+        assert_eq!(
+            rf.resolution_at(at),
+            None,
+            "`{ident}` in `{context}` was resolved"
+        );
+        assert!(
+            rf.in_opaque_region(at),
+            "`{ident}` in `{context}` is outside every opaque region"
+        );
+    }
 }
 
 // --- static contexts do not see the instance scope (D5 soundness) ---
