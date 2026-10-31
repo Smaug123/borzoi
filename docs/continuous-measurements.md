@@ -338,8 +338,6 @@ A measurement generator writes this shape:
 `measurement` is a lowercase kebab-case path segment. `configuration` and
 `statistics` are JSON objects. `statistics` must contain at least one number
 and cannot contain arrays; use nested objects for structured metric families.
-An optional `retired_statistics` array names metrics the generator deliberately
-stopped emitting — see [Retiring a metric] below.
 The series identity is a deterministic digest of the generator schema,
 measurement name, pinned corpus revision, `flake.lock` hash, and complete
 configuration. Changing the corpus, toolchain inputs, stride, scope, defines,
@@ -395,134 +393,47 @@ is not hand-checked against the taxonomy beside it:
 all 8,192 combinations of the inputs it reads and asserts the list is exactly
 what comes back, so it can be neither short nor long.
 
-*Across* runs it can, and does. Two consecutive observations of one series
-measure the same thing over the same corpus with the same toolchain, so a
-metric present in one and absent from the next is a change in what is
-measured — and only the generator knows whether it meant it. `record` therefore
-compares each observation against the one it will follow on the dashboard and
-refuses to publish one that drops a metric its predecessor carried, unless it
-says so. It reads the statistics exactly as the dashboard does, one metric per
-nested *number*, so a field that starts serialising as `null` counts as dropped
-for the same reason the dashboard would stop plotting it.
+What the recorder *can* check is a rerun. A rerun is compared against the
+observation it **replaces**, and the check is exact equality of the metric
+namespace, in both directions. Two attempts of one run measure the same commit
+with the same generator over the same corpus, so their namespaces must agree by
+construction: a metric appearing only on the second attempt shows a namespace
+that depends on something other than the code, just as surely as one that
+disappears. It is the one place the within-run rule above can be *checked*
+rather than merely required of the generator. It also matters because
+re-recording deletes the old file outright, so a metric only it carried would
+otherwise leave no trace anywhere. The recorder reads the statistics exactly as
+the dashboard does, one metric per nested *number*, so a field that starts
+serialising as `null` counts as dropped.
 
-A rerun is checked against the observation it **replaces** as well, and that
-check is the strict one: exact equality of the metric namespace, in both
-directions, ignoring `retired_statistics` entirely. Two attempts of one run
-measure the same commit with the same generator over the same corpus, so their
-namespaces must agree by construction — a metric appearing only on the second
-attempt is a namespace depending on something other than the code just as surely
-as one that disappears, and a retirement declared here would be a false claim,
-since nothing changed to retire. It is the one place the within-run rule above
-can be *checked* rather than merely required of the generator. It also matters
-because re-recording deletes the old file outright, so a metric only it carried
-would otherwise leave no trace anywhere.
-
-The comparison is otherwise against the **predecessor**, not the newest recorded
-observation, because runs finish out of order and observations are ordered by
-workflow creation. An older run landing late has a smaller metric namespace
-because a *later* commit widened it, which is not a drop; comparing against the
-newest would refuse it for one.
-
-What the check therefore claims is narrow, and worth stating exactly: an
-observation is compared against the greatest **already recorded** observation
-below it. A drop escapes whenever the observations carrying the metric have not
-been recorded yet, and once the first post-drop observation escapes so does
-every later one, because each is then compared against an already-gapped
-predecessor. That is not confined to the start of a series — a sufficiently
-reordered arrival escapes at any depth — though in practice a live series has
-its whole prefix long since published, so a new commit's run always has a
-carrying predecessor to be measured against. The check firing is a claim; its
-not firing is not.
-
-Closing that gap by validating the **successor** too is a trap, and the reason
-is worth recording. The observation such a check would refuse is the innocent
-one: in the mirror case — a metric added and removed across two commits, the
-adding run landing late — the late run emitted a strict superset of both its
-neighbours, and the drop it would be refused for belongs to an observation that
-is already published and immutable. Nothing anyone could change would discharge
-the refusal, so a correct observation would be permanently unpublishable and its
-run permanently red. The gap is accepted instead, and
-`a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it` pins it so it
-is not later "fixed" into that trap.
-
-The boundary is established by enumeration rather than by the argument above,
-because arrival order is precisely what replaying the real history cannot vary —
-it only ever exercises the order that happened.
-`every_arrival_order_that_records_a_carrier_first_catches_the_drop` runs all 24
-orders of a four-observation series and asserts the rule directly: every order
-that records a carrying observation before the first dropping one is refused,
-and the eight that escape all begin with a dropping observation. That count is
-pinned, not as a target but as the size of the accepted gap — a change that
-moves it in either direction has changed what the recorder claims.
-
-Accepting it costs nothing a reader can see, because retirement is rendered from
-presence rather than from the declaration: a metric absent from the newest
-observation is labelled retired whether or not anyone said so. What escapes is
-the record of intent, and the chance to catch a generator regression at the
-moment it happened.
+Observations of *different* commits are not compared. The code may change what
+it measures, and a check after the merge is the wrong place to object: it
+cannot block the change, only refuse to publish the observation, which loses a
+real point to prevent nothing. The decline census shows how routine such a
+change is. It emits one metric per cause and tier, so deleting a `DeclineCause`
+drops fourteen.
 
 ### Retiring a metric
 
-A metric is retired by naming it in the observation's `retired_statistics`:
+A metric is retired by no longer emitting it. The dashboard labels a metric the
+newest observation of the selected series does not carry as `(retired)`, and
+its "Latest" card reads "Last measured — retired". Liveness is read off the
+observations themselves, so it needs no declaration to be right, and the series
+digest does not move: the metrics beside a retired one keep their history.
 
-```json
-{
-  "schema_version": 1,
-  "measurement": "project-corpus-diff",
-  "configuration": { "selection": { "source": "corpus" } },
-  "statistics": { "divergences": 0, "deferrals": { "total": 41 } },
-  "retired_statistics": ["decline_census.project.by_cause.occupied"]
-}
-```
+What does need catching is a metric dropped *by accident*, and the place to
+catch it is the pull request. The whole-project generator pins its namespace in
+`crates/corpus-diff/manifests/generator_metrics.txt`, checked by
+`the_metric_namespace_is_pinned`. Any added or removed metric moves that file,
+and `BORZOI_UPDATE_MANIFESTS=1` regenerates it, so the reviewer sees exactly
+which metrics a change adds or removes. The pin renders a single run, so
+`the_metric_namespace_does_not_depend_on_the_run` covers the data side: over
+generated summaries that touch every decline cause and tier, shape, hover
+grade, asset status and skip, the namespace never moves.
 
-`statistics` must still contain at least one number, so the last metric of a
-measurement cannot be retired. That is deliberate: a measurement with nothing
-left to measure should be removed from the workflow, not published as an
-observation of nothing.
-
-Each entry is a dotted metric path in the spelling the dashboard names it by,
-and it must **not** also appear in `statistics` — a retirement says the metric
-is gone, and one that is still measured would licence dropping it later without
-notice.
-
-**Leave the declaration in place once written.** It is only *consulted* at the
-transition, since by the next run the predecessor already lacks the key — but
-the run that publishes the transition can fail, and this job fails for reasons
-that say nothing about Borzoi. If that happens, the next observation's
-predecessor is still the one from before the retirement, and a generator that
-dropped the marker on the strength of "needed once" is refused, as is every
-observation after it, until someone puts the marker back. Keeping it costs a
-line, and a stale entry cannot quietly license anything: a name that is retired
-*and* emitted is refused outright, so a metric that comes back forces the marker
-to be removed deliberately.
-
-The declaration is deliberately not
-part of the series digest, and that is the whole reason it exists rather than a
-schema bump: retiring one metric must not restart the trend of the metrics
-beside it, which are still measuring exactly what they measured before. The
-`schema_version` is global to every generator, so bumping it would restart the
-parser, resolution and find-references series too; and `configuration` is
-all-or-nothing, so splitting there would discard the divergence and deferral
-history that the PR gate and the tier-reorder plan both read.
-
-Because the workflow runs on push to `main`, forgetting the declaration fails
-*after* the merge: the record step exits non-zero, so that commit's observation
-— along with any the same step would have recorded after it — is not published,
-and the run goes red. So add the declaration in the same commit that removes the
-key. A lost point in a forty-point series costs little; a metric that silently
-freezes at a stale value costs the thing this workflow exists for.
-
-Renaming is retirement plus introduction, and the halves are not symmetrical.
-The new key starts mid-series, which the dashboard shows honestly — the chart
-begins where the metric does. The old key is the half that needs saying out
-loud.
-
-The dashboard labels a metric the newest observation of the selected series
-does not carry as `(retired)`, and its "Latest" card reads "Last measured".
-That covers the retirements predating this check as well as the declared ones:
-liveness is read off the observations themselves, so it needs no declaration to
-be right. The label and the check are two halves of one fact — the label makes
-an absence legible, the check makes it deliberate.
+Renaming is retirement plus introduction. The new key starts mid-series, which
+the dashboard shows honestly — the chart begins where the metric does — and the
+old one reads as retired.
 
 ## Three corpora
 
@@ -687,9 +598,9 @@ timid; the census says which model owns the move, which is the question every
 change to that ladder asks and which no aggregate can answer. Both maps carry
 every variant including the zeros — a cause that stops *occurring* must read as
 `0`, not vanish, because a zero and an absence say opposite things and only one
-of them is a measurement. A cause that stops *existing* is a different event and
-has to be declared: see [Retiring a metric]. Narrowing either map retires every
-pair it removes, permanently — which is why `by_pair` publishes the whole
+of them is a measurement. A cause that stops *existing* is a different event: it
+retires its metrics (see [Retiring a metric]). Narrowing either map retires every
+pair it removes — which is why `by_pair` publishes the whole
 product rather than each cause's reachable tiers. That narrowing is not
 available at all: a tier is fixed where the decline *site* is built, not where
 the cause is named, so which tiers a cause can speak from is not a function of
