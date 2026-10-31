@@ -2562,7 +2562,7 @@ impl<'a> Resolver<'a> {
             // same `head_is_definite_value` test the cross-file block below uses): it
             // catches an **opened** assembly / auto-open value too, which has no
             // in-file `Def` range — so testing the classification, not
-            // `value_def_range`, is what makes `open Demo.Auto (value Tag); type Tag =
+            // `value_slot_position`, is what makes `open Demo.Auto (value Tag); type Tag =
             // Case | Other; Tag.Case` defer to the opened value (FCS), not the case.
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
@@ -2573,8 +2573,8 @@ impl<'a> Resolver<'a> {
                 Some(DefKind::EnumCase) => {
                     head_is_value
                         && self
-                            .value_def_range(head)
-                            .is_some_and(|vr| vr.start() > self.defs[type_id.index()].range.start())
+                            .value_slot_position(head)
+                            .is_some_and(|vp| vp > self.defs[type_id.index()].range.start())
                 }
                 // A union case loses the qualifier to *any* definite non-case value.
                 _ => head_is_value,
@@ -2607,13 +2607,7 @@ impl<'a> Resolver<'a> {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
             if head_is_value {
-                // A contributor mark sits where its contributor added the name.
-                let mark_pos = self
-                    .lookup_entry(head)
-                    .filter(|e| e.mark.is_some())
-                    .map(|e| rowan::TextSize::from(e.open_pos));
-                let value_pos = self.value_def_range(head).map(|vr| vr.start()).or(mark_pos);
-                match value_pos {
+                match self.value_slot_position(head) {
                     // A later value takes the qualifier: member access on the
                     // value — the intra-file fallback below resolves the head to
                     // it (M2c). An earlier value lost it to the type (M2d).
@@ -4377,12 +4371,21 @@ impl<'a> Resolver<'a> {
     /// parameter / local / pattern binder), or `None` if none is in scope. Used
     /// to break a value-vs-type qualifier collision by source order (latest
     /// wins): see the enum-case branch of [`resolve_long_ident`](Self::resolve_long_ident).
-    pub(super) fn value_def_range(&self, name: &str) -> Option<TextRange> {
-        self.value_resolution_def_range(self.lookup(name)?)
+    /// Where the value [`Self::lookup`] finds for `name` entered the
+    /// environment, for ordering it against a same-named type: its in-file
+    /// definition, or — for a contributor mark — where its contributor added
+    /// the name. `None` for an opened value.
+    pub(super) fn value_slot_position(&self, name: &str) -> Option<rowan::TextSize> {
+        let entry = self.lookup_entry(name)?;
+        if entry.mark.is_some() {
+            return Some(rowan::TextSize::from(entry.open_pos));
+        }
+        self.value_resolution_def_range(entry.resolution)
+            .map(|r| r.start())
     }
 
     /// The in-file definition range behind a value-frame resolution — the
-    /// range half of [`value_def_range`](Self::value_def_range), for callers
+    /// range half of [`value_slot_position`](Self::value_slot_position), for callers
     /// that already hold the resolution.
     fn value_resolution_def_range(&self, res: Resolution) -> Option<TextRange> {
         match res {
@@ -4618,7 +4621,7 @@ impl<'a> Resolver<'a> {
     /// statically-undecidable repr (abbreviation, delegate, unspecified-kind
     /// object model) makes the contest [`HeadSlot::Unordered`]. The latest
     /// eviction-relevant position is compared against the value's
-    /// ([`Self::value_def_range`]); a value with no in-file position (an
+    /// ([`Self::value_slot_position`]); a value with no in-file position (an
     /// opened module's value) cannot be ordered either, so any
     /// possibly-evicting type alongside one is likewise `Unordered` —
     /// mirroring the member branch's positionless defer. Deliberately **not**

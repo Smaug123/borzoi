@@ -306,10 +306,14 @@ enum Route {
     TypeGroupLocalLet,
     /// The same local heading a dotted path.
     TypeGroupLocalHead,
+    /// A value heading a dotted path, after a same-named enum, and after an
+    /// `[<AutoOpen>]` type that spells the name only as a parameter: the
+    /// value keeps the qualifier, whatever the contributor's mark says.
+    EnumQualifierAfterMark,
 }
 
 impl Route {
-    const ALL: [Route; 62] = [
+    const ALL: [Route; 63] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -372,6 +376,7 @@ impl Route {
         Route::TypeGroupParameter,
         Route::TypeGroupLocalLet,
         Route::TypeGroupLocalHead,
+        Route::EnumQualifierAfterMark,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -397,7 +402,10 @@ impl Route {
     fn probes_itself(self) -> bool {
         matches!(
             self,
-            Route::TypeGroupParameter | Route::TypeGroupLocalLet | Route::TypeGroupLocalHead
+            Route::TypeGroupParameter
+                | Route::TypeGroupLocalLet
+                | Route::TypeGroupLocalHead
+                | Route::EnumQualifierAfterMark
         )
     }
 
@@ -416,9 +424,10 @@ impl Route {
             | Route::EarlierNamespaceRqaAliased
             | Route::AutoOpenBarlessUnion => kind.is_case(),
             // A capitalised parameter is a pattern, not a binder.
-            Route::TypeGroupParameter | Route::TypeGroupLocalLet | Route::TypeGroupLocalHead => {
-                !kind.is_case()
-            }
+            Route::TypeGroupParameter
+            | Route::TypeGroupLocalLet
+            | Route::TypeGroupLocalHead
+            | Route::EnumQualifierAfterMark => !kind.is_case(),
             _ => true,
         }
     }
@@ -730,6 +739,10 @@ impl Route {
             Route::TypeGroupLocalHead => (
                 vec![],
                 "module GridProbe\n@OWN\ntype GridM() =\n    member _.M() =\n        let @NAME = \"local\"\n        @P.Length\nand @NAME() =\n    member _.X = 0\n",
+            ),
+            Route::EnumQualifierAfterMark => (
+                vec![],
+                "module GridProbe\ntype @NAME = GridRed = 0\nlet @NAME = {| GridRed = 42 |}\n[<AutoOpen>]\ntype GridT =\n    static member F(@NAME: int) = @NAME\nlet probe = @P.GridRed\n",
             ),
             Route::CeNoOperation => (
                 vec![],
