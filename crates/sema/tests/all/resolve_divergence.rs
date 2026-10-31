@@ -72,14 +72,17 @@
 //! same files: this report's `gap_b1` count is exactly the gate's `tally.gaps`,
 //! the number of uses (with multiplicity) its manifest lists as `gap`.
 
+use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
+use proptest::prelude::*;
 use serde::Serialize;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
+use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
     B1_TAGS, Bucket, FileCensus, LineIndex, classify, env_usize_or, invoke_fcs_dump_census,
     parse_census_jsonl,
@@ -106,6 +109,7 @@ fn output_dir() -> PathBuf {
 }
 
 /// One adjudicated use, for a worklist line.
+#[derive(Debug)]
 struct Site {
     /// `"B1"` / `"B2"` / `"B3"` / `"other"` — the machinery bucket.
     bucket: &'static str,
@@ -133,7 +137,7 @@ impl Site {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Report {
     files_compared: usize,
     /// In-file, non-definition, non-zero-width uses adjudicated (the denominator).
@@ -724,5 +728,100 @@ fn test_site(tag: &'static str) -> Site {
         end: 1,
         text: "x".into(),
         ours: String::new(),
+    }
+}
+
+/// The metric namespace this generator publishes, one line per metric.
+///
+/// A metric that stops being emitted shows on the dashboard as retired, so a
+/// deliberate drop needs no ceremony beyond this file's diff. What the pin
+/// catches is the accidental one, which is otherwise invisible until someone
+/// wonders where a chart went.
+#[test]
+fn the_metric_namespace_is_pinned() {
+    let manifest = Manifest::from_entries(metric_paths(&Report::default(), 13, None))
+        .expect("metric paths are manifest entries");
+    check_manifest(
+        "resolve_divergence_metrics",
+        &manifest,
+        &regenerate("resolve_divergence::the_metric_namespace_is_pinned"),
+    );
+}
+
+/// The metrics `summary.json` publishes for `r`, named as the dashboard names
+/// them.
+fn metric_paths(r: &Report, stride: usize, limit: Option<usize>) -> BTreeSet<String> {
+    let json: serde_json::Value =
+        serde_json::from_str(&summary_json(r, stride, limit)).expect("valid JSON");
+    borzoi_stats::metric_paths(&json["statistics"])
+}
+
+fn sites(tags: impl Strategy<Value = &'static str>) -> impl Strategy<Value = Vec<Site>> {
+    prop::collection::vec(tags.prop_map(test_site), 0..4)
+}
+
+fn paths() -> impl Strategy<Value = Vec<PathBuf>> {
+    prop::collection::vec(Just(PathBuf::from("a.fs")), 0..3)
+}
+
+/// Reports over every match bucket in [`BUCKET_NAMES`] and every `gap_b1`
+/// sub-tag in [`B1_TAGS`], each present or absent independently — the two
+/// closed key sets the summary publishes as histograms.
+fn report_strategy() -> impl Strategy<Value = Report> {
+    (
+        (0..4usize, 0..4usize, 0..4usize),
+        prop::collection::btree_map(prop::sample::select(BUCKET_NAMES.to_vec()), 1..4usize, 0..5),
+        (
+            sites(prop::sample::select(B1_TAGS.to_vec())),
+            sites(Just("member")),
+            sites(Just("overload")),
+            sites(Just("other")),
+        ),
+        (sites(Just("fault")), sites(Just("alternate"))),
+        (paths(), paths(), paths(), paths()),
+    )
+        .prop_map(
+            |(
+                (files_compared, adjudicated, out_of_file),
+                matches,
+                (gap_b1, gap_b2, gap_b3, gap_other),
+                (divergences, alt_binders),
+                (our_errors, our_panics, fcs_not_ok, unreadable),
+            )| Report {
+                files_compared,
+                adjudicated,
+                out_of_file,
+                matches,
+                gap_b1,
+                gap_b2,
+                gap_b3,
+                gap_other,
+                divergences,
+                alt_binders,
+                our_errors,
+                our_panics,
+                fcs_not_ok,
+                unreadable,
+            },
+        )
+}
+
+proptest! {
+    /// Which metrics a run publishes is a function of the code alone. A
+    /// histogram keyed by what occurred, or a ratio that turns `null` on an
+    /// empty denominator, makes it depend on the run instead — and then a
+    /// metric vanishes from one observation with nothing in the diff to say
+    /// so, which [`the_metric_namespace_is_pinned`] cannot see because it
+    /// renders only one run.
+    #[test]
+    fn the_metric_namespace_does_not_depend_on_the_run(
+        report in report_strategy(),
+        stride in 1..20usize,
+        limit in prop::option::of(0..100usize),
+    ) {
+        prop_assert_eq!(
+            metric_paths(&report, stride, limit),
+            metric_paths(&Report::default(), 13, None)
+        );
     }
 }

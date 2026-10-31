@@ -33,12 +33,15 @@
 //!    (feature snippets) and `src/` (the compiler). Neither is typical
 //!    application code, so the report breaks the distribution down by area.
 
+use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    Bucket, CENSUS_TAGS, FileCensus, Tally, env_usize_or, invoke_fcs_dump_census,
-    parse_census_jsonl,
+    Bucket, CENSUS_TAGS, CLASSIFY_PROBES, FileCensus, Tally, classify_probe, env_usize_or,
+    invoke_fcs_dump_census, parse_census_jsonl,
 };
+use borzoi_oracle_harness::manifest::Manifest;
+use proptest::prelude::*;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The areas [`area_of`] can return. The published per-area breakdown emits
@@ -86,6 +89,37 @@ fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.extension().and_then(|s| s.to_str()) == Some("fs") {
             out.push(path);
         }
+    }
+}
+
+/// One run's tallies: the files FCS checked, as a whole and by area.
+struct CensusTally {
+    type_checked_ok: usize,
+    overall: Tally,
+    /// Every one of [`AREAS`], keyed by area, with its file count. An area
+    /// with no files is present as zeros; see [`AREAS`] for why.
+    per_area: BTreeMap<&'static str, (usize, Tally)>,
+}
+
+/// Tally the files FCS type-checked, overall and per area.
+fn tally_census(census: &[FileCensus]) -> CensusTally {
+    let ok: Vec<&FileCensus> = census.iter().filter(|f| f.ok).collect();
+    let mut overall = Tally::default();
+    overall.add(ok.iter().flat_map(|f| f.uses.iter()));
+    let per_area = AREAS
+        .into_iter()
+        .map(|area| {
+            let area_files: Vec<&&FileCensus> =
+                ok.iter().filter(|f| area_of(&f.path) == area).collect();
+            let mut t = Tally::default();
+            t.add(area_files.iter().flat_map(|f| f.uses.iter()));
+            (area, (area_files.len(), t))
+        })
+        .collect();
+    CensusTally {
+        type_checked_ok: ok.len(),
+        overall,
+        per_area,
     }
 }
 
@@ -346,32 +380,23 @@ fn uses_bucket_census() {
     );
 
     let census: Vec<FileCensus> = parse_census_jsonl(&invoke_fcs_dump_census(&sample));
-    let ok: Vec<&FileCensus> = census.iter().filter(|f| f.ok).collect();
+    let tally = tally_census(&census);
     println!(
         "FILES: {} sampled, {} type-checked Ok ({:.0}%)",
         census.len(),
-        ok.len(),
-        100.0 * ok.len() as f64 / census.len() as f64
+        tally.type_checked_ok,
+        100.0 * tally.type_checked_ok as f64 / census.len() as f64
     );
 
-    let mut overall = Tally::default();
-    overall.add(ok.iter().flat_map(|f| f.uses.iter()));
-    print_report("ALL AREAS", ok.len(), &overall);
+    print_report("ALL AREAS", tally.type_checked_ok, &tally.overall);
 
-    // Every area is tallied, including the ones with no files. Printing skips
-    // an empty area (an empty section is noise on a terminal); the published
-    // summary must not, so the tally is built for all of them and the print
-    // guard sits after it.
-    let mut per_area: BTreeMap<&'static str, (usize, Tally)> = BTreeMap::new();
+    // Printing skips an empty area (an empty section is noise on a terminal);
+    // the published summary does not.
     for area in AREAS {
-        let area_files: Vec<&&FileCensus> =
-            ok.iter().filter(|f| area_of(&f.path) == area).collect();
-        let mut t = Tally::default();
-        t.add(area_files.iter().flat_map(|f| f.uses.iter()));
-        if !area_files.is_empty() {
-            print_report(&format!("AREA = {area}"), area_files.len(), &t);
+        let (files, t) = &tally.per_area[area];
+        if *files > 0 {
+            print_report(&format!("AREA = {area}"), *files, t);
         }
-        per_area.insert(area, (area_files.len(), t));
     }
 
     if let Some(dir) = std::env::var_os("BORZOI_USES_CENSUS_OUT") {
@@ -379,9 +404,9 @@ fn uses_bucket_census() {
         std::fs::create_dir_all(&dir).expect("create uses-census output directory");
         let json = summary_json(
             sample.len(),
-            ok.len(),
-            &overall,
-            &per_area,
+            tally.type_checked_ok,
+            &tally.overall,
+            &tally.per_area,
             stride,
             (limit != usize::MAX).then_some(limit),
         );
@@ -390,7 +415,7 @@ fn uses_bucket_census() {
     }
 
     assert!(
-        overall.nondef() > 0,
+        tally.overall.nondef() > 0,
         "census observed no non-definition uses"
     );
 }
@@ -520,5 +545,76 @@ fn the_tag_histogram_reconciles_with_the_bucket_totals() {
             from_tags,
             "bucket {key} disagrees with the tags CENSUS_TAGS files under it"
         );
+    }
+}
+
+/// The metric namespace this generator publishes, one line per metric.
+///
+/// A metric that stops being emitted shows on the dashboard as retired, so a
+/// deliberate drop needs no ceremony beyond this file's diff. What the pin
+/// catches is the accidental one, which is otherwise invisible until someone
+/// wonders where a chart went.
+#[test]
+fn the_metric_namespace_is_pinned() {
+    let manifest = Manifest::from_entries(metric_paths(&[], 13, None))
+        .expect("metric paths are manifest entries");
+    check_manifest(
+        "uses_census_metrics",
+        &manifest,
+        &regenerate("uses_census::the_metric_namespace_is_pinned"),
+    );
+}
+
+/// The metrics `summary.json` publishes for a run over `census`, named as the
+/// dashboard names them.
+fn metric_paths(census: &[FileCensus], stride: usize, limit: Option<usize>) -> BTreeSet<String> {
+    let tally = tally_census(census);
+    let json: serde_json::Value = serde_json::from_str(&summary_json(
+        census.len(),
+        tally.type_checked_ok,
+        &tally.overall,
+        &tally.per_area,
+        stride,
+        limit,
+    ))
+    .expect("valid JSON");
+    borzoi_stats::metric_paths(&json["statistics"])
+}
+
+proptest! {
+    /// Which metrics a run publishes is a function of the code alone. A map
+    /// keyed by what occurred, or a ratio that turns `null` on an empty
+    /// denominator, makes it depend on the run instead — and then a metric
+    /// vanishes from one observation with nothing in the diff to say so, which
+    /// [`the_metric_namespace_is_pinned`] cannot see because it renders only
+    /// one run.
+    ///
+    /// Each generated file sits in one of [`AREAS`] and carries uses drawn
+    /// from the whole of what [`classify`](crate::common::classify) can be
+    /// handed, so every area and every sub-tag is present or absent
+    /// independently across cases.
+    #[test]
+    fn the_metric_namespace_does_not_depend_on_the_run(
+        files in prop::collection::vec(
+            (
+                prop::sample::select(AREAS.to_vec()),
+                any::<bool>(),
+                prop::collection::vec(0..CLASSIFY_PROBES, 0..6),
+            ),
+            0..5,
+        ),
+        stride in 1..20usize,
+        limit in prop::option::of(0..100usize),
+    ) {
+        let census: Vec<FileCensus> = files
+            .into_iter()
+            .map(|(area, ok, probes)| FileCensus {
+                path: format!("/corpus/{area}/File.fs"),
+                ok,
+                has_check_errors: false,
+                uses: probes.into_iter().map(classify_probe).collect(),
+            })
+            .collect();
+        prop_assert_eq!(metric_paths(&census, stride, limit), metric_paths(&[], 13, None));
     }
 }

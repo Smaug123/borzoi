@@ -1,0 +1,38 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all resolve_divergence::the_metric_namespace_is_pinned
+alt_binders
+b1_coverage.basis_points
+b1_coverage.matched
+b1_coverage.seen
+divergences
+files_compared
+gap_b1_by_tag.active-pattern-case
+gap_b1_by_tag.active-pattern-fn
+gap_b1_by_tag.constructor
+gap_b1_by_tag.entity:module
+gap_b1_by_tag.entity:namespace
+gap_b1_by_tag.entity:type
+gap_b1_by_tag.parameter
+gap_b1_by_tag.static-member
+gap_b1_by_tag.static-member:overloaded(group)
+gap_b1_by_tag.type-parameter
+gap_b1_by_tag.union-case
+gap_b1_by_tag.value:local-or-param
+gap_b1_by_tag.value:module-or-import
+gaps.b1
+gaps.b2
+gaps.b3
+gaps.other
+gaps.total
+infrastructure.fcs_not_ok
+infrastructure.our_panics
+infrastructure.our_parser_errors
+infrastructure.unreadable
+matches.by_bucket.B1
+matches.by_bucket.B2
+matches.by_bucket.B3
+matches.by_bucket.other
+matches.total
+out_of_file
+uses_adjudicated
