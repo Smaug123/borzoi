@@ -1040,6 +1040,38 @@ const ROWS: &[Row] = &[
         ],
     },
     Row {
+        label: "join range variables named like implicit values",
+        decls: &[],
+        src: "module UcR30b\n\
+              let q =\n    query {\n        for x in [ 1 ] do\n        join id in [ 2 ] on (x = id)\n        groupJoin y in [ 3 ] on (x = y) into ignore\n        select (id, ignore)\n    }\n\
+              let b = id 1\n",
+        probes: &[
+            defer(
+                "id",
+                1,
+                "proj:id:member",
+                "a query range variable is a value binder the walk does not intern",
+            ),
+            defer(
+                "id",
+                2,
+                "proj:id:member",
+                "a query range variable is a value binder the walk does not intern",
+            ),
+            defer(
+                "ignore",
+                1,
+                "proj:ignore:member",
+                "a query range variable is a value binder the walk does not intern",
+            ),
+            commit(
+                "id",
+                3,
+                "FSharp.Core:Microsoft.FSharp.Core.Operators.id:member",
+            ),
+        ],
+    },
+    Row {
         label: "an auto-open type abbreviation borrowing statics",
         decls: &[],
         src: "namespace UcR31\n\
@@ -1119,12 +1151,7 @@ const ROWS: &[Row] = &[
                 "proj:Some:member",
                 "a computation statement's head may be a custom operation",
             ),
-            defer(
-                "Some",
-                2,
-                SOME,
-                "an implicit name inside a computation expression may be a custom operation of its builder",
-            ),
+            commit("Some", 2, SOME),
         ],
     },
     Row {
