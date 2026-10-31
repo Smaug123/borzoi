@@ -151,12 +151,13 @@ done
 # --- local materialisation ---------------------------------------------------
 
 # A process, as `pid start-time`: the start time tells a live owner from an
-# unrelated process that has since been given the same pid. Fails for a
-# process `ps` cannot report, so no identity without a start time is ever
-# recorded: one would match a dead process forever.
+# unrelated process that has since been given the same pid. Rendered in a
+# fixed zone and locale, so every run spells one process the same way. Fails
+# for a process `ps` cannot report, so no identity without a start time is
+# ever recorded: one would match a dead process forever.
 identity() { # pid
   local start
-  start="$(ps -o lstart= -p "$1" 2>/dev/null)" || return 1
+  start="$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null)" || return 1
   [ -n "$start" ] || return 1
   printf '%s %s' "$1" "$start"
 }

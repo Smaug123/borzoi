@@ -171,6 +171,7 @@ run_gate() {
   (
     env -u BORZOI_PROJECT_LIST -u RUNNER_TEMP -u GITHUB_ENV \
       PATH="${EXTRA_PATH:+$EXTRA_PATH:}$tmp/bin:$PATH" \
+      TZ="${RUN_TZ:-UTC}" LC_ALL="${RUN_LC_ALL:-C}" \
       BORZOI_PROJECT_CORPUS_CACHE="$tmp/cache" \
       GIT_CONFIG_COUNT=1 \
       GIT_CONFIG_KEY_0="url.$tmp/remote/.insteadOf" \
@@ -217,11 +218,13 @@ test_concurrency() {
   show_failure c
   assert_eq "a rerun of a materialised pin restores nothing" 0 "$(count_log restore)"
 
+  # The two runs disagree on time zone, so neither may judge the other's
+  # liveness by a time it renders in its own.
   : >"$tmp/log"
-  run_gate d "$tmp/plan1" "$rev1" "$step" &
+  RUN_TZ=Pacific/Kiritimati run_gate d "$tmp/plan1" "$rev1" "$step" &
   # Until d is reading: e must arrive at a corpus in use, not race d to it.
   until [ -n "$(ls "$tmp/cache/readers")" ] || [ -e "$tmp/d.status" ]; do sleep 0.1; done
-  run_gate e "$tmp/plan2" "$rev2" "$step" &
+  RUN_TZ=America/Adak run_gate e "$tmp/plan2" "$rev2" "$step" &
   wait
   assert_eq "a run of another pin beside a reader: reader succeeds" 0 "$(cat "$tmp/d.status")"
   show_failure d
