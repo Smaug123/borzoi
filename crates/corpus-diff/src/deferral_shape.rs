@@ -68,10 +68,11 @@ pub enum DeferralShape {
     /// inert slot carrying its screen and exported surface, and records no
     /// resolution of its own inside it.
     SignatureFile,
-    /// The record sits inside an **object expression's** member, binding or
-    /// interface-implementation block. Those bodies introduce their own `this`
-    /// and parameter binders and are not walked at all; only the object type and
-    /// its constructor argument are.
+    /// The record sits inside an **object expression** the resolver declines
+    /// to walk: the value-binding form's bindings (`{ new T() with X = e }`),
+    /// or, in recovered input, one whose base call takes an alias (`{ new B()
+    /// as b with … }`, which FCS rejects). Other object expressions' members
+    /// are walked.
     ObjectExpressionBody,
     /// The record sits in an **attribute's arguments** (`[<A(Flags.X)>]`,
     /// `[<A(Name = v)>]`). Only the attribute's type name is resolved.
@@ -288,9 +289,9 @@ fn single_name_shape(
 /// The innermost syntax region around `token` that the resolver does not walk
 /// at all, if there is one:
 ///
-/// - an `OBJ_EXPR`'s members, bindings and interface implementations — every
-///   child but the `NEW_EXPR` carrying the object type and constructor
-///   argument, which are resolved;
+/// - an `OBJ_EXPR` whose base call takes an alias, all but the `NEW_EXPR`
+///   carrying the object type and constructor argument; and any `OBJ_EXPR`'s
+///   value bindings;
 /// - an `ATTRIBUTE`'s arguments — every child but the attribute's own type
 ///   name, which is;
 /// - a member signature (an SRTP member constraint's), whose types are not.
@@ -299,7 +300,15 @@ fn unwalked_region(token: &SyntaxToken) -> Option<DeferralShape> {
     for node in token.parent_ancestors() {
         let child_kind = child.as_ref().map(SyntaxNode::kind);
         match node.kind() {
-            SyntaxKind::OBJ_EXPR if child_kind.is_some_and(|k| k != SyntaxKind::NEW_EXPR) => {
+            SyntaxKind::OBJ_EXPR
+                if child_kind.is_some_and(|k| {
+                    k == SyntaxKind::BINDING
+                        || (k != SyntaxKind::NEW_EXPR
+                            && node
+                                .children_with_tokens()
+                                .any(|el| el.kind() == SyntaxKind::AS_TOK))
+                }) =>
+            {
                 return Some(DeferralShape::ObjectExpressionBody);
             }
             SyntaxKind::ATTRIBUTE
@@ -450,6 +459,7 @@ let h (x : U<N>) =
 let o =
     { new I with
         member _.Apply r = r.Field }
+let b = { new C () with Run = q }
 let q = Inner.v
 let s = 1<pos>
 let n = C.Make (name = N)
@@ -512,9 +522,14 @@ let p = g () |> f
         (
             "Apply r = r.Field",
             "r.Field",
-            DeferralShape::ObjectExpressionBody,
+            DeferralShape::MemberAccessOnValue,
         ),
-        ("_.Apply", "Apply", DeferralShape::ObjectExpressionBody),
+        (
+            "_.Apply r = r",
+            "Apply",
+            DeferralShape::MemberDefinitionName,
+        ),
+        ("Run = q", "q", DeferralShape::ObjectExpressionBody),
         ("q = Inner.v", "Inner", DeferralShape::Qualifier),
         ("1<pos>", "pos", DeferralShape::Measure),
         ("(name = N)", "name", DeferralShape::NamedArgument),

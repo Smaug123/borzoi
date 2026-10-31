@@ -186,22 +186,17 @@ impl<'a> Resolver<'a> {
             }
             Expr::ObjExpr(e) => {
                 // `{ new T(args) with member … interface I with member … }` —
-                // resolve the object type `T` and the constructor argument in the
-                // enclosing scope (same treatment as `New`). The `with member …`
-                // and `interface I with member …` bodies introduce their own
-                // `this`/parameter binders; resolving them in the enclosing scope
-                // *without* that scoping could mis-resolve a parameter to an outer
-                // binder of the same name (unsound), so — exactly like
-                // type-definition member bodies (`ModuleDecl::Types`) — they (and
-                // the implemented interface type names) are left for the dedicated
-                // member-resolution slice. Under-resolution here is sound
-                // (availability only, never a wrong resolution).
+                // the object type `T` and the constructor argument resolve in the
+                // enclosing scope (same treatment as `New`); the members close
+                // over that scope under their own self-identifiers and
+                // parameters.
                 if let Some(ty) = e.obj_type() {
                     self.resolve_type(&ty);
                 }
                 if let Some(arg) = e.arg() {
                     self.resolve_method_args(&arg, Callee::MaybeNamed);
                 }
+                self.resolve_object_expression_members(e);
             }
             Expr::InferredUpcast(e) => {
                 // `upcast e` — the inferred coercion has no syntactic target
@@ -818,8 +813,11 @@ impl<'a> Resolver<'a> {
                 // `fun None -> …`): resolve a known union-case reference, else
                 // decline (drop). See the module-level "Provisional pattern
                 // heads" note.
+                // A head naming no case is a variable binder in FCS (`fun X ->
+                // X`, FS0049). It is not bound here, but it may hide an
+                // enclosing binder of its name.
                 if def.provisional {
-                    self.resolve_provisional_case_head(&def.key(), def.range);
+                    entries.extend(self.resolve_provisional_case_head(&def.key(), def.range));
                     continue;
                 }
                 let name = def.key().to_string();
@@ -877,8 +875,10 @@ impl<'a> Resolver<'a> {
         // `base`-headed long-ident path, it is the reserved base-class receiver,
         // not a value binder, so it must never resolve to an in-file name — not
         // even a back-ticked `` ``base`` `` binder (whose token text carries the
-        // backticks, so the unquoted-`base` test distinguishes them). Defer it.
-        if tok.text() == "base" {
+        // backticks, so the unquoted-`base` test distinguishes them). Defer it,
+        // and a spelling of a synthesized parameter binding too
+        // ([`is_synthesized_argument_name`](super::lookup::is_synthesized_argument_name)).
+        if tok.text() == "base" || super::lookup::is_synthesized_argument_name(&id_text(tok)) {
             return false;
         }
         // A bare use of a name that is one of the *currently-being-resolved*

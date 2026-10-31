@@ -43,8 +43,12 @@
 //! slice will consult), or a genuine upper-case *variable* pattern (rare,
 //! FS0049). Binding those unconditionally would point the result `None` in
 //! `match x with None -> None` at a fabricated binder (a wrong go-to-definition);
-//! per correctness-over-availability we decline. The dropped non-case heads are
-//! a coverage gap, never a wrong answer.
+//! per correctness-over-availability we decline. A head no case reference
+//! takes, and no unfolded implicit surface could supply as a case, is a
+//! variable to FCS, so it is entered as a declining scope entry that hides
+//! whatever the enclosing scope gives its name (`let X = 1` then `fun X -> X`)
+//! rather than letting the body bind that. The dropped non-case heads are a coverage
+//! gap, never a wrong answer.
 
 use crate::recovery::SyntaxRecovery;
 use std::collections::{HashMap, HashSet};
