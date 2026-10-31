@@ -83,14 +83,16 @@ pub trait EcmaView {
     }
 
     /// The simple names — this assembly's own and those it references —
-    /// that its manifest qualifies by a non-neutral culture
-    /// (`Assembly.Culture`, `AssemblyRef.Culture`). A binder matches culture
-    /// as well as simple name, so binding by simple name alone is exact only
-    /// for names no manifest qualifies.
+    /// that its manifest qualifies beyond simple name, version and token: by
+    /// a non-neutral culture (`Assembly.Culture`, `AssemblyRef.Culture`), or
+    /// by a flag a binder compares (a content type such as WindowsRuntime,
+    /// `Retargetable`, or any bit ECMA-335 does not assign; not `PublicKey`,
+    /// the processor architecture or the JIT hints). A binder matches those too, so binding by simple name
+    /// alone is exact only for names no manifest qualifies.
     ///
     /// Defaults to `None`, "not read": a consumer must then treat every name
     /// as possibly qualified.
-    fn culture_qualified_names(&self) -> Option<Vec<String>> {
+    fn qualified_names(&self) -> Option<Vec<String>> {
         None
     }
 

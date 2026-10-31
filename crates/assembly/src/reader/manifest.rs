@@ -22,6 +22,13 @@ use super::tables::{Coded, Tables, table};
 /// 8-byte `PublicKeyToken`.
 const FLAG_PUBLIC_KEY: u32 = 0x0001;
 
+/// The `AssemblyFlags` bits no binder compares: `PublicKey` (how the key is
+/// spelled, not which), the processor architecture (`0x00F0`), and the two
+/// JIT hints (`0x4000`, `0x8000`). Anything else — a content type
+/// (`0x0E00`), `Retargetable` (`0x0100`), or a bit no edition assigns —
+/// may change what a reference binds to.
+const FLAGS_IDENTITY_NEUTRAL: u32 = FLAG_PUBLIC_KEY | 0x00F0 | 0x4000 | 0x8000;
+
 /// `Major.Minor.Build.Revision` — the .NET assembly version quadruple.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Version {
@@ -46,6 +53,10 @@ pub(crate) struct AssemblyIdentity {
     pub has_full_key: bool,
     /// The row's `Culture`, empty for a culture-neutral assembly.
     pub culture: String,
+    /// Whether the row's `Flags` hold a bit outside
+    /// [`FLAGS_IDENTITY_NEUTRAL`]: a content type, `Retargetable`, or a bit
+    /// no edition of ECMA-335 assigns.
+    pub flagged: bool,
 }
 
 /// A manifest resource embedded in this file (`CurrentFile` implementation).
@@ -83,6 +94,7 @@ pub(crate) fn read_assembly(tables: &Tables) -> Result<Option<AssemblyIdentity>,
         public_key,
         has_full_key: flags & FLAG_PUBLIC_KEY != 0,
         culture,
+        flagged: flags & !FLAGS_IDENTITY_NEUTRAL != 0,
     }))
 }
 
@@ -113,6 +125,7 @@ fn read_assembly_ref(tables: &Tables, r: u32) -> Result<AssemblyIdentity, Error>
         public_key,
         has_full_key: flags & FLAG_PUBLIC_KEY != 0,
         culture,
+        flagged: flags & !FLAGS_IDENTITY_NEUTRAL != 0,
     })
 }
 

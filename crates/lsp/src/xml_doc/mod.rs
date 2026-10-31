@@ -12,12 +12,16 @@
 //! - [`render`] — documentation trees to that model.
 //! - [`source`] — the `///` documentation FCS attaches to a declaration in F#
 //!   source, for a project-local symbol.
+//! - [`xpath`] — the XPath subset an `<inheritdoc>` selects inherited nodes
+//!   with, evaluated as Roslyn evaluates it.
 
 pub mod depth;
 pub mod file;
 pub mod key;
 pub mod lookup;
 pub mod markdown;
+mod pairing;
 pub mod render;
 pub mod source;
 pub mod tree;
+pub mod xpath;

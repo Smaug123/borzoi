@@ -26,6 +26,8 @@ use borzoi_sema::test_support::{DeclaringEntity, StructuralName, logical_full_na
 use borzoi_spawn::BoundedCommand;
 use serde::Deserialize;
 
+pub mod inheritdoc_oracle;
+
 /// Budget for the `dotnet build` of `tools/fcs-dump`.
 ///
 /// A cold build restores packages and compiles FCS, which is legitimately
@@ -1035,6 +1037,8 @@ pub fn doc_key_env_of(
                 manifest_identity: None,
                 type_forwarders: Vec::new(),
                 doc_id_dialect: Some(dialect),
+                has_assembly_references: None,
+                qualified_names: None,
             },
         )
         .collect();

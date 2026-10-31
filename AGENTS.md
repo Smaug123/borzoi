@@ -170,6 +170,14 @@ This is a Cargo workspace with nine members:
   (`docs/fsproj-consumption-plan.md` tracks the remaining consumers).
   `borzoi-assembly` is runtime-live too: referenced assemblies are
   read into each project's `AssemblyEnv` (`crates/lsp/src/semantic.rs`).
+  Hover's XML documentation lives in `crates/lsp/src/xml_doc/`. Its
+  `<inheritdoc>` work is held to Roslyn's IDE through
+  `tools/inheritdoc-oracle`, a test-only C# JSONL batch tool (the
+  `nuget-oracle` mould) that calls Roslyn's internal expansion by
+  reflection, evaluates Roslyn's XPath selection, and compiles purpose-built
+  C# fixtures (rewriting a method name or an `AssemblyRef` in one, for
+  metadata no compiler writes). `xml_doc_inheritdoc_xpath_diff` holds the
+  XPath subset to certain-implies-exact against it.
 - `crates/corpus-diff/` — `borzoi-corpus-diff`. Test-only, unpublished: an
   empirical whole-project name-resolution differential. It loads real F#
   projects through the same runtime path the LSP uses (`Workspace` +

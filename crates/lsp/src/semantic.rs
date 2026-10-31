@@ -41,7 +41,7 @@ use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::sidecar_manager::SidecarManager;
 use crate::workspace::{ServedTfm, Workspace};
 use crate::xml_doc::key::DocTarget;
-use crate::xml_doc::lookup::{DocFileCache, DocLookup, KeyCensusCache};
+use crate::xml_doc::lookup::{DocLookup, DocSources};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ReferencedAssemblyProjection {
@@ -102,6 +102,12 @@ struct ReferencedAssemblyProjection {
     /// Deliberately not `#[serde(default)]`: an entry that predates the field
     /// must miss rather than read as unknown-but-cached.
     doc_id_dialect: Option<DocIdDialect>,
+    /// Whether the manifest references other assemblies
+    /// (`EcmaView::assembly_refs`), which decides the core library Roslyn's
+    /// special types bind into. `None` when unread (a reader panic).
+    has_assembly_references: Option<bool>,
+    /// `EcmaView::qualified_names`; `None` when unread.
+    qualified_names: Option<Vec<String>>,
 }
 
 /// Why one referenced DLL contributed nothing to the [`AssemblyEnv`]. The two
@@ -231,12 +237,12 @@ struct PrevFold {
 /// assumption the request loop already makes.
 #[derive(Debug, Default)]
 pub struct SemanticState {
-    /// Per-project compile-ordered parses, keyed by canonicalised project
-    /// path. Invalidated by [`Self::invalidate_project`] on text-sync and by
+    /// Per-project compile-ordered parses, keyed by [`ProjectId`]. Invalidated
+    /// by [`Self::invalidate_project`] on text-sync and by
     /// [`Self::invalidate_all`] when `workspace/didChangeWatchedFiles` reports
     /// a structural (`.fsproj` / assets / import) change.
-    project_parses: HashMap<PathBuf, ProjectParses>,
-    /// The last fold outcome per project, keyed by canonicalised project path.
+    project_parses: HashMap<ProjectId, ProjectParses>,
+    /// The last fold outcome per project, keyed by [`ProjectId`].
     /// **Absence means [`FoldOutcome::Unknown`]** — no fold has run since the
     /// inputs last changed — which is a third state, not a synonym for success.
     ///
@@ -251,7 +257,7 @@ pub struct SemanticState {
     /// Read (not drained) by [`Self::fold_outcome`], which is what lets the
     /// shell's message be a function of current state rather than of the event
     /// that provoked it.
-    observed_fold_refusals: HashMap<PathBuf, FoldRefusal>,
+    observed_fold_refusals: HashMap<ProjectId, FoldRefusal>,
     /// Per-**file** parse cache — the parsed [`ImplFile`]s for each Compile item,
     /// keyed by path. Lets [`build_parses`] re-parse only the file that changed on
     /// a single-file edit and reuse every other file's tree (a rowan handle
@@ -275,7 +281,7 @@ pub struct SemanticState {
     file_parses: HashMap<PathBuf, Vec<CachedParse>>,
     /// Per-project flattened name index over referenced-assembly entities,
     /// keyed by the **full value-input set** `build_assembly_env` reads: the
-    /// canonicalised project path *and* the canonicalised `dotnet_root` it was
+    /// [`ProjectId`] *and* the canonicalised `dotnet_root` it was
     /// resolved against (`None` when no root was supplied). Built by reading
     /// the parsed `<ProjectReference>` graph (the edges) plus
     /// `project.assets.json` (the artifacts), and feeding each resolved DLL
@@ -311,7 +317,7 @@ pub struct SemanticState {
     /// (first-declared — [`Workspace::served_tfm_for_project`]), so the
     /// extra key component is structural preparation for a TFM-override
     /// policy and makes "different TFM ⇒ different env" machine-checkable.
-    assembly_envs: HashMap<(PathBuf, Option<PathBuf>, ServedTfm), CachedAssemblyEnv>,
+    assembly_envs: HashMap<(ProjectId, Option<PathBuf>, ServedTfm), CachedAssemblyEnv>,
     /// Per-project resolved sema output: the Compile-order fold of
     /// [`borzoi_sema::resolve_project`] over the project's [`ProjectParses`] against its
     /// [`AssemblyEnv`]. Wrapped in [`Arc`] so handlers can return it without
@@ -325,7 +331,7 @@ pub struct SemanticState {
     /// that env, and a re-fetched env can differ (a recovered C# sidecar DLL can
     /// sort earlier, shifting handles), so a consumer classifying those handles
     /// must use *this* env — see [`Self::resolved_project_and_env_for`].
-    resolved_projects: HashMap<PathBuf, (Arc<ResolvedProject>, Arc<AssemblyEnv>)>,
+    resolved_projects: HashMap<ProjectId, (Arc<ResolvedProject>, Arc<AssemblyEnv>)>,
     /// Per-project *previous* fold, kept for incremental re-resolution (stage 2).
     /// Unlike `resolved_projects` — which every text-sync drops — this **survives**
     /// text-sync, so after a keystroke [`Self::resolved_project_for`] can fold the
@@ -341,7 +347,7 @@ pub struct SemanticState {
     /// not correctness. `PrevFold::resolved` shares the same `Arc` as the matching
     /// `resolved_projects` entry, so the extra state is one `Vec<ImplFile>` of
     /// rowan handles per project.
-    prev_resolved: HashMap<PathBuf, PrevFold>,
+    prev_resolved: HashMap<ProjectId, PrevFold>,
     /// Running tally of folds that took the *incremental* path (a reusable
     /// [`PrevFold`] whose env matched). A silently-cold fold — a fold that
     /// should reuse but doesn't — is a *performance* regression, not a
@@ -384,15 +390,14 @@ pub struct SemanticState {
     /// [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`] on a
     /// watched structural or referenced-assembly change.
     pdb_images: HashMap<PathBuf, Option<Arc<[u8]>>>,
-    /// The parsed sidecar `.xml` documentation files hover has read, keyed by
-    /// path. Each entry is validated against the file's `(size, mtime)` on
-    /// every use (see [`DocFileCache`]), so correctness does not depend on any
-    /// invalidation; [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`]
-    /// clear it only to bound memory, alongside the PDB images.
-    xml_docs: DocFileCache,
-    /// Per-assembly doc-ID collision censuses, one per env (see
-    /// [`KeyCensusCache`]); cleared alongside `xml_docs`, for memory.
-    xml_doc_keys: KeyCensusCache,
+    /// What XML-documentation lookup caches: the parsed sidecar `.xml` files
+    /// hover has read, each validated against the file's `(size, mtime)` on
+    /// every use (see [`DocFileCache`](crate::xml_doc::lookup::DocFileCache)),
+    /// and the per-assembly key censuses, each validated by env identity — so
+    /// correctness does not depend on any invalidation;
+    /// [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`] clear
+    /// them only to bound memory, alongside the PDB images.
+    xml_doc: DocSources,
     /// On-disk cache of each referenced DLL's projected entities, so a warm
     /// server restart skips the parse+project that dominates a cold env build.
     /// **Disabled by default** (so tests and un-opted consumers stay off-disk);
@@ -475,7 +480,7 @@ impl SemanticState {
     /// arrive through `workspace/didChangeWatchedFiles`
     /// ([`Self::invalidate_all`] / [`Self::invalidate_assembly_state`]).
     pub fn invalidate_project(&mut self, project: &Path) {
-        let key = canonicalise(project);
+        let key = ProjectId::new(project);
         self.project_parses.remove(&key);
         self.resolved_projects.remove(&key);
         // The recorded fold outcome described the *old* inputs; drop it back to
@@ -500,8 +505,7 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
-        self.xml_docs.clear();
-        self.xml_doc_keys.clear();
+        self.xml_doc.clear();
         // A structural change can stale open buffers' tokens; owe a workspace
         // refresh (the next drain sends it, even with no following fold).
         self.wants_refresh = true;
@@ -524,8 +528,7 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
-        self.xml_docs.clear();
-        self.xml_doc_keys.clear();
+        self.xml_doc.clear();
         // A referenced-assembly change can stale open buffers' cross-assembly
         // tokens; owe a workspace refresh (sent on the next drain).
         self.wants_refresh = true;
@@ -554,7 +557,7 @@ impl SemanticState {
     /// `.xml` beside the DLL `env` read it from (cached per file; see
     /// [`crate::xml_doc::lookup`]).
     pub fn xml_doc(&mut self, env: &Arc<AssemblyEnv>, target: DocTarget) -> DocLookup {
-        crate::xml_doc::lookup::lookup(&mut self.xml_docs, &mut self.xml_doc_keys, env, target)
+        self.xml_doc.lookup(env, target)
     }
 
     /// Drop the caches for **every** cached project that lists `file` in its
@@ -577,7 +580,7 @@ impl SemanticState {
         // just changed, so every refusal drops back to `FoldOutcome::Unknown`;
         // the next fold re-establishes whichever ones still hold.
         self.observed_fold_refusals.clear();
-        let to_drop: Vec<PathBuf> = self
+        let to_drop: Vec<ProjectId> = self
             .project_parses
             .iter()
             .filter(|(_, parses)| {
@@ -796,8 +799,12 @@ impl SemanticState {
         // every other env input they are read fresh from disk on a miss, and a
         // `.fsproj` edit reaches this cache the same way a restore does —
         // through [`Self::invalidate_all`].
+        let id = ProjectId::new(project);
+        // Built, restored and reported as the key spells it, so the entry holds
+        // exactly the env of the project it names.
+        let project = id.as_path();
         let key = (
-            canonicalise(project),
+            id.clone(),
             dotnet_root.map(canonicalise),
             target_framework.clone(),
         );
@@ -879,7 +886,7 @@ impl SemanticState {
     /// passed through to [`Self::assembly_env_for_project`]; it's `None` when
     /// SDK discovery turns nothing up (most commonly in tests).
     ///
-    /// Cached (project + env) keyed on the canonicalised project path.
+    /// Cached (project + env) keyed by [`ProjectId`].
     /// Invalidated by [`Self::invalidate_project`] on any text-sync. Folds the
     /// whole project; for a single-file request that only needs a prefix, prefer
     /// [`Self::resolved_prefix_and_env_for`].
@@ -916,7 +923,8 @@ impl SemanticState {
         workspace: &mut Workspace,
         docs: &HashMap<Uri, String>,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
-        let key = canonicalise(project);
+        let key = ProjectId::new(project);
+        let project = key.as_path();
         let lookup_span = tracing::info_span!(
             "semantic.project_lookup",
             project = %project.display(),
@@ -1173,7 +1181,7 @@ impl SemanticState {
     /// folded only the prefix, not the whole project — the point of the slice.
     pub fn cached_resolved_len(&self, project: &Path) -> Option<usize> {
         self.resolved_projects
-            .get(&canonicalise(project))
+            .get(&ProjectId::new(project))
             .map(|(resolved, _env)| resolved.len())
     }
 
@@ -1185,7 +1193,7 @@ impl SemanticState {
     /// discipline).
     ///
     /// `docs` is the live buffer map ([`crate::server::State::docs`]); a
-    /// missing entry falls through to `std::fs::read_to_string`. A file we
+    /// missing entry falls through to [`crate::disk_text::read`]. A file we
     /// can read neither from the buffer nor from disk is skipped — never an
     /// error, never a panic.
     pub fn parses_for_project<'a>(
@@ -1194,7 +1202,7 @@ impl SemanticState {
         workspace: &mut Workspace,
         docs: &HashMap<Uri, String>,
     ) -> Option<&'a ProjectParses> {
-        let key = canonicalise(project);
+        let key = ProjectId::new(project);
         if !self.project_parses.contains_key(&key) {
             let parses = self.fold(project, workspace, docs).ok()?;
             self.project_parses.insert(key.clone(), parses);
@@ -1217,8 +1225,8 @@ impl SemanticState {
         workspace: &mut Workspace,
         docs: &HashMap<Uri, String>,
     ) -> Result<ProjectParses, FoldRefusal> {
-        let outcome = build_parses(project, workspace, docs, &mut self.file_parses);
-        let key = canonicalise(project);
+        let key = ProjectId::new(project);
+        let outcome = build_parses(key.as_path(), workspace, docs, &mut self.file_parses);
         match &outcome {
             Ok(_) => {
                 self.observed_fold_refusals.remove(&key);
@@ -1238,11 +1246,10 @@ impl SemanticState {
     /// of current state, so a fold that recovers stops being reported *because
     /// there is nothing to report*, not because some other code path remembered
     /// to undo an earlier notification.
-    pub fn fold_outcome(&self, project: &CanonicalProject) -> FoldOutcome<'_> {
-        let key = project.key();
-        match self.observed_fold_refusals.get(key) {
+    pub fn fold_outcome(&self, project: &ProjectId) -> FoldOutcome<'_> {
+        match self.observed_fold_refusals.get(project) {
             Some(refusal) => FoldOutcome::Refused(refusal),
-            None if self.project_parses.contains_key(key) => FoldOutcome::Succeeded,
+            None if self.project_parses.contains_key(project) => FoldOutcome::Succeeded,
             None => FoldOutcome::Unknown,
         }
     }
@@ -2832,6 +2839,8 @@ pub fn build_env_from_dll_paths<'a>(
                 manifest_identity: projection.manifest_identity,
                 type_forwarders: projection.type_forwarders,
                 doc_id_dialect: projection.doc_id_dialect,
+                has_assembly_references: projection.has_assembly_references,
+                qualified_names: projection.qualified_names,
             }
         })
         .collect();
@@ -3014,6 +3023,10 @@ fn enumerate_view_catching<V: EcmaView>(
                     None
                 }
             });
+            let has_assembly_references =
+                catch_reader_panic(path, "assembly_refs", || !view.assembly_refs().is_empty());
+            let qualified_names =
+                catch_reader_panic(path, "qualified_names", || view.qualified_names()).flatten();
             Some(ReferencedAssemblyProjection {
                 entities: types,
                 fsharp_abbreviations_unknowable: skipped.fsharp_abbreviations_unknowable,
@@ -3027,6 +3040,8 @@ fn enumerate_view_catching<V: EcmaView>(
                 manifest_identity: Some(view.identity().clone()),
                 type_forwarders,
                 doc_id_dialect,
+                has_assembly_references,
+                qualified_names,
             })
         }
         Err(err) => {
@@ -3069,100 +3084,86 @@ fn read_text(path: &Path, docs: &HashMap<Uri, String>) -> Option<String> {
             return Some(text.clone());
         }
     }
-    std::fs::read_to_string(path).ok()
+    crate::disk_text::read(path).ok()
 }
 
-/// Cache-key canonicalisation. Falls back to the literal path when
-/// `canonicalize` fails (e.g. the file doesn't exist on disk yet); matches
-/// the convention `Workspace::project` already uses.
+/// A file's identity *as a file*: its real path, or the literal path when
+/// `canonicalize` fails (e.g. the file doesn't exist on disk yet).
 ///
-/// Public because [`crate::server`] keys its per-project deferral record the
-/// same way: a project reached as `/var/…` from one path and `/private/var/…`
-/// from another is one project, and keying it as two makes the same message go
-/// out twice.
-pub fn canonicalise(path: &Path) -> PathBuf {
+/// For joining paths from two sources that spell one file differently — the
+/// graph walk's lexical spellings against the paths NuGet recorded in an assets
+/// file. Never for identifying a *project*: two spellings of one `.fsproj` can
+/// be two different MSBuild projects (see [`ProjectId`]).
+fn canonicalise(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// A project reference carrying both spellings that matter: the path the
-/// caller found it by, and its [`canonicalise`]d cache key.
+/// A project, identified by the spelling it is evaluated under: the caller's
+/// path, made absolute and lexically normalised, with no symlink resolved.
 ///
-/// The two are not interchangeable, which is the whole reason this type exists.
-/// The **key** identifies the project in every cache (and in the deferral
-/// dedup), so two spellings of one project are one entry. The **path** is what
-/// the project is *evaluated with*, and must stay as the caller spelled it:
-/// MSBuild derives `$(MSBuildProjectDirectory)` from it and joins every
-/// `<Compile>` include against it, so evaluating `/private/tmp/…` when the
-/// editor opened `/tmp/…` yields an item set whose paths match no open buffer.
+/// MSBuild evaluates a project as it is spelt, not as the file it names.
+/// `$(MSBuildProjectDirectory)` is the spelling's directory, every relative
+/// `<Compile>` and `<ProjectReference>` is joined to it, and the search for
+/// `Directory.Build.props`, `Directory.Packages.props` and the like walks *its*
+/// ancestors. So a directory reached through a symlink has different ancestors
+/// from its real path, and a project file that is itself a symlink compiles the
+/// sources beside the link, not beside its target: two spellings of one file
+/// can be two projects, and `dotnet` treats them so. Identifying a project by
+/// its real path merges them, and whichever spelling is evaluated first is then
+/// served for both.
 ///
-/// Carrying both also lets a hot path skip the `realpath` syscall:
-/// [`crate::server`]'s deferral refresh runs after every dispatched message and
-/// looks projects up by key, and doing that naively cost two or three
-/// canonicalisations per scoped project per keystroke.
+/// Every per-project cache is keyed by this, and the project is evaluated by
+/// [`Self::as_path`], so a key always names exactly the evaluation it holds.
+/// Lexical normalisation loses nothing, since MSBuild normalises a project's
+/// path the same way (`..` is textual, as in [`lexically_normalize`]).
+///
+/// Equality folds case where the platform does
+/// ([`crate::paths::path_dedup_key`]), matching
+/// [`crate::paths::paths_equal`], which the rest of the LSP uses for the same
+/// question. Two spellings differing only in case search the same directories,
+/// and a restore keeps a project's references under either (probed on macOS).
 #[derive(Debug, Clone)]
-pub struct CanonicalProject {
+pub struct ProjectId {
     path: PathBuf,
-    key: PathBuf,
-    /// [`crate::paths::path_dedup_key`] of `key` — the identity, folded the way
-    /// the platform folds case.
-    ///
-    /// For a project that exists on disk this is belt-and-braces: `canonicalize`
-    /// resolves the true on-disk casing (probed, macOS). It bites on the
-    /// fallback — [`canonicalise`] returns the literal path when `canonicalize`
-    /// fails, so a project not yet on disk keeps whatever casing the caller
-    /// spelled, and two spellings of one file would otherwise be two projects.
-    /// The rest of the LSP already treats those as equal
-    /// ([`crate::paths::paths_equal`]).
     identity: String,
 }
 
-/// Identity is the platform-folded canonical key, not the spelling: two buffers
-/// reaching one physical `.fsproj` — through a symlink, or through a
-/// differently-cased path on macOS/Windows — are the same project. A derived
-/// `PartialEq` (comparing `path` too) made them two, so a scope holding both
-/// stored one report under a shared key while rendering each spelling, and
-/// re-sent both toasts after every dispatch.
-impl PartialEq for CanonicalProject {
+impl PartialEq for ProjectId {
     fn eq(&self, other: &Self) -> bool {
         self.identity == other.identity
     }
 }
 
-impl Eq for CanonicalProject {}
+impl Eq for ProjectId {}
 
-impl std::hash::Hash for CanonicalProject {
+impl std::hash::Hash for ProjectId {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.identity.hash(state);
     }
 }
 
-impl CanonicalProject {
+impl ProjectId {
     pub fn new(path: &Path) -> Self {
-        let key = canonicalise(path);
-        CanonicalProject {
-            identity: crate::paths::path_dedup_key(&key),
-            path: path.to_path_buf(),
-            key,
+        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let path = lexically_normalize(&absolute);
+        ProjectId {
+            identity: crate::paths::path_dedup_key(&path),
+            path,
         }
     }
 
-    /// The platform-folded identity — the right key for a map of projects.
+    /// The platform-folded identity, as text.
     pub fn identity(&self) -> &str {
         &self.identity
     }
 
-    /// The spelling the caller found this project by — what to *evaluate* with.
+    /// The spelling to evaluate, restore and report this project by.
     pub fn as_path(&self) -> &Path {
         &self.path
     }
-
-    /// The cache key — what to *look up* by.
-    pub fn key(&self) -> &Path {
-        &self.key
-    }
 }
 
-impl std::fmt::Display for CanonicalProject {
+impl std::fmt::Display for ProjectId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.path.display())
     }
@@ -3178,39 +3179,74 @@ fn is_signature_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
 
-    /// A project's identity survives the spellings the rest of the LSP already
-    /// treats as one file.
-    ///
-    /// Exercised on paths that are *not* on disk, which is where it bites:
-    /// `canonicalise` falls back to the literal path there, so the caller's
-    /// casing survives. (For a project that does exist, `canonicalize` resolves
-    /// the true on-disk casing itself — probed on macOS — so this is defence in
-    /// depth for that case, not the mechanism.)
+    use proptest::prelude::*;
+
+    /// A spelling of `/proj/<segments>`: each segment optionally preceded by a
+    /// redundant `.` and a cancelling `noise/..` pair, and optionally
+    /// upper-cased.
+    fn spelling(segments: &[(String, bool, bool)]) -> PathBuf {
+        let mut path = PathBuf::from("/proj");
+        for (segment, noisy, upper) in segments {
+            if *noisy {
+                path.push(".");
+                path.push("noise");
+                path.push("..");
+            }
+            path.push(if *upper {
+                segment.to_ascii_uppercase()
+            } else {
+                segment.clone()
+            });
+        }
+        path
+    }
+
+    fn segments() -> impl Strategy<Value = Vec<(String, bool, bool)>> {
+        prop::collection::vec(("[a-c]{1,2}", any::<bool>(), any::<bool>()), 1..4)
+    }
+
+    proptest! {
+        /// Two spellings are one project exactly when the rest of the LSP
+        /// treats them as one file: membership matches a buffer to a
+        /// `<Compile>` item by this same relation, so a project and the
+        /// sources it lists are identified alike. Exercised off disk, where no
+        /// symlink can intervene.
+        #[test]
+        fn project_identity_is_lexical_path_equality(a in segments(), b in segments()) {
+            let (a, b) = (spelling(&a), spelling(&b));
+            prop_assert_eq!(
+                ProjectId::new(&a) == ProjectId::new(&b),
+                crate::paths::paths_equal(&lexically_normalize(&a), &lexically_normalize(&b)),
+                "{:?} vs {:?}", a, b
+            );
+            // The identity is what a map keys on, so it decides the same way.
+            prop_assert_eq!(
+                ProjectId::new(&a) == ProjectId::new(&b),
+                ProjectId::new(&a).identity() == ProjectId::new(&b).identity()
+            );
+        }
+    }
+
+    /// A project reached through a symlinked directory is not the project at
+    /// its real path: MSBuild searches different ancestors for each.
+    #[cfg(unix)]
     #[test]
-    fn project_identity_folds_case_where_the_platform_does() {
-        let upper = CanonicalProject::new(Path::new("/nonexistent/Proj/App.fsproj"));
-        let lower = CanonicalProject::new(Path::new("/nonexistent/proj/App.fsproj"));
-        let other = CanonicalProject::new(Path::new("/nonexistent/Proj/Other.fsproj"));
+    fn a_symlinked_spelling_is_its_own_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("App.fsproj"), "<Project />").unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
 
-        // Agrees with the comparison the rest of the LSP uses for the same
-        // question, on every platform.
+        let through_link = ProjectId::new(&tmp.path().join("link").join("App.fsproj"));
+        assert_ne!(through_link, ProjectId::new(&real.join("App.fsproj")));
         assert_eq!(
-            upper == lower,
-            crate::paths::paths_equal(upper.as_path(), lower.as_path()),
-            "identity disagrees with `paths_equal` about {:?} vs {:?}",
-            upper.as_path(),
-            lower.as_path()
-        );
-        assert_ne!(upper, other, "different projects stay different");
-
-        // …and the identity is what a map keys on, so equal projects collide.
-        let mut seen = std::collections::HashSet::new();
-        seen.insert(upper.identity().to_string());
-        assert_eq!(
-            seen.contains(lower.identity()),
-            crate::paths::paths_equal(upper.as_path(), lower.as_path())
+            through_link.as_path(),
+            tmp.path().join("link").join("App.fsproj"),
+            "evaluated as spelt"
         );
     }
+
     use super::*;
     use borzoi_assembly::{
         Access, AssemblyIdentity, AssemblyProjectionSkips, EntityKind, FSharpResource,

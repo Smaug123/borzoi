@@ -46,6 +46,14 @@
 //! - **Project-rooted.** The command's working directory is the project
 //!   directory, so `dotnet` resolves the SDK from the project's `global.json`
 //!   (rather than the LSP process's cwd) — the same SDK the evaluator saw.
+//! - **Only from a real directory.** A project whose directory is reached
+//!   through a symlink is declined. MSBuild runs a project's targets with the
+//!   process's working directory set to the project's directory, which the OS
+//!   reports by its real path, so restore resolves the project's relative
+//!   `<ProjectReference>`s under a spelling its evaluation never used, and
+//!   NuGet drops them: the restore succeeds without them, whatever directory it
+//!   is run from. A project file that is itself a symlink, in a real directory,
+//!   restores whole.
 //! - **Bounded.** It runs under [`BoundedCommand`] with a deadline as a backstop.
 //!
 //! These isolation guarantees are enforced through MSBuild global properties, so
@@ -79,6 +87,7 @@ use std::time::Duration;
 
 use borzoi_spawn::BoundedCommand;
 
+use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
     ResolvedAssemblies, resolve_assemblies_for_tfm, resolve_assemblies_root_only,
 };
@@ -175,6 +184,7 @@ pub fn restore_to_scratch_assemblies(
     let Some(inputs) = restore_inputs(project, env) else {
         return RestoreOutcome::Declined;
     };
+    let project = inputs.project.as_path();
 
     let Some(scratch) = ScratchDir::new() else {
         return RestoreOutcome::TransientFailure;
@@ -247,6 +257,15 @@ struct RestoreInputs {
 /// The inputs of an offline restore of `project`, or `None` if the project
 /// must not be restored here.
 fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs> {
+    let Some(project) = in_its_real_directory(project) else {
+        tracing::info!(
+            project = %project.display(),
+            "on-demand restore declined: the project's directory is not spelt by its real path, \
+             and restoring it there drops its project references"
+        );
+        return None;
+    };
+    let project = project.as_path();
     // A project with a `packages.lock.json` expects restore to resolve its
     // *pinned* graph; a fresh resolve here could pick different versions, so
     // decline rather than risk over-resolving. (`RestorePackagesWithLockFile`
@@ -287,14 +306,18 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
     })
 }
 
-/// `path`, made absolute, if that is already its real path: no symlink in it,
-/// no `..`, and every component spelt as the file system spells it. `None`
-/// otherwise, or if it does not resolve. The result is in ordinary form (see
-/// [`without_verbatim_prefix`]).
-fn as_real_path(path: &Path) -> Option<PathBuf> {
-    let absolute = ordinary(std::path::absolute(path).ok()?);
-    let real = ordinary(std::fs::canonicalize(path).ok()?);
-    (real == absolute).then_some(absolute)
+/// `project`, made absolute and lexically normalised, if its directory is
+/// spelt by its real path: no symlink in it. Case may differ where the platform
+/// folds it (a restore keeps the references then; probed on macOS), and the
+/// file itself may be a symlink, which MSBuild evaluates beside the link.
+/// `None` otherwise, or if the directory does not resolve. The result is in
+/// ordinary form (see [`without_verbatim_prefix`]), the form MSBuild is
+/// handed.
+fn in_its_real_directory(project: &Path) -> Option<PathBuf> {
+    let spelt = ordinary(lexically_normalize(&std::path::absolute(project).ok()?));
+    let directory = spelt.parent()?;
+    let real = ordinary(std::fs::canonicalize(directory).ok()?);
+    paths_equal(&real, directory).then_some(spelt)
 }
 
 /// `path` in ordinary form. On Windows a real path comes back verbatim
@@ -350,21 +373,17 @@ pub enum RestoreGraphSource {
 /// [`restore_to_scratch_assemblies`] restores with. This is the half-A oracle
 /// of `docs/nuget-dgspec-boundary-plan.md`; the LSP itself never calls it.
 ///
-/// It declines a project not named by its real path. Restore runs in the
-/// project's directory, which the OS reports by its real path, so such a
-/// project is spelt two ways in one evaluation, and NuGet drops its
-/// `ProjectReference`s from the spec restore reads; the two routes then
-/// disagree, and neither is the project the LSP evaluated.
+/// It declines what [`restore_to_scratch_assemblies`] declines, including a
+/// project whose directory is reached through a symlink: NuGet drops such a
+/// project's `ProjectReference`s from the spec restore reads, so the two routes
+/// would disagree.
 pub fn restore_graph(
     project: &Path,
     dotnet_root: &Path,
     env: &SdkDiscoveryEnv,
     source: RestoreGraphSource,
 ) -> RestoreGraph {
-    let Some(project) = as_real_path(project) else {
-        return RestoreGraph::Declined;
-    };
-    let Some(inputs) = restore_inputs(&project, env) else {
+    let Some(inputs) = restore_inputs(project, env) else {
         return RestoreGraph::Declined;
     };
     let project = inputs.project.as_path();

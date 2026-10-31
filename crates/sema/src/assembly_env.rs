@@ -28,6 +28,9 @@ use borzoi_assembly::{
 use crate::def::SemanticClass;
 use crate::resolve::{ActivePatternShape, DeclineCause};
 
+mod il_types;
+pub use il_types::IlTypeDefinition;
+
 /// Fuel bound for chasing a chain of type-abbreviation markers
 /// (`type A = B; type B = C; …`) in [`AssemblyEnv::resolve_abbreviation_target`].
 /// Real alias chains are short; the bound only stops a pathological or crafted
@@ -646,18 +649,32 @@ pub struct AssemblyEnv {
     /// [`Self::unique_assembly_key_for_name`] falls back to the entities there.
     assembly_identities: Vec<Option<AssemblyIdentity>>,
     /// Per-[`AssemblyId`] type forwarders, `(dotted namespace, metadata
-    /// name) → target assembly simple name`, in lockstep with
+    /// name) → target assembly identity`, in lockstep with
     /// [`Self::assemblies`]. A facade assembly (`netstandard`) declares no
     /// TypeDefs — an abbreviation-target chase that lands in one continues
     /// through its forwarder, exactly as the CLR's loader does (FSharp.Core's
     /// pickle names its BCL targets through the `netstandard` CCU).
-    assembly_forwarders: Vec<HashMap<(String, String), String>>,
+    assembly_forwarders: Vec<HashMap<(String, String), AssemblyIdentity>>,
     /// Per-[`AssemblyId`] [`DocIdDialect`], for the assemblies whose build path
     /// supplied one. A map rather than a vector in lockstep with
     /// [`Self::assemblies`], so a constructor that has no dialect to give
     /// records nothing — and [`Self::doc_id_dialect`] reports it unknown —
     /// rather than shifting another assembly's into its place.
     assembly_doc_id_dialects: HashMap<AssemblyId, DocIdDialect>,
+    /// Per-[`AssemblyId`], in lockstep with [`Self::assemblies`]: whether the
+    /// DLL's manifest references other assemblies (`AssemblyRef` rows).
+    /// `None` where the build path did not read it.
+    assembly_has_references: Vec<Option<bool>>,
+    /// The simple names (lower-cased) some loaded manifest qualifies beyond
+    /// simple name, version and token — by culture or flags — its own or a
+    /// reference's ([`borzoi_assembly::EcmaView::qualified_names`]). Binding
+    /// one by simple name alone is not a binder's binding, which matches
+    /// those too.
+    qualified_names: HashSet<String>,
+    /// Whether every loaded DLL's qualified names were read, so that
+    /// [`Self::qualified_names`] is the whole set. `false` for an env
+    /// built without them (and by default).
+    qualified_names_read: bool,
     /// Memo for [`Self::resolve_abbreviation_target`] /
     /// [`Self::resolve_abbreviation_tycon`], keyed by `(marker, allow_args)`.
     /// The chase is a pure function of the env's immutable entity data, but
@@ -679,6 +696,8 @@ pub struct AssemblyEnv {
     /// every function read. Reset with the chase cache, on whose inputs it
     /// depends.
     measure_head_cache: MeasureHeadCache,
+    /// [`Self::primitive_binds`]'s core library, computed on first use.
+    core_library: std::sync::OnceLock<Option<HashSet<String>>>,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -904,6 +923,13 @@ pub struct AssemblyProjectionInput {
     /// [`borzoi_assembly::EcmaView::doc_id_dialect`]; `None` when it could not
     /// be read, which [`AssemblyEnv::doc_id_dialect`] reports as unknown.
     pub doc_id_dialect: Option<DocIdDialect>,
+    /// Whether the manifest references other assemblies
+    /// ([`borzoi_assembly::EcmaView::assembly_refs`] non-empty); `None` when
+    /// not read.
+    pub has_assembly_references: Option<bool>,
+    /// [`borzoi_assembly::EcmaView::qualified_names`]; `None` when
+    /// not read.
+    pub qualified_names: Option<Vec<String>>,
 }
 
 /// Whether entity `e`'s **logical name** — its IL `name` or its `source_name` —
@@ -1113,6 +1139,8 @@ impl AssemblyEnv {
                         manifest_identity: None,
                         type_forwarders: Vec::new(),
                         doc_id_dialect: None,
+                        has_assembly_references: None,
+                        qualified_names: None,
                     }
                 })
                 .collect(),
@@ -1129,6 +1157,7 @@ impl AssemblyEnv {
         assemblies: Vec<AssemblyProjectionInput>,
     ) -> Self {
         let mut env = AssemblyEnv::default();
+        let mut qualified_read = true;
         let mut tagged: Vec<(
             Option<AssemblyId>,
             AbbreviationVisibility,
@@ -1148,6 +1177,8 @@ impl AssemblyEnv {
                 manifest_identity,
                 type_forwarders,
                 doc_id_dialect,
+                has_assembly_references,
+                qualified_names,
             } = input;
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
@@ -1156,10 +1187,17 @@ impl AssemblyEnv {
             if let Some(dialect) = doc_id_dialect {
                 env.assembly_doc_id_dialects.insert(id, dialect);
             }
+            env.assembly_has_references.push(has_assembly_references);
+            match qualified_names {
+                Some(names) => env
+                    .qualified_names
+                    .extend(names.iter().map(|n| n.to_lowercase())),
+                None => qualified_read = false,
+            }
             env.assembly_forwarders.push(
                 type_forwarders
                     .into_iter()
-                    .map(|f| ((f.namespace, f.name), f.assembly.name))
+                    .map(|f| ((f.namespace, f.name), f.assembly))
                     .collect(),
             );
             // Register the DLL's identity so a referenced-CCU name is counted per
@@ -1195,6 +1233,7 @@ impl AssemblyEnv {
                 )
             }));
         }
+        env.qualified_names_read = qualified_read;
         env.index_roots(tagged);
         env.record_assembly_auto_opens(auto_opens);
         env
@@ -1439,6 +1478,7 @@ impl AssemblyEnv {
     /// `None`) so the AutoOpen deref can tell same-named views apart.
     pub fn from_views<V: EcmaView>(views: &[V]) -> Result<Self, ImportError> {
         let mut env = AssemblyEnv::default();
+        let mut qualified_read = true;
         let mut tagged = Vec::new();
         let mut auto_opens = Vec::new();
         let mut dropped_namespaces = Vec::new();
@@ -1467,10 +1507,18 @@ impl AssemblyEnv {
             // Every view is a distinct loaded DLL with a known identity — register
             // it (even a rootless one) so a referenced-CCU name is counted per DLL.
             env.assembly_identities.push(Some(view.identity().clone()));
+            env.assembly_has_references
+                .push(Some(!view.assembly_refs().is_empty()));
+            match view.qualified_names() {
+                Some(names) => env
+                    .qualified_names
+                    .extend(names.iter().map(|n| n.to_lowercase())),
+                None => qualified_read = false,
+            }
             env.assembly_forwarders.push(
                 view.type_forwarders()?
                     .into_iter()
-                    .map(|f| ((f.namespace, f.name), f.assembly.name))
+                    .map(|f| ((f.namespace, f.name), f.assembly))
                     .collect(),
             );
             tagged.extend(roots.into_iter().map(move |r| {
@@ -1488,6 +1536,7 @@ impl AssemblyEnv {
                 view.assembly_auto_opens()?,
             ));
         }
+        env.qualified_names_read = qualified_read;
         env.index_roots(tagged);
         env.record_assembly_auto_opens(auto_opens);
         for namespace in dropped_namespaces {
@@ -2073,6 +2122,125 @@ impl AssemblyEnv {
         self.assembly_provenance(handle)
             .and_then(|id| self.assembly_doc_id_dialects.get(&id))
             .copied()
+    }
+
+    /// Whether `handle`'s DLL is the reference set's core library as Roslyn
+    /// picks it: the one loaded DLL whose manifest references no other
+    /// assembly and that defines `System.Object` (of any accessibility, so
+    /// that every DLL Roslyn might count is counted). `Some(false)` when
+    /// another DLL is that one, or when none or several are; `None` when it
+    /// cannot be told — some DLL's references were not read, or a DLL the env
+    /// cannot name is present.
+    pub fn is_core_library(&self, handle: EntityHandle) -> Option<bool> {
+        if self.assembly_identities_incomplete
+            || self.assembly_has_references.len() != self.assemblies.len()
+        {
+            return None;
+        }
+        // A dropped `System` type may be a competing `System.Object`.
+        if self.namespace_has_dropped_type(&["System".to_string()]) {
+            return None;
+        }
+        let defines_object: HashSet<usize> = self
+            .top_level_types
+            .iter()
+            .filter(|&&h| self.is_root_object(h))
+            .filter_map(|&h| self.assembly_provenance(h))
+            .map(|id| id.0 as usize)
+            .collect();
+        let mut without = Vec::new();
+        for (i, has) in self.assembly_has_references.iter().enumerate() {
+            match has {
+                None => return None,
+                Some(false) if defines_object.contains(&i) => without.push(i),
+                Some(_) => {}
+            }
+        }
+        let id = self.assembly_provenance(handle)?;
+        Some(matches!(without.as_slice(), [only] if *only == id.0 as usize))
+    }
+
+    /// Whether the primitive `p` binds as Roslyn's special types do: to a
+    /// public `System` type of the reference set's core library — the one
+    /// loaded DLL with no assembly references ([`Self::is_core_library`]),
+    /// which must also be the sole loaded assembly defining a public
+    /// `System.Object`. Without one, to Roslyn every primitive is an error
+    /// type, and so is one whose definition is not public.
+    pub fn primitive_binds(&self, p: borzoi_assembly::Primitive) -> bool {
+        use borzoi_assembly::Primitive;
+        let name = match p {
+            Primitive::Void => "Void",
+            Primitive::Bool => "Boolean",
+            Primitive::Char => "Char",
+            Primitive::I1 => "SByte",
+            Primitive::U1 => "Byte",
+            Primitive::I2 => "Int16",
+            Primitive::U2 => "UInt16",
+            Primitive::I4 => "Int32",
+            Primitive::U4 => "UInt32",
+            Primitive::I8 => "Int64",
+            Primitive::U8 => "UInt64",
+            Primitive::R4 => "Single",
+            Primitive::R8 => "Double",
+            Primitive::IntPtr => "IntPtr",
+            Primitive::UIntPtr => "UIntPtr",
+            Primitive::Object => "Object",
+            Primitive::String => "String",
+        };
+        self.core_library
+            .get_or_init(|| self.core_library_types())
+            .as_ref()
+            .is_some_and(|types| types.contains(name))
+    }
+
+    /// Whether `handle` has `System.Object`'s shape: a non-generic class of
+    /// exactly that metadata name (no suffix, recorded or not) with no base type (of any accessibility; see
+    /// [`Self::primitive_binds`] for the public one).
+    fn is_root_object(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        e.namespace.len() == 1
+            && e.namespace[0] == "System"
+            && e.name == "Object"
+            && e.metadata_arity_suffix == Some(0)
+            && e.generic_parameters.is_empty()
+            && e.kind == EntityKind::Class
+            && !e.is_struct
+            && e.base_type.is_none()
+    }
+
+    /// The names of the `System` types the core library defines (see
+    /// [`Self::primitive_binds`]) under exactly those metadata names — not
+    /// `` Int32`0 ``, which projects as `Int32` with no suffix recorded; `None`
+    /// when there is no core library.
+    fn core_library_types(&self) -> Option<HashSet<String>> {
+        let in_system = |h: EntityHandle| {
+            let e = self.entity(h);
+            e.namespace.len() == 1
+                && e.namespace[0] == "System"
+                && e.metadata_arity_suffix == Some(0)
+                && e.generic_parameters.is_empty()
+                && e.access == borzoi_assembly::Access::Public
+        };
+        let mut objects = self
+            .top_level_types
+            .iter()
+            .copied()
+            .filter(|&h| in_system(h) && self.is_root_object(h));
+        let (Some(object), None) = (objects.next(), objects.next()) else {
+            return None;
+        };
+        if self.is_core_library(object) != Some(true) {
+            return None;
+        }
+        let core = self.assembly_provenance(object)?;
+        Some(
+            self.top_level_types
+                .iter()
+                .copied()
+                .filter(|&h| in_system(h) && self.assembly_provenance(h) == Some(core))
+                .map(|h| self.entity(h).name.clone())
+                .collect(),
+        )
     }
 
     /// The total number of interned entities (top-level + nested).
@@ -2959,6 +3127,16 @@ impl AssemblyEnv {
         self.nodes[handle.index()].signature_non_authoritative
     }
 
+    /// Whether `handle`'s assembly carries an **authoritative F# signature** —
+    /// so its entities and members are projected in F#'s source-level view
+    /// (record fields as fields, module values as methods, accessors folded
+    /// away) rather than as the IL a metadata consumer such as Roslyn reads.
+    /// `false` for a C#/VB/BCL assembly, and for an F# one whose pickle could
+    /// not be used (whose projection is then the IL one).
+    pub fn has_authoritative_fsharp_signature(&self, handle: EntityHandle) -> bool {
+        !self.fsharp_signature_unreliable(handle)
+    }
+
     /// Whether `handle` is an F# **module** we may rely on being one.
     ///
     /// A module's kind is trustworthy only from an authoritative F# pickle. A
@@ -3822,6 +4000,8 @@ impl AssemblyEnv {
         self.abbreviation_chase_cache = Default::default();
         self.measure_verdict_cache = Default::default();
         self.measure_head_cache = Default::default();
+        // The core library is named only over a complete identity set.
+        self.core_library = Default::default();
     }
 
     /// Record that a referenced assembly **dropped an undecodable type** in
@@ -3833,6 +4013,8 @@ impl AssemblyEnv {
     /// enclosing namespace (empty for a root-namespace type).
     pub fn mark_namespace_dropped_type(&mut self, namespace: Vec<String>) {
         self.namespaces_with_dropped_types.insert(namespace);
+        // The core library is named only over a `System` with no drop.
+        self.core_library = Default::default();
         self.invalidate_bare_value_index();
     }
 
@@ -3856,6 +4038,16 @@ impl AssemblyEnv {
     /// unreliable. The applicability matcher's named-argument affirmation reads this.
     pub(crate) fn namespace_has_dropped_type(&self, namespace: &[String]) -> bool {
         self.namespaces_with_dropped_types.contains(namespace)
+    }
+
+    /// Whether any referenced assembly dropped an undecodable type, anywhere.
+    /// A consumer matching types by a spelling that does not tell nesting from
+    /// namespace (a documentation-comment ID: `T:A.B.C` is a `C` in `A.B`, a
+    /// `C` nested in `A.B`, or in `B` in `A`) cannot tell which namespace a
+    /// competitor's drop would have been recorded under, so cannot rule one
+    /// out by asking about a namespace.
+    pub fn dropped_any_type(&self) -> bool {
+        !self.namespaces_with_dropped_types.is_empty()
     }
 
     /// Whether a dropped type sits in **any namespace this module path could be split
@@ -4740,7 +4932,7 @@ impl AssemblyEnv {
                     if let Some(redirect) = self.assembly_forwarders[id.0 as usize]
                         .get(&(path[..split].join("."), path[split].clone()))
                     {
-                        queue.push((redirect.clone(), Some(split)));
+                        queue.push((redirect.name.clone(), Some(split)));
                     }
                 }
             }
@@ -7510,6 +7702,8 @@ mod from_views_tests {
             manifest_identity: Some(ident("Lib")),
             type_forwarders: Vec::new(),
             doc_id_dialect: None,
+            has_assembly_references: None,
+            qualified_names: None,
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
             input("Contributor.dll", vec![widget, marker]),
@@ -7661,6 +7855,8 @@ mod from_views_tests {
             manifest_identity: Some(ident(dll)),
             type_forwarders: forwarders,
             doc_id_dialect: None,
+            has_assembly_references: None,
+            qualified_names: None,
         }
     }
 
@@ -7670,6 +7866,395 @@ mod from_views_tests {
             name: name.to_string(),
             assembly: ident(to),
         }
+    }
+
+    /// [`forwarder_input`] with the manifest facts [`AssemblyEnv::il_type_definition`]
+    /// and [`AssemblyEnv::primitive_binds`] read.
+    fn manifest_input(
+        dll: &str,
+        roots: Vec<Entity>,
+        has_assembly_references: Option<bool>,
+        qualified_names: Option<Vec<&str>>,
+    ) -> super::AssemblyProjectionInput {
+        super::AssemblyProjectionInput {
+            has_assembly_references,
+            qualified_names: qualified_names
+                .map(|names| names.into_iter().map(str::to_string).collect()),
+            ..forwarder_input(dll, roots, Vec::new())
+        }
+    }
+
+    fn system_ref(assembly: &str, name: &str) -> TypeRef {
+        TypeRef::Named {
+            assembly: Some(ident(assembly)),
+            namespace: vec!["System".to_string()],
+            name: name.to_string(),
+            type_args: Vec::new(),
+            segment_arities: vec![0],
+        }
+    }
+
+    /// A binder matches culture, which a `TypeRef` does not carry: a reference
+    /// binds by simple name only where no loaded manifest qualifies that name
+    /// by culture, and only where every manifest's cultures were read.
+    #[test]
+    fn il_type_definition_declines_a_qualified_or_unread_name() {
+        let rows: [(&str, Option<Vec<&str>>, bool); 4] = [
+            ("cultures read, none qualified", Some(vec![]), true),
+            ("another name qualified", Some(vec!["Other"]), true),
+            (
+                "this name qualified, in another case",
+                Some(vec!["core"]),
+                false,
+            ),
+            ("qualified names unread", None, false),
+        ];
+        for (label, cultures, binds) in rows {
+            let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+                manifest_input(
+                    "Core",
+                    vec![object_entity("Core")],
+                    Some(false),
+                    Some(vec![]),
+                ),
+                manifest_input(
+                    "Lib",
+                    vec![module_entity("Lib", &["Lib"], "M")],
+                    Some(true),
+                    cultures,
+                ),
+            ]);
+            let from = handle_of(&env, &["Lib"], "M");
+            let object = handle_of(&env, &["System"], "Object");
+            let expected = if binds {
+                super::IlTypeDefinition::Resolved(object)
+            } else {
+                super::IlTypeDefinition::Ambiguous
+            };
+            assert_eq!(
+                env.il_type_definition(from, &system_ref("Core", "Object")),
+                expected,
+                "{label}"
+            );
+        }
+    }
+
+    /// A reference spells a type's metadata name, whose arity suffix need not
+    /// be its parameter count (F#'s `[<CompiledName("C`2")>]` on a
+    /// one-parameter type): it binds by the suffix the `TypeDef` was written
+    /// with. A pickle marker has no `TypeDef` at all, but records no suffix,
+    /// as a `TypeDef` with a suffix the projection does not take as an arity
+    /// does: it binds nothing certain.
+    #[test]
+    fn il_type_definition_binds_by_the_written_arity_suffix() {
+        let compiled = Entity {
+            kind: EntityKind::Class,
+            generic_parameters: vec![type_parameter(0)],
+            metadata_arity_suffix: Some(2),
+            ..module_entity("Lib", &["N"], "C")
+        };
+        let marker = Entity {
+            kind: EntityKind::Exception,
+            metadata_arity_suffix: None,
+            ..module_entity("Lib", &["N"], "Alias")
+        };
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+            "Lib",
+            vec![compiled, marker, module_entity("Lib", &["N"], "From")],
+            Some(false),
+            Some(vec![]),
+        )]);
+        let from = handle_of(&env, &["N"], "From");
+        let reference = |name: &str, arity: usize| TypeRef::Named {
+            assembly: Some(ident("Lib")),
+            namespace: vec!["N".to_string()],
+            name: name.to_string(),
+            type_args: Vec::new(),
+            segment_arities: vec![arity],
+        };
+        assert!(matches!(
+            env.il_type_definition(from, &reference("C", 2)),
+            super::IlTypeDefinition::Resolved(_)
+        ));
+        assert_eq!(
+            env.il_type_definition(from, &reference("C", 1)),
+            super::IlTypeDefinition::NotFound
+        );
+        assert_eq!(
+            env.il_type_definition(from, &reference("Alias", 0)),
+            super::IlTypeDefinition::Ambiguous
+        );
+    }
+
+    /// A `TypeDef` named with a suffix the projection does not take as an
+    /// arity (`` Foo`0 ``) projects as the bare name with no suffix recorded,
+    /// and a same-module reference to it (a `TypeDef` token) is spelled
+    /// stripped, exactly as a reference to a genuine `Foo` is. Roslyn keeps
+    /// the two apart; the binding cannot, so a name that some type holds
+    /// without a recorded suffix binds nothing — at the top level and nested.
+    #[test]
+    fn il_type_definition_declines_a_name_a_suffixless_type_shares() {
+        let suffixless = |name: &str| Entity {
+            kind: EntityKind::Class,
+            metadata_arity_suffix: None,
+            ..module_entity("Lib", &["N"], name)
+        };
+        let plain = |name: &str| Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["N"], name)
+        };
+        let outer = Entity {
+            nested_types: vec![suffixless("Inner"), plain("Inner")],
+            ..plain("Outer")
+        };
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+            "Lib",
+            vec![plain("Foo"), suffixless("Foo"), outer, plain("From")],
+            Some(false),
+            Some(vec![]),
+        )]);
+        let from = handle_of(&env, &["N"], "From");
+        let reference = |name: &str, arities: Vec<usize>| TypeRef::Named {
+            assembly: None,
+            namespace: vec!["N".to_string()],
+            name: name.to_string(),
+            type_args: Vec::new(),
+            segment_arities: arities,
+        };
+        assert_eq!(
+            env.il_type_definition(from, &reference("Foo", vec![0])),
+            super::IlTypeDefinition::Ambiguous
+        );
+        assert_eq!(
+            env.il_type_definition(from, &reference("Outer/Inner", vec![0, 0])),
+            super::IlTypeDefinition::Ambiguous
+        );
+        assert!(matches!(
+            env.il_type_definition(from, &reference("Outer", vec![0])),
+            super::IlTypeDefinition::Resolved(_)
+        ));
+    }
+
+    /// A core-library type whose `TypeDef` name carries a suffix the
+    /// projection does not record (`` System.Int32`0 ``) is not the special
+    /// type Roslyn binds the primitive to, nor is such an `Object` the root.
+    #[test]
+    fn primitive_binds_only_to_a_suffixless_metadata_name() {
+        let suffixed = |e: Entity| Entity {
+            metadata_arity_suffix: None,
+            ..e
+        };
+        let int32 = || Entity {
+            kind: EntityKind::Struct,
+            ..module_entity("Core", &["System"], "Int32")
+        };
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+            "Core",
+            vec![object_entity("Core"), suffixed(int32())],
+            Some(false),
+            Some(vec![]),
+        )]);
+        assert!(env.primitive_binds(Primitive::Object));
+        assert!(!env.primitive_binds(Primitive::I4), "an Int32`0");
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+            "Core",
+            vec![suffixed(object_entity("Core")), int32()],
+            Some(false),
+            Some(vec![]),
+        )]);
+        assert!(!env.primitive_binds(Primitive::I4), "an Object`0");
+    }
+
+    /// Roslyn's special types bind into the core library: the one loaded DLL
+    /// referencing no other assembly and defining `System.Object`, which
+    /// must also be the sole definer of a public one. Anything less certain
+    /// binds no primitive.
+    #[test]
+    fn primitive_binds_only_into_the_one_unreferencing_object_definer() {
+        let int32 = || Entity {
+            kind: EntityKind::Struct,
+            ..module_entity("Core", &["System"], "Int32")
+        };
+        let lib = || module_entity("Lib", &["Lib"], "M");
+        let rows: [(&str, Vec<super::AssemblyProjectionInput>, bool); 7] = [
+            (
+                "the core library",
+                vec![
+                    manifest_input(
+                        "Core",
+                        vec![object_entity("Core"), int32()],
+                        Some(false),
+                        Some(vec![]),
+                    ),
+                    manifest_input("Lib", vec![lib()], Some(true), Some(vec![])),
+                ],
+                true,
+            ),
+            (
+                "references unread somewhere",
+                vec![
+                    manifest_input(
+                        "Core",
+                        vec![object_entity("Core"), int32()],
+                        Some(false),
+                        Some(vec![]),
+                    ),
+                    manifest_input("Lib", vec![lib()], None, Some(vec![])),
+                ],
+                false,
+            ),
+            (
+                "another DLL references nothing, but defines no Object",
+                vec![
+                    manifest_input(
+                        "Core",
+                        vec![object_entity("Core"), int32()],
+                        Some(false),
+                        Some(vec![]),
+                    ),
+                    manifest_input("Lib", vec![lib()], Some(false), Some(vec![])),
+                ],
+                true,
+            ),
+            (
+                "two DLLs reference nothing and define Object",
+                vec![
+                    manifest_input(
+                        "Core",
+                        vec![object_entity("Core"), int32()],
+                        Some(false),
+                        Some(vec![]),
+                    ),
+                    manifest_input("Lib", vec![object_entity("Lib")], Some(false), Some(vec![])),
+                ],
+                false,
+            ),
+            (
+                "the unreferencing DLL defines no Object",
+                vec![
+                    manifest_input("Core", vec![int32()], Some(false), Some(vec![])),
+                    manifest_input("Lib", vec![object_entity("Lib")], Some(true), Some(vec![])),
+                ],
+                false,
+            ),
+            (
+                "two DLLs define Object",
+                vec![
+                    manifest_input(
+                        "Core",
+                        vec![object_entity("Core"), int32()],
+                        Some(false),
+                        Some(vec![]),
+                    ),
+                    manifest_input("Lib", vec![object_entity("Lib")], Some(true), Some(vec![])),
+                ],
+                false,
+            ),
+            (
+                "no core library at all",
+                vec![manifest_input("Lib", vec![lib()], Some(true), Some(vec![]))],
+                false,
+            ),
+        ];
+        for (label, inputs, binds) in rows {
+            let env = AssemblyEnv::from_assemblies_with_projection_knowability(inputs);
+            assert_eq!(env.primitive_binds(Primitive::I4), binds, "{label}: int");
+            assert_eq!(
+                env.primitive_binds(Primitive::Object),
+                binds,
+                "{label}: object"
+            );
+        }
+        // A primitive the core library defines non-publicly is no special type
+        // to Roslyn, and nor is a non-public `System.Object`.
+        let internal = |e: Entity| Entity {
+            access: Access::Internal,
+            ..e
+        };
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+            "Core",
+            vec![object_entity("Core"), internal(int32())],
+            Some(false),
+            Some(vec![]),
+        )]);
+        assert!(env.primitive_binds(Primitive::Object));
+        assert!(!env.primitive_binds(Primitive::I4), "an internal Int32");
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+            "Core",
+            vec![internal(object_entity("Core")), int32()],
+            Some(false),
+            Some(vec![]),
+        )]);
+        assert!(!env.primitive_binds(Primitive::I4), "an internal Object");
+        // The verdict follows the env's identity set: marked incomplete after
+        // a first answer, it can no longer name the core library.
+        let mut env =
+            AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+                "Core",
+                vec![object_entity("Core"), int32()],
+                Some(false),
+                Some(vec![]),
+            )]);
+        assert!(env.primitive_binds(Primitive::I4));
+        env.mark_referenced_assemblies_incomplete();
+        assert!(!env.primitive_binds(Primitive::I4), "after the mark");
+        // `System.Object` is the root class: an interface of the name, or a
+        // class with a base, is not it.
+        for (label, object) in [
+            (
+                "an interface named Object",
+                Entity {
+                    kind: EntityKind::Interface,
+                    ..object_entity("Core")
+                },
+            ),
+            (
+                "an Object with a base",
+                Entity {
+                    base_type: Some(TypeRef::Named {
+                        assembly: None,
+                        namespace: vec!["System".to_string()],
+                        name: "Int32".to_string(),
+                        type_args: Vec::new(),
+                        segment_arities: vec![0],
+                    }),
+                    ..object_entity("Core")
+                },
+            ),
+        ] {
+            let env =
+                AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+                    "Core",
+                    vec![object, int32()],
+                    Some(false),
+                    Some(vec![]),
+                )]);
+            assert!(!env.primitive_binds(Primitive::I4), "{label}");
+        }
+        // A type dropped from `System` may be a competing `System.Object`,
+        // learnt after a first answer as well as before.
+        let mut env =
+            AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+                "Core",
+                vec![object_entity("Core"), int32()],
+                Some(false),
+                Some(vec![]),
+            )]);
+        assert!(env.primitive_binds(Primitive::I4));
+        env.mark_namespace_dropped_type(vec!["System".to_string()]);
+        assert!(
+            !env.primitive_binds(Primitive::I4),
+            "after a drop in System"
+        );
+        // A primitive the core library does not define binds to nothing.
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
+            "Core",
+            vec![object_entity("Core"), int32()],
+            Some(false),
+            Some(vec![]),
+        )]);
+        assert!(env.primitive_binds(Primitive::I4));
+        assert!(!env.primitive_binds(Primitive::String));
     }
 
     #[test]

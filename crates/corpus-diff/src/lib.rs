@@ -887,6 +887,9 @@ pub struct ProjectUse {
     /// an operator's compiled name, `op_Addition`, where [`Self::name`] and
     /// [`Self::full_name`] carry the rendering `(+)`.
     pub logical_name: Option<String>,
+    /// For a value or a field, what a hover could show as its type; `None` for
+    /// a symbol with no value type. See [`OracleValue`].
+    pub value: Option<OracleValue>,
     pub start: usize,
     pub end: usize,
     pub is_from_definition: bool,
@@ -921,6 +924,36 @@ pub struct ProjectUse {
     /// [`DeclaringEntity::is_constructor`], which is present only for a record
     /// that also carries a declaring path.
     pub is_constructor: bool,
+}
+
+/// What FCS says about a used value or field beyond its identity: where it
+/// lives, and its type — the oracle a hover's shown type is graded against
+/// ([`handler_diff`]).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OracleValue {
+    /// `None` where FCS could not say.
+    #[serde(rename = "Kind")]
+    pub kind: Option<ValueKind>,
+    /// The symbol's own type, in the canonical currency the inference
+    /// differentials share (`System.Int32 -> 'a`): not its type at this use,
+    /// since a generic value's use records the value itself. `None` where FCS
+    /// could not render it.
+    #[serde(rename = "TypeCanon")]
+    pub type_canon: Option<String>,
+}
+
+/// Where a used value lives, as FCS classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ValueKind {
+    /// A parameter, a pattern binder or a local `let`.
+    Local,
+    /// A module-level `let`.
+    Module,
+    /// A member of a type: a method, property, constructor or event.
+    Member,
+    /// A record or class field.
+    Field,
 }
 
 /// Where FCS says the used symbol is declared, classified by what the
@@ -1122,6 +1155,8 @@ struct RawUse {
     is_compiler_generated: Option<bool>,
     #[serde(rename = "SymbolKind", default)]
     symbol_kind: Option<String>,
+    #[serde(rename = "Value", default)]
+    value: Option<OracleValue>,
 }
 
 #[derive(Deserialize)]
@@ -1190,6 +1225,7 @@ pub fn parse_project_uses(
                     Ok(ProjectUse {
                         name: u.symbol_name,
                         logical_name: u.logical_name,
+                        value: u.value,
                         start: idx.offset(u.range.start.line, u.range.start.col),
                         end: idx.offset(u.range.end.line, u.range.end.col),
                         is_from_definition: u.is_from_definition,
@@ -1779,9 +1815,23 @@ pub struct CorpusSummary {
     pub project_divergences: usize,
     pub assembly_divergences: usize,
     pub reverse_divergences: usize,
+    /// What the plain copy's hover probes showed of their symbol's type
+    /// ([`handler_diff::HoverTypeCensus`]).
+    pub hover_types: handler_diff::HoverTypeCensus,
 }
 
 impl CorpusSummary {
+    /// Count what `handlers`' plain hover probes showed of their symbol's type.
+    /// The perturbed copy re-asks records the plain one already asked, so its
+    /// probes would count them twice.
+    pub fn record_hover_types(&mut self, handlers: &handler_diff::HandlerReport) {
+        for probe in &handlers.probes {
+            if let (handler_diff::Variant::Plain, Some(grade)) = (probe.variant, probe.hover_type) {
+                self.hover_types.record(grade);
+            }
+        }
+    }
+
     pub fn new(projects_discovered: usize) -> Self {
         Self {
             projects_discovered,
@@ -2018,6 +2068,7 @@ impl CorpusSummary {
             self.unoracled_or_pattern_aliases
         )
         .expect("write String");
+        out.push_str(&self.hover_types.render_text());
         if !self.build_properties.is_empty() {
             let properties = self
                 .build_properties
@@ -2112,6 +2163,7 @@ impl CorpusSummary {
             skipped_uses: &self.skipped_uses,
             unoracled_definitions: self.unoracled_definitions,
             unoracled_or_pattern_aliases: self.unoracled_or_pattern_aliases,
+            hover_types: &self.hover_types,
             skipped_projects: &self.skipped_projects,
             skipped_by_reason: &self.skipped_by_reason,
             discovery_errors: &self.project_discovery_errors,
@@ -2384,6 +2436,7 @@ pub fn run_project_corpus_diff_with_options(
         let verdict = match visit_project(&project, &load_options, stride, &mut summary) {
             Ok((assets, sources, comparison, handlers)) => {
                 summary.record_comparison(&comparison);
+                summary.record_hover_types(&handlers);
                 record_divergence_details(&comparison, &mut divergence_details);
                 divergence_details.extend(handlers.divergences.iter().map(|d| d.render()));
                 ProjectVerdict::Comparable {
@@ -2810,6 +2863,8 @@ struct CorpusJsonReport<'a> {
     /// ungraded-reverse-check accounting, kept separate so neither count's
     /// meaning shifts under the other.
     unoracled_or_pattern_aliases: usize,
+    /// What the hover probes showed of their symbol's type.
+    hover_types: &'a handler_diff::HoverTypeCensus,
     skipped_projects: &'a [CorpusSkip],
     skipped_by_reason: &'a BTreeMap<String, usize>,
     discovery_errors: &'a [ProjectDiscoveryError],
@@ -3003,6 +3058,10 @@ struct GeneratorStatistics {
     /// coverage rather than as the loss of signal it is.
     unoracled_or_pattern_aliases: usize,
     project_assets_by_status: BTreeMap<&'static str, usize>,
+    /// What a user hovering a symbol is shown of its type, graded against FCS:
+    /// the measurement that ranks inference work by what users see. Every
+    /// class and verdict is carried, the zeros included.
+    hover_types: handler_diff::HoverTypeCensus,
 }
 
 #[derive(Debug, Serialize)]
@@ -3149,6 +3208,7 @@ pub fn render_generator_summary(
                     (status.json_key(), count)
                 })
                 .collect(),
+            hover_types: summary.hover_types.clone(),
         },
     };
     let mut json = serde_json::to_string_pretty(&generator)?;
@@ -6989,6 +7049,98 @@ mod tests {
                     .expect("a map")
                     .len(),
                 DeferralShape::ALL.len()
+            );
+        }
+    }
+
+    /// The hover-type census reaches all three surfaces — the text report, the
+    /// JSONL and the generator statistics — with every class and verdict, the
+    /// zeros included, and counts only the plain copy's hover probes (the
+    /// perturbed run re-asks records the plain one already graded).
+    #[test]
+    fn the_hover_type_census_reaches_every_surface() {
+        use handler_diff::{
+            Expectation, Handler, HandlerReport, HoverType, Outcome, Probe, ProbeItem, SymbolClass,
+            TypeVerdict, ValueLabel, Variant, Withheld,
+        };
+        let probe = |variant, handler, hover_type| ProbeItem {
+            variant,
+            file: PathBuf::from("/checkout/A.fs"),
+            range: (0, 1),
+            name: "x".to_string(),
+            handler,
+            probe: Probe::Last,
+            expectation: Expectation::Served(Graded::Project, AnswerSurface::Resolver),
+            outcome: Outcome::Described,
+            hover_type,
+        };
+        let agrees = HoverType {
+            class: SymbolClass::Local,
+            verdict: TypeVerdict::Agrees,
+        };
+        let withheld = HoverType {
+            class: SymbolClass::InFileValue,
+            verdict: TypeVerdict::Withheld(Withheld::InFile(ValueLabel::Function)),
+        };
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_hover_types(&HandlerReport {
+            probes: vec![
+                probe(Variant::Plain, Handler::Hover, Some(agrees)),
+                probe(Variant::Plain, Handler::Hover, Some(agrees)),
+                probe(Variant::Plain, Handler::Hover, Some(withheld)),
+                probe(Variant::Perturbed, Handler::Hover, Some(withheld)),
+                probe(Variant::Plain, Handler::Definition, None),
+            ],
+            ..HandlerReport::default()
+        });
+
+        let text = summary.render_text_report();
+        assert!(
+            text.contains(
+                "project-corpus-diff hover types: 3 probes | agrees=2 withheld-in-file-function=1"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "project-corpus-diff hover types in-file-value: withheld-in-file-function=1"
+            ),
+            "{text}"
+        );
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let report_path = tmp.path().join("summary.jsonl");
+        write_json_report_line(&report_path, &summary).expect("write report");
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(report_path).expect("read report"))
+                .expect("valid JSON");
+        let rendered = render_generator_summary(&summary, &generator_settings()).expect("render");
+        let statistics: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        for census in [
+            &report["hover_types"],
+            &statistics["statistics"]["hover_types"],
+        ] {
+            assert_eq!(census["total"], 3, "{census}");
+            assert_eq!(census["by_verdict"]["agrees"], 2, "{census}");
+            assert_eq!(census["by_verdict"]["wrong"], 0, "{census}");
+            assert_eq!(census["by_class"]["local"]["agrees"], 2, "{census}");
+            assert_eq!(
+                census["by_class"]["in-file-value"]["withheld-in-file-function"], 1,
+                "{census}"
+            );
+            assert_eq!(
+                census["by_class"]["assembly-member"]["withheld-assembly-measures"], 0,
+                "{census}"
+            );
+            let verdicts = TypeVerdict::all().len();
+            assert_eq!(
+                census["by_verdict"].as_object().map(|m| m.len()),
+                Some(verdicts)
+            );
+            assert_eq!(
+                census["by_class"].as_object().map(|m| m.len()),
+                Some(SymbolClass::ALL.len())
             );
         }
     }

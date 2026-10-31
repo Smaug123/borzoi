@@ -8,6 +8,8 @@
 //! asserts:
 //!
 //! - every file indexes (none is malformed, foreign, or a redirect stub);
+//! - every file is in the grammar `xml_doc::file` certifies Roslyn's reader
+//!   reads as it does, so no `<inheritdoc>` expansion declines a whole file;
 //! - every entry's range re-parse — the lazy path hover takes — yields exactly
 //!   the element the whole-document parse holds (the equivalence
 //!   `xml_doc::file` relies on);
@@ -45,6 +47,8 @@ use crate::common::ensure_system_runtime_dll;
 struct Census {
     files: usize,
     unindexed: Vec<(PathBuf, String)>,
+    /// Indexed files outside the certified grammar.
+    uncertified: Vec<PathBuf>,
     entries: usize,
     ambiguous: usize,
     unknown: BTreeMap<String, usize>,
@@ -153,7 +157,7 @@ fn foreign_structure(markdown: &str) -> Option<String> {
 fn sweep_file(path: &Path, strict: bool, census: &mut Census) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let started = Instant::now();
-    let parsed = DocFile::decode(&bytes).and_then(DocFile::parse);
+    let parsed = DocFile::load(&bytes);
     let elapsed = started.elapsed();
     let file = match parsed {
         Ok(file) => file,
@@ -166,6 +170,9 @@ fn sweep_file(path: &Path, strict: bool, census: &mut Census) {
         }
     };
     census.files += 1;
+    if !file.read_whole_as_roslyn_reads() {
+        census.uncertified.push(path.to_path_buf());
+    }
     if census.slowest.as_ref().is_none_or(|(d, _, _)| elapsed > *d) {
         census.slowest = Some((elapsed, path.to_path_buf(), bytes.len()));
     }
@@ -231,6 +238,13 @@ fn print(label: &str, census: &Census) {
         census.ambiguous
     );
     eprintln!(
+        "files outside the certified grammar: {}",
+        census.uncertified.len()
+    );
+    for path in census.uncertified.iter().take(10) {
+        eprintln!("  {}", path.display());
+    }
+    eprintln!(
         "entries with unresolved <inheritdoc>: {}, with unresolved <include>: {}",
         census.inheritdoc, census.include
     );
@@ -268,6 +282,12 @@ fn shipped_doc_files_index_and_render_with_no_fallback() {
         census.entries >= 50_000,
         "a ref pack plus FSharp.Core documents ~60,000 symbols; swept {}",
         census.entries
+    );
+    assert!(
+        census.uncertified.is_empty(),
+        "shipped doc files outside the certified grammar decline every \
+         <inheritdoc> they hold: {:?}",
+        census.uncertified
     );
     assert!(
         census.unknown.is_empty(),

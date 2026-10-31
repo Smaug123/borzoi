@@ -39,8 +39,10 @@
 //! - **hover**: its range contains the cursor. A hover describing a symbol
 //!   names FCS's symbol: its name and kind, and for a referenced-assembly
 //!   symbol its qualified name; a project symbol's hover range ends where FCS's
-//!   use ends. A comparable project is never served the degraded single-file
-//!   note.
+//!   use ends. A type it shows for a project value is FCS's type for it
+//!   ([`hover_type`]) — and so is the one shown at the declaration of an
+//!   earlier file's value whose use shows none. A comparable project is never
+//!   served the degraded single-file note.
 //! - **references**: every location is a use of the same symbol according to
 //!   FCS — ending where FCS's use ends and within it, since FCS spans `A.b`
 //!   from `A` where the handler marks `b` — and no location twice.
@@ -57,6 +59,10 @@
 //! with a different set of (correct) uses than it gave for the same symbol
 //! from another of its uses. A use in the perturbed run's appended code has no
 //! comparator verdict, so every probe of one that is not answered is listed.
+//! And for every hover, what it showed of its symbol's type
+//! ([`hover_type::TypeVerdict`]): counted per file, and listed record by record
+//! where it is not what its kind of symbol is expected to show — so a type a
+//! hover stops showing moves a line.
 //!
 //! The second and third are what the handlers' **single-file fallback** looks
 //! like from outside. Go-to-definition and hover fall back to resolving the
@@ -113,7 +119,14 @@ use crate::lsp_client::{LspClient, file_uri};
 use crate::perturb::Perturbed;
 use crate::utf16::{line_starts, offset_of, position_of};
 use crate::{
-    AnswerSurface, Comparison, FileUses, Graded, ItemOutcome, ProjectUse, UseDecl, path_key,
+    AnswerSurface, Comparison, DeclSite, FileUses, Graded, ItemOutcome, ProjectUse, UseDecl,
+    path_key,
+};
+
+pub mod hover_type;
+
+pub use hover_type::{
+    HoverType, HoverTypeCensus, SymbolClass, TypeVerdict, ValueLabel, Withheld, parse_canonical,
 };
 
 /// One record in this many is asked everything; the rest only what is cheap.
@@ -313,6 +326,8 @@ pub struct ProbeItem {
     pub probe: Probe,
     pub expectation: Expectation,
     pub outcome: Outcome,
+    /// For a hover, what it showed of the symbol's type ([`hover_type`]).
+    pub hover_type: Option<HoverType>,
 }
 
 /// A wrong answer from a handler, or a perturbed copy that is not a copy.
@@ -581,6 +596,9 @@ fn run_copy(
 ) {
     // The first non-empty references answer for each symbol.
     let mut references_by_symbol: HashMap<SymbolId, BTreeSet<Located>> = HashMap::new();
+    // Whether hovering an earlier file's declaration shows its type, by the
+    // declaration's file and start.
+    let mut typed_at_definition: HashMap<(usize, usize), bool> = HashMap::new();
     for target in targets {
         let file = copy.fcs[target.file].expect("targets are in files FCS reported on");
         let text = &copy.texts[target.file];
@@ -621,9 +639,15 @@ fn run_copy(
                         continue;
                     }
                 };
+                let mut type_grade = None;
                 let graded = match handler {
                     Handler::Definition => grade_definition(copy, u, &value),
-                    Handler::Hover => grade_hover(copy, target.file, u, byte, &value),
+                    Handler::Hover => {
+                        grade_hover(copy, target.file, u, byte, &value).map(|(outcome, grade)| {
+                            type_grade = Some(grade);
+                            outcome
+                        })
+                    }
                     Handler::References => {
                         grade_references(copy, u, &value).map(|(outcome, locations)| {
                             if locations.is_empty()
@@ -641,6 +665,36 @@ fn run_copy(
                         .divergences
                         .push(divergence((handler, probe), detail));
                     Outcome::Wrong
+                });
+                let hover_type = (handler == Handler::Hover).then(|| {
+                    let verdict = match type_grade {
+                        Some(TypeGrade::Final(verdict)) => verdict,
+                        Some(TypeGrade::AtDefinition(site)) => {
+                            let typed = definition_shows_type(
+                                copy,
+                                client,
+                                &mut typed_at_definition,
+                                u,
+                                &site,
+                            )
+                            .unwrap_or_else(|detail| {
+                                report
+                                    .divergences
+                                    .push(divergence((handler, probe), detail));
+                                true
+                            });
+                            TypeVerdict::Withheld(if typed {
+                                Withheld::EarlierFileTypedAtDefinition
+                            } else {
+                                Withheld::EarlierFileUntypedAtDefinition
+                            })
+                        }
+                        None => TypeVerdict::Wrong,
+                    };
+                    HoverType {
+                        class: SymbolClass::of(u, &copy.paths[target.file]),
+                        verdict,
+                    }
                 });
                 if handler == Handler::Definition
                     && probe == Probe::Last
@@ -667,10 +721,74 @@ fn run_copy(
                     probe,
                     expectation: target.expectation,
                     outcome,
+                    hover_type,
                 });
             }
         }
     }
+}
+
+/// Whether hovering `site`, the declaration in an earlier file of the value
+/// `u` uses, shows the value's type — graded against FCS's like the use's own
+/// would be. Asked once per declaration.
+///
+/// `Err` for a type there that is not FCS's: a wrong answer at the
+/// declaration, reported against the use that led to it.
+fn definition_shows_type(
+    copy: &Copy<'_>,
+    client: &mut LspClient,
+    cache: &mut HashMap<(usize, usize), bool>,
+    u: &ProjectUse,
+    site: &DeclSite,
+) -> Result<bool, String> {
+    let Some(file) = copy.paths.iter().position(|p| *p == site.file) else {
+        return Ok(false);
+    };
+    if let Some(&typed) = cache.get(&(file, site.start)) {
+        return Ok(typed);
+    }
+    let Some((line, character)) = position_of(&copy.texts[file], &copy.starts[file], site.start)
+    else {
+        return Ok(false);
+    };
+    let value = client
+        .request(
+            Handler::Hover.method(),
+            json!({
+                "textDocument": { "uri": copy.uris[file] },
+                "position": { "line": line, "character": character },
+            }),
+        )
+        .map_err(|error| format!("the server answered a hover at the declaration with: {error}"))?;
+    // Cached before grading, so a wrong type there is reported once.
+    let shown = value["contents"]["value"]
+        .as_str()
+        .and_then(|body| shown_project_type(body).map(str::to_string));
+    cache.insert((file, site.start), shown.is_some());
+    match shown {
+        Some(shown) => hover_type::grade_shown(u, &shown)
+            .map(|_| true)
+            .map_err(|detail| format!("at its declaration in an earlier file, {detail}")),
+        None => Ok(false),
+    }
+}
+
+/// The type a project hover body's head shows for a value-like binder
+/// (`` `x : int` — value `` shows `int`), if it shows one.
+fn shown_project_type(body: &str) -> Option<&str> {
+    let first = body.split("\n\n").next()?;
+    let (content, after) = code_span(first)?;
+    ValueLabel::of_label(after.strip_prefix(" — ")?)?;
+    content[hovered_name(content).len()..].strip_prefix(" : ")
+}
+
+/// What [`grade_hover`] found of a hover's type: a verdict, or — for an earlier
+/// file's binder shown without one — the declaration whose own hover decides
+/// which [`Withheld`] it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypeGrade {
+    Final(TypeVerdict),
+    AtDefinition(DeclSite),
 }
 
 /// An answer in a form two runs can be compared in: a references list sorted,
@@ -895,15 +1013,18 @@ fn assembly_head(head: &str) -> Option<(&'static [&'static str], &str)> {
     (!name.is_empty()).then_some((kinds, name))
 }
 
+/// Grade a hover: whether it names FCS's symbol ([`Outcome`]) and what it shows
+/// of the symbol's type ([`TypeGrade`]).
 fn grade_hover(
     copy: &Copy<'_>,
     file: usize,
     u: &ProjectUse,
     byte: usize,
     value: &Value,
-) -> Result<Outcome, String> {
+) -> Result<(Outcome, TypeGrade), String> {
+    let final_ = |outcome, verdict| Ok((outcome, TypeGrade::Final(verdict)));
     if value.is_null() {
-        return Ok(Outcome::Declined);
+        return final_(Outcome::Declined, TypeVerdict::NoHover);
     }
     let body = value["contents"]["value"]
         .as_str()
@@ -925,7 +1046,7 @@ fn grade_hover(
                     .to_string(),
             );
         }
-        return Ok(Outcome::Explained);
+        return final_(Outcome::Explained, TypeVerdict::ResolverDeclined);
     }
     let mut paragraphs = body.split("\n\n");
     let first = paragraphs.next().unwrap_or_default();
@@ -955,7 +1076,7 @@ fn grade_hover(
     };
     if let Some(label) = after.strip_prefix(" — ") {
         let Some(kinds) = project_label_kinds(label) else {
-            return Ok(Outcome::Other);
+            return final_(Outcome::Other, TypeVerdict::NotASymbol);
         };
         check(hovered_name(content), kinds)?;
         if !(u.start <= start && end == u.end) {
@@ -964,15 +1085,39 @@ fn grade_hover(
                 u.start, u.end
             ));
         }
-        return Ok(Outcome::Described);
+        let Some(value_label) = ValueLabel::of_label(label) else {
+            return final_(Outcome::Described, TypeVerdict::NotAValue);
+        };
+        let grade = match shown_project_type(first) {
+            Some(shown) => TypeGrade::Final(hover_type::grade_shown(u, shown)?),
+            None => match &u.decl {
+                UseDecl::InProject(d) if d.file == copy.paths[file] => {
+                    TypeGrade::Final(TypeVerdict::Withheld(Withheld::InFile(value_label)))
+                }
+                UseDecl::InProject(d) => TypeGrade::AtDefinition(d.clone()),
+                UseDecl::Unlocated | UseDecl::OutsideProject(_) => {
+                    TypeGrade::Final(TypeVerdict::Withheld(Withheld::Elsewhere))
+                }
+            },
+        };
+        return Ok((Outcome::Described, grade));
     }
     if !after.is_empty() {
-        return Ok(Outcome::Other);
+        return final_(Outcome::Other, TypeVerdict::NotASymbol);
     }
     let Some((kinds, name)) = assembly_head(content) else {
-        return Ok(Outcome::DescribedUnread);
+        return final_(Outcome::DescribedUnread, TypeVerdict::Unread);
     };
     check(name, kinds)?;
+    // The signature is everything before the documentation's thematic break.
+    let signature = body.split("\n\n---\n\n").next().unwrap_or(body);
+    let verdict = if !kinds.iter().any(|k| matches!(*k, "member" | "field")) {
+        TypeVerdict::NotAValue
+    } else if let Some(why) = hover_type::assembly_withheld(signature) {
+        TypeVerdict::Withheld(why)
+    } else {
+        TypeVerdict::ShownSignature
+    };
     // The context line names where the symbol is declared: `in X.Y`, possibly
     // after a kind (`class, in X.Y`).
     let context = paragraphs
@@ -993,7 +1138,7 @@ fn grade_hover(
             ));
         }
     }
-    Ok(Outcome::Described)
+    final_(Outcome::Described, verdict)
 }
 
 /// Grade a references answer, returning its locations for the
@@ -1431,6 +1576,174 @@ fn check_inertness(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The type grading is not vacuous: an oracle whose type for a value is
+    /// planted wrong makes the real handler's (right) hover a divergence —
+    /// at the use in the value's own file, and, for an earlier file's value,
+    /// at the declaration the withheld verdict asks about. The unplanted
+    /// oracle is the control: no divergence, and the probes it plants on agree
+    /// or are withheld as the planted ones are not.
+    #[test]
+    #[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+    fn a_planted_wrong_type_is_a_divergence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let write = |name: &str, text: &str| {
+            std::fs::write(dir.path().join(name), text).expect("write fixture");
+        };
+        write(
+            "P.fsproj",
+            "<Project>\n  <ItemGroup>\n    <Compile Include=\"Lib.fs\" />\n    \
+             <Compile Include=\"Use.fs\" />\n  </ItemGroup>\n</Project>\n",
+        );
+        write(
+            "Lib.fs",
+            "module Lib\n\nlet answer = 42\nlet more = answer + 1\n",
+        );
+        write("Use.fs", "module Use\n\nlet a = Lib.answer + 1\n");
+        let options = crate::LoadOptions::default();
+        let loaded = crate::load_lsp_project_with_options(&dir.path().join("P.fsproj"), &options)
+            .expect("loads");
+        let sources: Vec<(PathBuf, Arc<str>)> = loaded
+            .parses
+            .paths
+            .iter()
+            .cloned()
+            .zip(loaded.parses.texts.iter().cloned())
+            .collect();
+        let fcs = crate::parse_project_uses(
+            &crate::invoke_fcs_uses_project(&loaded).expect("FCS answers"),
+            &sources,
+        )
+        .expect("parses");
+        let comparison = crate::compare_project_uses(&loaded, &fcs);
+        let run = |fcs: &[FileUses]| {
+            crate::compare_project_handlers(&loaded, &options, NonZeroUsize::MIN, fcs, &comparison)
+        };
+        let grades = |report: &HandlerReport, file: usize| -> BTreeSet<TypeVerdict> {
+            report
+                .probes
+                .iter()
+                .filter(|p| p.variant == Variant::Plain && p.file == sources[file].0)
+                .filter(|p| p.name == "answer" && p.handler == Handler::Hover)
+                .filter_map(|p| p.hover_type.map(|g| g.verdict))
+                .collect()
+        };
+
+        let control = run(&fcs);
+        assert_eq!(control.divergences, Vec::new());
+        assert_eq!(grades(&control, 0), BTreeSet::from([TypeVerdict::Agrees]));
+        assert_eq!(
+            grades(&control, 1),
+            BTreeSet::from([TypeVerdict::Withheld(
+                Withheld::EarlierFileTypedAtDefinition
+            )])
+        );
+
+        for (file, expected) in [
+            (
+                0,
+                "the hover shows \"answer\" as type \"int\"; FCS's is \"string\"",
+            ),
+            (1, "at its declaration in an earlier file, the hover shows"),
+        ] {
+            let mut planted = fcs.clone();
+            let mut count = 0;
+            for u in planted[file].uses.iter_mut() {
+                if u.name == "answer" && !u.is_from_definition {
+                    let value = u.value.as_mut().expect("FCS types a value");
+                    value.type_canon = Some("System.String".to_string());
+                    count += 1;
+                }
+            }
+            assert_eq!(count, 1, "one use of `answer` in file {file}");
+            let report = run(&planted);
+            let details: Vec<&str> = report
+                .divergences
+                .iter()
+                .filter(|d| d.variant == Variant::Plain)
+                .map(|d| d.detail.as_str())
+                .collect();
+            assert!(
+                !details.is_empty() && details.iter().all(|d| d.contains(expected)),
+                "file {file}: {details:#?}"
+            );
+        }
+    }
+
+    /// Grade `body` as the hover over all of `text`'s one-line source, for a
+    /// record of the whole line named `name`, of FCS kind `kind`, declared in
+    /// a referenced assembly.
+    fn grade_assembly_hover(text: &str, name: &str, kind: &str, body: &str) -> TypeVerdict {
+        let path = PathBuf::from("/p/A.fs");
+        let u = ProjectUse {
+            name: name.to_string(),
+            logical_name: None,
+            value: None,
+            start: 0,
+            end: text.len(),
+            is_from_definition: false,
+            is_compiler_generated: false,
+            decl: UseDecl::Unlocated,
+            symbol_kind: Some(kind.to_string()),
+            assembly: Some("System.Runtime".to_string()),
+            full_name: None,
+            declaring: None,
+            generic_arity: None,
+            is_constructor: false,
+        };
+        let fcs = [FileUses {
+            path: path.clone(),
+            diagnostics: Vec::new(),
+            uses: vec![u.clone()],
+        }];
+        let paths = [path];
+        let copy = Copy::new(Variant::Plain, &paths, vec![Arc::from(text)], &fcs);
+        let hover = json!({
+            "contents": { "kind": "markdown", "value": body },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": text.len() },
+            },
+        });
+        match grade_hover(&copy, 0, &u, 0, &hover) {
+            Ok((Outcome::Described, TypeGrade::Final(verdict))) => verdict,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_assembly_hover_shows_a_signature_withholds_it_or_has_none() {
+        assert_eq!(
+            grade_assembly_hover(
+                "WriteLine",
+                "WriteLine",
+                "member",
+                "`static member WriteLine: value: string -> unit`\n\nin `System.Console`\n\n\
+                 from System.Console v9.0.0.0\n\n---\n\nTypes not shown: a doc's own prose"
+            ),
+            TypeVerdict::ShownSignature
+        );
+        assert_eq!(
+            grade_assembly_hover(
+                "Distance",
+                "Distance",
+                "member",
+                "`member Distance with get`\n\nin `M.T`\n\nTypes not shown: they are read from \
+                 the compiled signature, which drops units of measure, and this member's F# type \
+                 may carry one.\n\nfrom M v1.0.0.0"
+            ),
+            TypeVerdict::Withheld(Withheld::Measures)
+        );
+        assert_eq!(
+            grade_assembly_hover(
+                "Console",
+                "Console",
+                "type",
+                "`type Console`\n\nclass, in `System`\n\nfrom System.Console v9.0.0.0"
+            ),
+            TypeVerdict::NotAValue
+        );
+    }
 
     #[test]
     fn names_compare_without_their_quoting() {
