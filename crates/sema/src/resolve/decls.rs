@@ -608,7 +608,8 @@ impl<'a> Resolver<'a> {
                     if !is_type_augmentation(defn)
                         && let Some(name) = defn.long_id().and_then(single_ident)
                     {
-                        let require_qualified = attrs_require_qualified_access(defn.attributes());
+                        let require_qualified =
+                            self.certainly_require_qualified_access(defn.attributes());
                         self.shadow_abbreviation_case(defn, &name, require_qualified);
                     }
                 }

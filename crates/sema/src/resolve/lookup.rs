@@ -2343,6 +2343,12 @@ impl<'a> Resolver<'a> {
                     Some(MarkReach::Expression) => continue,
                     None => {}
                 }
+                // A name that may be a union case the walk cannot decide
+                // shadows an earlier case: decline rather than skip it as a
+                // value.
+                if entry.undecided_case {
+                    return Err(None);
+                }
                 // An opened entry that an unmodelled open could shadow with a *case*
                 // (F#: the latest open wins) cannot be trusted in pattern position —
                 // defer rather than return a possibly-shadowed case (a wrong

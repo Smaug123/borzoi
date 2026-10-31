@@ -194,6 +194,25 @@ impl Resolver<'_> {
         self.may_carry_core_attribute(attrs, "AutoOpen")
     }
 
+    /// Whether attribute lists certainly mark their target
+    /// `[<RequireQualifiedAccess>]`: spelled so, while written names can be
+    /// trusted ([`Self::attribute_spellings_trusted`]).
+    pub(super) fn certainly_require_qualified_access(
+        &self,
+        attrs: impl Iterator<Item = AttributeList>,
+    ) -> bool {
+        let spellings: Vec<String> = attrs
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .filter_map(|attr| attr.type_name())
+            .filter_map(|li| li.idents().last())
+            .map(|seg| id_text(&seg).to_string())
+            .collect();
+        spellings
+            .iter()
+            .any(|s| s == "RequireQualifiedAccess" || s == "RequireQualifiedAccessAttribute")
+            && self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
+    }
+
     /// Whether attribute lists *may* mark their target
     /// `[<RequireQualifiedAccess>]`.
     pub(super) fn may_require_qualified_access(

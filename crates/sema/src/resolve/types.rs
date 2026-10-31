@@ -458,10 +458,11 @@ impl<'a> Resolver<'a> {
     /// `type T = X` parses as an abbreviation, but FCS reads it as a union with
     /// the nullary case `X` when `X` is `T` itself or names no type in scope
     /// (`TyconCoreAbbrevThatIsReallyAUnion`), and the case then shadows a
-    /// same-named value. Unless `X` resolves as a type here, the value name `X`
-    /// is shadowed with a deferral: which reading FCS takes is not decided. A
-    /// `[<RequireQualifiedAccess>]` case is reachable only as `T.X` and
-    /// shadows nothing.
+    /// same-named value or case. Unless `X` resolves as a type here, the name
+    /// `X` is shadowed with a deferral in both namespaces
+    /// ([`ScopeEntry::undecided_case`]): which reading FCS takes is not
+    /// decided. A case certainly `[<RequireQualifiedAccess>]` is reachable only
+    /// as `T.X` and shadows nothing.
     pub(super) fn shadow_abbreviation_case(
         &mut self,
         defn: &TypeDefn,
@@ -485,11 +486,9 @@ impl<'a> Resolver<'a> {
             );
         if !names_a_type {
             let generation = self.open_generation;
-            self.module_frame().entries.push(ScopeEntry::binding(
-                case,
-                Resolution::Deferred(DeferredReason::UnboundName),
-                generation,
-            ));
+            self.module_frame()
+                .entries
+                .push(ScopeEntry::undecided_case(case, generation));
         }
     }
 
