@@ -26,9 +26,9 @@
 use std::collections::{BTreeSet, HashSet};
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, Expr, ModuleDecl, ModuleOrNamespace,
-    ModuleOrNamespaceKind, NestedModuleDecl, SigFile, SyntaxKind, SyntaxNode, Type, TypeDefn,
-    TypeDefnRepr, TypeDefnsDecl, UnionCase,
+    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, Expr, MemberDefn, MemberLeading,
+    ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigFile,
+    SyntaxKind, SyntaxNode, Type, TypeDefn, TypeDefnRepr, TypeDefnsDecl, UnionCase,
 };
 
 use super::model::SlotClass;
@@ -146,6 +146,59 @@ fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
     names
 }
 
+/// The names an augmentation's members may put in bare scope where its type
+/// is folded: each member's name, with its accessor forms, an operator under
+/// its compiled name (`op_PlusDot`, which `id_text` gives). A self
+/// identifier or a parameter is never one. Where a member's name cannot be
+/// read, or an `inherit` brings names it does not spell, every name the
+/// augmentation spells ([`declared_identifiers`]).
+fn augmentation_member_names(defn: &TypeDefn) -> BTreeSet<String> {
+    let mut members: Vec<MemberDefn> = defn.members().collect();
+    if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
+        members.extend(om.members());
+    }
+    let mut names = BTreeSet::new();
+    for m in &members {
+        let name = match m {
+            MemberDefn::Member(mm) => {
+                if mm.leading_keyword() == MemberLeading::New {
+                    continue;
+                }
+                mm.binding().and_then(|b| b.pat()).and_then(|p| match p {
+                    Pat::LongIdent(l)
+                        if !l
+                            .syntax()
+                            .children()
+                            .any(|c| ActivePatName::can_cast(c.kind())) =>
+                    {
+                        l.head().and_then(|h| h.idents().last())
+                    }
+                    Pat::Named(n) if n.active_pat_name().is_none() => n.ident(),
+                    _ => None,
+                })
+            }
+            MemberDefn::GetSetMember(g) => g.name().and_then(|n| n.idents().last()),
+            MemberDefn::AutoProperty(a) => a.ident(),
+            MemberDefn::AbstractSlot(s) => s.val_sig().and_then(|v| v.ident()),
+            MemberDefn::ValField(v) => v.ident(),
+            MemberDefn::MemberSig(ms) => ms.val_sig().and_then(|v| v.ident()),
+            MemberDefn::Inherit(_) => None,
+            // Private to the type, or reachable only through an interface.
+            MemberDefn::Interface(_) | MemberDefn::LetBindings(_) | MemberDefn::Do(_) => continue,
+        };
+        let Some(name) = name else {
+            return declared_identifiers(defn.syntax());
+        };
+        let name = id_text(&name).to_string();
+        names.extend(
+            ["", "get_", "set_", "add_", "remove_"]
+                .into_iter()
+                .map(|prefix| format!("{prefix}{name}")),
+        );
+    }
+    names
+}
+
 /// The compiled names of the operator-named union cases declared in `node`.
 fn operator_case_names(node: &SyntaxNode) -> impl Iterator<Item = String> + '_ {
     node.descendants()
@@ -235,6 +288,28 @@ impl Resolver<'_> {
         &self,
         decls: impl Iterator<Item = ModuleDecl>,
     ) -> Contribution {
+        let decls: Vec<ModuleDecl> = decls.collect();
+        // The block's own types that may be `[<AutoOpen>]`: an intrinsic
+        // augmentation of one adds to the statics its fold brings. An
+        // augmentation of any other type adds nothing bare: an intrinsic
+        // augmentation sits in its type's own module, so one of a type
+        // declared elsewhere is an extension, whose members are reachable
+        // only through the type.
+        let auto_open_types: HashSet<String> = decls
+            .iter()
+            .filter_map(|d| match d {
+                ModuleDecl::Types(types) => Some(types.defns()),
+                _ => None,
+            })
+            .flatten()
+            .filter(|defn| {
+                !is_type_augmentation(defn)
+                    && defn.typar_decls().is_none()
+                    && self.may_auto_open(defn.attributes())
+            })
+            .filter_map(|defn| defn.long_id().and_then(|li| li.idents().last()))
+            .map(|name| id_text(&name).to_string())
+            .collect();
         let mut out = Contribution::default();
         for decl in decls {
             match decl {
@@ -283,8 +358,13 @@ impl Resolver<'_> {
                         }
                         // An intrinsic augmentation's statics join its type's
                         // surface, which an `[<AutoOpen>]` type folds.
-                        if is_type_augmentation(&defn) {
-                            out.values.extend(declared_identifiers(defn.syntax()));
+                        if is_type_augmentation(&defn)
+                            && defn
+                                .long_id()
+                                .and_then(|li| li.idents().last())
+                                .is_some_and(|name| auto_open_types.contains(&*id_text(&name)))
+                        {
+                            out.values.extend(augmentation_member_names(&defn));
                         }
                     }
                 }

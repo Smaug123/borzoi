@@ -92,11 +92,19 @@ enum DeclKind {
     Extern,
     NestedAutoOpen,
     NestedPlain,
+    /// An `[<AutoOpen>]` class, then an intrinsic augmentation of it holding
+    /// every member kind ([`Unit::AugmentationMember`]).
     Augmentation,
+    /// A class that is not `[<AutoOpen>]`, then an intrinsic augmentation of
+    /// it holding every member kind: nothing it declares is bare.
+    PlainAugmentation,
+    /// An optional augmentation (an extension) of a referenced type: its
+    /// members are reachable only through the type.
+    ExtensionAugmentation,
 }
 
 impl DeclKind {
-    const ALL: [DeclKind; 25] = [
+    const ALL: [DeclKind; 27] = [
         DeclKind::LetValue,
         DeclKind::LetFunction,
         DeclKind::LetLiteral,
@@ -122,6 +130,8 @@ impl DeclKind {
         DeclKind::NestedAutoOpen,
         DeclKind::NestedPlain,
         DeclKind::Augmentation,
+        DeclKind::PlainAugmentation,
+        DeclKind::ExtensionAugmentation,
     ];
 
     /// Whether the kind writes a signature for itself, so it can sit in a
@@ -155,6 +165,8 @@ impl DeclKind {
                 | DeclKind::AutoOpenClass
                 | DeclKind::StructType
                 | DeclKind::Augmentation
+                | DeclKind::PlainAugmentation
+                | DeclKind::ExtensionAugmentation
         )
     }
 
@@ -172,6 +184,7 @@ impl DeclKind {
                 | DeclKind::StructRecord
                 | DeclKind::Abbreviation
                 | DeclKind::NestedPlain
+                | DeclKind::ExtensionAugmentation
         )
     }
 }
@@ -217,6 +230,8 @@ impl MemberKind {
 enum Unit {
     Decl(DeclKind),
     Member(MemberKind),
+    /// A member of an intrinsic augmentation of an `[<AutoOpen>]` class.
+    AugmentationMember(MemberKind),
 }
 
 /// Where the contributor sits.
@@ -297,8 +312,15 @@ fn member(kind: MemberKind, i: usize, n: usize, d: &mut Decl, unit: Unit) {
             d.names.push(format!("OraKe{i}x{n}"));
         }
         MemberKind::Instance => {
-            push(format!("member _.OraKi{i}x{n} = {i}"));
-            d.names.push(format!("OraKi{i}x{n}"));
+            // A named self identifier, which is no bare name of the type's.
+            push(format!(
+                "member oraSelf{i}x{n}.OraKi{i}x{n} (q{i}x{n}: int) = q{i}x{n}"
+            ));
+            d.names.extend([
+                format!("OraKi{i}x{n}"),
+                format!("oraSelf{i}x{n}"),
+                format!("q{i}x{n}"),
+            ]);
         }
     }
 }
@@ -536,11 +558,17 @@ fn decl(kind: DeclKind, i: usize, rng: &mut Rng) -> Decl {
             );
             d.names.push(format!("oraNpv{i}"));
         }
-        DeclKind::Augmentation => {
+        DeclKind::Augmentation | DeclKind::PlainAugmentation => {
+            // The event's source is a module value: a static initialiser in
+            // the class as well as the augmentation's `static member val`
+            // duplicates the type's `.cctor`.
+            lines(&mut d, &[format!("let oraGev{i} = Event<int>()")]);
+            if kind == DeclKind::Augmentation {
+                lines(&mut d, &["[<AutoOpen>]".to_string()]);
+            }
             lines(
                 &mut d,
                 &[
-                    "[<AutoOpen>]".to_string(),
                     format!("type OraG{i}() ="),
                     format!("    static member OraGs{i} = {i}"),
                     format!("type OraG{i} with"),
@@ -549,6 +577,38 @@ fn decl(kind: DeclKind, i: usize, rng: &mut Rng) -> Decl {
             );
             d.names
                 .extend([format!("OraG{i}"), format!("OraGs{i}"), format!("OraGa{i}")]);
+            // Every member kind in the augmentation, so each is graded where
+            // the class is folded, and where it is not.
+            let member_unit = |m| {
+                if kind == DeclKind::Augmentation {
+                    Unit::AugmentationMember(m)
+                } else {
+                    unit
+                }
+            };
+            let start = d.lines.len();
+            for (n, m) in MemberKind::ALL.into_iter().enumerate() {
+                member(m, i, n, &mut d, member_unit(m));
+            }
+            for (line, _) in &mut d.lines[start..] {
+                *line = line.replace(&format!("oraEv{i}.Publish"), &format!("oraGev{i}.Publish"));
+            }
+        }
+        DeclKind::ExtensionAugmentation => {
+            lines(
+                &mut d,
+                &[
+                    "type System.Int32 with".to_string(),
+                    format!("    static member OraXs{i} (r{i}: int) = r{i}"),
+                    format!("    member oraXself{i}.OraXi{i} = {i}"),
+                ],
+            );
+            d.names.extend([
+                format!("OraXs{i}"),
+                format!("r{i}"),
+                format!("oraXself{i}"),
+                format!("OraXi{i}"),
+            ]);
         }
     }
     d
@@ -948,13 +1008,18 @@ fn every_name_fcs_says_a_contributor_introduces_is_marked() {
         }
     }
     for kind in MemberKind::ALL {
-        let (generated, bound) = census.get(&Unit::Member(kind)).copied().unwrap_or_default();
-        if generated == 0 {
-            model_wrong.push(format!("  member {kind:?} was never generated"));
-        } else if kind.introduces() && bound == 0 {
-            model_wrong.push(format!(
-                "  member {kind:?} introduced no probed name in FCS"
-            ));
+        for (unit, label) in [
+            (Unit::Member(kind), "member"),
+            (Unit::AugmentationMember(kind), "augmentation member"),
+        ] {
+            let (generated, bound) = census.get(&unit).copied().unwrap_or_default();
+            if generated == 0 {
+                model_wrong.push(format!("  {label} {kind:?} was never generated"));
+            } else if kind.introduces() && bound == 0 {
+                model_wrong.push(format!(
+                    "  {label} {kind:?} introduced no probed name in FCS"
+                ));
+            }
         }
     }
     assert!(
