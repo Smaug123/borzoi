@@ -500,6 +500,7 @@ pub fn resolve_file(
         r.fold_implicit_union_cases(false);
         let seeded = r.module_frame().entries.len() - retained;
         r.module_frame().entries.rotate_right(seeded);
+        r.earlier_block_contributions(seeded);
         // …then what earlier files put in the root scope, and the block's
         // **own** enclosing namespace, which FCS opens implicitly as well
         // (`ImplicitlyOpenOwnNamespace`) — that is how a referenced assembly's

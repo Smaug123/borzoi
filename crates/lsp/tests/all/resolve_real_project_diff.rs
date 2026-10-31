@@ -206,7 +206,16 @@ fn our_assembly_full(env: &AssemblyEnv, res: Resolution) -> OurAsm {
                 unqualified: tail,
             }
         }
-        _ => unreachable!("only Entity/Member reach here"),
+        Resolution::UnionCase { union, case } => {
+            let e = env.entity(union);
+            let tail = format!("{}.{}", entity_name(e), env.union_case_name(union, case));
+            OurAsm {
+                assembly: e.assembly.name.clone(),
+                qualified: qualify(&e.namespace, &tail),
+                unqualified: tail,
+            }
+        }
+        _ => unreachable!("only Entity/Member/UnionCase reach here"),
     }
 }
 
@@ -232,6 +241,11 @@ fn our_assembly_full_nested(env: &AssemblyEnv, res: Resolution) -> Option<String
             "{}.{}",
             env.entity_full_name(parent),
             env.member_display_name(parent, idx)
+        )),
+        Resolution::UnionCase { union, case } => Some(format!(
+            "{}.{}",
+            env.entity_full_name(union),
+            env.union_case_name(union, case)
         )),
         _ => None,
     }
@@ -486,7 +500,11 @@ fn project_resolution_matches_fcs() {
                 // FCS resolved this use into a referenced assembly.
                 match res {
                     None | Some(Resolution::Deferred(_)) => tally.gaps += 1,
-                    Some(r @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
+                    Some(
+                        r @ (Resolution::Entity(_)
+                        | Resolution::Member { .. }
+                        | Resolution::UnionCase { .. }),
+                    ) => {
                         let ours = our_assembly_full(&env, r);
                         // The oracle's *rendered* name and the structural one
                         // our own resolution certifies are both accepted, and

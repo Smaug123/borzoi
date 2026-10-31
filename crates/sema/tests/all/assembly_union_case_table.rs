@@ -1226,6 +1226,60 @@ const ROWS: &[Row] = &[
             commit("None", 0, NONE),
         ],
     },
+    Row {
+        label: "query range variables an into binds",
+        decls: &[],
+        src: "module UcR41\n\
+              let q =\n    query {\n        for i in [ 1 ] do\n        groupBy i into Some\n        select Some\n    }\n\
+              let r =\n    query {\n        for i in [ 1 ] do\n        groupBy i into id\n        select id\n    }\n\
+              let s = Some (id 1)\n",
+        probes: &[
+            defer(
+                "Some",
+                1,
+                "proj:Some:member",
+                "a query range variable is a value binder the walk does not intern",
+            ),
+            defer(
+                "id",
+                1,
+                "proj:id:member",
+                "a query range variable is a value binder the walk does not intern",
+            ),
+            commit("Some", 2, SOME),
+            commit(
+                "id",
+                2,
+                "FSharp.Core:Microsoft.FSharp.Core.Operators.id:member",
+            ),
+        ],
+    },
+    // Last: a `namespace global` block's declarations reach every later file
+    // of the project, so no row may follow it.
+    Row {
+        label: "an earlier namespace global block of the same file",
+        decls: &[],
+        src: "namespace global\n\
+              type UcR40U = Some of int | Other\n\
+              [<AutoOpen>]\n\
+              module UcR40M =\n    let id (x: int) = x + 1\n\
+              namespace UcR40\n\
+              module Use =\n    let a = Some 1\n    let b = id 1\n",
+        probes: &[
+            defer(
+                "Some",
+                1,
+                "proj:UcR40U.Some:unioncase",
+                "an earlier block's root contribution",
+            ),
+            defer(
+                "id",
+                1,
+                "proj:UcR40M.id:member",
+                "an earlier block's root contribution",
+            ),
+        ],
+    },
 ];
 
 /// Rows FCS reports errors for — a declaration or expression cut off where an

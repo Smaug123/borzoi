@@ -345,10 +345,11 @@ fn string_literal_text(tok: &SyntaxToken) -> Option<Option<String>> {
 struct ClauseIdentifiers {
     /// Every identifier a clause's translation may read by name alone.
     read: Vec<SyntaxToken>,
-    /// The identifiers a join applies: its condition word, and the range
-    /// variables it binds (`join v in … into g`), which the walk does not
-    /// intern.
-    join_arguments: Vec<SyntaxToken>,
+    /// The identifiers a clause applies that may bind a range variable, which
+    /// the walk does not intern: every one a join applies (`join v in …`),
+    /// its condition word among them, and every one after an `into`
+    /// (`groupBy k into g`).
+    range_variables: Vec<SyntaxToken>,
 }
 
 /// Every bare identifier the translation of the expression whose body is
@@ -456,7 +457,7 @@ fn clause_spine(e: &Expr, out: &mut ClauseIdentifiers) {
                         break;
                     }
                     if let Some(Expr::Ident(i)) = app.arg() {
-                        out.join_arguments.extend(i.ident());
+                        out.range_variables.extend(i.ident());
                     }
                     sources = app.func();
                 }
@@ -481,12 +482,19 @@ fn clause_spine(e: &Expr, out: &mut ClauseIdentifiers) {
             _ => break,
         }
     }
+    // Peeled outermost first: back into source order, so `into` precedes
+    // what it binds.
+    args.reverse();
+    let mut after_into = false;
     for arg in args {
         if &*id_text(&arg) == "into" {
             out.read.push(arg);
+            after_into = true;
         } else if joins {
             out.read.push(arg.clone());
-            out.join_arguments.push(arg);
+            out.range_variables.push(arg);
+        } else if after_into {
+            out.range_variables.push(arg);
         }
     }
 }
@@ -547,9 +555,10 @@ impl Resolver<'_> {
         if names.is_empty() {
             return false;
         }
-        // A join's range variables bind names the walk does not intern, for
-        // the rest of the expression: each is marked like an operation's
-        // name, so no binding outside the expression answers for it.
+        // A join's or an `into`'s range variables bind names the walk does
+        // not intern, for the rest of the expression: each is marked like an
+        // operation's name, so no binding outside the expression answers
+        // for it.
         let mut range_variables = BTreeSet::new();
         if let Some(inner) = ce.inner() {
             let mut idents = ClauseIdentifiers::default();
@@ -560,7 +569,7 @@ impl Resolver<'_> {
                         .insert(tok.text_range(), cause);
                 }
             }
-            for tok in idents.join_arguments {
+            for tok in idents.range_variables {
                 let name = id_text(&tok);
                 if !names.contains(&*name) {
                     range_variables.insert(name.to_string());

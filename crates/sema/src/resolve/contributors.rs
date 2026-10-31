@@ -574,6 +574,20 @@ impl Resolver<'_> {
         self.push_contribution(&contribution, pos);
     }
 
+    /// What this file's earlier blocks put in the root scope of the blocks
+    /// after them (`AddLocalRootModuleOrNamespace`, as an earlier file's
+    /// do), marked in the block frame just above the `seeded` implicit
+    /// entries: FCS adds them after the implicit opens, and a reopened
+    /// block's re-taken bindings, which are those same declarations walked,
+    /// stand above them.
+    pub(super) fn earlier_block_contributions(&mut self, seeded: usize) {
+        let own = self.contributions.root.clone();
+        let before = self.module_frame().entries.len();
+        self.push_contribution(&own, 0);
+        let pushed = self.module_frame().entries.len() - before;
+        self.module_frame().entries[seeded..].rotate_right(pushed);
+    }
+
     /// A top-level block, after the implicit auto-opens are seeded and before
     /// its declarations: what earlier files put in its root scope
     /// (`AddLocalRootModuleOrNamespace`), then its own namespace's implicit
