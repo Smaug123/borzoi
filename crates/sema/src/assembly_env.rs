@@ -3711,8 +3711,8 @@ impl AssemblyEnv {
     ///
     /// [`CoreAttributeAliases::certain`] when some assembly declares an
     /// entity spelled like either that is not FSharp.Core's own class, an
-    /// abbreviation whose target is spelled like either, or a namespace whose
-    /// abbreviations could not be decoded at all (whose names are unknown).
+    /// abbreviation whose target is spelled like either, or when an alias may
+    /// exist that the env never read ([`Self::abbreviations_may_be_unread`]).
     /// [`CoreAttributeAliases::possible`] names every abbreviation whose
     /// target was not decoded: an attribute written with one of those names
     /// may be either.
@@ -3732,6 +3732,21 @@ impl AssemblyEnv {
         })
     }
 
+    /// Whether a referenced assembly may declare an abbreviation the env never
+    /// read, so that no attribute spelling can be taken at its word. An F#
+    /// abbreviation lives in its assembly's signature pickle, so one can be
+    /// missing only where the env lost part of what an assembly declares:
+    /// a DLL the host skipped whole ([`Self::identities_incomplete`]), a
+    /// pickle that could not be decoded ([`Self::unknowable_abbreviation_namespaces`]),
+    /// or a type the projection dropped ([`Self::namespaces_with_dropped_types`]).
+    /// A dropped *member* ([`borzoi_assembly::Entity::skipped_members`]) hides
+    /// no abbreviation, since an abbreviation is an entity of its own.
+    fn abbreviations_may_be_unread(&self) -> bool {
+        self.assembly_identities_incomplete
+            || !self.unknowable_abbreviation_namespaces.is_empty()
+            || !self.namespaces_with_dropped_types.is_empty()
+    }
+
     /// The scan behind [`Self::core_attribute_aliases`], for the FSharp.Core
     /// attribute written `names`.
     fn attribute_aliases(&self, names: &[&str]) -> CoreAttributeAliases {
@@ -3739,7 +3754,7 @@ impl AssemblyEnv {
             let spelled_core = |name: &str| names.contains(&name);
             let core_namespace = ["Microsoft", "FSharp", "Core"];
             let mut aliases = CoreAttributeAliases {
-                certain: !self.unknowable_abbreviation_namespaces.is_empty(),
+                certain: self.abbreviations_may_be_unread(),
                 possible: HashSet::new(),
             };
             for node in &self.nodes {
@@ -4693,6 +4708,7 @@ impl AssemblyEnv {
         self.measure_head_cache = Default::default();
         // The core library is named only over a complete identity set.
         self.core_library = Default::default();
+        self.invalidate_attribute_aliases();
     }
 
     /// Record that a referenced assembly **dropped an undecodable type** in
@@ -4707,6 +4723,16 @@ impl AssemblyEnv {
         // The core library is named only over a `System` with no drop.
         self.core_library = Default::default();
         self.invalidate_bare_value_index();
+        self.invalidate_attribute_aliases();
+    }
+
+    /// Drop the memoised [`Self::core_attribute_aliases`] and
+    /// [`Self::custom_operation_aliases`], which read
+    /// [`Self::abbreviations_may_be_unread`]: a mark that arrives after the
+    /// first query must still withdraw trust.
+    fn invalidate_attribute_aliases(&mut self) {
+        self.core_attribute_alias = std::sync::OnceLock::new();
+        self.custom_operation_alias = std::sync::OnceLock::new();
     }
 
     /// Drop the memoised [`Self::bare_value_index`],
@@ -8194,6 +8220,31 @@ pub(crate) mod from_views_tests {
         let env = AssemblyEnv::from_entities(vec![alias("Mystery", None)]);
         assert!(!env.core_attribute_aliases().certain);
         assert!(env.core_attribute_aliases().possible.contains("Mystery"));
+    }
+
+    /// No attribute spelling is trusted once the env may have missed an
+    /// abbreviation: a DLL the host could not read, or a type the projection
+    /// dropped. Both marks withdraw trust even after a first query, which
+    /// memoises the answer, and both alias scans follow.
+    #[test]
+    fn attribute_aliases_are_untrusted_once_an_abbreviation_may_be_unread() {
+        type Mark = fn(&mut AssemblyEnv);
+        let marks: [(&str, Mark); 2] = [
+            ("unread reference", |env| {
+                env.mark_referenced_assemblies_incomplete()
+            }),
+            ("dropped type", |env| {
+                env.mark_namespace_dropped_type(vec!["Lib".to_string()])
+            }),
+        ];
+        for (label, mark) in marks {
+            let mut env = AssemblyEnv::from_entities(vec![module_entity("Lib", &["Lib"], "M")]);
+            assert!(!env.core_attribute_aliases().certain, "{label}: before");
+            assert!(!env.custom_operation_aliases().certain, "{label}: before");
+            mark(&mut env);
+            assert!(env.core_attribute_aliases().certain, "{label}: after");
+            assert!(env.custom_operation_aliases().certain, "{label}: after");
+        }
     }
 
     #[test]

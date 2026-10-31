@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's unmodelled-contributor grid
+       (tests/all/unmodelled_contributor_grid.rs): abbreviations of the
+       FSharp.Core attributes whose presence changes what a declaration puts in
+       bare scope. The grid hands this DLL to FCS but not to the resolver,
+       whose env is marked incomplete instead: a reference it could not read,
+       whose aliases it therefore cannot know. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaAttributeAliasFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>
