@@ -14,6 +14,7 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
+use super::contributors::{FileContributions, RecBlock};
 use super::model::{
     DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem, ItemId,
     OpenTrace, ProjectItems, Resolution, SlotClass,
@@ -108,6 +109,32 @@ pub(super) struct ScopeEntry {
     /// ([`ResolvedFile::decline_site`](super::model::ResolvedFile::decline_site)).
     /// `None` for every entry that commits.
     pub(super) decline: Option<DeclineCause>,
+    /// `Some` for a **contributor mark**: a name a contributor the walk does
+    /// not model may have put in the environment here
+    /// ([`Resolver::push_contribution`](super::contributors)). It declines,
+    /// and shadows every earlier entry of the name by position, as FCS's
+    /// latest-write-wins environment would let the contributor's binding do.
+    /// [`MarkReach`] says which namespaces it shadows in. Never stored back
+    /// into a top-level container's frame: a mark records a position in one
+    /// block's walk.
+    pub(super) mark: Option<MarkReach>,
+}
+
+/// Which namespaces a contributor mark ([`ScopeEntry::mark`]) shadows in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MarkReach {
+    /// Expression and pattern position: the contributor may supply a union
+    /// or exception case, an active-pattern case or a literal.
+    Both,
+    /// Expression position, bare or as a dotted head: the contributor
+    /// supplies a value that cannot be a literal, which never enters FCS's
+    /// pattern table.
+    Expression,
+    /// A bare expression use only: the contributor is a constructible type,
+    /// whose name enters FCS's unqualified table for construction but never
+    /// its pattern table, and which a dotted head reaches through the type
+    /// namespace the walk models.
+    Bare,
 }
 
 impl ScopeEntry {
@@ -128,6 +155,7 @@ impl ScopeEntry {
             opened_ap_shape: None,
             maybe_constant_pattern: false,
             decline: None,
+            mark: None,
         }
     }
 
@@ -169,6 +197,30 @@ impl ScopeEntry {
         entry
     }
 
+    /// A contributor mark ([`Self::mark`]) for `name`, entered at `pos` — the
+    /// position FCS adds the contributor's names to the environment, which the
+    /// head-slot ordering compares like an `open`'s.
+    pub(super) fn contributor_mark(
+        name: String,
+        reach: MarkReach,
+        generation: usize,
+        pos: u32,
+    ) -> Self {
+        ScopeEntry {
+            name,
+            resolution: Resolution::Deferred(DeferredReason::UnboundName),
+            from_open: false,
+            generation,
+            pattern_only: false,
+            open_pos: pos,
+            opened_case: false,
+            opened_ap_shape: None,
+            maybe_constant_pattern: false,
+            decline: Some(DeclineCause::UnmodelledContributor),
+            mark: Some(reach),
+        }
+    }
+
     /// Withdraw what this entry commits, for `cause`: it stays in scope,
     /// shadowing by position, and names nothing.
     pub(super) fn withdraw(&mut self, cause: DeclineCause) {
@@ -193,6 +245,7 @@ impl ScopeEntry {
             opened_ap_shape: None,
             maybe_constant_pattern: false,
             decline: None,
+            mark: None,
         }
     }
 
@@ -219,6 +272,7 @@ impl ScopeEntry {
             opened_ap_shape: None,
             maybe_constant_pattern: false,
             decline: None,
+            mark: None,
         }
     }
 }
@@ -1256,34 +1310,6 @@ pub(super) struct Resolver<'a> {
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
-    /// Whether this file declares **any** `[<AutoOpen>]` container — a module
-    /// or a type — whose bare-visible surface therefore folds into the rest of
-    /// its enclosing scope.
-    ///
-    /// A flag rather than a name set on purpose. That surface is open-ended:
-    /// values, union and exception cases, `extern` prototypes, active-pattern
-    /// tags, a single-case union spelled exactly like an abbreviation, an
-    /// auto-open type's statics, statics borrowed through an abbreviation —
-    /// each invisible to a different part of the parse, and each discoverable
-    /// only by someone thinking of it. Enumerating them is a list that grows
-    /// under review; this is one closed question whose soundness argument fits
-    /// in a sentence, and it costs commits only in the files that declare such
-    /// a container.
-    ///
-    /// Read by [`Resolver::open_own_enclosing_namespace`], which folds at
-    /// position 0 — before the block's walk — and so can see none of it.
-    pub(super) own_auto_open_container: bool,
-    /// The simple names of this file's type definitions that can **take FCS's
-    /// unqualified value slot** — the [`SlotClass`]`
-    /// != Keeps` subset of [`Self::own_type_simple_names`], pre-scanned
-    /// file-globally.
-    ///
-    /// A plain union, record or explicit interface provably never enters that
-    /// slot (probes M20k/M20l/M20o), so it shadows nothing and a same-named
-    /// opened value must still resolve — fcs-dump-verified: with `type Tag = A |
-    /// B` in the block, bare `Tag` is still the assembly's `Demo.Auto.Extra.Tag`.
-    /// Screening on every type name instead cost exactly those uses.
-    pub(super) own_value_slot_type_names: HashSet<String>,
     /// `true` when some attribute in the file has no resolvable *name shape*
     /// — a nameless `[<>]` or an ident-less path — so the gate cannot key it
     /// and must keep the presence defer (EX-3 §2(d) stage 5).
@@ -1314,6 +1340,22 @@ pub(super) struct Resolver<'a> {
     /// declarations are in scope for earlier type annotations there, so a bare
     /// single-segment type name must defer unless already resolved in-file.
     pub(super) recursive_module_active: bool,
+    /// What this file's declarations contribute to later files through routes
+    /// the walk does not model ([`FileContributions`]), accumulated by the walk.
+    pub(super) contributions: FileContributions,
+    /// Whether this file declares a type spelled like `[<AutoOpen>]` or
+    /// `[<RequireQualifiedAccess>]`, or an abbreviation of one — which makes
+    /// every written attribute name untrustworthy for those two
+    /// ([`Resolver::attribute_spellings_trusted`]).
+    pub(super) declares_core_attribute_alias: bool,
+    /// How many computation expressions the walk is inside
+    /// ([`Resolver::computation_expression_decline`]).
+    pub(super) ce_depth: usize,
+    /// The active `rec` blocks' contributions, re-pushed where FCS's
+    /// `TcMutRecDefns_Phase1` order puts them above what the walk just pushed:
+    /// every binder after each `open`, and the nested modules' `[<AutoOpen>]`
+    /// contents after each type or exception definition.
+    pub(super) rec_contribution: Option<RecBlock>,
     /// Type names a **same-file** `[<AutoOpen>]` module has opened into the
     /// current scope. F# opens an auto-open nested module into the remainder
     /// of its CONTAINER's scope — including a *module* container or the

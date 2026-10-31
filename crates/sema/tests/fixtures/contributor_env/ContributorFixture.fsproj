@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's unmodelled-contributor grid
+       (tests/all/unmodelled_contributor_grid.rs): referenced types whose
+       statics reach bare scope through routes the resolver does not list
+       member by member — inherited through a base class, borrowed through an
+       `[<AutoOpen>]` abbreviation, or dropped by the projection. Each type
+       carries a static of every name the grid probes. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaContributorFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

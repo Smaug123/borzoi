@@ -430,14 +430,14 @@ const CELLS: &[Cell] = &[
         probe: "extraValue",
         position: Position::Expr,
     },
-    // The two shadowings the resolver does not model generally — a later
-    // constructible type taking the value slot, and a same-block `[<AutoOpen>]`
-    // module folding above an earlier open — reproduce through an explicit
-    // `open` too and have their own tasks. Their cells belong here because this
-    // channel meets them far more often, and it must DECLINE rather than commit
-    // a target FCS shadows: `screen_block_local_shadows` makes both `None` on
-    // our side, which is the same value FCS's local target renders as in the
-    // matrix currency, so they are ordinary passing cells and not gaps.
+    // A later constructible type taking the value slot, and a same-block
+    // `[<AutoOpen>]` module folding above an earlier open: this channel folds
+    // at position 0, so it meets both more often than any other. The slot is
+    // ordered at the use (`Resolver::bare_value_evicted`) and the fold-back is
+    // a contributor mark (`docs/unmodelled-contributors.md`); both make the
+    // probe `None` on our side, which is the same value FCS's local target
+    // renders as in the matrix currency, so they are ordinary passing cells
+    // and not gaps.
     Cell {
         container: Container::Namespace("Demo.Auto"),
         decls: &[],

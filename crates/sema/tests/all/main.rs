@@ -93,6 +93,7 @@ mod resolve_types;
 mod resolve_union_cases;
 mod tier_order_diff;
 mod types_census;
+mod unmodelled_contributor_grid;
 mod use_rec;
 mod uses_census;
 mod uses_census_project;

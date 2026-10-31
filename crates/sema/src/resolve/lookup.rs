@@ -10,13 +10,14 @@ use borzoi_assembly::EntityKind;
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
 
+use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
     DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, Resolution, SlotClass,
 };
 use super::state::{
-    ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
-    ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
+    ActivePatternShape, AssemblyPath, CaseTier, MarkReach, OpenInterpretation, Resolver,
+    SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -249,6 +250,27 @@ impl<'a> Resolver<'a> {
             })
             .collect();
         self.module_frame().entries.extend(entries);
+        // The members the projection dropped are statics FCS still opens, by
+        // names the entries above do not list. An accessor's IL name carries
+        // its property's.
+        let dropped = Contribution {
+            values: self
+                .assemblies
+                .entity(handle)
+                .skipped_members
+                .iter()
+                .map(|m| {
+                    let name = m.name.as_str();
+                    ["get_", "set_", "add_", "remove_"]
+                        .iter()
+                        .find_map(|p| name.strip_prefix(p))
+                        .unwrap_or(name)
+                        .to_string()
+                })
+                .collect(),
+            ..Contribution::default()
+        };
+        self.push_contribution(&dropped, open_pos);
     }
 
     /// Collect one open-fold **group**'s assembly-side surfaces at path `gp`,
@@ -375,50 +397,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Demote every fold entry this block may shadow in a way that position-0
-    /// ordering does not express.
-    ///
-    /// Two shadowings the resolver does not model anywhere — they reproduce
-    /// through an explicit `open` too, and their fixes are their own slices. But
-    /// this channel meets them far more often, since it brings a whole
-    /// namespace's names in at position 0, before the block's walk has seen
-    /// anything; so rather than commit a target FCS shadows, it declines:
-    ///
-    /// - a **constructible type** the block declares takes FCS's unqualified
-    ///   value slot from a same-named opened value. Screened per name against
-    ///   [`Resolver::own_value_slot_type_names`], which is a *closed* set — the
-    ///   file's type definitions that can enter the slot, and nothing else can;
-    /// - an **`[<AutoOpen>]` container**'s surface folds into the enclosing
-    ///   scope above anything opened before it. Here the whole group is demoted
-    ///   rather than screened per name, because that surface is open-ended:
-    ///   values, union and exception cases, `extern` prototypes, active-pattern
-    ///   tags, a single-case union spelled exactly like an abbreviation, an
-    ///   auto-open type's statics, statics borrowed through an abbreviation.
-    ///   Enumerating them is a list that grows under review and can only be
-    ///   audited by inspection; [`Resolver::own_auto_open_container`] is one
-    ///   closed question, and it costs commits only in files that declare such
-    ///   a container.
-    ///
-    /// `Opaque` rather than removal keeps an entry in scope shadowing by
-    /// position, so an earlier open's same-named value cannot wrongly win.
-    /// Position-blind, so it also declines uses the shadower provably cannot
-    /// reach — availability, in the direction the pre-scans already accept.
-    fn screen_block_local_shadows(&self, group: &mut AssemblyFoldGroup) {
-        for surface in &mut group.surfaces {
-            for entry in &mut surface.entries {
-                if self.block_local_shadow(&entry.name) {
-                    entry.target = OpenFoldTarget::Opaque(DeclineCause::BlockLocalShadow);
-                }
-            }
-        }
-    }
-
-    /// Whether the block may shadow `name` in one of the two ways
-    /// [`Self::screen_block_local_shadows`] describes.
-    fn block_local_shadow(&self, name: &str) -> bool {
-        self.own_auto_open_container || self.own_value_slot_type_names.contains(name)
-    }
-
     /// Whether a project `[<AutoOpen>]` module directly in `namespace` — this
     /// file's or an earlier Compile-order one's — holds a **nested module**.
     ///
@@ -435,31 +413,6 @@ impl<'a> Resolver<'a> {
             self.nested_module_exports.iter().any(under)
                 || self.preceding.nested_module_paths.iter().any(under)
         })
-    }
-
-    /// The [`Self::screen_block_local_shadows`] screen applied to entries
-    /// already pushed into the frame, from `from` onwards — the project half's,
-    /// which [`Self::open_project_namespace_values`] writes directly rather than
-    /// through an [`AssemblyFoldGroup`].
-    ///
-    /// The project half is folded at position 0 for the same reason the assembly
-    /// halves are, so the same shadowers reach it: an earlier file's auto-open
-    /// module value at this namespace loses its slot to a later local type just
-    /// as an assembly member does. `Deferred` here is what `Opaque` is there.
-    fn demote_block_local_shadowed_entries(&mut self, from: usize) {
-        let names: Vec<String> = self.module_frame().entries[from..]
-            .iter()
-            .map(|e| e.name.clone())
-            .collect();
-        let shadowed: Vec<usize> = names
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| self.block_local_shadow(n))
-            .map(|(i, _)| from + i)
-            .collect();
-        for i in shadowed {
-            self.module_frame().entries[i].withdraw(DeclineCause::BlockLocalShadow);
-        }
     }
 
     /// Apply one [`AssemblyFoldGroup`]: the Stage-1 signature screen, then the
@@ -935,7 +888,7 @@ impl<'a> Resolver<'a> {
         // returns modules and namespaces alike, so a top-level `module A.B` in
         // one reference merges with `namespace A.B` in another.
         let handles = self.opened_assembly_modules(&namespace);
-        let mut group = self.assembly_fold_group(&namespace, &handles, true);
+        let group = self.assembly_fold_group(&namespace, &handles, true);
         if group.barrier() {
             self.open_generation += 1;
         }
@@ -1057,7 +1010,6 @@ impl<'a> Resolver<'a> {
                 self.opaque_dotted_open = true;
             }
         }
-        self.screen_block_local_shadows(&mut group);
         self.apply_assembly_fold_group(&namespace, group, 0);
         // The project namespace half's own cases/exceptions and its
         // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves
@@ -1065,7 +1017,6 @@ impl<'a> Resolver<'a> {
         if project_ns {
             let before = self.module_frame().entries.len();
             self.open_project_namespace_values(&namespace, 0);
-            self.demote_block_local_shadowed_entries(before);
             // A project `[<AutoOpen>]` module here that holds a **nested module**
             // can be shortened through: FCS enters that submodule under its short
             // name, so `open Inner` reaches it and its `target` out-ranks the
@@ -2381,6 +2332,16 @@ impl<'a> Resolver<'a> {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
                     continue;
+                }
+                // A contributor mark: the name may be a case the walk does not
+                // model, unless the contributor is a constructible type, which
+                // never enters the pattern table.
+                match entry.mark {
+                    Some(MarkReach::Both) => {
+                        return Err(Some(DeclineCause::UnmodelledContributor));
+                    }
+                    Some(MarkReach::Bare | MarkReach::Expression) => continue,
+                    None => {}
                 }
                 // An opened entry that an unmodelled open could shadow with a *case*
                 // (F#: the latest open wins) cannot be trusted in pattern position —
@@ -4661,7 +4622,31 @@ impl<'a> Resolver<'a> {
     /// opaque/unmodelled open might supply — the qualified block is barred
     /// while one is in scope, so a proven eviction could not resolve anything
     /// anyway.
+    /// Why a **bare** use of `name` must not commit the value [`Self::lookup`]
+    /// found: a constructible type of the name took FCS's unqualified slot
+    /// after it, or the two cannot be ordered ([`Self::head_value_slot`] —
+    /// one slot serves a bare use and a dotted head alike).
+    pub(super) fn bare_value_evicted(&self, name: &str) -> Option<DeclineCause> {
+        // No value to evict: whatever committed came from the type itself.
+        self.lookup_entry(name)
+            .filter(|e| !matches!(e.resolution, Resolution::Deferred(_)))?;
+        match self.value_slot(name, true) {
+            HeadSlot::Held => None,
+            HeadSlot::Evicted => Some(DeclineCause::ValueEvicted),
+            HeadSlot::Unordered => Some(DeclineCause::HeadSlotUnordered),
+        }
+    }
+
     fn head_value_slot(&self, head: &str) -> HeadSlot {
+        self.value_slot(head, false)
+    }
+
+    /// [`Self::head_value_slot`], for a dotted head or (`bare`) a bare use.
+    /// They differ only where one `open` supplied both the value and the
+    /// type: a dotted head's reading priority prefers the type, while a bare
+    /// use reads the open's fold, which adds a namespace's types before its
+    /// `[<AutoOpen>]` modules' values, so the value holds.
+    fn value_slot(&self, head: &str, bare: bool) -> HeadSlot {
         // The latest in-scope type position per class: `Keeps` types are
         // ignored outright (they never occupy the slot).
         let mut evictor_pos: Option<u32> = None;
@@ -4687,6 +4672,24 @@ impl<'a> Resolver<'a> {
         // into the slot (a module open's `M.Color` class evicts exactly like a
         // namespace-supplied one — probe M20v, codex round 8), so both prefix
         // lists feed the project checks below.
+        // The enclosing namespace is opened implicitly at the block's start
+        // (`ImplicitlyOpenOwnNamespace`), and an earlier file's type there
+        // takes the slot exactly as one an explicit `open` brings — at the
+        // block's start, where the implicit auto-opens' values and the
+        // namespace's own folded values sit too, in an order the positions do
+        // not record.
+        let enclosing_type = {
+            let ns = self.enclosing_namespace();
+            let mut path = ns.to_vec();
+            path.push(head.to_string());
+            (!ns.is_empty())
+                .then(|| self.preceding.exported_type_slot_class(&path))
+                .flatten()
+                .filter(|class| *class != SlotClass::Keeps)
+        };
+        if let Some(class) = enclosing_type {
+            note(0, class);
+        }
         let open_prefixes = self
             .explicit_open_prefixes
             .iter()
@@ -4745,6 +4748,7 @@ impl<'a> Resolver<'a> {
         // binding sits at its definition's.
         let (value_pos, value_from_open) = match self.lookup_entry(head) {
             Some(entry) if entry.from_open => (Some(entry.open_pos), true),
+            Some(entry) if entry.mark.is_some() => (Some(entry.open_pos), false),
             Some(entry) => (
                 self.value_resolution_def_range(entry.resolution)
                     .map(|r| u32::from(r.start())),
@@ -4752,6 +4756,9 @@ impl<'a> Resolver<'a> {
             ),
             None => (None, false),
         };
+        if enclosing_type.is_some() && value_from_open && value_pos == Some(0) {
+            return HeadSlot::Unordered;
+        }
         match value_pos {
             Some(value_pos) => {
                 // An EQUAL position means one `open` supplied both the value
@@ -4761,7 +4768,7 @@ impl<'a> Resolver<'a> {
                 // the tie by reading priority (the higher reading's TYPE
                 // wins — probe M20x, codex round 9), which the slot ordering
                 // does not model — undecidable, defer.
-                let same_open_tie = |p: u32| value_from_open && p == value_pos;
+                let same_open_tie = |p: u32| !bare && value_from_open && p == value_pos;
                 if evictor_pos.is_some_and(|p| p > value_pos) {
                     HeadSlot::Evicted
                 } else if unknown_pos.is_some_and(|p| p > value_pos)
@@ -4982,26 +4989,48 @@ impl<'a> Resolver<'a> {
             .filter(|e| e.generation == self.open_generation)
     }
 
+    /// [`Self::lookup`] for a **bare** expression use — the one position a
+    /// constructible type's name contests ([`MarkReach::Bare`]).
+    pub(super) fn lookup_bare(&self, name: &str) -> Option<Resolution> {
+        self.lookup_bare_entry(name).map(|entry| entry.resolution)
+    }
+
+    /// The entry [`Self::lookup_bare`] resolves to.
+    pub(super) fn lookup_bare_entry(&self, name: &str) -> Option<&ScopeEntry> {
+        self.latest_entry_noting_withdrawals(name, true)
+            .0
+            .filter(|e| e.generation == self.open_generation)
+    }
+
     /// The latest in-scope value entry for `name` **regardless of generation
     /// staleness** — [`Self::lookup_entry`] minus its staleness filter, and the
     /// walk both share (so they can never disagree on the other skipping
     /// rules). Exists so [`Self::head_entry_staled`] can distinguish "no entry
     /// at all" from "an entry the barrier staled".
     fn latest_entry(&self, name: &str) -> Option<&ScopeEntry> {
-        self.latest_entry_noting_withdrawals(name).0
+        self.latest_entry_noting_withdrawals(name, false).0
     }
 
     /// [`Self::latest_entry`], and whether the walk passed over an **opened**
     /// entry of the name because an [`opaque_value_open`](Self::opaque_value_open)
     /// is in scope — the one skip that withdraws a name the walk would
     /// otherwise have found. One walk, so the census
-    /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
-    fn latest_entry_noting_withdrawals(&self, name: &str) -> (Option<&ScopeEntry>, bool) {
+    /// ([`Self::bare_value_decline`]) cannot disagree with the lookup. `bare`
+    /// says the name is used bare rather than as a dotted head, which only a
+    /// [`MarkReach::Bare`] mark distinguishes.
+    fn latest_entry_noting_withdrawals(
+        &self,
+        name: &str,
+        bare: bool,
+    ) -> (Option<&ScopeEntry>, bool) {
         let mut withdrawn_by_opaque_open = false;
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
                     continue;
+                }
+                if entry.mark == Some(MarkReach::Bare) && !bare {
+                    continue; // a type's name, which a dotted head reads by type
                 }
                 if entry.pattern_only {
                     continue; // constructor namespace only — not a value here
@@ -5032,7 +5061,7 @@ impl<'a> Resolver<'a> {
     /// in scope binds at all is not attributed — an opaque `open` being live is
     /// no evidence that it is why *this* name found nothing.
     pub(super) fn bare_value_decline(&self, name: &str) -> Option<DeclineCause> {
-        let (entry, withdrawn_by_opaque_open) = self.latest_entry_noting_withdrawals(name);
+        let (entry, withdrawn_by_opaque_open) = self.latest_entry_noting_withdrawals(name, true);
         if withdrawn_by_opaque_open {
             return Some(DeclineCause::OpaqueOpen);
         }
