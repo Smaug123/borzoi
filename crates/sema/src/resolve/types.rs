@@ -1068,7 +1068,18 @@ impl<'a> Resolver<'a> {
             .copied()
             .unwrap_or(false)
         {
-            return MemberScope::Optional;
+            // A header that misses a scoped type's arity (`type T with` for
+            // `type T<'a>`) is FS0957, and FCS still reads the members
+            // against that type's cases.
+            let scoped_at_other_arity = self
+                .own_type_scoped
+                .iter()
+                .any(|((n, _), scoped)| *n == name && *scoped);
+            return if scoped_at_other_arity {
+                MemberScope::Unwalked
+            } else {
+                MemberScope::Optional
+            };
         }
         // An augmentation is intrinsic only in the container declaring its
         // type, which (outside `rec`) precedes it, so a name this container

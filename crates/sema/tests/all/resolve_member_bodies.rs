@@ -518,3 +518,31 @@ type T() =
         );
     }
 }
+
+/// An augmentation whose header misses the type's arity (`type T with` for
+/// `type T<'a>`) is FS0957 to FCS, which still binds its members' names
+/// against the union's cases. Neither reading is the module scope alone, so a
+/// member body there commits nothing a case could take.
+#[test]
+fn augmentation_missing_the_types_arity_commits_no_case_name() {
+    let src = "\
+module M
+type T<'a> =
+    | A
+    | B of 'a
+let A = 1
+type T with
+    member _.M = A
+";
+    let rf = resolve(src);
+    let use_r = ident_at(src, "member _.M = A", "A");
+    let committed = rf
+        .resolution_at(use_r)
+        .filter(|r| matches!(r, Resolution::Local(_) | Resolution::Item(_)))
+        .and_then(|r| rf.resolved_def(r))
+        .map(|d| d.range);
+    assert_eq!(
+        committed, None,
+        "a body under an arity-missing header committed `A` to {committed:?}"
+    );
+}
