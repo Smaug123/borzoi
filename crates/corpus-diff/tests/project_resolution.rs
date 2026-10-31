@@ -355,6 +355,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
             uses: vec![ProjectUse {
                 name: "x".to_string(),
                 logical_name: None,
+                value: None,
                 start: use_start,
                 end: use_end,
                 is_from_definition: false,
@@ -399,6 +400,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
     let compared = ProjectUse {
         name: "x".to_string(),
         logical_name: None,
+        value: None,
         start: 13,
         end: 14,
         is_from_definition: false,
@@ -414,6 +416,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
     let generated = ProjectUse {
         name: "_arg1".to_string(),
         logical_name: None,
+        value: None,
         is_compiler_generated: true,
         symbol_kind: None,
         ..compared.clone()
@@ -806,6 +809,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                 ProjectUse {
                     name: "_n".to_string(),
                     logical_name: None,
+                    value: None,
                     start: first,
                     end: first + 2,
                     is_from_definition: true,
@@ -825,6 +829,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                 ProjectUse {
                     name: "_n".to_string(),
                     logical_name: None,
+                    value: None,
                     start: body,
                     end: body + 2,
                     is_from_definition: false,
@@ -903,6 +908,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                 ProjectUse {
                     name: "_arg1".to_string(),
                     logical_name: None,
+                    value: None,
                     start: pattern_start,
                     end: pattern_end,
                     is_from_definition: false,
@@ -922,6 +928,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                 ProjectUse {
                     name: "_n".to_string(),
                     logical_name: None,
+                    value: None,
                     start: first,
                     end: first + 2,
                     is_from_definition: true,
@@ -941,6 +948,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                 ProjectUse {
                     name: "_n".to_string(),
                     logical_name: None,
+                    value: None,
                     start: body,
                     end: body + 2,
                     is_from_definition: false,
@@ -987,6 +995,7 @@ fn comparison_reports_skipped_oracle_categories() {
                 ProjectUse {
                     name: "x".to_string(),
                     logical_name: None,
+                    value: None,
                     start: 0,
                     end: 1,
                     is_from_definition: true,
@@ -1006,6 +1015,7 @@ fn comparison_reports_skipped_oracle_categories() {
                 ProjectUse {
                     name: "x".to_string(),
                     logical_name: None,
+                    value: None,
                     start: 4,
                     end: 4,
                     is_from_definition: false,
@@ -1025,6 +1035,7 @@ fn comparison_reports_skipped_oracle_categories() {
                 ProjectUse {
                     name: "printfn".to_string(),
                     logical_name: None,
+                    value: None,
                     start: 0,
                     end: 7,
                     is_from_definition: false,
@@ -1040,6 +1051,7 @@ fn comparison_reports_skipped_oracle_categories() {
                 ProjectUse {
                     name: "intrinsic".to_string(),
                     logical_name: None,
+                    value: None,
                     start: 0,
                     end: 9,
                     is_from_definition: false,
@@ -1093,6 +1105,7 @@ fn comparison_matches_assembly_oracle_declarations() {
             uses: vec![ProjectUse {
                 name: "Value".to_string(),
                 logical_name: None,
+                value: None,
                 start,
                 end,
                 is_from_definition: false,
@@ -1155,6 +1168,7 @@ let value = 1
                 // FCS names the suffixed type, as it resolves it.
                 name: "MarkAttribute".to_string(),
                 logical_name: None,
+                value: None,
                 start: use_start,
                 end: use_end,
                 is_from_definition: false,
@@ -1203,6 +1217,7 @@ fn a_constructor_record_steps_aside_for_the_name_the_author_wrote() {
     let named = ProjectUse {
         name: "x".to_string(),
         logical_name: None,
+        value: None,
         start: use_start,
         end: use_end,
         is_from_definition: false,
@@ -1266,6 +1281,7 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
     let gradable = ProjectUse {
         name: "x".to_string(),
         logical_name: None,
+        value: None,
         start: use_start,
         end: use_end,
         is_from_definition: false,
@@ -1287,6 +1303,7 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
     let ungradable = ProjectUse {
         name: "x".to_string(),
         logical_name: None,
+        value: None,
         decl: UseDecl::Unlocated,
         ..gradable.clone()
     };
@@ -1328,6 +1345,7 @@ fn string_length_use(span: (usize, usize)) -> ProjectUse {
     ProjectUse {
         name: "Length".to_string(),
         logical_name: None,
+        value: None,
         start: span.0,
         end: span.1,
         is_from_definition: false,
@@ -1514,6 +1532,7 @@ fn comparison_reports_wrong_assembly_resolution() {
             uses: vec![ProjectUse {
                 name: "Value".to_string(),
                 logical_name: None,
+                value: None,
                 start,
                 end,
                 is_from_definition: false,
@@ -1545,6 +1564,7 @@ fn project_use(name: &str, at: (usize, usize), decl: DeclSite) -> ProjectUse {
     ProjectUse {
         name: name.to_string(),
         logical_name: None,
+        value: None,
         start: at.0,
         end: at.1,
         is_from_definition: false,
@@ -1892,6 +1912,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                 ProjectUse {
                     name: "B".to_string(),
                     logical_name: None,
+                    value: None,
                     start: module_start,
                     end: module_end,
                     is_from_definition: true,
@@ -1911,6 +1932,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                 ProjectUse {
                     name: "x".to_string(),
                     logical_name: None,
+                    value: None,
                     start: x_def_start,
                     end: x_def_end,
                     is_from_definition: true,
@@ -1930,6 +1952,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                 ProjectUse {
                     name: "y".to_string(),
                     logical_name: None,
+                    value: None,
                     start: y_def_start,
                     end: y_def_end,
                     is_from_definition: true,
@@ -3340,6 +3363,7 @@ fn the_manifest_counts_handler_probes_and_lists_every_inconsistent_one() {
         probe,
         expectation,
         outcome,
+        hover_type: None,
     };
     let served = Expectation::Served(Graded::Project, AnswerSurface::Resolver);
     let foo = text_range(using, "Shared.foo");
@@ -3611,6 +3635,205 @@ fn a_byte_order_mark_moves_no_handler_fixture_verdict() {
     );
 }
 
+/// One record of each kind a hover is put to, across two files, and what the
+/// real handler shows of its type, graded against FCS: each record's class and
+/// verdict, by the name it is used by and the line of the use. The pins are the
+/// measurement's claim per kind — a type shown and FCS's, a type withheld and
+/// why, no type for a symbol that has none — so a grader that classed every
+/// probe alike, or graded nothing, fails here rather than passing the gate.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn hover_types_are_graded_per_kind() {
+    use borzoi_corpus_diff::handler_diff::{
+        Handler, HoverType, SymbolClass as C, TypeVerdict as V, ValueLabel as L, Variant,
+        Withheld as W,
+    };
+    use borzoi_corpus_diff::{ProjectCandidates, ProjectCorpusRunOptions};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        &dir.path().join("Kinds.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"Lib.fs\" />\n    \
+         <Compile Include=\"Use.fs\" />\n  </ItemGroup>\n</Project>\n",
+    );
+    write(&dir.path().join("Lib.fs"), KINDS_LIB_SOURCE);
+    write(&dir.path().join("Use.fs"), KINDS_USE_SOURCE);
+    let run = run_project_corpus_diff_with_options(
+        ProjectCandidates {
+            discovered: 1,
+            exhaustive: false,
+            max_files: None,
+            visited: vec![dir.path().join("Kinds.fsproj")],
+            discovery_errors: Vec::new(),
+        },
+        ProjectCorpusRunOptions {
+            handler_sample_stride: Some(NonZeroUsize::MIN),
+            ..ProjectCorpusRunOptions::default()
+        },
+    );
+    assert_eq!(run.divergence_details, Vec::<String>::new());
+    let ProjectVerdict::Comparable {
+        handlers, sources, ..
+    } = &run.projects[0].verdict
+    else {
+        panic!("not comparable: {:?}", run.projects[0].verdict);
+    };
+    // Each plain record's grades, by file name, line and name.
+    let mut graded: std::collections::BTreeMap<(String, usize, String), BTreeSet<HoverType>> =
+        std::collections::BTreeMap::new();
+    for probe in &handlers.probes {
+        let (Variant::Plain, Handler::Hover, Some(grade)) =
+            (probe.variant, probe.handler, probe.hover_type)
+        else {
+            continue;
+        };
+        let text = &sources
+            .iter()
+            .find(|(path, _)| *path == probe.file)
+            .expect("a source")
+            .1;
+        let line = text[..probe.range.0].matches('\n').count() + 1;
+        let file = probe.file.file_name().expect("named").to_string_lossy();
+        graded
+            .entry((file.into_owned(), line, probe.name.clone()))
+            .or_default()
+            .insert(grade);
+    }
+    let at = |file: &str, line: usize, name: &str| -> Vec<(C, V)> {
+        graded
+            .get(&(file.to_string(), line, name.to_string()))
+            .unwrap_or_else(|| panic!("no hover probe of {name:?} on {file}:{line}"))
+            .iter()
+            .map(|g| (g.class, g.verdict))
+            .collect()
+    };
+    let pins = [
+        // Shown, and FCS's: a literal-bound value, a local, a generic function.
+        (("Lib.fs", 14, "answer"), (C::InFileValue, V::Agrees)),
+        (("Lib.fs", 18, "y"), (C::Local, V::Agrees)),
+        (("Lib.fs", 20, "unannotated"), (C::InFileValue, V::Agrees)),
+        // Withheld by this file's inference: a parameter, a function whose
+        // body applies a statically resolved operator, a record construction,
+        // a static member.
+        (
+            ("Lib.fs", 4, "x"),
+            (C::Local, V::Withheld(W::InFile(L::Parameter))),
+        ),
+        (
+            ("Lib.fs", 15, "twice"),
+            (C::InFileValue, V::Withheld(W::InFile(L::Function))),
+        ),
+        (
+            ("Lib.fs", 21, "origin"),
+            (C::InFileValue, V::Withheld(W::InFile(L::Value))),
+        ),
+        (
+            ("Lib.fs", 23, "Zero"),
+            (C::ProjectMember, V::Withheld(W::InFile(L::StaticMember))),
+        ),
+        // An earlier file's binder: typed where it is declared, and not.
+        (
+            ("Use.fs", 5, "answer"),
+            (
+                C::EarlierFileValue,
+                V::Withheld(W::EarlierFileTypedAtDefinition),
+            ),
+        ),
+        (
+            ("Use.fs", 6, "twice"),
+            (
+                C::EarlierFileValue,
+                V::Withheld(W::EarlierFileUntypedAtDefinition),
+            ),
+        ),
+        // No value type to show.
+        (
+            ("Lib.fs", 22, "Circle"),
+            (C::ProjectUnionCase, V::NotAValue),
+        ),
+        (("Lib.fs", 23, "Counter"), (C::ProjectEntity, V::NotAValue)),
+        // The resolver names nothing: a record field's access, and — with no
+        // referenced assemblies — a constructor.
+        (("Lib.fs", 21, "X"), (C::ProjectField, V::ResolverDeclined)),
+        (
+            ("Lib.fs", 24, "StringBuilder"),
+            (C::Constructor, V::ResolverDeclined),
+        ),
+    ];
+    for ((file, line, name), expected) in pins {
+        assert_eq!(at(file, line, name), [expected], "{name} on {file}:{line}");
+    }
+
+    // The premises the `Agrees` pins rest on, asked of FCS rather than assumed:
+    // it does type these, and as the hover shows them.
+    let loaded = load_lsp_project(&dir.path().join("Kinds.fsproj")).expect("loads");
+    let sources: Vec<_> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let fcs = parse_project_uses(
+        &invoke_fcs_uses_project(&loaded).expect("FCS answers"),
+        &sources,
+    )
+    .expect("parses");
+    let canon = |line: usize, name: &str| -> Option<String> {
+        let (file, text) = (&fcs[0], &sources[0].1);
+        file.uses
+            .iter()
+            .find(|u| {
+                u.name == name
+                    && !u.is_from_definition
+                    && text[..u.start].matches('\n').count() + 1 == line
+            })
+            .and_then(|u| u.value.as_ref()?.type_canon.clone())
+    };
+    assert_eq!(canon(14, "answer").as_deref(), Some("System.Int32"));
+    assert_eq!(canon(18, "y").as_deref(), Some("System.Int32"));
+    assert_eq!(canon(20, "unannotated").as_deref(), Some("'a -> 'a"));
+}
+
+const KINDS_LIB_SOURCE: &str = r#"module Lib
+
+let answer = 42
+let twice (x : int) = x * 2
+let apply f x = f x
+type Shape =
+    | Circle of float
+    | Square of float
+type Point = { X : int; Y : int }
+type Counter() =
+    member _.Next() = 1
+    static member Zero = 0
+let origin = { X = 0; Y = 0 }
+let useAnswer = answer + 1
+let useTwice = twice 3
+let local () =
+    let y = 5
+    y + 1
+let unannotated z = z
+let useUnannotated = unannotated 1
+let fieldUse = origin.X
+let caseUse = Circle 1.0
+let memberUse = Counter.Zero
+let sb = System.Text.StringBuilder()
+let len = "abc".Length
+let mapped = List.map twice [ 1 ]
+let write () = System.Console.WriteLine "x"
+"#;
+
+const KINDS_USE_SOURCE: &str = r#"module Use
+
+open Lib
+
+let a = answer + 1
+let b = twice 4
+let c = apply twice 5
+let d = useTwice
+"#;
+
 const ZOO_SOURCE: &str = r#"module Zoo
 
 /// A union, a record, a generic struct record, a class, an exception, and the
@@ -3753,6 +3976,7 @@ fn no_two_handler_probes_can_trade_outcomes_unseen() {
                 probe: Probe::Last,
                 expectation,
                 outcome,
+                hover_type: None,
             })
             .collect();
         project_corpus_manifest(
@@ -3800,4 +4024,164 @@ fn no_two_handler_probes_can_trade_outcomes_unseen() {
         }
     }
     assert_eq!(pairs, 3 * 8 * 8 * 10 * 9);
+}
+
+/// The hover outcome a probe with this type verdict comes to.
+fn hover_outcome_of(
+    verdict: borzoi_corpus_diff::handler_diff::TypeVerdict,
+) -> borzoi_corpus_diff::handler_diff::Outcome {
+    use borzoi_corpus_diff::handler_diff::{Outcome as O, TypeVerdict as V};
+    match verdict {
+        V::Agrees | V::ShownUngraded | V::ShownSignature | V::Withheld(_) | V::NotAValue => {
+            O::Described
+        }
+        V::Wrong => O::Wrong,
+        V::Unread => O::DescribedUnread,
+        V::ResolverDeclined => O::Explained,
+        V::NoHover => O::Declined,
+        V::NotASymbol => O::Other,
+    }
+}
+
+/// A synthetic two-record project whose hover probes carry `grades`, and its
+/// manifest.
+fn hover_type_manifest(
+    grades: [(
+        borzoi_corpus_diff::handler_diff::Expectation,
+        borzoi_corpus_diff::handler_diff::HoverType,
+    ); 2],
+) -> Vec<String> {
+    use borzoi_corpus_diff::handler_diff::{Handler, HandlerReport, Probe, ProbeItem, Variant};
+
+    let lib = "module Shared\nlet foo = 1\nlet bar = foo + foo\n";
+    let loaded = synthetic_multi_file_project(&[("A.fs", lib)]);
+    let root = PathBuf::from("/tmp/corpus-diff-synthetic-multi");
+    let a = loaded.parses.paths[0].clone();
+    let sources: Vec<_> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let spans = [nth_text_range(lib, "foo", 1), nth_text_range(lib, "foo", 2)];
+    let probes = spans
+        .into_iter()
+        .zip(grades)
+        .map(|((start, end), (expectation, grade))| ProbeItem {
+            variant: Variant::Plain,
+            file: a.clone(),
+            range: (start, end),
+            name: "foo".to_string(),
+            handler: Handler::Hover,
+            probe: Probe::Last,
+            expectation,
+            outcome: hover_outcome_of(grade.verdict),
+            hover_type: Some(grade),
+        })
+        .collect();
+    project_corpus_manifest(
+        &[ProjectRecord {
+            project: loaded.project.clone(),
+            verdict: ProjectVerdict::Comparable {
+                assets: ProjectAssetsStatus::NotChecked,
+                sources,
+                comparison: Box::default(),
+                handlers: Box::new(HandlerReport {
+                    probes,
+                    ..HandlerReport::default()
+                }),
+            },
+        }],
+        &root,
+    )
+    .expect("renders")
+    .entries()
+    .to_vec()
+}
+
+/// No two hover probes can trade what they showed of their type without moving
+/// a manifest line: for every class of symbol, every pair of distinct type
+/// verdicts and every comparator verdict, the manifest of two records of that
+/// class with those verdicts differs from the one with the verdicts swapped. A
+/// listing rule that let two verdicts both go unlisted for one class fails
+/// this, because a lost type offset by a gained one would leave every count
+/// the same.
+#[test]
+fn no_two_hover_probes_can_trade_type_verdicts_unseen() {
+    use borzoi_corpus_diff::AnswerSurface;
+    use borzoi_corpus_diff::handler_diff::{Expectation, HoverType, SymbolClass, TypeVerdict};
+
+    // One that expects a description and one that expects "No definition
+    // available": the type listing must not lean on which outcome is expected.
+    let expectations = [
+        Expectation::Served(Graded::Project, AnswerSurface::Resolver),
+        Expectation::Declined(Graded::Project),
+    ];
+    let verdicts = TypeVerdict::all();
+    let mut pairs = 0;
+    for class in SymbolClass::ALL {
+        for &expectation in &expectations {
+            for &v1 in &verdicts {
+                for &v2 in &verdicts {
+                    if v1 == v2 {
+                        continue;
+                    }
+                    let grade = |verdict| (expectation, HoverType { class, verdict });
+                    let before = hover_type_manifest([grade(v1), grade(v2)]);
+                    let after = hover_type_manifest([grade(v2), grade(v1)]);
+                    assert_ne!(
+                        before, after,
+                        "{class:?} under {expectation:?}: trading {v1:?} and {v2:?} moves no line"
+                    );
+                    pairs += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        pairs,
+        SymbolClass::ALL.len() * expectations.len() * verdicts.len() * (verdicts.len() - 1)
+    );
+}
+
+/// The manifest counts each file's hover type verdicts, and lists a record
+/// whose verdict is not its class's expected one with its class, its verdict
+/// and the probes that came to it.
+#[test]
+fn the_manifest_counts_hover_types_and_lists_every_unexpected_one() {
+    use borzoi_corpus_diff::handler_diff::{
+        Expectation, HoverType, SymbolClass, TypeVerdict, ValueLabel, Withheld,
+    };
+
+    let served = Expectation::Served(Graded::Project, borzoi_corpus_diff::AnswerSurface::Resolver);
+    let lines = hover_type_manifest([
+        (
+            served,
+            HoverType {
+                class: SymbolClass::InFileValue,
+                verdict: TypeVerdict::Agrees,
+            },
+        ),
+        (
+            served,
+            HoverType {
+                class: SymbolClass::InFileValue,
+                verdict: TypeVerdict::Withheld(Withheld::InFile(ValueLabel::Function)),
+            },
+        ),
+    ]);
+    let hover_types: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .filter(|line| line.contains("hover-type"))
+        .collect();
+    assert_eq!(
+        hover_types,
+        [
+            "Synthetic.fsproj A.fs hover-types plain agrees=1 withheld-in-file-function=1",
+            "Synthetic.fsproj A.fs:3:17-20 \"foo\" hover-type plain in-file-value \
+             withheld-in-file-function at last",
+        ]
+    );
 }
