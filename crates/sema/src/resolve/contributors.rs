@@ -174,7 +174,9 @@ fn attribute_lookup_names(spelling: &str) -> [Option<String>; 3] {
 
 /// **The** rule for whether written attribute names can be taken at their
 /// word for `[<AutoOpen>]` and `[<RequireQualifiedAccess>]`
-/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]). FCS honours an attribute
+/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]), and for
+/// `[<CustomOperation>]` over its own alias inputs
+/// ([`Resolver::may_be_custom_operation`]). FCS honours an attribute
 /// through an abbreviation (`type AO = AutoOpenAttribute`, then `[<AO>]` — it
 /// warns), so a spelling proves nothing once one may exist. Trusted when:
 ///
@@ -705,15 +707,12 @@ pub(super) fn signature_contributions(
     let custom_operation_alias =
         super::custom_operations::signature_renames_custom_operation(sig.syntax());
     rf.contributions.declares_custom_operation_alias = custom_operation_alias;
+    let co_alias_declared = custom_operation_alias || preceding.custom_operation_alias_declared;
     let co_aliases = assemblies.custom_operation_aliases();
-    let co_trusted = !custom_operation_alias
-        && !preceding.custom_operation_alias_declared
-        && !co_aliases.certain;
     rf.contributions.custom_operations =
         super::custom_operations::signature_custom_operations(sig.syntax(), &|s| {
             super::custom_operations::CUSTOM_OPERATION_SPELLINGS.contains(&s)
-                || !co_trusted
-                || super::custom_operations::spelling_may_name(&co_aliases.possible, s)
+                || !core_attribute_spellings_trusted(co_alias_declared, co_aliases, [s])
         });
     for module in sig.modules() {
         let root_module = matches!(module.kind(), ModuleOrNamespaceKind::NamedModule)
