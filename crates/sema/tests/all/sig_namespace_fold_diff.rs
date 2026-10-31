@@ -330,6 +330,20 @@ const SHAPES: &[Shape] = &[
         imp: "type U =\n    | ([])\n    | (::) of int * U\n",
         model: Model::Unmodelled,
     },
+    // A type that takes the constructor slot puts its own name in bare
+    // value scope (Codex review): `ref ()` is its constructor.
+    Shape {
+        label: "constructor_slot_type_named_ref",
+        sig: "type ref = System.Object\n\ntype U =\n    | Case1\n",
+        imp: "type ref = System.Object\n\ntype U =\n    | Case1\n",
+        model: Model::Unmodelled,
+    },
+    Shape {
+        label: "unsigned_constructor_slot_type_named_ref",
+        sig: "",
+        imp: "type ref = System.Object\n\ntype U =\n    | Case1\n",
+        model: Model::Unmodelled,
+    },
     Shape {
         label: "enum_lowercase",
         sig: "type U =\n    | ref = 0\n    | failwith = 1\n",
@@ -354,6 +368,7 @@ const PROBES: &str = concat!(
     "    let useFailure () = Failure \"x\"\n",
     "    let useModuleOk () = M.Ok\n",
     "    let useConsOperator () = op_ColonColon\n",
+    "    let useConstructor () = ref ()\n",
 );
 
 /// Where the reader file sits relative to the pair, and how it reaches `N`.
