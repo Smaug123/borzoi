@@ -116,9 +116,7 @@ impl DocFileCache {
             let _span =
                 tracing::info_span!("parse_xml_doc", path = %path.display(), bytes = bytes.len())
                     .entered();
-            DocFile::decode(&bytes)
-                .and_then(DocFile::parse)
-                .map(Arc::new)
+            DocFile::load(&bytes).map(Arc::new)
         };
         if let Err(e) = &parsed {
             tracing::warn!(path = %path.display(), error = ?e, "unusable XML documentation file");
@@ -171,6 +169,36 @@ impl KeyCensusCache {
     }
 }
 
+/// Everything documentation lookup caches: parsed files and per-assembly key
+/// censuses.
+#[derive(Debug, Default)]
+pub struct DocSources {
+    pub files: DocFileCache,
+    pub censuses: KeyCensusCache,
+}
+
+impl DocSources {
+    /// Drop every cache (memory only).
+    pub fn clear(&mut self) {
+        self.files.clear();
+        self.censuses.clear();
+    }
+
+    /// [`lookup`] through these caches.
+    pub fn lookup(&mut self, env: &Arc<AssemblyEnv>, target: DocTarget) -> DocLookup {
+        lookup(&mut self.files, &mut self.censuses, env, target)
+    }
+
+    /// [`locate`] through these caches.
+    pub fn locate(
+        &mut self,
+        env: &Arc<AssemblyEnv>,
+        target: DocTarget,
+    ) -> Result<Located, DocLookup> {
+        locate(&mut self.files, &mut self.censuses, env, target)
+    }
+}
+
 /// Look up `target`'s documentation in the doc file beside its DLL.
 pub fn lookup(
     files: &mut DocFileCache,
@@ -178,37 +206,55 @@ pub fn lookup(
     env: &Arc<AssemblyEnv>,
     target: DocTarget,
 ) -> DocLookup {
+    match locate(files, censuses, env, target) {
+        Ok(found) => DocLookup::Found(found.member),
+        Err(miss) => miss,
+    }
+}
+
+/// A [`DocLookup::Found`] entry with what it was found in.
+#[derive(Debug, Clone)]
+pub struct Located {
+    pub member: DocElement,
+    pub file: Arc<DocFile>,
+    pub key: String,
+}
+
+/// [`lookup`], keeping the file and key of a found entry.
+pub fn locate(
+    files: &mut DocFileCache,
+    censuses: &mut KeyCensusCache,
+    env: &Arc<AssemblyEnv>,
+    target: DocTarget,
+) -> Result<Located, DocLookup> {
     let owner = target.owner();
     let Some(dll) = env.assembly_path(owner) else {
-        return DocLookup::NoAssemblyPath;
+        return Err(DocLookup::NoAssemblyPath);
     };
     let census = censuses.census(env, dll);
-    let key = match doc_key(env, &census, target) {
-        Ok(key) => key,
-        Err(e) => return DocLookup::Key(e),
-    };
+    let key = doc_key(env, &census, target).map_err(DocLookup::Key)?;
     let path = xml_path_for(dll);
     let file = match files.load(&path) {
         Ok(file) => file,
-        Err(LoadError::NotFound) => return DocLookup::NoXmlFile(path),
-        Err(LoadError::Io(error)) => return DocLookup::Io { path, error },
-        Err(LoadError::Doc(error)) => return DocLookup::Unreadable { path, error },
+        Err(LoadError::NotFound) => return Err(DocLookup::NoXmlFile(path)),
+        Err(LoadError::Io(error)) => return Err(DocLookup::Io { path, error }),
+        Err(LoadError::Doc(error)) => return Err(DocLookup::Unreadable { path, error }),
     };
     let expected = &env.entity(owner).assembly.name;
     if let Some(declared) = file.assembly()
         && !declared.eq_ignore_ascii_case(expected)
     {
-        return DocLookup::OtherAssembly {
+        return Err(DocLookup::OtherAssembly {
             declared: declared.to_string(),
             expected: expected.clone(),
-        };
+        });
     }
     match file.entry(&key) {
-        None => DocLookup::NoEntry { key },
-        Some(DocEntry::Ambiguous) => DocLookup::Ambiguous { key },
+        None => Err(DocLookup::NoEntry { key }),
+        Some(DocEntry::Ambiguous) => Err(DocLookup::Ambiguous { key }),
         Some(DocEntry::Unique(range)) => match file.member_element(range.clone()) {
-            Ok(member) => DocLookup::Found(member),
-            Err(error) => DocLookup::EntryUnreadable { key, error },
+            Ok(member) => Ok(Located { member, file, key }),
+            Err(error) => Err(DocLookup::EntryUnreadable { key, error }),
         },
     }
 }

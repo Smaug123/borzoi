@@ -1560,11 +1560,7 @@ mod tests {
                 attributes.push((k.to_string(), v));
             }
         }
-        DocElement {
-            name: name.to_string(),
-            attributes,
-            children,
-        }
+        DocElement::new(name, attributes, children)
     }
 
     fn all_names() -> Vec<&'static str> {
