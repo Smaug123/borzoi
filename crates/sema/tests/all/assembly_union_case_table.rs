@@ -1243,6 +1243,21 @@ const ROWS: &[Row] = &[
         ],
     },
     Row {
+        label: "cases inside object-expression members",
+        decls: &[],
+        src: "module UcR42\n\
+              type I =\n    abstract M : int option -> int\n    abstract N : unit -> Result<int, string>\n\
+              let o =\n    { new I with\n        member _.M x = match x with Some y -> y | None -> 0\n        member this.N () = Ok (this.M (Some 1)) }\n\
+              let p = { new System.Object() with member _.ToString() = string (ValueSome 1) }\n",
+        probes: &[
+            commit("Some", 0, SOME),
+            commit("None", 0, NONE),
+            commit("Ok", 0, OK),
+            commit("Some", 1, SOME),
+            commit("ValueSome", 0, VSOME),
+        ],
+    },
+    Row {
         label: "query range variables an into binds",
         decls: &[],
         src: "module UcR41\n\
@@ -2003,10 +2018,16 @@ enum Use {
     /// `type Probe (Name x) = …` — a pattern a primary constructor rejects,
     /// reading nothing of it.
     CtorParamApplied,
+    /// `{ new System.Object() with member _.ToString() = string (Name 1) }`
+    /// — inside an object expression's member body.
+    ObjectExpression,
+    /// `{ new System.Object() with member _.Equals x = match x with Name _
+    /// -> … }` — an applied pattern head there.
+    ObjectExpressionPattern,
 }
 
 impl Use {
-    const ALL: [Use; 7] = [
+    const ALL: [Use; 9] = [
         Use::Applied,
         Use::FunctionValue,
         Use::AppliedPattern,
@@ -2014,6 +2035,8 @@ impl Use {
         Use::CtorParam,
         Use::CtorParamAs,
         Use::CtorParamApplied,
+        Use::ObjectExpression,
+        Use::ObjectExpressionPattern,
     ];
 
     /// The line holding the probe, and where in it the name starts.
@@ -2026,6 +2049,14 @@ impl Use {
             Use::CtorParam => ("type Probe (", ": int) = member _.V = 0"),
             Use::CtorParamAs => ("type Probe (x: int, ", " as y) = member _.V = y"),
             Use::CtorParamApplied => ("type Probe (", " x) = member _.V = 0"),
+            Use::ObjectExpression => (
+                "let probe = { new System.Object() with member _.ToString() = string (",
+                " 1) }",
+            ),
+            Use::ObjectExpressionPattern => (
+                "let probe = { new System.Object() with member _.Equals x = match unbox x with ",
+                " _ -> true | _ -> false }",
+            ),
         };
         (format!("{prefix}{name}{suffix}"), prefix.len())
     }
@@ -2178,7 +2209,7 @@ fn the_shadowing_grid_agrees_with_fcs() {
         cells.len(),
         failures.join("\n")
     );
-    // Non-vacuity: the unshadowed cells are 140 of the 2380, and a grid whose
+    // Non-vacuity: the unshadowed cells are 180 of the 3060, and a grid whose
     // shadowed cells all decline would pass the property above while
     // exercising none of the guards that decide when a shadower does not, in
     // fact, shadow.
