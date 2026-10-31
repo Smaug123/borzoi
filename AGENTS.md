@@ -170,6 +170,14 @@ This is a Cargo workspace with nine members:
   (`docs/fsproj-consumption-plan.md` tracks the remaining consumers).
   `borzoi-assembly` is runtime-live too: referenced assemblies are
   read into each project's `AssemblyEnv` (`crates/lsp/src/semantic.rs`).
+  Hover's XML documentation lives in `crates/lsp/src/xml_doc/`. Its
+  `<inheritdoc>` work is held to Roslyn's IDE through
+  `tools/inheritdoc-oracle`, a test-only C# JSONL batch tool (the
+  `nuget-oracle` mould) that calls Roslyn's internal expansion by
+  reflection, evaluates Roslyn's XPath selection, and compiles purpose-built
+  C# fixtures (rewriting a method name or an `AssemblyRef` in one, for
+  metadata no compiler writes). `xml_doc_inheritdoc_xpath_diff` holds the
+  XPath subset to certain-implies-exact against it.
 - `crates/corpus-diff/` — `borzoi-corpus-diff`. Test-only, unpublished: an
   empirical whole-project name-resolution differential. It loads real F#
   projects through the same runtime path the LSP uses (`Workspace` +
@@ -377,8 +385,6 @@ nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ign
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_source_diff::corpus:: -- --ignored  #  ~20 s
-# Over the pinned *project* corpus (restored, as `tools/ci/project-corpus.sh` does):
-BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi --test all xml_doc_source_diff::project::pinned -- --ignored  # ~20 s
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s
@@ -409,12 +415,12 @@ the parser deterministic, so there is no drift for slack to absorb, and a
 one-sided floor is exactly what rotted 2,401 files deep while nothing ran the
 sweep. If every moved line is intended, regenerate with
 `BORZOI_UPDATE_MANIFESTS=1` on the same command (the failure message prints it;
-for the whole-project gate it is
-`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh`, run outside
-`nix develop`) and commit the manifest diff, so the reviewer sees exactly which
-items moved. The hard gates (zero divergences, no parser panic or round-trip
-failure, no dropped reference-pack type) are separate assertions that
-regeneration cannot bless. `docs/continuous-measurements.md` ("Exact
+for the whole-project gate,
+`BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh` regenerates
+every manifest its steps check) and commit the manifest diff, so the reviewer
+sees exactly which items moved. The hard gates (zero divergences, no parser
+panic or round-trip failure, no dropped reference-pack type) are separate
+assertions that regeneration cannot bless. `docs/continuous-measurements.md` ("Exact
 manifests") has the format and the helpers: `borzoi_oracle_harness::manifest`,
 and `borzoi_oracle_harness::corpus_key`, which spells a corpus file the same way
 on macOS (where Nix renames case-colliding names) and on Linux CI.
@@ -426,3 +432,36 @@ first establishing which direction it moved and why.
 `docs/continuous-measurements.md` has the full gate/measurement split, and the
 record of why the MSBuild-on-real-projects row stayed unwired-and-named while it
 had known divergences rather than being green-lit at a ceiling equal to them.
+
+### The whole-project gate
+
+CI's `corpus-diff` job (Whole-project resolution) runs on every pull request,
+ungated by the change filters. Its gates are the steps of
+`tools/ci/project-corpus-gate.sh`, which is the one list of them: CI runs
+each as `project-corpus-gate.sh STEP`, and `project-corpus-gate.test.sh`
+fails if the job runs anything else. So running the script runs the job:
+
+```sh
+bash tools/ci/project-corpus-gate.sh                    # every step
+bash tools/ci/project-corpus-gate.sh xml-doc-source     # just one; --list names them
+```
+
+Run it outside `nix develop` (it enters the devshell itself) before pushing a
+change that could move what the LSP answers, which is most changes to `cst`,
+`sema`, `assembly`, `msbuild`, `nuget`, `lsp` or `corpus-diff`. The steps are
+the project-corpus resolution differential and its exact manifest, the
+`borzoi-corpus-diff` crate's tests (its FCS-driven fixtures included), the
+whole-assembly projection sweep over the corpus's packages, and the
+restore-graph and project source-doc differentials with their exact manifests
+(`crates/lsp/tests/manifests/`). With every step it keeps going past a
+failure and names the failed steps at the end.
+
+Run locally, it first materialises the pinned project corpus (clones, and
+restores from nuget.org) into a cache shared by every worktree,
+`${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}`. Concurrent
+runs are safe: each has its own plan and env files, a lock serialises the
+checkout and restore, and no run rewrites the corpus while another run's steps
+read it, so a run of a different pin waits for them. A run whose pin is
+already materialised skips the restore. A run killed outright leaves its lock
+or its reader registration behind; the next run that needs it gone fails and
+says what to remove once no step of the killed run is still going.

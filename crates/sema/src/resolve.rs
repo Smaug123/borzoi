@@ -65,6 +65,8 @@ use crate::qnof::QualifiedNameOfFile;
 
 mod assembly;
 mod bindings;
+mod contributors;
+use contributors::FileContributions;
 mod decls;
 mod exprs;
 mod lookup;
@@ -117,6 +119,9 @@ pub fn resolve_file(
     // Over-approximate (an augmentation target's last segment counts too),
     // which is sound: a spurious match only adds a defer.
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        if type_defn_renames_core_attribute(&defn) {
+            r.declares_core_attribute_alias = true;
+        }
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
             // A generic declaration of the name disqualifies an in-file
@@ -232,38 +237,6 @@ pub fn resolve_file(
                 }
                 _ => {}
             }
-        }
-        // …and the fact that it EXISTS. Its contents are not enumerated: a
-        // `[<AutoOpen>]` container's bare-visible surface is open-ended —
-        // values, union and exception cases, `extern` prototypes,
-        // active-pattern tags, a single-case union spelled like an
-        // abbreviation, an auto-open *type*'s statics, statics borrowed through
-        // an abbreviation — and each is invisible to a different part of the
-        // parse. Enumerating them is a list that keeps growing and can only be
-        // audited by inspection; the flag is one closed question with a
-        // one-line soundness argument, and it costs commits only in files that
-        // actually declare such a container. Read by the implicit
-        // enclosing-namespace fold, which runs before the block's walk and so
-        // cannot see any of it (`Resolver::block_local_shadow_unknowable`).
-        r.own_auto_open_container = true;
-    }
-    // An `[<AutoOpen>]` **type** is the other container whose surface folds into
-    // the rest of its enclosing scope — its statics, and (fsi-verified) the
-    // statics of an abbreviation's target. Same closed flag, same reason.
-    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
-        // `CanAutoOpenTyconRef` (`NameResolution.fs`) ends `tcref.Typars(m) |>
-        // List.isEmpty`, so a GENERIC `[<AutoOpen>]` type auto-opens nothing at
-        // all — flagging it would defer every name the enclosing namespace
-        // supplies for a container that contributes none (fcs-dump-verified).
-        if attrs_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
-            r.own_auto_open_container = true;
-        }
-        // The value-slot subset of the type-name pre-scan above.
-        if let Some(name) = defn.long_id().and_then(|li| li.idents().last())
-            && decls::type_slot_class(&defn) != model::SlotClass::Keeps
-        {
-            r.own_value_slot_type_names
-                .insert(id_text(&name).to_string());
         }
     }
     // Every value-binder simple name in the file — the constructor fallback's
@@ -484,6 +457,7 @@ pub fn resolve_file(
             .remove(&r.container_path)
             .unwrap_or_default();
         let frame = r.top_level.remove(&r.container_path).unwrap_or_default();
+        r.module_frames.push(r.scopes.len());
         r.scopes.push(frame);
         // The block frame is now active: seed the implicit auto-opens'
         // `[<AutoOpen>]` modules (FSharp.Core's `Operators` /
@@ -495,13 +469,14 @@ pub fn resolve_file(
             // Implicit auto-opens precede every declaration: slot position 0.
             r.open_auto_open_modules_in(&ns, 0, true);
         }
-        // …then the block's **own** enclosing namespace, which FCS opens
-        // implicitly as well (`ImplicitlyOpenOwnNamespace`) — that is how a
-        // referenced assembly's `[<AutoOpen>]` module in `namespace N` is in
-        // scope from a file that declares `namespace N` and opens nothing.
-        // After the implicit auto-opens, matching FCS's order: those are
-        // applied when the CCU is added, before any block env exists.
-        r.open_own_enclosing_namespace();
+        // …then what earlier files put in the root scope, and the block's
+        // **own** enclosing namespace, which FCS opens implicitly as well
+        // (`ImplicitlyOpenOwnNamespace`) — that is how a referenced assembly's
+        // `[<AutoOpen>]` module in `namespace N` is in scope from a file that
+        // declares `namespace N` and opens nothing. After the implicit
+        // auto-opens, matching FCS's order: those are applied when the CCU is
+        // added, before any block env exists.
+        r.block_start_contributions(&module);
         // EX-3 §2(d): the block header's own attributes (`[<AutoOpen>] module
         // Test`) resolve in the block's opening scope — the implicit auto-opens
         // just seeded, no explicit `open` yet — which is FCS's env for them.
@@ -513,6 +488,7 @@ pub fn resolve_file(
             .scopes
             .pop()
             .expect("container value frame is on the stack");
+        r.module_frames.pop();
         // Opens are scoped to this one block: drop the entries an `open` brought
         // in ([`ScopeEntry::from_open`]) before storing the container frame back,
         // so a later same-named `namespace N` block re-takes only the value/case
@@ -520,7 +496,7 @@ pub fn resolve_file(
         // leak across same-named blocks, but namespace values merge). A *nested*
         // module's frame is popped and discarded, so its opened entries vanish
         // with no filter needed.
-        frame.entries.retain(|e| !e.from_open);
+        frame.entries.retain(|e| !e.from_open && e.mark.is_none());
         // The surviving bindings re-enter a later same-named block at that
         // block's generation zero: their stamps are THIS block's history, and
         // carrying them over would let a fresh block's counter (reset to 0)
@@ -1339,12 +1315,14 @@ fn resolve_project_files_impl(
             // slot materialises.
             SourceFile::Sig(sig) => {
                 let surface = signature_surface(sig, &pf.qnof);
-                ResolvedFile::signature_slot(
+                let mut rf = ResolvedFile::signature_slot(
                     preceding.next_base(),
                     surface.screen,
                     surface.defs,
                     surface.exports,
-                )
+                );
+                contributors::signature_contributions(sig, &preceding, assemblies, &mut rf);
+                rf
             }
             SourceFile::Impl(file) => {
                 // Per-file span so the fold's cost is attributable in the LSP's
@@ -1739,12 +1717,14 @@ fn resolve_project_files_incremental_impl(
             let mut rf = match &pf.file {
                 SourceFile::Sig(sig) => {
                     let surface = signature_surface(sig, &pf.qnof);
-                    ResolvedFile::signature_slot(
+                    let mut rf = ResolvedFile::signature_slot(
                         preceding.next_base(),
                         surface.screen,
                         surface.defs,
                         surface.exports,
-                    )
+                    );
+                    contributors::signature_contributions(sig, &preceding, assemblies, &mut rf);
+                    rf
                 }
                 SourceFile::Impl(file) => {
                     let mut rf = resolve_file(file, &preceding, assemblies, &pf.recovery);
@@ -1845,6 +1825,7 @@ impl<'a> Resolver<'a> {
             typar_scopes: Vec::new(),
             type_defs: HashMap::new(),
             type_slot_classes: HashMap::new(),
+            type_slot_history: HashMap::new(),
             type_access_roots: HashMap::new(),
             container_decls: HashMap::new(),
             type_cases: HashMap::new(),
@@ -1890,8 +1871,6 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
-            own_auto_open_container: false,
-            own_value_slot_type_names: HashSet::new(),
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),
@@ -1902,6 +1881,12 @@ impl<'a> Resolver<'a> {
             opaque_value_open: false,
             opaque_dotted_open: false,
             recursive_module_active: false,
+            contributions: FileContributions::default(),
+            rec_contribution: None,
+            declares_core_attribute_alias: false,
+            ce_depth: 0,
+            module_frames: Vec::new(),
+            auto_open_type_paths: HashSet::new(),
             rec_module_names: HashSet::new(),
             auto_open_type_shadow_names: HashMap::new(),
             anonymous_root: false,
@@ -2121,6 +2106,8 @@ impl<'a> Resolver<'a> {
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
+            contributions: self.contributions,
+            declares_core_attribute_alias: self.declares_core_attribute_alias,
             attribute_shape_unknowable: self.attribute_shape_unknowable,
             augmentation_instance_names: self.augmentation_instance_names,
             augmentation_static_names: self.augmentation_static_names,
@@ -2341,17 +2328,6 @@ fn attrs_require_qualified_access(attrs: impl Iterator<Item = AttributeList>) ->
         })
 }
 
-/// Whether the attribute lists mark the type `[<Struct>]` — a struct
-/// union/record is a struct type (`isStructTy`), which puts its name in FCS's
-/// unqualified slot (probe M20m of `docs/project-type-member-plan.md`).
-fn attrs_mark_struct(attrs: impl Iterator<Item = AttributeList>) -> bool {
-    attrs
-        .flat_map(|list| list.attributes().collect::<Vec<_>>())
-        .filter_map(|attr| attr.type_name())
-        .filter_map(|li| li.idents().last())
-        .any(|seg| matches!(&*id_text(&seg), "Struct" | "StructAttribute"))
-}
-
 /// Every nested-module name declared anywhere under `decls` (all depths),
 /// for the `rec`-block pre-scan ([`Resolver::rec_module_names`]): inside
 /// `module rec` / `namespace rec`, a later-declared module is already in
@@ -2375,6 +2351,28 @@ pub(crate) fn collect_nested_module_names(
             collect_nested_module_names(nm.decls(), out);
         }
     }
+}
+
+/// Whether a type definition may rename or impersonate a core attribute
+/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]): it is named like one, or
+/// it is an abbreviation with any target token spelled like one, however the
+/// target is written (parenthesised, `global.`-rooted, applied). Token-level,
+/// so no target syntax escapes it; a spurious match only withdraws trust in
+/// written attribute names. The definition's own attribute lists are not
+/// read: using an attribute renames nothing.
+pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
+    let spelled_core =
+        |t: &SyntaxToken| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(t));
+    let named_core = defn
+        .long_id()
+        .and_then(|li| li.idents().last())
+        .is_some_and(|name| spelled_core(&name));
+    let aliases_core = matches!(defn.repr(), Some(TypeDefnRepr::Abbrev(a))
+        if a.syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .any(|t| spelled_core(&t)));
+    named_core || aliases_core
 }
 
 /// Whether the attribute lists mark a module or type `[<AutoOpen>]`.

@@ -101,6 +101,9 @@ jobs:
       - name: Test change detection
         run: bash tools/ci/detect-changes.test.sh
 
+      - name: Test the whole-project gate script
+        run: bash tools/ci/project-corpus-gate.test.sh
+
   fcs-dump:
     name: Build fcs-dump
     needs: changes
@@ -1038,21 +1041,16 @@ jobs:
       - name: Materialise the pinned project corpus
         run: bash tools/ci/project-corpus.sh
 
+      # Every gate below is a step of `tools/ci/project-corpus-gate.sh`, which
+      # says what each checks; it is the one list of them, so the local run of
+      # the whole-project gate is this job. One Actions step per gate keeps
+      # their logs and timings apart. `project-corpus-gate.test.sh` fails if
+      # this job's `run:` lines and the script's `--list` differ.
       - name: Gate on whole-project resolution
-        # The exit code *is* the gate here, which is the whole difference from
-        # `stats.yml`'s job: that one records the same numbers into the series
-        # and deliberately ignores this status, so without this job nothing ever
-        # asserted on them at a decision point.
-        #
-        # Two gates, in order. Zero divergences in every direction is a hard
-        # assertion: both sides read one reference set, so neither can resolve a
-        # name in an assembly the other cannot see. Then the run must reproduce
-        # `crates/corpus-diff/manifests/project_corpus.txt` exactly — every
-        # project's verdict, every file's match counts, every graded record that
-        # is not a match — so a change that makes the LSP answer less, or moves
-        # a project to "skipped", fails here even though it diverges nowhere.
-        # The script header says how to regenerate the manifest.
-        run: bash tools/ci/project-corpus-gate.sh
+        run: bash tools/ci/project-corpus-gate.sh resolution
+
+      - name: Test corpus-diff crate, FCS-driven fixtures included
+        run: bash tools/ci/project-corpus-gate.sh corpus-diff-tests
 
       - name: Test corpus-diff crate, FCS-driven fixtures included
         # No other job tests this crate. Its FCS-driven tests are the runner's
@@ -1071,54 +1069,13 @@ jobs:
             --skip explain_token_at_position
 
       - name: Gate on whole-assembly projection losses
-        # This sweep wants a populated package cache rather than a fixture,
-        # which is why it had been left a local ratchet — but the step above
-        # has just restored the pinned corpus into exactly one, so the input it
-        # needs already exists on this runner and costs nothing more to reach.
-        #
-        # A whole-assembly skip is the grade of failure that invalidates
-        # readings into *other* assemblies too (the missing one could declare a
-        # colliding type or an assembly-level `[<AutoOpen>]`), so any loss
-        # without a named exemption fails. Losses are identified by the file's
-        # bytes, never its path, so the cache layout here cannot perturb a
-        # verdict.
-        #
-        # Measured 2026-07-31 against this exact restore: 1124 assemblies found,
-        # 1118 projected, 6 exempt (native PE), 0 dropped types. The sweep's own
-        # `MIN_PROJECTED = 1_000` anti-vacuity floor exists to catch a mistyped
-        # root, and this population clears it by 118 — thin enough that a corpus
-        # bump which drops a few dependencies could fail this step for a reason
-        # that has nothing to do with projection. If it goes red with
-        # "population too small" after a `nix/project-corpus.json` change, that
-        # is what happened; re-measure rather than assuming a projection defect.
-        run: |
-          nix develop --command env \
-            BORZOI_DLL_SWEEP_ROOT="$RUNNER_TEMP/project-corpus-packages" \
-            cargo test -p borzoi-assembly --test all projection_skip_sweep:: \
-            -- --ignored --nocapture
+        run: bash tools/ci/project-corpus-gate.sh assembly-projection
 
       - name: Gate on the restore-graph oracle
-        # The half-A oracle of docs/nuget-dgspec-boundary-plan.md over the same
-        # restored projects: the dependency-graph spec generated without
-        # restoring must be exactly the one restore itself reads, and what the
-        # dgspec reader makes of it is pinned in `restore_graph_projects.txt`.
-        run: |
-          nix develop --command env \
-            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
-            cargo test -p borzoi --test all restore_graph::pinned_projects \
-            -- --ignored --nocapture
+        run: bash tools/ci/project-corpus-gate.sh restore-graph
 
       - name: Gate on whole-project source docs
-        # Hover's project-local `///` docs over the same restored projects,
-        # loaded through the LSP's runtime path (Compile order, reference
-        # closure, signature-aware fold) with FCS reading exactly the same
-        # references: where hover would show a doc, FCS attaches exactly it,
-        # and the outcome is pinned in `xml_doc_source_projects.txt`.
-        run: |
-          nix develop --command env \
-            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
-            cargo test -p borzoi --test all xml_doc_source_diff::project::pinned \
-            -- --ignored --nocapture
+        run: bash tools/ci/project-corpus-gate.sh xml-doc-source
 
   all-required-checks-complete:
     if: ${{ always() }}

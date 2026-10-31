@@ -17,6 +17,7 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle, MemberIndex};
 use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
+use super::contributors::{Contribution, FileContributions};
 use super::state::ActivePatternShape;
 
 /// One export recorded at a qualified path, in the Compile order
@@ -339,6 +340,20 @@ pub struct ProjectItems {
     /// winner nondeterministic. [`Self::extend_with`] appends in the same
     /// Compile-order loop as every other per-file accumulator.
     pub(super) auto_open_module_paths: Vec<(Vec<String>, usize)>,
+    /// What earlier files add to every later file's root scope through routes
+    /// the walk does not model ([`FileContributions::root`]).
+    pub(super) root_contribution: Contribution,
+    /// Whether some file folded so far declares a type spelled like
+    /// `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`, or an abbreviation of
+    /// one ([`ResolvedFile::declares_core_attribute_alias`]).
+    pub(super) core_attribute_alias_declared: bool,
+    /// Per project module, what earlier files' declarations add to an `open`
+    /// of it beyond its folded values ([`FileContributions::module_opens`]).
+    pub(super) module_open_contributions: HashMap<Vec<String>, Contribution>,
+    /// Per namespace, what earlier files' declarations add to an `open` of it
+    /// that the namespace fold does not model
+    /// ([`FileContributions::namespace_opens`]).
+    pub(super) namespace_open_contributions: HashMap<Vec<String>, Contribution>,
     /// The project-global [`ItemId`]s of earlier files' **constructor cases**
     /// (exported non-qualified union / exception constructors —
     /// [`ExportedItem::is_case`]). Lets a later file classify an opened cross-file
@@ -1144,6 +1159,23 @@ impl ProjectItems {
         // only while every file contributes both indices together.
         self.project_module_simple_names
             .extend(file.own_module_simple_names.iter().cloned());
+        // Written attribute names stay trustworthy only while nothing so far
+        // can rename or impersonate `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`.
+        self.core_attribute_alias_declared |= file.declares_core_attribute_alias;
+        // What the file contributes through routes the walk does not model.
+        self.root_contribution.merge(&file.contributions.root);
+        for (path, c) in &file.contributions.module_opens {
+            self.module_open_contributions
+                .entry(path.clone())
+                .or_default()
+                .merge(c);
+        }
+        for (path, c) in &file.contributions.namespace_opens {
+            self.namespace_open_contributions
+                .entry(path.clone())
+                .or_default()
+                .merge(c);
+        }
         for ns in idx.namespace_paths {
             self.namespace_paths.insert(ns);
         }
@@ -2148,16 +2180,24 @@ pub enum DeclineCause {
     /// one FCS binds depends on an order sema does not model (assembly
     /// reference order, or a straddle across auto-open fragments).
     OpenFoldCollision,
-    /// A type or `[<AutoOpen>]` container **declared in this block** may take
-    /// the opened name's unqualified slot, which folding the open at the top of
-    /// the block does not express.
-    BlockLocalShadow,
     /// An assembly surface F# opens with **no source `open`** — an implicitly
     /// opened namespace (`Some` and `None` in `Microsoft.FSharp.Core`), a
     /// retained manifest `[<AutoOpen>]` module, the root namespace — supplies a
     /// value of this bare name, and sema folds no scope entry for it, so the
     /// name finds nothing to commit.
     ImplicitSurfaceUnfolded,
+    /// A contributor the walk does not model — an `[<AutoOpen>]` module or type
+    /// folding back into its enclosing scope, an earlier file's root-level
+    /// one, a `rec` block's later binder, a constructible type, an `extern`, a
+    /// static the projection drops — may have put this name in the
+    /// environment after the entry the walk would commit
+    /// (`docs/unmodelled-contributors.md`).
+    UnmodelledContributor,
+    /// A bare name an implicit open supplies, used inside a computation
+    /// expression, where a custom operation of its builder
+    /// (`[<CustomOperation("name")>]`) may take it; the walk does not model
+    /// those.
+    ComputationExpressionImplicit,
 }
 
 impl DeclineCause {
@@ -2211,8 +2251,9 @@ impl DeclineCause {
         DeclineCause::OpenedExceptionShadowed,
         DeclineCause::OpenFoldResidue,
         DeclineCause::OpenFoldCollision,
-        DeclineCause::BlockLocalShadow,
         DeclineCause::ImplicitSurfaceUnfolded,
+        DeclineCause::UnmodelledContributor,
+        DeclineCause::ComputationExpressionImplicit,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2264,8 +2305,9 @@ impl DeclineCause {
             DeclineCause::OpenedExceptionShadowed => "opened_exception_shadowed",
             DeclineCause::OpenFoldResidue => "open_fold_residue",
             DeclineCause::OpenFoldCollision => "open_fold_collision",
-            DeclineCause::BlockLocalShadow => "block_local_shadow",
             DeclineCause::ImplicitSurfaceUnfolded => "implicit_surface_unfolded",
+            DeclineCause::UnmodelledContributor => "unmodelled_contributor",
+            DeclineCause::ComputationExpressionImplicit => "computation_expression_implicit",
         }
     }
 }
@@ -2718,6 +2760,13 @@ pub struct ResolvedFile {
     /// [`Self::attributes_may_declare_extension`] treats it as a possible
     /// marker.
     pub(super) own_abbrev_type_simple_names: HashSet<String>,
+    /// What the file contributes to later files through routes the walk does
+    /// not model ([`FileContributions`]), carried into
+    /// [`ProjectItems`] by the Compile-order fold.
+    pub(super) contributions: FileContributions,
+    /// See [`Resolver::declares_core_attribute_alias`](super::state::Resolver),
+    /// carried into [`ProjectItems::core_attribute_alias_declared`].
+    pub(super) declares_core_attribute_alias: bool,
     /// `true` when some attribute has no resolvable name shape (nameless
     /// `[<>]`, an ident-less path) — unkeyable, so the gate keeps the
     /// presence defer.
@@ -2940,6 +2989,8 @@ impl ResolvedFile {
             && FileExportIndices::from_decls(self) == FileExportIndices::from_decls(other)
             && self.own_type_simple_names == other.own_type_simple_names
             && self.own_module_simple_names == other.own_module_simple_names
+            && self.contributions == other.contributions
+            && self.declares_core_attribute_alias == other.declares_core_attribute_alias
             // A signature file's whole contribution is its screen
             // (`extend_with` pushes it into `ProjectItems::sig_screens`), so
             // a `.fsi` edit that changes the screen must invalidate the
@@ -2978,6 +3029,8 @@ impl ResolvedFile {
             own_type_simple_names: HashSet::new(),
             own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
+            contributions: FileContributions::default(),
+            declares_core_attribute_alias: false,
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),

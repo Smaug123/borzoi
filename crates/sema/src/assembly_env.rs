@@ -38,6 +38,47 @@ pub use il_types::IlTypeDefinition;
 /// terminates well within it).
 const ABBREV_CHASE_FUEL: u32 = 32;
 
+/// See [`AssemblyEnv::core_attribute_aliases`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CoreAttributeAliases {
+    /// Some assembly certainly renames or impersonates a core attribute, or
+    /// may under a name nothing records.
+    pub(crate) certain: bool,
+    /// Abbreviation names whose target was not decoded.
+    pub(crate) possible: HashSet<String>,
+}
+
+/// Whether any named type anywhere in `target` — its head, an argument, a
+/// function or tuple component, at any depth — has a last path segment
+/// `spelled` accepts.
+fn target_mentions(
+    target: &borzoi_assembly::AbbreviationTarget,
+    spelled: &impl Fn(&str) -> bool,
+) -> bool {
+    use borzoi_assembly::AbbreviationTarget as T;
+    match target {
+        T::Named { path, args, .. } => {
+            path.last().is_some_and(|last| spelled(last))
+                || args.iter().any(|arg| target_mentions(arg, spelled))
+        }
+        T::Fun(domain, range) => {
+            target_mentions(domain, spelled) || target_mentions(range, spelled)
+        }
+        T::Tuple { elems, .. } => elems.iter().any(|elem| target_mentions(elem, spelled)),
+        _ => false,
+    }
+}
+
+/// The written names of the two FSharp.Core attributes whose presence changes
+/// what an `open` brings into bare scope: `[<AutoOpen>]` and
+/// `[<RequireQualifiedAccess>]`, with and without the `Attribute` suffix.
+pub(crate) const CORE_ATTRIBUTE_NAMES: &[&str] = &[
+    "AutoOpen",
+    "AutoOpenAttribute",
+    "RequireQualifiedAccess",
+    "RequireQualifiedAccessAttribute",
+];
+
 /// Index of a source assembly in [`AssemblyEnv::assemblies`]. Identifies which
 /// referenced DLL an interned entity came from, so a resolved member can name
 /// the file to read its portable PDB from (go-to-definition).
@@ -698,6 +739,9 @@ pub struct AssemblyEnv {
     measure_head_cache: MeasureHeadCache,
     /// [`Self::primitive_binds`]'s core library, computed on first use.
     core_library: std::sync::OnceLock<Option<HashSet<String>>>,
+    /// Memo for [`Self::core_attribute_aliases`]: a scan of every entity,
+    /// asked once per project fold.
+    core_attribute_alias: std::sync::OnceLock<CoreAttributeAliases>,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -3296,6 +3340,59 @@ impl AssemblyEnv {
         }
         chain.pop();
         false
+    }
+
+    /// What the referenced assemblies say about renaming `[<AutoOpen>]` and
+    /// `[<RequireQualifiedAccess>]` ([`CORE_ATTRIBUTE_NAMES`]). Both are sealed
+    /// classes, so only an abbreviation can rename them, and only a type
+    /// spelled like one can impersonate it.
+    ///
+    /// [`CoreAttributeAliases::certain`] when some assembly declares an
+    /// entity spelled like either that is not FSharp.Core's own class, an
+    /// abbreviation whose target is spelled like either, or a namespace whose
+    /// abbreviations could not be decoded at all (whose names are unknown).
+    /// [`CoreAttributeAliases::possible`] names every abbreviation whose
+    /// target was not decoded: an attribute written with one of those names
+    /// may be either.
+    pub(crate) fn core_attribute_aliases(&self) -> &CoreAttributeAliases {
+        self.core_attribute_alias.get_or_init(|| {
+            let spelled_core = |name: &str| CORE_ATTRIBUTE_NAMES.contains(&name);
+            let core_namespace = ["Microsoft", "FSharp", "Core"];
+            let mut aliases = CoreAttributeAliases {
+                certain: !self.unknowable_abbreviation_namespaces.is_empty(),
+                possible: HashSet::new(),
+            };
+            for node in &self.nodes {
+                let e = &node.entity;
+                let impostor = (spelled_core(&e.name)
+                    || e.source_name.as_deref().is_some_and(spelled_core))
+                    && !(e.assembly.name == "FSharp.Core"
+                        && e.namespace == core_namespace
+                        && e.kind != EntityKind::Abbreviation);
+                if impostor {
+                    aliases.certain = true;
+                }
+                if e.kind != EntityKind::Abbreviation {
+                    continue;
+                }
+                match &e.abbreviation_target {
+                    // Anywhere in the target, not only its head: an
+                    // abbreviation applied to the attribute
+                    // (`type AO = Id<AutoOpenAttribute>` over `type Id<'T> =
+                    // 'T`) renames it as surely.
+                    Some(target) => {
+                        if target_mentions(target, &spelled_core) {
+                            aliases.certain = true;
+                        }
+                    }
+                    None => {
+                        aliases.possible.insert(e.name.clone());
+                        aliases.possible.extend(e.source_name.clone());
+                    }
+                }
+            }
+            aliases
+        })
     }
 
     /// The F# source full name of `handle`: namespace segments, enclosing
@@ -7293,6 +7390,41 @@ mod from_views_tests {
             path: path.iter().map(|s| (*s).to_string()).collect(),
             args: Vec::new(),
         }
+    }
+
+    /// A referenced abbreviation renames a core attribute wherever its
+    /// target mentions one — at the head, or as an argument of another
+    /// abbreviation (`type AO = Id<AutoOpenAttribute>`) — and an abbreviation
+    /// whose target was not decoded makes its own name a possible rename.
+    #[test]
+    fn core_attribute_aliases_read_the_whole_target() {
+        let alias = |name: &str, target: Option<AbbreviationTarget>| Entity {
+            kind: EntityKind::Abbreviation,
+            assembly: ident("Lib"),
+            abbreviation_target: target,
+            ..module_entity("_", &["Lib"], name)
+        };
+        let auto_open = named_target(
+            Some("FSharp.Core"),
+            &["Microsoft", "FSharp", "Core", "AutoOpenAttribute"],
+        );
+        let applied = AbbreviationTarget::Named {
+            ccu: None,
+            path: vec!["Lib".to_string(), "Id`1".to_string()],
+            args: vec![auto_open.clone()],
+        };
+        let harmless = named_target(Some("System.Runtime"), &["System", "String"]);
+        for (label, target, certain) in [
+            ("head", auto_open, true),
+            ("argument", applied, true),
+            ("unrelated", harmless, false),
+        ] {
+            let env = AssemblyEnv::from_entities(vec![alias("AO", Some(target))]);
+            assert_eq!(env.core_attribute_aliases().certain, certain, "{label}");
+        }
+        let env = AssemblyEnv::from_entities(vec![alias("Mystery", None)]);
+        assert!(!env.core_attribute_aliases().certain);
+        assert!(env.core_attribute_aliases().possible.contains("Mystery"));
     }
 
     #[test]

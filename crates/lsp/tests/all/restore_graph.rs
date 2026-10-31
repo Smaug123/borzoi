@@ -241,16 +241,17 @@ fn a_project_reference_brings_its_project_into_the_spec() {
     assert!(!root.join("lib/obj").exists(), "nor its reference's obj/");
 }
 
-/// A project named through a symlink, of its directory or of the project file
-/// itself, declines down both routes. Restore runs in the project's directory,
-/// which the OS reports by its real path, so such a project is spelt two ways
-/// in one evaluation and NuGet drops its `ProjectReference`s from the spec
-/// restore reads: the routes would disagree, and neither spec is the project
-/// the LSP evaluated. (The shipped restore still restores such a spelling;
-/// see the plan's stage 2.)
+/// A project whose directory is reached through a symlink declines down both
+/// routes. MSBuild runs a project's targets with the process's working
+/// directory set to the project's directory, which the OS reports by its real
+/// path, so such a project is spelt two ways in one evaluation and NuGet drops
+/// its `ProjectReference`s from the spec restore reads: the routes would
+/// disagree. A project *file* that is a symlink, in a real directory, is spelt
+/// one way: MSBuild evaluates it beside the link, so it is a project of its
+/// own, and it keeps the reference that resolves there.
 #[cfg(unix)]
 #[test]
-fn a_project_named_through_a_symlink_declines() {
+fn a_project_in_a_symlinked_directory_declines() {
     let root = write_tree(
         "symlinked",
         &[
@@ -258,35 +259,41 @@ fn a_project_named_through_a_symlink_declines() {
             ("real/App.fs", "module App\n"),
             ("real/lib/Lib.fsproj", LIB),
             ("real/lib/Lib.fs", "module Lib\n"),
+            ("elsewhere/App.fs", "module App\n"),
+            ("elsewhere/lib/Lib.fsproj", LIB),
+            ("elsewhere/lib/Lib.fs", "module Lib\n"),
         ],
     );
     std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
-    std::fs::create_dir_all(root.join("elsewhere")).unwrap();
-    std::fs::write(root.join("elsewhere/App.fs"), "module App\n").unwrap();
     std::os::unix::fs::symlink(
         root.join("real/App.fsproj"),
         root.join("elsewhere/App.fsproj"),
     )
     .unwrap();
 
-    for project in [
-        root.join("link").join("App.fsproj"),
-        root.join("elsewhere").join("App.fsproj"),
-    ] {
-        match both_routes(&project) {
-            Ok(Graphs::Declined) => {}
-            Ok(Graphs::Agree(_)) => panic!("{}: must decline", project.display()),
-            Err(failure) => panic!("{failure}"),
-        }
+    match both_routes(&root.join("link").join("App.fsproj")) {
+        Ok(Graphs::Declined) => {}
+        Ok(Graphs::Agree(_)) => panic!("a project in a symlinked directory must decline"),
+        Err(failure) => panic!("{failure}"),
     }
-    // By its real path, the same project keeps its reference.
-    let spec = committed_spec(&root.join("real").join("App.fsproj"));
-    let entry = spec
-        .projects
-        .iter()
-        .find(|p| p.restore.project_unique_name.ends_with("App.fsproj"))
-        .expect("the entry is in the spec");
-    assert_eq!(entry.restore.frameworks[0].project_references.len(), 1);
+    // By its real path, and as a symlinked file beside its own `lib/`, the
+    // project keeps its reference, resolved beside the spelling.
+    for directory in ["real", "elsewhere"] {
+        let spec = committed_spec(&root.join(directory).join("App.fsproj"));
+        let entry = spec
+            .projects
+            .iter()
+            .find(|p| p.restore.project_unique_name.ends_with("App.fsproj"))
+            .expect("the entry is in the spec");
+        let references = &entry.restore.frameworks[0].project_references;
+        assert_eq!(references.len(), 1, "{directory}");
+        let expected = root.join(directory).join("lib").join("Lib.fsproj");
+        assert_eq!(
+            references[0].project_unique_name,
+            expected.to_str().unwrap(),
+            "{directory}"
+        );
+    }
 }
 
 /// A project conditioned on a global `dotnet restore` injects

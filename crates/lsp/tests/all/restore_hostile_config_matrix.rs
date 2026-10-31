@@ -86,6 +86,10 @@ fn assert_hazard(tag: &str, fsproj_body: &str, siblings: &[(&str, &str)], expect
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-hostile-{tag}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
+    // By its real path: the on-demand restore declines a project whose
+    // directory is reached through a symlink, and the temporary directory is
+    // one on macOS.
+    let root = std::fs::canonicalize(&root).unwrap();
     let fsproj = root.join("App.fsproj");
     std::fs::write(&fsproj, fsproj_body).unwrap();
     std::fs::write(root.join("App.fs"), "module App\n\nlet answer = 42\n").unwrap();

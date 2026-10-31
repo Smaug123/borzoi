@@ -210,6 +210,24 @@ pub fn classify(
     Some(DefinitionUnavailable { reason, analysis })
 }
 
+/// [`classify`] for a signature file, and the range to anchor the explanation
+/// on. The resolver analyses implementation files only, so nothing in a
+/// signature file has a resolution: an identifier under the cursor is an
+/// [`UnavailableReason::UntrackedName`], and anything else has nothing to
+/// explain. `root` is the signature-grammar tree.
+pub fn classify_signature(
+    root: &SyntaxNode,
+    byte: usize,
+    analysis: Analysis,
+) -> Option<(DefinitionUnavailable, TextRange)> {
+    let range = identifier_token_range(root, byte)?;
+    let unavailable = DefinitionUnavailable {
+        reason: UnavailableReason::UntrackedName,
+        analysis,
+    };
+    Some((unavailable, range))
+}
+
 /// The resolution the LSP would *act* on at `byte` — see
 /// [`served_resolution_with_range`], shared so the explanation and the
 /// navigation can never disagree about which verdict is in force.

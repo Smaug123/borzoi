@@ -1027,17 +1027,16 @@ fn closing_the_last_buffer_forgets_the_project() {
     );
 }
 
-/// Two buffers reaching one physical project through different symlinked
-/// spellings are one project, and are reported once.
+/// Two buffers reaching one project file through a symlinked directory reach
+/// two projects, each reported once.
 ///
-/// This pins the user-visible contract. It does *not* discriminate
-/// `CanonicalProject`'s key-only equality from a path-inclusive one: aliases of
-/// one file render the same `file_name()`, so the duplicate report the equality
-/// prevents is unreachable through a directory symlink. The equality is
-/// key-only because that is what project identity *is*, not because this test
-/// forced it.
+/// MSBuild evaluates a project as it is spelt, and a symlinked directory has
+/// different ancestors to search for `Directory.Build.props` and the like, so
+/// the two spellings are evaluated separately and may defer for different
+/// reasons. Merging their reports would let one spelling's message stand for
+/// the other's. Neither re-toasts on a later dispatch.
 #[test]
-fn aliased_spellings_of_one_project_are_one_project() {
+fn each_spelling_of_a_symlinked_project_is_reported_once() {
     let tmp = TempDir::new().unwrap();
     let root = real_path(&tmp);
     let real = root.join("real");
@@ -1057,16 +1056,16 @@ fn aliased_spellings_of_one_project_are_one_project() {
 
     server.open(&aliased, "module B\nlet b = 2\n", "fsharp");
     assert_eq!(
-        server.deferral_messages(&aliased),
-        Vec::<String>::new(),
-        "the alias is the same project, already reported"
+        server.deferral_messages(&aliased).len(),
+        1,
+        "the spelling through the link is its own project"
     );
-    // …and it stays quiet, rather than re-toasting on every later dispatch.
+    // …and both stay quiet, rather than re-toasting on every later dispatch.
     for _ in 0..3 {
         assert_eq!(
             server.deferral_messages(&direct),
             Vec::<String>::new(),
-            "an aliased project re-toasted on a later dispatch"
+            "a project re-toasted on a later dispatch"
         );
     }
 }

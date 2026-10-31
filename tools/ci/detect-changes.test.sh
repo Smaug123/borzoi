@@ -47,6 +47,7 @@ assert_eq "sidecar prod"             "$(expect sidecar)"       "$(classify 'tool
 assert_eq "sidecar tests"            "$(expect sidecar)"       "$(classify 'tools/csharp-sidecar.tests/Bar.cs')"
 assert_eq "nuget crate"              "$(expect nuget)"         "$(classify 'crates/nuget/src/version.rs')"
 assert_eq "nuget oracle tool"        "$(expect nuget)"         "$(classify 'tools/nuget-oracle/Program.fs')"
+assert_eq "inheritdoc oracle tool"    "$(expect lsp)"           "$(classify 'tools/inheritdoc-oracle/Program.cs')"
 # The generated facade lives under crates/cst, so a hand-edit there is a `cst`
 # change; the staleness gate (test-astgen) runs on `cst` too, catching it.
 assert_eq "generated facade is cst"  "$(expect cst)"           "$(classify 'crates/cst/src/syntax/generated/union_types.rs')"

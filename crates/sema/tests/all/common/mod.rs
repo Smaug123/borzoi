@@ -1256,6 +1256,29 @@ pub fn ensure_qualifier_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **unmodelled-contributor** fixture
+/// (`tests/fixtures/contributor_env`, `SemaContributorFixture.dll`) once per
+/// test binary and return its `.dll` path: referenced statics reaching bare
+/// scope through a base class, an `[<AutoOpen>]` abbreviation, or a member the
+/// projection drops (`tests/all/unmodelled_contributor_grid.rs`). Behind the
+/// shared [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_contributor_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/contributor_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build contributor fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaContributorFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **active-pattern** fixture (`tests/fixtures/active_pattern_env`,
 /// `SemaActivePatternFixture.dll`) once per test binary and return its `.dll`
 /// path. A referenced F# library exposing active-pattern recognizers of every
@@ -1884,6 +1907,8 @@ struct RawUse {
     generic_arity: Option<usize>,
     #[serde(rename = "DeclaringPath", default)]
     declaring_path: Option<Vec<RawDeclaringSegment>>,
+    #[serde(rename = "DeclaringNamespace", default)]
+    declaring_namespace: Option<String>,
     #[serde(rename = "IsConstructor", default)]
     is_constructor: bool,
 }
@@ -2198,6 +2223,18 @@ pub struct NormalisedProjectUse {
     pub assembly: Option<String>,
     /// The symbol's full name (`Demo.Calc.Zero`), or `None`.
     pub full_name: Option<String>,
+    /// FCS's symbol kind (`unioncase`, `member`, `type`, …), or `None`.
+    pub kind: Option<String>,
+    /// The declaring entity's path, outermost first, as `(compiled name,
+    /// generic arity)` — the structural identity a rendered full name cannot
+    /// carry (`FSharpOption`1` for `Option<_>.Some`). `None` when FCS reported
+    /// no declaring entity.
+    pub declaring_path: Option<Vec<(String, usize)>>,
+    /// The namespace the declaring path's outermost entity sits in, `None` for
+    /// the root namespace or when FCS reported no declaring entity.
+    pub declaring_namespace: Option<String>,
+    /// Whether the use is a constructor call (FCS names the constructed type).
+    pub is_constructor: bool,
 }
 
 /// All symbol uses FCS reported for one project file.
@@ -2207,6 +2244,9 @@ pub struct FileUses {
     /// supplied source).
     pub path: PathBuf,
     pub uses: Vec<NormalisedProjectUse>,
+    /// The message of every `Severity=Error` diagnostic FCS reported for the
+    /// file — empty for a file that checked cleanly.
+    pub errors: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -2221,6 +2261,16 @@ struct RawFileUses {
     path: String,
     #[serde(rename = "Uses")]
     uses: Vec<RawUse>,
+    #[serde(rename = "Diagnostics", default)]
+    diagnostics: Vec<RawProjectDiagnostic>,
+}
+
+#[derive(Deserialize)]
+struct RawProjectDiagnostic {
+    #[serde(rename = "Severity")]
+    severity: String,
+    #[serde(rename = "Message")]
+    message: String,
 }
 
 /// Parse the `uses-project` subcommand's JSON into per-file, byte-offset-
@@ -2277,12 +2327,24 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
+                        kind: u.kind,
+                        declaring_path: u.declaring_path.map(|path| {
+                            path.into_iter().map(|seg| (seg.name, seg.arity)).collect()
+                        }),
+                        declaring_namespace: u.declaring_namespace,
+                        is_constructor: u.is_constructor,
                     }
                 })
                 .collect();
             FileUses {
                 path: path.to_path_buf(),
                 uses,
+                errors: f
+                    .diagnostics
+                    .into_iter()
+                    .filter(|d| d.severity == "Error")
+                    .map(|d| d.message)
+                    .collect(),
             }
         })
         .collect()

@@ -443,10 +443,14 @@ impl<'a> Resolver<'a> {
                 // uses we can resolve. The `let!`/`use!`/`and!` binders inside
                 // are now modelled as `Expr::LetOrUse` (their bound names
                 // resolve to locals); other CE-specific constructs still fall
-                // through to `Deferred`, never to a wrong resolution.
+                // through to `Deferred`, never to a wrong resolution. The
+                // builder's custom operations are names the walk does not
+                // model ([`Self::computation_expression_decline`]).
+                self.ce_depth += 1;
                 if let Some(inner) = e.inner() {
                     self.resolve_expr(&inner);
                 }
+                self.ce_depth -= 1;
             }
             Expr::Record(e) => {
                 // `{ src with F = e; … }` — resolve the copy source (if any) and
@@ -830,9 +834,20 @@ impl<'a> Resolver<'a> {
     /// Resolve a **bare** name use, and where it declines, record which guard
     /// declined it if one did ([`Self::bare_value_decline`]).
     pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) {
-        if self.record_name_use(tok, allow_opened_type)
-            && let Some(cause) = self.bare_value_decline(&id_text(tok))
+        if self.record_name_use(tok, allow_opened_type) {
+            if let Some(cause) = self.bare_value_decline(&id_text(tok)) {
+                self.record_decline(tok.text_range(), DeclineSite::pre_walk(cause));
+            }
+        } else if let Some(cause) = self
+            .bare_value_evicted(&id_text(tok))
+            .or_else(|| self.computation_expression_decline(&id_text(tok)))
         {
+            // A constructible type of the name took the unqualified slot after
+            // the value the lookup found: a bare use constructs the type.
+            self.record(
+                tok.text_range(),
+                Resolution::Deferred(DeferredReason::UnboundName),
+            );
             self.record_decline(tok.text_range(), DeclineSite::pre_walk(cause));
         }
     }

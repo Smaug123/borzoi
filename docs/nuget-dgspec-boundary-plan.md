@@ -252,8 +252,8 @@ tautological. In its place, `tests/all/restore_graph.rs` checks the stronger
 claim the reference needs: the generated spec *equals* the one restore read, up
 to the scratch directories each was written under. The checks run on:
 - fixtures (a single project, a project reference, a locked project, a
-  project named through a symlink, a project conditioned on restore's
-  injected global);
+  project in a symlinked directory, a symlinked project file, a project
+  conditioned on restore's injected global);
 - every corpus project, in CI's `corpus-diff` job (`restore_graph::pinned_projects`),
   where the stage-1 reader's verdict on each spec is pinned in
   `tests/manifests/restore_graph_projects.txt`. All six corpus projects agree
@@ -267,20 +267,35 @@ The routes check turned up two findings:
   for every verb, which for the shipped restore only repeats what the CLI adds.
   A test diffs the MSBuild command lines the two verbs forward, so an SDK that
   starts forwarding another global fails by name.
-- **Symlinked project paths: open, in the shipped restore.** Restore runs in the
-  project's directory, which the OS reports by its real path. A project named
-  through a symlink is therefore spelt two ways in one evaluation, and NuGet
-  drops its `ProjectReference`s: the shipped restore of such a spelling never
-  sees them. The oracle declines such a spelling, so it makes no claim there.
-  The shipped restore is unchanged, because no fix local to it is right:
-  - naming the project by its real path moves the directories MSBuild searches
-    for `Directory.Build.props` and the like away from the ones the LSP
-    evaluated;
-  - declining poisons the LSP's assembly-env cache, which is keyed by
-    canonical path, for the real spelling too.
+- **Symlinked project paths: a project is the spelling it is evaluated
+  under.** MSBuild runs a project's targets with the process's working
+  directory set to the project's directory, which the OS reports by its real
+  path. A project whose *directory* is reached through a symlink is therefore
+  spelt two ways in one restore: the walk resolves its relative
+  `ProjectReference`s by the real path, the evaluation by the symlinked one, and
+  NuGet drops them from the spec. That is `dotnet`'s own behaviour, from any
+  working directory: `dotnet build /abs/link/App.fsproj` compiles against the
+  reference but writes an assets file without it. A project *file* that is a
+  symlink, in a real directory, restores whole.
 
-  The LSP keys a project by its canonical path but evaluates the spelling it
-  was handed, so the fix belongs at that boundary, as its own change.
+  Two spellings of one file are also two MSBuild projects. Probed with
+  `dotnet msbuild -getProperty -getItem:Compile`: through a symlinked directory
+  the `Directory.Build.props` search walks the link's ancestors, and a symlinked
+  `.fsproj` compiles the sources beside the link, not beside its target. So the
+  LSP identifies a project by its spelling (`semantic::ProjectId`: absolute,
+  lexically normalised, case folded where the platform folds it), keys every
+  per-project cache by it, and evaluates that spelling. Keying by real path
+  merged distinct projects and served whichever spelling was evaluated first.
+  Both the shipped restore and the oracle decline a project whose directory is
+  not its real path; the decline is cached under that spelling alone, so the
+  real spelling still restores.
+
+  The cost: a never-restored project opened through a symlinked directory
+  (including macOS `/tmp` and `/var` temporary directories) gets no on-demand
+  restore. The alternative, evaluating every project under its real directory
+  as `cd proj && dotnet build` does, would need file identity by real path
+  across the LSP (membership, buffer overlays, the paths in responses) and
+  would change which `Directory.Build.props` a symlink-opened project reads.
 
 ### Stage 3: the decomposition is lossless
 
