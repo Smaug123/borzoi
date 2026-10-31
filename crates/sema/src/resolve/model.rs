@@ -144,6 +144,11 @@ pub(super) struct SigScreen {
     /// ([`FileExportIndices::derive`]); [`Self::namespace_unexported_names`]
     /// carries what they hide instead.
     pub(super) namespaces: HashSet<Vec<String>>,
+    /// The `(namespace, type name)` pairs of every type the signature declares
+    /// directly under a namespace that may take FCS's constructor slot —
+    /// read from the signature, which is what later files are checked
+    /// against even where the implementation disagrees with it.
+    pub(super) namespace_slot_type_names: Vec<(Vec<String>, String)>,
     /// The `(namespace, name)` pairs of every **bare** value-space name the
     /// signature may expose directly under a namespace without an exported
     /// identity: a case of an attributed union (whose
@@ -332,6 +337,9 @@ pub struct ProjectItems {
     /// The namespaces some paired signature folded so far declares
     /// ([`SigScreen::namespaces`]).
     pub(super) signatured_namespaces: HashSet<Vec<String>>,
+    /// [`SigScreen::namespace_slot_type_names`] of every paired signature
+    /// folded so far, by namespace.
+    pub(super) signatured_slot_type_names: HashMap<Vec<String>, HashSet<String>>,
     /// [`AssemblyEnv::core_attribute_aliases`](crate::AssemblyEnv::core_attribute_aliases)
     /// for the env the fold resolves against, set when the fold starts.
     pub(super) assembly_core_attribute_aliases: Arc<crate::assembly_env::CoreAttributeAliases>,
@@ -1187,6 +1195,12 @@ impl ProjectItems {
         if let Some(screen) = paired_screen {
             self.signatured_namespaces
                 .extend(screen.namespaces.iter().cloned());
+            for (namespace, name) in &screen.namespace_slot_type_names {
+                self.signatured_slot_type_names
+                    .entry(namespace.clone())
+                    .or_default()
+                    .insert(name.clone());
+            }
         }
         let idx = match paired_screen {
             None => FileExportIndices::from_decls(file),

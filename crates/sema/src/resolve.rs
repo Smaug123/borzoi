@@ -1234,6 +1234,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut value_paths = Vec::new();
     let mut bare_value_paths: Vec<Vec<String>> = Vec::new();
     let mut namespaces: HashSet<Vec<String>> = HashSet::new();
+    let mut namespace_slot_type_names: Vec<(Vec<String>, String)> = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
     for fragment in sig.modules() {
@@ -1328,6 +1329,10 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 auto_open_type_containers.push(ns.clone());
                             }
                             for defn in types.defns() {
+                                if let Some(ident) = sig_type_slot_name(&defn) {
+                                    namespace_slot_type_names
+                                        .push((ns.clone(), id_text(&ident).to_string()));
+                                }
                                 for ident in sig_bare_value_idents(&defn) {
                                     let mut path = ns.clone();
                                     path.push(id_text(&ident).to_string());
@@ -1473,6 +1478,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         exported_value_paths,
         exported_case_paths,
         namespaces,
+        namespace_slot_type_names,
         namespace_unexported_names,
         attribute_spellings,
     });

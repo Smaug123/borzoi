@@ -346,6 +346,13 @@ const SHAPES: &[Shape] = &[
         imp: "type V =\n    | Vcase\n\n[<AutoOpen>]\nmodule M =\n    let ref (x : int) = x\n",
         model: Model::Unmodelled,
     },
+    // The signature alone declares the constructible type (Codex review).
+    Shape {
+        label: "signature_only_constructor_slot_type",
+        sig: "type ref = System.Object\n\ntype U =\n    | Case1\n",
+        imp: "type U =\n    | Case1\n",
+        model: Model::Unmodelled,
+    },
     Shape {
         label: "enum_lowercase",
         sig: "type U =\n    | ref = 0\n    | failwith = 1\n",

@@ -2066,6 +2066,13 @@ impl<'a> Resolver<'a> {
             && self
                 .direct_project_type_contestants(namespace)
                 .iter()
+                .chain(
+                    self.preceding
+                        .signatured_slot_type_names
+                        .get(namespace)
+                        .into_iter()
+                        .flatten(),
+                )
                 .any(|name| self.latest_entry(name).is_some())
         {
             self.open_generation += 1;
