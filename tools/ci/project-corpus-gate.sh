@@ -168,6 +168,20 @@ alive() { # identity
   [ "$now" = "$1" ]
 }
 
+# Whether FILE (a lock's owner, or a reader registration) records a process
+# that has exited; if so, prints that identity. Every run removes its own file
+# before it exits, so an owner seen dead may have released the file (and,
+# for the lock, another run taken it) since it was read: abandoned means the
+# file still records that same dead owner afterwards.
+abandoned() { # file
+  local owner
+  owner="$(cat "$1" 2>/dev/null || true)"
+  [ -n "$owner" ] || return 1
+  ! alive "$owner" || return 1
+  [ "$(cat "$1" 2>/dev/null || true)" = "$owner" ] || return 1
+  printf '%s' "$owner"
+}
+
 lock_held=
 reader=
 run_env=
@@ -190,22 +204,16 @@ cleanup() {
 acquire_lock() {
   local owner said=
   until mkdir "$lock" 2>/dev/null; do
-    owner="$(cat "$lock/owner" 2>/dev/null || true)"
     # No owner yet is a run between its `mkdir` and writing the owner; for
     # longer than a minute, it is one that died there.
-    if { [ -n "$owner" ] && ! alive "$owner"; } ||
-      { [ -z "$owner" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
-      # A run removes its lock before it exits, so an owner found dead may
-      # have released the lock (and another run taken it) since we read it.
-      # Abandoned means the lock still records that owner.
-      if [ ! -d "$lock" ] || [ "$(cat "$lock/owner" 2>/dev/null || true)" != "$owner" ]; then
-        continue
-      fi
+    if owner="$(abandoned "$lock/owner")" ||
+      { [ ! -e "$lock/owner" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
       echo "project-corpus-gate: $lock is held by a run that has exited" \
         "(${owner:-no owner recorded}). If no gate run is in progress, remove it:" >&2
       echo "  rm -r '$lock'" >&2
       exit 1
     fi
+    owner="$(cat "$lock/owner" 2>/dev/null || true)"
     if [ -z "$said" ]; then
       echo "project-corpus-gate: waiting for $lock (held by pid ${owner%% *})" >&2
       said=1
@@ -236,13 +244,14 @@ wait_for_readers() {
       owner="$(cat "$r" 2>/dev/null || true)"
       if [ -z "$owner" ]; then
         rm -f "$r"
-      elif alive "$owner"; then
-        live+=" ${owner%% *}"
-      else
+      elif owner="$(abandoned "$r")"; then
         echo "project-corpus-gate: $r registers a run that has exited ($owner)," \
           "and its steps may still be reading the corpus. Once none is, remove it:" >&2
         echo "  rm '$r'" >&2
         exit 1
+      else
+        # Alive, or it has just finished: either way, look again.
+        live+=" ${owner%% *}"
       fi
     done
     [ -n "$live" ] || return 0

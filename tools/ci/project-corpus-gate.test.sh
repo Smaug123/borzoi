@@ -269,6 +269,15 @@ test_concurrency() {
     "$(grep -c "rm -r.*$tmp/cache/lock" "$tmp/i.out")"
   rm -r "$tmp/cache/lock"
 
+  # A lock whose run died between taking it and recording itself.
+  mkdir "$tmp/cache/lock"
+  touch -t 202001010000 "$tmp/cache/lock"
+  run_gate i2 "$tmp/plan2" "$rev2" "$step"
+  assert_eq "a lock with no owner for over a minute fails fast" 1 "$(cat "$tmp/i2.status")"
+  assert_eq "naming the lock to remove" 1 \
+    "$(grep -c "no owner recorded" "$tmp/i2.out")"
+  rm -r "$tmp/cache/lock"
+
   EXTRA_PATH="$tmp/nops" run_gate j "$tmp/plan2" "$rev2" "$step"
   assert_eq "a run that cannot read its own start time fails" 1 "$(cat "$tmp/j.status")"
   assert_eq "and registers nowhere" "" \
@@ -289,6 +298,23 @@ test_concurrency() {
   assert_eq "the run whose restore failed fails" 1 "$(cat "$tmp/k.status")"
   assert_eq "the run that waited on it takes the lock and succeeds" 0 "$(cat "$tmp/l.status")"
   show_failure l
+
+  # A writer that finds a reader dead only after the reader has finished
+  # normally: the registration it read is gone, not abandoned.
+  local reader
+  rm -f "$tmp/ps-entered"
+  : >"$tmp/log"
+  run_gate o "$tmp/plan2" "$rev2" "$step" &
+  for _ in $(seq 100); do [ -e "$tmp/started.o" ] && break; sleep 0.1; done
+  reader="$(cut -d' ' -f1 "$tmp/cache/readers"/*)"
+  EXTRA_PATH="$tmp/slowps" FAKE_PS_SLOW_PID="$reader" run_gate p "$tmp/plan1" "$rev1" "$step"
+  wait
+  assert_eq "the writer did look at the reader as it exited" yes \
+    "$([ -e "$tmp/ps-entered" ] && echo yes)"
+  assert_eq "the reader that finished succeeds" 0 "$(cat "$tmp/o.status")"
+  show_failure o
+  assert_eq "the writer that waited on it succeeds" 0 "$(cat "$tmp/p.status")"
+  show_failure p
 
   # A run killed outright while its step still reads: the step outlives the
   # registration's owner, and a run of another pin must not restore under it.
