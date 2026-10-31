@@ -13,11 +13,12 @@
 //!   intentionally incomplete, so some real files still produce parse errors.
 //!   The corpus is content-addressed (pinned in `flake.nix`) and the parser is
 //!   deterministic, so which files those are is a fixed fact, and the sweep
-//!   checks it exactly against `tests/manifests/parser_corpus.txt`: one line per
-//!   file that parses with errors or is skipped as non-UTF-8, and one summary
-//!   line counting the clean parses. Every non-clean file is listed by path, so
-//!   a file moving into or out of the clean set moves a listed line as well as
-//!   the count.
+//!   checks it exactly against `tests/manifests/parser_corpus.txt`: one keyed
+//!   line per file that parses with errors or is skipped as non-UTF-8, and one
+//!   counting the corpus files. The clean parses are the files not listed, so a
+//!   file moving into or out of the clean set moves a listed line; no line
+//!   counts the sweep's own verdicts, so two independent changes merge key by
+//!   key.
 //!
 //!   The comparison is **two-sided**: improving the parser fails it just as a
 //!   regression does. Parse one more file cleanly and it goes red until the
@@ -50,7 +51,7 @@ use borzoi_cst::parser::{Parse, parse, parse_sig};
 use borzoi_oracle_harness::manifest::Manifest;
 
 use crate::common::corpus_manifest::{
-    check_manifest, corpus_relative, regenerate_ignored, sort_by_corpus_key, summary_entry,
+    check_manifest, corpus_count_item, corpus_relative, regenerate_ignored, sort_by_corpus_key,
 };
 use crate::common::{
     catch_unwind_silent, collect_fsharp_corpus_files, corpus_root, read_corpus_source,
@@ -190,21 +191,27 @@ fn parse_fsharp_corpus() {
     );
 
     // --- Every file's outcome, exactly ----------------------------------------
-    let entries = std::iter::once(summary_entry("clean", tally.clean))
+    // The clean files are the unlisted ones, so every file must be clean or
+    // listed for the count to say how many are clean.
+    assert_eq!(
+        tally.clean + tally.files_with_errors.len() + tally.non_utf8.len(),
+        files.len(),
+        "every corpus file is clean, listed with errors, or listed as non-UTF-8"
+    );
+    let entries = std::iter::once(corpus_count_item(files.len()))
         .chain(
             tally
                 .files_with_errors
                 .iter()
-                .map(|p| format!("{} errors", corpus_relative(&root, p))),
+                .map(|p| (corpus_relative(&root, p), "errors".to_string())),
         )
         .chain(
             tally
                 .non_utf8
                 .iter()
-                .map(|p| format!("{} non-utf8", corpus_relative(&root, p))),
+                .map(|p| (corpus_relative(&root, p), "non-utf8".to_string())),
         );
-    let manifest =
-        Manifest::from_entries(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    let manifest = Manifest::from_keyed(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
     check_manifest(
         "parser_corpus",
         &manifest,

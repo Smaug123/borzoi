@@ -40,7 +40,8 @@
 //!   [`recovered_trees_match_fcs_under_deletion`]): one file in
 //!   [`FCS_FILE_STRIDE`] whose clean trees already agree with FCS, one case of
 //!   each family per file, graded with `common::recovery::grade` and pinned in
-//!   `tests/manifests/recovery_sweep.txt`.
+//!   `tests/manifests/recovery_sweep.txt`, keyed by file, deletion offset and
+//!   family, with every case's verdict listed.
 //!
 //! The FCS-free halves are pure. They draw [`TOKEN_POSITIONS_PER_FILE`] and
 //! [`MEMBER_POSITIONS_PER_FILE`] cases from every clean file by default;
@@ -526,7 +527,7 @@ fn deletion_keeps_undamaged_declarations() {
 fn recovered_trees_match_fcs_under_deletion() {
     let root = corpus_root();
     let files = clean_files(&root);
-    let mut entries: Vec<String> = Vec::new();
+    let mut entries: Vec<(String, String)> = Vec::new();
     let mut baselines = 0usize;
     let mut tally: BTreeMap<String, usize> = BTreeMap::new();
     let mut divergences: Vec<String> = Vec::new();
@@ -586,11 +587,9 @@ fn recovered_trees_match_fcs_under_deletion() {
                     token.split(' ').next().unwrap()
                 ))
                 .or_default() += 1;
-            entries.push(format!(
-                "{}@{} {} {token}",
-                file.key,
-                case.deleted.start,
-                case.family.name()
+            entries.push((
+                format!("{}@{} {}", file.key, case.deleted.start, case.family.name()),
+                token,
             ));
         }
     }
@@ -604,8 +603,7 @@ fn recovered_trees_match_fcs_under_deletion() {
     for d in divergences.iter().take(DIVERGENCE_SAMPLE) {
         eprintln!("  divergent: {d}");
     }
-    let manifest =
-        Manifest::from_entries(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    let manifest = Manifest::from_keyed(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
     check_manifest(
         "recovery_sweep",
         &manifest,

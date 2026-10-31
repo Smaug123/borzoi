@@ -38,10 +38,10 @@
 //! The corpus is content-addressed (pinned in `flake.nix`) and both parsers are
 //! deterministic, so every file's bucket is a fixed fact, and the sweep checks
 //! it **exactly** against `tests/manifests/parser_corpus_diff.txt`: one line per
-//! file outside the match bucket, keyed by corpus-relative path, and one summary
-//! line counting the matches. Since every non-match is listed by path, a file
-//! moving into or out of the match bucket moves a listed line as well as the
-//! count. A new acceptance gap, a lost match, a new range divergence and a
+//! file outside the match bucket, keyed by corpus-relative path, and one
+//! counting the corpus files. The matches are the files not listed, so a file
+//! moving into or out of the match bucket moves a listed line; no line counts
+//! the sweep's own verdicts, so two independent changes merge key by key. A new acceptance gap, a lost match, a new range divergence and a
 //! newly fixed one all fail the run alike; an intended movement is acknowledged
 //! by regenerating the manifest and committing the diff:
 //!
@@ -73,7 +73,7 @@ use serde::Deserialize;
 
 use crate::common::catch_unwind_silent;
 use crate::common::corpus_manifest::{
-    check_manifest, corpus_relative, regenerate_ignored, sort_by_corpus_key, summary_entry,
+    check_manifest, corpus_count_item, corpus_relative, regenerate_ignored, sort_by_corpus_key,
 };
 use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
 use crate::common::recovery::grade;
@@ -446,17 +446,26 @@ fn parser_matches_fcs_over_corpus() {
         audit_panicked.len(),
     );
 
-    let entries = std::iter::once(summary_entry("match", count(Bucket::Match))).chain(
+    // The matches are the unlisted files, so every file must have exactly one
+    // outcome for the count to say how many match.
+    assert_eq!(
+        outcomes.len(),
+        files.len(),
+        "every corpus file gets exactly one bucket"
+    );
+    let entries = std::iter::once(corpus_count_item(files.len())).chain(
         outcomes
             .iter()
             .filter(|o| o.1 != Bucket::Match)
-            .map(|(p, b, token)| match token {
-                Some(token) => format!("{} {} {token}", corpus_relative(&root, p), b.name()),
-                None => format!("{} {}", corpus_relative(&root, p), b.name()),
+            .map(|(p, b, token)| {
+                let value = match token {
+                    Some(token) => format!("{} {token}", b.name()),
+                    None => b.name().to_string(),
+                };
+                (corpus_relative(&root, p), value)
             }),
     );
-    let manifest =
-        Manifest::from_entries(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    let manifest = Manifest::from_keyed(entries).unwrap_or_else(|e| panic!("manifest entry: {e}"));
     check_manifest(
         "parser_corpus_diff",
         &manifest,

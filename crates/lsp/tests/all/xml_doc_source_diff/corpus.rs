@@ -9,13 +9,12 @@
 //!
 //! **The manifest** (`tests/manifests/xml_doc_source_corpus.txt`) pins the
 //! outcome exactly — the corpus is content-addressed and both sides are
-//! deterministic: one line per sampled file (compared or skipped, and why;
-//! whether FCS's check errored; its agreement counts, and how many "no doc"
-//! answers FCS reported no use to pair with) and one line per other graded
-//! occurrence (each decline with its cause and whether FCS had a doc there,
-//! each unpaired doc, each oracle-ambiguous site). Agreements are counted per
-//! file rather than listed; a site moving between agreement and anything else
-//! moves a listed line. Regenerate with
+//! deterministic. Every line is `<key><TAB><value>` (`Manifest::from_keyed`),
+//! so independent changes merge key by key (`tools/manifest-merge.sh`): one
+//! per sampled file (compared or skipped, and why; whether FCS's check
+//! errored) and one per graded occurrence, keyed by its range, with what we
+//! resolved there and its verdict ([`manifest_item`]) — agreements included,
+//! so no line counts the sweep's own verdicts. Regenerate with
 //!
 //! ```text
 //! BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi --test all xml_doc_source_diff::corpus:: -- --ignored
@@ -34,7 +33,7 @@ use borzoi_oracle_harness::corpus_key::{Positions, corpus_relative, sort_by_corp
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 
-use super::harness::{Graded, Verdict, census, check_paths, failures};
+use super::harness::{census, check_paths, failures, manifest_item};
 
 /// The sample the checked-in manifest describes: every `DEFAULT_STRIDE`th file.
 const DEFAULT_STRIDE: usize = 13;
@@ -69,29 +68,6 @@ fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The manifest spelling of a non-agreement verdict.
-fn verdict_entry(g: &Graded) -> Option<String> {
-    let fcs = match g.fcs_lines.as_deref() {
-        Some(lines) if !lines.is_empty() => "fcs-doc",
-        Some(_) => "fcs-none",
-        None => "fcs-unpaired",
-    };
-    match &g.verdict {
-        Verdict::Agree { .. } => None,
-        Verdict::Declined(why) => Some(format!("declined {why:?} {fcs}")),
-        // An unpaired "no doc" claims nothing hover would show; it is counted
-        // per file. An unpaired doc is a commitment the oracle cannot check.
-        Verdict::Unpaired => match g.ours.as_deref() {
-            Some(lines) if !lines.is_empty() => Some("unpaired-doc".to_string()),
-            _ => None,
-        },
-        Verdict::OracleAmbiguous => Some("oracle-ambiguous".to_string()),
-        Verdict::Diverge { .. } | Verdict::ElaborationDiverges { .. } => {
-            Some("DIVERGE".to_string())
-        }
-    }
-}
-
 #[test]
 #[ignore = "corpus-wide source-doc differential (FCS type-checks each sampled file); run with --ignored under nix develop"]
 fn source_docs_match_fcs_over_corpus() {
@@ -122,7 +98,7 @@ fn source_docs_match_fcs_over_corpus() {
         for path in &sample {
             let key = corpus_relative(&root, path);
             let Ok(text) = std::fs::read_to_string(path) else {
-                manifest.push(format!("{key} skipped unreadable"));
+                manifest.push((key, "skipped unreadable".to_string()));
                 continue;
             };
             // On a thread of its own with a generous stack: the parser and the
@@ -144,13 +120,13 @@ fn source_docs_match_fcs_over_corpus() {
             let (graded, fcs) = match outcome {
                 Ok(r) => r,
                 Err(_) => {
-                    manifest.push(format!("{key} skipped panicked"));
+                    manifest.push((key, "skipped panicked".to_string()));
                     continue;
                 }
             };
             let oracle = &fcs[0];
             if !oracle.ok {
-                manifest.push(format!("{key} skipped fcs-not-ok"));
+                manifest.push((key, "skipped fcs-not-ok".to_string()));
                 continue;
             }
             compared += 1;
@@ -160,15 +136,7 @@ fn source_docs_match_fcs_over_corpus() {
             }
             let positions = Positions::new(&text);
             for g in &graded {
-                if let Some(entry) = verdict_entry(g) {
-                    manifest.push(format!(
-                        "{key}:{} {} {:?} {} {entry}",
-                        positions.at(usize::from(g.range.start())),
-                        g.name.replace(char::is_whitespace, "_"),
-                        g.def_kind,
-                        if g.is_definition { "def" } else { "use" },
-                    ));
-                }
+                manifest.push(manifest_item(&key, &positions, g));
             }
             for g in failures(&graded) {
                 divergences.push(format!(
@@ -178,26 +146,14 @@ fn source_docs_match_fcs_over_corpus() {
                     g.verdict
                 ));
             }
-            let agree_doc = graded
-                .iter()
-                .filter(|g| matches!(g.verdict, Verdict::Agree { attached: true }))
-                .count();
-            let agree_none = graded
-                .iter()
-                .filter(|g| matches!(g.verdict, Verdict::Agree { attached: false }))
-                .count();
-            let unpaired_none = graded
-                .iter()
-                .filter(|g| matches!(g.verdict, Verdict::Unpaired) && verdict_entry(g).is_none())
-                .count();
-            manifest.push(format!(
-                "{key} compared {} agree-doc={agree_doc} agree-none={agree_none} \
-                 unpaired-none={unpaired_none}",
+            manifest.push((
+                key,
                 if oracle.has_errors() {
-                    "fcs-check-errors"
+                    "compared fcs-check-errors"
                 } else {
-                    "fcs-clean"
+                    "compared fcs-clean"
                 }
+                .to_string(),
             ));
         }
     }
@@ -212,7 +168,7 @@ fn source_docs_match_fcs_over_corpus() {
         eprintln!("xmldoc-corpus: not comparing the manifest (non-default sample)");
         return;
     }
-    let manifest = Manifest::from_counted(manifest).unwrap_or_else(|e| panic!("manifest: {e}"));
+    let manifest = Manifest::from_keyed(manifest).unwrap_or_else(|e| panic!("manifest: {e}"));
     check(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/manifests/xml_doc_source_corpus.txt"),
         &manifest,

@@ -60,16 +60,23 @@
 //! The corpus is pinned by the flake and both sides are deterministic, so every
 //! outcome is a fixed fact, and the sweep checks it **exactly** against
 //! `tests/manifests/resolve_corpus_diff.txt` rather than through count bounds.
-//! It holds one line per sampled file (whether it was compared or skipped, and
-//! why; for a compared file, whether FCS's check errored, its match count and
-//! its count of graded external-target uses) and one line per non-match use
-//! (gap, alt-binder, divergence), keyed by corpus-relative path and `line:col`.
-//! Matches are counted per file rather than listed — there are ~22k of them —
-//! but since every gap, alt-binder and divergence is listed by key, a use
-//! moving between match and any other bucket moves a listed line, so the
-//! per-file count loses no movement. External-target uses (~18k) are counted
-//! the same way: every one that is not declined is a divergence, which fails
-//! before the manifest is compared, so the count is all that can move.
+//! Every line is `<key><TAB><value>` ([`Manifest::from_keyed`]), so independent
+//! changes merge key by key (`tools/manifest-merge.sh`):
+//!
+//! - `<file>` → whether it was compared or skipped, and why; for a compared
+//!   file, whether FCS's check errored, and two counts of the oracle's records:
+//!   `b1=` its in-file B1 uses and `external=` its graded external-target uses.
+//! - `<file>:<line>:<col> "<text>"` → every in-file B1 use that is not a match
+//!   (gap, alt-binder, divergence), and every external-target use we did not
+//!   decline (a divergence).
+//!
+//! No line counts our own verdicts: such a count changes with every item it
+//! sums, so any two changes to one file's uses would conflict on it. The counts
+//! are of what FCS reported, which moves only when the corpus or the oracle
+//! does. So a file's matches are its `b1` less its listed in-file uses, and its
+//! declined external uses its `external` less its listed external ones — ~22k
+//! and ~18k of them, left unlisted. The sweep checks, file by file, that every
+//! counted record came to exactly one verdict, so the subtraction holds.
 //!
 //! Any difference fails with a line diff. A movement in either direction is
 //! signal: a lost match is a regression, a gained one an improvement, and both
@@ -168,8 +175,12 @@ struct Tally {
     /// Our parse or resolve panicked (a construct not modeled yet).
     our_skipped: usize,
     unreadable: usize,
-    /// One entry per sampled file and per non-match use (see the module docs).
-    manifest: Vec<String>,
+    /// One `(key, value)` per sampled file and per non-match use (see the
+    /// module docs).
+    manifest: Vec<(String, String)>,
+    /// Compared files whose verdicts do not account for every oracle record
+    /// the file's line counts, so its unlisted matches cannot be derived.
+    unaccounted: Vec<String>,
 }
 
 #[test]
@@ -258,6 +269,13 @@ fn resolution_matches_fcs_over_corpus() {
         &tally.alt_binders,
     );
 
+    assert!(
+        tally.unaccounted.is_empty(),
+        "the sweep's verdicts do not account for the oracle records it counts, \
+         so the manifest's unlisted matches would be wrong:\n{}",
+        tally.unaccounted.join("\n")
+    );
+
     // The soundness gate: wrong answers, which no manifest regeneration may
     // bless.
     assert!(
@@ -278,7 +296,7 @@ fn resolution_matches_fcs_over_corpus() {
         return;
     }
     let manifest =
-        Manifest::from_counted(tally.manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+        Manifest::from_keyed(tally.manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
     check_manifest(
         "resolve_corpus_diff",
         &manifest,
@@ -319,12 +337,12 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
     let rel = corpus_relative(root, &path);
     if !file.ok {
         tally.fcs_not_ok += 1;
-        tally.manifest.push(format!("{rel} fcs-not-ok"));
+        tally.manifest.push((rel, "fcs-not-ok".to_string()));
         return;
     }
     let Ok(source) = std::fs::read_to_string(&path) else {
         tally.unreadable += 1;
-        tally.manifest.push(format!("{rel} unreadable"));
+        tally.manifest.push((rel, "unreadable".to_string()));
         return;
     };
 
@@ -348,12 +366,12 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
         Ok(Some(rf)) => rf,
         Ok(None) => {
             tally.our_errors += 1;
-            tally.manifest.push(format!("{rel} our-parse-errors"));
+            tally.manifest.push((rel, "our-parse-errors".to_string()));
             return;
         }
         Err(_) => {
             tally.our_skipped += 1;
-            tally.manifest.push(format!("{rel} our-panic"));
+            tally.manifest.push((rel, "our-panic".to_string()));
             return;
         }
     };
@@ -365,8 +383,10 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
     } else {
         "fcs-clean"
     };
-    let mut file_matches = 0usize;
-    let mut file_external = 0usize;
+    // Per kind of record, the verdicts given: listed, or (a match, a declined
+    // external use) left to the counts.
+    let (mut in_file_listed, mut matches) = (0usize, 0usize);
+    let (mut external_listed, mut external_declined) = (0usize, 0usize);
 
     let all_uses = census_resolve_uses(file, &source);
     // The ranges at which FCS records an in-file symbol, as a use *or* a
@@ -387,6 +407,17 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
         // symbol is reported at a zero-width range.
         .filter(|u| !u.is_from_definition && u.start != u.end)
         .collect();
+    // The oracle's records this file's line counts, read off the census alone.
+    let b1 = uses
+        .iter()
+        .filter(|u| matches!(u.decl, CensusDecl::InFile(..)) && u.bucket == Some(Bucket::B1))
+        .count();
+    let external = uses
+        .iter()
+        .filter(|u| {
+            matches!(u.decl, CensusDecl::OtherFile) && !in_file_ranges.contains(&(u.start, u.end))
+        })
+        .count();
 
     for u in uses {
         let use_range = TextRange::new(
@@ -433,11 +464,11 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
                     }
                 };
                 tally.external_graded += 1;
-                file_external += 1;
                 if let Some(ours) = wrong {
+                    external_listed += 1;
                     tally
                         .manifest
-                        .push(format!("{key} divergence external-target {ours}"));
+                        .push((key, format!("divergence external-target {ours}")));
                     tally.divergences.push(Site {
                         path: path.clone(),
                         range: use_range,
@@ -446,6 +477,8 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
                         ours,
                         fcs_check_errors: file.has_check_errors,
                     });
+                } else {
+                    external_declined += 1;
                 }
                 continue;
             }
@@ -468,65 +501,76 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
             fcs_check_errors: file.has_check_errors,
         };
 
-        match rf.resolution_at(use_range) {
+        let verdict = match rf.resolution_at(use_range) {
             // We recorded nothing here, or honestly deferred: a modeling gap,
             // not a disagreement (e.g. named-module headers we don't intern, or
             // a long-ident occurrence we key by a different range).
             None | Some(Resolution::Deferred(_)) => {
                 tally.gaps += 1;
-                tally.manifest.push(format!("{key} gap"));
+                Some("gap".to_string())
             }
             Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => {
                 match rf.resolved_def(res) {
                     // Exact match — the headline coverage, counted per file.
                     Some(def) if def.range == expected => {
                         tally.matches += 1;
-                        file_matches += 1;
+                        None
                     }
                     // Same-named in-file binder, different range.
                     Some(def) if def.name == text => {
-                        tally.manifest.push(format!(
-                            "{key} alt-binder fcs={} ours={} {check}",
-                            at(expected),
-                            at(def.range)
-                        ));
                         tally
                             .alt_binders
                             .push(site(format!("binder {:?} at {:?}", def.name, def.range)));
+                        Some(format!(
+                            "alt-binder fcs={} ours={} {check}",
+                            at(expected),
+                            at(def.range)
+                        ))
                     }
                     // A *differently-named* binder — we resolved to the wrong
                     // symbol entirely.
                     Some(def) => {
-                        tally.manifest.push(format!(
-                            "{key} divergence binder={:?} at {}",
-                            def.name,
-                            at(def.range)
-                        ));
                         tally
                             .divergences
                             .push(site(format!("binder {:?} at {:?}", def.name, def.range)));
+                        Some(format!(
+                            "divergence binder={:?} at {}",
+                            def.name,
+                            at(def.range)
+                        ))
                     }
                     None => {
                         tally
-                            .manifest
-                            .push(format!("{key} divergence no-in-file-def"));
-                        tally
                             .divergences
                             .push(site(format!("{res:?} (no in-file def)")));
+                        Some("divergence no-in-file-def".to_string())
                     }
                 }
             }
             // FCS resolved an in-file binder, but we point into an assembly or
             // claim the name is unresolved — an unambiguous soundness fault.
             Some(other) => {
-                tally.manifest.push(format!("{key} divergence out-of-file"));
                 tally.divergences.push(site(format!("{other:?}")));
+                Some("divergence out-of-file".to_string())
             }
+        };
+        match verdict {
+            Some(v) => {
+                in_file_listed += 1;
+                tally.manifest.push((key, v));
+            }
+            None => matches += 1,
         }
     }
-    tally.manifest.push(format!(
-        "{rel} compared {check} match={file_matches} external={file_external}"
-    ));
+    if in_file_listed + matches != b1 || external_listed + external_declined != external {
+        tally.unaccounted.push(format!(
+            "{rel}: b1={b1} but {in_file_listed} listed + {matches} matches; \
+             external={external} but {external_listed} listed + {external_declined} declined"
+        ));
+    }
+    tally
+        .manifest
+        .push((rel, format!("compared {check} b1={b1} external={external}")));
 }
 
 /// Recursively collect `.fs` implementation files (not `.fsi`), skipping

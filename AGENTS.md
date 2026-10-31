@@ -415,9 +415,11 @@ and `borzoi_oracle_harness::corpus_key`, which spells a corpus file the same way
 on macOS (where Nix renames case-colliding names) and on Linux CI.
 
 A manifest whose every entry is keyed (`<key><TAB><value>`) — the
-whole-project `project_corpus.txt` among them — merges key by key rather than as
-text, so a rebase past another branch's manifest movement needs no regeneration
-when the two moved different items. Enable the driver once per clone:
+whole-project `project_corpus.txt`, and the `parser_corpus`,
+`parser_corpus_diff`, `recovery_sweep`, `resolve_corpus_diff`,
+`infer_corpus_diff` and `xml_doc_source_*` sweeps' — merges key by key rather
+than as text, so a rebase past another branch's manifest movement needs no
+regeneration when the two moved different items. Enable the driver once per clone:
 
 ```sh
 git config merge.borzoi-manifest.driver 'bash tools/manifest-merge.sh %O %A %B %P'

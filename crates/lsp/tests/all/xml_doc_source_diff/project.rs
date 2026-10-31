@@ -15,7 +15,13 @@
 //!   `corpus-diff` job over the pinned project corpus) grades every project in
 //!   `BORZOI_PROJECT_LIST` with FCS reading **exactly** the reference set our
 //!   `AssemblyEnv` was built from (`--noframework`), and pins the outcome in an
-//!   exact manifest (`tests/manifests/xml_doc_source_projects.txt`).
+//!   exact manifest (`tests/manifests/xml_doc_source_projects.txt`): per
+//!   project, FCS's error count, and per graded occurrence, keyed by its
+//!   project, file and range, what we resolved there and its verdict
+//!   ([`manifest_item`]). Every line is
+//!   `<key><TAB><value>`, so independent changes merge key by key
+//!   (`tools/manifest-merge.sh`), and every occurrence is listed, agreements
+//!   included, so no line counts the sweep's own verdicts.
 //!
 //! The gate is the rest of the group's: certain-implies-exact, and in a file
 //! FCS checks cleanly an unpaired doc or a site whose FCS records disagree is a
@@ -29,13 +35,14 @@ use borzoi::semantic::SemanticState;
 use borzoi::uri::UriExt as _;
 use borzoi::workspace::Workspace;
 use borzoi_cst::language_version::LanguageVersion;
-use borzoi_oracle_harness::corpus_key::Positions;
+use borzoi_oracle_harness::corpus_key::{Positions, corpus_relative};
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use borzoi_sema::resolve_project_files;
 
 use super::harness::{
     Graded, OracleFile, OurProject, Verdict, census, describe, failures, fcs_check_with, grade,
+    manifest_item,
 };
 use crate::common::{checkout_key, runtime_project_state_files};
 
@@ -336,28 +343,6 @@ fn fixture_project_docs_agree_with_fcs() {
 // The pinned project corpus
 // ============================================================================
 
-/// The manifest spelling of a graded occurrence that is not an agreement.
-fn entry(g: &Graded) -> Option<String> {
-    let fcs = match g.fcs_lines.as_deref() {
-        Some(lines) if !lines.is_empty() => "fcs-doc",
-        Some(_) => "fcs-none",
-        None => "fcs-unpaired",
-    };
-    match &g.verdict {
-        Verdict::Agree { .. } => None,
-        Verdict::Declined(why) => Some(format!("declined {why:?} {fcs}")),
-        Verdict::Unpaired => g
-            .ours
-            .as_deref()
-            .is_some_and(|l| !l.is_empty())
-            .then(|| "unpaired-doc".to_string()),
-        Verdict::OracleAmbiguous => Some("oracle-ambiguous".to_string()),
-        Verdict::Diverge { .. } | Verdict::ElaborationDiverges { .. } => {
-            Some("DIVERGE".to_string())
-        }
-    }
-}
-
 #[test]
 #[ignore = "whole-project source-doc differential over restored projects; set BORZOI_PROJECT_LIST and run with --ignored under nix develop"]
 fn pinned_projects_docs_agree_with_fcs() {
@@ -411,40 +396,32 @@ fn pinned_projects_docs_agree_with_fcs() {
             .filter(|g| g.declared_in.is_some_and(|d| d != g.file))
             .collect();
         cross_file_docs += cross.len();
-        manifest.push(format!(
-            "{} oracle-errors={errors} agree-doc={} cross-file-doc={} agree-none={}",
-            checkout_key(project),
-            graded
-                .iter()
-                .filter(|g| matches!(g.verdict, Verdict::Agree { attached: true }))
-                .count(),
-            cross.len(),
-            graded
-                .iter()
-                .filter(|g| matches!(g.verdict, Verdict::Agree { attached: false }))
-                .count(),
-        ));
+        let project_key = checkout_key(project);
+        // A file's key is scoped by the project, as `<project> <file>` with
+        // the file relative to the project's directory (`root:<checkout key>`
+        // outside it): two projects may compile one file, and a regression in
+        // one offset by an improvement in the other must still move a line.
+        let dir = project.parent().expect("a project file has a directory");
+        let file_keys: Vec<String> = loaded
+            .paths
+            .iter()
+            .map(|p| {
+                if p.starts_with(dir) {
+                    format!("{project_key} {}", corpus_relative(dir, p))
+                } else {
+                    format!("{project_key} root:{}", checkout_key(p))
+                }
+            })
+            .collect();
+        manifest.push((project_key, format!("compared oracle-errors={errors}")));
+        let positions: Vec<Positions<'_>> = loaded
+            .ours
+            .texts
+            .iter()
+            .map(|t| Positions::new(t))
+            .collect();
         for g in &graded {
-            // A decline where FCS has no doc costs nothing a reader sees, and
-            // a signature-heavy project has thousands: counted per file and
-            // cause (`from_counted`), not listed per site.
-            if let Verdict::Declined(why) = &g.verdict
-                && g.fcs_lines.as_deref().is_some_and(<[String]>::is_empty)
-            {
-                manifest.push(format!("{} declined {why:?} fcs-none", names[g.file]));
-                continue;
-            }
-            if let Some(e) = entry(g) {
-                let text = &loaded.ours.texts[g.file];
-                manifest.push(format!(
-                    "{}:{} {} {:?} {} {e}",
-                    names[g.file],
-                    Positions::new(text).at(usize::from(g.range.start())),
-                    g.name.replace(char::is_whitespace, "_"),
-                    g.def_kind,
-                    if g.is_definition { "def" } else { "use" },
-                ));
-            }
+            manifest.push(manifest_item(&file_keys[g.file], &positions[g.file], g));
         }
     }
     eprintln!(
@@ -457,7 +434,7 @@ fn pinned_projects_docs_agree_with_fcs() {
         bad_sites.len(),
         bad_sites.join("\n")
     );
-    let manifest = Manifest::from_counted(manifest).unwrap_or_else(|e| panic!("manifest: {e}"));
+    let manifest = Manifest::from_keyed(manifest).unwrap_or_else(|e| panic!("manifest: {e}"));
     check(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/manifests/xml_doc_source_projects.txt"),
         &manifest,
