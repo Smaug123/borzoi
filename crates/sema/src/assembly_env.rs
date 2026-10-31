@@ -137,6 +137,13 @@ pub(crate) const CORE_ATTRIBUTE_NAMES: &[&str] = &[
     "RequireQualifiedAccessAttribute",
 ];
 
+/// See [`AssemblyEnv::augmentation_member_names`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AugmentationNames {
+    pub(crate) names: HashSet<String>,
+    pub(crate) unlisted: bool,
+}
+
 /// Index of a source assembly in [`AssemblyEnv::assemblies`]. Identifies which
 /// referenced DLL an interned entity came from, so a resolved member can name
 /// the file to read its portable PDB from (go-to-definition).
@@ -996,9 +1003,9 @@ pub struct AssemblyEnv {
     /// Lazily-built [`Self::implicit_union_cases`]. A property of the closure,
     /// like [`Self::bare_value_index`], and invalidated with it.
     implicit_union_cases: std::sync::OnceLock<Vec<OpenFoldName>>,
-    /// Lazily-built [`Self::augmentation_members_on`]. The entities are fixed
-    /// once the env is built, so it is never invalidated.
-    augmentation_members: std::sync::OnceLock<HashMap<String, HashSet<String>>>,
+    /// Lazily-built [`Self::augmentation_member_names`]. The entities are
+    /// fixed once the env is built, so it is never invalidated.
+    augmentation_members: std::sync::OnceLock<AugmentationNames>,
     /// Lazily-built index behind
     /// [`Self::contested_child_namespace_declares`]: the first segments of every
     /// child namespace a contested auto-open's *contributor* declares under it,
@@ -2455,6 +2462,44 @@ impl AssemblyEnv {
         self.nodes.is_empty()
     }
 
+    /// The names every F# extension member (`type T with member …`) of every
+    /// referenced assembly may bear, on whatever type: what an `open type`
+    /// may bring beside the type's own statics, when the extension is in
+    /// scope. Keyed by name alone, since nothing in a member's IL name says
+    /// for certain which type it extends (`[<CompiledName>]` may name any).
+    /// A name is the member's source name, each segment of its IL name, and
+    /// the name an accessor carries (`get_P` is `P`'s). `unlisted` when a
+    /// module dropped a member the projection could not decode, which may be
+    /// an extension of any name.
+    pub(crate) fn augmentation_member_names(&self) -> &AugmentationNames {
+        self.augmentation_members.get_or_init(|| {
+            let mut out = AugmentationNames::default();
+            for node in &self.nodes {
+                let entity = &node.entity;
+                if entity.kind == EntityKind::Module && !entity.skipped_members.is_empty() {
+                    out.unlisted = true;
+                }
+                for member in &entity.members {
+                    let Member::Method(m) = member else { continue };
+                    if m.augmentation == Augmentation::No {
+                        continue;
+                    }
+                    let il = m.name.split('.').filter(|seg| *seg != "Static");
+                    for name in std::iter::once(member_name(member)).chain(il) {
+                        out.names.insert(name.to_string());
+                        if let Some(own) = ["get_", "set_", "add_", "remove_"]
+                            .iter()
+                            .find_map(|p| name.strip_prefix(p))
+                        {
+                            out.names.insert(own.to_string());
+                        }
+                    }
+                }
+            }
+            out
+        })
+    }
+
     /// Every interned entity, top-level and nested alike, in interning order.
     ///
     /// [`EntityHandle`]'s constructor is private, so without this a caller
@@ -2463,59 +2508,6 @@ impl AssemblyEnv {
     /// *all* of them (a lookup-driven sweep would silently skip whatever it
     /// could not name, and the entities most likely to be mis-modelled are the
     /// ones no ordinary lookup reaches, e.g. a compiler-generated nested type).
-    /// The names of the F# extension members (`type T with member …`) any
-    /// referenced assembly declares on a type whose simple name is `type_name`
-    /// — what an `open type` of it may bring beside its own statics. Keyed by
-    /// the head of the member's IL name (`T.Member`, or `T.Member.Static`,
-    /// generic arity dropped);
-    /// a member whose IL name names no type counts for every type. A name is
-    /// both the member's source name and the tail of its IL name.
-    pub(crate) fn augmentation_members_on(&self, type_name: &str) -> HashSet<&str> {
-        let index = self.augmentation_members.get_or_init(|| {
-            let mut index: HashMap<String, HashSet<String>> = HashMap::new();
-            for node in &self.nodes {
-                for member in &node.entity.members {
-                    let Member::Method(m) = member else { continue };
-                    if m.augmentation == Augmentation::No {
-                        continue;
-                    }
-                    // A static extension member compiles to `T.Member.Static`.
-                    let il = m.name.strip_suffix(".Static").unwrap_or(&m.name);
-                    let (target, tail) = match il.rsplit_once('.') {
-                        Some((head, tail)) => {
-                            let head = head.rsplit('.').next().unwrap_or(head);
-                            (
-                                head.split('`').next().unwrap_or(head).to_string(),
-                                Some(tail),
-                            )
-                        }
-                        None => (String::new(), None),
-                    };
-                    // An extension property or event compiles to its
-                    // accessors (`T.get_P.Static`), whose names carry its own.
-                    let names = index.entry(target).or_default();
-                    for name in std::iter::once(member_name(member)).chain(tail) {
-                        names.insert(name.to_string());
-                        if let Some(own) = ["get_", "set_", "add_", "remove_"]
-                            .iter()
-                            .find_map(|p| name.strip_prefix(p))
-                        {
-                            names.insert(own.to_string());
-                        }
-                    }
-                }
-            }
-            index
-        });
-        index
-            .get(type_name)
-            .into_iter()
-            .chain(index.get(""))
-            .flatten()
-            .map(String::as_str)
-            .collect()
-    }
-
     pub fn all_handles(&self) -> impl Iterator<Item = EntityHandle> + use<> {
         (0..self.nodes.len()).map(EntityHandle::new)
     }

@@ -95,32 +95,6 @@ module FixBuilders =
 type Plain =
     static member Marker = 0
 
-/// No probed statics of its own either: `PlainExt` adds them as extension
-/// members, in scope wherever `GridFix` is opened.
-type Plain2 =
-    static member Marker = 0
-
-[<AutoOpen>]
-module PlainExt =
-    type Plain2 with
-        static member id(x: int) = x + 1
-        static member gridV(x: int) = x + 1
-        static member Some(x: int) = x + 1
-        static member GridC(x: int) = x + 1
-
-/// No probed statics of its own: `Plain3Ext` adds them as extension
-/// *properties*, which compile to `Plain3.get_X.Static`.
-type Plain3 =
-    static member Marker = 0
-
-[<AutoOpen>]
-module Plain3Ext =
-    type Plain3 with
-        static member id = 42
-        static member gridV = 42
-        static member Some = 42
-        static member GridC = 42
-
 /// An overload set of statics named `Parse`: methods, which never contest a
 /// pattern.
 type Overloads =
