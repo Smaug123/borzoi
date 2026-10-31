@@ -81,8 +81,8 @@ mod types;
 
 pub use model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
-    ItemId, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace, ResolvedFile,
-    ResolvedProject,
+    ItemId, OpaqueRegion, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace,
+    ResolvedFile, ResolvedProject,
 };
 pub use state::ActivePatternShape;
 use state::{
@@ -2118,6 +2118,8 @@ impl<'a> Resolver<'a> {
             items: Vec::new(),
             resolutions: HashMap::new(),
             or_pattern_aliases: HashSet::new(),
+            opaque_binders: HashSet::new(),
+            opaque_regions: Vec::new(),
             scopes: Vec::new(),
             typar_scopes: Vec::new(),
             type_defs: HashMap::new(),
@@ -2397,14 +2399,39 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// An [opaque region](ResolvedFile::opaque_regions) is a promise that the
+    /// walk resolves no name in it that a binder there could capture — the
+    /// claim binder completeness reads every binder there as declined by.
+    /// Checked rather than trusted. An attribute's *name* is resolved wherever
+    /// it is ([`Self::attribute_resolutions`]), but it is a type use, which no
+    /// value or type parameter in the region can capture.
+    fn debug_assert_opaque_regions_record_nothing(&self) {
+        if cfg!(debug_assertions) {
+            for region in &self.opaque_regions {
+                let model::OpaqueRegion::Range(r) = region else {
+                    continue;
+                };
+                for range in self.resolutions.keys() {
+                    debug_assert!(
+                        !r.contains_range(*range),
+                        "the walk records a resolution at {range:?} inside the opaque region {r:?}"
+                    );
+                }
+            }
+        }
+    }
+
     fn finish(mut self) -> ResolvedFile {
         self.seal_assembly_readings();
         self.debug_assert_shadowable_types_are_attributed();
         self.debug_assert_commit_maps_are_disjoint();
+        self.debug_assert_opaque_regions_record_nothing();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,
             or_pattern_aliases: self.or_pattern_aliases,
+            opaque_binders: self.opaque_binders,
+            opaque_regions: self.opaque_regions,
             attribute_resolutions: self.attribute_resolutions,
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,

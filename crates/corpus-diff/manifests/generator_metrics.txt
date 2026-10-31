@@ -32,6 +32,7 @@ decline_census.assembly.by_cause.incomplete_assemblies
 decline_census.assembly.by_cause.manifest_surface_arity_fallback
 decline_census.assembly.by_cause.manifest_surface_contest
 decline_census.assembly.by_cause.manifest_surface_uncertain
+decline_census.assembly.by_cause.opaque_binder
 decline_census.assembly.by_cause.opaque_open
 decline_census.assembly.by_cause.opaque_value_head
 decline_census.assembly.by_cause.open_barrier_staled
@@ -230,6 +231,12 @@ decline_census.assembly.by_pair.manifest_surface_uncertain.implicit_open
 decline_census.assembly.by_pair.manifest_surface_uncertain.pre_walk
 decline_census.assembly.by_pair.manifest_surface_uncertain.root
 decline_census.assembly.by_pair.manifest_surface_uncertain.whole_walk
+decline_census.assembly.by_pair.opaque_binder.enclosing_namespace
+decline_census.assembly.by_pair.opaque_binder.explicit_open
+decline_census.assembly.by_pair.opaque_binder.implicit_open
+decline_census.assembly.by_pair.opaque_binder.pre_walk
+decline_census.assembly.by_pair.opaque_binder.root
+decline_census.assembly.by_pair.opaque_binder.whole_walk
 decline_census.assembly.by_pair.opaque_open.enclosing_namespace
 decline_census.assembly.by_pair.opaque_open.explicit_open
 decline_census.assembly.by_pair.opaque_open.implicit_open
@@ -428,6 +435,7 @@ decline_census.project.by_cause.incomplete_assemblies
 decline_census.project.by_cause.manifest_surface_arity_fallback
 decline_census.project.by_cause.manifest_surface_contest
 decline_census.project.by_cause.manifest_surface_uncertain
+decline_census.project.by_cause.opaque_binder
 decline_census.project.by_cause.opaque_open
 decline_census.project.by_cause.opaque_value_head
 decline_census.project.by_cause.open_barrier_staled
@@ -626,6 +634,12 @@ decline_census.project.by_pair.manifest_surface_uncertain.implicit_open
 decline_census.project.by_pair.manifest_surface_uncertain.pre_walk
 decline_census.project.by_pair.manifest_surface_uncertain.root
 decline_census.project.by_pair.manifest_surface_uncertain.whole_walk
+decline_census.project.by_pair.opaque_binder.enclosing_namespace
+decline_census.project.by_pair.opaque_binder.explicit_open
+decline_census.project.by_pair.opaque_binder.implicit_open
+decline_census.project.by_pair.opaque_binder.pre_walk
+decline_census.project.by_pair.opaque_binder.root
+decline_census.project.by_pair.opaque_binder.whole_walk
 decline_census.project.by_pair.opaque_open.enclosing_namespace
 decline_census.project.by_pair.opaque_open.explicit_open
 decline_census.project.by_pair.opaque_open.implicit_open
@@ -1218,6 +1232,7 @@ skipped_uses.out_of_project_declarations
 skipped_uses.shadowed_constructor_use
 skipped_uses.total
 skipped_uses.zero_width
+unmodelled_binders
 unoracled_definitions
 unoracled_or_pattern_aliases
 uses.assembly_considered

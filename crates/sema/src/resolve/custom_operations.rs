@@ -28,7 +28,7 @@
 //! `[<Extension>]` method), and every one a referenced assembly declares on
 //! an extension member, is an operation of every builder.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use borzoi_cst::syntax::{
     AstNode, Attribute, AttributeList, Binding, ComputationExpr, Expr, InheritMember, Pat,
@@ -415,6 +415,68 @@ fn clause_identifiers(comp: &Expr, out: &mut Vec<SyntaxToken>) {
     }
 }
 
+/// The variables `ce`'s own custom-operation clauses bind (not a nested
+/// expression's), with whether each resets the variable space:
+///
+/// - a join's (`join x in ys on …`, `groupJoin`, `leftOuterJoin`): the
+///   argument the operation applies before the `JoinIn`'s `in` — FCS's
+///   `JoinOrGroupJoinOrZipClause`, which binds it for the condition and the
+///   clauses after;
+/// - an `into`'s (`… into g`): the identifier `into` applies. After an
+///   operation's own `into` (`groupBy x into g`, FCS's `IntoSuffix`) the
+///   clauses see only that variable, so it resets the variable space; a join's
+///   `into` (`groupJoin … into g`) adds its variable beside the earlier ones.
+fn custom_operation_binders(ce: &ComputationExpr) -> Vec<(SyntaxToken, bool)> {
+    let own = |n: &SyntaxNode| {
+        n.ancestors()
+            .skip(1)
+            .find(|a| a.kind() == SyntaxKind::COMPUTATION_EXPR)
+            .as_ref()
+            == Some(ce.syntax())
+    };
+    let mut out = Vec::new();
+    for node in ce.syntax().descendants() {
+        if node.kind() != SyntaxKind::JOIN_IN_EXPR || !own(&node) {
+            continue;
+        }
+        let Some(Expr::JoinIn(join)) = Expr::cast(node) else {
+            continue;
+        };
+        if let Some(Expr::App(app)) = join.lhs()
+            && !app.is_infix()
+            && let Some(arg) = app.arg()
+        {
+            out.extend(
+                arg.syntax()
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                    .map(|t| (t, false)),
+            );
+        }
+    }
+    let mut tokens = ce
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| !t.kind().is_trivia());
+    while let Some(tok) = tokens.next() {
+        if tok.kind() == SyntaxKind::IDENT_TOK
+            && tok.text() == "into"
+            && tok.parent().is_some_and(|p| own(&p))
+            && let Some(next) = tokens.next()
+            && next.kind() == SyntaxKind::IDENT_TOK
+        {
+            let joins = tok
+                .parent_ancestors()
+                .take_while(|n| n.kind() != SyntaxKind::COMPUTATION_EXPR)
+                .any(|n| n.kind() == SyntaxKind::JOIN_IN_EXPR);
+            out.push((next, !joins));
+        }
+    }
+    out
+}
+
 /// The identifiers of one clause's application spine the translation reads
 /// by name: its head (`StripApps`), an `into` it applies (`IntoSuffix`),
 /// and — in a join, whose sources a `JoinIn` separates — the condition word
@@ -527,6 +589,7 @@ impl Resolver<'_> {
                 }
             }
         }
+        self.decline_custom_operation_binders(ce);
         let pos = u32::from(ce.syntax().text_range().start());
         let generation = self.open_generation;
         let entries = names
@@ -540,6 +603,55 @@ impl Resolver<'_> {
             .collect();
         self.scopes.push(Frame { entries });
         true
+    }
+
+    /// The variables `ce`'s custom-operation clauses bind, which the walk
+    /// knows of but does not intern ([`custom_operation_binders`]): each is an
+    /// [opaque binder](super::ResolvedFile::opaque_binders), and every later
+    /// spelling of a name one may capture declines, bare or as a dotted head —
+    /// its own name, and after an `into` that resets the variable space, every
+    /// name a pattern of the expression bound before it, which the clauses
+    /// after it no longer see.
+    ///
+    /// Declined by token rather than by a scope entry because the capture is
+    /// positional in a way the frames are not: a join's variable shadows a
+    /// `for` variable of its name that the walk pushed *after* this
+    /// expression's own frame, and a reset sends a later use of a name past
+    /// the expression altogether.
+    fn decline_custom_operation_binders(&mut self, ce: &ComputationExpr) {
+        let binders = custom_operation_binders(ce);
+        if binders.is_empty() {
+            return;
+        }
+        let idents: Vec<SyntaxToken> = ce
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+            .collect();
+        for (binder, resets) in binders {
+            let at = binder.text_range().start();
+            self.opaque_binders.insert(binder.text_range());
+            let mut names: HashSet<String> = HashSet::from([id_text(&binder).to_string()]);
+            if resets {
+                // Over-approximate: every identifier in a pattern before the
+                // `into`, case names included, which only declines more.
+                names.extend(
+                    idents
+                        .iter()
+                        .filter(|t| t.text_range().start() < at)
+                        .filter(|t| t.parent_ancestors().any(|n| Pat::can_cast(n.kind())))
+                        .map(|t| id_text(t).to_string()),
+                );
+            }
+            for tok in &idents {
+                if tok.text_range().start() >= at && names.contains(&*id_text(tok)) {
+                    self.custom_operation_clauses
+                        .entry(tok.text_range())
+                        .or_insert(DeclineCause::OpaqueBinder);
+                }
+            }
+        }
     }
 
     /// Leave a computation expression [`Self::enter_computation_expression`]

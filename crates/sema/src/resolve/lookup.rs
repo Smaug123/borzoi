@@ -1929,6 +1929,31 @@ impl<'a> Resolver<'a> {
                 ));
             }
         }
+        // A possible union case the walk does not intern (`type T = X`)
+        // declines its name in both namespaces, and no other.
+        let own_cases: Vec<&Vec<String>> = self
+            .export_decls
+            .iter()
+            .filter(|d| {
+                matches!(d.kind, super::model::ExportDeclKind::OpaqueCase)
+                    && !super::model::superseded_by_a_later_value(&self.export_decls, d)
+            })
+            .map(|d| &d.path)
+            .collect();
+        for path in own_cases.into_iter().chain(&self.preceding.opaque_cases) {
+            if let Some((name, container)) = path.split_last()
+                && container == module_path
+            {
+                let mut entry = ScopeEntry::opened_declined(
+                    name.clone(),
+                    DeclineCause::OpaqueBinder,
+                    generation,
+                    open_pos,
+                );
+                entry.opened_case = true;
+                entries.push(entry);
+            }
+        }
         let count = entries.len();
         self.module_frame().entries.extend(entries);
         self.pattern_suppressed_case_ids.extend(suppressed);
@@ -2417,6 +2442,9 @@ impl<'a> Resolver<'a> {
             self.record_decline(range, DeclineSite::pre_walk(cause));
         }
         let a_variable = res.is_none() && self.unfolded_implicit_surface(name).is_none();
+        if a_variable {
+            self.opaque_binders.insert(range);
+        }
         a_variable.then(|| {
             ScopeEntry::binding(
                 name.to_string(),
@@ -2665,7 +2693,17 @@ impl<'a> Resolver<'a> {
         // whole path is then a member access we don't model, so defer it. Gated on
         // the raw token text (`base`, no backticks) so the quoted form is
         // unaffected.
-        if first.text() == "base" || is_synthesized_argument_name(&id_text(first)) {
+        if first.text() == "base" || is_synthesized_name(&id_text(first)) {
+            return;
+        }
+        // A head a custom operation takes by name, or a variable one binds,
+        // declines the whole path, as a bare use of it does.
+        if let Some(cause) = self.custom_operation_clause_decline(first) {
+            self.record(
+                first.text_range(),
+                Resolution::Deferred(DeferredReason::UnboundName),
+            );
+            self.record_decline(first.text_range(), DeclineSite::pre_walk(cause));
             return;
         }
 
@@ -5280,13 +5318,24 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// Whether `name` is spelled like the binding FCS synthesizes for a parameter
-/// that is not a plain name (`_`, a tuple): `_arg1`, `_arg2`, …. A use of that
-/// spelling inside such a member, lambda or function is the synthesized
-/// binding, which the walk does not model, so the walk never commits one
-/// rather than bind an enclosing value of the name. Real code spells these
-/// names essentially never.
-pub(super) fn is_synthesized_argument_name(name: &str) -> bool {
-    name.strip_prefix("_arg")
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+/// Whether `name` is spelled like a binding FCS synthesizes, which the walk
+/// does not model, so it never commits a use of one rather than bind an
+/// enclosing value of the name:
+///
+/// - the binding of a parameter that is not a plain name (`_`, a tuple):
+///   `_arg1`, `_arg2`, …, in scope in its member, lambda or function;
+/// - an identifier, an `@` and a line number (`doval@24`, the value of a
+///   `static do` among recursive types): FCS's spelling for a value it makes,
+///   which only a double-backtick identifier can write. A quoted operator
+///   (`` ``@`` ``) is not one.
+///
+/// Real code spells these names essentially never.
+pub(super) fn is_synthesized_name(name: &str) -> bool {
+    let digits = |n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit());
+    let generated_value = name.rsplit_once('@').is_some_and(|(stem, line)| {
+        digits(line)
+            && stem.starts_with(|c: char| c.is_alphabetic() || c == '_')
+            && stem.chars().all(|c| c.is_alphanumeric() || c == '_')
+    });
+    generated_value || name.strip_prefix("_arg").is_some_and(digits)
 }

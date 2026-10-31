@@ -1894,6 +1894,21 @@ impl Attribute {
 }
 
 impl Binding {
+    /// The `as <self-id>` of a secondary constructor (`new () as this = …`) —
+    /// FCS's `SynMemberDefn.Member` binding whose head is `SynPat.As(_,
+    /// SynPat.Named this)`. The [`SyntaxKind::IDENT_TOK`] directly after a direct
+    /// [`SyntaxKind::AS_TOK`] child; `None` without one (an `as` inside a
+    /// pattern nests in that pattern's node).
+    pub fn ctor_self_id(&self) -> Option<SyntaxToken> {
+        let mut tokens = self
+            .0
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|t| !t.kind().is_trivia());
+        tokens.find(|t| t.kind() == SyntaxKind::AS_TOK)?;
+        tokens.next().filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+    }
+
     /// The binding's leading attribute lists — FCS's `SynBinding.attributes`
     /// (field 4) in the `let [<Literal>] x = …` form, where the run sits between
     /// the `let`/`and` keyword and the pattern. Leading [`AttributeList`] children
