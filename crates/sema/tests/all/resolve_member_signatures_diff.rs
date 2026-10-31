@@ -549,7 +549,7 @@ fn grade(program: &Program, file: &crate::common::FileCensus, clean: bool) -> Ve
                     ));
                 }
             }
-            Resolution::Entity(_) | Resolution::Member { .. } => {
+            Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
                 // FCS spans a dotted type path from its first segment
                 // (`System.String`); we key the type at its own segment. The
                 // two share an end.
