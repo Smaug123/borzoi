@@ -204,10 +204,10 @@ cleanup() {
 acquire_lock() {
   local owner said=
   until mkdir "$lock" 2>/dev/null; do
-    # No owner yet is a run between its `mkdir` and writing the owner; for
+    # No owner yet is a run between its `mkdir` and recording itself; for
     # longer than a minute, it is one that died there.
     if owner="$(abandoned "$lock/owner")" ||
-      { [ ! -e "$lock/owner" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+      { [ ! -s "$lock/owner" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
       echo "project-corpus-gate: $lock is held by a run that has exited" \
         "(${owner:-no owner recorded}). If no gate run is in progress, remove it:" >&2
       echo "  rm -r '$lock'" >&2
@@ -221,7 +221,9 @@ acquire_lock() {
     sleep 1
   done
   lock_held=1
-  printf '%s\n' "$me" >"$lock/owner"
+  # Renamed into place, so the owner file is absent or complete.
+  printf '%s\n' "$me" >"$lock/owner.new"
+  mv "$lock/owner.new" "$lock/owner"
 }
 
 release_lock() {

@@ -278,6 +278,14 @@ test_concurrency() {
     "$(grep -c "no owner recorded" "$tmp/i2.out")"
   rm -r "$tmp/cache/lock"
 
+  # Or that died with its owner file created but not yet written.
+  mkdir "$tmp/cache/lock"
+  : >"$tmp/cache/lock/owner"
+  touch -t 202001010000 "$tmp/cache/lock"
+  run_gate i3 "$tmp/plan2" "$rev2" "$step"
+  assert_eq "a lock with an empty owner for over a minute fails fast" 1 "$(cat "$tmp/i3.status")"
+  rm -r "$tmp/cache/lock"
+
   EXTRA_PATH="$tmp/nops" run_gate j "$tmp/plan2" "$rev2" "$step"
   assert_eq "a run that cannot read its own start time fails" 1 "$(cat "$tmp/j.status")"
   assert_eq "and registers nowhere" "" \
