@@ -1258,6 +1258,30 @@ const ROWS: &[Row] = &[
         ],
     },
     Row {
+        label: "primary-constructor parameters spelled like a case or a value",
+        decls: &[],
+        src: "module UcR43\n\
+              let Foo = 42\n\
+              type C (Foo: int) =\n    member _.V = Foo\n\
+              type D (Some: int) =\n    member _.V = Some 1\n\
+              type E (x: int, Foo) =\n    member _.V = Foo + x\n",
+        probes: &[
+            defer(
+                "Foo",
+                2,
+                "proj:Foo:member",
+                "a capitalised parameter that names no case binds, masking the outer value",
+            ),
+            commit("Some", 1, SOME),
+            defer(
+                "Foo",
+                4,
+                "proj:Foo:member",
+                "a capitalised parameter that names no case binds, masking the outer value",
+            ),
+        ],
+    },
+    Row {
         label: "query range variables an into binds",
         decls: &[],
         src: "module UcR41\n\

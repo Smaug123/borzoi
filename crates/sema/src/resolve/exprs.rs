@@ -762,6 +762,11 @@ impl<'a> Resolver<'a> {
     /// `_argN` and drops the match that would read it, so nothing of it is
     /// resolved: not a parameter spelled like a union case (`Some: int`),
     /// not a pattern the constructor rejects (`Some x`, FS3865).
+    ///
+    /// A capitalised name (`Foo: int`) is FCS's undecided case: it binds
+    /// unless it names a case, so it masks whatever outer `Foo` the walk
+    /// would find, as a lambda's does
+    /// ([`Self::resolve_provisional_case_head`]), and records nothing.
     pub(super) fn primary_constructor_locals(&mut self, args: Option<Pat>) -> Vec<ScopeEntry> {
         let elements: Vec<Pat> = match args {
             Some(Pat::Tuple(t)) if !t.is_struct() => t.elements().collect(),
@@ -781,7 +786,21 @@ impl<'a> Resolver<'a> {
                 let PatternName::Binder(def) = pat_name else {
                     continue;
                 };
-                if def.provisional || !names.contains(&def.range) {
+                if !names.contains(&def.range) {
+                    continue;
+                }
+                if def.provisional {
+                    let name = def.key().to_string();
+                    let a_case = self
+                        .case_reference(&name)
+                        .is_some_and(|r| !matches!(r, Resolution::Deferred(_)));
+                    if !a_case {
+                        entries.push(ScopeEntry::binding(
+                            name,
+                            Resolution::Deferred(DeferredReason::UnboundName),
+                            self.open_generation,
+                        ));
+                    }
                     continue;
                 }
                 let name = def.key().to_string();
@@ -818,6 +837,19 @@ impl<'a> Resolver<'a> {
             }
             Pat::Named(p) => names.extend(p.ident().map(|t| t.text_range())),
             Pat::OptionalVal(p) => names.extend(p.ident().map(|t| t.text_range())),
+            // `Foo`: one segment, no arguments, no typars.
+            Pat::LongIdent(p)
+                if p.args().next().is_none()
+                    && p.name_pat_pairs().is_none()
+                    && p.typar_decls().is_none() =>
+            {
+                if let Some(head) = p.head() {
+                    let segs: Vec<_> = head.idents().collect();
+                    if let [only] = segs.as_slice() {
+                        names.push(only.text_range());
+                    }
+                }
+            }
             Pat::As(p) => {
                 if let Some(Pat::Named(rhs)) = p.rhs() {
                     names.extend(rhs.ident().map(|t| t.text_range()));
