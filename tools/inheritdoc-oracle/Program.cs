@@ -61,6 +61,9 @@
 //     assembly carries, for fixtures `compile` cannot make.
 //     -> {"ok":true}
 //
+//   {"op":"emit",..}
+//     Write an assembly from a JSON description (see Emit.cs).
+//
 // Any per-request exception is reported as {"error":..} on that line; the
 // process itself never dies mid-batch.
 
@@ -140,7 +143,7 @@ internal static class Program
     /// Forget what was read from <paramref name="dll"/> (and its documentation file), which a request has just
     /// written: the next compilation over it reads it afresh.
     /// </summary>
-    private static void Rewritten(string dll)
+    internal static void Rewritten(string dll)
     {
         s_references.Remove(dll);
         s_compilation = null;
@@ -328,6 +331,8 @@ internal static class Program
                 Rewritten(Path.Combine(outDir, name + ".dll"));
                 return new JsonObject { ["ok"] = true };
             }
+            case "emit":
+                return Emit.Run(request);
             case "swap-method-names":
             {
                 // Exchange the `Name` columns of the two `MethodDef` rows named

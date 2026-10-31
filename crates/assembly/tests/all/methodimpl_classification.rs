@@ -243,6 +243,13 @@ fn property_impls_split_across_accessors_are_unioned() {
         [("IRead", property_m("P")), ("IWrite", property_m("P"))]
     );
     assert_eq!(got("B"), [("IBoth", property_m("B"))]);
+    // The merged entry carries both accessor rows' declarations: a getter's
+    // and a setter's, which differ.
+    let declarations = property("B").implements[0]
+        .declarations
+        .as_ref()
+        .expect("both declarations project");
+    assert_eq!(declarations.len(), 2, "{declarations:?}");
 }
 
 #[test]

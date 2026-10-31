@@ -18,20 +18,16 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use borzoi::assembly_cache::AssemblyCache;
-use borzoi::semantic::build_env_from_dll_paths;
 use borzoi::xml_doc::lookup::DocSources;
 
 use crate::common::ensure_system_runtime_dll;
-use crate::common::inheritdoc_diff::{Census, compare_assembly};
+use crate::common::inheritdoc_diff::{Census, build_env, compare_assembly};
 
 /// ASP.NET Core entries expanded exactly as Roslyn expands them, measured
-/// 2026-10-29 over Microsoft.AspNetCore.App.Ref 10.0.12. Nearly all of the
-/// pack's `<inheritdoc>`s are bare, inheriting from an implicit candidate,
-/// which the expansion does not model yet.
-const ASPNET_EXPANDED: usize = 13;
+/// 2026-10-29 over Microsoft.AspNetCore.App.Ref 10.0.12.
+const ASPNET_EXPANDED: usize = 2106;
 
 fn dlls_in(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -85,15 +81,11 @@ fn packs() -> (PathBuf, PathBuf) {
 }
 
 fn sweep(references: &[PathBuf], targets: &[PathBuf]) -> Census {
-    let (env, _) = build_env_from_dll_paths(
-        references.iter().map(PathBuf::as_path),
-        &AssemblyCache::disabled(),
-    );
-    let env = Arc::new(env);
+    let (env, references) = build_env(references, &AssemblyCache::disabled());
     let mut sources = DocSources::default();
     let mut census = Census::default();
     for dll in targets {
-        census.add(&compare_assembly(&env, &mut sources, references, dll));
+        census.add(&compare_assembly(&env, &mut sources, &references, dll));
     }
     census
 }
