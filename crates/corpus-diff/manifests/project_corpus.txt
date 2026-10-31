@@ -5,33 +5,32 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs compared match=3
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers perturbed definition declined=18 located=12
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers perturbed hover described=30
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers perturbed references referenced=30
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers plain definition declined=24 located=494
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers plain hover declined=3 described=174 explained=6
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers plain references declined=9 referenced=174
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers plain definition declined=21 located=482
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers plain hover declined=3 described=153 explained=6
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs handlers plain references declined=9 referenced=153
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs hover-types perturbed agrees=12 not-a-value=9 shown-signature=9
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs hover-types plain no-hover=3 not-a-value=132 resolver-declined=6 shown-signature=6 withheld-in-file-function=15 withheld-in-file-parameter=21
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:102:13-22 "believeMe" hover-type plain in-file-value withheld-in-file-function at first,middle,last
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:104:105-108 "Map" handlers plain definition first declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:104:105-108 "Map" handlers plain definition last declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:104:105-108 "Map" handlers plain definition middle declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:104:38-41 "k1" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs hover-types plain no-hover=3 not-a-value=105 resolver-declined=6 shown-signature=9 withheld-in-file-function=12 withheld-in-file-parameter=27
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:102:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:104:38-41 "k1" project-deferral unrecorded type_parameter
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:104:59-62 "k2" project-deferral unrecorded type_parameter
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:107:40-42 "k" project-deferral unrecorded type_parameter
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:110:41-44 "k1" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:108:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:110:41-44 "k1" project-deferral unrecorded type_parameter
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:110:62-65 "k2" project-deferral unrecorded type_parameter
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:111:13-25 "transitivity" hover-type plain in-file-value withheld-in-file-function at first,middle,last
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:115:72-78 "Result" handlers plain definition first declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:115:72-78 "Result" handlers plain definition last declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:115:72-78 "Result" handlers plain definition middle declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:115:94-100 "Result" handlers plain definition first declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:115:94-100 "Result" handlers plain definition last declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:115:94-100 "Result" handlers plain definition middle declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:124:30-38 "errorPrf" hover-type plain local withheld-in-file-parameter at first,middle,last
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:132:13-22 "believeMe" hover-type plain in-file-value withheld-in-file-function at first,middle,last
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:146:13-22 "believeMe" hover-type plain in-file-value withheld-in-file-function at first,middle,last
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:172:22-28 "fstPrf" hover-type plain local withheld-in-file-parameter at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:122:13-25 "transitivity" hover-type plain in-file-value withheld-in-file-function at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:128:13-22 "believeMe" hover-type plain in-file-value withheld-in-file-function at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:141:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:150:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:155:25-34 "domainPrf" hover-type plain local withheld-in-file-parameter at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:166:13-22 "believeMe" hover-type plain in-file-value withheld-in-file-function at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:166:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:16:39-41 "id" handlers plain definition first declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:16:39-41 "id" handlers plain definition last declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:16:39-41 "id" handlers plain definition middle declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:175:53-58 "Async" handlers plain definition first declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:175:53-58 "Async" handlers plain definition last declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:175:53-58 "Async" handlers plain definition middle declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:184:30-33 "int" handlers perturbed definition first declined expected fresh-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:184:30-33 "int" handlers perturbed definition last declined expected fresh-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:184:30-33 "int" handlers perturbed definition middle declined expected fresh-assembly
@@ -50,86 +49,79 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:185:57-61 "List"
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:185:57-61 "List" handlers perturbed definition middle declined expected fresh-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:185:57-68 "length" handlers perturbed definition last declined expected fresh-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:185:57-68 "length" handlers perturbed definition middle declined expected fresh-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:21:23-24 "(=)" handlers plain definition first declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:21:23-24 "(=)" handlers plain definition last declined expected served-assembly
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:21:23-24 "(=)" handlers plain definition middle declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:22:22-24 "(|>)" handlers plain definition first declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:22:22-24 "(|>)" handlers plain definition last declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:22:22-24 "(|>)" handlers plain definition middle declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:22:34-38 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:24:13-17 "None" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:29:19-31 "_arg1" compiler-generated
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:29:40-42 "ba" hover-type plain local withheld-in-file-parameter at first,middle,last
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:29:44-46 "ab" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:23-35 "_arg2" compiler-generated
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:42-44 "a" project-deferral unrecorded type_parameter
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:46-48 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:46-48 "b" project-deferral unrecorded type_parameter
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:52-64 "_arg1" compiler-generated
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:71-73 "b" project-deferral unrecorded type_parameter
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:75-77 "c" project-deferral unrecorded type_parameter
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:86-88 "a" project-deferral unrecorded type_parameter
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:90-92 "c" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:32:90-92 "c" project-deferral unrecorded type_parameter
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:35:20-22 "bc" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:38:15-25 "_arg1" compiler-generated
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:42:33-34 "a" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:46:19-29 "_arg1" compiler-generated
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:50:16-26 "_arg1" compiler-generated
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:50:49-50 "g" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:69:7-29 "RequireQualifiedAccessAttribute" shadowed-constructor
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:69:8-29 "``.ctor``" shadowed-constructor
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:77:13-18 "unbox" handlers plain definition first declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:77:13-18 "unbox" handlers plain definition last declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:77:13-18 "unbox" handlers plain definition middle declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:80:56-61 "array" assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:80:66-71 "array" assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:84:43-48 "array" assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:84:53-58 "array" assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:89:13-22 "believeMe" hover-type plain in-file-value withheld-in-file-function at first,middle,last
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:93:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:95:29-31 "a" project-deferral unrecorded type_parameter
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:95:49-51 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:95:49-51 "b" project-deferral unrecorded type_parameter
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:96:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:98:31-33 "a" project-deferral unrecorded type_parameter
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:98:51-53 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:98:51-53 "b" project-deferral unrecorded type_parameter
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:99:23-26 "prf" hover-type plain local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:9:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:9:4-25 "``.ctor``" shadowed-constructor
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi compared match=0 assembly-match=0 attribute=0 member=0 definitions=38
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain definition declined=195
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain hover declined=89 explained=106
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain references declined=195
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi hover-types plain no-hover=89 resolver-declined=106
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain definition declined=189
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain hover declined=91 explained=98
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi handlers plain references declined=189
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi hover-types plain no-hover=91 resolver-declined=98
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:103-106 "v1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:103-106 "v1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:108-111 "v2" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:116-119 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:116-119 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:116-119 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:116-119 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:120-123 "Map" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:124-127 "k1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:129-132 "v1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:135-138 "Map" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:139-142 "k2" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:144-147 "v2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:144-147 "v2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:17-20 "k1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:22-25 "v1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:27-30 "k2" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:32-35 "v2" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:32-35 "v2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:41-44 "k1" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:62-65 "k2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:82-85 "Teq" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:86-89 "k1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:86-89 "k1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:91-94 "k2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:102:99-102 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:102-108 "error" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:22-26 "ok1" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:22-26 "ok1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:28-32 "ok2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:34-40 "error" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:44-47 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:48-52 "ok1" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:54-58 "ok2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:54-58 "ok2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:63-66 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:67-73 "Result" assembly-deferral unrecorded signature_file
@@ -139,58 +131,51 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:89-95 "Resu
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:106:96-100 "ok2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:101-107 "Result" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:108-111 "ok" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:113-120 "error2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:113-120 "error2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:25-32 "error1" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:25-32 "error1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:34-41 "error2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:43-46 "ok" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:50-53 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:50-53 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:50-53 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:50-53 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:54-61 "error1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:63-70 "error2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:75-78 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:79-85 "Result" assembly-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:86-89 "ok" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:86-89 "ok" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:110:91-98 "error1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:100-106 "Result" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:107-111 "ok1" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:113-120 "error1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:113-120 "error1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:123-129 "Result" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:130-134 "ok2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:136-143 "error2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:20-24 "ok1" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:26-33 "error1" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:26-33 "error1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:35-39 "ok2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:41-48 "error2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:52-55 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:56-60 "ok1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:62-66 "ok2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:71-74 "Teq" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:75-82 "error1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:75-82 "error1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:84-91 "error2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:114:96-99 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:20-22 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:24-26 "b" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:30-33 "Teq" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:34-36 "a" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:34-36 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:38-40 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:45-48 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:49-51 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:52-58 "option" assembly-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:60-62 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:60-62 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:117:63-69 "option" assembly-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:120:22-24 "a" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:120:22-24 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:120:26-28 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:120:32-35 "Teq" project-deferral unrecorded signature_file
@@ -204,17 +189,17 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:120:69-71 "b" p
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:101-109 "domain2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:113-119 "range" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:20-28 "domain1" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:30-38 "domain2" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:30-38 "domain2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:40-46 "range" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:50-53 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:54-62 "domain1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:54-62 "domain1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:64-72 "domain2" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:77-80 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:77-80 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:77-80 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:77-80 "Teq" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:81-89 "domain1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:81-89 "domain1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:124:93-99 "range" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:111-114 "Teq" project-deferral unrecorded signature_file
@@ -223,15 +208,16 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:125-133 "do
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:22-30 "domain1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:32-40 "domain2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:42-49 "range1" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:51-58 "range2" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:51-58 "range2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:62-65 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:66-74 "domain1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:78-85 "range1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:87-95 "domain2" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:99-106 "range2" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:99-106 "range2" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:99-106 "range2" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:127:99-106 "range2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:131:108-115 "range2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:131:19-26 "domain" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:131:19-26 "domain" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:131:28-35 "range1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:131:37-44 "range2" project-deferral unrecorded signature_file x2
@@ -249,15 +235,15 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:21-29 "doma
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:31-39 "domain2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:41-48 "range1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:50-57 "range2" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:61-64 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:65-73 "domain1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" handlers plain hover last declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:77-84 "range1" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:86-94 "domain2" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:86-94 "domain2" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:86-94 "domain2" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:86-94 "domain2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:134:98-105 "range2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:110-113 "Teq" project-deferral unrecorded signature_file
@@ -269,9 +255,11 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:135-143 "do
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:135-143 "domain2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:147-154 "range2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:18-26 "domain1" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:28-35 "range1" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:28-35 "range1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:37-45 "domain2" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:37-45 "domain2" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:47-54 "range2" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:47-54 "range2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:58-61 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:137:62-70 "domain1" project-deferral unrecorded signature_file
@@ -283,12 +271,9 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:17-22 "fst1
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:24-29 "fst2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:31-35 "snd" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:39-42 "Teq" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:43-48 "fst1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:43-48 "fst1" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:50-55 "fst2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:50-55 "fst2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:60-63 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:64-69 "fst1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:141:64-69 "fst1" project-deferral unrecorded signature_file
@@ -303,20 +288,28 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:43-48 "snd1
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:43-48 "snd1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:50-55 "snd2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:60-63 "Teq" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:64-68 "fst" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:64-68 "fst" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:71-76 "snd1" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:78-82 "fst" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:78-82 "fst" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:145:85-90 "snd2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:102-107 "snd1" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:109-114 "fst2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:109-114 "fst2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:117-122 "snd2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:18-23 "fst1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:25-30 "snd1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:32-37 "fst2" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:39-44 "snd2" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:39-44 "snd2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:48-51 "Teq" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:52-57 "fst1" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:52-57 "fst1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:59-64 "fst2" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:69-72 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:69-72 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:69-72 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:69-72 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:73-78 "snd1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:149:80-85 "snd2" project-deferral unrecorded signature_file
@@ -327,67 +320,72 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:23-25 "b" p
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:29-32 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:33-35 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:37-39 "b" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:44-47 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:44-47 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:44-47 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:44-47 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:48-53 "Async" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:54-56 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:59-64 "Async" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:152:65-67 "b" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:21-23 "a" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:21-23 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:25-27 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:31-34 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:35-40 "Async" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:41-43 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:46-51 "Async" assembly-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:52-54 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:52-54 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:60-63 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:64-66 "a" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:68-70 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:155:68-70 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:14-16 "a" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:20-23 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:20-23 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:20-23 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:20-23 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:24-26 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:16:28-30 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:17-19 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:21-23 "b" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:27-30 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:31-33 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:35-37 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:39-45 "option" assembly-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:39-45 "option" handlers plain hover first declined expected declined-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:39-45 "option" handlers plain hover last declined expected declined-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:20:39-45 "option" handlers plain hover middle declined expected declined-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:20-23 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:24-26 "a" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:28-30 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:28-30 "b" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:35-38 "Teq" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:39-41 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:39-41 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:25:43-45 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:24-27 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:28-30 "a" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:32-34 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:32-34 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:39-42 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:43-45 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:47-49 "c" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:54-57 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:58-60 "a" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:62-64 "c" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:28:62-64 "c" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:16-19 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:20-22 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:24-26 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:31-33 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:31:37-39 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:18-21 "Teq" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:22-24 "a" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:22-24 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:26-28 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:33-35 "a" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:39-41 "b" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:39-41 "b" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:39-41 "b" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:35:39-41 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:39:20-23 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:39:24-26 "a" project-deferral unrecorded signature_file
@@ -396,10 +394,8 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:39:35-37 "b" pr
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:39:41-43 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:17-20 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:21-23 "a" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:25-27 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:25-27 "b" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:33-35 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:39-41 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:43:46-48 "a" project-deferral unrecorded signature_file
@@ -410,26 +406,32 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:62:7-29 "Requir
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:62:7-29 "RequireQualifiedAccessAttribute" shadowed-constructor
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:62:8-29 "``.ctor``" shadowed-constructor
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:23-25 "a" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:27-29 "b" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:27-29 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:31-34 "a2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:36-39 "b2" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:43-46 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:43-46 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:43-46 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:43-46 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:47-49 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:51-53 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:58-61 "Teq" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:62-65 "a2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:62-65 "a2" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:67-70 "b2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:69:67-70 "b2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:19-21 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:23-25 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:29-32 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:33-35 "a" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:37-39 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:37-39 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:44-47 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:48-50 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:51-56 "array" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:58-60 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:72:61-66 "array" assembly-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:75:21-23 "a" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:75:21-23 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:75:25-27 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:75:31-34 "Teq" project-deferral unrecorded signature_file
@@ -445,13 +447,14 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:22-24 "b" pr
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:28-31 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:32-34 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:36-38 "b" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:43-46 "Teq" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:43-46 "Teq" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:43-46 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:43-46 "Teq" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:47-49 "a" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:47-49 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:50-54 "list" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:56-58 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:78:59-63 "list" assembly-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:81:20-22 "a" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:81:20-22 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:81:24-26 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:81:30-33 "Teq" project-deferral unrecorded signature_file
@@ -465,17 +468,16 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:81:63-65 "b" pr
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:100-102 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:17-19 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:21-23 "b" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:29-31 "a" handlers plain hover first declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:29-31 "a" handlers plain hover last declined expected declined-project
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:29-31 "a" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:29-31 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:49-51 "b" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:68-71 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:72-74 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:76-78 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:83-86 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:87-90 "Set" assembly-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:91-93 "a" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:91-93 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:84:96-99 "Set" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:87:103-105 "b" project-deferral unrecorded signature_file
@@ -493,12 +495,12 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:87:99-101 "a" p
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:17-19 "a" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:21-23 "b" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:27-30 "Teq" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:31-33 "a" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:31-33 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:35-37 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:42-45 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:46-48 "a" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:49-52 "seq" assembly-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:54-56 "b" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:54-56 "b" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:90:57-60 "seq" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:100-103 "Map" assembly-deferral unrecorded signature_file
@@ -507,7 +509,9 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:109-111 "v" 
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:114-117 "Map" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:118-121 "k2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:123-125 "v" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:20-23 "k1" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:20-23 "k1" project-deferral unrecorded signature_file x2
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:25-28 "k2" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:25-28 "k2" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:30-32 "v" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:38-41 "k1" project-deferral unrecorded signature_file
@@ -515,14 +519,11 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:59-62 "k2" p
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:79-82 "Teq" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:83-86 "k1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:88-91 "k2" project-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" handlers plain hover first declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" handlers plain hover last declined expected declined-project
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" handlers plain hover middle declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:94:96-99 "Teq" project-deferral unrecorded signature_file
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:102-105 "v2" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:102-105 "v2" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:22-25 "v1" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:27-30 "v2" project-deferral unrecorded signature_file x2
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:32-34 "k" handlers plain hover first declined expected declined-project x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:32-34 "k" project-deferral unrecorded signature_file x2
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:40-42 "k" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:59-62 "Teq" project-deferral unrecorded signature_file
@@ -536,7 +537,6 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:80-83 "Map" 
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:84-86 "k" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:88-91 "v1" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:94-97 "Map" assembly-deferral unrecorded signature_file
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:98-100 "k" handlers plain hover first declined expected declined-project
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:98:98-100 "k" project-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:9:3-25 "RequireQualifiedAccessAttribute" assembly-deferral unrecorded signature_file
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fsi:9:3-25 "RequireQualifiedAccessAttribute" shadowed-constructor
@@ -689,13 +689,14 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs compa
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers perturbed definition declined=72 located=12 located-elsewhere=18
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers perturbed hover described=30 explained=72
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers perturbed references declined=72 referenced=30
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers plain definition declined=258 located=435 located-elsewhere=60
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers plain hover declined=1 described=226 explained=257
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers plain references declined=258 referenced=226
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers plain definition declined=333 located=420 located-elsewhere=59
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers plain hover declined=3 described=203 explained=330
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs handlers plain references declined=333 referenced=203
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs hover-types perturbed agrees=12 not-a-value=9 resolver-declined=72 shown-signature=9
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs hover-types plain no-hover=1 not-a-value=102 resolver-declined=257 shown-signature=27 withheld-earlier-file-typed-at-definition=4 withheld-in-file-parameter=57 withheld-in-file-value=36
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs hover-types plain agrees=3 no-hover=3 not-a-value=73 resolver-declined=330 shown-signature=23 withheld-earlier-file-typed-at-definition=2 withheld-in-file-parameter=51 withheld-in-file-pattern-local=15 withheld-in-file-value=36
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:100:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:101:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:104:19-24 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:104:19-34 "Formatter" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:104:36-52 "Formatter" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:105:15-19 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
@@ -705,11 +706,13 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:106:3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:107:15-19 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:107:23-27 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:110:19-46 "JsonSerialiserOptions" project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:110:48-54 "actual" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:110:48-76 "JsonSerialiserOptions" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:111:15-19 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:112:15-19 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:112:23-27 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:112:31-35 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:112:36-37 "f" hover-type plain local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:113:15-19 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:113:23-27 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:116:19-39 "JsonDocOptions" project-deferral qualified-access member_access_on_value
@@ -722,11 +725,11 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:119:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:119:23-27 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:123:13-22 "Formatter" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:124:13-21 "Snapshot" project-deferral unrecorded field_label
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:124:24-29 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:124:24-38 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:125:13-19 "Actual" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:125:22-35 "Actual" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:126:13-34 "JsonSerialiserOptions" project-deferral unrecorded field_label
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:126:37-51 "jsonSerOptions" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:127:13-27 "JsonDocOptions" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:130:5-139:10 "Core" ambiguous-oracle-range
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:130:5-139:10 "FSharp" ambiguous-oracle-range
@@ -752,6 +755,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:137:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:138:15-29 "CallerFilePathAttribute" assembly-deferral shadowable-type attribute_unrulable@pre_walk x3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:138:15-29 "CallerFilePathAttribute" shadowed-constructor x3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:140:11-22 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:142:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:142:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:143:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:144:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
@@ -793,11 +797,13 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:171:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:172:15-29 "CallerFilePathAttribute" assembly-deferral shadowable-type attribute_unrulable@pre_walk x3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:172:15-29 "CallerFilePathAttribute" shadowed-constructor x3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:174:11-22 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:176:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:176:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:177:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:178:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:179:41-51 "memberName" hover-type plain local withheld-in-file-parameter at first,middle,last
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:180:39-47 "filePath" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:185:21-31 "MemberName" project-deferral unrecorded field_label
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:185:34-44 "memberName" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:186:21-29 "FilePath" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:187:21-31 "LineNumber" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:190:13-13 "ExpectState" zero-width
@@ -835,7 +841,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:211:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:213:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:214:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:215:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:218:41-51 "callerLine" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:222:21-31 "MemberName" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:223:21-29 "FilePath" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:224:21-31 "LineNumber" project-deferral unrecorded field_label
@@ -877,7 +882,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:251:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:253:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:254:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:255:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:257:39-47 "filePath" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:262:21-31 "MemberName" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:263:21-29 "FilePath" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:264:21-31 "LineNumber" project-deferral unrecorded field_label
@@ -886,6 +890,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:268:2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:269:17-38 "JsonSerialiserOptions" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:269:41-68 "JsonSerialiserOptions" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:270:17-31 "JsonDocOptions" project-deferral unrecorded field_label
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:270:34-39 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:270:34-54 "JsonDocOptions" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:271:17-25 "Snapshot" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:271:28-32 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
@@ -899,6 +904,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:275:5
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:275:5-290:10 "OptionalArgumentAttribute" shadowed-constructor x3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:275:6-290:10 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:27:43-56 "``.ctor``" project-deferral unbound-name unexplained
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:27:83-97 "sourceOverride" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:282:39-70 "MaintainsVariableSpaceUsingBind" assembly-deferral unrecorded attribute_argument x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:282:7-22 "CustomOperationAttribute" assembly-deferral shadowable-type attribute_unrulable@pre_walk x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:282:7-22 "CustomOperationAttribute" shadowed-constructor x2
@@ -920,12 +926,9 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:291:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:294:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:295:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:296:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:297:41-51 "memberName" hover-type plain local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:299:41-51 "callerLine" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:303:21-31 "MemberName" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:304:21-29 "FilePath" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:305:21-31 "LineNumber" project-deferral unrecorded field_label
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:305:34-44 "lineNumber" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:309:17-26 "Formatter" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:309:29-33 "None" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:310:17-25 "Snapshot" project-deferral unrecorded field_label
@@ -958,11 +961,9 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:331:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:332:15-29 "CallerFilePathAttribute" assembly-deferral shadowable-type attribute_unrulable@pre_walk x3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:332:15-29 "CallerFilePathAttribute" shadowed-constructor x3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:334:11-22 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:336:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:336:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:337:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:338:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:342:41-51 "callerLine" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:346:21-31 "MemberName" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:347:21-29 "FilePath" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:348:21-31 "LineNumber" project-deferral unrecorded field_label
@@ -976,7 +977,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:354:3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:355:17-25 "Snapshot" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:355:28-32 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:355:34-47 "SnapshotValue" project-deferral qualified-access qualifier
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:355:64-72 "snapshot" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:356:17-23 "Actual" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:356:26-30 "None" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:359:5-378:10 "Core" ambiguous-oracle-range
@@ -1006,14 +1006,13 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:379:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:37:32-48 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:37:66-82 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:37:90-106 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:381:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:381:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:382:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:383:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:391:21-31 "MemberName" project-deferral unrecorded field_label
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:391:34-44 "memberName" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:392:21-29 "FilePath" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:393:21-31 "LineNumber" project-deferral unrecorded field_label
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:393:34-44 "lineNumber" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:397:17-26 "Formatter" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:397:29-33 "None" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:398:17-38 "JsonSerialiserOptions" project-deferral unrecorded field_label
@@ -1034,14 +1033,13 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:411:7
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:411:7-22 "CustomOperationAttribute" shadowed-constructor x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:411:8-22 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:412:38-49 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:413:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:413:15-30 "Formatter" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:414:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:415:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:416:13-13 "ExpectState" zero-width
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:416:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:417:17-26 "Formatter" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:417:29-33 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:417:52-61 "formatter" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:41:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:428:37-68 "MaintainsVariableSpaceUsingBind" assembly-deferral unrecorded attribute_argument x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:428:7-22 "CustomOperationAttribute" assembly-deferral shadowable-type attribute_unrulable@pre_walk x2
@@ -1055,7 +1053,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:432:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:433:13-13 "ExpectStateListy" zero-width
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:434:17-26 "Formatter" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:434:29-33 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:434:44-45 "f" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:44:15-21 "actual" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:44:15-30 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:451:52-83 "MaintainsVariableSpaceUsingBind" assembly-deferral unrecorded attribute_argument x2
@@ -1076,6 +1073,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:474:7
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:474:7-22 "CustomOperationAttribute" shadowed-constructor x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:474:8-22 "``.ctor``" shadowed-constructor
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:475:53-69 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:476:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:476:15-29 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:477:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:480:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
@@ -1097,6 +1095,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:49:36
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:4:13-15 "IO" assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:4:6-12 "System" assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:50:15-19 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:50:26-27 "f" hover-type plain local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:517:45-76 "MaintainsVariableSpaceUsingBind" assembly-deferral unrecorded attribute_argument x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:517:7-22 "CustomOperationAttribute" assembly-deferral shadowable-type attribute_unrulable@pre_walk x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:517:7-22 "CustomOperationAttribute" shadowed-constructor x2
@@ -1106,12 +1105,13 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:519:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:51:15-19 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:51:23-27 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:51:31-35 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:51:36-37 "f" hover-type plain local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:520:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:521:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:522:13-13 "ExpectState" zero-width
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:522:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:523:17-31 "JsonDocOptions" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:523:34-38 "Some" assembly-deferral unbound-name implicit_surface_unfolded@pre_walk
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:523:39-50 "jsonOptions" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:527:22-24 "_arg1" compiler-generated
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:527:35-51 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:527:52-54 "T" project-deferral unrecorded type_parameter x2
@@ -1156,24 +1156,24 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:559:3
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:559:50-52 "T" project-deferral unrecorded type_parameter x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:559:65-81 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:559:82-84 "T" ambiguous-oracle-range x2
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:559:88-89 "f" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:55:13-22 "Formatter" project-deferral unrecorded field_label
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:55:25-34 "formatter" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:562:31-47 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:562:48-50 "T" project-deferral unrecorded type_parameter x2
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:563:21-22 "f" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:563:29-57 "CompletedListSnapshotGeneric" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:565:26-43 "ReadAllLines" assembly-deferral qualified-access assembly_type_member
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:565:44-49 "state" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:565:44-65 "FilePath" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:565:50-56 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:569:17-26 "AstWalker" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:56:13-21 "Snapshot" project-deferral unrecorded field_label
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:56:24-29 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:56:24-38 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:570:21-42 "FilePath" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:570:27-33 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:571:22-33 "Force" assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:572:21-44 "LineNumber" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:572:27-33 "Caller" project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:573:21-26 "state" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:573:21-44 "MemberName" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:573:27-33 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:577:17-21 "Diff" project-deferral unbound-name qualifier
@@ -1181,27 +1181,26 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:577:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:577:85-89 "Diff" project-deferral unbound-name qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:577:85-96 "format" project-deferral qualified-access unexplained
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:57:13-19 "Actual" project-deferral unrecorded field_label
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:57:22-28 "actual" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:57:22-35 "Actual" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:581:20-39 "GlobalBuilderConfig" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:582:21-40 "GlobalBuilderConfig" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:582:55-72 "CompletedSnapshot" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:582:86-102 "Force" assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:582:86-96 "listSource" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:584:112-135 "MemberName" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:584:118-124 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:584:57-78 "FilePath" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:584:63-69 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:584:83-106 "LineNumber" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:584:89-95 "Caller" project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:588:114-118 "diff" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:588:78-101 "MemberName" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:588:84-90 "Caller" project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:592:29-34 "lines" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:592:29-40 "Force" assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:593:34-44 "listSource" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:593:34-50 "Force" assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:594:30-44 "SnapshotUpdate" project-deferral qualified-access qualifier
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:594:62-72 "listSource" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:595:17-21 "File" project-deferral qualified-access qualifier
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:595:17-35 "writeAllLines" hover-type plain earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:595:43-64 "FilePath" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:595:49-55 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:598:15-43 "CompletedListSnapshotGeneric" project-deferral qualified-access qualifier
@@ -1209,21 +1208,27 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:599:1
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:5:13-20 "Runtime" assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:5:21-37 "CompilerServices" assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:5:6-12 "System" assembly-deferral unrecorded declaration_path
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:600:19-23 "mode" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:600:25-44 "GlobalBuilderConfig" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:607:17-36 "GlobalBuilderConfig" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:607:57-69 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:609:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:609:49-57 "expected" hover-type plain local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:612:31-42 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:612:43-45 "T" handlers plain hover first declined expected declined-project x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:612:43-45 "T" project-deferral unrecorded type_parameter x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:613:21-22 "f" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:613:29-53 "CompletedSnapshotGeneric" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:618:28-32 "Diff" project-deferral unbound-name qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:618:28-41 "patience" project-deferral qualified-access unexplained
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:618:42-50 "snapshot" hover-type plain local withheld-in-file-parameter at first,middle,last
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:622:21-31 "mockSource" hover-type plain local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:624:21-44 "MemberName" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:624:27-33 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:625:22-26 "Diff" project-deferral unbound-name qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:625:22-33 "format" project-deferral qualified-access unexplained
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:629:20-39 "GlobalBuilderConfig" project-deferral qualified-access qualifier
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:629:20-56 "isBulkUpdateMode" hover-type plain earlier-file-value withheld-earlier-file-typed-at-definition at last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:62:33-35 "U" project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:62:39-50 "IEnumerable" assembly-deferral unrecorded unexplained
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:62:51-55 "elt" handlers plain hover first declined expected declined-project
@@ -1243,21 +1248,21 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:639:2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:63:18-34 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:63:54-65 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:643:29-46 "ReadAllLines" assembly-deferral qualified-access assembly_type_member
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:643:47-52 "state" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:643:47-68 "FilePath" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:643:53-59 "Caller" project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:644:54-59 "lines" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:645:29-43 "SnapshotUpdate" project-deferral qualified-access qualifier
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:645:65-70 "lines" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:645:71-94 "LineNumber" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:645:77-83 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:646:17-21 "File" project-deferral qualified-access qualifier
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:646:17-35 "writeAllLines" hover-type plain earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:646:42-63 "FilePath" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:646:48-54 "Caller" project-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:647:83-94 "oldContents" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:649:15-39 "CompletedSnapshotGeneric" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:64:11-27 "ExpectStateListy" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:650:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:651:25-44 "GlobalBuilderConfig" project-deferral qualified-access qualifier
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:651:25-61 "isBulkUpdateMode" hover-type plain earlier-file-value withheld-earlier-file-typed-at-definition at last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:658:17-36 "GlobalBuilderConfig" project-deferral qualified-access qualifier
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:658:57-69 "Caller" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:660:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
@@ -1293,12 +1298,11 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:86:13
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:87:13-21 "Snapshot" project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:87:24-38 "Snapshot" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:88:13-19 "Actual" project-deferral unrecorded field_label
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:88:22-28 "actual" hover-type plain local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:88:22-35 "Actual" project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:88:79-80 "f" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:92:32-43 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:92:61-72 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:92:80-91 "ExpectState" project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:95:15-20 "state" hover-type plain local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:95:15-27 "Actual" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:96:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:97:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
@@ -16949,16 +16953,15 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj V
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers perturbed definition declined=18 located=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers perturbed hover described=12 explained=18
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers perturbed references declined=18 referenced=12
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain definition declined=29 located=13
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain hover declined=1 explained=28
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain references declined=29
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain definition declined=10 located=13
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain hover explained=10
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs handlers plain references declined=10
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs hover-types perturbed agrees=3 resolver-declined=18 withheld-in-file-function=6 withheld-in-file-parameter=3
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs hover-types plain no-hover=1 resolver-declined=28
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs hover-types plain resolver-declined=10
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:10:15-44 "ValueSetDuringStabilization" project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:11:11-15 "Some" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:12:11-15 "None" assembly-deferral unrecorded implicit_surface_unfolded@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:12:19-26 "Value" project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:14:27-29 "a" handlers plain hover first declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:14:27-29 "a" project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:14:33-37 "unit" assembly-deferral shadowable-type opaque_open@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Var.fs:14:44-47 "Var" project-deferral shadowable-type opaque_open@pre_walk

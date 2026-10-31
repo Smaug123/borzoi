@@ -171,7 +171,7 @@ pub(crate) fn document_text(state: &State, uri: &Uri) -> Option<String> {
         return Some(text.clone());
     }
     let path = uri.to_file_path().ok()?;
-    std::fs::read_to_string(path).ok()
+    crate::disk_text::read(&path).ok()
 }
 
 #[cfg(test)]
@@ -271,6 +271,55 @@ mod tests {
             !items(&result).is_empty(),
             "an on-disk file must be read and diagnosed: {result:?}"
         );
+    }
+
+    /// A file read from disk is the document an editor shows, which has no
+    /// byte-order mark: a diagnostic on line 0 lands on the same column with or
+    /// without one on disk.
+    #[test]
+    fn an_unopened_files_byte_order_mark_moves_no_line_zero_diagnostic() {
+        let ranges = |prefix: &str| {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let path = tmp.path().join("OnDisk.fs");
+            std::fs::write(&path, format!("{prefix}let x = \"open\n")).unwrap();
+            let uri = Uri::from_file_path(&path).unwrap();
+            let mut state = State::default();
+            let result = handle(&mut state, params(uri));
+            items(&result).iter().map(|d| d.range).collect::<Vec<_>>()
+        };
+        let plain = ranges("");
+        assert!(
+            plain
+                .iter()
+                .any(|r| r.start.line == 0 && r.start.character > 0),
+            "the fixture must diagnose mid-line on line 0: {plain:?}"
+        );
+        assert_eq!(ranges("\u{feff}"), plain);
+    }
+
+    /// An open buffer is the client's text, mark and all: its positions count
+    /// whatever the client sent.
+    #[test]
+    fn an_open_buffers_byte_order_mark_is_the_clients_column() {
+        let mut state = State::default();
+        let uri = Uri::parse("file:///proj/Foo.fs").unwrap();
+        state
+            .docs
+            .insert(uri.clone(), "\u{feff}let x = \"open\n".to_string());
+        let marked = items(&handle(&mut state, params(uri))).to_vec();
+        let mut state = State::default();
+        let uri = Uri::parse("file:///proj/Foo.fs").unwrap();
+        state
+            .docs
+            .insert(uri.clone(), "let x = \"open\n".to_string());
+        let plain = items(&handle(&mut state, params(uri))).to_vec();
+        assert!(!plain.is_empty());
+        for (m, p) in marked.iter().zip(&plain) {
+            assert_eq!(m.range.start.line, p.range.start.line);
+            if p.range.start.line == 0 {
+                assert_eq!(m.range.start.character, p.range.start.character + 1);
+            }
+        }
     }
 
     #[test]

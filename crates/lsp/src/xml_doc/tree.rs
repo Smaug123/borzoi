@@ -115,6 +115,25 @@ impl DocElement {
         }
     }
 
+    /// The same tree with adjacent text runs merged and empty ones dropped,
+    /// at every level: the form an XML parser hands back for the
+    /// serialisation of this tree, so two trees that serialise identically
+    /// compare equal.
+    pub fn normalized(self) -> Self {
+        let mut children: Vec<DocNode> = Vec::with_capacity(self.children.len());
+        for child in self.children {
+            match child {
+                DocNode::Text(t) if t.is_empty() => {}
+                DocNode::Text(t) => match children.last_mut() {
+                    Some(DocNode::Text(prev)) => prev.push_str(&t),
+                    _ => children.push(DocNode::Text(t)),
+                },
+                DocNode::Element(e) => children.push(DocNode::Element(e.normalized())),
+            }
+        }
+        DocElement { children, ..self }
+    }
+
     /// Whether a namespace touches this element or any descendant.
     pub fn any_namespaced(&self) -> bool {
         self.namespaced != Namespacing::None
@@ -141,4 +160,15 @@ fn push_text_content(nodes: &[DocNode], out: &mut String) {
             DocNode::Element(e) => push_text_content(&e.children, out),
         }
     }
+}
+
+/// .NET's `OrdinalIgnoreCase` equality of an element name against an ASCII
+/// lower-case word — how C# compares documentation element names
+/// (`DocumentationCommentXmlNames.ElementEquals`). For the words asked about
+/// (`inheritdoc`, `member`, `doc`) that is ASCII case-folding: .NET maps no
+/// other character onto their letters (`ı`, U+0131, upper-cases to `I` by
+/// Unicode but is not `OrdinalIgnoreCase`-equal to `i`).
+pub fn name_is(name: &str, word: &str) -> bool {
+    debug_assert!(word.bytes().all(|b| b.is_ascii_lowercase()));
+    name.eq_ignore_ascii_case(word)
 }

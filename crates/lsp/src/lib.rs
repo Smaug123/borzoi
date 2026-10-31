@@ -2,6 +2,7 @@ pub mod assembly_cache;
 pub mod csharp_sidecar;
 pub mod cst_panic_safe;
 pub mod diagnostics;
+pub mod disk_text;
 pub mod fsproj_diagnostics;
 pub mod goto_source;
 pub mod handlers;

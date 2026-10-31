@@ -699,3 +699,54 @@ fn references_are_listed_in_source_order() {
     );
     assert!(in_source_order(&locs), "{locs:#?}");
 }
+
+/// A file the client has not opened is read from disk, and its positions must
+/// be the ones an editor shows and FCS reports, neither of which counts a
+/// byte-order mark. The last file of a project needs no module header, so its
+/// line 0 can hold uses: the references to `foo` there land on the same columns
+/// whether or not the file on disk starts with a mark.
+#[test]
+fn an_unopened_files_byte_order_mark_moves_no_line_zero_reference() {
+    let src = "let bar = Shared.foo + Shared.foo\n";
+    let locations = |prefix: &str| {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("P.fsproj"),
+            r#"<Project>
+              <ItemGroup>
+                <Compile Include="A.fs" />
+                <Compile Include="B.fs" />
+              </ItemGroup>
+            </Project>"#,
+        );
+        let a = tmp.path().join("A.fs");
+        let b = tmp.path().join("B.fs");
+        let a_src = "module Shared\nlet foo = 1\n";
+        write(&a, a_src);
+        write(&b, &format!("{prefix}{src}"));
+        let a_uri = Uri::from_file_path(&a).unwrap();
+        let b_uri = Uri::from_file_path(&b).unwrap();
+        let mut state = State::default();
+        // Only A is open; B is read from disk.
+        state.docs.insert(a_uri.clone(), a_src.to_string());
+        run(&mut state, &a_uri, 1, 5, false)
+            .into_iter()
+            .filter(|l| l.uri == b_uri)
+            .map(|l| l.range)
+            .collect::<Vec<_>>()
+    };
+    let plain = locations("");
+    let foo_ends: Vec<_> = src
+        .match_indices("foo")
+        .map(|(byte, _)| Position {
+            line: 0,
+            character: u32::try_from(byte + 3).unwrap(),
+        })
+        .collect();
+    assert_eq!(
+        plain.iter().map(|r| r.end).collect::<Vec<_>>(),
+        foo_ends,
+        "both uses on line 0 are found: {plain:?}"
+    );
+    assert_eq!(locations("\u{feff}"), plain);
+}

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 43f9dea755731492eda3a1bb2b8f53bf3dc0e40f105e6879ec780d20b2e50038 # shrinks to generated = DocElement { name: "member", attributes: [("name", "M:X")], children: [Element(DocElement { name: "summary", attributes: [("xmlns", "urn:x")], children: [Element(DocElement { name: "summary", attributes: [], children: [], namespaced: None })], namespaced: None })], namespaced: None }, path = "/summary"
+cc 29a5010b6297e7e891f47ed3c10953c2ef249d74160e21b7c30ba05b32a6a31d # shrinks to generated = DocElement { name: "member", attributes: [("name", "M:X")], children: [Element(DocElement { name: "overloads", attributes: [("xmlns", "urn:x")], children: [], namespaced: None })], namespaced: None }, ancestry = []
+cc b1eb6cf4858fe216e568d04b8e64c9cbbabc8c6d2b609a924ad2e13bb008c54f # shrinks to generated = DocElement { name: "member", attributes: [("name", "M:X")], children: [Element(DocElement { name: "overloads", attributes: [("xmlns", "urn:x")], children: [Text("x")], namespaced: None })], namespaced: None }, ancestry = []

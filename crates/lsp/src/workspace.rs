@@ -47,7 +47,7 @@ use crate::project_graph::{
     Edge, EdgeKind, NodeResult, NodeTfm, ProjectGraph, ProjectKind, build_graph, classify,
 };
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
-use crate::semantic::CanonicalProject;
+use crate::semantic::ProjectId;
 use crate::tfm_policy::{self, caller_owns_target_framework, seed_target_framework_global};
 use borzoi_msbuild::ItemMetadataValue;
 
@@ -98,11 +98,11 @@ fn is_script_path(file: &Path) -> bool {
 pub struct ProjectsGeneration(u64);
 
 pub struct Workspace {
-    /// Keyed by the canonicalised project path. The value is `None`
+    /// Keyed by [`ProjectId`], whose spelling is what was evaluated. The value is `None`
     /// when evaluation failed for any reason (IO, malformed XML,
     /// reserved-property collision in `extra_properties`) — caching
     /// the failure means we don't re-attempt on every keystroke.
-    projects: HashMap<PathBuf, Option<EvaluatedProject>>,
+    projects: HashMap<ProjectId, Option<EvaluatedProject>>,
     /// Bumped by every [`Self::invalidate_projects`], so a caller that read
     /// several evaluations across a span of time can tell whether they all
     /// came from one generation of the cache — see
@@ -768,7 +768,7 @@ impl Workspace {
     }
 
     /// The evaluated project at `project_path`, lazily computed and cached
-    /// (keyed by canonicalised path). `None` when evaluation failed; the
+    /// (keyed by [`ProjectId`]). `None` when evaluation failed; the
     /// failure is cached too, so we don't re-read on every keystroke.
     pub fn project(&mut self, project_path: &Path) -> Option<&ParsedProject> {
         self.evaluated(project_path).map(|e| &e.parsed)
@@ -780,20 +780,14 @@ impl Workspace {
     /// and a capability declined on a fact the explainer cannot see is a
     /// capability that goes away silently.
     pub fn project_evaluation(&mut self, project_path: &Path) -> ProjectEvaluation<'_> {
-        // From the caller's spelling, never from the canonical key: on a first
-        // lookup through a symlinked path the key is what the evaluation would
-        // be *anchored on*, and `$(MSBuildProjectDirectory)` plus every joined
-        // `<Compile>` include would then name files under a spelling no open
-        // buffer uses. `CanonicalProject` keeps both for exactly this reason.
-        self.project_evaluation_of(&CanonicalProject::new(project_path))
+        self.project_evaluation_of(&ProjectId::new(project_path))
     }
 
-    /// [`Self::project_evaluation`] for a project whose path is already
-    /// canonical, skipping the `realpath` syscall. The deferral refresh runs
-    /// after every dispatched message and already holds canonical paths, so the
-    /// re-canonicalisation was pure cost there.
-    pub fn project_evaluation_of(&mut self, project: &CanonicalProject) -> ProjectEvaluation<'_> {
-        match self.evaluated_by_key(project.key().to_path_buf(), project.as_path()) {
+    /// [`Self::project_evaluation`] for a project already identified. The
+    /// deferral refresh runs after every dispatched message and already holds
+    /// [`ProjectId`]s, so re-deriving them would be pure cost there.
+    pub fn project_evaluation_of(&mut self, project: &ProjectId) -> ProjectEvaluation<'_> {
+        match self.evaluated_of(project) {
             Some(evaluated) => ProjectEvaluation::Evaluated {
                 parsed: &evaluated.parsed,
                 not_an_inner_build: evaluated.not_an_inner_build,
@@ -804,27 +798,23 @@ impl Workspace {
 
     /// The cached [`EvaluatedProject`] for `project_path` — the parse plus the
     /// SDK install root the evaluator resolved — lazily computed and cached
-    /// (keyed by canonicalised path). `None` when evaluation failed; the
+    /// (keyed by [`ProjectId`]). `None` when evaluation failed; the
     /// failure is cached too.
     fn evaluated(&mut self, project_path: &Path) -> Option<&EvaluatedProject> {
-        let key =
-            std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
-        self.evaluated_by_key(key, project_path)
+        self.evaluated_of(&ProjectId::new(project_path))
     }
 
-    /// [`Self::evaluated`] with the cache key already computed.
-    ///
-    /// `project_path` stays the caller's spelling: it is what the evaluation is
-    /// *anchored on* (`$(MSBuildProjectDirectory)`, every joined `<Compile>`
-    /// include), so substituting the canonical key here would produce item paths
-    /// that match no open buffer on a system where `/tmp` is a symlink.
-    fn evaluated_by_key(&mut self, key: PathBuf, project_path: &Path) -> Option<&EvaluatedProject> {
-        let project_path = project_path.to_path_buf();
+    /// [`Self::evaluated`] for a project already identified. Evaluates the
+    /// spelling the key names, so `$(MSBuildProjectDirectory)` and every joined
+    /// `<Compile>` include are spelt as the buffers that reach the project by
+    /// that path are, and the entry can never hold another spelling's
+    /// evaluation.
+    fn evaluated_of(&mut self, project: &ProjectId) -> Option<&EvaluatedProject> {
         let env = &self.env;
         let extra_build_properties = &self.extra_build_properties;
         self.projects
-            .entry(key)
-            .or_insert_with(|| evaluate_project(&project_path, env, extra_build_properties))
+            .entry(project.clone())
+            .or_insert_with(|| evaluate_project(project.as_path(), env, extra_build_properties))
             .as_ref()
     }
 
@@ -1512,7 +1502,7 @@ fn evaluate_project(
 ) -> Option<EvaluatedProject> {
     let _span =
         tracing::info_span!("evaluate_project", project = %project_path.display()).entered();
-    let source = std::fs::read_to_string(project_path).ok()?;
+    let source = crate::disk_text::read(project_path).ok()?;
     let disc = SdkDiscovery::for_project(project_path, env)
         .inspect_err(|err| {
             crate::log_warn!(

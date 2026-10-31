@@ -431,6 +431,11 @@ own spelling while sharing one stored report. Identity is now the key alone,
 hand-implemented along with `Hash`, which fixes the class rather than the one
 call site that noticed it.
 
+(Later superseded: the key was the real path, which merges spellings MSBuild
+evaluates as different projects. A project is now identified by the spelling it
+is evaluated under, `semantic::ProjectId`; see
+`docs/nuget-dgspec-boundary-plan.md`, stage 2, "Symlinked project paths".)
+
 Also from that round: the `tracing::warn!` had come to log the *message*, which
 `deferral_message` has already truncated to `MAX_RENDERED_CAUSES` — so the
 documented "ask the user for the trace" path carried exactly the `(and N more)`
