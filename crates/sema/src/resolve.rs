@@ -772,20 +772,16 @@ struct SignatureSurface {
     exports: Vec<model::SigExport>,
 }
 
-/// Whether the node carries a `private` accessibility token anywhere. Gates
-/// the *type* surface: `type private T` and a private representation (`type
-/// T = private | …`) restrict the cases to part of the project, which is a
-/// later Stage-3 slice — a skipped decl's names stay in the screen's token
-/// set, so readings of them defer. `internal` and `public` restrict nothing
-/// sema can see (one project is one assembly), so a type carrying only those
-/// exports exactly like an unannotated one.
-fn has_private_access_token(node: &SyntaxNode) -> bool {
+/// Whether the node carries any accessibility token (`private` / `internal` /
+/// `public`) anywhere. Gates the *type* surface: `type private T` and
+/// repr-level accessibility (`type T = private | …`) are a later Stage-3
+/// slice — a skipped decl's names stay in the screen's token set, so
+/// readings of them defer.
+fn has_access_token(node: &SyntaxNode) -> bool {
     use borzoi_cst::syntax::SyntaxKind;
     node.descendants_with_tokens()
         .filter_map(|el| el.into_token())
-        .any(|t| {
-            t.kind() == SyntaxKind::ACCESS_TOK && t.text() != "internal" && t.text() != "public"
-        })
+        .any(|t| t.kind() == SyntaxKind::ACCESS_TOK)
 }
 
 /// The accessibility classification of one signature `val` (FCS-probed
@@ -1148,11 +1144,10 @@ fn collect_sig_container_exports(
             }
             SigDecl::Types(types) => {
                 for defn in types.defns() {
-                    // Private accessibility on the type or its
-                    // representation (`type private T`, `type T = private |
-                    // …`) is Stage 3: skip — the screen keeps the cases
-                    // deferred.
-                    if has_private_access_token(defn.syntax()) {
+                    // Accessibility on the type or its representation
+                    // (`type private T`, `type T = private | …`) is Stage 3:
+                    // skip — the screen keeps the cases deferred.
+                    if has_access_token(defn.syntax()) {
                         continue;
                     }
                     let Some(type_ident) = defn.long_id().and_then(single_ident) else {

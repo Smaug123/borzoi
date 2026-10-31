@@ -338,6 +338,14 @@ const SHAPES: &[Shape] = &[
         imp: "type ref = System.Object\n\ntype U =\n    | Case1\n",
         model: Model::Unmodelled,
     },
+    // The signature alone renames AutoOpen (Codex review): FCS reads later
+    // files against the signature even though the implementation omits it.
+    Shape {
+        label: "signature_only_alias",
+        sig: "type AO = Microsoft.FSharp.Core.AutoOpenAttribute\n\ntype V =\n    | Vcase\n\n[<AO>]\nmodule M =\n    val ref : int -> int\n",
+        imp: "type V =\n    | Vcase\n\n[<AutoOpen>]\nmodule M =\n    let ref (x : int) = x\n",
+        model: Model::Unmodelled,
+    },
     Shape {
         label: "enum_lowercase",
         sig: "type U =\n    | ref = 0\n    | failwith = 1\n",

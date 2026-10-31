@@ -453,9 +453,7 @@ with these mechanics settled in review/probing:
   `open Pn; Md.shown` reaches the export (FCS-probed, codex round 1) — the
   materialisation also publishes (nothing on the impl side does — its
   fragments are anonymous — yet FCS treats the implicit module as real and
-  openable). A type or representation annotated `internal` (or `public`)
-  exports like an unannotated one — one project is one assembly, so it
-  restricts nothing sema can see. A case is exported *bare* only when its
+  openable). A case is exported *bare* only when its
   type carries no attribute at all (any written attribute may be an
   abbreviation of `RequireQualifiedAccess`) and no other declaration of the
   container puts the same name in bare scope or in the constructor slot;
