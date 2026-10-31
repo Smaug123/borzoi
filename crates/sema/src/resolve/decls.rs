@@ -6,6 +6,7 @@ use borzoi_cst::syntax::{
 
 use crate::def::DefId;
 
+use super::contributors::Contribution;
 use super::model::{
     CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, Resolution, SlotClass,
 };
@@ -13,8 +14,8 @@ use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
 };
 use super::{
-    attrs_auto_open, attrs_mark_struct, attrs_require_qualified_access, id_text,
-    is_type_augmentation, single_ident, type_long_ident_path,
+    attrs_auto_open, attrs_require_qualified_access, id_text, is_type_augmentation, single_ident,
+    type_long_ident_path,
 };
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
@@ -91,13 +92,15 @@ pub(super) fn type_slot_class(defn: &TypeDefn) -> SlotClass {
         Some(TypeDefnRepr::Enum(_)) => SlotClass::Evicts,
         Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => {
             // A genuine `[<Struct>]` union/record IS a struct type and evicts
-            // (probe M20m) — but the marker is matched textually, and a
+            // (probe M20m) — but sema cannot resolve attribute types. A
             // CUSTOM attribute named `Struct` would be mistaken for it while
-            // FCS keeps the type ordinary (codex round 7). Sema cannot
-            // resolve attribute types, so a `Struct`-marked union/record is
-            // Unknown — defer in contest, never a wrong target either way
-            // (the genuine-marker resolve is the availability price).
-            if attrs_mark_struct(defn.attributes()) {
+            // FCS keeps the type ordinary (codex round 7), and an
+            // abbreviation can spell `StructAttribute` any way at all
+            // (`type S = StructAttribute`, then `[<S>]`). So an attributed
+            // union/record is Unknown — defer in contest, never a wrong
+            // target either way (the genuine-marker resolve is the
+            // availability price).
+            if defn.attributes().next().is_some() {
                 SlotClass::Unknown
             } else {
                 SlotClass::Keeps
@@ -413,6 +416,11 @@ impl<'a> Resolver<'a> {
                 }
             }
             ModuleDecl::Types(types) => {
+                // What the group contributes that its walk below does not
+                // model: an `[<AutoOpen>]` type's statics, a constructible
+                // type's name in the unqualified slot. FCS adds both when it
+                // adds the group's tycons, ahead of their members.
+                self.type_group_contributions(types);
                 // A type definition (parser phase 9) introduces a project type
                 // name (`type T = …`). Two things happen, in order:
                 //
@@ -578,6 +586,9 @@ impl<'a> Resolver<'a> {
                         // out of the *value* frame — reachable then only as `T.Case`.
                         let require_qualified = attrs_require_qualified_access(defn.attributes());
                         self.define_union_cases(defn, &name, require_qualified);
+                        if !require_qualified {
+                            self.unproven_bare_cases(defn);
+                        }
                         // An enum's cases (`Color = Red = 0 | …`) populate the same
                         // [`Self::type_cases`] index — never the value frame, so a
                         // bare `Red` stays unresolved while `Color.Red` resolves.
@@ -589,6 +600,10 @@ impl<'a> Resolver<'a> {
                         self.define_type_members(defn, &name);
                     }
                 }
+                // In a `rec` block, the block's modules enter after its types,
+                // ahead of every member body: their `[<AutoOpen>]` contents
+                // outrank the cases just pushed.
+                self.reassert_rec_modules(u32::from(types.syntax().text_range().end()));
                 // 3. Now every name in the group is in scope, resolve the uses:
                 //    an augmentation's head (`type T with …`) is a *use* of an
                 //    existing type — resolve it against the table (a genuine
@@ -640,6 +655,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ModuleDecl::Exception(exn) => {
+                self.exception_contribution(exn);
                 // An exception definition (parser phase 9.15) introduces a
                 // project-level name `E` — both an exception *type* and a
                 // value-namespace *constructor*. Two things happen:
@@ -727,6 +743,13 @@ impl<'a> Resolver<'a> {
                     .unwrap_or_default();
                 if !ext_name.is_empty() {
                     self.record_project_name_shadow(ext_name.clone());
+                }
+                // The prototype is a value the walk does not intern, so a use
+                // after it must not commit an earlier binding of its name.
+                if let Some(name) = ext_name.last() {
+                    let contribution = Contribution::of_value(name.clone());
+                    let pos = u32::from(ext.syntax().text_range().start());
+                    self.push_contribution(&contribution, pos);
                 }
                 // An `extern` introduces a value-namespace name we do NOT intern
                 // (interning it is a later slice), so it is invisible to the
@@ -1464,6 +1487,7 @@ impl<'a> Resolver<'a> {
                                 && gp.as_slice() == self.enclosing_namespace())
                         {
                             self.open_project_namespace_values(gp, pos);
+                            self.namespace_open_contributions(gp, pos);
                         }
 
                         // -- The project module half (highest: FCS folds the
@@ -1489,6 +1513,7 @@ impl<'a> Resolver<'a> {
                             // per-fragment restriction — that is only for a fragment
                             // reached implicitly by opening its enclosing namespace.
                             self.open_module_values(gp, pos, None);
+                            self.module_open_contributions(gp, pos);
                             self.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
@@ -1503,6 +1528,8 @@ impl<'a> Resolver<'a> {
                         }
                     }
                 }
+                // In a `rec` block, the block's binders outrank this open.
+                self.reassert_rec_block(u32::from(open.syntax().text_range().start()));
                 // Resolution-explain trace: record which opaque-open flags THIS
                 // open flipped false→true (snapshot at the arm's start). Both the
                 // `open type` and plain-`open` branches fall through to here.
@@ -1549,6 +1576,9 @@ impl<'a> Resolver<'a> {
         match decl {
             ModuleDecl::NestedModule(nm) => self.resolve_attribute_lists(nm.attributes()),
             other => self.resolve_attributes_under(other.syntax()),
+        }
+        if matches!(decl, ModuleDecl::Types(_) | ModuleDecl::Exception(_)) {
+            self.reassert_rec_modules(u32::from(decl.syntax().text_range().end()));
         }
     }
 
@@ -1699,11 +1729,20 @@ impl<'a> Resolver<'a> {
         // lexical scope when the frame is popped, so they never leak unqualified
         // into the enclosing module. The frame is the innermost, so
         // [`Self::module_frame`] targets it for this module's exports.
+        self.module_frames.push(self.scopes.len());
         self.scopes.push(Frame::default());
+        // Inside a `rec` block every binder the module declares is in scope
+        // from its start, ahead of the walk reaching it.
+        let saved_rec_contribution = self.rec_contribution.clone();
+        if self.recursive_module_active {
+            self.enter_rec_block(nm.decls(), u32::from(nm.syntax().text_range().start()));
+        }
         for decl in nm.decls() {
             self.module_decl(&decl);
         }
         self.scopes.pop();
+        self.module_frames.pop();
+        self.rec_contribution = saved_rec_contribution;
 
         self.module_path = saved_module_path;
         self.container_path = saved_container_path;
@@ -1793,6 +1832,9 @@ impl<'a> Resolver<'a> {
         }
         self.nested_module_locals = saved_nested_locals;
         self.augmentation_head_locals = saved_augmentation_locals;
+        // An `[<AutoOpen>]` module folds back into the rest of its container
+        // (`AddLocalSubModule`), which the walk does not model.
+        self.auto_open_module_contribution(nm);
     }
 
     /// Record a project-introduced *name* — a nested module
