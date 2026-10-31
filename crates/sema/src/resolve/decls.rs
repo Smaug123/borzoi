@@ -1722,6 +1722,7 @@ impl<'a> Resolver<'a> {
         // lexical scope when the frame is popped, so they never leak unqualified
         // into the enclosing module. The frame is the innermost, so
         // [`Self::module_frame`] targets it for this module's exports.
+        self.module_frames.push(self.scopes.len());
         self.scopes.push(Frame::default());
         // Inside a `rec` block every binder the module declares is in scope
         // from its start, ahead of the walk reaching it.
@@ -1733,6 +1734,7 @@ impl<'a> Resolver<'a> {
             self.module_decl(&decl);
         }
         self.scopes.pop();
+        self.module_frames.pop();
         self.rec_contribution = saved_rec_contribution;
 
         self.module_path = saved_module_path;

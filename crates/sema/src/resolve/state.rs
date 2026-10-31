@@ -1347,6 +1347,10 @@ pub(super) struct Resolver<'a> {
     /// intrinsic augmentations extend what they fold
     /// ([`Resolver::type_group_contributions`]).
     pub(super) auto_open_type_paths: HashSet<Vec<String>>,
+    /// The index in [`Self::scopes`] of each module or namespace frame on the
+    /// stack, innermost last: every frame above the innermost holds
+    /// expression-local bindings.
+    pub(super) module_frames: Vec<usize>,
     /// How many computation expressions the walk is inside
     /// ([`Resolver::computation_expression_decline`]).
     pub(super) ce_depth: usize,

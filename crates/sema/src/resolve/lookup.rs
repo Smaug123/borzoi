@@ -4634,26 +4634,28 @@ impl<'a> Resolver<'a> {
     /// one slot serves a bare use and a dotted head alike).
     pub(super) fn bare_value_evicted(&self, name: &str) -> Option<DeclineCause> {
         // No value to evict: whatever committed came from the type itself.
-        let entry = self
-            .lookup_entry(name)
+        self.lookup_entry(name)
             .filter(|e| !matches!(e.resolution, Resolution::Deferred(_)))?;
-        // A parameter or pattern local enters scope after every type that is
-        // in scope where it is bound — a type group's types enter ahead of
-        // its members' bodies, whatever their text order — so no type evicts
-        // it.
-        if let Resolution::Local(id) = entry.resolution
-            && matches!(
-                self.defs[id.index()].kind,
-                DefKind::Parameter | DefKind::PatternLocal
-            )
-        {
-            return None;
-        }
+
         match self.value_slot(name, true) {
             HeadSlot::Held => None,
             HeadSlot::Evicted => Some(DeclineCause::ValueEvicted),
             HeadSlot::Unordered => Some(DeclineCause::HeadSlotUnordered),
         }
+    }
+
+    /// Whether `entry` lives in a frame above the innermost module frame:
+    /// a parameter, a pattern local, a local `let`, anything an expression
+    /// binds.
+    fn entry_is_expression_local(&self, entry: &ScopeEntry) -> bool {
+        let Some(&module) = self.module_frames.last() else {
+            return false;
+        };
+        self.scopes
+            .iter()
+            .enumerate()
+            .skip(module + 1)
+            .any(|(_, frame)| frame.entries.iter().any(|e| std::ptr::eq(e, entry)))
     }
 
     fn head_value_slot(&self, head: &str) -> HeadSlot {
@@ -4766,6 +4768,11 @@ impl<'a> Resolver<'a> {
         // before it loses (probes M20p/M20q, codex round 3) — while a source
         // binding sits at its definition's.
         let (value_pos, value_from_open) = match self.lookup_entry(head) {
+            // An expression-local binding enters scope after every type that
+            // is in scope where it is bound — a type group's types enter
+            // ahead of its members' bodies, whatever their text order — so no
+            // type evicts it.
+            Some(entry) if self.entry_is_expression_local(entry) => return HeadSlot::Held,
             Some(entry) if entry.from_open => (Some(entry.open_pos), true),
             Some(entry) if entry.mark.is_some() => (Some(entry.open_pos), false),
             Some(entry) => (

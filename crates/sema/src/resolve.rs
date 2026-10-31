@@ -457,6 +457,7 @@ pub fn resolve_file(
             .remove(&r.container_path)
             .unwrap_or_default();
         let frame = r.top_level.remove(&r.container_path).unwrap_or_default();
+        r.module_frames.push(r.scopes.len());
         r.scopes.push(frame);
         // The block frame is now active: seed the implicit auto-opens'
         // `[<AutoOpen>]` modules (FSharp.Core's `Operators` /
@@ -487,6 +488,7 @@ pub fn resolve_file(
             .scopes
             .pop()
             .expect("container value frame is on the stack");
+        r.module_frames.pop();
         // Opens are scoped to this one block: drop the entries an `open` brought
         // in ([`ScopeEntry::from_open`]) before storing the container frame back,
         // so a later same-named `namespace N` block re-takes only the value/case
@@ -1878,6 +1880,7 @@ impl<'a> Resolver<'a> {
             rec_contribution: None,
             declares_core_attribute_alias: false,
             ce_depth: 0,
+            module_frames: Vec::new(),
             auto_open_type_paths: HashSet::new(),
             rec_module_names: HashSet::new(),
             auto_open_type_shadow_names: HashMap::new(),

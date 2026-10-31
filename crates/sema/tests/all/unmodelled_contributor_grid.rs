@@ -292,10 +292,14 @@ enum Route {
     /// whose later `and` type is named so: the group's types enter scope
     /// before its members' bodies, so the parameter holds.
     TypeGroupParameter,
+    /// The same with a local `let` in the member body.
+    TypeGroupLocalLet,
+    /// The same local heading a dotted path.
+    TypeGroupLocalHead,
 }
 
 impl Route {
-    const ALL: [Route; 56] = [
+    const ALL: [Route; 58] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -352,6 +356,8 @@ impl Route {
         Route::AutoOpenTypeAugmented,
         Route::AutoOpenTypeAugmentedInModule,
         Route::TypeGroupParameter,
+        Route::TypeGroupLocalLet,
+        Route::TypeGroupLocalHead,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -368,12 +374,17 @@ impl Route {
                 | Route::OwnAssemblyAutoOpen
                 | Route::EarlierTopUnopened
                 | Route::TypeGroupParameter
+                | Route::TypeGroupLocalLet
+                | Route::TypeGroupLocalHead
         )
     }
 
     /// Whether the route writes its probe itself (`@P`), so it has one use.
     fn probes_itself(self) -> bool {
-        matches!(self, Route::TypeGroupParameter)
+        matches!(
+            self,
+            Route::TypeGroupParameter | Route::TypeGroupLocalLet | Route::TypeGroupLocalHead
+        )
     }
 
     /// Whether the route declares the `gridB` builder its uses run inside.
@@ -391,7 +402,9 @@ impl Route {
             | Route::EarlierNamespaceRqaAliased
             | Route::AutoOpenBarlessUnion => kind.is_case(),
             // A capitalised parameter is a pattern, not a binder.
-            Route::TypeGroupParameter => !kind.is_case(),
+            Route::TypeGroupParameter | Route::TypeGroupLocalLet | Route::TypeGroupLocalHead => {
+                !kind.is_case()
+            }
             _ => true,
         }
     }
@@ -655,6 +668,14 @@ impl Route {
             Route::TypeGroupParameter => (
                 vec![],
                 "module GridProbe\n@OWN\ntype GridM() =\n    member _.M(@NAME: int) = @P + 1\nand @NAME() =\n    member _.X = 0\n",
+            ),
+            Route::TypeGroupLocalLet => (
+                vec![],
+                "module GridProbe\n@OWN\ntype GridM() =\n    member _.M() =\n        let @NAME (x: int) = x\n        @P 1\nand @NAME() =\n    member _.X = 0\n",
+            ),
+            Route::TypeGroupLocalHead => (
+                vec![],
+                "module GridProbe\n@OWN\ntype GridM() =\n    member _.M() =\n        let @NAME = \"local\"\n        @P.Length\nand @NAME() =\n    member _.X = 0\n",
             ),
             Route::CeNoOperation => (
                 vec![],
