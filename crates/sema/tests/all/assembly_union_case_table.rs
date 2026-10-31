@@ -1288,6 +1288,31 @@ const RECOVERED: &[Row] = &[
             commit("Some", 0, SOME),
         ],
     },
+    Row {
+        label: "primary constructors over patterns that are not simple",
+        decls: &[],
+        src: "module UcX06\n\
+              type C1 (Option.None) =\n\
+              \x20   member _.V = 0\n\
+              type C2 (Result.Ok x) =\n\
+              \x20   member _.V = 0\n\
+              type C3 (Some (y: int)) =\n\
+              \x20   member _.V = 0\n\
+              type C4 (Choice1Of2 z, w: int) =\n\
+              \x20   member _.V = w\n\
+              type C5 ([Some 1]) =\n\
+              \x20   member _.V = 0\n\
+              let after = Some 1\n",
+        probes: &[
+            defer("Option.None", 0, "-", "FCS reads nothing of the pattern"),
+            defer("Result.Ok", 0, "-", "FCS reads nothing of the pattern"),
+            defer("Some", 0, "-", "FCS reads nothing of the pattern"),
+            defer("Choice1Of2", 0, "-", "FCS reads nothing of the pattern"),
+            defer("Some", 1, "-", "FCS reads nothing of the pattern"),
+            commit("w", 1, "proj:w:member"),
+            commit("Some", 2, SOME),
+        ],
+    },
 ];
 
 /// Rows graded in an env where a second assembly auto-opens `Shadow.Implicit`
@@ -1872,14 +1897,26 @@ enum Use {
     AppliedPattern,
     /// `match x with Name -> …` — a bare pattern head.
     BarePattern,
+    /// `type Probe (Name: int) = …` — a primary constructor's parameter,
+    /// which FCS compiles to an anonymous `_arg1` without reading the name.
+    CtorParam,
+    /// `type Probe (x: int, Name as y) = …` — the same as a later tupled
+    /// parameter, aliased.
+    CtorParamAs,
+    /// `type Probe (Name x) = …` — a pattern a primary constructor rejects,
+    /// reading nothing of it.
+    CtorParamApplied,
 }
 
 impl Use {
-    const ALL: [Use; 4] = [
+    const ALL: [Use; 7] = [
         Use::Applied,
         Use::FunctionValue,
         Use::AppliedPattern,
         Use::BarePattern,
+        Use::CtorParam,
+        Use::CtorParamAs,
+        Use::CtorParamApplied,
     ];
 
     /// The line holding the probe, and where in it the name starts.
@@ -1889,6 +1926,9 @@ impl Use {
             Use::FunctionValue => ("let probe = List.map ", " [ 1 ]"),
             Use::AppliedPattern => ("let probe x = match x with ", " _ -> 1 | _ -> 0"),
             Use::BarePattern => ("let probe x = match x with ", " -> 1 | _ -> 0"),
+            Use::CtorParam => ("type Probe (", ": int) = member _.V = 0"),
+            Use::CtorParamAs => ("type Probe (x: int, ", " as y) = member _.V = y"),
+            Use::CtorParamApplied => ("type Probe (", " x) = member _.V = 0"),
         };
         (format!("{prefix}{name}{suffix}"), prefix.len())
     }
@@ -2041,7 +2081,7 @@ fn the_shadowing_grid_agrees_with_fcs() {
         cells.len(),
         failures.join("\n")
     );
-    // Non-vacuity: the unshadowed cells are 80 of the 1360, and a grid whose
+    // Non-vacuity: the unshadowed cells are 140 of the 2380, and a grid whose
     // shadowed cells all decline would pass the property above while
     // exercising none of the guards that decide when a shadower does not, in
     // fact, shadow.

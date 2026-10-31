@@ -819,8 +819,7 @@ impl<'a> Resolver<'a> {
         //    S = x` is `M.x`, not the ctor param).
         let mut instance_entries: Vec<ScopeEntry> = Vec::new();
         if let Some(ctor) = defn.implicit_ctor() {
-            instance_entries
-                .extend(self.pattern_locals(ctor.args().into_iter(), BinderRole::Param));
+            instance_entries.extend(self.primary_constructor_locals(ctor.args()));
             if let Some(self_tok) = ctor.self_id()
                 && let Some(entry) = self.bind_self_ident(&self_tok)
             {

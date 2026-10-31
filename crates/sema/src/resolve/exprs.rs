@@ -1,6 +1,9 @@
 //! Expression and pattern name resolution.
 
+use std::collections::HashSet;
+
 use borzoi_cst::syntax::{AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
+use rowan::TextRange;
 
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
@@ -754,6 +757,79 @@ impl<'a> Resolver<'a> {
             self.resolve_expr(&result);
         }
         self.scopes.pop();
+    }
+
+    /// A primary constructor's parameters, as FCS reads them
+    /// (`SimplePatsOfPat`, then `TcImplicitCtorInfo_Phase2A`): unit, or a
+    /// tuple of simple patterns, each a name, `?name` or `pat as name` under
+    /// parentheses, attributes and type annotations. The annotations are type
+    /// uses and the names bind. FCS compiles anything else to an anonymous
+    /// `_argN` and drops the match that would read it, so nothing of it is
+    /// resolved: not a parameter spelled like a union case (`Some: int`),
+    /// not a pattern the constructor rejects (`Some x`, FS3865).
+    pub(super) fn primary_constructor_locals(&mut self, args: Option<Pat>) -> Vec<ScopeEntry> {
+        let elements: Vec<Pat> = match args {
+            Some(Pat::Tuple(t)) if !t.is_struct() => t.elements().collect(),
+            Some(Pat::Paren(p)) => match p.inner() {
+                Some(Pat::Tuple(t)) if !t.is_struct() => t.elements().collect(),
+                inner => inner.into_iter().collect(),
+            },
+            other => other.into_iter().collect(),
+        };
+        let mut names: Vec<TextRange> = Vec::new();
+        for element in &elements {
+            self.simple_constructor_pattern(element, &mut names);
+        }
+        let mut entries = Vec::new();
+        for element in &elements {
+            for pat_name in pattern_names(element, BinderRole::Param, &HashSet::new()) {
+                let PatternName::Binder(def) = pat_name else {
+                    continue;
+                };
+                if def.provisional || !names.contains(&def.range) {
+                    continue;
+                }
+                let name = def.key().to_string();
+                let range = def.range;
+                let res = Resolution::Local(self.intern(def));
+                self.record(range, res);
+                entries.push(ScopeEntry::binding(name, res, self.open_generation));
+            }
+        }
+        entries
+    }
+
+    /// One element of [`Self::primary_constructor_locals`]: resolve its
+    /// annotations and collect the name it binds, if it is simple.
+    fn simple_constructor_pattern(&mut self, pat: &Pat, names: &mut Vec<TextRange>) {
+        match pat {
+            Pat::Typed(p) => {
+                if let Some(ty) = p.ty() {
+                    self.resolve_type(&ty);
+                }
+                if let Some(inner) = p.pat() {
+                    self.simple_constructor_pattern(&inner, names);
+                }
+            }
+            Pat::Attrib(p) => {
+                if let Some(inner) = p.pat() {
+                    self.simple_constructor_pattern(&inner, names);
+                }
+            }
+            Pat::Paren(p) => {
+                if let Some(inner) = p.inner() {
+                    self.simple_constructor_pattern(&inner, names);
+                }
+            }
+            Pat::Named(p) => names.extend(p.ident().map(|t| t.text_range())),
+            Pat::OptionalVal(p) => names.extend(p.ident().map(|t| t.text_range())),
+            Pat::As(p) => {
+                if let Some(Pat::Named(rhs)) = p.rhs() {
+                    names.extend(rhs.ident().map(|t| t.text_range()));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Intern the binders of each pattern in `pats` (under `role`), recording
