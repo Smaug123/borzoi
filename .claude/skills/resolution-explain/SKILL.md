@@ -59,8 +59,7 @@ Same as the whole-project differential — see [[resolve-real-project-diff]]:
   `<project_dir>/obj/project.assets.json` (only that standard location).
 - Run under `nix develop`. The first run builds `fcs-dump` (several minutes),
   though this tool itself never queries FCS — the loader path just shares the
-  harness. A signature file (`.fsi`) in the Compile set makes the LSP refuse
-  the whole project, so the load panics; pick a signature-free project.
+  harness. Signatured projects (`.fsi` Compile items) load like any other.
 
 ## Reading the dump
 
@@ -92,6 +91,16 @@ token "List.replicate" @ 981..995
   `PERTURBS [flags…]` or `(no modeled per-open effect)`. The tool **never**
   labels an open `clean`: an all-false open can still take part in a per-token
   deferral it cannot see.
+
+  Each `namespace N` block also lists an **implicit open of the enclosing
+  namespace** first, at the header's namespace path: every such block folds
+  every earlier fragment of `N` (the project's own files included) before its
+  first declaration. When a file with *no* perturbing `open` still defers
+  ordinary names (`int`, `failwith`, `ref`), read that line: a
+  `staled_earlier`/`opaque_dotted` there means some earlier fragment of `N`
+  contributes names the fold cannot enumerate, and every name in the block
+  pays for it. (That was the whole WoofWare.Incremental hot spot: one
+  signatured namespace-direct union.)
 - **note** — printed for any `Deferred` token (even with zero opens). It names
   the perturbing candidates and states the per-token deferral causes the
   per-open view cannot attribute.

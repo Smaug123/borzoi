@@ -1,0 +1,105 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_dot_index_spacing::
+"let y = (f x).\n    [\n    yield 1\n    yield 2\n]\nlet z = 1\n" module[0]/Expr@37: only ours starts a unit here
+"let y = Array.\n    [\n    yield 1\n    yield 2\n]\nlet z = 1\n" module[0]/Expr@37: only ours starts a unit here
+"let y = a.b.\n    [\n    yield 1\n    yield 2\n]\nlet z = 1\n" module[0]/Expr@35: only ours starts a unit here
+"let y = f(x).\n    [\n    yield 1\n    yield 2\n]\nlet z = 1\n" module[0]/Expr@36: only ours starts a unit here
+"let y = xs.[0].\n    [\n    yield 1\n    yield 2\n]\nlet z = 1\n" module[0]/Expr@38: only ours starts a unit here
+"let y = xs.\n    [\n    yield 1\n    yield 2\n]\nlet z = 1\n" module[0]/Expr@34: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . ( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@69: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . ()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . (i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . [ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@75: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . [0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@70: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . [\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@95: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . [\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@115: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            . [i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@68: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .(i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .[ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@74: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .[0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@69: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .[\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@94: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .[\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@114: only ours starts a unit here
+"module A =\n    try\n        let y = (f x)\n            .[i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . ( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@69: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . ()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . (i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . [ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@75: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . [0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@70: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . [\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@95: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . [\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@115: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            . [i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@68: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .(i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .[ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@74: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .[0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@69: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .[\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@94: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .[\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@114: only ours starts a unit here
+"module A =\n    try\n        let y = Array\n            .[i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . ( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . ()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@64: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . (i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . [ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@73: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . [0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@68: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . [\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@93: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . [\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@113: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            . [i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@63: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .(i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@64: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .[ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@72: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .[0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .[\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@92: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .[\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@112: only ours starts a unit here
+"module A =\n    try\n        let y = a.b\n            .[i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@64: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . ( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@68: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . ()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . (i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . [ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@74: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . [0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@69: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . [\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@94: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . [\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@114: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            . [i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@64: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .(i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .[ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@73: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .[0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@68: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .[\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@93: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .[\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@113: only ours starts a unit here
+"module A =\n    try\n        let y = f(x)\n            .[i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . ( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@70: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . ()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . (i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@68: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . [ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@76: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . [0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@71: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . [\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@96: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . [\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@116: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            . [i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@68: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@69: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .(i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .[ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@75: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .[0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@70: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .[\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@95: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .[\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@115: only ours starts a unit here
+"module A =\n    try\n        let y = xs.[0]\n            .[i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . ( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . ()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@63: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . (i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@64: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . [ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@72: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . [0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@67: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . [\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@92: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . [\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@112: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            . [i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@64: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .( i )\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@65: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .()\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@62: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .(i)\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@63: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .[ yield 1 ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@71: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .[0..1]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@66: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .[\n            \"hello\"\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@91: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .[\n            yield 1\n            yield 2\n        ]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@111: only ours starts a unit here
+"module A =\n    try\n        let y = xs\n            .[i]\n        h y\n    with _ -> ()\nmodule B =\n    let z = 1\n" module[0]/nested@0/Expr@63: only ours starts a unit here

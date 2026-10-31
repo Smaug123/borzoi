@@ -6,7 +6,7 @@ use crate::uri::UriExt as _;
 use std::collections::HashMap;
 use std::path::Path;
 
-use borzoi_cst::syntax::ImplFile;
+use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, DefKind, InferredFile, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, Ty,
     resolve_file,
@@ -222,21 +222,40 @@ pub fn served_resolution_with_range(
     }
 }
 
-/// The smallest inferred-type entry whose range contains `byte`, if any — the
-/// type-side analogue of [`smallest_resolution_with_range`]. Hover uses it to
-/// surface an expression's inferred type (literals today) where no name
-/// resolution applies; "smallest" picks the innermost expression at the cursor.
-pub fn smallest_inferred_type_with_range(
-    inferred: &InferredFile,
+/// The inferred type of the **innermost expression at the cursor**, if
+/// inference recorded one — the type-side analogue of
+/// [`smallest_resolution_with_range`]. Hover uses it to surface an
+/// expression's inferred type (a literal, a tuple) where no name resolution
+/// applies.
+///
+/// Only that expression: when a smaller expression around the cursor has no
+/// recorded type — an unresolved name, say — the answer is `None`, not the
+/// type of whatever encloses it. A hover on `Unknown` in `let seen = Unknown
+/// ()` inside a typed block is not a hover on the block.
+pub fn innermost_inferred_type_with_range<'a>(
+    inferred: &'a InferredFile,
+    root: &SyntaxNode,
     byte: usize,
-) -> Option<(TextRange, &Ty)> {
-    let byte = TextSize::try_from(byte).ok()?;
-    inferred
+) -> Option<(TextRange, &'a Ty)> {
+    let offset = TextSize::try_from(byte).ok()?;
+    let (range, ty) = inferred
         .types()
         .iter()
-        .filter(|(range, _)| range.start() <= byte && byte <= range.end())
-        .min_by_key(|(range, _)| range.len())
-        .map(|(range, ty)| (*range, ty))
+        .filter(|(range, _)| range.start() <= offset && offset <= range.end())
+        .min_by_key(|(range, _)| range.len())?;
+    // Every non-trivia token the cursor touches: at a boundary between two
+    // tokens it touches both, and an expression strictly inside `range`
+    // around either is a more specific one inference left untyped. Trivia is
+    // skipped because it attaches to the *following* node (the space after a
+    // tuple's comma sits inside the next element's node).
+    let untyped_inner = root.token_at_offset(offset).any(|token| {
+        !token.kind().is_trivia()
+            && token
+                .parent_ancestors()
+                .take_while(|node| range.contains_range(node.text_range()))
+                .any(|node| Expr::can_cast(node.kind()) && node.text_range() != *range)
+    });
+    (!untyped_inner).then_some((*range, ty))
 }
 
 /// The smallest inference-recorded **member resolution** whose range contains
