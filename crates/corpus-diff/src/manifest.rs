@@ -45,7 +45,7 @@ use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::DeferredReason;
 
 use crate::deferral_shape::DeferralCause;
-use crate::handler_diff::{HandlerReport, PerturbedSkip, Variant, consistent};
+use crate::handler_diff::{HandlerReport, PerturbedSkip, Probe, Variant, consistent};
 use crate::{
     AnswerSurface, Graded, ItemOutcome, LoadSkip, ProjectAssetsStatus, ProjectRecord, ProjectSkip,
     ProjectVerdict, ServedDecline, SetAside,
@@ -203,7 +203,15 @@ pub fn project_corpus_manifest(
 /// - `<project> handlers perturbed skipped <why>`, with the oracle's errors on
 ///   the copy, when the perturbed run could not be made;
 /// - `<file> handlers skipped owned-by-another-project` for a source the server
-///   answers as another project's, which is not probed.
+///   answers as another project's, which is not probed;
+/// - `<file> hover-types <copy> <verdict>=<n> …` — per file and copy, how many
+///   hover probes came to each type verdict
+///   ([`crate::handler_diff::TypeVerdict`]);
+/// - `<file>:<span> "<name>" hover-type <copy> <class> <verdict> at <probes>` —
+///   every record whose hover describes its symbol with a verdict other than
+///   its class's expected one
+///   ([`crate::handler_diff::SymbolClass::expected_verdict`]), with the probes
+///   that came to it. A type lost from a hover lists its record here.
 ///
 /// A perturbed probe's span is in the perturbed copy's text.
 fn handler_entries(
@@ -224,27 +232,52 @@ fn handler_entries(
         .map(|((path, _), text)| (path.as_path(), Positions::new(text)))
         .collect();
     let mut counts: BTreeMap<(String, &str, &str), BTreeMap<&str, usize>> = BTreeMap::new();
+    let mut type_counts: BTreeMap<(String, &str), BTreeMap<String, usize>> = BTreeMap::new();
+    // A listed hover-type record, and the probes that came to its verdict.
+    type Listed = (String, &'static str, &'static str, String);
+    let mut type_listed: BTreeMap<Listed, Vec<Probe>> = BTreeMap::new();
     for probe in &handlers.probes {
         let file = file_key(root, &record.project, project, &probe.file)?;
+        let positions = match probe.variant {
+            Variant::Plain => &plain,
+            Variant::Perturbed => &perturbed,
+        };
+        let at = || {
+            positions.get(probe.file.as_path()).ok_or_else(|| {
+                ManifestError::Entry(format!(
+                    "a handler probe in {}, which is not a source of {}",
+                    probe.file.display(),
+                    record.project.display()
+                ))
+            })
+        };
         *counts
             .entry((file.clone(), probe.variant.label(), probe.handler.label()))
             .or_default()
             .entry(probe.outcome.label())
             .or_default() += 1;
+        if let Some(grade) = probe.hover_type {
+            *type_counts
+                .entry((file.clone(), probe.variant.label()))
+                .or_default()
+                .entry(grade.verdict.label())
+                .or_default() += 1;
+            if grade.listed() {
+                type_listed
+                    .entry((
+                        format!("{file}:{} {:?}", span(at()?, probe.range), probe.name),
+                        probe.variant.label(),
+                        grade.class.label(),
+                        grade.verdict.label(),
+                    ))
+                    .or_default()
+                    .push(probe.probe);
+            }
+        }
         if consistent(probe.handler, probe.expectation, probe.outcome) {
             continue;
         }
-        let positions = match probe.variant {
-            Variant::Plain => &plain,
-            Variant::Perturbed => &perturbed,
-        };
-        let at = positions.get(probe.file.as_path()).ok_or_else(|| {
-            ManifestError::Entry(format!(
-                "a handler probe in {}, which is not a source of {}",
-                probe.file.display(),
-                record.project.display()
-            ))
-        })?;
+        let at = at()?;
         entries.push(format!(
             "{file}:{} {:?} handlers {} {} {} {} expected {}",
             span(at, probe.range),
@@ -264,6 +297,24 @@ fn handler_entries(
         entries.push(format!(
             "{file} handlers {variant} {handler} {}",
             outcomes.join(" ")
+        ));
+    }
+    for ((file, variant), verdicts) in type_counts {
+        let verdicts: Vec<String> = verdicts
+            .into_iter()
+            .map(|(verdict, n)| format!("{verdict}={n}"))
+            .collect();
+        entries.push(format!(
+            "{file} hover-types {variant} {}",
+            verdicts.join(" ")
+        ));
+    }
+    for ((record, variant, class, verdict), mut probes) in type_listed {
+        probes.sort_unstable();
+        let probes: Vec<&str> = probes.into_iter().map(|p| p.label()).collect();
+        entries.push(format!(
+            "{record} hover-type {variant} {class} {verdict} at {}",
+            probes.join(",")
         ));
     }
     for path in &handlers.owned_elsewhere {

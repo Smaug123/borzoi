@@ -4818,6 +4818,199 @@ let private extraRefArgsOf (refs: string list) : string[] =
     |> List.map (refArg "refs")
     |> List.toArray
 
+/// Render an expression's inferred type for the oracle. Uses FCS's own
+/// pretty-printer (`FSharpType.Format`), which — unlike the entity-metadata
+/// `renderType` — handles function / tuple / measure types and never throws;
+/// the *canonical* renderer that the Rust `Ty` will diff against is the Phase-3.1
+/// "Ty representation" open question, deferred until that lands.
+let private renderExprType (t: FSharpType) : string =
+    try t.Format(FSharpDisplayContext.Empty) with _ -> "?"
+
+/// The canonical name of the type parameter at position `i` — the **shared
+/// convention** with the Rust side's `Ty::typar_name` (`crates/sema/src/ty.rs`):
+/// `'a`, `'b`, …, `'z` for the first 26, then a fixed overflow tail `'t26`,
+/// `'t27`, … past `'z`. We control both sides of this oracle, so the scheme is
+/// chosen once and mirrored — a generalised scheme then compares by string
+/// equality regardless of FCS's arbitrary internal typar names.
+let private canonicalTyparName (i: int) : string =
+    if i < 26 then sprintf "'%c" (char (int 'a' + i)) else sprintf "'t%d" i
+
+/// Canonical type rendering for the inference differential
+/// (`infer_literals_diff` / `infer_binder_types_diff`): abbreviation-resolved BCL
+/// FQNs (`System.Int32`, `System.Byte[]`) — the *same* convention the
+/// entity-metadata [`renderType`] emits, so the Rust `Ty` renderer can match it
+/// byte-for-byte. A **reference tuple** renders `a * b` with FQN elements (nested
+/// tuples parenthesised), a **function** `dom -> ran`, and a **generic parameter**
+/// renders canonically by first appearance (`'a`, `'b`, …) — the same numbering
+/// `Ty::render` emits for a generalised scheme's `Ty::Param`s (Stage 3.2c-2c).
+///
+/// This lives *here*, not in the shared [`renderType`], so it stays confined to
+/// the inference `TypeCanon` path and does not change the assembly-metadata dump's
+/// tuple/typar currency (which keeps the IL `System.Tuple<…>` / positional-typar
+/// forms the Rust assembly normaliser mirrors). An **array** renders
+/// `(canonical elem)[,…]`, recursing rather than delegating, so the convention
+/// holds all the way down the array spine: `(int * string)[]` is
+/// `(System.Int32 * System.String)[]`, not the IL `System.Tuple<…>[]` the
+/// metadata renderer would emit, and `'a[]` keeps its canonical typar instead of
+/// throwing into the display fallback. The element is parenthesised for a tuple
+/// or function, since `[]` binds tighter than both `*` and `->` and a bare
+/// `System.Int32 * System.String[]` denotes a different type. A **generic
+/// application** renders `Head<a, b>`, recursing the same way, so the convention
+/// holds under the arguments too: `option<int * string>` is
+/// `Microsoft.FSharp.Core.FSharpOption<System.Int32 * System.String>`. Arguments
+/// are *not* parenthesised — a comma-separated list has no regrouping to
+/// prevent, since both `*` and `->` bind tighter than `,`. A **measure** or **SRTP**
+/// (`^`-static-req) typar renders *distinctively* — `<measure:name>` /
+/// `<srtp:name>` — a shape the Rust side never emits, so a wrong emission on our
+/// side fails loudly instead of matching by accident. Falls back to FCS's `Format`
+/// for shapes [`renderType`] still does not model (struct tuples), which
+/// inference never produces.
+let private renderTypeCanonical (t: FSharpType) : string =
+    // A rename table threaded through one top-level render call, mapping each
+    // generic-parameter *name* to its canonical index by first appearance. Fresh
+    // per call, so distinct binders each start their numbering at `'a`.
+    let rename = System.Collections.Generic.Dictionary<string, int>()
+    let canonTypar (name: string) : string =
+        match rename.TryGetValue name with
+        | true, i -> canonicalTyparName i
+        | false, _ ->
+            let i = rename.Count
+            rename.[name] <- i
+            canonicalTyparName i
+    // Strip every abbreviation layer. Grouping is a property of the *type*, not
+    // of how it was spelled, so each precedence test below asks the stripped
+    // type: an alias is the one way to put a tuple or a function somewhere the
+    // writer could not parenthesise it (`type Pair = int * string` then
+    // `Pair[]`), and testing the unexpanded type there emits
+    // `System.Int32 * System.String[]` — a well-formed canonical string denoting
+    // a *different* type. `an_alias_and_its_expansion_render_identically` is the
+    // property that holds this.
+    //
+    // A unit-of-measure abbreviation (`[<Measure>] type sqrm = m^2`) is not
+    // stripped: FCS reports it as an abbreviation whose `AbbreviatedType` is the
+    // measure itself (`stripTyEqns` reduces only a type application), so the
+    // chase would never end. Every other abbreviation-chasing site in this file
+    // carries the same guard.
+    let rec strip (t: FSharpType) : FSharpType =
+        if t.IsAbbreviation && not t.IsMeasureType then strip t.AbbreviatedType else t
+    // Whether `t` must be parenthesised where ` * `, `[]` or a tuple join would
+    // otherwise regroup it. A *struct* tuple renders in application form
+    // (`System.ValueTuple<…>`), so it needs no parens.
+    let needsGrouping (t: FSharpType) : bool =
+        let t = strip t
+        (t.IsTupleType && not t.IsStructTupleType) || t.IsFunctionType
+    // Render a child that sits under an operator binding tighter than ` * ` and
+    // ` -> ` — an array element, a byref referent, a tuple element. Every such
+    // position goes through this rather than deciding for itself, so adding one
+    // is a call to this function, not a grouping rule to remember: a bare
+    // `System.Int32 * System.String&` denotes a tuple whose second element is a
+    // byref, which is a different type from a byref tuple.
+    let rec goGrouped (t: FSharpType) : string =
+        let s = go t
+        if needsGrouping t then sprintf "(%s)" s else s
+
+    and go (t: FSharpType) : string =
+        // The canonical currency names the *compiled* tycon
+        // (`Microsoft.FSharp.Core.FSharpOption`, not `option`), so strip before
+        // dispatching — the same first step [`renderTypeInScope`] takes, hoisted
+        // here so every branch below sees the stripped type rather than only the
+        // fallthrough.
+        if t.IsAbbreviation && not t.IsMeasureType then
+            go (strip t)
+        elif t.IsTupleType && not t.IsStructTupleType then
+            // A tuple or function element is parenthesised so the flat ` * ` join
+            // stays unambiguous, matching `Ty::render`'s `render_tuple` (`*`
+            // binds tighter than `->`, so a bare function element would be
+            // mis-grouped as `a -> (b * c)`).
+            t.GenericArguments |> Seq.map goGrouped |> String.concat " * "
+        elif t.IsTupleType then
+            // A **struct** tuple. FCS exposes it structurally — no
+            // `TypeDefinition` — so the generic-application arm below cannot see
+            // it, and without this arm an element that makes the metadata
+            // renderer throw drops the whole type into display currency.
+            //
+            // `struct (a * b)`, F#'s own surface spelling and the convention
+            // `borzoi_assembly`'s `AbbreviationTarget` already documents, rather
+            // than the compiled `System.ValueTuple<…>`. The compiled form would
+            // not be injective: FCS presents an 8+-element struct tuple with a
+            // *flat* `GenericArguments` list even though `ValueTuple` nests the
+            // tail through an eighth `TRest` slot, so `struct (a * … * h)` and a
+            // written `System.ValueTuple<a, …, h>` would render alike. The
+            // surface form cannot collide with an application at any arity, and
+            // its own parens mean it never needs grouping.
+            let args = t.GenericArguments |> Seq.map goGrouped |> String.concat " * "
+            sprintf "struct (%s)" args
+        elif t.IsFunctionType then
+            // `dom -> ran`, matching `Ty::render`'s `render_fun`: `->` is right-
+            // associative and looser than `*`, so the range is never parenthesised
+            // (a curried `a -> b -> c` reads flat via recursion on the range) and
+            // the domain is parenthesised only when it is itself a function
+            // (`(a -> b) -> c`); a tuple domain (`a * b -> c`) needs none.
+            let args = t.GenericArguments |> Seq.toArray
+            if args.Length = 2 then
+                let dom = go args.[0]
+                let dom = if (strip args.[0]).IsFunctionType then sprintf "(%s)" dom else dom
+                sprintf "%s -> %s" dom (go args.[1])
+            else
+                try renderType t with _ -> renderExprType t
+        elif t.IsGenericParameter then
+            let tp = t.GenericParameter
+            // A measure or SRTP typar renders distinctively — a shape the Rust
+            // side never produces, so any accidental match is impossible.
+            if tp.IsMeasure then sprintf "<measure:%s>" tp.Name
+            elif tp.IsSolveAtCompileTime then sprintf "<srtp:%s>" tp.Name
+            else canonTypar tp.Name
+        elif t.HasTypeDefinition && t.TypeDefinition.IsArrayType
+             && t.GenericArguments.Count = 1 then
+            // Recurse, so the canonical convention holds under the array rather
+            // than handing the whole subtree to the metadata renderer. Delegating
+            // switches currency silently: a tuple element comes back as the IL
+            // `System.Tuple<…>`, and a function or typar element throws, which the
+            // caller's `try` turns into FCS's *display* rendering of the entire
+            // type from the root — three currencies in one field.
+            let commas = String.replicate (t.TypeDefinition.ArrayRank - 1) ","
+            sprintf "%s[%s]" (goGrouped t.GenericArguments.[0]) commas
+        elif isRealByref t && t.GenericArguments.Count = 1 then
+            // `T&`, as [`renderTypeInScope`] spells it, recursing for the same
+            // reason every other arm does — the metadata renderer throws on a
+            // function or typar referent and drops the whole type into display
+            // currency.
+            sprintf "%s&" (goGrouped t.GenericArguments.[0])
+        elif t.HasTypeDefinition && not (isRealByref t) && t.GenericArguments.Count > 0 then
+            // A generic application: `Head<a, b>`, recursing into the arguments
+            // for the same reason the array branch recurses into its element —
+            // the metadata renderer runs a *different* currency, so delegating
+            // makes the convention depend on what an argument happens to
+            // contain. A tuple argument would come back as the IL
+            // `System.Tuple<…>`, and a function or typar argument throws, which
+            // the caller's `try` turns into FCS's display rendering of the whole
+            // type from the root (postfix `X option`, source aliases).
+            //
+            // The head is spelled exactly as [`renderType`] spells it, so the
+            // canonical renderer names a tycon identically on every path: `TryFullName`
+            // (falling back to `DisplayName` for an entity FCS reports without
+            // one), FCS's nested-type `+` normalised to `/`, and the ECMA-335
+            // backtick-arity suffix stripped.
+            let td = t.TypeDefinition
+            let baseName =
+                td.TryFullName
+                |> Option.defaultWith (fun () -> td.DisplayName)
+            let baseName = stripAritySuffix (baseName.Replace('+', '/'))
+            // Arguments are *not* parenthesised. Unlike a tuple element, an
+            // array element or a function domain — where the enclosing operator
+            // binds tighter and a bare structural child would regroup into a
+            // different type — a comma-separated argument list has nothing to
+            // regroup: both `*` and `->` bind tighter than `,`, which the F#
+            // compiler itself confirms by accepting `Func<int -> string, bool>`
+            // and `Dictionary<int * string, bool>` as two-argument applications.
+            // The rendering also stays injective without them: `H<a * b>` is one
+            // tuple argument, `H<a, b>` is two.
+            let args = t.GenericArguments |> Seq.map go |> String.concat ", "
+            sprintf "%s<%s>" baseName args
+        else
+            try renderType t with _ -> renderExprType t
+    go t
+
 /// Normalise one symbol use to the JSON shape the sema differential consumes:
 /// the symbol's display name, the use range, whether it is the defining
 /// occurrence, the declaration range (`null` for an out-of-any-file symbol),
@@ -5000,8 +5193,39 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
         | :? FSharpMemberOrFunctionOrValue as m ->
             (try box m.LogicalName with _ -> null)
         | _ -> null
+    // What a hover on this use could show as the symbol's type, and where the
+    // symbol lives: present for a value — a local or parameter, a module-level
+    // value or function, a member — and for a field, `null` for anything else
+    // (an entity, a union case, an active-pattern case, a type parameter),
+    // which has no value type to show.
+    //
+    // `TypeCanon` is the symbol's *own* type, not its type at this use: a
+    // generic value's use records the value itself, so a generic function reads
+    // `('a -> 'b) -> …` everywhere it is used, which is what a hover that shows
+    // the binder's type shows. In the canonical currency the inference
+    // differentials share ([`renderTypeCanonical`]); `null` where it throws.
+    //
+    // `Kind` is checked in this order because a member is also
+    // `IsModuleValueOrMember`: `member`, then `module` (a module-level `let`),
+    // then `local` (a parameter, a pattern binder, a local `let`).
+    let value : objnull =
+        let canon (t: unit -> FSharpType) : objnull =
+            try box (renderTypeCanonical (t ())) with _ -> null
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m ->
+            let kind : objnull =
+                try
+                    if m.IsMember then box "member"
+                    elif m.IsModuleValueOrMember then box "module"
+                    else box "local"
+                with _ ->
+                    null
+            box {| Kind = kind; TypeCanon = canon (fun () -> m.FullType) |}
+        | :? FSharpField as f -> box {| Kind = box "field"; TypeCanon = canon (fun () -> f.FieldType) |}
+        | _ -> null
     {| SymbolName = u.Symbol.DisplayName
        LogicalName = logicalName
+       Value = value
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
        DeclRange = declRange
@@ -6243,199 +6467,6 @@ let private classifyExpr (e: FSharpExpr) : string =
     | ILFieldSet _ -> "il-field-set"
     | ILAsm _ -> "il-asm"
     | _ -> "other"
-
-/// Render an expression's inferred type for the oracle. Uses FCS's own
-/// pretty-printer (`FSharpType.Format`), which — unlike the entity-metadata
-/// `renderType` — handles function / tuple / measure types and never throws;
-/// the *canonical* renderer that the Rust `Ty` will diff against is the Phase-3.1
-/// "Ty representation" open question, deferred until that lands.
-let private renderExprType (t: FSharpType) : string =
-    try t.Format(FSharpDisplayContext.Empty) with _ -> "?"
-
-/// The canonical name of the type parameter at position `i` — the **shared
-/// convention** with the Rust side's `Ty::typar_name` (`crates/sema/src/ty.rs`):
-/// `'a`, `'b`, …, `'z` for the first 26, then a fixed overflow tail `'t26`,
-/// `'t27`, … past `'z`. We control both sides of this oracle, so the scheme is
-/// chosen once and mirrored — a generalised scheme then compares by string
-/// equality regardless of FCS's arbitrary internal typar names.
-let private canonicalTyparName (i: int) : string =
-    if i < 26 then sprintf "'%c" (char (int 'a' + i)) else sprintf "'t%d" i
-
-/// Canonical type rendering for the inference differential
-/// (`infer_literals_diff` / `infer_binder_types_diff`): abbreviation-resolved BCL
-/// FQNs (`System.Int32`, `System.Byte[]`) — the *same* convention the
-/// entity-metadata [`renderType`] emits, so the Rust `Ty` renderer can match it
-/// byte-for-byte. A **reference tuple** renders `a * b` with FQN elements (nested
-/// tuples parenthesised), a **function** `dom -> ran`, and a **generic parameter**
-/// renders canonically by first appearance (`'a`, `'b`, …) — the same numbering
-/// `Ty::render` emits for a generalised scheme's `Ty::Param`s (Stage 3.2c-2c).
-///
-/// This lives *here*, not in the shared [`renderType`], so it stays confined to
-/// the inference `TypeCanon` path and does not change the assembly-metadata dump's
-/// tuple/typar currency (which keeps the IL `System.Tuple<…>` / positional-typar
-/// forms the Rust assembly normaliser mirrors). An **array** renders
-/// `(canonical elem)[,…]`, recursing rather than delegating, so the convention
-/// holds all the way down the array spine: `(int * string)[]` is
-/// `(System.Int32 * System.String)[]`, not the IL `System.Tuple<…>[]` the
-/// metadata renderer would emit, and `'a[]` keeps its canonical typar instead of
-/// throwing into the display fallback. The element is parenthesised for a tuple
-/// or function, since `[]` binds tighter than both `*` and `->` and a bare
-/// `System.Int32 * System.String[]` denotes a different type. A **generic
-/// application** renders `Head<a, b>`, recursing the same way, so the convention
-/// holds under the arguments too: `option<int * string>` is
-/// `Microsoft.FSharp.Core.FSharpOption<System.Int32 * System.String>`. Arguments
-/// are *not* parenthesised — a comma-separated list has no regrouping to
-/// prevent, since both `*` and `->` bind tighter than `,`. A **measure** or **SRTP**
-/// (`^`-static-req) typar renders *distinctively* — `<measure:name>` /
-/// `<srtp:name>` — a shape the Rust side never emits, so a wrong emission on our
-/// side fails loudly instead of matching by accident. Falls back to FCS's `Format`
-/// for shapes [`renderType`] still does not model (struct tuples), which
-/// inference never produces.
-let private renderTypeCanonical (t: FSharpType) : string =
-    // A rename table threaded through one top-level render call, mapping each
-    // generic-parameter *name* to its canonical index by first appearance. Fresh
-    // per call, so distinct binders each start their numbering at `'a`.
-    let rename = System.Collections.Generic.Dictionary<string, int>()
-    let canonTypar (name: string) : string =
-        match rename.TryGetValue name with
-        | true, i -> canonicalTyparName i
-        | false, _ ->
-            let i = rename.Count
-            rename.[name] <- i
-            canonicalTyparName i
-    // Strip every abbreviation layer. Grouping is a property of the *type*, not
-    // of how it was spelled, so each precedence test below asks the stripped
-    // type: an alias is the one way to put a tuple or a function somewhere the
-    // writer could not parenthesise it (`type Pair = int * string` then
-    // `Pair[]`), and testing the unexpanded type there emits
-    // `System.Int32 * System.String[]` — a well-formed canonical string denoting
-    // a *different* type. `an_alias_and_its_expansion_render_identically` is the
-    // property that holds this.
-    //
-    // A unit-of-measure abbreviation (`[<Measure>] type sqrm = m^2`) is not
-    // stripped: FCS reports it as an abbreviation whose `AbbreviatedType` is the
-    // measure itself (`stripTyEqns` reduces only a type application), so the
-    // chase would never end. Every other abbreviation-chasing site in this file
-    // carries the same guard.
-    let rec strip (t: FSharpType) : FSharpType =
-        if t.IsAbbreviation && not t.IsMeasureType then strip t.AbbreviatedType else t
-    // Whether `t` must be parenthesised where ` * `, `[]` or a tuple join would
-    // otherwise regroup it. A *struct* tuple renders in application form
-    // (`System.ValueTuple<…>`), so it needs no parens.
-    let needsGrouping (t: FSharpType) : bool =
-        let t = strip t
-        (t.IsTupleType && not t.IsStructTupleType) || t.IsFunctionType
-    // Render a child that sits under an operator binding tighter than ` * ` and
-    // ` -> ` — an array element, a byref referent, a tuple element. Every such
-    // position goes through this rather than deciding for itself, so adding one
-    // is a call to this function, not a grouping rule to remember: a bare
-    // `System.Int32 * System.String&` denotes a tuple whose second element is a
-    // byref, which is a different type from a byref tuple.
-    let rec goGrouped (t: FSharpType) : string =
-        let s = go t
-        if needsGrouping t then sprintf "(%s)" s else s
-
-    and go (t: FSharpType) : string =
-        // The canonical currency names the *compiled* tycon
-        // (`Microsoft.FSharp.Core.FSharpOption`, not `option`), so strip before
-        // dispatching — the same first step [`renderTypeInScope`] takes, hoisted
-        // here so every branch below sees the stripped type rather than only the
-        // fallthrough.
-        if t.IsAbbreviation && not t.IsMeasureType then
-            go (strip t)
-        elif t.IsTupleType && not t.IsStructTupleType then
-            // A tuple or function element is parenthesised so the flat ` * ` join
-            // stays unambiguous, matching `Ty::render`'s `render_tuple` (`*`
-            // binds tighter than `->`, so a bare function element would be
-            // mis-grouped as `a -> (b * c)`).
-            t.GenericArguments |> Seq.map goGrouped |> String.concat " * "
-        elif t.IsTupleType then
-            // A **struct** tuple. FCS exposes it structurally — no
-            // `TypeDefinition` — so the generic-application arm below cannot see
-            // it, and without this arm an element that makes the metadata
-            // renderer throw drops the whole type into display currency.
-            //
-            // `struct (a * b)`, F#'s own surface spelling and the convention
-            // `borzoi_assembly`'s `AbbreviationTarget` already documents, rather
-            // than the compiled `System.ValueTuple<…>`. The compiled form would
-            // not be injective: FCS presents an 8+-element struct tuple with a
-            // *flat* `GenericArguments` list even though `ValueTuple` nests the
-            // tail through an eighth `TRest` slot, so `struct (a * … * h)` and a
-            // written `System.ValueTuple<a, …, h>` would render alike. The
-            // surface form cannot collide with an application at any arity, and
-            // its own parens mean it never needs grouping.
-            let args = t.GenericArguments |> Seq.map goGrouped |> String.concat " * "
-            sprintf "struct (%s)" args
-        elif t.IsFunctionType then
-            // `dom -> ran`, matching `Ty::render`'s `render_fun`: `->` is right-
-            // associative and looser than `*`, so the range is never parenthesised
-            // (a curried `a -> b -> c` reads flat via recursion on the range) and
-            // the domain is parenthesised only when it is itself a function
-            // (`(a -> b) -> c`); a tuple domain (`a * b -> c`) needs none.
-            let args = t.GenericArguments |> Seq.toArray
-            if args.Length = 2 then
-                let dom = go args.[0]
-                let dom = if (strip args.[0]).IsFunctionType then sprintf "(%s)" dom else dom
-                sprintf "%s -> %s" dom (go args.[1])
-            else
-                try renderType t with _ -> renderExprType t
-        elif t.IsGenericParameter then
-            let tp = t.GenericParameter
-            // A measure or SRTP typar renders distinctively — a shape the Rust
-            // side never produces, so any accidental match is impossible.
-            if tp.IsMeasure then sprintf "<measure:%s>" tp.Name
-            elif tp.IsSolveAtCompileTime then sprintf "<srtp:%s>" tp.Name
-            else canonTypar tp.Name
-        elif t.HasTypeDefinition && t.TypeDefinition.IsArrayType
-             && t.GenericArguments.Count = 1 then
-            // Recurse, so the canonical convention holds under the array rather
-            // than handing the whole subtree to the metadata renderer. Delegating
-            // switches currency silently: a tuple element comes back as the IL
-            // `System.Tuple<…>`, and a function or typar element throws, which the
-            // caller's `try` turns into FCS's *display* rendering of the entire
-            // type from the root — three currencies in one field.
-            let commas = String.replicate (t.TypeDefinition.ArrayRank - 1) ","
-            sprintf "%s[%s]" (goGrouped t.GenericArguments.[0]) commas
-        elif isRealByref t && t.GenericArguments.Count = 1 then
-            // `T&`, as [`renderTypeInScope`] spells it, recursing for the same
-            // reason every other arm does — the metadata renderer throws on a
-            // function or typar referent and drops the whole type into display
-            // currency.
-            sprintf "%s&" (goGrouped t.GenericArguments.[0])
-        elif t.HasTypeDefinition && not (isRealByref t) && t.GenericArguments.Count > 0 then
-            // A generic application: `Head<a, b>`, recursing into the arguments
-            // for the same reason the array branch recurses into its element —
-            // the metadata renderer runs a *different* currency, so delegating
-            // makes the convention depend on what an argument happens to
-            // contain. A tuple argument would come back as the IL
-            // `System.Tuple<…>`, and a function or typar argument throws, which
-            // the caller's `try` turns into FCS's display rendering of the whole
-            // type from the root (postfix `X option`, source aliases).
-            //
-            // The head is spelled exactly as [`renderType`] spells it, so the
-            // canonical renderer names a tycon identically on every path: `TryFullName`
-            // (falling back to `DisplayName` for an entity FCS reports without
-            // one), FCS's nested-type `+` normalised to `/`, and the ECMA-335
-            // backtick-arity suffix stripped.
-            let td = t.TypeDefinition
-            let baseName =
-                td.TryFullName
-                |> Option.defaultWith (fun () -> td.DisplayName)
-            let baseName = stripAritySuffix (baseName.Replace('+', '/'))
-            // Arguments are *not* parenthesised. Unlike a tuple element, an
-            // array element or a function domain — where the enclosing operator
-            // binds tighter and a bare structural child would regroup into a
-            // different type — a comma-separated argument list has nothing to
-            // regroup: both `*` and `->` bind tighter than `,`, which the F#
-            // compiler itself confirms by accepting `Func<int -> string, bool>`
-            // and `Dictionary<int * string, bool>` as two-argument applications.
-            // The rendering also stays injective without them: `H<a * b>` is one
-            // tuple argument, `H<a, b>` is two.
-            let args = t.GenericArguments |> Seq.map go |> String.concat ", "
-            sprintf "%s<%s>" baseName args
-        else
-            try renderType t with _ -> renderExprType t
-    go t
 
 /// A leaf declaration whose typed tree FCS could not convert to the public
 /// [`FSharpExpr`] view, reported alongside a per-declaration dump instead of

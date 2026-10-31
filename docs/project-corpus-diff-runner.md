@@ -233,6 +233,33 @@ the full set would take the better part of an hour. That is also why the gate
 runs under `--profile gate` (optimised, with debug assertions and overflow
 checks kept).
 
+### What a hover shows of a symbol's type
+
+Naming the right symbol is the least a hover does; what makes it useful is the
+type (`` `x : int` — value `` against `` `x` — value ``). Each hover probe is
+also graded on that (`crates/corpus-diff/src/handler_diff/hover_type.rs`)
+against FCS's type for the record: `fcs-dump`'s use records carry a `Value`
+field for a value or field — where it lives (`local`, `module`, `member`,
+`field`) and its own type in the canonical currency the inference differentials
+share. The comparison is made in the displayed domain: FCS's type is read back
+into a `Ty` and rendered by the renderer the hover uses, and the two must agree
+up to the names of their type parameters. A shown type that is not FCS's is a
+wrong answer and fails the run. A hover that shows none is recorded with why —
+which kind of in-file binder inference left untyped, an earlier file's binder
+(and whether hovering its declaration shows the type: the hover reads only the
+hovered file's inference), a referenced-assembly member whose metadata
+signature the hover withholds — and a symbol with no value type (a type, a
+union case) is recorded as such.
+
+The census (`hover_types`: per verdict, and per class of symbol × verdict, every
+key present) reaches the text report, the JSONL and the generator statistics.
+The manifest counts each file's verdicts and lists every record whose verdict
+is not its class's expected one (a project value's type shown and FCS's; a
+referenced-assembly member's signature shown; nothing for a non-value), so a
+type a hover stops showing moves a line. A referenced-assembly signature is
+recorded as shown but not graded here: it is read from metadata and rendered as
+a signature with parameter names, not as a `Ty`.
+
 ### Signature files
 
 A `.fsi` Compile item is loaded like any other. Sema folds it into an inert
