@@ -655,6 +655,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ModuleDecl::Exception(exn) => {
+                self.exception_contribution(exn);
                 // An exception definition (parser phase 9.15) introduces a
                 // project-level name `E` — both an exception *type* and a
                 // value-namespace *constructor*. Two things happen:

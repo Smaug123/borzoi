@@ -26,7 +26,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, AttributeList, Expr, ModuleDecl, ModuleOrNamespace,
+    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, Expr, ModuleDecl, ModuleOrNamespace,
     ModuleOrNamespaceKind, NestedModuleDecl, SigFile, SyntaxKind, SyntaxNode, Type, TypeDefn,
     TypeDefnRepr, TypeDefnsDecl, UnionCase,
 };
@@ -261,6 +261,10 @@ impl Resolver<'_> {
                     if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
                         out.names.insert(id_text(&name).to_string());
                     }
+                    // An exception is a type: `[<AutoOpen>]` folds its statics.
+                    if self.may_auto_open(exn.attributes()) {
+                        out.values.extend(declared_identifiers(exn.syntax()));
+                    }
                 }
                 ModuleDecl::Extern(ext) => {
                     if let Some(name) = ext.name().and_then(|n| n.idents().last()) {
@@ -441,6 +445,20 @@ impl Resolver<'_> {
                 }
             }
         }
+    }
+
+    /// An `[<AutoOpen>]` exception, before its walk: an exception is a type,
+    /// and its statics enter the container as an `[<AutoOpen>]` type's do.
+    pub(super) fn exception_contribution(&mut self, exn: &ExceptionDefnDecl) {
+        if !self.may_auto_open(exn.attributes()) {
+            return;
+        }
+        let contribution = Contribution {
+            values: declared_identifiers(exn.syntax()),
+            ..Contribution::default()
+        };
+        self.push_contribution(&contribution, u32::from(exn.syntax().text_range().start()));
+        self.record_open_contribution(&contribution, false);
     }
 
     /// A union whose cases the walk just put in bare scope, because its

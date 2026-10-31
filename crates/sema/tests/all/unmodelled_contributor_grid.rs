@@ -331,10 +331,15 @@ enum Route {
     /// An operator-named union case (`([])`, compiled `op_Nil`) of an
     /// `[<AutoOpen>]` module, in front of an earlier binder of that name.
     AutoOpenOperatorCase,
+    /// An `[<AutoOpen>]` exception with a static of the name, in an
+    /// `[<AutoOpen>]` module.
+    AutoOpenExceptionInModule,
+    /// The same exception declared directly in the probe's module.
+    AutoOpenException,
 }
 
 impl Route {
-    const ALL: [Route; 69] = [
+    const ALL: [Route; 71] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -404,6 +409,8 @@ impl Route {
         Route::RecTypeGroupQualifier,
         Route::AutoOpenTypeAccessor,
         Route::AutoOpenOperatorCase,
+        Route::AutoOpenExceptionInModule,
+        Route::AutoOpenException,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -802,6 +809,14 @@ impl Route {
             Route::AutoOpenOperatorCase => (
                 vec![],
                 "module GridProbe\nlet op_Nil = 0\n[<AutoOpen>]\nmodule GridAuto =\n    type GridL =\n        | ([])\n        | (::) of int * GridL\nlet probe = @P{op_Nil}\n",
+            ),
+            Route::AutoOpenExceptionInModule => (
+                vec![],
+                "module GridProbe\n@OWN\n[<AutoOpen>]\nmodule GridAuto =\n    [<AutoOpen>]\n    exception GridEx of int with\n        @STATIC\n@USE\n",
+            ),
+            Route::AutoOpenException => (
+                vec![],
+                "module GridProbe\n@OWN\n[<AutoOpen>]\nexception GridEx of int with\n    @STATIC\n@USE\n",
             ),
             Route::CeNoOperation => (
                 vec![],
