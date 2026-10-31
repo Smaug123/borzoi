@@ -2055,19 +2055,18 @@ impl<'a> Resolver<'a> {
         // constructor, which sema does not model. Before signatured
         // namespaces shadowed by name, every one of them raised the barrier
         // and stood behind it; it still goes up here wherever a collision is
-        // possible — a visible entry of the name, or a binder of it anywhere
-        // in this file — since a type whose name nothing else claims evicts
-        // nothing. (An unsigned namespace never raised it, and its bare
-        // constructor contest is unmodelled: see
+        // possible — an entry of the name visible here, in any frame —
+        // since a type whose name nothing in scope claims evicts nothing. A
+        // binder after the open shadows the type by position as usual. (An
+        // unsigned namespace never raised it, and its bare constructor
+        // contest is unmodelled: see
         // `sig_namespace_fold_diff::unsigned_constructor_slot_contest`.)
         if is_namespace
             && self.preceding.signatured_namespaces.contains(namespace)
             && self
                 .direct_project_type_contestants(namespace)
                 .iter()
-                .any(|name| {
-                    self.latest_entry(name).is_some() || self.own_binder_simple_names.contains(name)
-                })
+                .any(|name| self.latest_entry(name).is_some())
         {
             self.open_generation += 1;
         }
