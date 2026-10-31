@@ -2013,6 +2013,22 @@ pub enum DeclineCause {
     /// A same-file `[<AutoOpen>]` module opened a type of this name into scope,
     /// with no later same-container `type` outranking it.
     SameFileAutoOpenType,
+    /// A single-segment name whose in-file type definition is not the only
+    /// one in scope, so FCS may bind another: the enclosing containers
+    /// declare the name more than once (FCS picks by arity), or a `rec`
+    /// block or an exception may hold another.
+    InFileTypeNameReused,
+    /// A single-segment name whose in-file type definition lives in an
+    /// ancestor namespace, which a namespace does not see unopened.
+    InFileTypeOutsideNamespace,
+    /// A single-segment name whose in-file type definition is followed by an
+    /// `open`, which may bring a same-named type FCS binds instead.
+    InFileTypeOpenedOver,
+    /// A single-segment type name whose written arity is not that of the one
+    /// in-file type of its name, where FCS may bind another: `List<int>`
+    /// beside an in-file `List` names an opened generic, and a bare `Action`
+    /// beside an in-file `Action<'T>` names an assembly `Action` in scope.
+    InFileArityMismatch,
     /// A single-segment name inside an active `rec` block, where a
     /// forward-declared project type may not be in `type_defs` yet.
     RecursiveModuleActive,
@@ -2221,6 +2237,10 @@ impl DeclineCause {
     /// `docs/continuous-measurements.md` names; iterating this cannot.
     pub const ALL: &'static [DeclineCause] = &[
         DeclineCause::SameFileAutoOpenType,
+        DeclineCause::InFileTypeNameReused,
+        DeclineCause::InFileTypeOutsideNamespace,
+        DeclineCause::InFileArityMismatch,
+        DeclineCause::InFileTypeOpenedOver,
         DeclineCause::RecursiveModuleActive,
         DeclineCause::RecursiveModuleHead,
         DeclineCause::OpaqueOpen,
@@ -2276,6 +2296,10 @@ impl DeclineCause {
     pub fn label(self) -> &'static str {
         match self {
             DeclineCause::SameFileAutoOpenType => "same_file_auto_open_type",
+            DeclineCause::InFileTypeNameReused => "in_file_type_name_reused",
+            DeclineCause::InFileTypeOutsideNamespace => "in_file_type_outside_namespace",
+            DeclineCause::InFileArityMismatch => "in_file_arity_mismatch",
+            DeclineCause::InFileTypeOpenedOver => "in_file_type_opened_over",
             DeclineCause::RecursiveModuleActive => "recursive_module_active",
             DeclineCause::RecursiveModuleHead => "recursive_module_head",
             DeclineCause::OpaqueOpen => "opaque_open",
