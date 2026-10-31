@@ -193,6 +193,12 @@ acquire_lock() {
     # longer than a minute, it is one that died there.
     if { [ -n "$owner" ] && ! alive "$owner"; } ||
       { [ -z "$owner" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+      # A run removes its lock before it exits, so an owner found dead may
+      # have released the lock (and another run taken it) since we read it.
+      # Abandoned means the lock still records that owner.
+      if [ ! -d "$lock" ] || [ "$(cat "$lock/owner" 2>/dev/null || true)" != "$owner" ]; then
+        continue
+      fi
       echo "project-corpus-gate: $lock is held by a run that has exited" \
         "(${owner:-no owner recorded}). If no gate run is in progress, remove it:" >&2
       echo "  rm -r '$lock'" >&2

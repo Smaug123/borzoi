@@ -68,7 +68,7 @@ tmp=
 setup_fixture() {
   tmp="$(mktemp -d)"
   local fake="$tmp/repo" bin="$tmp/bin"
-  mkdir -p "$fake/tools/ci" "$fake/target/debug" "$bin" "$tmp/nops" "$tmp/remote/owner"
+  mkdir -p "$fake/tools/ci" "$fake/target/debug" "$bin" "$tmp/nops" "$tmp/slowps" "$tmp/remote/owner"
   cp "$here/project-corpus-gate.sh" "$here/project-corpus.sh" "$fake/tools/ci/"
 
   # One upstream repository with two pins, each holding the project.
@@ -106,7 +106,13 @@ case "$1" in
   --version) echo 10.0.100-fake ;;
   restore)
     echo "restore $2" >>"$FAKE_LOG"
-    [ -z "${FAKE_RESTORE_FAILS:-}" ] || exit 1
+    if [ -n "${FAKE_RESTORE_FAILS:-}" ]; then
+      # Holding the lock until the waiter is looking at it, if one is meant to.
+      if [ -n "${FAKE_RESTORE_FAILS_AFTER:-}" ]; then
+        for _ in $(seq 100); do [ -e "$FAKE_RESTORE_FAILS_AFTER" ] && break; sleep 0.1; done
+      fi
+      exit 1
+    fi
     obj="$(dirname "$2")/obj"
     mkdir -p "$obj"
     printf 'partial' >"$obj/project.assets.json"
@@ -143,7 +149,18 @@ echo "step $FAKE_RUN" >>"$FAKE_LOG"
 EOF
   # A `ps` that reports nothing, for the run that cannot record its identity.
   printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/nops/ps"
-  chmod +x "$fake/target/debug/borzoi-stats" "$bin"/* "$tmp/nops/ps"
+  # A `ps` that, asked about FAKE_PS_SLOW_PID, says so and answers only once
+  # that process has exited: the waiter reads the lock's owner, the owner
+  # releases and exits, and only then does the waiter learn it is dead.
+  cat >"$tmp/slowps/ps" <<'EOF'
+#!/usr/bin/env bash
+if [ "${*: -1}" = "$FAKE_PS_SLOW_PID" ]; then
+  touch "$FAKE_PS_ENTERED"
+  for _ in $(seq 100); do kill -0 "$FAKE_PS_SLOW_PID" 2>/dev/null || break; sleep 0.1; done
+fi
+PATH="${PATH#*:}" exec ps "$@"
+EOF
+  chmod +x "$fake/target/debug/borzoi-stats" "$bin"/* "$tmp/nops/ps" "$tmp/slowps/ps"
 }
 
 # run_gate NAME PLAN REV [STEP...]: one local gate run, in the background of
@@ -160,6 +177,8 @@ run_gate() {
       GIT_CONFIG_VALUE_0="https://github.com/" \
       FAKE_PLAN="$plan" FAKE_EXPECT_REV="$rev" FAKE_RUN="$name" \
       FAKE_LOG="$tmp/log" FAKE_RESTORE_FAILS="${FAKE_RESTORE_FAILS:-}" \
+      FAKE_RESTORE_FAILS_AFTER="${FAKE_RESTORE_FAILS_AFTER:-}" \
+      FAKE_PS_SLOW_PID="${FAKE_PS_SLOW_PID:-}" FAKE_PS_ENTERED="$tmp/ps-entered" \
       bash "$tmp/repo/tools/ci/project-corpus-gate.sh" "$@" >"$tmp/$name.out" 2>&1
     echo $? >"$tmp/$name.status"
   )
@@ -242,6 +261,22 @@ test_concurrency() {
   assert_eq "a run that cannot read its own start time fails" 1 "$(cat "$tmp/j.status")"
   assert_eq "and registers nowhere" "" \
     "$(ls "$tmp/cache/readers"; ls -d "$tmp/cache/lock" 2>/dev/null)"
+
+  # A waiter that finds the lock's owner dead only after the owner has
+  # released it: the lock it read is gone, not abandoned.
+  local holder
+  : >"$tmp/log"
+  FAKE_RESTORE_FAILS=1 FAKE_RESTORE_FAILS_AFTER="$tmp/ps-entered" \
+    run_gate k "$tmp/plan1" "$rev1" "$step" &
+  for _ in $(seq 100); do [ -s "$tmp/cache/lock/owner" ] && break; sleep 0.1; done
+  holder="$(cut -d' ' -f1 "$tmp/cache/lock/owner")"
+  EXTRA_PATH="$tmp/slowps" FAKE_PS_SLOW_PID="$holder" run_gate l "$tmp/plan1" "$rev1" "$step"
+  wait
+  assert_eq "the waiter did look at the holder as it exited" yes \
+    "$([ -e "$tmp/ps-entered" ] && echo yes)"
+  assert_eq "the run whose restore failed fails" 1 "$(cat "$tmp/k.status")"
+  assert_eq "the run that waited on it takes the lock and succeeds" 0 "$(cat "$tmp/l.status")"
+  show_failure l
 
   rm -rf "$tmp"
 }
