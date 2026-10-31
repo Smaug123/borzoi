@@ -1252,7 +1252,7 @@ pub(super) struct Resolver<'a> {
     /// arity, more than one means the latest in-file hit may not be the one
     /// FCS binds (of two same-arity declarations in one scope it binds the
     /// first) ([`DeclineCause::InFileTypeNameReused`]).
-    pub(super) type_decl_counts: HashMap<Vec<String>, HashMap<(String, usize), usize>>,
+    pub(super) type_decl_counts: HashMap<Vec<String>, HashMap<String, HashMap<usize, usize>>>,
     /// Each in-file type's generic arity, by its [`Self::type_defs`] binder.
     /// FCS looks a type name up by name *and* arity first, so `E<int>` beside
     /// `type E` and `type E<'T>` binds the generic one whatever their order,

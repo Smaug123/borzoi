@@ -188,7 +188,9 @@ impl<'a> Resolver<'a> {
             .type_decl_counts
             .entry(self.container_path.clone())
             .or_default()
-            .entry((key.clone(), arity))
+            .entry(key.clone())
+            .or_default()
+            .entry(arity)
             .or_default() += 1;
         // Filed under the current container path (see [`Self::type_defs`]). Last
         // definition of a name wins — a redefinition shadows the earlier one for
@@ -2704,16 +2706,18 @@ impl<'a> Resolver<'a> {
         let Some(id) = found else {
             return Some(Err(DeclineCause::InFileArityMismatch));
         };
-        let chain = (0..=self.container_path.len())
-            .filter_map(|k| self.type_decl_counts.get(&self.container_path[..k]));
-        let (at_arity, any_arity) = chain.fold((0, 0), |(at, any), counts| {
-            counts
-                .iter()
-                .filter(|((n, _), _)| n == name)
-                .fold((at, any), |(at, any), ((_, a), c)| {
-                    (at + if *a == arity { *c } else { 0 }, any + *c)
-                })
-        });
+        let (at_arity, any_arity) = (0..=self.container_path.len())
+            .filter_map(|k| {
+                self.type_decl_counts
+                    .get(&self.container_path[..k])
+                    .and_then(|m| m.get(name))
+            })
+            .fold((0, 0), |(at, any), by_arity| {
+                (
+                    at + by_arity.get(&arity).copied().unwrap_or(0),
+                    any + by_arity.values().sum::<usize>(),
+                )
+            });
         let declared = self.own_type_decl_counts.get(name).copied().unwrap_or(0);
         if at_arity > 1
             || (self.recursive_module_active && declared > any_arity)
