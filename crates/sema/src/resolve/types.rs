@@ -469,9 +469,6 @@ impl<'a> Resolver<'a> {
         type_name: &SyntaxToken,
         require_qualified: bool,
     ) {
-        if require_qualified {
-            return;
-        }
         let Some(TypeDefnRepr::Abbrev(a)) = defn.repr() else {
             return;
         };
@@ -484,7 +481,25 @@ impl<'a> Resolver<'a> {
                 self.decide_type_path(std::slice::from_ref(&case), 0),
                 TypePathResolution::InFileType(_) | TypePathResolution::Assembly { .. }
             );
-        if !names_a_type {
+        if names_a_type {
+            return;
+        }
+        // The type's own members see its cases, `[<RequireQualifiedAccess>]`
+        // or not, so the case is one of its own, declining
+        // ([`Self::resolve_type_member_bodies`]).
+        let type_key = id_text(type_name).to_string();
+        if let Some(own) = self
+            .type_defs
+            .get(&self.container_path)
+            .and_then(|m| m.get(&type_key))
+            .copied()
+        {
+            self.own_union_cases.entry(own).or_default().push((
+                case.clone(),
+                Resolution::Deferred(DeferredReason::UnboundName),
+            ));
+        }
+        if !require_qualified {
             let generation = self.open_generation;
             self.module_frame()
                 .entries
@@ -906,18 +921,40 @@ impl<'a> Resolver<'a> {
             MemberScope::Optional => None,
             MemberScope::Unwalked => return,
         };
-        // The type's own union cases, above the module scope.
-        let cases: Vec<ScopeEntry> = own
+        // The type's own union cases, above the module scope. A case the walk
+        // cannot decide (`type T = T`'s) declines in both namespaces.
+        let mut cases: Vec<ScopeEntry> = own
             .and_then(|k| self.own_union_cases.get(&k))
             .map(|cases| {
                 cases
                     .iter()
-                    .map(|(name, res)| {
-                        ScopeEntry::binding(name.clone(), *res, self.open_generation)
+                    .map(|(name, res)| match res {
+                        Resolution::Deferred(_) => {
+                            ScopeEntry::undecided_case(name.clone(), self.open_generation)
+                        }
+                        _ => ScopeEntry::binding(name.clone(), *res, self.open_generation),
                     })
                     .collect()
             })
             .unwrap_or_default();
+        // An intrinsic augmentation's members see the augmented type's own
+        // name again, which a constructible type holds as its constructor
+        // ahead of any module value. A same-named type the walk has met that
+        // may take the slot ([`SlotClass`]) therefore declines the name:
+        // whether the augmentation is that type's intrinsic one is not
+        // decided here.
+        if super::is_type_augmentation(defn)
+            && let Some(name) = defn.long_id().and_then(|li| li.idents().last())
+        {
+            let name = id_text(&name).to_string();
+            if self.type_in_scope_may_take_slot(&name) {
+                cases.push(ScopeEntry::binding(
+                    name,
+                    Resolution::Deferred(DeferredReason::UnboundName),
+                    self.open_generation,
+                ));
+            }
+        }
         let pushed_cases = !cases.is_empty();
         if pushed_cases {
             self.scopes.push(Frame { entries: cases });
@@ -939,6 +976,18 @@ impl<'a> Resolver<'a> {
         if pushed_cases {
             self.scopes.pop();
         }
+    }
+
+    /// Whether a type of `name` declared along the container chain may take
+    /// FCS's unqualified slot (its [`SlotClass`] is not
+    /// [`SlotClass::Keeps`]).
+    fn type_in_scope_may_take_slot(&self, name: &str) -> bool {
+        (0..=self.container_path.len()).any(|k| {
+            self.type_slot_history
+                .get(&self.container_path[..k])
+                .and_then(|m| m.get(name))
+                .is_some_and(|entries| entries.iter().any(|(_, class)| *class != SlotClass::Keeps))
+        })
     }
 
     /// Which scope a type definition's members see, beyond the module scope
@@ -1176,6 +1225,19 @@ impl<'a> Resolver<'a> {
                         }
                     }
                     entries.extend(self.pattern_locals(l.args(), BinderRole::Param));
+                }
+                // A secondary constructor's `new (…) as self = …` binds its own
+                // self identifier for the body.
+                if mm.leading_keyword() == MemberLeading::New
+                    && let Some(tok) = b
+                        .syntax()
+                        .children_with_tokens()
+                        .filter_map(|el| el.into_token())
+                        .skip_while(|t| t.kind() != SyntaxKind::AS_TOK)
+                        .find(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                    && let Some(entry) = self.bind_self_ident(&tok)
+                {
+                    entries.push(entry);
                 }
                 if let Some(ret) = b.return_type() {
                     self.resolve_type(&ret);

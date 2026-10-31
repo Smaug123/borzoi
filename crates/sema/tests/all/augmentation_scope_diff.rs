@@ -20,7 +20,11 @@
 //! * in a `rec` module an augmentation may precede its type, and is still
 //!   intrinsic, and its members see the module's later values;
 //! * an intrinsic augmentation's own `static let` shadows the module value;
-//! * a `[<RequireQualifiedAccess>]` `type T = T` case shadows no module value.
+//! * a `[<RequireQualifiedAccess>]` `type T = T` case shadows no module value,
+//!   except in the type's own members;
+//! * a class's name is its constructor in its augmentations, ahead of a
+//!   module value of the name;
+//! * a secondary constructor's `as self` binds its own self identifier.
 //!
 //! Each program declares one type, module values named like its cases or its
 //! constructor parameter and field, and a member that uses every one of those
@@ -44,6 +48,9 @@ use rowan::TextRange;
 struct Kind {
     label: &'static str,
     decl: &'static str,
+    /// The declaration in the `Host::Own` programs, where it differs
+    /// (`type T = T with`, which takes members only so).
+    own_decl: Option<&'static str>,
     values: &'static str,
     /// The augmentation head, and a renaming of its parameters if generic.
     header: &'static str,
@@ -59,8 +66,12 @@ struct Kind {
     pinned: bool,
     /// Whether an intrinsic augmentation of it may declare `static let`.
     static_let: bool,
-    /// Whether a value-position `T` in the member body must be committed (a
-    /// non-qualified `type T = T` case is deliberately declined).
+    /// Whether an optional extension may declare the member (not a
+    /// constructor).
+    extension_member: bool,
+    /// Whether a value-position `T` in an augmentation's member body must be
+    /// committed (a non-qualified `type T = T` case is deliberately declined,
+    /// as is the case its own members see).
     body_t_commits: bool,
 }
 
@@ -69,6 +80,7 @@ const GENERIC_MEMBER: &str = "member this.M (p: 'a) : int =";
 const KINDS: &[Kind] = &[
     Kind {
         label: "rqa-union",
+        own_decl: None,
         decl: "[<RequireQualifiedAccess>]\ntype T<'a> =\n    | A\n    | B of 'a\n",
         values: "let A = 1\nlet B = 2\n",
         header: "T<'a>",
@@ -79,10 +91,12 @@ const KINDS: &[Kind] = &[
         own_members: true,
         pinned: true,
         static_let: false,
+        extension_member: true,
         body_t_commits: false,
     },
     Kind {
         label: "union",
+        own_decl: None,
         decl: "type T<'a> =\n    | A\n    | B of 'a\n",
         values: "let A = 1\nlet B = 2\n",
         header: "T<'a>",
@@ -93,10 +107,12 @@ const KINDS: &[Kind] = &[
         own_members: true,
         pinned: true,
         static_let: false,
+        extension_member: true,
         body_t_commits: false,
     },
     Kind {
         label: "class",
+        own_decl: None,
         decl: "type T<'a>(a: 'a) =\n    let b = 3\n    member _.X = (a, b)\n",
         values: "let a = 1\nlet b = 2\n",
         header: "T<'a>",
@@ -107,10 +123,12 @@ const KINDS: &[Kind] = &[
         own_members: true,
         pinned: false,
         static_let: false,
+        extension_member: true,
         body_t_commits: false,
     },
     Kind {
         label: "plain-class",
+        own_decl: None,
         decl: "type T(a: int) =\n    let b = 3\n    member _.X = (a, b)\n",
         values: "let a = 1\nlet b = 2\n",
         header: "T",
@@ -121,10 +139,12 @@ const KINDS: &[Kind] = &[
         own_members: true,
         pinned: true,
         static_let: true,
+        extension_member: true,
         body_t_commits: false,
     },
     Kind {
         label: "interface",
+        own_decl: None,
         decl: "type T<'a> =\n    abstract X: 'a\n",
         values: "",
         header: "T<'a>",
@@ -135,11 +155,13 @@ const KINDS: &[Kind] = &[
         own_members: false,
         pinned: false,
         static_let: false,
+        extension_member: true,
         body_t_commits: false,
     },
     Kind {
         // FCS reads `type T = T` as a union with the case `T`.
         label: "abbreviation-union",
+        own_decl: Some("type T = T with\n"),
         decl: "type T = T\n",
         values: "let T = 1\n",
         header: "T",
@@ -147,14 +169,16 @@ const KINDS: &[Kind] = &[
         member: "member this.M (p: int) : int =",
         body: "(ignore T; ignore p; 0)",
         annotation: "T",
-        own_members: false,
+        own_members: true,
         pinned: false,
         static_let: false,
+        extension_member: true,
         body_t_commits: false,
     },
     Kind {
         // A `[<RequireQualifiedAccess>]` case shadows no module value.
         label: "rqa-abbreviation-union",
+        own_decl: Some("[<RequireQualifiedAccess>]\ntype T = T with\n"),
         decl: "[<RequireQualifiedAccess>]\ntype T = T\n",
         values: "let T = 1\n",
         header: "T",
@@ -162,10 +186,46 @@ const KINDS: &[Kind] = &[
         member: "member this.M (p: int) : int =",
         body: "(ignore T; ignore p; 0)",
         annotation: "T",
-        own_members: false,
+        own_members: true,
         pinned: false,
         static_let: false,
+        extension_member: true,
         body_t_commits: true,
+    },
+    Kind {
+        // A class's own name is its constructor in its intrinsic
+        // augmentation, ahead of a module value of the name.
+        label: "constructor-class",
+        own_decl: None,
+        decl: "type T() =\n    member _.X = 1\n",
+        values: "let T () = 42\n",
+        header: "T",
+        renamed: None,
+        member: "static member Create () =",
+        body: "T ()",
+        annotation: "T",
+        own_members: true,
+        pinned: false,
+        static_let: false,
+        extension_member: true,
+        body_t_commits: false,
+    },
+    Kind {
+        // A secondary constructor's `as self` binds its own self identifier.
+        label: "constructor-as-self",
+        own_decl: None,
+        decl: "type T() =\n    member _.X = 1\n",
+        values: "let self = 42\nlet x = 1\n",
+        header: "T",
+        renamed: None,
+        member: "new (x: int) as self =",
+        body: "T () then (ignore self; ignore x)",
+        annotation: "T",
+        own_members: true,
+        pinned: false,
+        static_let: false,
+        extension_member: false,
+        body_t_commits: false,
     },
 ];
 
@@ -235,6 +295,7 @@ fn program(kind: &Kind, host: Host, values: Values) -> Option<String> {
     };
     if matches!(host, Host::Own) && !kind.own_members
         || matches!(host, Host::StaticLet) && !kind.static_let
+        || matches!(host, Host::Optional | Host::AfterOpen) && !kind.extension_member
     {
         return None;
     }
@@ -261,7 +322,10 @@ fn program(kind: &Kind, host: Host, values: Values) -> Option<String> {
     if let Values::BeforeType = values {
         s += kind.values;
     }
-    s += kind.decl;
+    s += match host {
+        Host::Own => kind.own_decl.unwrap_or(kind.decl),
+        _ => kind.decl,
+    };
     if let Host::Own = host {
         s += &format!("    {}\n        {}\n", kind.member, kind.body);
     }
@@ -351,7 +415,7 @@ fn member_scopes_agree_with_fcs() {
                 continue;
             }
             let text = &src[u.start..u.end];
-            if !["A", "B", "a", "b", "p", "'a", "T"].contains(&text) {
+            if !["A", "B", "a", "b", "p", "'a", "T", "self", "x"].contains(&text) {
                 continue;
             }
             let at = span(u.start, u.end);
@@ -368,7 +432,11 @@ fn member_scopes_agree_with_fcs() {
                 (CensusDecl::InFile(s, e), Some(def)) if def == span(s, e) => committed += 1,
                 (_, None)
                     if !host.must_commit(kind)
-                        || text == "T" && (u.start < member_at || !kind.body_t_commits) => {}
+                        || text == "T"
+                            && (u.start < member_at
+                                || !kind.body_t_commits
+                                // Its own members see the case.
+                                || matches!(host, Host::Own)) => {}
                 (decl, _) => failures.push(format!(
                     "{label} {host:?}: `{text}` at {at:?}: we gave {res:?} ({ours:?}), FCS {decl:?}\n{src}"
                 )),
