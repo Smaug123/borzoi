@@ -14,8 +14,8 @@ use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
 };
 use super::{
-    attrs_auto_open, attrs_mark_struct, attrs_require_qualified_access, id_text,
-    is_type_augmentation, single_ident, type_long_ident_path,
+    attrs_auto_open, attrs_require_qualified_access, id_text, is_type_augmentation, single_ident,
+    type_long_ident_path,
 };
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
@@ -92,13 +92,15 @@ pub(super) fn type_slot_class(defn: &TypeDefn) -> SlotClass {
         Some(TypeDefnRepr::Enum(_)) => SlotClass::Evicts,
         Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => {
             // A genuine `[<Struct>]` union/record IS a struct type and evicts
-            // (probe M20m) — but the marker is matched textually, and a
+            // (probe M20m) — but sema cannot resolve attribute types. A
             // CUSTOM attribute named `Struct` would be mistaken for it while
-            // FCS keeps the type ordinary (codex round 7). Sema cannot
-            // resolve attribute types, so a `Struct`-marked union/record is
-            // Unknown — defer in contest, never a wrong target either way
-            // (the genuine-marker resolve is the availability price).
-            if attrs_mark_struct(defn.attributes()) {
+            // FCS keeps the type ordinary (codex round 7), and an
+            // abbreviation can spell `StructAttribute` any way at all
+            // (`type S = StructAttribute`, then `[<S>]`). So an attributed
+            // union/record is Unknown — defer in contest, never a wrong
+            // target either way (the genuine-marker resolve is the
+            // availability price).
+            if defn.attributes().next().is_some() {
                 SlotClass::Unknown
             } else {
                 SlotClass::Keeps

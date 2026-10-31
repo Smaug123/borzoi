@@ -267,6 +267,12 @@ enum Route {
     OpenTypeDropped,
     /// A constructible type of the name.
     ConstructibleType,
+    /// A record of the name that a `StructAttribute` spelled through an
+    /// abbreviation makes a struct, in an `[<AutoOpen>]` module: a struct
+    /// takes the slot.
+    AutoOpenAliasedStructRecord,
+    /// The same record, declared directly in the probe's module.
+    AliasedStructRecord,
     /// An abbreviation of a constructible type, named so.
     ConstructibleAbbrev,
     /// An earlier file's constructible type of the name in the probe file's
@@ -321,7 +327,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 65] = [
+    const ALL: [Route; 67] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -368,6 +374,8 @@ impl Route {
         Route::OpenTypeInherited,
         Route::OpenTypeDropped,
         Route::ConstructibleType,
+        Route::AutoOpenAliasedStructRecord,
+        Route::AliasedStructRecord,
         Route::ConstructibleAbbrev,
         Route::EarlierNamespaceCtor,
         Route::EarlierNamespaceCtorOpened,
@@ -699,6 +707,14 @@ impl Route {
             Route::OpenTypeDropped => (
                 vec![],
                 "module GridProbe\n@OWN\nopen type GridFix.Dropped\n@USE\n",
+            ),
+            Route::AutoOpenAliasedStructRecord => (
+                vec![],
+                "module GridProbe\n@OWN\ntype GridS = StructAttribute\n[<AutoOpen>]\nmodule GridAuto =\n    [<GridS>]\n    type @NAME = { GridF: int }\n@USE\n",
+            ),
+            Route::AliasedStructRecord => (
+                vec![],
+                "module GridProbe\n@OWN\ntype GridS = StructAttribute\n[<GridS>]\ntype @NAME = { GridF: int }\n@USE\n",
             ),
             Route::ConstructibleType => (vec![], "module GridProbe\n@OWN\n@CTOR\n@USE\n"),
             Route::ConstructibleAbbrev => (vec![], "module GridProbe\n@OWN\n@OBJ\n@USE\n"),

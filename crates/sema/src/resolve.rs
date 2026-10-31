@@ -2327,17 +2327,6 @@ fn attrs_require_qualified_access(attrs: impl Iterator<Item = AttributeList>) ->
         })
 }
 
-/// Whether the attribute lists mark the type `[<Struct>]` — a struct
-/// union/record is a struct type (`isStructTy`), which puts its name in FCS's
-/// unqualified slot (probe M20m of `docs/project-type-member-plan.md`).
-fn attrs_mark_struct(attrs: impl Iterator<Item = AttributeList>) -> bool {
-    attrs
-        .flat_map(|list| list.attributes().collect::<Vec<_>>())
-        .filter_map(|attr| attr.type_name())
-        .filter_map(|li| li.idents().last())
-        .any(|seg| matches!(&*id_text(&seg), "Struct" | "StructAttribute"))
-}
-
 /// Every nested-module name declared anywhere under `decls` (all depths),
 /// for the `rec`-block pre-scan ([`Resolver::rec_module_names`]): inside
 /// `module rec` / `namespace rec`, a later-declared module is already in
