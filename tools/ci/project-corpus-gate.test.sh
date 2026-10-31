@@ -68,7 +68,7 @@ tmp=
 setup_fixture() {
   tmp="$(mktemp -d)"
   local fake="$tmp/repo" bin="$tmp/bin"
-  mkdir -p "$fake/tools/ci" "$fake/target/debug" "$bin" "$tmp/remote/owner"
+  mkdir -p "$fake/tools/ci" "$fake/target/debug" "$bin" "$tmp/nops" "$tmp/remote/owner"
   cp "$here/project-corpus-gate.sh" "$here/project-corpus.sh" "$fake/tools/ci/"
 
   # One upstream repository with two pins, each holding the project.
@@ -82,6 +82,11 @@ setup_fixture() {
   rev2="$(git -C "$tmp/src" rev-parse HEAD)"
   rev1="$(git -C "$tmp/src" rev-parse HEAD~1)"
   git clone --quiet --bare "$tmp/src" "$tmp/remote/owner/repo"
+  if ! git -C "$tmp/remote/owner/repo" cat-file -e "$rev1^{commit}" ||
+    ! git -C "$tmp/remote/owner/repo" cat-file -e "$rev2^{commit}"; then
+    echo "FAIL - the fixture's upstream repository has both pins" >&2
+    exit 1
+  fi
   printf 'owner/repo\t%s\tproj/P.fsproj\n' "$rev1" >"$tmp/plan1"
   printf 'owner/repo\t%s\tproj/P.fsproj\n' "$rev2" >"$tmp/plan2"
 
@@ -136,7 +141,9 @@ for _ in 1 2 3 4 5 6; do
 done
 echo "step $FAKE_RUN" >>"$FAKE_LOG"
 EOF
-  chmod +x "$fake/target/debug/borzoi-stats" "$bin"/*
+  # A `ps` that reports nothing, for the run that cannot record its identity.
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/nops/ps"
+  chmod +x "$fake/target/debug/borzoi-stats" "$bin"/* "$tmp/nops/ps"
 }
 
 # run_gate NAME PLAN REV [STEP...]: one local gate run, in the background of
@@ -146,9 +153,8 @@ run_gate() {
   shift 3
   (
     env -u BORZOI_PROJECT_LIST -u RUNNER_TEMP -u GITHUB_ENV \
-      PATH="$tmp/bin:$PATH" \
+      PATH="${EXTRA_PATH:+$EXTRA_PATH:}$tmp/bin:$PATH" \
       BORZOI_PROJECT_CORPUS_CACHE="$tmp/cache" \
-      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
       GIT_CONFIG_COUNT=1 \
       GIT_CONFIG_KEY_0="url.$tmp/remote/.insteadOf" \
       GIT_CONFIG_VALUE_0="https://github.com/" \
@@ -169,6 +175,9 @@ count_log() { grep -c "^$1" "$tmp/log" 2>/dev/null || true; }
 
 test_concurrency() {
   local step
+  # The fixture's own commits and the runs' clones alike: no signing, no
+  # rewriting of github.com URLs but the fixture's own.
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
   step="$(bash "$here/project-corpus-gate.sh" --list | head -n1)"
 
   setup_fixture
@@ -227,6 +236,12 @@ test_concurrency() {
   assert_eq "a lock held by a dead run fails fast" 1 "$(cat "$tmp/i.status")"
   assert_eq "the failure names the lock to remove" 1 \
     "$(grep -c "rm -r.*$tmp/cache/lock" "$tmp/i.out")"
+  rm -r "$tmp/cache/lock"
+
+  EXTRA_PATH="$tmp/nops" run_gate j "$tmp/plan2" "$rev2" "$step"
+  assert_eq "a run that cannot read its own start time fails" 1 "$(cat "$tmp/j.status")"
+  assert_eq "and registers nowhere" "" \
+    "$(ls "$tmp/cache/readers"; ls -d "$tmp/cache/lock" 2>/dev/null)"
 
   rm -rf "$tmp"
 }

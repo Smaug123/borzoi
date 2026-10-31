@@ -151,12 +151,19 @@ done
 # --- local materialisation ---------------------------------------------------
 
 # A process, as `pid start-time`: the start time tells a live owner from an
-# unrelated process that has since been given the same pid.
+# unrelated process that has since been given the same pid. Fails for a
+# process `ps` cannot report, so no identity without a start time is ever
+# recorded: one would match a dead process forever.
 identity() { # pid
-  printf '%s %s' "$1" "$(ps -o lstart= -p "$1" 2>/dev/null || true)"
+  local start
+  start="$(ps -o lstart= -p "$1" 2>/dev/null)" || return 1
+  [ -n "$start" ] || return 1
+  printf '%s %s' "$1" "$start"
 }
 alive() { # identity
-  [ "$(identity "${1%% *}")" = "$1" ]
+  local now
+  now="$(identity "${1%% *}")" || return 1
+  [ "$now" = "$1" ]
 }
 
 lock_held=
@@ -198,7 +205,7 @@ acquire_lock() {
     sleep 1
   done
   lock_held=1
-  identity $$ >"$lock/owner"
+  printf '%s\n' "$me" >"$lock/owner"
 }
 
 release_lock() {
@@ -235,6 +242,11 @@ if [ -z "${BORZOI_PROJECT_LIST:-}" ]; then
   lock="$cache/lock"
   readers="$cache/readers"
   stamp="$cache/materialised"
+  if ! me="$(identity $$)"; then
+    echo "project-corpus-gate: \`ps -o lstart= -p $$\` reports no start time, so" \
+      "this run cannot register in $cache in a form other runs can tell is dead" >&2
+    exit 1
+  fi
   mkdir -p "$readers"
   trap cleanup EXIT
   trap 'exit 129' HUP
@@ -268,7 +280,7 @@ if [ -z "${BORZOI_PROJECT_LIST:-}" ]; then
     cp "$wanted" "$stamp"
   fi
   reader="$(mktemp "$readers/XXXXXX")"
-  identity $$ >"$reader"
+  printf '%s\n' "$me" >"$reader"
   release_lock
 
   bash tools/ci/project-corpus.sh env "$plan"
