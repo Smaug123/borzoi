@@ -349,10 +349,19 @@ enum Route {
     AutoOpenExceptionInModule,
     /// The same exception declared directly in the probe's module.
     AutoOpenException,
+    /// An `[<AutoOpen>]` type's static, an own binder of its name after the
+    /// type, then a use in an intrinsic augmentation's member.
+    AutoOpenTypeStaticInAugmentation,
+    /// The same, the use after the augmentation, at module level.
+    AutoOpenTypeStaticAfterAugmentation,
+    /// [`Route::AutoOpenTypeStaticInAugmentation`] for an exception.
+    AutoOpenExceptionStaticInAugmentation,
+    /// [`Route::AutoOpenTypeStaticAfterAugmentation`] for an exception.
+    AutoOpenExceptionStaticAfterAugmentation,
 }
 
 impl Route {
-    const ALL: [Route; 77] = [
+    const ALL: [Route; 81] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -430,6 +439,10 @@ impl Route {
         Route::AutoOpenOperatorCase,
         Route::AutoOpenExceptionInModule,
         Route::AutoOpenException,
+        Route::AutoOpenTypeStaticInAugmentation,
+        Route::AutoOpenTypeStaticAfterAugmentation,
+        Route::AutoOpenExceptionStaticInAugmentation,
+        Route::AutoOpenExceptionStaticAfterAugmentation,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -465,6 +478,10 @@ impl Route {
                 | Route::RecTypeGroupQualifier
                 | Route::AutoOpenTypeAccessor
                 | Route::AutoOpenOperatorCase
+                | Route::AutoOpenTypeStaticInAugmentation
+                | Route::AutoOpenTypeStaticAfterAugmentation
+                | Route::AutoOpenExceptionStaticInAugmentation
+                | Route::AutoOpenExceptionStaticAfterAugmentation
         )
     }
 
@@ -493,6 +510,11 @@ impl Route {
             | Route::RecTypeGroupQualifier => !kind.is_case(),
             // The probe is a fixed name, not the kind's: one kind runs it.
             Route::AutoOpenTypeAccessor | Route::AutoOpenOperatorCase => kind == Kind::OwnValue,
+            // The route writes its own binder of the name, a value.
+            Route::AutoOpenTypeStaticInAugmentation
+            | Route::AutoOpenTypeStaticAfterAugmentation
+            | Route::AutoOpenExceptionStaticInAugmentation
+            | Route::AutoOpenExceptionStaticAfterAugmentation => kind == Kind::OwnValue,
             _ => true,
         }
     }
@@ -880,6 +902,22 @@ impl Route {
             Route::AutoOpenException => (
                 vec![],
                 "module GridProbe\n@OWN\n[<AutoOpen>]\nexception GridEx of int with\n    @STATIC\n@USE\n",
+            ),
+            Route::AutoOpenTypeStaticInAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\ntype GridT() =\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridT with\n    static member GridUse() = @P 1\n",
+            ),
+            Route::AutoOpenTypeStaticAfterAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\ntype GridT() =\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridT with\n    static member GridUse() = 0\nlet probe = @P 1\n",
+            ),
+            Route::AutoOpenExceptionStaticInAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\nexception GridEx of int with\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridEx with\n    static member GridUse() = @P 1\n",
+            ),
+            Route::AutoOpenExceptionStaticAfterAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\nexception GridEx of int with\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridEx with\n    static member GridUse() = 0\nlet probe = @P 1\n",
             ),
             Route::ActivePattern => (vec![], "module GridProbe\n@OWN\n@AP\n@USE\n"),
         }

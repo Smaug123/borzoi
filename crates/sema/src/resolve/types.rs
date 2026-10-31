@@ -487,11 +487,16 @@ impl<'a> Resolver<'a> {
         // The type's own members see its cases, `[<RequireQualifiedAccess>]`
         // or not, so the case is one of its own, declining
         // ([`Self::resolve_type_member_bodies`]).
-        let type_key = id_text(type_name).to_string();
+        // Keyed by name and arity: a same-named type of another arity later
+        // in the group is the name's latest binder.
+        let key = (
+            id_text(type_name).to_string(),
+            defn.typar_decls().map_or(0, |t| t.typars().count()),
+        );
         if let Some(own) = self
-            .type_defs
+            .type_defs_by_arity
             .get(&self.container_path)
-            .and_then(|m| m.get(&type_key))
+            .and_then(|m| m.get(&key))
             .copied()
         {
             self.own_union_cases.entry(own).or_default().push((
@@ -1018,6 +1023,16 @@ impl<'a> Resolver<'a> {
         // A `rec` block's members see its later values and types, which the
         // source-ordered walk has not reached.
         if self.recursive_module_active {
+            return MemberScope::Unwalked;
+        }
+        // An `[<AutoOpen>]` type's or exception's statics enter scope again
+        // at its intrinsic augmentation, ahead of the module values, and the
+        // walk does not list them.
+        if (0..=self.container_path.len()).any(|k| {
+            let mut path = self.container_path[..k].to_vec();
+            path.push(name.clone());
+            self.auto_open_type_paths.contains(&path)
+        }) {
             return MemberScope::Unwalked;
         }
         // No type of the name in this file is generic or could declare union

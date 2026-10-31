@@ -583,6 +583,12 @@ impl Resolver<'_> {
         if !self.may_auto_open(exn.attributes()) {
             return;
         }
+        // Its later augmentations extend what it folds, as a type's do.
+        if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
+            let mut path = self.container_path.clone();
+            path.push(id_text(&name).to_string());
+            self.auto_open_type_paths.insert(path);
+        }
         let contribution = Contribution {
             values: declared_identifiers(exn.syntax()),
             ..Contribution::default()
