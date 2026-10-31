@@ -159,10 +159,10 @@ pub(super) struct SigScreen {
     /// ([`ProjectItems::namespace_shadow_names`]) rather than hiding the whole
     /// namespace behind a generation barrier.
     pub(super) namespace_unexported_names: Vec<(Vec<String>, String)>,
-    /// Every attribute name the signature writes, with and without the
-    /// `Attribute` suffix — what decides whether a referenced assembly's
-    /// undecoded abbreviation could be one of its attributes
-    /// ([`ProjectItems::trusts_attribute_spellings_of`]).
+    /// Every attribute name the signature writes, as written
+    /// ([`super::contributors::attribute_spellings`]) — what decides whether a
+    /// referenced assembly's undecoded abbreviation could be one of its
+    /// attributes ([`ProjectItems::trusts_attribute_spellings_of`]).
     pub(super) attribute_spellings: HashSet<String>,
 }
 
@@ -987,15 +987,18 @@ impl ProjectItems {
 
     /// Whether every attribute `screen`'s signature writes is the attribute
     /// it spells as far as `[<AutoOpen>]` and `[<RequireQualifiedAccess>]` go:
-    /// no file folded so far renames or impersonates either
-    /// ([`Self::core_attribute_alias_declared`]), no referenced assembly
-    /// certainly does, and none of the signature's spellings is an assembly
-    /// abbreviation whose target was not decoded.
+    /// the [`super::contributors::core_attribute_spellings_trusted`] rule over
+    /// all of the signature's spellings at once, with every file folded so
+    /// far ([`Self::core_attribute_alias_declared`]) and the fold's assembly
+    /// env ([`Self::assembly_core_attribute_aliases`]). It is the conjunction
+    /// of the rule over each of the signature's attribute lists, which is how
+    /// a file's own walk asks it.
     pub(super) fn trusts_attribute_spellings_of(&self, screen: &SigScreen) -> bool {
-        let aliases = &self.assembly_core_attribute_aliases;
-        !self.core_attribute_alias_declared
-            && !aliases.certain
-            && screen.attribute_spellings.is_disjoint(&aliases.possible)
+        super::contributors::core_attribute_spellings_trusted(
+            self.core_attribute_alias_declared,
+            &self.assembly_core_attribute_aliases,
+            screen.attribute_spellings.iter().map(String::as_str),
+        )
     }
 
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {

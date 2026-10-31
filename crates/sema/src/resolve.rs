@@ -1454,21 +1454,13 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
             Some((container.to_vec(), name.clone()))
         })
         .collect();
-    // Every attribute spelling the signature writes, with and without the
-    // `Attribute` suffix FCS adds when it looks one up.
-    let attribute_spellings: HashSet<String> = sig
-        .syntax()
-        .descendants()
-        .filter_map(AttributeList::cast)
-        .flat_map(|list| list.attributes().collect::<Vec<_>>())
-        .filter_map(|attr| attr.type_name().and_then(|li| li.idents().last()))
-        .flat_map(|ident| {
-            let name = id_text(&ident).to_string();
-            let stripped = name.strip_suffix("Attribute").map(str::to_string);
-            [Some(format!("{name}Attribute")), stripped, Some(name)]
-        })
-        .flatten()
-        .collect();
+    // Every attribute spelling the signature writes, as written: the trust
+    // rule expands each to the names FCS may look it up under.
+    let attribute_spellings: HashSet<String> = contributors::attribute_spellings(
+        sig.syntax().descendants().filter_map(AttributeList::cast),
+    )
+    .into_iter()
+    .collect();
     let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),

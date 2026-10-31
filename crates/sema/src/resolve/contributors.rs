@@ -39,7 +39,7 @@ use super::{
     Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation,
     type_defn_renames_core_attribute,
 };
-use crate::assembly_env::{AssemblyEnv, CustomOperationNames};
+use crate::assembly_env::{AssemblyEnv, CoreAttributeAliases, CustomOperationNames};
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
 
@@ -149,23 +149,77 @@ fn operator_case_names(node: &SyntaxNode) -> impl Iterator<Item = String> + '_ {
         .filter_map(|case| case.operator_name().map(|(name, _)| name.to_string()))
 }
 
+/// The written spelling of each attribute in `attrs`: the last segment of
+/// its type name, as the source writes it.
+pub(super) fn attribute_spellings(attrs: impl Iterator<Item = AttributeList>) -> Vec<String> {
+    attrs
+        .flat_map(|list| list.attributes().collect::<Vec<_>>())
+        .filter_map(|attr| attr.type_name())
+        .filter_map(|li| li.idents().last())
+        .map(|seg| id_text(&seg).to_string())
+        .collect()
+}
+
+/// Every type name an attribute written `spelling` may be looked up under:
+/// the spelling with the `Attribute` suffix FCS appends, the spelling itself,
+/// and — over-approximating, which only withdraws trust — the spelling with
+/// that suffix stripped.
+fn attribute_lookup_names(spelling: &str) -> [Option<String>; 3] {
+    [
+        Some(spelling.to_string()),
+        Some(format!("{spelling}Attribute")),
+        spelling.strip_suffix("Attribute").map(str::to_string),
+    ]
+}
+
+/// **The** rule for whether written attribute names can be taken at their
+/// word for `[<AutoOpen>]` and `[<RequireQualifiedAccess>]`
+/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]). FCS honours an attribute
+/// through an abbreviation (`type AO = AutoOpenAttribute`, then `[<AO>]` — it
+/// warns), so a spelling proves nothing once one may exist. Trusted when:
+///
+/// - `alias_declared` is false: no project file folded so far (the one being
+///   read included) declares a type that renames or impersonates either
+///   ([`super::type_defn_renames_core_attribute`]);
+/// - no referenced assembly certainly does ([`CoreAttributeAliases::certain`]);
+/// - no name any of `spellings` may be looked up under
+///   ([`attribute_lookup_names`]) is an assembly abbreviation whose target was
+///   not decoded ([`CoreAttributeAliases::possible`]).
+///
+/// Every caller — a file's own attribute lists
+/// ([`Resolver::attribute_spellings_trusted`]), a signature's contributions
+/// ([`signature_contributions`]) and a signature's screen
+/// ([`ProjectItems::trusts_attribute_spellings_of`]) — goes through here, so
+/// they cannot disagree about one set of inputs.
+pub(super) fn core_attribute_spellings_trusted<'s>(
+    alias_declared: bool,
+    aliases: &CoreAttributeAliases,
+    spellings: impl IntoIterator<Item = &'s str>,
+) -> bool {
+    !alias_declared
+        && !aliases.certain
+        && spellings.into_iter().all(|s| {
+            attribute_lookup_names(s)
+                .iter()
+                .flatten()
+                .all(|name| !aliases.possible.contains(name))
+        })
+}
+
 impl Resolver<'_> {
-    /// Whether written attribute names can be taken at their word for
-    /// `[<AutoOpen>]` and `[<RequireQualifiedAccess>]`: neither this file nor
-    /// an earlier one renames or impersonates either, no referenced assembly
-    /// certainly does, and none of `spellings` is an assembly abbreviation
-    /// whose target was not decoded. FCS honours an attribute through an
-    /// abbreviation (`type AO = AutoOpenAttribute`, then `[<AO>]` — it warns),
-    /// so a spelling proves nothing once one may exist.
+    /// Whether written attribute names in this file can be taken at their
+    /// word for `[<AutoOpen>]` and `[<RequireQualifiedAccess>]`: the
+    /// [`core_attribute_spellings_trusted`] rule, with this file's and every
+    /// earlier file's alias declarations.
     pub(super) fn attribute_spellings_trusted<'s>(
         &self,
-        mut spellings: impl Iterator<Item = &'s str>,
+        spellings: impl Iterator<Item = &'s str>,
     ) -> bool {
-        let aliases = self.assemblies.core_attribute_aliases();
-        !self.declares_core_attribute_alias
-            && !self.preceding.core_attribute_alias_declared
-            && !aliases.certain
-            && spellings.all(|s| !aliases.possible.contains(s))
+        core_attribute_spellings_trusted(
+            self.declares_core_attribute_alias || self.preceding.core_attribute_alias_declared,
+            self.assemblies.core_attribute_aliases(),
+            spellings,
+        )
     }
 
     /// Whether attribute lists *may* mark their target with the core
@@ -177,12 +231,7 @@ impl Resolver<'_> {
         attrs: impl Iterator<Item = AttributeList>,
         core: &str,
     ) -> bool {
-        let spellings: Vec<String> = attrs
-            .flat_map(|list| list.attributes().collect::<Vec<_>>())
-            .filter_map(|attr| attr.type_name())
-            .filter_map(|li| li.idents().last())
-            .map(|seg| id_text(&seg).to_string())
-            .collect();
+        let spellings = attribute_spellings(attrs);
         let long = format!("{core}Attribute");
         spellings.iter().any(|s| *s == core || *s == long)
             || (!spellings.is_empty()
@@ -641,16 +690,12 @@ pub(super) fn signature_contributions(
     rf.declares_core_attribute_alias = renames;
     let aliases = assemblies.core_attribute_aliases();
     let may_auto_open = |attrs: &mut dyn Iterator<Item = AttributeList>| {
-        let spellings: Vec<String> = attrs
-            .flat_map(|list| list.attributes().collect::<Vec<_>>())
-            .filter_map(|attr| attr.type_name())
-            .filter_map(|li| li.idents().last())
-            .map(|seg| id_text(&seg).to_string())
-            .collect();
-        let trusted = !renames
-            && !preceding.core_attribute_alias_declared
-            && !aliases.certain
-            && spellings.iter().all(|s| !aliases.possible.contains(s));
+        let spellings = attribute_spellings(attrs);
+        let trusted = core_attribute_spellings_trusted(
+            renames || preceding.core_attribute_alias_declared,
+            aliases,
+            spellings.iter().map(String::as_str),
+        );
         spellings
             .iter()
             .any(|s| s == "AutoOpen" || s == "AutoOpenAttribute")
@@ -679,6 +724,164 @@ pub(super) fn signature_contributions(
         if root_module || matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace) {
             let names = declared_identifiers(module.syntax());
             rf.contributions.root.names.extend(names);
+        }
+    }
+}
+
+#[cfg(test)]
+mod attribute_trust_tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::super::SourceFile;
+    use borzoi_cst::parser::parse_sig;
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// Spellings an attribute may be written with, and names an undecoded
+    /// assembly abbreviation may carry: small enough that they collide often,
+    /// with each suffix shape on both sides.
+    const SPELLINGS: &[&str] = &[
+        "AO",
+        "AOAttribute",
+        "AutoOpen",
+        "Obsolete",
+        "ObsoleteAttribute",
+        "Attribute",
+        "double",
+    ];
+
+    fn aliases_strategy() -> impl Strategy<Value = CoreAttributeAliases> {
+        (
+            any::<bool>(),
+            proptest::sample::subsequence(SPELLINGS, 0..=SPELLINGS.len()),
+        )
+            .prop_map(|(certain, possible)| CoreAttributeAliases {
+                certain,
+                possible: possible.into_iter().map(str::to_string).collect(),
+            })
+    }
+
+    /// What FCS may resolve an attribute written `s` to: `s` with the
+    /// `Attribute` suffix appended when it lacks one, and `s` itself.
+    fn fcs_lookup_names(s: &str) -> Vec<String> {
+        let mut names = vec![s.to_string()];
+        if !s.ends_with("Attribute") {
+            names.push(format!("{s}Attribute"));
+        }
+        names
+    }
+
+    /// The rule's discriminating case: an undecoded abbreviation
+    /// `AOAttribute` is what FCS finds for a written `[<AO>]`.
+    #[test]
+    fn a_suffixed_undecoded_abbreviation_withdraws_trust_in_its_short_spelling() {
+        let aliases = CoreAttributeAliases {
+            certain: false,
+            possible: ["AOAttribute".to_string()].into_iter().collect(),
+        };
+        assert!(!core_attribute_spellings_trusted(false, &aliases, ["AO"]));
+        assert!(core_attribute_spellings_trusted(
+            false,
+            &aliases,
+            ["Obsolete"]
+        ));
+    }
+
+    /// Generate a namespace signature whose types carry the given attribute
+    /// lists, one type per list.
+    fn signature_source(lists: &[Vec<(bool, &str)>]) -> String {
+        let mut src = String::from("namespace N\n\n");
+        for (i, list) in lists.iter().enumerate() {
+            if !list.is_empty() {
+                let attrs: Vec<String> = list
+                    .iter()
+                    .map(|(qualified, s)| {
+                        if *qualified {
+                            format!("Lib.{s}")
+                        } else {
+                            (*s).to_string()
+                        }
+                    })
+                    .collect();
+                src.push_str(&format!("[<{}>]\n", attrs.join("; ")));
+            }
+            src.push_str(&format!("type T{i} = int\n\n"));
+        }
+        src
+    }
+
+    proptest! {
+        /// The rule never trusts a set of spellings FCS could resolve to a
+        /// possible rename.
+        #[test]
+        fn the_rule_is_sound_against_fcs_lookup(
+            alias_declared in any::<bool>(),
+            aliases in aliases_strategy(),
+            spellings in proptest::collection::vec(proptest::sample::select(SPELLINGS), 0..4),
+        ) {
+            let fcs_may_rename = alias_declared
+                || aliases.certain
+                || spellings
+                    .iter()
+                    .flat_map(|s| fcs_lookup_names(s))
+                    .any(|name| aliases.possible.contains(&name));
+            if core_attribute_spellings_trusted(alias_declared, &aliases, spellings.iter().copied()) {
+                prop_assert!(!fcs_may_rename, "{spellings:?} {aliases:?}");
+            }
+        }
+
+        /// A signature's screen asks the rule about all of its spellings at
+        /// once; a file's walk asks it per attribute list. Where both apply —
+        /// the same signature, alias declarations and assembly env — the
+        /// screen trusts exactly when every one of its lists is trusted.
+        #[test]
+        fn the_screen_agrees_with_each_attribute_list(
+            alias_declared in any::<bool>(),
+            aliases in aliases_strategy(),
+            lists in proptest::collection::vec(
+                proptest::collection::vec(
+                    (any::<bool>(), proptest::sample::select(SPELLINGS)),
+                    0..3,
+                ),
+                1..4,
+            ),
+        ) {
+            let src = signature_source(&lists);
+            let parsed = parse_sig(&src);
+            prop_assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            let sig = SigFile::cast(parsed.root).expect("signature file");
+            let qnof = crate::qualified_names(
+                &[SourceFile::Sig(sig.clone())],
+                &[PathBuf::from("/p/N.fsi")],
+            );
+            let qnof = qnof.into_iter().next().expect("one qnof");
+            let surface = super::super::signature_surface(&sig, &qnof);
+            let items = ProjectItems {
+                core_attribute_alias_declared: alias_declared,
+                assembly_core_attribute_aliases: Arc::new(aliases.clone()),
+                ..ProjectItems::default()
+            };
+            let per_list = sig
+                .syntax()
+                .descendants()
+                .filter_map(AttributeList::cast)
+                .all(|list| {
+                    let spellings = attribute_spellings(std::iter::once(list));
+                    core_attribute_spellings_trusted(
+                        alias_declared,
+                        &aliases,
+                        spellings.iter().map(String::as_str),
+                    )
+                });
+            // A signature with no attribute at all is trusted per list
+            // vacuously; the screen still withdraws trust for a declared or
+            // certain alias, which no list is there to see.
+            let any_list = lists.iter().any(|l| !l.is_empty());
+            if any_list {
+                prop_assert_eq!(items.trusts_attribute_spellings_of(&surface.screen), per_list, "{}", src);
+            }
         }
     }
 }
