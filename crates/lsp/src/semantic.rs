@@ -1193,7 +1193,7 @@ impl SemanticState {
     /// discipline).
     ///
     /// `docs` is the live buffer map ([`crate::server::State::docs`]); a
-    /// missing entry falls through to `std::fs::read_to_string`. A file we
+    /// missing entry falls through to [`crate::disk_text::read`]. A file we
     /// can read neither from the buffer nor from disk is skipped — never an
     /// error, never a panic.
     pub fn parses_for_project<'a>(
@@ -3084,7 +3084,7 @@ fn read_text(path: &Path, docs: &HashMap<Uri, String>) -> Option<String> {
             return Some(text.clone());
         }
     }
-    std::fs::read_to_string(path).ok()
+    crate::disk_text::read(path).ok()
 }
 
 /// A file's identity *as a file*: its real path, or the literal path when

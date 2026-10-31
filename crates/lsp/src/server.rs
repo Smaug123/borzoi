@@ -1610,9 +1610,26 @@ pub(crate) fn grouped_for_uri_linked(
             // diagnostic neither pins nor reads the project cache, and the graph
             // matches the buffer since buffer == disk); the diagnostics are
             // entry-anchored, so they land in this same-file group.
-            if std::fs::read_to_string(&path).is_ok_and(|disk| disk == text) {
+            //
+            // The graph is evaluated from the disk text without its byte-order
+            // mark ([`crate::disk_text`]), so a buffer matches disk when their
+            // contents do, and its spans are in the content's coordinates: a
+            // buffer that keeps a mark has every line-0 column one further on.
+            let content = crate::disk_text::content(text);
+            if crate::disk_text::read(&path).is_ok_and(|disk| disk == content) {
                 let graph = workspace.project_graph(&path);
-                diagnostics.extend(fsproj_diagnostics::graph_diagnostics(text, &path, &graph));
+                let mut graph_diagnostics =
+                    fsproj_diagnostics::graph_diagnostics(content, &path, &graph);
+                if content.len() != text.len() {
+                    for d in &mut graph_diagnostics {
+                        for p in [&mut d.range.start, &mut d.range.end] {
+                            if p.line == 0 {
+                                p.character += 1;
+                            }
+                        }
+                    }
+                }
+                diagnostics.extend(graph_diagnostics);
             }
             Some(vec![FileDiagnostics {
                 file: None,
@@ -2295,6 +2312,54 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("project reference cycle")),
             "expected a cycle warning on A.fsproj: {diags:#?}"
+        );
+    }
+
+    /// A byte-order mark is no content: a saved project is in sync with its
+    /// buffer whichever of the two starts with one, so the on-disk cycle
+    /// surfaces in every combination — at the buffer's own columns, which count
+    /// a mark the client sent and nothing else.
+    #[test]
+    fn fsproj_cycle_ignores_a_byte_order_mark_on_either_side() {
+        let a_text =
+            r#"<Project><ItemGroup><ProjectReference Include="B.fsproj" /></ItemGroup></Project>"#;
+        let cycle_ranges = |disk_bom: &str, buffer_bom: &str| {
+            let tmp = TempDir::new().unwrap();
+            let a = tmp.path().join("A.fsproj");
+            let b = tmp.path().join("B.fsproj");
+            fs::write(&a, format!("{disk_bom}{a_text}")).unwrap();
+            fs::write(
+                &b,
+                r#"<Project><ItemGroup><ProjectReference Include="A.fsproj" /></ItemGroup></Project>"#,
+            )
+            .unwrap();
+            let mut ws = Workspace::default();
+            let buffer = format!("{buffer_bom}{a_text}");
+            let groups = grouped_for_uri(&Uri::from_file_path(&a).unwrap(), &buffer, &mut ws)
+                .expect("dispatch returned Some");
+            only_same_file(groups)
+                .into_iter()
+                .filter(|d| d.message.contains("project reference cycle"))
+                .map(|d| d.range)
+                .collect::<Vec<_>>()
+        };
+        let plain = cycle_ranges("", "");
+        assert_eq!(plain.len(), 1, "{plain:?}");
+        let shifted: Vec<_> = plain
+            .iter()
+            .map(|r| {
+                let mut r = *r;
+                r.start.character += 1;
+                r.end.character += 1;
+                r
+            })
+            .collect();
+        assert_eq!(cycle_ranges("\u{feff}", ""), plain, "mark on disk only");
+        assert_eq!(cycle_ranges("", "\u{feff}"), shifted, "mark in buffer only");
+        assert_eq!(
+            cycle_ranges("\u{feff}", "\u{feff}"),
+            shifted,
+            "mark on both"
         );
     }
 
