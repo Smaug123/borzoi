@@ -265,6 +265,29 @@ enum Route {
     AutoOpenAliasedStructRecord,
     /// The same record, declared directly in the probe's module.
     AliasedStructRecord,
+    /// A record of the name whose only attribute is a trusted
+    /// `[<RequireQualifiedAccess>]`: provably not a struct, so it never takes
+    /// the slot.
+    RqaRecord,
+    /// `type N = N` under a trusted `[<RequireQualifiedAccess>]`: a union
+    /// (`TyconCoreAbbrevThatIsReallyAUnion`) that is provably not a struct,
+    /// and whose case is not bare, so it adds nothing.
+    RqaSelfUnion,
+    /// `type N = N` under an attribute spelled `RQA` that a same-file
+    /// abbreviation makes `StructAttribute`.
+    AliasedStructSelfUnion,
+    /// `type N = N` under `[<Struct; RequireQualifiedAccess>]`.
+    StructRqaSelfUnion,
+    /// `type N = N` under `[<RQA; RequireQualifiedAccess>]`, `RQA` an
+    /// earlier file's abbreviation of `StructAttribute`.
+    EarlierFileStructAliasSelfUnion,
+    /// The same, the earlier file's abbreviation declared in its signature
+    /// too.
+    SignatureStructAliasSelfUnion,
+    /// `type N = N` under `[<RequireQualifiedAccess>]`, a same-file
+    /// abbreviation of `StructAttribute` named so: neither spelling is
+    /// trusted.
+    ImpersonatedRqaSelfUnion,
     /// An abbreviation of a constructible type, named so.
     ConstructibleAbbrev,
     /// A generic class of the name, then a non-generic union of it: both take
@@ -329,7 +352,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 70] = [
+    const ALL: [Route; 77] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -378,6 +401,13 @@ impl Route {
         Route::ConstructibleType,
         Route::AutoOpenAliasedStructRecord,
         Route::AliasedStructRecord,
+        Route::RqaRecord,
+        Route::RqaSelfUnion,
+        Route::AliasedStructSelfUnion,
+        Route::StructRqaSelfUnion,
+        Route::EarlierFileStructAliasSelfUnion,
+        Route::SignatureStructAliasSelfUnion,
+        Route::ImpersonatedRqaSelfUnion,
         Route::ConstructibleAbbrev,
         Route::GenericClassThenUnion,
         Route::EarlierNamespaceCtor,
@@ -418,6 +448,8 @@ impl Route {
                 | Route::TypeGroupParameter
                 | Route::TypeGroupLocalLet
                 | Route::TypeGroupLocalHead
+                | Route::RqaRecord
+                | Route::RqaSelfUnion
         )
     }
 
@@ -444,7 +476,14 @@ impl Route {
             | Route::ActivePattern
             | Route::RqaAliased
             | Route::EarlierNamespaceRqaAliased
-            | Route::AutoOpenBarlessUnion => kind.is_case(),
+            | Route::AutoOpenBarlessUnion
+            // `type N = N` makes `N` a union case, which must be capitalised.
+            | Route::RqaSelfUnion
+            | Route::AliasedStructSelfUnion
+            | Route::StructRqaSelfUnion
+            | Route::EarlierFileStructAliasSelfUnion
+            | Route::SignatureStructAliasSelfUnion
+            | Route::ImpersonatedRqaSelfUnion => kind.is_case(),
             // A capitalised parameter is a pattern, not a binder.
             Route::TypeGroupParameter
             | Route::TypeGroupLocalLet
@@ -719,6 +758,46 @@ impl Route {
             Route::AliasedStructRecord => (
                 vec![],
                 "module GridProbe\n@OWN\ntype GridS = StructAttribute\n[<GridS>]\ntype @NAME = { GridF: int }\n@USE\n",
+            ),
+            Route::RqaRecord => (
+                vec![],
+                "module GridProbe\n@OWN\n[<RequireQualifiedAccess>]\ntype @NAME = { GridF: int }\n@USE\n",
+            ),
+            Route::RqaSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\n[<RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::AliasedStructSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\ntype RQA = StructAttribute\n[<RQA>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::StructRqaSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\n[<Struct; RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::EarlierFileStructAliasSelfUnion => (
+                vec![(
+                    "GridAlias.fs",
+                    "module GridAlias\ntype RQA = StructAttribute\n",
+                )],
+                "module GridProbe\nopen GridAlias\n@OWN\n[<RQA; RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::SignatureStructAliasSelfUnion => (
+                vec![
+                    (
+                        "GridAlias.fsi",
+                        "module GridAlias\ntype RQA = StructAttribute\n",
+                    ),
+                    (
+                        "GridAlias.fs",
+                        "module GridAlias\ntype RQA = StructAttribute\n",
+                    ),
+                ],
+                "module GridProbe\nopen GridAlias\n@OWN\n[<RQA; RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::ImpersonatedRqaSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\ntype RequireQualifiedAccess = StructAttribute\n[<RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
             ),
             Route::ConstructibleType => (vec![], "module GridProbe\n@OWN\n@CTOR\n@USE\n"),
             Route::ConstructibleAbbrev => (vec![], "module GridProbe\n@OWN\n@OBJ\n@USE\n"),

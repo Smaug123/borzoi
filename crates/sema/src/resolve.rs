@@ -126,6 +126,9 @@ pub fn resolve_file(
         if custom_operations::type_defn_renames_custom_operation(&defn) {
             r.contributions.declares_custom_operation_alias = true;
         }
+        if type_defn_renames_attribute(&defn, crate::assembly_env::SLOT_ATTRIBUTE_NAMES) {
+            r.contributions.declares_slot_attribute_alias = true;
+        }
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
             if !is_type_augmentation(&defn) {
@@ -2432,8 +2435,12 @@ pub(crate) fn collect_nested_module_names(
 /// written attribute names. The definition's own attribute lists are not
 /// read: using an attribute renames nothing.
 pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
-    let spelled_core =
-        |t: &SyntaxToken| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(t));
+    type_defn_renames_attribute(defn, crate::assembly_env::CORE_ATTRIBUTE_NAMES)
+}
+
+/// [`type_defn_renames_core_attribute`], for the attributes written `names`.
+pub(super) fn type_defn_renames_attribute(defn: &TypeDefn, names: &[&str]) -> bool {
+    let spelled_core = |t: &SyntaxToken| names.contains(&&*id_text(t));
     let named_core = defn
         .long_id()
         .and_then(|li| li.idents().last())

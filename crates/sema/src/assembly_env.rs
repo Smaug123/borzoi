@@ -137,6 +137,13 @@ pub(crate) const CORE_ATTRIBUTE_NAMES: &[&str] = &[
     "RequireQualifiedAccessAttribute",
 ];
 
+/// The written names of the FSharp.Core attributes that decide whether a
+/// record, a union or a self-named abbreviation (`type T = T`, a union) takes
+/// FCS's unqualified slot: `[<Struct>]` makes it a struct, and `[<Measure>]`
+/// keeps `type T = T` from being a union at all.
+pub(crate) const SLOT_ATTRIBUTE_NAMES: &[&str] =
+    &["Struct", "StructAttribute", "Measure", "MeasureAttribute"];
+
 /// Index of a source assembly in [`AssemblyEnv::assemblies`]. Identifies which
 /// referenced DLL an interned entity came from, so a resolved member can name
 /// the file to read its portable PDB from (go-to-definition).
@@ -805,6 +812,8 @@ pub struct AssemblyEnv {
     extension_custom_operation: std::sync::OnceLock<CustomOperationNames>,
     /// Memo for [`Self::custom_operation_aliases`].
     custom_operation_alias: std::sync::OnceLock<CoreAttributeAliases>,
+    /// Memo for [`Self::slot_attribute_aliases`].
+    slot_attribute_alias: std::sync::OnceLock<CoreAttributeAliases>,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -3431,6 +3440,14 @@ impl AssemblyEnv {
         self.custom_operation_alias.get_or_init(|| {
             self.attribute_aliases(&["CustomOperation", "CustomOperationAttribute"])
         })
+    }
+
+    /// What the referenced assemblies say about renaming the attributes that
+    /// decide a record's or union's slot ([`SLOT_ATTRIBUTE_NAMES`]), as
+    /// [`Self::core_attribute_aliases`] says it of `[<AutoOpen>]`.
+    pub(crate) fn slot_attribute_aliases(&self) -> &CoreAttributeAliases {
+        self.slot_attribute_alias
+            .get_or_init(|| self.attribute_aliases(SLOT_ATTRIBUTE_NAMES))
     }
 
     /// The scan behind [`Self::core_attribute_aliases`], for the FSharp.Core

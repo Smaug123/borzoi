@@ -1,7 +1,8 @@
 //! Module/namespace declaration walking and export construction.
 
 use borzoi_cst::syntax::{
-    AstNode, ModuleDecl, NestedModuleDecl, SyntaxToken, TypeDefn, TypeDefnRepr,
+    AstNode, Attribute, ModuleDecl, NestedModuleDecl, SyntaxToken, Type, TypeAbbrev, TypeDefn,
+    TypeDefnRepr,
 };
 
 use crate::def::DefId;
@@ -79,44 +80,93 @@ fn merge_auto_open_shadow(
         .or_insert(new);
 }
 
-/// Classify whether `defn`'s name enters FCS's unqualified slot (see
-/// [`SlotClass`]): `[<Struct>]` forces a struct type regardless of repr
-/// (probe M20m); enums are structs (M20b); an object model is class/struct
-/// when explicitly kinded or carrying a primary constructor (M20a), an
-/// explicit interface never enters (M20o), and an unspecified kind is
-/// inference-dependent; unions/records never enter (M20k/M20l); everything
-/// else — abbreviations (target-chased, M20n), delegates (langversion-gated),
-/// bodyless/IL reprs — is statically undecidable.
-pub(super) fn type_slot_class(defn: &TypeDefn) -> SlotClass {
-    match defn.repr() {
-        Some(TypeDefnRepr::Enum(_)) => SlotClass::Evicts,
-        Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => {
-            // A genuine `[<Struct>]` union/record IS a struct type and evicts
-            // (probe M20m) — but sema cannot resolve attribute types. A
-            // CUSTOM attribute named `Struct` would be mistaken for it while
-            // FCS keeps the type ordinary (codex round 7), and an
-            // abbreviation can spell `StructAttribute` any way at all
-            // (`type S = StructAttribute`, then `[<S>]`). So an attributed
-            // union/record is Unknown — defer in contest, never a wrong
-            // target either way (the genuine-marker resolve is the
-            // availability price).
-            if defn.attributes().next().is_some() {
-                SlotClass::Unknown
-            } else {
-                SlotClass::Keeps
+impl Resolver<'_> {
+    /// Classify whether `defn`'s name enters FCS's unqualified slot (see
+    /// [`SlotClass`]): `[<Struct>]` forces a struct type regardless of repr
+    /// (probe M20m); enums are structs (M20b); an object model is class/struct
+    /// when explicitly kinded or carrying a primary constructor (M20a), an
+    /// explicit interface never enters (M20o), and an unspecified kind is
+    /// inference-dependent; unions/records never enter (M20k/M20l), and nor
+    /// does `type T = T`, which FCS reads as a union whatever is in scope
+    /// (`TyconCoreAbbrevThatIsReallyAUnion`); everything else — abbreviations
+    /// (target-chased, M20n), delegates (langversion-gated), bodyless/IL
+    /// reprs — is statically undecidable.
+    pub(super) fn type_slot_class(&self, defn: &TypeDefn) -> SlotClass {
+        match defn.repr() {
+            Some(TypeDefnRepr::Enum(_)) => SlotClass::Evicts,
+            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => {
+                self.union_like_slot_class(defn)
             }
-        }
-        Some(TypeDefnRepr::ObjectModel(om)) => {
-            if om.is_interface() {
-                SlotClass::Keeps
-            } else if om.is_class() || om.is_struct() || defn.implicit_ctor().is_some() {
-                SlotClass::Evicts
-            } else {
-                SlotClass::Unknown
+            Some(TypeDefnRepr::Abbrev(a)) if abbrev_names_itself(defn, &a) => {
+                self.union_like_slot_class(defn)
             }
+            Some(TypeDefnRepr::ObjectModel(om)) => {
+                if om.is_interface() {
+                    SlotClass::Keeps
+                } else if om.is_class() || om.is_struct() || defn.implicit_ctor().is_some() {
+                    SlotClass::Evicts
+                } else {
+                    SlotClass::Unknown
+                }
+            }
+            _ => SlotClass::Unknown,
         }
-        _ => SlotClass::Unknown,
     }
+
+    /// A record's or union's slot class: [`SlotClass::Keeps`] unless one of
+    /// its attributes may be `[<Struct>]` (a genuine struct union or record
+    /// evicts, probe M20m) or `[<Measure>]` (which keeps `type T = T` from
+    /// being a union). An attribute may be either when it is spelled like
+    /// one, or when written names cannot be trusted: an abbreviation can spell
+    /// `StructAttribute` any way at all (`type S = StructAttribute`, then
+    /// `[<S>]`), and this file, an earlier one or a referenced assembly may
+    /// declare one. Otherwise the attribute is provably something else,
+    /// `[<RequireQualifiedAccess>]` say, and the type keeps the slot.
+    fn union_like_slot_class(&self, defn: &TypeDefn) -> SlotClass {
+        let attrs: Vec<_> = defn
+            .attributes()
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .collect();
+        if attrs.is_empty() {
+            return SlotClass::Keeps;
+        }
+        let aliases = self.assemblies.slot_attribute_aliases();
+        let trusted = !self.contributions.declares_slot_attribute_alias
+            && !self.preceding.slot_attribute_alias_declared
+            && !aliases.certain;
+        let may_change_slot = |attr: &Attribute| {
+            let Some(last) = attr.type_name().and_then(|li| li.idents().last()) else {
+                // An attribute whose name cannot be read may be either.
+                return true;
+            };
+            let spelled = id_text(&last);
+            !trusted
+                || crate::assembly_env::SLOT_ATTRIBUTE_NAMES.contains(&&*spelled)
+                || aliases.possible.contains(&*spelled)
+        };
+        if attrs.iter().any(may_change_slot) {
+            SlotClass::Unknown
+        } else {
+            SlotClass::Keeps
+        }
+    }
+}
+
+/// Whether `defn` is `type T = T`: an abbreviation whose target is a bare
+/// identifier spelled like the type's own name, which FCS reads as a union
+/// with the nullary case `T` (`TyconCoreAbbrevThatIsReallyAUnion`). Only an
+/// unparenthesised target counts, as only that one is FCS's union shape.
+fn abbrev_names_itself(defn: &TypeDefn, abbrev: &TypeAbbrev) -> bool {
+    let Some(Type::LongIdent(target)) = abbrev.ty() else {
+        return false;
+    };
+    let (Some(target), Some(name)) = (
+        target.long_ident().and_then(single_ident),
+        defn.long_id().and_then(|li| li.idents().last()),
+    ) else {
+        return false;
+    };
+    id_text(&target) == id_text(&name)
 }
 
 impl<'a> Resolver<'a> {
@@ -513,7 +563,7 @@ impl<'a> Resolver<'a> {
                         if type_auto_open {
                             self.note_hidden_value_module(self.container_path.clone());
                         }
-                        let slot = type_slot_class(defn);
+                        let slot = self.type_slot_class(defn);
                         // The type's access-root (own `private` plus any enclosing
                         // `private` module) — a same-file module-qualified `A.Foo.Red`
                         // from an inaccessible site does not resolve the type's

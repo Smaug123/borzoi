@@ -350,6 +350,10 @@ pub struct ProjectItems {
     /// `CustomOperationAttribute` or an abbreviation of it
     /// ([`FileContributions::declares_custom_operation_alias`]).
     pub(super) custom_operation_alias_declared: bool,
+    /// Whether some earlier file declares a type spelled like
+    /// `StructAttribute` or `MeasureAttribute` or an abbreviation of one
+    /// ([`FileContributions::declares_slot_attribute_alias`]).
+    pub(super) slot_attribute_alias_declared: bool,
     /// Whether some file folded so far declares a type spelled like
     /// `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`, or an abbreviation of
     /// one ([`ResolvedFile::declares_core_attribute_alias`]).
@@ -1174,6 +1178,7 @@ impl ProjectItems {
         self.custom_operations
             .merge(&file.contributions.custom_operations);
         self.custom_operation_alias_declared |= file.contributions.declares_custom_operation_alias;
+        self.slot_attribute_alias_declared |= file.contributions.declares_slot_attribute_alias;
         for (path, c) in &file.contributions.module_opens {
             self.module_open_contributions
                 .entry(path.clone())

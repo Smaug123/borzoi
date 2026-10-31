@@ -31,7 +31,6 @@ use borzoi_cst::syntax::{
     TypeDefnRepr, TypeDefnsDecl, UnionCase,
 };
 
-use super::decls::type_slot_class;
 use super::model::SlotClass;
 use super::model::{ProjectItems, ResolvedFile};
 use super::state::{MarkReach, ScopeEntry};
@@ -109,6 +108,11 @@ pub(super) struct FileContributions {
     /// `CustomOperationAttribute` or an abbreviation of it, after which any
     /// attribute may be one.
     pub(super) declares_custom_operation_alias: bool,
+    /// Whether the file declares a type spelled like `StructAttribute` or
+    /// `MeasureAttribute` or an abbreviation of one
+    /// ([`crate::assembly_env::SLOT_ATTRIBUTE_NAMES`]), after which any
+    /// attribute may be one ([`Resolver::type_slot_class`]).
+    pub(super) declares_slot_attribute_alias: bool,
 }
 
 /// Every name anything declared in `node` can bear: each identifier written
@@ -319,7 +323,7 @@ impl Resolver<'_> {
     /// through the walk's type tables, which hold no contributor's.
     fn type_names(&self, defn: &TypeDefn) -> Contribution {
         let mut out = Contribution::default();
-        if type_slot_class(defn) != SlotClass::Keeps
+        if self.type_slot_class(defn) != SlotClass::Keeps
             && let Some(name) = defn.long_id().and_then(|li| li.idents().last())
         {
             out.values.insert(id_text(&name).to_string());
@@ -678,6 +682,15 @@ pub(super) fn signature_contributions(
     let custom_operation_alias =
         super::custom_operations::signature_renames_custom_operation(sig.syntax());
     rf.contributions.declares_custom_operation_alias = custom_operation_alias;
+    // A signature that aliases `StructAttribute` lets a later file's
+    // attribute be `[<Struct>]` whatever it is spelled.
+    rf.contributions.declares_slot_attribute_alias = sig
+        .syntax()
+        .descendants()
+        .filter_map(TypeDefn::cast)
+        .any(|defn| {
+            super::type_defn_renames_attribute(&defn, crate::assembly_env::SLOT_ATTRIBUTE_NAMES)
+        });
     let co_aliases = assemblies.custom_operation_aliases();
     let co_trusted = !custom_operation_alias
         && !preceding.custom_operation_alias_declared
