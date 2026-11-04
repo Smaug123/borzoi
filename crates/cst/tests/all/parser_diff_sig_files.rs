@@ -2577,3 +2577,15 @@ fn nameless_namespace_in_sig_stays_a_parse_error() {
         );
     }
 }
+
+/// A generic member signature's own type parameters and their inside-`<>`
+/// `when` clause (`SynValSig.explicitTypeParams`), which the resolver reads.
+#[test]
+fn diff_sig_member_sig_typars_and_constraints() {
+    assert_sig_asts_match(
+        "module M\ntype T =\n  abstract M<'U when 'U : comparison> : 'U -> unit\n",
+    );
+    assert_sig_asts_match(
+        "module M\ntype T =\n  member M<'U when 'U :> System.IDisposable> : 'U -> int\n",
+    );
+}

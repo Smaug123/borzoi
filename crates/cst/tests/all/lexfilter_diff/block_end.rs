@@ -1,13 +1,9 @@
 //! Self-pinned `Virtual::BlockEnd` placement.
 //!
 //! The lex-filter differential ([`crate::common::assert_filtered_streams_match`])
-//! *drops* `Virtual::BlockEnd` on our side: FCS's outer LexFilter wrapper
-//! (`LexFilter.fs`, `GetToken`) swallows every `OBLOCKEND` and re-inserts
-//! `OBLOCKEND_COMING_SOON`/`_IS_HERE` tokens that carry no `FSharpTokenKind`
-//! arm (→ `FSharpTokenKind.None`) and are filtered out of the public token
-//! stream, so `tokens-filtered` never surfaces a block end. The differential is
-//! therefore structurally blind to `BlockEnd` — yet the parser's correctness
-//! turns on exactly where it lands:
+//! compares block ends against FCS (`OBLOCKEND_IS_HERE` in FCS's internal
+//! stream). These tests pin, against our own filter output, the placements the
+//! parser's correctness turns on:
 //!
 //! * the `and`-chain gate (`parse_type_defn`'s `closed_block`) admits a
 //!   continuation only once the previous body's `BlockEnd` has arrived;
@@ -16,11 +12,8 @@
 //!   whether the body-close `BlockEnd` lands *after* the member (valid,
 //!   in-block) or *before* it (FCS-invalid, `=`-line form).
 //!
-//! Those are otherwise pinned only *indirectly*, via the parser AST diffs. These
-//! tests pin the placement *directly* against our own filter output — the
-//! [`super::computation_expr::and_bang_emits_virtual`] idiom for a virtual the
-//! differential cannot see — so a regression that moves `BlockEnd` fails here
-//! loudly rather than (at best) as a downstream AST divergence.
+//! The differential says where FCS puts a block end; these say which of those
+//! placements a parser rule depends on, so a regression names the rule.
 
 use borzoi_cst::lexer::{Token, lex};
 use borzoi_cst::lexfilter::{FilteredToken, Virtual, filter};
