@@ -137,6 +137,13 @@ pub(crate) const CORE_ATTRIBUTE_NAMES: &[&str] = &[
     "RequireQualifiedAccessAttribute",
 ];
 
+/// See [`AssemblyEnv::augmentation_member_names`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AugmentationNames {
+    pub(crate) names: HashSet<String>,
+    pub(crate) unlisted: bool,
+}
+
 /// Index of a source assembly in [`AssemblyEnv::assemblies`]. Identifies which
 /// referenced DLL an interned entity came from, so a resolved member can name
 /// the file to read its portable PDB from (go-to-definition).
@@ -193,6 +200,26 @@ impl MemberIndex {
     }
 
     /// The position of the named member within its entity's `members` list.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// An index into a union's [`UnionCases::Known`] list. Pairs with the owning
+/// union's [`EntityHandle`] to name one of its cases
+/// ([`Resolution::UnionCase`](crate::Resolution::UnionCase)); only
+/// [`AssemblyEnv::union_case_index`] makes one, so it never indexes a list
+/// that is [`UnionCases::Unknowable`] or a union whose signature is not
+/// authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnionCaseIndex(u32);
+
+impl UnionCaseIndex {
+    fn new(index: usize) -> Self {
+        UnionCaseIndex(u32::try_from(index).expect("more than u32::MAX cases on one union"))
+    }
+
+    /// The position of the named case within its union's case list.
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -447,6 +474,24 @@ pub struct OpenFoldName {
     /// the case rather than being skipped as a plain value. `false` for every
     /// case / type-shadow entry.
     pub constant_pattern: bool,
+    /// The type whose **tycon-tier** step pushed this entry: the type itself for
+    /// a type-name contestant, the union for one of its cases, the exception for
+    /// its constructor. `None` for a val and for an active-pattern tag, which the
+    /// vals step pushes. It is what lets a union case be told from an
+    /// exception constructor once both are opaque, and a union's own type-name
+    /// entry from a sibling type that happens to share a case's name.
+    pub from_type: Option<EntityHandle>,
+}
+
+impl OpenFoldName {
+    /// Whether this entry is a case of a union (and not an exception
+    /// constructor or an active-pattern tag), whatever its target.
+    pub fn is_union_case(&self, env: &AssemblyEnv) -> bool {
+        self.is_case
+            && self
+                .from_type
+                .is_some_and(|h| env.entity(h).kind == EntityKind::Union)
+    }
 }
 
 /// The target of an [`OpenFoldName`].
@@ -459,12 +504,19 @@ pub enum OpenFoldTarget {
     },
     /// A whole entity — an exception's constructor *is* its type.
     Entity(EntityHandle),
-    /// In scope, shadowing, but naming nothing (the consumer defers): union
-    /// cases and active-pattern tags (no member exists to point at), nested
-    /// type names (FCS's unqualified constructor slot — modelled only as a
-    /// contestant), an auto-open *type*'s statics, an overload set, a
-    /// cross-assembly collision. Carries why, for the decline census
-    /// ([`crate::ResolvedFile::decline_site`]) at the use the entry declines.
+    /// A case of an authoritative union ([`AssemblyEnv::union_case_index`]).
+    UnionCase {
+        union: EntityHandle,
+        case: UnionCaseIndex,
+    },
+    /// In scope, shadowing, but naming nothing (the consumer defers):
+    /// active-pattern tags (no member exists to point at), a union case the
+    /// fold cannot order against a same-named name or whose union is not
+    /// authoritative, nested type names (FCS's unqualified constructor slot —
+    /// modelled only as a contestant), an auto-open *type*'s statics, an
+    /// overload set, a cross-assembly collision. Carries why, for the decline
+    /// census ([`crate::ResolvedFile::decline_site`]) at the use the entry
+    /// declines.
     Opaque(DeclineCause),
 }
 
@@ -534,6 +586,51 @@ fn active_pattern_banana(name: &str) -> Option<(Vec<&str>, ActivePatternShape)> 
         arity: None,
     };
     Some((tags, shape))
+}
+
+/// Demote to [`OpenFoldTarget::Opaque`] every union case of one fold surface
+/// whose order against a same-named entry of the **same** surface the fold
+/// cannot vouch for.
+///
+/// The surface lists entries in FCS's fold order, and between the steps of one
+/// container that order is certain: exceptions, then the tycon tier, then the
+/// vals, then the `[<AutoOpen>]` submodules. *Within* the tycon tier it is
+/// declaration order, which the projection reads from metadata while FCS reads
+/// it from the signature pickle, and nothing guarantees the two agree. So a
+/// case keeps its definite target only when no same-named entry could be
+/// ordered against it that way:
+///
+/// - **another case** of the name — an exception, a second union's case, an
+///   active-pattern tag — anywhere in the surface, since each would contest the
+///   constructor namespace and the winner is a fold-order question;
+/// - an **earlier tycon-tier entry** of the name — a sibling type's name, which
+///   takes FCS's unqualified constructor slot. The union's *own* type-name entry
+///   is exempt: FCS adds a type's name before its cases
+///   (`AddPartsOfTyconRefToNameEnv`), so `type SynBinding = SynBinding of …`
+///   binds the case.
+///
+/// A later val of the name is not a contest the fold leaves open: vals fold
+/// after the tycon tier, and the val wins by position on both sides.
+fn demote_unordered_union_cases(out: &mut OpenFoldSurface) {
+    let unordered: Vec<usize> = out
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let OpenFoldTarget::UnionCase { union, .. } = e.target else {
+                return None;
+            };
+            let contested = out.entries.iter().enumerate().any(|(j, other)| {
+                j != i
+                    && other.name == e.name
+                    && (other.is_case || (j < i && other.from_type.is_some_and(|t| t != union)))
+            });
+            contested.then_some(i)
+        })
+        .collect();
+    for i in unordered {
+        out.entries[i].target = OpenFoldTarget::Opaque(DeclineCause::AssemblyCaseUnordered);
+    }
 }
 
 /// Whether a type of `kind` (with IL value-type-ness `is_struct`) occupies FCS's
@@ -903,6 +1000,12 @@ pub struct AssemblyEnv {
     /// Not the *enclosing* namespace, which is a property of the file being
     /// resolved rather than of the closure, so it has no fixed answer to cache.
     bare_value_index: std::sync::OnceLock<BareValueIndex>,
+    /// Lazily-built [`Self::implicit_union_cases`]. A property of the closure,
+    /// like [`Self::bare_value_index`], and invalidated with it.
+    implicit_union_cases: std::sync::OnceLock<Vec<OpenFoldName>>,
+    /// Lazily-built [`Self::augmentation_member_names`]. The entities are
+    /// fixed once the env is built, so it is never invalidated.
+    augmentation_members: std::sync::OnceLock<AugmentationNames>,
     /// Lazily-built index behind
     /// [`Self::contested_child_namespace_declares`]: the first segments of every
     /// child namespace a contested auto-open's *contributor* declares under it,
@@ -2359,6 +2462,44 @@ impl AssemblyEnv {
         self.nodes.is_empty()
     }
 
+    /// The names every F# extension member (`type T with member …`) of every
+    /// referenced assembly may bear, on whatever type: what an `open type`
+    /// may bring beside the type's own statics, when the extension is in
+    /// scope. Keyed by name alone, since nothing in a member's IL name says
+    /// for certain which type it extends (`[<CompiledName>]` may name any).
+    /// A name is the member's source name, each segment of its IL name, and
+    /// the name an accessor carries (`get_P` is `P`'s). `unlisted` when a
+    /// module dropped a member the projection could not decode, which may be
+    /// an extension of any name.
+    pub(crate) fn augmentation_member_names(&self) -> &AugmentationNames {
+        self.augmentation_members.get_or_init(|| {
+            let mut out = AugmentationNames::default();
+            for node in &self.nodes {
+                let entity = &node.entity;
+                if entity.kind == EntityKind::Module && !entity.skipped_members.is_empty() {
+                    out.unlisted = true;
+                }
+                for member in &entity.members {
+                    let Member::Method(m) = member else { continue };
+                    if m.augmentation == Augmentation::No {
+                        continue;
+                    }
+                    let il = m.name.split('.').filter(|seg| *seg != "Static");
+                    for name in std::iter::once(member_name(member)).chain(il) {
+                        out.names.insert(name.to_string());
+                        if let Some(own) = ["get_", "set_", "add_", "remove_"]
+                            .iter()
+                            .find_map(|p| name.strip_prefix(p))
+                        {
+                            out.names.insert(own.to_string());
+                        }
+                    }
+                }
+            }
+            out
+        })
+    }
+
     /// Every interned entity, top-level and nested alike, in interning order.
     ///
     /// [`EntityHandle`]'s constructor is private, so without this a caller
@@ -2991,6 +3132,164 @@ impl AssemblyEnv {
         }
     }
 
+    /// The union cases F# puts in bare scope with **no source `open`** — the
+    /// non-`[<RequireQualifiedAccess>]` cases of the unions directly in an
+    /// implicitly opened namespace (`Some`, `None`, `Ok`, `Error`, `Choice1Of2`,
+    /// … from FSharp.Core's `Microsoft.FSharp.Core`), in fold order.
+    ///
+    /// Each names its definite [`OpenFoldTarget::UnionCase`] only when nothing
+    /// else F# makes bare-visible without an `open` could be ordered against it:
+    /// every container the `assembly_bare_value_surface_could_supply`
+    /// index folds — the implicit namespaces, the contested auto-opens, the root
+    /// namespace and the retained module-shaped auto-opens — is applied at
+    /// assembly import, in **reference order**, which sema does not model. So a
+    /// case is [`OpenFoldTarget::Opaque`] when another of those surfaces lists
+    /// its name, when any of them carries name-unknown residue (a hidden name
+    /// could be this one) or its namespace is uncertain (a dropped type, an
+    /// unknowable abbreviation), or when the env's auto-open list could not be
+    /// read at all. A same-named entry of the case's *own* surface is ordered by
+    /// the fold itself (`demote_unordered_union_cases`). A constructible
+    /// *type* of the name on another surface is not a reason: it contests only
+    /// expression position, which the use site answers
+    /// (`Resolver::assembly_case_slot_contested`).
+    ///
+    /// Memoised: the answer is a property of the closure, not of a file.
+    pub fn implicit_union_cases(&self) -> &[OpenFoldName] {
+        self.implicit_union_cases
+            .get_or_init(|| self.build_implicit_union_cases())
+    }
+
+    /// Build [`Self::implicit_union_cases`].
+    fn build_implicit_union_cases(&self) -> Vec<OpenFoldName> {
+        // Every surface visible without an `open`, each with whether its own
+        // cases are among those returned, and its namespace's uncertainty.
+        let mut surfaces: Vec<(OpenFoldSurface, bool, bool)> = Vec::new();
+        // An uncertain namespace hides names whether or not any of its types
+        // survived to give it a surface.
+        let mut uncertain_namespace = false;
+        for ns in self.effective_implicit_open_namespace_paths() {
+            let uncertain = self.namespace_uncertain(&ns);
+            uncertain_namespace |= uncertain;
+            for s in self.open_namespace_fold_surfaces(&ns) {
+                surfaces.push((s, true, uncertain));
+            }
+        }
+        let others = self
+            .contested_auto_opens
+            .iter()
+            .map(|(_, ns)| ns.clone())
+            .chain(std::iter::once(Vec::new()));
+        for ns in others {
+            let uncertain = self.namespace_uncertain(&ns);
+            uncertain_namespace |= uncertain;
+            for s in self.open_namespace_fold_surfaces(&ns) {
+                surfaces.push((s, false, uncertain));
+            }
+        }
+        for &(h, effectively_public) in &self.auto_open_module_handles {
+            if effectively_public {
+                let uncertain = self.namespace_uncertain(&self.nodes[h.index()].owning_namespace);
+                surfaces.push((self.open_fold_surface(h), false, uncertain));
+            }
+        }
+        let hides =
+            |s: &OpenFoldSurface, uncertain: bool| s.residue || s.residue_below_vals || uncertain;
+        let mut out = Vec::new();
+        for (i, (surface, returned, uncertain)) in surfaces.iter().enumerate() {
+            if !returned {
+                continue;
+            }
+            for e in surface.entries.iter().filter(|e| e.is_union_case(self)) {
+                let hidden = self.extension_surface_unknowable
+                    || uncertain_namespace
+                    || hides(surface, *uncertain)
+                    || surfaces
+                        .iter()
+                        .any(|(other, _, other_uncertain)| hides(other, *other_uncertain));
+                // Another surface's constructible *type* of the name is not a
+                // collision here: it contests only expression position, where
+                // the use site asks the slot question itself
+                // (`Resolver::assembly_case_slot_contested`), and never the
+                // pattern namespace.
+                let collides = surfaces.iter().enumerate().any(|(j, (other, _, _))| {
+                    j != i && other.entries.iter().any(|f| f.name == e.name)
+                });
+                let mut case = e.clone();
+                if hidden {
+                    case.target = OpenFoldTarget::Opaque(DeclineCause::OpenFoldResidue);
+                } else if collides {
+                    case.target = OpenFoldTarget::Opaque(DeclineCause::OpenFoldCollision);
+                }
+                out.push(case);
+            }
+        }
+        out
+    }
+
+    /// Whether some surface F# makes bare-visible could put a **constructible
+    /// type** named `name` in FCS's unqualified constructor slot — where it
+    /// evicts a same-named union case from expression position
+    /// (`AddPartsOfTyconRefToNameEnv`: class, struct and delegate names enter
+    /// the slot; unions, records and interfaces do not).
+    ///
+    /// `namespace` is an opened (or implicitly opened) namespace, or the root
+    /// when empty: its public direct types of the name, and the public nested
+    /// types of every `[<AutoOpen>]` module that opening it folds. Its
+    /// namespace-scoped uncertainty — a dropped type, an unknowable
+    /// abbreviation — could be such a type and answers `true`. Deferral-only,
+    /// like every arm of the value index: over-approximating costs a commit,
+    /// never a wrong target.
+    pub(crate) fn namespace_could_supply_slot_type(
+        &self,
+        namespace: &[String],
+        name: &str,
+    ) -> bool {
+        self.namespace_uncertain(namespace)
+            || self
+                .public_types_named(namespace, name)
+                .into_iter()
+                .any(|(kind, is_struct)| type_name_is_value_slot_contestant(kind, is_struct))
+            || self
+                .auto_open_modules_in_namespace(namespace)
+                .iter()
+                .any(|&m| self.module_children_supply_slot_type(m, name))
+    }
+
+    /// Whether a public nested type of module `module` named `name` takes the
+    /// unqualified constructor slot — the per-module half of
+    /// [`Self::namespace_could_supply_slot_type`].
+    fn module_children_supply_slot_type(&self, module: EntityHandle, name: &str) -> bool {
+        self.children(module).iter().any(|&child| {
+            let c = self.entity(child);
+            self.is_public(child)
+                && c.kind != EntityKind::Module
+                && (c.source_name.as_deref() == Some(name) || c.name == name)
+                && type_name_is_value_slot_contestant(c.kind, c.is_struct)
+        })
+    }
+
+    /// The **closure-wide** half of the slot question: whether any surface F#
+    /// makes bare-visible with no source `open` and no enclosing namespace —
+    /// the contested auto-opens, the root namespace, the retained module-shaped
+    /// auto-opens — could supply a constructible type named `name`, or whether
+    /// the auto-open list itself is unknown. (The implicit namespaces are among
+    /// a file's open readings, so the caller asks of them per reading.)
+    pub(crate) fn implicit_surface_could_supply_slot_type(&self, name: &str) -> bool {
+        self.extension_surface_unknowable
+            || self
+                .contested_auto_opens
+                .iter()
+                .any(|(_, ns)| self.namespace_could_supply_slot_type(ns, name))
+            || self.namespace_could_supply_slot_type(&[], name)
+            || self.auto_open_module_handles.iter().any(|&(h, _)| {
+                self.module_children_supply_slot_type(h, name)
+                    || self
+                        .auto_open_descendants(h)
+                        .iter()
+                        .any(|&(d, _)| self.module_children_supply_slot_type(d, name))
+            })
+    }
+
     /// The bare-visible **value** surface of `namespace`: its fold surfaces plus
     /// the namespace-scoped uncertainty they cannot encode. The only sanctioned
     /// way to ask whether a namespace could supply a value.
@@ -3609,13 +3908,40 @@ impl AssemblyEnv {
     ///
     /// [`Entity::union_cases`]: borzoi_assembly::Entity::union_cases
     pub fn authoritative_union_case(&self, handle: EntityHandle, name: &str) -> bool {
+        self.union_case_index(handle, name).is_some()
+    }
+
+    /// The case of union `handle` named `name`, under exactly the authority
+    /// rule of [`Self::authoritative_union_case`] — the only way to make a
+    /// [`UnionCaseIndex`], so a [`Resolution::UnionCase`](crate::Resolution::UnionCase)
+    /// can only ever name a case the pickle published on an authoritative
+    /// assembly.
+    ///
+    /// A list naming `name` twice is malformed (F# rejects a duplicate case),
+    /// so it names nothing rather than whichever comes first.
+    pub fn union_case_index(&self, handle: EntityHandle, name: &str) -> Option<UnionCaseIndex> {
         let entity = self.entity(handle);
-        entity.kind == EntityKind::Union
-            && !self.fsharp_signature_unreliable(handle)
-            && match &entity.union_cases {
-                UnionCases::Known(cases) => cases.iter().any(|c| c == name),
-                UnionCases::Unknowable => false,
+        if entity.kind != EntityKind::Union || self.fsharp_signature_unreliable(handle) {
+            return None;
+        }
+        let UnionCases::Known(cases) = &entity.union_cases else {
+            return None;
+        };
+        let mut found = cases.iter().enumerate().filter(|(_, c)| *c == name);
+        match (found.next(), found.next()) {
+            (Some((i, _)), None) => Some(UnionCaseIndex::new(i)),
+            _ => None,
+        }
+    }
+
+    /// The source name of case `case` of union `union`.
+    pub fn union_case_name(&self, union: EntityHandle, case: UnionCaseIndex) -> &str {
+        match &self.entity(union).union_cases {
+            UnionCases::Known(cases) => &cases[case.index()],
+            UnionCases::Unknowable => {
+                unreachable!("a UnionCaseIndex is only made over a Known case list")
             }
+        }
     }
 
     /// Whether the entity is `[<RequireQualifiedAccess>]`. Opening such a module is
@@ -3676,6 +4002,7 @@ impl AssemblyEnv {
         let mut out = OpenFoldSurface::default();
         self.fold_container_into(handle, &mut out, true);
         self.demote_pattern_shadowed_exceptions(&mut out);
+        demote_unordered_union_cases(&mut out);
         out
     }
 
@@ -3698,10 +4025,19 @@ impl AssemblyEnv {
     /// `System.Decimal` — a C# `const decimal` is a literal carried by
     /// `DecimalConstantAttribute` with NO `Literal` flag (Q17), so a decimal
     /// field's literal-ness is unknowable and demotes conservatively.
+    ///
+    /// A **union case** with a definite target is the same shape — a case in
+    /// the constructor namespace, folded at the tycon tier, below any later
+    /// same-surface literal — and is demoted by the same rule.
     fn demote_pattern_shadowed_exceptions(&self, out: &mut OpenFoldSurface) {
         for i in 0..out.entries.len() {
             let e = &out.entries[i];
-            if !(e.is_case && matches!(e.target, OpenFoldTarget::Entity(_))) {
+            if !(e.is_case
+                && matches!(
+                    e.target,
+                    OpenFoldTarget::Entity(_) | OpenFoldTarget::UnionCase { .. }
+                ))
+            {
                 continue;
             }
             let shadowed = out.entries[i + 1..].iter().any(|later| {
@@ -3711,8 +4047,10 @@ impl AssemblyEnv {
                     && self.value_may_be_constant_pattern(&later.target)
             });
             if shadowed {
-                out.entries[i].target =
-                    OpenFoldTarget::Opaque(DeclineCause::OpenedExceptionShadowed);
+                out.entries[i].target = OpenFoldTarget::Opaque(match out.entries[i].target {
+                    OpenFoldTarget::UnionCase { .. } => DeclineCause::AssemblyCaseUnordered,
+                    _ => DeclineCause::OpenedExceptionShadowed,
+                });
             }
         }
     }
@@ -3737,7 +4075,9 @@ impl AssemblyEnv {
             },
             // No member to inspect (an opaque overload set, an entity): assume
             // the worst — an opaque case merely defers, never a wrong target.
-            OpenFoldTarget::Entity(_) | OpenFoldTarget::Opaque(_) => true,
+            OpenFoldTarget::Entity(_)
+            | OpenFoldTarget::UnionCase { .. }
+            | OpenFoldTarget::Opaque(_) => true,
         }
     }
 
@@ -3860,6 +4200,15 @@ impl AssemblyEnv {
                         e.target = OpenFoldTarget::Opaque(DeclineCause::OpenedExceptionShadowed);
                     }
                 }
+                // A union case keeps its definite target here: the two
+                // re-orderings above are its too, but each is answered where
+                // it can be decided. A same-surface literal is one this
+                // surface can see (the demotion below); a later open's
+                // constructible type is the use site's question
+                // (`Resolver::assembly_case_slot_contested`), since only the
+                // use site knows what was opened after this fold.
+                self.demote_pattern_shadowed_exceptions(&mut out);
+                demote_unordered_union_cases(&mut out);
                 out
             })
             .collect();
@@ -3911,6 +4260,7 @@ impl AssemblyEnv {
                     is_case: true,
                     ap_shape: None,
                     constant_pattern: false,
+                    from_type: Some(child),
                 });
             }
         }
@@ -3939,6 +4289,7 @@ impl AssemblyEnv {
                     is_case: false,
                     ap_shape: None,
                     constant_pattern: false,
+                    from_type: Some(child),
                 });
             }
             if c.kind == EntityKind::Union && !c.is_require_qualified_access {
@@ -3957,17 +4308,27 @@ impl AssemblyEnv {
                     // The complete accessible-case list — possibly empty (a
                     // private representation contributes nothing to a
                     // cross-assembly open, and is NOT residue).
+                    // Each case names its definite target when the union is one we
+                    // may act on ([`Self::union_case_index`]); otherwise it is in
+                    // scope and opaque.
                     UnionCases::Known(cases) => {
                         for case in cases {
                             out.entries.push(OpenFoldName {
                                 name: case.clone(),
-                                target: OpenFoldTarget::Opaque(
-                                    DeclineCause::AssemblyCaseUntargeted,
-                                ),
+                                target: match self.union_case_index(child, case) {
+                                    Some(idx) => OpenFoldTarget::UnionCase {
+                                        union: child,
+                                        case: idx,
+                                    },
+                                    None => {
+                                        OpenFoldTarget::Opaque(DeclineCause::AssemblyCaseUntargeted)
+                                    }
+                                },
                                 space: OpenFoldSpace::Both,
                                 is_case: true,
                                 ap_shape: None,
                                 constant_pattern: false,
+                                from_type: Some(child),
                             });
                         }
                     }
@@ -4077,6 +4438,7 @@ impl AssemblyEnv {
                                 is_case: true,
                                 ap_shape: Some(shape),
                                 constant_pattern: false,
+                                from_type: None,
                             });
                         }
                     }
@@ -4098,6 +4460,7 @@ impl AssemblyEnv {
                 is_case: false,
                 ap_shape: None,
                 constant_pattern,
+                from_type: None,
             });
         }
 
@@ -4356,6 +4719,7 @@ impl AssemblyEnv {
     /// take effect. `&mut self` makes this a plain reset rather than a race.
     fn invalidate_bare_value_index(&mut self) {
         self.bare_value_index = std::sync::OnceLock::new();
+        self.implicit_union_cases = std::sync::OnceLock::new();
         self.contested_child_namespace_heads = std::sync::OnceLock::new();
         self.contested_surface_members = std::sync::OnceLock::new();
     }

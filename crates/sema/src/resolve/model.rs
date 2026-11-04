@@ -8,12 +8,14 @@
 //! [`resolve`](super) module.
 
 use crate::recovery::SyntaxRecovery;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use rowan::{TextRange, TextSize};
 
-use crate::assembly_env::{AssemblyEnv, CustomOperationNames, EntityHandle, MemberIndex};
+use crate::assembly_env::{
+    AssemblyEnv, CustomOperationNames, EntityHandle, MemberIndex, UnionCaseIndex,
+};
 use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
@@ -401,6 +403,9 @@ pub struct ProjectItems {
     /// `CustomOperationAttribute` or an abbreviation of it
     /// ([`FileContributions::declares_custom_operation_alias`]).
     pub(super) custom_operation_alias_declared: bool,
+    /// The names earlier files' type augmentations declare
+    /// ([`FileContributions::extension_statics`]).
+    pub(super) extension_statics: BTreeSet<String>,
     /// Whether some file folded so far declares a type spelled like
     /// `[<AutoOpen>]` or `[<RequireQualifiedAccess>]`, or an abbreviation of
     /// one ([`ResolvedFile::declares_core_attribute_alias`]).
@@ -1256,6 +1261,8 @@ impl ProjectItems {
         self.custom_operations
             .merge(&file.contributions.custom_operations);
         self.custom_operation_alias_declared |= file.contributions.declares_custom_operation_alias;
+        self.extension_statics
+            .extend(file.contributions.extension_statics.iter().cloned());
         for (path, c) in &file.contributions.module_opens {
             self.module_open_contributions
                 .entry(path.clone())
@@ -2097,6 +2104,15 @@ pub enum Resolution {
         parent: EntityHandle,
         idx: MemberIndex,
     },
+    /// A case of a referenced-assembly F# union (`Some` in `Some 1`, `Ok` in
+    /// `| Ok x ->`), named by the union and the case's position in its
+    /// published case list. FCS reports such a use as the union case itself —
+    /// an `FSharpUnionCase`, not the union type and not a carrier class — so
+    /// this is its own variant rather than an [`Self::Entity`] of either.
+    UnionCase {
+        union: EntityHandle,
+        case: UnionCaseIndex,
+    },
     /// In scope-shape but not resolvable yet; never an error (D5).
     Deferred(DeferredReason),
     /// Genuinely absent from every scope and import we model. The only
@@ -2105,7 +2121,7 @@ pub enum Resolution {
 }
 
 impl Resolution {
-    /// This resolution with an **assembly-rooted** reading — the two variants
+    /// This resolution with an **assembly-rooted** reading — the variants
     /// that name something in a referenced assembly — demoted to
     /// [`DeferredReason::IncompleteAssemblies`]. Everything else is returned
     /// unchanged: an in-file binder cannot be shadowed by anything an assembly
@@ -2119,7 +2135,7 @@ impl Resolution {
     /// would otherwise see a claim the rest of the file has withdrawn.
     pub(crate) fn sealed_under_incomplete_projection(self) -> Resolution {
         match self {
-            Resolution::Entity(_) | Resolution::Member { .. } => {
+            Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
                 Resolution::Deferred(DeferredReason::IncompleteAssemblies)
             }
             other => other,
@@ -2367,6 +2383,15 @@ pub enum DeclineCause {
     /// operations the walk cannot list: its type is unknown, or some route
     /// that could add an operation is unread.
     CustomOperationsUnknown,
+    /// A bare expression name found an **assembly union case** in scope, but a
+    /// constructible type of the same name may hold FCS's unqualified
+    /// constructor slot here and evict it
+    /// (`Resolver::assembly_case_slot_contested`).
+    AssemblyCaseSlotContested,
+    /// An assembly union case shares its name with another entry of its own
+    /// fold surface — a second case, a sibling type — or with a later literal
+    /// there, in an order the fold cannot vouch for.
+    AssemblyCaseUnordered,
     /// A binder the walk knows is in scope but does not intern may capture
     /// the name: a custom operation's variable (`join x in …`, `… into g`).
     /// See [`ResolvedFile::opaque_binders`].
@@ -2432,6 +2457,8 @@ impl DeclineCause {
         DeclineCause::UnmodelledContributor,
         DeclineCause::CustomOperationMayTake,
         DeclineCause::CustomOperationsUnknown,
+        DeclineCause::AssemblyCaseSlotContested,
+        DeclineCause::AssemblyCaseUnordered,
         DeclineCause::OpaqueBinder,
     ];
 
@@ -2492,6 +2519,8 @@ impl DeclineCause {
             DeclineCause::UnmodelledContributor => "unmodelled_contributor",
             DeclineCause::CustomOperationMayTake => "custom_operation_may_take",
             DeclineCause::CustomOperationsUnknown => "custom_operations_unknown",
+            DeclineCause::AssemblyCaseSlotContested => "assembly_case_slot_contested",
+            DeclineCause::AssemblyCaseUnordered => "assembly_case_unordered",
             DeclineCause::OpaqueBinder => "opaque_binder",
         }
     }
@@ -3694,6 +3723,7 @@ impl ResolvedFile {
             // resolution was produced against.
             Resolution::Entity(_)
             | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }
             | Resolution::Deferred(_)
             | Resolution::Unresolved => None,
         }
@@ -3793,6 +3823,7 @@ impl ResolvedFile {
             }
             Resolution::Entity(_)
             | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }
             | Resolution::Deferred(_)
             | Resolution::Unresolved => None,
         }
@@ -3892,6 +3923,7 @@ impl ResolvedProject {
                 .or_else(|| match res {
                     Resolution::Entity(handle) => env.entity_class(handle),
                     Resolution::Member { parent, idx } => env.member_class(parent, idx),
+                    Resolution::UnionCase { .. } => Some(SemanticClass::UnionCase),
                     _ => None,
                 })
         }))

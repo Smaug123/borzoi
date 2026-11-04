@@ -290,7 +290,7 @@ fn wrong_commitments(src: &str, rf: &ResolvedFile, file: &FileCensus, clean: boo
             // An assembly target: wrong wherever FCS names an in-file binder
             // there. FCS spans a dotted access from its head, so match on the
             // shared end.
-            Resolution::Entity(_) | Resolution::Member { .. } => {
+            Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
                 let in_file: Vec<_> = uses
                     .iter()
                     .filter(|u| {

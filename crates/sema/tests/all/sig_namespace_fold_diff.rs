@@ -442,6 +442,10 @@ fn our_assembly_leaf(env: &AssemblyEnv, res: Resolution) -> (String, String) {
             };
             (e.assembly.name.clone(), leaf)
         }
+        Resolution::UnionCase { union, case } => (
+            env.entity(union).assembly.name.clone(),
+            env.union_case_name(union, case).to_string(),
+        ),
         _ => unreachable!("only assembly resolutions reach here"),
     }
 }
@@ -561,7 +565,12 @@ fn grade_cell(shape: &Shape, reader: Reader) -> CellCommits {
                      {:?} in {:?}",
                     u.full_name, u.assembly
                 )),
-                (Resolution::Entity(_) | Resolution::Member { .. }, Some(decl)) => {
+                (
+                    Resolution::Entity(_)
+                    | Resolution::Member { .. }
+                    | Resolution::UnionCase { .. },
+                    Some(decl),
+                ) => {
                     commits.wrong.push(format!(
                         "{ctx}: {text:?} in {file:?}: we commit assembly {:?}, FCS declares \
                          in-project at {:?}",
@@ -569,7 +578,12 @@ fn grade_cell(shape: &Shape, reader: Reader) -> CellCommits {
                         decl.file.file_name()
                     ));
                 }
-                (Resolution::Entity(_) | Resolution::Member { .. }, None) => {
+                (
+                    Resolution::Entity(_)
+                    | Resolution::Member { .. }
+                    | Resolution::UnionCase { .. },
+                    None,
+                ) => {
                     let (asm, leaf) = our_assembly_leaf(env(), res);
                     let fcs_leaf = u
                         .full_name

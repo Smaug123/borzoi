@@ -90,3 +90,13 @@ module FixBuilders =
     let fixBMethodName = FixBMethodName()
     let fixBNoOp = FixBNoOp()
     let fixBDerived = FixBDerived()
+
+/// No probed statics of its own: the grid's source extensions add them.
+type Plain =
+    static member Marker = 0
+
+/// An overload set of statics named `Parse`: methods, which never contest a
+/// pattern.
+type Overloads =
+    static member Parse(x: string) = x
+    static member Parse(x: int) = string x

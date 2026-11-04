@@ -228,7 +228,9 @@ fn in_file_type_names_agree_with_fcs_over_every_write_sequence() {
                     .collect(),
                 // FCS spans a dotted type path from its first segment; the
                 // two share an end.
-                Resolution::Entity(_) | Resolution::Member { .. } => uses
+                Resolution::Entity(_)
+                | Resolution::Member { .. }
+                | Resolution::UnionCase { .. } => uses
                     .iter()
                     .filter(|u| {
                         u.end == usize::from(range.end()) && u.start <= range.start().into()
@@ -250,9 +252,12 @@ fn in_file_type_names_agree_with_fcs_over_every_write_sequence() {
                     (Resolution::Local(_) | Resolution::Item(_), CensusDecl::InFile(s, e)) => {
                         ours == Some(range_of(s, e))
                     }
-                    (Resolution::Entity(_) | Resolution::Member { .. }, CensusDecl::OtherFile) => {
-                        true
-                    }
+                    (
+                        Resolution::Entity(_)
+                        | Resolution::Member { .. }
+                        | Resolution::UnionCase { .. },
+                        CensusDecl::OtherFile,
+                    ) => true,
                     _ => false,
                 });
             if !agrees {

@@ -5,9 +5,10 @@
 > namespace half. `open M` now resolves M's value / union-case / exception /
 > active-pattern / nested-type surface the way FCS folds it, precedence falling out
 > of push order (latest-wins). Outstanding: submodule **dotted heads** (Slice B),
-> option-B bare-name **slot eviction** (§8), **value-binding accessibility**, the remaining
-> §5a over-conservative cell, and the **implicit-open** placement. Reference-order
-> merges stay declined by design (§4c). Leave in `docs/` until those close.
+> option-B bare-name **slot eviction** (§8) for exceptions and values (union cases have
+> it), **value-binding accessibility**, the remaining §5a over-conservative cell, and the
+> implicit-open placement of everything but union cases. Reference-order merges stay
+> declined by design (§4c). Leave in `docs/` until those close.
 
 ## How it resolves now ("the fold")
 
@@ -22,7 +23,9 @@ module handle's complete-or-opaque bare-name surface in FCS's order:
 1. exception constructors → value **and** pattern scope;
 2. the **tycon tier** (`fold_tycon_tier`): nested type names as opaque value-slot
    contestants, non-RQA union **cases** (from the pickle, `Entity::union_case_names`)
-   into value *and* pattern scope;
+   into value *and* pattern scope, each naming its case (`Resolution::UnionCase`)
+   unless the fold cannot order it against a same-named entry of its own surface
+   (`demote_unordered_union_cases`);
 3. **vals** — definite targets, with active-pattern tags into pattern scope;
 4. `[<AutoOpen>]` submodules, recursively.
 
@@ -279,19 +282,25 @@ the `decimal` `DecimalConstantAttribute` case, Q17). Recovers the availability; 
 change to the eviction machinery that applies to the module fold too. Its own slice, with
 `Demo.NsFold` matrix cells for the eviction and pattern-literal contests.
 
-### Implicit-open placement (own slice)
+### Implicit-open placement
 
-The namespace fold runs only for an *explicit* `open`. The **implicit** auto-open of the
-enclosing / assembly-level `[<AutoOpen>]` namespaces (`resolve.rs`,
-`open_auto_open_modules_in`) still imports only auto-open *module* statics, so a direct
-namespace-level exception or union case of an implicitly-opened namespace
-(`MatchFailureException` in `Microsoft.FSharp.Core`) stays `Deferred` where FCS resolves it.
-Sound, but an availability asymmetry. Not a mechanical reroute: the implicit set includes
-`Microsoft.FSharp.Core`, whose direct tycons include `option` / `Result` — folding their
-cases would put `Some` / `None` / `Ok` / `Error` into every file as *opaque* entries and
-shadow their fundamental handling. So it needs the fundamental cases modelled (definite
-targets, not opaque) first — its own slice, with `Demo.NsFold`-style cells for the implicit
-placement.
+**Union cases have landed.** The implicitly opened namespaces' union cases
+(`AssemblyEnv::implicit_union_cases`) fold at position 0 around the implicit auto-open
+modules' statics (`Resolver::fold_implicit_union_cases`), each naming its case unless
+another surface F# opens without an `open` could be ordered against it. What the walk
+cannot see in front of a case is the same set of routes it cannot see in front of an
+implicit value — `[<AutoOpen>]` fold-backs, `rec` blocks, earlier files' roots, an
+`open type`'s extension members, a computation expression's custom operations — and
+one primitive marks them all (`docs/unmodelled-contributors.md`). A project type's
+constructor slot is ordered at the use (`Resolver::bare_value_evicted`). An assembly
+type's slot is answered position-blind and name-keyed
+(`Resolver::assembly_case_slot_contested`, §8 option B for union cases).
+
+`crates/sema/tests/all/assembly_union_case_table.rs` grades every spelling against FCS
+(a pinned table, a recovered-input table, an implicit-collision table, and a generated
+shadower × placement × use grid). Still outstanding: the implicit namespaces' direct
+**exceptions** (`MatchFailureException`) and active-pattern tags (`KeyValue`), which stay
+unfolded.
 
 ## 6. Why this before A4/S4
 

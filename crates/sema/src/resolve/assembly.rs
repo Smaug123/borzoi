@@ -692,33 +692,22 @@ impl<'a> Resolver<'a> {
     /// How a path segment that names a **union case** of `parent` resolves, or
     /// `None` when `parent` is not a union that declares it.
     ///
-    /// The case must be *provable* — [`AssemblyEnv::authoritative_union_case`](crate::AssemblyEnv::authoritative_union_case),
+    /// The case must be *provable* — [`AssemblyEnv::union_case_index`](crate::AssemblyEnv::union_case_index),
     /// so neither an unknowable case list nor a non-authoritative assembly's
     /// IL-heuristic union can make a reading own a path FCS would re-root.
     ///
-    /// A field-carrying case compiles to a nested type — nameable, and keyed on
-    /// the union's own arity, whose generic parameters the carrier inherits. A
-    /// **nullary** case has no carrier at all (fsc emits a static property the
-    /// F#-entity projection drops), so it defers: the reading owns the path (the
-    /// case is certainly there) while naming no target.
+    /// It names the case itself, which FCS reports the use as — not the nested
+    /// carrier class fsc compiles a field-carrying case to (a nullary case, and
+    /// every case of a union fsc compiles to a single class, has none).
     ///
-    /// [`AssemblyEnv::authoritative_union_case`](crate::AssemblyEnv::authoritative_union_case): crate::AssemblyEnv::authoritative_union_case
+    /// [`AssemblyEnv::union_case_index`](crate::AssemblyEnv::union_case_index): crate::AssemblyEnv::union_case_index
     fn union_case_tail(&self, parent: EntityHandle, name: &str) -> Option<Resolution> {
-        if !self.assemblies.authoritative_union_case(parent, name) {
-            return None;
-        }
-        let arity = self.assemblies.entity(parent).generic_parameters.len();
-        Some(
-            match self
-                .assemblies
-                .nested(parent, name, arity)
-                .or_else(|| self.assemblies.nested(parent, name, 0))
-                .filter(|&h| self.assemblies.is_public(h))
-            {
-                Some(case) => Resolution::Entity(case),
-                None => Resolution::Deferred(DeferredReason::QualifiedAccess),
-            },
-        )
+        self.assemblies
+            .union_case_index(parent, name)
+            .map(|case| Resolution::UnionCase {
+                union: parent,
+                case,
+            })
     }
 
     /// The **union-case pattern** sibling of [`Self::assembly_type_path_core`]:
@@ -797,24 +786,16 @@ impl<'a> Resolver<'a> {
         let Some(union) = owning else {
             return AssemblyPath::NoMatch;
         };
-        // A field-carrying case compiles to a nested type; a generic union's
-        // carrier carries the union's own generic parameters, so key the nested
-        // lookup on the union's arity (falling back to arity 0 for a non-generic
-        // union). A nullary case has no carrier at all — a known case reference
-        // with an opaque target, exactly as an opened assembly case folds.
-        let arity = self.assemblies.entity(union).generic_parameters.len();
-        let nested_case = self
-            .assemblies
-            .nested(union, case_name, arity)
-            .or_else(|| self.assemblies.nested(union, case_name, 0))
-            .filter(|&h| self.assemblies.is_public(h));
+        // The case itself, as FCS reports the use — `owning` is set only where
+        // `authoritative_union_case` holds, which is exactly when the index
+        // exists.
         let whole = TextRange::new(type_seg.text_range().start(), case_seg.text_range().end());
         let recs = vec![
             (type_seg.text_range(), Resolution::Entity(union)),
             (
                 whole,
-                match nested_case {
-                    Some(case) => Resolution::Entity(case),
+                match self.assemblies.union_case_index(union, case_name) {
+                    Some(case) => Resolution::UnionCase { union, case },
                     None => Resolution::Deferred(DeferredReason::QualifiedAccess),
                 },
             ),

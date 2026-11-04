@@ -1,12 +1,15 @@
 //! Expression and pattern name resolution.
 
+use std::collections::HashSet;
+
 use borzoi_cst::syntax::{AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
+use rowan::TextRange;
 
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
-use super::model::{DeclineSite, DeferredReason, Resolution};
+use super::model::{DeclineCause, DeclineSite, DeferredReason, Resolution};
 use super::state::{AliasTargets, Frame, Resolver, ScopeEntry};
 use super::types::TypePathResolution;
 
@@ -548,6 +551,27 @@ impl<'a> Resolver<'a> {
                     if let Some(ret) = b.return_type() {
                         self.resolve_type(&ret);
                     }
+                    // A sequence expression checks `let! Head … = m` as a
+                    // `let`, so a bare one-segment head binds the name, a
+                    // case's included (`seq { let! Some = xs in yield Some }`);
+                    // a builder's reads it as a pattern. The walk does not know
+                    // which it is in, so the head masks the name and records
+                    // nothing, and only the arguments bind.
+                    if let Some(Pat::LongIdent(p)) = b.pat()
+                        && p.typar_decls().is_none()
+                        && p.name_pat_pairs().is_none()
+                        && let Some(head) = p.head()
+                        && let [only] = head.idents().collect::<Vec<_>>().as_slice()
+                    {
+                        let args: Vec<Pat> = p.args().collect();
+                        entries.extend(self.pattern_locals(args.into_iter(), BinderRole::Pattern));
+                        entries.push(ScopeEntry::binding(
+                            id_text(only).to_string(),
+                            Resolution::Deferred(DeferredReason::UnboundName),
+                            self.open_generation,
+                        ));
+                        continue;
+                    }
                     entries.extend(self.pattern_locals(b.pat().into_iter(), BinderRole::Pattern));
                 }
                 self.scopes.push(Frame { entries });
@@ -768,6 +792,114 @@ impl<'a> Resolver<'a> {
         self.scopes.pop();
     }
 
+    /// A primary constructor's parameters, as FCS reads them
+    /// (`SimplePatsOfPat`, then `TcImplicitCtorInfo_Phase2A`): unit, or a
+    /// tuple of simple patterns, each a name, `?name` or `pat as name` under
+    /// parentheses, attributes and type annotations. The annotations are type
+    /// uses and the names bind. FCS compiles anything else to an anonymous
+    /// `_argN` and drops the match that would read it, so nothing of it is
+    /// resolved: not a parameter spelled like a union case (`Some: int`),
+    /// not a pattern the constructor rejects (`Some x`, FS3865).
+    ///
+    /// A capitalised name (`Foo: int`) is FCS's undecided case: it binds
+    /// unless it names a case, so it masks whatever outer `Foo` the walk
+    /// would find, as a lambda's does
+    /// ([`Self::resolve_provisional_case_head`]), and records nothing but
+    /// the [opaque binder](super::ResolvedFile::opaque_binders) FCS declares
+    /// there either way.
+    pub(super) fn primary_constructor_locals(&mut self, args: Option<Pat>) -> Vec<ScopeEntry> {
+        let elements: Vec<Pat> = match args {
+            Some(Pat::Tuple(t)) if !t.is_struct() => t.elements().collect(),
+            Some(Pat::Paren(p)) => match p.inner() {
+                Some(Pat::Tuple(t)) if !t.is_struct() => t.elements().collect(),
+                inner => inner.into_iter().collect(),
+            },
+            other => other.into_iter().collect(),
+        };
+        let mut names: Vec<TextRange> = Vec::new();
+        for element in &elements {
+            self.simple_constructor_pattern(element, &mut names);
+        }
+        let mut entries = Vec::new();
+        for element in &elements {
+            for pat_name in pattern_names(element, BinderRole::Param, &HashSet::new()) {
+                let PatternName::Binder(def) = pat_name else {
+                    continue;
+                };
+                if !names.contains(&def.range) {
+                    continue;
+                }
+                if def.provisional {
+                    self.opaque_binders.insert(def.range);
+                    let name = def.key().to_string();
+                    let a_case = self
+                        .case_reference(&name)
+                        .is_some_and(|r| !matches!(r, Resolution::Deferred(_)));
+                    if !a_case {
+                        entries.push(ScopeEntry::binding(
+                            name,
+                            Resolution::Deferred(DeferredReason::UnboundName),
+                            self.open_generation,
+                        ));
+                    }
+                    continue;
+                }
+                let name = def.key().to_string();
+                let range = def.range;
+                let res = Resolution::Local(self.intern(def));
+                self.record(range, res);
+                entries.push(ScopeEntry::binding(name, res, self.open_generation));
+            }
+        }
+        entries
+    }
+
+    /// One element of [`Self::primary_constructor_locals`]: resolve its
+    /// annotations and collect the name it binds, if it is simple.
+    fn simple_constructor_pattern(&mut self, pat: &Pat, names: &mut Vec<TextRange>) {
+        match pat {
+            Pat::Typed(p) => {
+                if let Some(ty) = p.ty() {
+                    self.resolve_type(&ty);
+                }
+                if let Some(inner) = p.pat() {
+                    self.simple_constructor_pattern(&inner, names);
+                }
+            }
+            Pat::Attrib(p) => {
+                if let Some(inner) = p.pat() {
+                    self.simple_constructor_pattern(&inner, names);
+                }
+            }
+            Pat::Paren(p) => {
+                if let Some(inner) = p.inner() {
+                    self.simple_constructor_pattern(&inner, names);
+                }
+            }
+            Pat::Named(p) => names.extend(p.ident().map(|t| t.text_range())),
+            Pat::OptionalVal(p) => names.extend(p.ident().map(|t| t.text_range())),
+            // `Foo`: one segment, no arguments, no typars.
+            Pat::LongIdent(p)
+                if p.args().next().is_none()
+                    && p.name_pat_pairs().is_none()
+                    && p.typar_decls().is_none() =>
+            {
+                if let Some(head) = p.head() {
+                    let segs: Vec<_> = head.idents().collect();
+                    if let [only] = segs.as_slice() {
+                        names.push(only.text_range());
+                    }
+                }
+            }
+            Pat::As(p) => {
+                if let Some(Pat::Named(rhs)) = p.rhs() {
+                    names.extend(rhs.ident().map(|t| t.text_range()));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Intern the binders of each pattern in `pats` (under `role`), recording
     /// each binder's self-resolution, and return them as scope entries for a
     /// fresh frame. Used for lambda parameters and `match`-clause patterns —
@@ -923,6 +1055,20 @@ impl<'a> Resolver<'a> {
             // An unbound name (or one shadowed away by an opaque open) falls back
             // to `Deferred`.
             .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
+        // An assembly union case an `open` put in scope loses FCS's unqualified
+        // slot to any later constructible type of its name, which the lookup
+        // cannot order (the type is not an entry). Expression position only: a
+        // type never contests the pattern namespace.
+        let res = match res {
+            Resolution::UnionCase { .. } if self.assembly_case_slot_contested(name) => {
+                self.record_decline(
+                    tok.text_range(),
+                    DeclineSite::pre_walk(DeclineCause::AssemblyCaseSlotContested),
+                );
+                Resolution::Deferred(DeferredReason::UnboundName)
+            }
+            other => other,
+        };
         self.record(tok.text_range(), res);
         matches!(res, Resolution::Deferred(_))
     }
