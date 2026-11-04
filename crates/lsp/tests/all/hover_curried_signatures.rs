@@ -723,16 +723,20 @@ fn run() -> &'static Run {
             );
         }
         let env = fixture_env();
+        // The sites share a handful of owners, and finding one scans every
+        // entity of the env, the BCL's included; find each once.
+        let mut owners: HashMap<&str, borzoi_sema::EntityHandle> = HashMap::new();
         let labels = universe
             .sites
             .iter()
             .zip(0..)
             .map(|(site, i)| {
                 let name = &probe[site.name.0..site.name.1];
-                let owner = env
-                    .all_handles()
-                    .find(|&h| env.entity_full_name(h) == site.owner)
-                    .unwrap_or_else(|| panic!("the env declares {}", site.owner));
+                let owner = *owners.entry(site.owner).or_insert_with(|| {
+                    env.all_handles()
+                        .find(|&h| env.entity_full_name(h) == site.owner)
+                        .unwrap_or_else(|| panic!("the env declares {}", site.owner))
+                });
                 let mut found = env
                     .member_indices(owner)
                     .filter(|&idx| env.member_display_name(owner, idx) == name);
