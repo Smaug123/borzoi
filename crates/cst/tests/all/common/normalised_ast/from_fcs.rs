@@ -1784,12 +1784,31 @@ fn fcs_binding(v: &Value) -> NormalisedBinding {
     // the `SynPat.Named`/`LongIdent` head so `let private x` / `member private
     // this.M` / `private new(…)` all resolve.
     let access = fcs_pat_access(&f[7]);
+    // Field 6 is `valData: SynValData(memberFlags, valInfo, thisIdOpt)`; an
+    // explicit constructor's `as <self>` is `thisIdOpt`, an `Ident option`.
+    let this_id = &fields(&f[6])[2];
+    let self_id = if this_id.is_null() {
+        None
+    } else {
+        match case_name(this_id) {
+            "Some" => Some(
+                fields(this_id)[0]
+                    .get("idText")
+                    .and_then(Value::as_str)
+                    .expect("SynValData thisIdOpt Some(Ident) has idText")
+                    .to_string(),
+            ),
+            "None" => None,
+            other => panic!("unexpected SynValData thisIdOpt Option case {other:?}"),
+        }
+    };
     NormalisedBinding {
         leading_keyword,
         is_mutable,
         is_inline,
         attributes,
         access,
+        self_id,
         pat,
         expr,
     }

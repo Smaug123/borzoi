@@ -785,6 +785,7 @@ fn normalise_extern(e: &ExternDecl) -> NormalisedDecl {
             // child of the `EXTERN_DECL`; FCS homes it on the lowered binding's
             // `LongIdent` head pattern.
             access: cst_access(e.syntax()),
+            self_id: None,
             pat,
             expr,
         }],
@@ -1254,6 +1255,7 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
                 attributes: Vec::new(),
                 // A `do` binding takes no access modifier.
                 access: None,
+                self_id: None,
                 // FCS's synthetic head pattern for a `do` binding.
                 pat: NormalisedPat::Const(NormalisedConst::Unit),
                 expr,
@@ -1808,6 +1810,9 @@ fn normalise_binding(
         // as an `ACCESS_TOK` child of the `BINDING` node (a sibling of the
         // pattern), so read it here.
         access: cst_access(b.syntax()),
+        self_id: b
+            .ctor_self_id()
+            .map(|t| strip_backticks(t.text()).to_string()),
         pat,
         expr,
     }
