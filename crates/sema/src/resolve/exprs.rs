@@ -804,7 +804,9 @@ impl<'a> Resolver<'a> {
     /// A capitalised name (`Foo: int`) is FCS's undecided case: it binds
     /// unless it names a case, so it masks whatever outer `Foo` the walk
     /// would find, as a lambda's does
-    /// ([`Self::resolve_provisional_case_head`]), and records nothing.
+    /// ([`Self::resolve_provisional_case_head`]), and records nothing but
+    /// the [opaque binder](super::ResolvedFile::opaque_binders) FCS declares
+    /// there either way.
     pub(super) fn primary_constructor_locals(&mut self, args: Option<Pat>) -> Vec<ScopeEntry> {
         let elements: Vec<Pat> = match args {
             Some(Pat::Tuple(t)) if !t.is_struct() => t.elements().collect(),
@@ -828,6 +830,7 @@ impl<'a> Resolver<'a> {
                     continue;
                 }
                 if def.provisional {
+                    self.opaque_binders.insert(def.range);
                     let name = def.key().to_string();
                     let a_case = self
                         .case_reference(&name)
