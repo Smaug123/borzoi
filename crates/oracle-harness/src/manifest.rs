@@ -840,10 +840,21 @@ mod tests {
             eo in edits(),
             et in edits(),
             key in "[a-d]{1,2}",
-            [v1, v2] in prop::array::uniform2(prop::option::of(prop::option::of("[xyz]"))),
+            i in 0usize..4,
+            j in 0usize..3,
         ) {
+            // Every state the key can end in: absent, bare, or valued. The two
+            // sides pick distinct states, neither of them `current`, by index
+            // into what remains, so every such pair is reachable unrejected.
             let current = b.get(&key).cloned();
-            prop_assume!(v1 != v2 && v1 != current && v2 != current);
+            let mut states: Vec<Option<Option<String>>> = [None, Some(None)]
+                .into_iter()
+                .chain(["x", "y", "z"].map(|v| Some(Some(v.to_string()))))
+                .filter(|s| *s != current)
+                .collect();
+            assert_eq!(states.len(), 4, "`current` is one of the five states");
+            let v1 = states.remove(i);
+            let v2 = states.remove(j);
             let (mut eo, mut et) = (eo, et);
             et.retain(|k, _| !eo.contains_key(k));
             let set = |edits: &mut Edits, v: Option<Option<String>>| match v {
