@@ -12,6 +12,8 @@
 
 use crate::{AssemblyEnv, EntityHandle, Resolution};
 
+pub mod binder_completeness;
+
 /// The entity FCS says a used symbol is declared in, named **structurally**.
 ///
 /// FCS's full name for a member is a *rendering*: the enclosing type is printed

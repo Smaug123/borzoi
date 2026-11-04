@@ -11,6 +11,7 @@ mod assembly_env;
 mod assembly_union_case_table;
 mod attr_resolution_diff;
 mod attr_resolution_sweep;
+mod binder_site_grid;
 mod classify_assembly_diff;
 mod classify_diff;
 mod commit_surface;

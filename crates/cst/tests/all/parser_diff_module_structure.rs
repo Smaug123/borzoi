@@ -2510,6 +2510,17 @@ fn diff_ast_two_abstract_slots() {
     assert_asts_match("type T =\n  abstract M : int\n  abstract N : int\n");
 }
 
+/// A generic abstract slot's own type parameters and their inside-`<>` `when`
+/// clause (`SynValSig.explicitTypeParams`), which the resolver reads.
+#[test]
+fn diff_ast_abstract_slot_typars_and_constraints() {
+    assert_asts_match("type T =\n  abstract M<'U> : 'U -> unit\n");
+    assert_asts_match("type T =\n  abstract M<'U when 'U :> System.IDisposable> : 'U -> unit\n");
+    assert_asts_match(
+        "type T =\n  abstract member M<'U, 'V when 'U : equality and 'V : struct> : 'U -> 'V\n",
+    );
+}
+
 /// Phase 9.10c — an abstract slot followed by a concrete member.
 #[test]
 fn diff_ast_abstract_then_member() {

@@ -33,6 +33,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use borzoi_oracle_harness::{BatchChild, BoundedCommand, default_timeout};
+use borzoi_sema::test_support::binder_completeness::{
+    OracleBinder, OracleBinderClass, OracleUse, is_unclassified_value, unmodelled_binders,
+};
 use serde::Deserialize;
 
 // ============================================================================
@@ -446,11 +449,15 @@ pub struct FileCensus {
 /// The FCS facts about one resolved symbol use that determine its bucket, plus
 /// the finer member/value distinctions (`IsProperty` / `IsValue` / `IsFunction`)
 /// the classification differential ([`crate::classify_diff`]) compares our
-/// [`SemanticClass`](borzoi_sema::SemanticClass) commitments against. Only
-/// `SymbolName` is still dropped by serde (kept in the JSON for ad-hoc
-/// drill-down).
+/// [`SemanticClass`](borzoi_sema::SemanticClass) commitments against, and the
+/// facts the binder-completeness check reads off a definition record.
 #[derive(Deserialize)]
 pub struct CensusUse {
+    #[serde(rename = "SymbolName", default)]
+    pub symbol_name: String,
+    /// Whether FCS made the value rather than the author writing it.
+    #[serde(rename = "IsCompilerGenerated", default)]
+    pub is_compiler_generated: bool,
     /// The use's byte range and (when in-file) declaration range. The census
     /// proper ignores these — it buckets by machinery, not location — but the
     /// resolution corpus-diff ([`census_resolve_uses`]) needs them to verify
@@ -880,6 +887,174 @@ pub fn census_resolve_uses(file: &FileCensus, source: &str) -> Vec<ResolveDiffUs
             }
         })
         .collect()
+}
+
+/// The class [`binder_completeness`] gives a census record, or `None` for one
+/// bare lookup cannot find (a member, a field, a namespace or module).
+fn census_binder_class(u: &CensusUse) -> Option<OracleBinderClass> {
+    match u.class.as_str() {
+        "Mfv" if !u.is_member => Some(OracleBinderClass::Value),
+        "UnionCase" => Some(OracleBinderClass::UnionCase),
+        "ActivePatternCase" => Some(OracleBinderClass::ActivePatternCase),
+        "GenericParameter" => Some(OracleBinderClass::TypeParameter),
+        "Entity" if !u.is_namespace && !u.is_module => Some(OracleBinderClass::Type),
+        _ => None,
+    }
+}
+
+/// Every record of `file` for a symbol bare lookup can find, in the
+/// binder-completeness currency, which keeps the ones that declare it
+/// ([`OracleBinder::introduces_a_name`]). Not only the definition records: FCS
+/// reports a type parameter's declaring occurrence as a use whose declaration is
+/// itself.
+pub fn census_oracle_binders(file: &FileCensus, source: &str) -> Vec<OracleBinder> {
+    let idx = LineIndex::new(source);
+    file.uses
+        .iter()
+        .filter_map(|u| {
+            let class = census_binder_class(u)?;
+            let (start, end) = u.use_range_bytes(&idx);
+            (start < end).then(|| OracleBinder {
+                name: u.symbol_name.clone(),
+                range: text_range(start, end),
+                class,
+                compiler_generated: u.is_compiler_generated,
+                decl: u.decl_range_bytes(&idx).map(|(s, e)| text_range(s, e)),
+            })
+        })
+        .flat_map(OracleBinder::witnessed)
+        .collect()
+}
+
+/// Every use record of `file`, in the binder-completeness currency.
+pub fn census_oracle_uses(file: &FileCensus, source: &str) -> Vec<OracleUse> {
+    let idx = LineIndex::new(source);
+    file.uses
+        .iter()
+        .filter(|u| !u.is_from_definition)
+        .map(|u| {
+            let (start, end) = u.use_range_bytes(&idx);
+            OracleUse {
+                range: text_range(start, end),
+                decl: u.decl_range_bytes(&idx).map(|(s, e)| text_range(s, e)),
+            }
+        })
+        .collect()
+}
+
+/// Every record of `uses` for a symbol bare lookup can find, in the
+/// binder-completeness currency (see [`census_oracle_binders`]). Panics on a
+/// value FCS did not classify, which would otherwise drop out of the check
+/// unseen.
+pub fn oracle_binders(uses: &[NormalisedUse]) -> Vec<OracleBinder> {
+    uses.iter()
+        .filter(|u| u.start < u.end)
+        .filter_map(|u| {
+            let value_kind = u.value_kind.as_deref();
+            assert!(
+                !is_unclassified_value(u.kind.as_deref(), value_kind),
+                "the oracle did not classify the value {:?} at {}..{}",
+                u.name,
+                u.start,
+                u.end
+            );
+            Some(OracleBinder {
+                name: u.name.clone(),
+                range: text_range(u.start, u.end),
+                class: OracleBinderClass::of_symbol_kind(u.kind.as_deref(), value_kind)?,
+                compiler_generated: u.is_compiler_generated,
+                decl: u.decl.map(|(s, e)| text_range(s, e)),
+            })
+        })
+        .flat_map(OracleBinder::witnessed)
+        .collect()
+}
+
+/// Every use record of `uses`, in the binder-completeness currency.
+pub fn oracle_uses(uses: &[NormalisedUse]) -> Vec<OracleUse> {
+    uses.iter()
+        .filter(|u| !u.is_from_definition)
+        .map(|u| OracleUse {
+            range: text_range(u.start, u.end),
+            decl: u.decl.map(|(s, e)| text_range(s, e)),
+        })
+        .collect()
+}
+
+/// The records of one project file's uses for a symbol bare lookup can find,
+/// in the binder-completeness currency (see [`census_oracle_binders`]).
+pub fn project_oracle_binders(file: &FileUses) -> Vec<OracleBinder> {
+    file.uses
+        .iter()
+        .filter(|u| u.start < u.end)
+        .filter_map(|u| {
+            Some(OracleBinder {
+                name: u.name.clone(),
+                range: text_range(u.start, u.end),
+                class: OracleBinderClass::of_symbol_kind(
+                    u.kind.as_deref(),
+                    u.value_kind.as_deref(),
+                )?,
+                compiler_generated: u.is_compiler_generated,
+                decl: u
+                    .decl
+                    .as_ref()
+                    .filter(|d| d.file.file_name() == file.path.file_name())
+                    .map(|d| text_range(d.start, d.end)),
+            })
+        })
+        .flat_map(OracleBinder::witnessed)
+        .collect()
+}
+
+/// Binder completeness over one FCS-graded cell: every binder the oracle
+/// reports in `file` that the walk does not know about, rendered for a
+/// failure message. `src` is the file's text, re-parsed for the binder's site.
+pub fn unmodelled_binder_failures(
+    label: &str,
+    src: &str,
+    rf: &borzoi_sema::ResolvedFile,
+    binders: &[OracleBinder],
+) -> Vec<String> {
+    let root = borzoi_cst::parser::parse(src).root;
+    unmodelled_binders(rf, &root, binders)
+        .into_iter()
+        .map(|b| {
+            format!(
+                "  {label}: FCS binds {:?} at {:?} ({:?}, {}), which the walk does not know",
+                b.name, b.range, b.class, b.site
+            )
+        })
+        .collect()
+}
+
+/// [`unmodelled_binder_failures`] over every file of a project cell, whose
+/// `i`th file `proj` resolved from `written[i]`.
+pub fn unmodelled_project_binder_failures(
+    label: &str,
+    proj: &borzoi_sema::ResolvedProject,
+    written: &[(PathBuf, String)],
+    fcs: &[FileUses],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, (path, src)) in written.iter().enumerate() {
+        if let Some(file) = fcs.iter().find(|f| f.path.file_name() == path.file_name()) {
+            out.extend(unmodelled_binder_failures(
+                label,
+                src,
+                proj.file(i),
+                &project_oracle_binders(file),
+            ));
+        }
+    }
+    out
+}
+
+fn text_range(start: usize, end: usize) -> rowan::TextRange {
+    rowan::TextRange::new(
+        u32::try_from(start).expect("offset fits u32").into(),
+        u32::try_from(end).expect("offset fits u32").into(),
+    )
 }
 
 // ============================================================================
@@ -1983,6 +2158,10 @@ pub struct NormalisedUse {
     /// (`FSharpMemberOrFunctionOrValue.LogicalName`): an operator's compiled
     /// name, `op_Addition`, where [`name`](Self::name) is the rendering `(+)`.
     pub logical_name: Option<String>,
+    /// For a value, where FCS says it lives: `local`, `module` or `member`.
+    pub value_kind: Option<String>,
+    /// Whether FCS made the value rather than the author writing it.
+    pub is_compiler_generated: bool,
 }
 
 #[derive(Deserialize)]
@@ -2019,6 +2198,16 @@ struct RawUse {
     declaring_namespace: Option<String>,
     #[serde(rename = "IsConstructor", default)]
     is_constructor: bool,
+    #[serde(rename = "IsCompilerGenerated", default)]
+    is_compiler_generated: bool,
+    #[serde(rename = "Value", default)]
+    value: Option<RawValue>,
+}
+
+#[derive(Deserialize)]
+struct RawValue {
+    #[serde(rename = "Kind", default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2083,6 +2272,8 @@ pub fn parse_fcs_uses(json: &str, source: &str) -> Vec<NormalisedUse> {
                 }),
                 is_constructor: u.is_constructor,
                 logical_name: u.logical_name,
+                value_kind: u.value.and_then(|v| v.kind),
+                is_compiler_generated: u.is_compiler_generated,
             }
         })
         .collect()
@@ -2343,6 +2534,10 @@ pub struct NormalisedProjectUse {
     pub declaring_namespace: Option<String>,
     /// Whether the use is a constructor call (FCS names the constructed type).
     pub is_constructor: bool,
+    /// For a value, where FCS says it lives: `local`, `module` or `member`.
+    pub value_kind: Option<String>,
+    /// Whether FCS made the value rather than the author writing it.
+    pub is_compiler_generated: bool,
 }
 
 /// All symbol uses FCS reported for one project file.
@@ -2441,6 +2636,8 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         }),
                         declaring_namespace: u.declaring_namespace,
                         is_constructor: u.is_constructor,
+                        value_kind: u.value.and_then(|v| v.kind),
+                        is_compiler_generated: u.is_compiler_generated,
                     }
                 })
                 .collect();

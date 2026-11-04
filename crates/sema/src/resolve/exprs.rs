@@ -196,6 +196,23 @@ impl<'a> Resolver<'a> {
                 if let Some(ty) = e.obj_type() {
                     self.resolve_type(&ty);
                 }
+                // FCS declares the members' `base` value at the base type's
+                // name, the expression's first long identifier (its tokens, not
+                // the trivia the node starts with). The walk never resolves
+                // `base`, so it is an opaque binder.
+                if let Some(base) = e
+                    .syntax()
+                    .descendants()
+                    .find_map(borzoi_cst::syntax::LongIdent::cast)
+                {
+                    let idents: Vec<SyntaxToken> = base.idents().collect();
+                    if let (Some(first), Some(last)) = (idents.first(), idents.last()) {
+                        self.opaque_binders.insert(rowan::TextRange::new(
+                            first.text_range().start(),
+                            last.text_range().end(),
+                        ));
+                    }
+                }
                 if let Some(arg) = e.arg() {
                     self.resolve_method_args(&arg, Callee::MaybeNamed);
                 }
@@ -1006,8 +1023,8 @@ impl<'a> Resolver<'a> {
         // even a back-ticked `` ``base`` `` binder (whose token text carries the
         // backticks, so the unquoted-`base` test distinguishes them). Defer it,
         // and a spelling of a synthesized parameter binding too
-        // ([`is_synthesized_argument_name`](super::lookup::is_synthesized_argument_name)).
-        if tok.text() == "base" || super::lookup::is_synthesized_argument_name(&id_text(tok)) {
+        // ([`is_synthesized_name`](super::lookup::is_synthesized_name)).
+        if tok.text() == "base" || super::lookup::is_synthesized_name(&id_text(tok)) {
             return false;
         }
         // A bare use of a name that is one of the *currently-being-resolved*

@@ -69,6 +69,11 @@
 //! - `<file>:<line>:<col> "<text>"` → every in-file B1 use that is not a match
 //!   (gap, alt-binder, divergence), and every external-target use we did not
 //!   decline (a divergence).
+//! - `<file>:<line>:<col> "<name>" binder` → every binder FCS declares that the
+//!   walk neither interns nor declines, with its class and construct
+//!   (`borzoi_sema::test_support::binder_completeness`): binder completeness's
+//!   worklist. A use FCS binds to one of them that we commit is a divergence
+//!   (`… behind-binder`), whatever bucket the use is in.
 //!
 //! No line counts our own verdicts: such a count changes with every item it
 //! sums, so any two changes to one file's uses would conflict on it. The counts
@@ -118,11 +123,14 @@ use crate::common::corpus_manifest::{
     Positions, check_manifest, corpus_relative, regenerate_ignored,
 };
 use crate::common::{
-    Bucket, CensusDecl, FileCensus, ResolveDiffUse, census_resolve_uses, env_usize_or,
-    invoke_fcs_dump_census, parse_census_jsonl,
+    Bucket, CensusDecl, FileCensus, ResolveDiffUse, census_oracle_binders, census_oracle_uses,
+    census_resolve_uses, env_usize_or, invoke_fcs_dump_census, parse_census_jsonl,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_sema::test_support::binder_completeness::{
+    commits_behind_unmodelled_binders, unmodelled_binders,
+};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
@@ -178,6 +186,10 @@ struct Tally {
     /// One `(key, value)` per sampled file and per non-match use (see the
     /// module docs).
     manifest: Vec<(String, String)>,
+    /// Binders FCS declares that the walk neither interns nor declines
+    /// (`borzoi_sema::test_support::binder_completeness`), each also a manifest
+    /// line.
+    unmodelled_binders: usize,
     /// Compared files whose verdicts do not account for every oracle record
     /// the file's line counts, so its unlisted matches cannot be derived.
     unaccounted: Vec<String>,
@@ -240,7 +252,8 @@ fn resolution_matches_fcs_over_corpus() {
     eprintln!(
         "resolve-diff: {} files compared | {} match | {} diverge | {} alt-binder \
          ({} in files FCS checked cleanly) | {} gaps | in-file B1 coverage {}‰ | \
-         {} fcs-not-ok | {} our-errors | {} our-skipped | {} unreadable",
+         {} fcs-not-ok | {} our-errors | {} our-skipped | {} unreadable | \
+         {} unmodelled binders",
         tally.files_compared,
         tally.matches,
         tally.divergences.len(),
@@ -256,6 +269,7 @@ fn resolution_matches_fcs_over_corpus() {
         tally.our_errors,
         tally.our_skipped,
         tally.unreadable,
+        tally.unmodelled_binders,
     );
     eprintln!(
         "resolve-diff: {} external-target uses graded | {} left to a same-range \
@@ -354,16 +368,20 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
             return None; // signal "our errors" without panicking
         }
         let recovery = SyntaxRecovery::of(&parsed);
+        let root = parsed.root.clone();
         let impl_file = ImplFile::cast(parsed.root)?;
-        Some(resolve_file(
-            &impl_file,
-            &ProjectItems::default(),
-            &AssemblyEnv::default(),
-            &recovery,
+        Some((
+            root,
+            resolve_file(
+                &impl_file,
+                &ProjectItems::default(),
+                &AssemblyEnv::default(),
+                &recovery,
+            ),
         ))
     }));
-    let rf = match resolved {
-        Ok(Some(rf)) => rf,
+    let (root_node, rf) = match resolved {
+        Ok(Some(resolved)) => resolved,
         Ok(None) => {
             tally.our_errors += 1;
             tally.manifest.push((rel, "our-parse-errors".to_string()));
@@ -387,6 +405,42 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
     // external use) left to the counts.
     let (mut in_file_listed, mut matches) = (0usize, 0usize);
     let (mut external_listed, mut external_declined) = (0usize, 0usize);
+
+    // Binder completeness: every binder FCS declares that the walk does not
+    // know about is listed, and a use FCS binds to one must not commit.
+    let unmodelled = unmodelled_binders(&rf, &root_node, &census_oracle_binders(file, &source));
+    for b in &unmodelled {
+        tally.unmodelled_binders += 1;
+        tally.manifest.push((
+            format!(
+                "{rel}:{} {:?} binder",
+                positions.at(usize::from(b.range.start())),
+                b.name
+            ),
+            format!("unmodelled-binder {:?} {}", b.class, b.site),
+        ));
+    }
+    for c in commits_behind_unmodelled_binders(&rf, &unmodelled, &census_oracle_uses(file, &source))
+    {
+        let text = source
+            .get(usize::from(c.use_range.start())..usize::from(c.use_range.end()))
+            .unwrap_or("");
+        tally.manifest.push((
+            format!(
+                "{rel}:{} {text:?} behind-binder",
+                positions.at(usize::from(c.use_range.start()))
+            ),
+            "divergence commit-behind-unmodelled-binder".to_string(),
+        ));
+        tally.divergences.push(Site {
+            path: path.clone(),
+            range: c.use_range,
+            text: text.to_string(),
+            expected: format!("the unmodelled binder at {:?}", c.binder.range),
+            ours: format!("{:?}", c.committed),
+            fcs_check_errors: file.has_check_errors,
+        });
+    }
 
     let all_uses = census_resolve_uses(file, &source);
     // The ranges at which FCS records an in-file symbol, as a use *or* a

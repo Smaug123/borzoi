@@ -719,3 +719,84 @@ fn diff_sig_ast_ranges_exclude_exception_augmentation_end() {
     assert_sig_ast_ranges_match("module M\nexception E with end\n");
     assert_sig_ast_ranges_match("module M\nmodule Inner =\n  exception E with end\n");
 }
+
+/// Name ranges below the declaration, across the spellings a name can take:
+/// plain, backticked (including one that starts `op_`, an identifier rather
+/// than an operator), an operator in parentheses with and without spacing, and
+/// active patterns with spacing and a comment inside, each as a `let` binder,
+/// a function binder and a `member` name; and the case-name spellings of a
+/// union. Every cell must agree with FCS, except the glued `(*)` operator,
+/// which must still diverge (docs/fcs-divergences.md): when it is fixed, this
+/// says so.
+#[test]
+fn diff_ast_ranges_for_name_spellings() {
+    use crate::common::{ast_ranges_match, fcs_ast_batch};
+    use std::io::Write as _;
+
+    const BINDERS: &[&str] = &[
+        "x",
+        "``x y``",
+        "``op_Case``",
+        "(+)",
+        "( + )",
+        "( * )",
+        "(*)",
+        "(|A|)",
+        "(| A |)",
+        "(|A|_|)",
+        "(| A (* c *) | B |)",
+    ];
+    const CASES: &[&str] = &["A", "``A b``", "``op_Case``", "([])", "( :: ) of int * int"];
+    let mut sources: Vec<(String, bool)> = Vec::new();
+    for name in BINDERS {
+        let known = *name == "(*)";
+        sources.push((format!("let {name} = 1\n"), known));
+        sources.push((format!("let {name} a b = a\n"), known));
+        sources.push((format!("type T() =\n    member _.{name} a b = a\n"), known));
+        sources.push((
+            format!("type T() =\n    static member {name} (a, b) = a\n"),
+            known,
+        ));
+    }
+    for case in CASES {
+        sources.push((format!("type U =\n    | Z\n    | {case}\n"), false));
+    }
+    let mut failures = Vec::new();
+    let mut graded = 0;
+    for (src, known) in &sources {
+        let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("tempfile");
+        tmp.write_all(src.as_bytes()).expect("write");
+        let json = fcs_ast_batch(tmp.path());
+        let parse = borzoi_cst::parser::parse(src);
+        // A spelling FCS rejects in this position names nothing to compare.
+        if crate::common::fcs_parse_had_errors(&json) {
+            assert!(
+                !parse.errors.is_empty(),
+                "we accept {src:?}, which FCS rejects"
+            );
+            continue;
+        }
+        graded += 1;
+        let agrees = ast_ranges_match(&parse, &json, src).is_ok();
+        if agrees == *known {
+            failures.push(format!(
+                "{src:?}: {}",
+                if *known {
+                    "now agrees (update docs/fcs-divergences.md)"
+                } else {
+                    "diverges"
+                }
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "name-range cells:\n{}",
+        failures.join("\n")
+    );
+    assert!(
+        graded > sources.len() / 2,
+        "only {graded} of {} cells were graded",
+        sources.len()
+    );
+}

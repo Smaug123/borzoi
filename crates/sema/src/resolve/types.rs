@@ -823,6 +823,17 @@ impl<'a> Resolver<'a> {
     /// (sound under-resolution), a later slice.
     pub(super) fn resolve_type_member_bodies(&mut self, defn: &TypeDefn) {
         if super::is_type_augmentation(defn) {
+            // The walk does not enter an augmentation's members, so it commits
+            // no use there that their binders could capture.
+            let mut members: Vec<MemberDefn> = defn.members().collect();
+            if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
+                members.extend(om.members());
+            }
+            self.opaque_regions.extend(
+                members
+                    .iter()
+                    .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
+            );
             return;
         }
         // The same member union `define_type_members` files: object-model repr
@@ -856,6 +867,25 @@ impl<'a> Resolver<'a> {
             }
         }
         let mut static_entries: Vec<ScopeEntry> = Vec::new();
+        // FCS declares the members' `base` value at the `inherit` member,
+        // keyword to arguments. The walk never resolves `base`, so it is an
+        // opaque binder.
+        for m in &members {
+            if let MemberDefn::Inherit(i) = m {
+                let mut tokens = i
+                    .syntax()
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .filter(|t| !t.kind().is_trivia());
+                if let Some(first) = tokens.next() {
+                    let end = tokens.last().unwrap_or_else(|| first.clone());
+                    self.opaque_binders.insert(TextRange::new(
+                        first.text_range().start(),
+                        end.text_range().end(),
+                    ));
+                }
+            }
+        }
 
         // Class-level `let`/`do`, in source order — each RHS/body sees the fields
         // (of matching or wider staticness) declared before it.
@@ -1091,6 +1121,13 @@ impl<'a> Resolver<'a> {
                 entries.extend(self.instance_receiver_entries(self_tok.as_ref(), has_base));
             }
             entries.extend(self.pattern_locals(l.args(), BinderRole::Param));
+        }
+        // A secondary constructor's `as this`: in scope in its body, the
+        // `then` block included.
+        if let Some(self_tok) = b.ctor_self_id()
+            && let Some(entry) = self.bind_self_ident(&self_tok)
+        {
+            entries.push(entry);
         }
         if let Some(ret) = b.return_type() {
             self.resolve_type(&ret);
@@ -1412,10 +1449,17 @@ impl<'a> Resolver<'a> {
             // constraint-only variable), it stays unrecorded: a sound deferral.
             Type::Var(t) => {
                 if let Some(tok) = t.ident()
-                    && let Some(id) = self.lookup_typar(&id_text(&tok))
                     && let Some((range, _)) = typar_occurrence(t.syntax())
                 {
-                    self.record(range, Resolution::Local(id));
+                    match self.lookup_typar(&id_text(&tok)) {
+                        Some(id) => self.record(range, Resolution::Local(id)),
+                        // No declared typar of the name is in scope: FCS
+                        // declares one implicitly at its first occurrence, which
+                        // this left unrecorded is an opaque binder of.
+                        None => {
+                            self.opaque_binders.insert(range);
+                        }
+                    }
                 }
             }
             // No in-file type-name use to resolve (or one whose accessor surface
@@ -1955,6 +1999,13 @@ impl<'a> Resolver<'a> {
     ) {
         for list in lists {
             for attr in list.attributes() {
+                // The walk resolves no use in an attribute's argument, so a
+                // binder FCS declares there (an implicit type parameter of a
+                // `typeof<'U>`) is one it knows declines.
+                if let Some(arg) = attr.arg() {
+                    self.opaque_regions
+                        .push(super::model::OpaqueRegion::Range(arg.syntax().text_range()));
+                }
                 if let Some(type_name) = attr.type_name() {
                     self.resolve_attribute_type(&type_name);
                 } else {

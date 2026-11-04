@@ -1788,7 +1788,6 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ControlFlowExpressi
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/AddressOf/E_byrefvaluesnotpermitted001.fs	compared fcs-check-errors b1=1 external=1
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ComputationExpressions/E_MissingTryFinally.fs	compared fcs-check-errors b1=14 external=4
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs	compared fcs-check-errors b1=2 external=9
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:9 "this"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs	compared fcs-clean b1=4 external=10
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs	compared fcs-check-errors b1=9 external=13
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_Sequential01.fs:16:18 "ds"	gap
@@ -1807,6 +1806,8 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/Que
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:48:18 "customers"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:51:26 "c"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:55:34 "yg"	gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:56:36 "o"	gap
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:56:39 "o"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:57:33 "mg"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:57:41 "mg"	gap
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:59:25 "yg"	gap
@@ -2045,11 +2046,14 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Jo
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:30:37 "c"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:30:41 "p"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:31:18 "ps"	gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:32:20 "p"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:38:18 "categories"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:24 "products"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:37 "c"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:39:41 "p"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:40:18 "ps"	gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:41:25 "p"	gap
+tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:41:61 "p"	gap
 tests/FSharp.Compiler.ComponentTests/EmittedIL/RealInternalSignature/ClassTypeVisibilityNamespaceRoot.fs	compared fcs-check-errors b1=29 external=117
 tests/FSharp.Compiler.ComponentTests/EmittedIL/SeqExpressionStepping/SeqExpressionSteppingTest07.fs	compared fcs-clean b1=48 external=63
 tests/FSharp.Compiler.ComponentTests/EmittedIL/StaticOptimizations/StaticOptimizations.fs	compared fcs-check-errors b1=5 external=14
@@ -2146,6 +2150,7 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:17:73 "^a"	gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:17:78 "^b"	gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:17:84 "^c"	gap
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:17:84 "c" binder	unmodelled-binder TypeParameter VAR_TYPE<FUN_TYPE<VAL_SIG
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:19:11 "TestType"	gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:20:11 "TestType"	gap
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_LessThanDotOpenParen001.fs:30:10 "TestType"	gap
@@ -2728,9 +2733,11 @@ tests/fsharp/typecheck/sigs/neg36.fs:31:17 "PC"	gap x4
 tests/fsharp/typecheck/sigs/neg36.fs:31:18 "C"	gap
 tests/fsharp/typecheck/sigs/neg48.fs	compared fcs-check-errors b1=0 external=56
 tests/fsharp/typecheck/sigs/neg59.fs	compared fcs-check-errors b1=12 external=55
+tests/fsharp/typecheck/sigs/neg59.fs:10:21 "i"	gap
 tests/fsharp/typecheck/sigs/neg59.fs:13:22 "dbOne"	gap
 tests/fsharp/typecheck/sigs/neg59.fs:15:30 "dbOne"	gap
 tests/fsharp/typecheck/sigs/neg59.fs:15:40 "i"	gap
+tests/fsharp/typecheck/sigs/neg59.fs:16:21 "i"	gap
 tests/fsharp/typecheck/sigs/neg59.fs:16:24 "group"	gap
 tests/fsharp/typecheck/sigs/neg59.fs:19:22 "dbOne"	gap
 tests/fsharp/typecheck/sigs/neg59.fs:7:22 "dbOne"	gap

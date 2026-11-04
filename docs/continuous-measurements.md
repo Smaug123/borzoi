@@ -155,7 +155,10 @@ not belong" look identical from a workflow file.
   moves when the corpus pin does is a constant with extra steps. Run it by hand
   when a pin changes.
 - `lexfilter_corpus` is a divergence *histogram*, not an assertion, and its FCS
-  side costs ~1.65 s per file — hours over the corpus. It points at the next
+  side costs seconds per file (FCS's own tokenizer, not the JSON: measured on
+  2026-10-08, 40 files of `src/Compiler/Checking` took 261 s through the public
+  stream and 487 s through the internal one, under load) — hours over the
+  corpus. It points at the next
   LexFilter arm worth porting, which is a question you ask deliberately.
 - The per-area report generators (`tier_order_diff`, `companion_head_diff`,
   `classify_diff`, `classify_assembly_diff`, `extension_shadow_diff`,
@@ -224,6 +227,8 @@ Granularity is chosen per sweep, to keep each file reviewable:
 | `recovery_sweep` (cst) | keyed by file, deletion offset and family. One per sampled single-token deletion graded against FCS: the relation and its compared/undamaged/total counts ([parser-recovery-oracle.md](parser-recovery-oracle.md)). |
 | `xml_doc_source_corpus` (lsp) | keyed. One per sampled file (compared or skipped and why; whether FCS's check errored) and one per occurrence hover was graded at, keyed by its range: what we resolved there and its verdict — agreement on a doc or on none, a decline with its cause and whether FCS had a doc, an unpaired answer, an oracle-ambiguous site. Agreements are listed too (~36k): an occurrence is ours, not an oracle record, so no count of the oracle's would leave them derivable. |
 | `xml_doc_source_projects` (lsp) | as `xml_doc_source_corpus`, over the pinned projects: one per project with FCS's error count, and one per graded occurrence, keyed `<project> <file>:<range>` (two projects may compile one file, and each project's answers are separate facts), a use of a declaration in another file marked `cross-file-use`. |
+| `accessor_coverage` (cst) | one per typed-AST accessor the parser differential's projection reads on a file that matches FCS (written by `parser_corpus_diff`). The ordinary suite holds sema's and the LSP's accessor calls to it, so it is the contract between the parser oracle and its consumers rather than a measurement. |
+| `dot_index_spacing` (cst, not ignored) | one per cell of the dotted-indexer spacing matrix whose recovered tree diverges from FCS's. |
 | `bcl_ref_pack_projection` (assembly) | the pack version, one per kept type with its member count, and one per dropped member with its reason. |
 | `fsproj_msbuild_corpus_diff` (msbuild) | one per pinned `.fsproj`, `<project>\t<outcomes>`: a project-level `error(...)`, or each facet's `match`, `decline(<first cause>)` or `skip(<reason>)`. A tab separates the two because a path may contain a space. A run over a project list checks just the listed projects' entries. |
 | `bcl_ref_pack_interface_impls` (assembly) | the pack version, and one per type implementing interface members: how many, and how many of those are implicit static impls. |

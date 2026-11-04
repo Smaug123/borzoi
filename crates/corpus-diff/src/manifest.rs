@@ -30,7 +30,10 @@
 //!   item of ours the oracle is silent about: deferrals with what was served
 //!   and which guard declined, matches through the attribute or member
 //!   surface, ambiguous ranges, shadowed constructor records, our or-pattern
-//!   aliases, and so on. Several records at one range and name (FCS reports an
+//!   aliases, and so on — and every binder the oracle declares that the walk
+//!   does not know about (`unmodelled-binder <class>`,
+//!   [`ItemOutcome::UnmodelledBinder`]), which is an item beside its
+//!   definition record's, not that record's outcome. Several records at one range and name (FCS reports an
 //!   attribute's name and its constructor there) are one line, their outcomes
 //!   its values.
 //!
@@ -147,6 +150,7 @@ fn of_an_oracle_record(outcome: ItemOutcome) -> bool {
         | ItemOutcome::SetAside(_) => true,
         ItemOutcome::UnoracledDefinition
         | ItemOutcome::UnoracledOrPatternAlias
+        | ItemOutcome::UnmodelledBinder(_)
         | ItemOutcome::ReverseDivergence => false,
     }
 }
@@ -520,5 +524,6 @@ fn outcome_label(outcome: ItemOutcome) -> String {
         ItemOutcome::UnoracledDefinition => "unoracled-definition".to_string(),
         ItemOutcome::UnoracledOrPatternAlias => "unoracled-or-pattern-alias".to_string(),
         ItemOutcome::ReverseDivergence => "reverse-divergence".to_string(),
+        ItemOutcome::UnmodelledBinder(class) => format!("unmodelled-binder {class:?}"),
     }
 }

@@ -22,8 +22,8 @@
 use std::path::PathBuf;
 
 use crate::common::{
-    CensusDecl, FileCensus, census_resolve_uses, invoke_fcs_dump_census, parse_census_jsonl,
-    temp_fs_file,
+    CensusDecl, FileCensus, census_oracle_binders, census_resolve_uses, invoke_fcs_dump_census,
+    parse_census_jsonl, temp_fs_file, unmodelled_binder_failures,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -495,6 +495,14 @@ fn receiver_names_never_bind_an_enclosing_value_fcs_hides() {
         let clean = file.ok && !file.has_check_errors;
         clean_rows += usize::from(clean && with_receiver[i]);
         let rf = resolve(src);
+        if clean {
+            failures.extend(unmodelled_binder_failures(
+                &format!("row {i}"),
+                src,
+                &rf,
+                &census_oracle_binders(file, src),
+            ));
+        }
         for w in wrong_commitments(src, &rf, file, clean) {
             failures.push(format!("{w}\n{src}"));
         }

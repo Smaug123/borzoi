@@ -39,8 +39,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::common::{
-    CensusDecl, census_resolve_uses, full_bcl_env, invoke_fcs_dump_census, parse_census_jsonl,
-    temp_fs_file,
+    CensusDecl, census_oracle_binders, census_resolve_uses, full_bcl_env, invoke_fcs_dump_census,
+    parse_census_jsonl, temp_fs_file, unmodelled_binder_failures,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -519,6 +519,14 @@ fn grade(program: &Program, file: &crate::common::FileCensus, clean: bool) -> Ve
     let rf = resolve(src);
     let uses = census_resolve_uses(file, src);
     let mut v = Verdict::default();
+    if clean {
+        v.wrong.extend(unmodelled_binder_failures(
+            "binder completeness",
+            src,
+            &rf,
+            &census_oracle_binders(file, src),
+        ));
+    }
 
     for (range, res) in rf.resolutions() {
         let range = *range;
