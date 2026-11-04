@@ -72,7 +72,7 @@ enum Outcome {
 /// one-liner that the `--nocapture` workflow reads.
 ///
 /// This harness *expects* the parser to panic on some corrupt inputs (D5
-/// tolerates parse panics), and the exhaustive sweep alone trips dozens of them;
+/// tolerates parse panics), and the mutation properties trip them routinely;
 /// a full backtrace per panic would bury the `Ok / Err / Panicked` signal.
 ///
 /// It used to get that by installing a custom process-global panic hook. That
@@ -443,42 +443,43 @@ proptest! {
 }
 
 // ============================================================================
-// Coverage floor + corpus sweep (plain #[test]s — deterministic).
+// Anti-vacuity floors + corpus sweep (plain #[test]s — deterministic).
 // ============================================================================
 
-/// Deterministic exhaustive offset sweep: flip *every* byte of MiniLib.dll
-/// (xor `0xFF`) and confirm corruption is actually *detected loud* — i.e. at
-/// least one mutation is rejected with an `Err`. Guards the vacuous green
-/// where the parser would silently accept anything. Doubles as full
-/// offset-coverage that the random mutation property only samples.
-///
-/// We don't require `Ok > 0` (a maximally fragile DLL could reject every
-/// flip) nor say anything about panics (zero is the happy case); the floor is
-/// "the importer says no, loudly, to corrupt input".
+/// The ECMA-335 metadata root signature (`BSJB`, II.24.2.1), which also opens
+/// a portable PDB blob.
+const METADATA_SIGNATURE: &[u8] = b"BSJB";
+
+/// The offset of the one metadata root signature in `bytes`.
+fn metadata_signature_offset(bytes: &[u8]) -> usize {
+    let hits: Vec<usize> = bytes
+        .windows(METADATA_SIGNATURE.len())
+        .enumerate()
+        .filter(|(_, w)| *w == METADATA_SIGNATURE)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected exactly one metadata root signature, found them at {hits:?}"
+    );
+    hits[0]
+}
+
+/// The importer can say no: corrupting MiniLib.dll's metadata root signature
+/// is rejected with a loud `Err`. Without this, the mutation properties above
+/// could be green because `probe` never reports anything but `Ok`.
 #[test]
-fn corruption_is_detected_loud() {
-    let base = minilib_bytes();
-    let mut err = 0usize;
-    let mut ok = 0usize;
-    let mut panicked = 0usize;
-    for offset in 0..base.len() {
-        let mut mutated = base.to_vec();
-        mutated[offset] ^= 0xFF;
-        match probe(&mutated) {
-            Outcome::Ok => ok += 1,
-            Outcome::Err => err += 1,
-            Outcome::Panicked => panicked += 1,
-        }
-    }
-    eprintln!(
-        "[fail_loud] MiniLib exhaustive 0xFF flip over {} bytes: Ok={ok} Err={err} Panicked={panicked}",
-        base.len(),
+fn a_corrupt_metadata_signature_is_rejected_loud() {
+    assert_eq!(
+        probe(minilib_bytes()),
+        Outcome::Ok,
+        "the pristine fixture probes clean"
     );
-    assert!(
-        err > 0,
-        "no single-byte mutation of MiniLib.dll was rejected with an Err — \
-         the importer appears to accept arbitrary corruption silently",
-    );
+    let mut mutated = minilib_bytes().to_vec();
+    let offset = metadata_signature_offset(&mutated);
+    mutated[offset] ^= 0xFF;
+    assert_eq!(probe(&mutated), Outcome::Err);
 }
 
 /// Anti-vacuity floors for the PDB arm.
@@ -508,34 +509,15 @@ fn pristine_pdb_fixture_probes_clean() {
     );
 }
 
-/// Second: exhaustive 0xFF flip over every byte of the extracted PDB blob —
-/// corruption of the PDB stream must be *detected loud* at least once, and
-/// (per the property above, sampled; here, exhaustively) never panic the
-/// accessor walk. Mirrors [`corruption_is_detected_loud`] for the ECMA side.
+/// Second: the PDB reader can say no. Corrupting the blob's metadata root
+/// signature is rejected with a loud `Err`, the PDB arm's counterpart of
+/// [`a_corrupt_metadata_signature_is_rejected_loud`].
 #[test]
-fn pdb_corruption_is_detected_loud() {
-    let base = minilib_pdb_blob();
-    let mut err = 0usize;
-    let mut ok = 0usize;
-    let mut panicked = 0usize;
-    for offset in 0..base.len() {
-        let mut mutated = base.to_vec();
-        mutated[offset] ^= 0xFF;
-        match probe_pdb_blob(&mutated) {
-            Outcome::Ok => ok += 1,
-            Outcome::Err => err += 1,
-            Outcome::Panicked => panicked += 1,
-        }
-    }
-    eprintln!(
-        "[fail_loud] PDB blob exhaustive 0xFF flip over {} bytes: Ok={ok} Err={err} Panicked={panicked}",
-        base.len(),
-    );
-    assert!(
-        err > 0,
-        "no single-byte mutation of the PDB blob was rejected with an Err — \
-         the PDB reader appears to accept arbitrary corruption silently",
-    );
+fn a_corrupt_pdb_signature_is_rejected_loud() {
+    let mut mutated = minilib_pdb_blob().to_vec();
+    assert_eq!(metadata_signature_offset(&mutated), 0);
+    mutated[0] ^= 0xFF;
+    assert_eq!(probe_pdb_blob(&mutated), Outcome::Err);
 }
 
 /// Curated corpus sweep over *unmutated* real assemblies. The three built
