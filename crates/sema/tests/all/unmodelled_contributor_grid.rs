@@ -34,7 +34,7 @@ use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
     FileUses, NormalisedProjectUse, ensure_ce_extension_fixture_built,
     ensure_contributor_fixture_built, ensure_fsharp_core_dll, invoke_fcs_dump_project_with_refs,
-    parse_fcs_uses_project, temp_fs_tree,
+    parse_fcs_uses_project, temp_fs_tree, unmodelled_project_binder_failures,
 };
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
@@ -1168,6 +1168,14 @@ fn grade(all: &[Cell], manifest: &str, test: &str) {
         }
 
         let proj = resolve_project_files(&project(&rel), env);
+        if errors.is_empty() {
+            failures.extend(unmodelled_project_binder_failures(
+                &cell.label,
+                &proj,
+                &written,
+                &fcs,
+            ));
+        }
         let ours = proj
             .file(probe_idx)
             .resolution_at(cell.probe)

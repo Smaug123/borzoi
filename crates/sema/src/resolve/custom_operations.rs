@@ -28,7 +28,7 @@
 //! `[<Extension>]` method), and every one a referenced assembly declares on
 //! an extension member, is an operation of every builder.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use borzoi_cst::syntax::{
     AstNode, Attribute, AttributeList, Binding, ComputationExpr, Expr, InheritMember, Pat,
@@ -340,95 +340,175 @@ fn string_literal_text(tok: &SyntaxToken) -> Option<Option<String>> {
     )
 }
 
-/// Every bare identifier the translation of the expression whose body is
-/// `comp` may read as a custom-operation clause by name alone: the head of
-/// each clause, and the identifiers applied in its spine (a join's condition
-/// word, `into`). Follows the clause positions of
-/// `TryTranslateComputationExpression` — sequenced statements, a `let`'s body,
-/// the branches of an `if`, a `match` or a `try`, a loop's body — and nothing
-/// a clause applies to beyond its spine.
-fn clause_identifiers(comp: &Expr, out: &mut Vec<SyntaxToken>) {
+/// The clauses of the expression whose body is `comp`, which the
+/// translation may read as custom-operation clauses: it follows the clause
+/// positions of `TryTranslateComputationExpression` — sequenced statements, a
+/// `let`'s body, the branches of an `if`, a `match` or a `try`, a loop's body
+/// — and nothing a clause applies to beyond its spine.
+fn clause_positions(comp: &Expr, out: &mut Vec<Expr>) {
     match comp {
         Expr::Sequential(e) => {
             for s in e.statements() {
-                clause_identifiers(&s, out);
+                clause_positions(&s, out);
             }
         }
         Expr::LetOrUse(e) => {
             if let Some(body) = e.body() {
-                clause_identifiers(&body, out);
+                clause_positions(&body, out);
             }
         }
         Expr::IfThenElse(e) => {
             for branch in [e.then_branch(), e.else_branch()].into_iter().flatten() {
-                clause_identifiers(&branch, out);
+                clause_positions(&branch, out);
             }
         }
         Expr::Match(e) => {
             for c in e.clauses() {
                 if let Some(r) = c.result() {
-                    clause_identifiers(&r, out);
+                    clause_positions(&r, out);
                 }
             }
         }
         Expr::MatchBang(e) => {
             for c in e.clauses() {
                 if let Some(r) = c.result() {
-                    clause_identifiers(&r, out);
+                    clause_positions(&r, out);
                 }
             }
         }
         Expr::Try(e) => {
             if let Some(t) = e.try_expr() {
-                clause_identifiers(&t, out);
+                clause_positions(&t, out);
             }
             for c in e.with_clauses() {
                 if let Some(r) = c.result() {
-                    clause_identifiers(&r, out);
+                    clause_positions(&r, out);
                 }
             }
             if let Some(f) = e.finally_expr() {
-                clause_identifiers(&f, out);
+                clause_positions(&f, out);
             }
         }
         Expr::While(e) => {
             if let Some(b) = e.body() {
-                clause_identifiers(&b, out);
+                clause_positions(&b, out);
             }
         }
         Expr::WhileBang(e) => {
             if let Some(b) = e.body() {
-                clause_identifiers(&b, out);
+                clause_positions(&b, out);
             }
         }
         Expr::ForEach(e) => {
             if let Some(b) = e.body() {
-                clause_identifiers(&b, out);
+                clause_positions(&b, out);
             }
         }
         Expr::For(e) => {
             if let Some(b) = e.body() {
-                clause_identifiers(&b, out);
+                clause_positions(&b, out);
             }
         }
-        _ => clause_spine(comp, out),
+        _ => out.push(comp.clone()),
     }
 }
 
-/// The identifiers of one clause's application spine the translation reads
-/// by name: its head (`StripApps`), an `into` it applies (`IntoSuffix`),
-/// and — in a join, whose sources a `JoinIn` separates — the condition word
-/// it applies (`OnExpr`), which the operation names as it likes. An argument
-/// is otherwise an ordinary expression.
-fn clause_spine(e: &Expr, out: &mut Vec<SyntaxToken>) {
+/// The variables the clauses of `ce` whose operation is one of `names` bind
+/// (not a nested expression's), with whether each resets the variable space:
+///
+/// - a join's (`join x in ys on …`, `groupJoin`, `leftOuterJoin`): the
+///   argument the operation applies before the `JoinIn`'s `in` — FCS's
+///   `JoinOrGroupJoinOrZipClause`, which binds it for the condition and the
+///   clauses after;
+/// - an `into`'s (`… into g`): the last argument, applied after an `into`
+///   (FCS's `IntoSuffix`). After an operation's own `into` (`groupBy x into
+///   g`) the clauses see only that variable, so it resets the variable space;
+///   a join's `into` (`groupJoin … into g`) adds its variable beside the
+///   earlier ones.
+fn custom_operation_binders(
+    ce: &ComputationExpr,
+    names: &BTreeSet<String>,
+) -> Vec<(SyntaxToken, bool)> {
+    let mut clauses = Vec::new();
+    if let Some(inner) = ce.inner() {
+        clause_positions(&inner, &mut clauses);
+    }
+    let idents = |e: &Expr| -> Vec<SyntaxToken> {
+        e.syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+            .collect()
+    };
+    let mut out = Vec::new();
+    for spine in clauses.iter().map(clause_spine) {
+        if !spine
+            .head
+            .as_ref()
+            .is_some_and(|h| names.contains(&*id_text(h)))
+        {
+            continue;
+        }
+        let joins = !spine.join_vars.is_empty();
+        out.extend(spine.join_vars.iter().flat_map(idents).map(|t| (t, false)));
+        if let [.., Expr::Ident(into), var] = spine.args.as_slice()
+            && into.ident().is_some_and(|t| &*id_text(&t) == "into")
+        {
+            out.extend(idents(var).into_iter().map(|t| (t, !joins)));
+        }
+    }
+    out
+}
+
+/// One clause's application spine, which the translation reads by name.
+struct ClauseSpine {
+    /// The operation (`StripApps`), when it is a single identifier.
+    head: Option<SyntaxToken>,
+    /// What the operation applies after a join's sources (to the right of
+    /// the `JoinIn`'s `in`, or around the `JoinIn`), or all it applies when
+    /// it is no join, in source order.
+    args: Vec<Expr>,
+    /// What a join applies before its `JoinIn`'s `in`: the join's variable.
+    join_vars: Vec<Expr>,
+}
+
+impl ClauseSpine {
+    /// The identifiers the translation reads by name: the head, an `into`
+    /// the clause applies (`IntoSuffix`), and — in a join, whose sources a
+    /// `JoinIn` separates — the condition word it applies (`OnExpr`), which
+    /// the operation names as it likes. An argument is otherwise an
+    /// ordinary expression.
+    fn identifiers(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        let joins = !self.join_vars.is_empty();
+        let words = self
+            .join_vars
+            .iter()
+            .chain(&self.args)
+            .filter_map(|a| match a {
+                Expr::Ident(i) => i.ident(),
+                _ => None,
+            })
+            .filter(move |t| joins || &*id_text(t) == "into");
+        self.head.clone().into_iter().chain(words)
+    }
+}
+
+/// The application spine of the clause `e`.
+fn clause_spine(e: &Expr) -> ClauseSpine {
     let mut args = Vec::new();
-    let mut joins = false;
+    let mut join_vars = Vec::new();
+    let mut in_join = false;
+    let mut head_tok = None;
     let mut head = e.clone();
     loop {
         match head {
             Expr::App(app) if !app.is_infix() => {
-                if let Some(Expr::Ident(i)) = app.arg() {
-                    args.extend(i.ident());
+                if let Some(arg) = app.arg() {
+                    if in_join {
+                        join_vars.push(arg);
+                    } else {
+                        args.push(arg);
+                    }
                 }
                 match app.func() {
                     Some(f) => head = f,
@@ -436,21 +516,31 @@ fn clause_spine(e: &Expr, out: &mut Vec<SyntaxToken>) {
                 }
             }
             Expr::JoinIn(j) => {
-                joins = true;
+                in_join = true;
+                // `groupJoin p in ps on (…) into g`: the `in` takes the rest
+                // of the clause, so what follows the sources is applied to
+                // them.
+                let mut rhs = j.rhs();
+                while let Some(Expr::App(app)) = rhs
+                    && !app.is_infix()
+                {
+                    args.extend(app.arg());
+                    rhs = app.func();
+                }
                 match j.lhs() {
                     Some(l) => head = l,
                     None => break,
                 }
             }
             Expr::Ident(i) => {
-                out.extend(i.ident());
+                head_tok = i.ident();
                 break;
             }
             Expr::LongIdent(li) => {
                 if let Some(li) = li.long_ident() {
                     let segs: Vec<SyntaxToken> = li.idents().collect();
                     if let [only] = segs.as_slice() {
-                        out.push(only.clone());
+                        head_tok = Some(only.clone());
                     }
                 }
                 break;
@@ -458,7 +548,13 @@ fn clause_spine(e: &Expr, out: &mut Vec<SyntaxToken>) {
             _ => break,
         }
     }
-    out.extend(args.into_iter().filter(|t| joins || &*id_text(t) == "into"));
+    args.reverse();
+    join_vars.reverse();
+    ClauseSpine {
+        head: head_tok,
+        args,
+        join_vars,
+    }
 }
 
 /// The token of the name an expression applies or constructs from, for
@@ -518,15 +614,18 @@ impl Resolver<'_> {
             return false;
         }
         if let Some(inner) = ce.inner() {
-            let mut heads = Vec::new();
-            clause_identifiers(&inner, &mut heads);
-            for tok in heads {
-                if names.contains(&*id_text(&tok)) {
-                    self.custom_operation_clauses
-                        .insert(tok.text_range(), cause);
+            let mut clauses = Vec::new();
+            clause_positions(&inner, &mut clauses);
+            for spine in clauses.iter().map(clause_spine) {
+                for tok in spine.identifiers() {
+                    if names.contains(&*id_text(&tok)) {
+                        self.custom_operation_clauses
+                            .insert(tok.text_range(), cause);
+                    }
                 }
             }
         }
+        self.decline_custom_operation_binders(ce, &names);
         let pos = u32::from(ce.syntax().text_range().start());
         let generation = self.open_generation;
         let entries = names
@@ -540,6 +639,55 @@ impl Resolver<'_> {
             .collect();
         self.scopes.push(Frame { entries });
         true
+    }
+
+    /// The variables `ce`'s custom-operation clauses bind, which the walk
+    /// knows of but does not intern ([`custom_operation_binders`]): each is an
+    /// [opaque binder](super::ResolvedFile::opaque_binders), and every later
+    /// spelling of a name one may capture declines, bare or as a dotted head —
+    /// its own name, and after an `into` that resets the variable space, every
+    /// name a pattern of the expression bound before it, which the clauses
+    /// after it no longer see.
+    ///
+    /// Declined by token rather than by a scope entry because the capture is
+    /// positional in a way the frames are not: a join's variable shadows a
+    /// `for` variable of its name that the walk pushed *after* this
+    /// expression's own frame, and a reset sends a later use of a name past
+    /// the expression altogether.
+    fn decline_custom_operation_binders(&mut self, ce: &ComputationExpr, names: &BTreeSet<String>) {
+        let binders = custom_operation_binders(ce, names);
+        if binders.is_empty() {
+            return;
+        }
+        let idents: Vec<SyntaxToken> = ce
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+            .collect();
+        for (binder, resets) in binders {
+            let at = binder.text_range().start();
+            self.opaque_binders.insert(binder.text_range());
+            let mut declined: HashSet<String> = HashSet::from([id_text(&binder).to_string()]);
+            if resets {
+                // Over-approximate: every identifier in a pattern before the
+                // `into`, case names included, which only declines more.
+                declined.extend(
+                    idents
+                        .iter()
+                        .filter(|t| t.text_range().start() < at)
+                        .filter(|t| t.parent_ancestors().any(|n| Pat::can_cast(n.kind())))
+                        .map(|t| id_text(t).to_string()),
+                );
+            }
+            for tok in &idents {
+                if tok.text_range().start() >= at && declined.contains(&*id_text(tok)) {
+                    self.custom_operation_clauses
+                        .entry(tok.text_range())
+                        .or_insert(DeclineCause::OpaqueBinder);
+                }
+            }
+        }
     }
 
     /// Leave a computation expression [`Self::enter_computation_expression`]

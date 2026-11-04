@@ -36,8 +36,8 @@ use rowan::TextRange;
 
 use crate::common::scope_gen::{Expected, Form, Generated, RefKind, generate, generate_seed};
 use crate::common::{
-    CensusDecl, census_resolve_uses, env_usize_or, invoke_fcs_dump_census, parse_census_jsonl,
-    temp_fs_file,
+    CensusDecl, census_oracle_binders, census_resolve_uses, env_usize_or, invoke_fcs_dump_census,
+    parse_census_jsonl, temp_fs_file, unmodelled_binder_failures,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -219,6 +219,12 @@ fn generated_programs_agree_with_fcs() {
             .filter(|u| !u.is_from_definition && u.start != u.end)
             .collect();
         let rf = resolve(&g.src);
+        ours_wrong.extend(unmodelled_binder_failures(
+            &format!("seed {seed}"),
+            &g.src,
+            &rf,
+            &census_oracle_binders(file, &g.src),
+        ));
 
         // The generator against FCS, at every planted use.
         for r in &g.refs {

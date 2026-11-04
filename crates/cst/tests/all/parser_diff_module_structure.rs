@@ -2407,8 +2407,8 @@ fn diff_ast_new_ctor_tuple_args() {
     assert_asts_match("type T =\n  val x : int\n  new(a, b) = { x = a }\n");
 }
 
-/// Phase 9.10b — `new(a) as self = …`; the `as self` is elided (FCS stores it in
-/// `valData.thisIdOpt`).
+/// Phase 9.10b — `new(a) as self = …`; FCS stores the `as self` in
+/// `valData.thisIdOpt`, compared as the binding's `self_id`.
 #[test]
 fn diff_ast_new_ctor_as_self() {
     assert_asts_match("type T =\n  val x : int\n  new(a) as self = { x = a }\n");

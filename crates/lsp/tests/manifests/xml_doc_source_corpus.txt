@@ -28447,9 +28447,11 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/Obj
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:10-19:11	d Parameter def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:19-19:20	m Parameter def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:28-19:29	y Parameter def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:19:39-19:43	this Value { is_function: false } def declined PatternBinder fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:33-20:34	y Parameter use unpaired-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:35-20:36	m Parameter use unpaired-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:37-20:38	d Parameter use unpaired-none
+tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/E_InvalidSelfReferentialStructConstructor.fs:20:9-20:13	this Value { is_function: false } use declined PatternBinder fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs	compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs:10:19-10:20	x Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ObjectExpressions/ValidStructConstructor.fs:10:26-10:27	x Value { is_function: false } use agree-none
@@ -28511,8 +28513,6 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/Que
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:52:31-52:32	o PatternLocal use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:53:21-53:32	monthGroups Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:55:29-55:30	o PatternLocal def agree-none
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:56:36-56:37	o PatternLocal use agree-none
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:56:39-56:40	o PatternLocal use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:59:33-59:44	monthGroups Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:61:17-61:18	c PatternLocal use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Grouping01.fs:61:32-61:42	yearGroups Value { is_function: false } use agree-none
@@ -29561,6 +29561,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/C
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/MemberDeclarations/MemberDeclarations.fs:95:9-95:20	compilation Parameter use agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs	compared fcs-check-errors
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs:7:6-7:7	A Type def agree-none
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs:9:23-9:24	y Value { is_function: false } def declined PatternBinder fcs-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs:9:8-9:9	x Parameter def agree-none
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs	compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/StaticLetDoDeclarations/LexicalScoping01.fs:11:5-11:11	verify Value { is_function: false } def agree-none
@@ -30963,13 +30964,10 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Jo
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:29:13-29:14	c PatternLocal def agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:31:13-31:14	p PatternLocal def agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:32:17-32:18	c PatternLocal use agree-none
-tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:32:20-32:21	p PatternLocal use agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:36:5-36:7	q4 Value { is_function: false } def agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:38:13-38:14	c PatternLocal def agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:40:13-40:14	p PatternLocal def agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:41:13-41:14	t Value { is_function: false } def agree-none
-tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:41:25-41:26	p PatternLocal use agree-none
-tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:41:61-41:62	p PatternLocal use agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:42:17-42:18	c PatternLocal use agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:42:20-42:21	t Value { is_function: false } use agree-none
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs:8:5-8:15	categories Value { is_function: false } def agree-none
@@ -38244,7 +38242,6 @@ tests/fsharp/typecheck/sigs/neg59.fs:106:5-106:31	useInQueryNoCustomOperator Val
 tests/fsharp/typecheck/sigs/neg59.fs:107:17-107:18	i PatternLocal def unpaired-none
 tests/fsharp/typecheck/sigs/neg59.fs:108:19-108:20	x Value { is_function: false } def unpaired-none
 tests/fsharp/typecheck/sigs/neg59.fs:109:21-109:22	i PatternLocal use unpaired-none
-tests/fsharp/typecheck/sigs/neg59.fs:10:21-10:22	i PatternLocal use agree-none
 tests/fsharp/typecheck/sigs/neg59.fs:111:5-111:35	whileInQueryWithCustomOperator Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg59.fs:112:17-112:18	i PatternLocal def unpaired-none
 tests/fsharp/typecheck/sigs/neg59.fs:114:24-114:25	i PatternLocal use unpaired-none
@@ -38259,8 +38256,6 @@ tests/fsharp/typecheck/sigs/neg59.fs:127:17-127:18	i PatternLocal def unpaired-n
 tests/fsharp/typecheck/sigs/neg59.fs:128:25-128:26	i PatternLocal use unpaired-none
 tests/fsharp/typecheck/sigs/neg59.fs:12:5-12:35	groupJoinMustUseASimplePattern Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg59.fs:13:17-13:18	i PatternLocal def agree-none
-tests/fsharp/typecheck/sigs/neg59.fs:15:24-15:25	i PatternLocal use unpaired-none
-tests/fsharp/typecheck/sigs/neg59.fs:16:21-16:22	i PatternLocal use agree-none
 tests/fsharp/typecheck/sigs/neg59.fs:18:5-18:30	functionDefinitionInQuery Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg59.fs:19:17-19:18	i PatternLocal def agree-none
 tests/fsharp/typecheck/sigs/neg59.fs:20:19-20:20	f Value { is_function: true } def agree-none
@@ -38327,7 +38322,6 @@ tests/fsharp/typecheck/sigs/neg59.fs:90:24-90:25	i PatternLocal use unpaired-non
 tests/fsharp/typecheck/sigs/neg59.fs:93:5-93:38	tryFinallyInQueryNoCustomOperator Value { is_function: false } def agree-none
 tests/fsharp/typecheck/sigs/neg59.fs:94:17-94:18	i PatternLocal def unpaired-none
 tests/fsharp/typecheck/sigs/neg59.fs:96:23-96:24	i PatternLocal use unpaired-none
-tests/fsharp/typecheck/sigs/neg59.fs:9:19-9:20	i PatternLocal use unpaired-none
 tests/fsharp/typecheck/sigs/neg95.fs	skipped fcs-not-ok
 tests/fsharp/typecheck/sigs/neg_byref_14.fs	compared fcs-check-errors
 tests/fsharp/typecheck/sigs/neg_byref_14.fs:3:11-3:25	ByrefException ExceptionCase def agree-none

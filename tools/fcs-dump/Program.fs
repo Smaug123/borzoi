@@ -5449,6 +5449,7 @@ let private projectSymbolUseCensus (u: FSharpSymbolUse) =
        IsModuleValueOrMember = mb (fun m -> m.IsModuleValueOrMember)
        IsValue = mb (fun m -> m.IsValue)
        IsActivePattern = mb (fun m -> m.IsActivePattern)
+       IsCompilerGenerated = mb (fun m -> m.IsCompilerGenerated)
        IsFunction =
         (match mfv with
          | Some m -> (try m.CurriedParameterGroups.Count > 0 with _ -> false)

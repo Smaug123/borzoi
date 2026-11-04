@@ -156,6 +156,18 @@ This is a Cargo workspace with nine members:
   `borzoi-assembly` entity model. Depends on `borzoi-cst` and
   `borzoi-assembly`. Differentially tested against FCS; consumed by the
   LSP at runtime (`crates/lsp/src/semantic.rs`).
+  The use differentials only see a binder the walk missed when some graded
+  use sits in its scope with an outer target to commit to, so **binder
+  completeness** checks the binders themselves
+  (`test_support::binder_completeness`): every binder FCS declares — a
+  definition record, or the declaration a use names — must be one the walk
+  interns (a `Def`) or knows it declines (`ResolvedFile::opaque_binders`,
+  `ResolvedFile::opaque_regions`). `tests/all/binder_site_grid.rs` is the
+  closed table of F#'s binding constructs, each FCS-graded under an empty
+  and a BCL environment with each row's status pinned; the FCS-graded grids,
+  `resolve_corpus_diff` and the whole-project gate run the same check on
+  every cell and file. A binding construct the walk does not know about
+  starts as a row in that table, not a review finding.
 - `crates/lsp/` — `borzoi` (the package id is just `borzoi`, *not*
   `borzoi-lsp`; use `cargo test -p borzoi`). The LSP server (binary + library):
   diagnostics, project-assets resolution, the C# sidecar. Depends on

@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use crate::common::{
     ensure_fsharp_core_dll, env_usize_or, invoke_fcs_dump_project_with_refs,
-    parse_fcs_uses_project, temp_fs_tree,
+    parse_fcs_uses_project, temp_fs_tree, unmodelled_project_binder_failures,
 };
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
@@ -890,6 +890,12 @@ fn every_name_fcs_says_a_contributor_introduces_is_marked() {
             .map(|(p, s)| (p.as_str(), s.as_str()))
             .collect();
         let proj = resolve_project_files(&project(&rel), &env);
+        failures.extend(unmodelled_project_binder_failures(
+            &format!("seed {seed} ({:?})", program.context),
+            &proj,
+            &written,
+            &fcs,
+        ));
         let file_paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
         let mut bound_units: BTreeSet<Unit> = BTreeSet::new();
         for (name, span) in &program.probes {

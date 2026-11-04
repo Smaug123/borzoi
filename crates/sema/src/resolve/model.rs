@@ -361,6 +361,11 @@ pub struct ProjectItems {
     /// open fold ([`ProjectItems::sig_screened_open_name`]) already covers
     /// exactly what those markers fear.
     pub(super) opaque_hidden_value_modules: HashSet<Vec<String>>,
+    /// The qualified paths (container + name) of earlier files' possible union
+    /// cases the walk does not intern (`type T = X`,
+    /// [`ExportDeclKind::OpaqueCase`]): an `open` of the container declines the
+    /// name, in both namespaces.
+    pub(super) opaque_cases: HashSet<Vec<String>>,
     /// Each earlier-file **non-`private`** `[<AutoOpen>]` module *fragment*,
     /// paired with the Compile-order file that declared it, in Compile order —
     /// `private` ones are excluded, since F# does not bring a `private` module
@@ -1278,6 +1283,7 @@ impl ProjectItems {
                 .or_default()
                 .insert(name);
         }
+        self.opaque_cases.extend(idx.opaque_cases);
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
         }
@@ -1450,6 +1456,7 @@ struct FileExportIndices {
     namespace_paths: Vec<Vec<String>>,
     modules_with_hidden_values: Vec<Vec<String>>,
     opaque_hidden_value_modules: Vec<Vec<String>>,
+    opaque_cases: Vec<Vec<String>>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
@@ -1471,6 +1478,16 @@ enum HiddenNames {
     /// borrower without naming any of them, so no screen bounds this
     /// marker and every consumer must stay conservative.
     Borrowed,
+}
+
+/// Whether a possible union case ([`ExportDeclKind::OpaqueCase`]) is shadowed,
+/// for every `open` of its container, by a value of its name the same
+/// container declares after it: latest wins, so the value is what a bare use
+/// after the `open` finds.
+pub(super) fn superseded_by_a_later_value(decls: &[ExportDecl], case: &ExportDecl) -> bool {
+    decls.iter().any(|d| {
+        matches!(d.kind, ExportDeclKind::Item { .. }) && d.path == case.path && d.pos > case.pos
+    })
 }
 
 /// Record `path` as a hidden-value module, filed by marker provenance.
@@ -1705,6 +1722,11 @@ impl FileExportIndices {
                 ExportDeclKind::ExceptionTycon => {
                     if !anon {
                         fi.nested_module_paths.push(decl.path.clone());
+                    }
+                }
+                ExportDeclKind::OpaqueCase => {
+                    if !superseded_by_a_later_value(&file.export_decls, decl) {
+                        fi.opaque_cases.push(decl.path.clone());
                     }
                 }
                 ExportDeclKind::Extern { name } => {
@@ -1975,6 +1997,13 @@ pub(super) enum ExportDeclKind {
     /// recorded only when `name` is non-empty (matching the legacy
     /// [`record_project_name_shadow`](super::Resolver::record_project_name_shadow) guard).
     Extern { name: Vec<String> },
+    /// The union case `type T = X` may declare
+    /// (`TyconCoreAbbrevThatIsReallyAUnion`), which the walk does not intern,
+    /// when `T` does not require qualified access. `path` = container + `X`.
+    /// Unlike an `extern`'s, it hides no other name: an `open` of the container
+    /// declines exactly `X` ([`ProjectItems::opaque_cases`]), unless a value
+    /// of the name the container declares later shadows it.
+    OpaqueCase,
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
     /// A module-level active-pattern case (Stage 3a). `path` = container + case
@@ -2338,6 +2367,10 @@ pub enum DeclineCause {
     /// operations the walk cannot list: its type is unknown, or some route
     /// that could add an operation is unread.
     CustomOperationsUnknown,
+    /// A binder the walk knows is in scope but does not intern may capture
+    /// the name: a custom operation's variable (`join x in …`, `… into g`).
+    /// See [`ResolvedFile::opaque_binders`].
+    OpaqueBinder,
 }
 
 impl DeclineCause {
@@ -2399,6 +2432,7 @@ impl DeclineCause {
         DeclineCause::UnmodelledContributor,
         DeclineCause::CustomOperationMayTake,
         DeclineCause::CustomOperationsUnknown,
+        DeclineCause::OpaqueBinder,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2458,6 +2492,7 @@ impl DeclineCause {
             DeclineCause::UnmodelledContributor => "unmodelled_contributor",
             DeclineCause::CustomOperationMayTake => "custom_operation_may_take",
             DeclineCause::CustomOperationsUnknown => "custom_operations_unknown",
+            DeclineCause::OpaqueBinder => "opaque_binder",
         }
     }
 }
@@ -2861,6 +2896,19 @@ impl ExportedItems {
     }
 }
 
+/// A part of a file whose binders the walk knows of without walking: it resolves
+/// no use there that such a binder could capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpaqueRegion {
+    /// The whole file: a signature file, where the walk resolves nothing.
+    WholeFile,
+    /// A range in which the walk resolves no name a binder there could
+    /// capture: a member of a type augmentation or an exception, which it does
+    /// not enter, or an attribute's argument. (An attribute's own name, a type
+    /// use, is resolved wherever it is.)
+    Range(TextRange),
+}
+
 /// The result of resolving a single file: the definition arena, a map from each
 /// name-use range to its [`Resolution`], and the items the file exports.
 ///
@@ -2890,6 +2938,15 @@ pub struct ResolvedFile {
     /// comparison that read the occurrence as a plain use would score our
     /// correct answer as a resolution the oracle contradicts.
     pub(super) or_pattern_aliases: HashSet<TextRange>,
+    /// The ranges of binders the walk knows are there but does not intern: it
+    /// puts a declining entry for the name in scope instead, so every use the
+    /// binder captures declines rather than reaching an outer same-named
+    /// target. A binder FCS reports that is in neither this set nor
+    /// [`Self::defs`] is one the walk does not know about at all.
+    pub(super) opaque_binders: HashSet<TextRange>,
+    /// The parts of the file whose binders the walk knows it does not walk
+    /// ([`OpaqueRegion`]).
+    pub(super) opaque_regions: Vec<OpaqueRegion>,
     /// The *type* each written attribute resolved to (EX-3 §2(d),
     /// `docs/extension-scope-enumeration-plan.md`), keyed by the written
     /// attribute name's range (the full dotted path, matching FCS's
@@ -3183,6 +3240,9 @@ impl ResolvedFile {
             defs,
             resolutions: HashMap::new(),
             or_pattern_aliases: HashSet::new(),
+            opaque_binders: HashSet::new(),
+            // The walk resolves nothing in a signature file.
+            opaque_regions: vec![OpaqueRegion::WholeFile],
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
             own_module_simple_names: HashSet::new(),
@@ -3518,6 +3578,46 @@ impl ResolvedFile {
     /// The binder a [`DefId`] names.
     pub fn def(&self, id: DefId) -> &Def {
         &self.defs[id.index()]
+    }
+
+    /// Whether the walk declines every use spelled `name`, wherever it is: the
+    /// spelling of a binding FCS synthesizes (`_arg1` for a parameter that is
+    /// not a plain name, `doval@24`), which no walk models, so a binder of that
+    /// name needs no def or scope entry of its own to be declined.
+    ///
+    /// `name` is FCS's display name, which quotes an identifier that needs it
+    /// (``` ``doval@24`` ```); the quotes are not part of the name.
+    pub fn declines_everywhere(name: &str) -> bool {
+        let name = name
+            .strip_prefix("``")
+            .and_then(|n| n.strip_suffix("``"))
+            .unwrap_or(name);
+        super::lookup::is_synthesized_name(name)
+    }
+
+    /// The binders the walk knows are there but declines rather than interns —
+    /// see the field's documentation.
+    pub fn opaque_binders(&self) -> &HashSet<TextRange> {
+        &self.opaque_binders
+    }
+
+    /// The parts of the file the walk does not walk, so knows every binder in
+    /// them declines.
+    pub fn opaque_regions(&self) -> &[OpaqueRegion] {
+        &self.opaque_regions
+    }
+
+    /// Whether `range` is in a part of the file the walk does not walk.
+    pub fn in_opaque_region(&self, range: TextRange) -> bool {
+        self.opaque_regions.iter().any(|region| match region {
+            OpaqueRegion::WholeFile => true,
+            OpaqueRegion::Range(r) => r.contains_range(range),
+        })
+    }
+
+    /// Every binder the walk interned, in interning order.
+    pub fn defs(&self) -> impl Iterator<Item = &Def> + '_ {
+        self.defs.iter()
     }
 
     /// The items this file exports.

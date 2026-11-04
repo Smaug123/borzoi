@@ -800,6 +800,10 @@ pub(super) struct Resolver<'a> {
     /// The subset of [`Self::resolutions`] recorded for an **or-pattern
     /// alias** — see [`ResolvedFile::is_or_pattern_alias`](super::ResolvedFile).
     pub(super) or_pattern_aliases: HashSet<TextRange>,
+    /// See [`ResolvedFile::opaque_binders`](super::ResolvedFile::opaque_binders).
+    pub(super) opaque_binders: HashSet<TextRange>,
+    /// See [`ResolvedFile::opaque_regions`](super::ResolvedFile::opaque_regions).
+    pub(super) opaque_regions: Vec<super::model::OpaqueRegion>,
     pub(super) scopes: Vec<Frame>,
     /// The **type-parameter** scope: a stack of frames, one per generic
     /// definition currently open (a `type` header, a generic `let`/function, a

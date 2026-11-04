@@ -51,6 +51,7 @@ AutoProperty::is_static
 AutoProperty::prop_kind
 AutoProperty::ty
 Binding::attributes
+Binding::ctor_self_id
 Binding::expr
 Binding::is_inline
 Binding::is_mutable

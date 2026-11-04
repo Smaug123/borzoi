@@ -884,6 +884,10 @@ pub struct NormalisedBinding {
     /// `let internal f a`, `member private this.M`, `private new(…)`. See
     /// [`NormalisedAccess`].
     pub access: Option<NormalisedAccess>,
+    /// An explicit constructor's `as <self>` identifier (`new () as this =
+    /// …`) — FCS's `SynValData.thisIdOpt` (field 2), which only an explicit
+    /// constructor populates. `None` for every other binding.
+    pub self_id: Option<String>,
     pub pat: NormalisedPat,
     pub expr: NormalisedExpr,
 }

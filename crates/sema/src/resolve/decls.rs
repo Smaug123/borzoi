@@ -4,10 +4,12 @@ use borzoi_cst::syntax::{
     AstNode, ModuleDecl, NestedModuleDecl, SyntaxToken, TypeDefn, TypeDefnRepr,
 };
 
-use crate::def::DefId;
+use crate::def::{DefId, DefKind};
 
 use super::contributors::Contribution;
-use super::model::{CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenTrace, SlotClass};
+use super::model::{
+    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
+};
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
 };
@@ -137,7 +139,7 @@ impl<'a> Resolver<'a> {
     /// `open Container; Case` ([`open_module_values`](Self::open_module_values)) and
     /// `Container.Case` ([`resolve_long_ident`](Self::resolve_long_ident)) resolve
     /// it. Returns the new [`ItemId`] (the caller records the decl and frame entry
-    /// as that [`Resolution::Item`](crate::Resolution::Item), so the case has the
+    /// as that [`Resolution::Item`], so the case has the
     /// *same* identity everywhere — declaration, same-file uses, and the
     /// cross-file open — which keeps find-references / rename intact, exactly
     /// as a top-level `let` does).
@@ -271,7 +273,7 @@ impl<'a> Resolver<'a> {
     /// [`ItemId`] as the case's resolution **everywhere** (declaration and same-file
     /// `Color.Red`), so it has one identity for find-references / rename, just like a
     /// non-RQA union case. `None` in an anonymous-root file (no cross-file handle),
-    /// where the case stays a [`Resolution::Local`](crate::Resolution::Local).
+    /// where the case stays a [`Resolution::Local`].
     pub(super) fn export_require_qualified_case(
         &mut self,
         name: &str,
@@ -652,9 +654,16 @@ impl<'a> Resolver<'a> {
                     // that `resolve_type_defn` (type uses only) does not cover.
                     self.resolve_type_member_bodies(defn);
                     self.leave_typars(pushed_typars);
+                    self.decline_abbreviation_case(defn);
                 }
             }
             ModuleDecl::Exception(exn) => {
+                // The walk does not enter an exception's members, so it
+                // commits no use there that their binders could capture.
+                self.opaque_regions.extend(
+                    exn.members()
+                        .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
+                );
                 self.exception_contribution(exn);
                 // An exception definition (parser phase 9.15) introduces a
                 // project-level name `E` — both an exception *type* and a
@@ -745,7 +754,17 @@ impl<'a> Resolver<'a> {
                     self.record_project_name_shadow(ext_name.clone());
                 }
                 // The prototype is a value the walk does not intern, so a use
-                // after it must not commit an earlier binding of its name.
+                // after it must not commit an earlier binding of its name: its
+                // name is an opaque binder, declined by the contribution below.
+                // Its arguments are too, trivially: a prototype has no body for
+                // one to be in scope in.
+                self.opaque_binders.extend(
+                    ext.name()
+                        .and_then(|name| name.idents().last())
+                        .into_iter()
+                        .chain(ext.args().filter_map(|arg| arg.name()))
+                        .map(|tok| tok.text_range()),
+                );
                 if let Some(name) = ext_name.last() {
                     let contribution = Contribution::of_value(name.clone());
                     let pos = u32::from(ext.syntax().text_range().start());
@@ -1881,5 +1900,55 @@ impl<'a> Resolver<'a> {
             .or_default()
             .entry(name.to_string())
             .or_default()
+    }
+}
+
+impl Resolver<'_> {
+    /// `type T = X` where `X` may be a union case rather than a type: FCS's
+    /// `TyconCoreAbbrevThatIsReallyAUnion` reads a single-identifier
+    /// abbreviation as a single-case union when the identifier names no type
+    /// in scope, or names the type being defined. The walk interns no case for
+    /// it, so unless the target committed to a type, the identifier is an
+    /// [opaque binder](super::ResolvedFile::opaque_binders). Unless `T`
+    /// requires qualified access, a declining mark for its name enters scope
+    /// here, in both namespaces a case occupies, and an `open` of the module,
+    /// here or in a later file, declines the name.
+    fn decline_abbreviation_case(&mut self, defn: &TypeDefn) {
+        let Some(TypeDefnRepr::Abbrev(abbrev)) = defn.repr() else {
+            return;
+        };
+        let Some(case) = abbrev
+            .ty()
+            .as_ref()
+            .and_then(super::abbrev_target_single_ident)
+        else {
+            return;
+        };
+        let names_a_type = match self.resolutions.get(&case.text_range()) {
+            Some(Resolution::Local(id)) => self.defs[id.index()].kind == DefKind::Type,
+            Some(Resolution::Entity(_)) => true,
+            _ => false,
+        };
+        if names_a_type {
+            return;
+        }
+        self.opaque_binders.insert(case.text_range());
+        // A type that requires qualified access puts no bare case in scope.
+        if attrs_require_qualified_access(defn.attributes()) {
+            return;
+        }
+        let contribution = Contribution {
+            names: std::iter::once(id_text(&case).to_string()).collect(),
+            ..Contribution::default()
+        };
+        let pos = defn.syntax().text_range().start();
+        self.push_contribution(&contribution, u32::from(pos));
+        let name = id_text(&case).to_string();
+        self.record_project_name_shadow(vec![name.clone()]);
+        // An `open` of the container, here or in a later file, declines the
+        // name ([`Self::open_module_values`]); nothing else it holds is hidden.
+        let mut path = self.container_path.clone();
+        path.push(name);
+        self.push_export_decl(path, pos, ExportDeclKind::OpaqueCase);
     }
 }

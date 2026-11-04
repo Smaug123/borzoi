@@ -29,6 +29,9 @@ use borzoi_msbuild::{
     Diagnostic, DiagnosticKind, DiagnosticOrigin, ImportFailReason, ParsedProject, SdkVersion,
     StructuralCompileItemUncertainty, VersionSpec,
 };
+use borzoi_sema::test_support::binder_completeness::{
+    OracleBinder, OracleBinderClass, UnmodelledBinder, unmodelled_binders,
+};
 use borzoi_sema::test_support::{
     assembly_full_name_agrees, certified_expected as certified_structural, logical_full_name,
 };
@@ -1018,6 +1021,18 @@ pub enum ValueKind {
     Field,
 }
 
+impl ValueKind {
+    /// The oracle's own spelling of this kind.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Module => "module",
+            Self::Member => "member",
+            Self::Field => "field",
+        }
+    }
+}
+
 /// Where FCS says the used symbol is declared, classified by what the
 /// differential can do with it.
 ///
@@ -1601,6 +1616,16 @@ pub struct Comparison {
     /// [`unoracled_definitions`](Self::unoracled_definitions) so neither
     /// count's meaning shifts under the other.
     pub unoracled_or_pattern_aliases: usize,
+    /// The oracle's binders the walk neither interned nor declines
+    /// ([`borzoi_sema::test_support::binder_completeness`]): the coverage
+    /// measurement of binder completeness. Each is also a ledger item
+    /// ([`ItemOutcome::UnmodelledBinder`]), beside the definition record's own.
+    ///
+    /// The hard half of that check — no use the oracle binds to such a binder
+    /// may commit — needs nothing new here: a commit at such a use names
+    /// something other than the oracle's declaration, which the forward pass
+    /// already reports as a [divergence](Self::divergences).
+    pub unmodelled_binders: Vec<UnmodelledBinderSite>,
     pub divergences: Vec<Divergence>,
     pub assembly_divergences: Vec<AssemblyDivergence>,
     pub reverse_divergences: Vec<ReverseDivergence>,
@@ -1610,6 +1635,13 @@ pub struct Comparison {
     pub compared_files: Vec<ComparedFile>,
     /// Every item behind the counts above, in the order it was graded.
     pub ledger: Vec<LedgerItem>,
+}
+
+/// One oracle binder the walk does not know about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnmodelledBinderSite {
+    pub file: PathBuf,
+    pub binder: UnmodelledBinder,
 }
 
 /// A project file the forward pass compared, and how many records the oracle
@@ -1660,6 +1692,8 @@ impl Comparison {
             }
             ItemOutcome::UnoracledDefinition => self.unoracled_definitions += 1,
             ItemOutcome::UnoracledOrPatternAlias => self.unoracled_or_pattern_aliases += 1,
+            // Counted by the detailed list's length.
+            ItemOutcome::UnmodelledBinder(_) => {}
         }
         if let ItemOutcome::Match(graded, _)
         | ItemOutcome::Deferral { graded, .. }
@@ -1833,6 +1867,10 @@ pub enum ItemOutcome {
     UnoracledDefinition,
     /// [`Comparison::unoracled_or_pattern_aliases`].
     UnoracledOrPatternAlias,
+    /// A binder the oracle defines that the walk does not know about,
+    /// detailed in [`Comparison::unmodelled_binders`]. Recorded beside the
+    /// definition record's own item, not in place of it.
+    UnmodelledBinder(OracleBinderClass),
     /// One of our answers no oracle record confirms; detailed in
     /// [`Comparison::reverse_divergences`].
     ReverseDivergence,
@@ -1885,6 +1923,8 @@ pub struct CorpusSummary {
     pub unoracled_definitions: usize,
     /// Aggregate of [`Comparison::unoracled_or_pattern_aliases`].
     pub unoracled_or_pattern_aliases: usize,
+    /// Aggregate of [`Comparison::unmodelled_binders`].
+    pub unmodelled_binders: usize,
     pub project_divergences: usize,
     pub assembly_divergences: usize,
     pub reverse_divergences: usize,
@@ -1989,6 +2029,7 @@ impl CorpusSummary {
         self.reverse_divergences += comparison.reverse_divergences.len();
         self.unoracled_definitions += comparison.unoracled_definitions;
         self.unoracled_or_pattern_aliases += comparison.unoracled_or_pattern_aliases;
+        self.unmodelled_binders += comparison.unmodelled_binders.len();
     }
 
     pub fn total_uses_considered(&self) -> usize {
@@ -2127,7 +2168,7 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
-            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} compiler-generated | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} ambiguous oracle ranges | {} shadowed constructor uses | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
+            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} compiler-generated | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} ambiguous oracle ranges | {} shadowed constructor uses | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled) | {} oracle binders unmodelled",
             self.skipped_uses.definitions,
             self.skipped_uses.zero_width,
             self.skipped_uses.compiler_generated,
@@ -2138,7 +2179,8 @@ impl CorpusSummary {
             self.skipped_uses.shadowed_constructor_use,
             self.skipped_uses.total(),
             self.unoracled_definitions,
-            self.unoracled_or_pattern_aliases
+            self.unoracled_or_pattern_aliases,
+            self.unmodelled_binders
         )
         .expect("write String");
         out.push_str(&self.hover_types.render_text());
@@ -2236,6 +2278,7 @@ impl CorpusSummary {
             skipped_uses: &self.skipped_uses,
             unoracled_definitions: self.unoracled_definitions,
             unoracled_or_pattern_aliases: self.unoracled_or_pattern_aliases,
+            unmodelled_binders: self.unmodelled_binders,
             hover_types: &self.hover_types,
             skipped_projects: &self.skipped_projects,
             skipped_by_reason: &self.skipped_by_reason,
@@ -2954,6 +2997,9 @@ struct CorpusJsonReport<'a> {
     /// ungraded-reverse-check accounting, kept separate so neither count's
     /// meaning shifts under the other.
     unoracled_or_pattern_aliases: usize,
+    /// The oracle's binders the walk does not know about: binder completeness's
+    /// coverage measurement.
+    unmodelled_binders: usize,
     /// What the hover probes showed of their symbol's type.
     hover_types: &'a handler_diff::HoverTypeCensus,
     skipped_projects: &'a [CorpusSkip],
@@ -3146,6 +3192,11 @@ struct GeneratorStatistics {
     /// *graded* to *ungraded* would otherwise show up as an improvement in
     /// coverage rather than as the loss of signal it is.
     unoracled_or_pattern_aliases: usize,
+    /// Binders the oracle defines that the walk does not know about. Plotted
+    /// because the count is the worklist binder completeness drains: it falls
+    /// as kinds are interned or declined, and a rise is a construct the walk
+    /// newly fails to see.
+    unmodelled_binders: usize,
     project_assets_by_status: BTreeMap<&'static str, usize>,
     /// What a user hovering a symbol is shown of its type, graded against FCS:
     /// the measurement that ranks inference work by what users see. Every
@@ -3279,6 +3330,7 @@ pub fn render_generator_summary(
             },
             unoracled_definitions: summary.unoracled_definitions,
             unoracled_or_pattern_aliases: summary.unoracled_or_pattern_aliases,
+            unmodelled_binders: summary.unmodelled_binders,
             // Every variant, including the ones that did not occur. A metric
             // that vanishes when its count reaches zero is worse than useless
             // here: the dashboard skips observations whose value is absent, so
@@ -3730,6 +3782,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 outcome,
             });
         }
+        add_unmodelled_binders(loaded, file_idx, file_uses, &mut comparison);
         // The reverse direction reads the same three surfaces, so it is handed
         // the member table this file's forward pass already solved rather than
         // inferring it a second time.
@@ -4044,6 +4097,69 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
         | Resolution::Item(_)
         | Resolution::Deferred(_)
         | Resolution::Unresolved => unreachable!("only assembly resolutions have assembly decls"),
+    }
+}
+
+/// The records in `file_uses` of a symbol bare lookup can find, in the
+/// binder-completeness currency, which keeps those that declare it
+/// ([`OracleBinder::introduces_a_name`]). Every record, not only the
+/// definitions: FCS reports a type parameter's declaring occurrence as a use
+/// whose declaration is itself.
+fn oracle_binders(file_uses: &FileUses) -> Vec<OracleBinder> {
+    file_uses
+        .uses
+        .iter()
+        .filter(|u| u.start < u.end)
+        .filter_map(|u| {
+            let value_kind = u.value.as_ref().and_then(|v| v.kind).map(ValueKind::label);
+            let class = OracleBinderClass::of_symbol_kind(u.symbol_kind.as_deref(), value_kind)?;
+            Some(OracleBinder {
+                name: u.name.clone(),
+                range: text_range(u.start, u.end),
+                class,
+                compiler_generated: u.is_compiler_generated,
+                decl: match &u.decl {
+                    UseDecl::InProject(site)
+                        if path_key(&site.file) == path_key(&file_uses.path) =>
+                    {
+                        Some(text_range(site.start, site.end))
+                    }
+                    UseDecl::InProject(_) | UseDecl::Unlocated | UseDecl::OutsideProject(_) => None,
+                },
+            })
+        })
+        .flat_map(OracleBinder::witnessed)
+        .collect()
+}
+
+fn text_range(start: usize, end: usize) -> TextRange {
+    TextRange::new(
+        u32::try_from(start).expect("offset fits u32").into(),
+        u32::try_from(end).expect("offset fits u32").into(),
+    )
+}
+
+/// Binder completeness for one compared file: every oracle binder the walk
+/// does not know about, listed and recorded.
+fn add_unmodelled_binders(
+    loaded: &LoadedProject,
+    file_idx: usize,
+    file_uses: &FileUses,
+    comparison: &mut Comparison,
+) {
+    let rf = loaded.resolved.file(file_idx);
+    let root = loaded.parses.files[file_idx].file.syntax();
+    for binder in unmodelled_binders(rf, root, &oracle_binders(file_uses)) {
+        let path = loaded.parses.paths[file_idx].clone();
+        comparison.record(LedgerItem {
+            file: path.clone(),
+            range: range_pair(binder.range),
+            name: binder.name.clone(),
+            outcome: ItemOutcome::UnmodelledBinder(binder.class),
+        });
+        comparison
+            .unmodelled_binders
+            .push(UnmodelledBinderSite { file: path, binder });
     }
 }
 
@@ -6514,6 +6630,7 @@ mod tests {
             },
             unoracled_definitions: 0,
             unoracled_or_pattern_aliases: 0,
+            unmodelled_binders: Vec::new(),
             divergences: vec![Divergence {
                 file: PathBuf::from("/tmp/B.fs"),
                 range: (20, 21),
@@ -7069,6 +7186,7 @@ mod tests {
         summary.record_comparison(&Comparison {
             unoracled_definitions: 7,
             unoracled_or_pattern_aliases: 3,
+            unmodelled_binders: vec![unmodelled_binder_site(); 2],
             ..Comparison::default()
         });
 
@@ -7078,6 +7196,22 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(report["unoracled_definitions"], 7);
         assert_eq!(report["unoracled_or_pattern_aliases"], 3);
+        assert_eq!(report["unmodelled_binders"], 2);
+    }
+
+    fn unmodelled_binder_site() -> UnmodelledBinderSite {
+        UnmodelledBinderSite {
+            file: PathBuf::from("/tmp/A.fs"),
+            binder: UnmodelledBinder {
+                name: "x".to_string(),
+                range: TextRange::new(1.into(), 2.into()),
+                class: OracleBinderClass::Value,
+                compiler_generated: false,
+                site: borzoi_sema::test_support::binder_completeness::BinderSite(
+                    "NAMED_PAT".to_string(),
+                ),
+            },
+        }
     }
 
     /// The generator summary is what `borzoi-stats record` publishes, so a
@@ -7091,6 +7225,7 @@ mod tests {
         summary.record_comparison(&Comparison {
             unoracled_definitions: 7,
             unoracled_or_pattern_aliases: 3,
+            unmodelled_binders: vec![unmodelled_binder_site(); 2],
             ..Comparison::default()
         });
 
@@ -7099,6 +7234,7 @@ mod tests {
 
         assert_eq!(json["statistics"]["unoracled_definitions"], 7);
         assert_eq!(json["statistics"]["unoracled_or_pattern_aliases"], 3);
+        assert_eq!(json["statistics"]["unmodelled_binders"], 2);
     }
 
     /// The shapes and the unexplained residue reach all three surfaces — the
