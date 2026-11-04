@@ -2426,7 +2426,10 @@ impl<'a> Resolver<'a> {
     /// supply as a case (FSharp.Core's `None`, which the walk does not fold),
     /// is a variable to FCS (`fun X -> X`): the entry declines, hiding from the
     /// body whatever the enclosing scope gives the name — a value, a type, an
-    /// opened type's member.
+    /// opened type's member. A case reference with no committed target (an
+    /// opaque or possible case: `type T = X` where `X` may name a type) does
+    /// not prove the head is no variable, so the head enters the same
+    /// declining entry; where the case is certain, that only over-declines.
     pub(super) fn resolve_provisional_case_head(
         &mut self,
         name: &str,
@@ -2441,7 +2444,10 @@ impl<'a> Resolver<'a> {
         {
             self.record_decline(range, DeclineSite::pre_walk(cause));
         }
-        let a_variable = res.is_none() && self.unfolded_implicit_surface(name).is_none();
+        let a_variable = match res {
+            None => self.unfolded_implicit_surface(name).is_none(),
+            Some(r) => matches!(r, Resolution::Deferred(_)),
+        };
         if a_variable {
             self.opaque_binders.insert(range);
         }

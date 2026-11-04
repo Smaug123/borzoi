@@ -1013,7 +1013,8 @@ fn wrong_commits(rf: &ResolvedFile, uses: &[OracleUse]) -> Vec<String> {
 
 /// Programs whose binders are all in the table, but which put them in a
 /// relation the rows do not: a custom operation's variable over a `for`
-/// variable, an `into` hiding what came before it. Each is graded at every
+/// variable, an `into` hiding what came before it, a possible union case
+/// beside a parameter of its name. Each is graded at every
 /// use FCS reports, and must leave no binder unmodelled.
 const SCOPE_CASES: &[(&str, &str)] = &[
     (
@@ -1036,10 +1037,14 @@ const SCOPE_CASES: &[(&str, &str)] = &[
         "let_after_into_is_its_own_binder",
         "module M\nlet y = \"outer\"\nlet q =\n    query {\n        for x in [1] do\n        groupBy x into g\n        let y = g.Key\n        select y\n    }\n",
     ),
+    (
+        "possible_case_leaves_a_parameter_binder",
+        "module M\nmodule Types =\n    type X = class end\nmodule N =\n    open Types\n    type T = X\nopen N\nlet X = 123\nlet f (X: int) = X\n",
+    ),
 ];
 
 #[test]
-fn custom_operation_scopes_agree_with_fcs() {
+fn binder_scopes_agree_with_fcs() {
     let paths: Vec<PathBuf> = SCOPE_CASES
         .iter()
         .map(|(id, src)| temp_fs_file(&format!("binder_scope_{id}"), src))
@@ -1222,6 +1227,22 @@ const MUST_COMMIT_CASES: &[(&str, Files, &str)] = &[
             "module BinderA\nlet X = 123\n[<RequireQualifiedAccess>]\ntype T = X\nlet y = X\n",
         )],
         "X",
+    ),
+    (
+        "into_applied_outside_a_custom_operation_binds_nothing",
+        &[(
+            "BinderA.fs",
+            "module BinderA\nlet q =\n    query {\n        for x in [1] do\n        let into v = v + 1\n        select (into x, x)\n    }\n",
+        )],
+        "x",
+    ),
+    (
+        "into_parameter_is_an_ordinary_binder",
+        &[(
+            "BinderA.fs",
+            "module BinderA\nlet q =\n    query {\n        for x in [1] do\n        let into v = v + 1\n        select (into x)\n    }\n",
+        )],
+        "v",
     ),
 ];
 
