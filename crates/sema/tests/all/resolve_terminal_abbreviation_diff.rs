@@ -30,7 +30,7 @@ use borzoi_oracle_harness::BoundedCommand;
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
-fn fixture_dll() -> &'static Path {
+pub(crate) fn fixture_dll() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT.get_or_init(|| {
         let project =
@@ -45,7 +45,7 @@ fn fixture_dll() -> &'static Path {
     })
 }
 
-fn env() -> &'static AssemblyEnv {
+pub(crate) fn env() -> &'static AssemblyEnv {
     static ENV: OnceLock<AssemblyEnv> = OnceLock::new();
     ENV.get_or_init(|| {
         let sysrt_path = ensure_system_runtime_dll();

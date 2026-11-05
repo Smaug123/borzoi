@@ -141,10 +141,19 @@ pub fn invoke_fcs_dump_with_refs(subcommand: &str, source: &Path, refs: &[&Path]
 /// files' values in scope: the oracle for cross-file inference. A signature
 /// slot reports no nodes and no binders.
 pub fn invoke_fcs_dump_types_project(paths: &[&Path]) -> Vec<(String, String)> {
+    invoke_fcs_dump_types_project_with_refs(paths, &[])
+}
+
+/// [`invoke_fcs_dump_types_project`], with `refs` (extra `.dll`s) referenced
+/// by the project.
+pub fn invoke_fcs_dump_types_project_with_refs(
+    paths: &[&Path],
+    refs: &[&Path],
+) -> Vec<(String, String)> {
     let request = serde_json::json!({
         "kind": "types-project",
         "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        "refs": Vec::<String>::new(),
+        "refs": refs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
     })
     .to_string();
     let line = fcs_file_batch_pool().request(&request);

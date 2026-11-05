@@ -5329,6 +5329,28 @@ impl AssemblyEnv {
         }
     }
 
+    /// The entity the abbreviation `marker`'s target names when that is one
+    /// step away and not itself an abbreviation — a tycon applied to anything,
+    /// resolved as [`Self::resolve_abbreviation_tycon`] resolves it — so a
+    /// caller reading the target's arguments reads the only hop there is.
+    /// `None` for a chained alias, and for every target the chase declines.
+    pub fn abbreviation_direct_tycon(&self, marker: EntityHandle) -> Option<EntityHandle> {
+        let AbbreviationTarget::Named { ccu, path, .. } =
+            self.entity(marker).abbreviation_target.as_ref()?
+        else {
+            return None;
+        };
+        // The same lookup the chase makes for its first step.
+        let target = match ccu {
+            None => {
+                let marker_key = self.assembly_key(marker);
+                self.abbreviation_target_at_path(path, |h| self.assembly_key(h) == marker_key)?
+            }
+            Some(name) => self.forwarded_target_at_path(name, path, ABBREV_CHASE_FUEL)?,
+        };
+        (!self.is_abbreviation(target)).then_some(target)
+    }
+
     fn resolve_abbreviation_cached(
         &self,
         marker: EntityHandle,
@@ -10477,7 +10499,7 @@ pub(crate) mod from_views_tests {
 /// Whether a pickled tycon path names FSharp.Core's array tycon of some rank
 /// (`Microsoft.FSharp.Core.[]`1`, `[,]`1`, …): a name F# syntax cannot give a
 /// declared type, so the path alone identifies the intrinsic.
-fn is_array_tycon_path(path: &[String]) -> bool {
+pub(crate) fn is_array_tycon_path(path: &[String]) -> bool {
     let [m, f, c, last] = path else {
         return false;
     };

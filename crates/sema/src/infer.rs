@@ -2540,10 +2540,12 @@ impl<'a> Gen<'a> {
         if entity.generic_parameters.len() != args.len() {
             return None;
         }
-        if matches!(
-            entity.kind,
-            EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
-        ) {
+        // FSharp.Core's own generic abbreviation (`int option`), read through
+        // to the target FCS names; any other abbreviation declines.
+        if entity.kind == EntityKind::Abbreviation {
+            return crate::function_ty::fsharp_core_abbreviation_ty(self.env, handle, args);
+        }
+        if matches!(entity.kind, EntityKind::Module | EntityKind::Measure) {
             return None;
         }
         if entity.generic_parameters.iter().any(constrained_parameter) {
