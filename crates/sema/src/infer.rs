@@ -523,8 +523,8 @@ pub struct InferredFile {
     /// serve hover / go-to-definition identically to a resolver-resolved member
     /// (`System.Console.WriteLine`). Absent means "no sound answer" (D5).
     member_resolutions: HashMap<TextRange, Resolution>,
-    /// Each walked binding's incompleteness reasons, in walk order; empty for a
-    /// complete binding. See [`Self::incompleteness`].
+    /// Each counted binding's incompleteness reasons, in walk order; empty for
+    /// a complete binding. See [`Self::incompleteness`].
     incompleteness: Vec<Vec<Incomplete>>,
     /// Each `(expr).Member` access's **receiver** type, keyed by the whole
     /// `DOT_GET_EXPR`'s range — recorded whether or not the access resolves.
@@ -592,10 +592,18 @@ impl InferredFile {
         self.receiver_types.get(&dot_get)
     }
 
-    /// Why each walked binding was incomplete, one entry per binding in walk
+    /// Why each counted binding was incomplete, one entry per binding in walk
     /// order (empty for a complete binding; a reason repeats if it was met
     /// more than once). A measurement, not a result: it is what the corpus
     /// sweep reads to say which unmodelled construct is holding real code back.
+    ///
+    /// Counted means walked, or declined for its own annotation
+    /// ([`Incomplete::BindingAnnotation`]), which is the one reason the walk
+    /// declines a whole binding for that a later stage of inference is meant
+    /// to remove — so the bindings it stops stay in the denominator. Other
+    /// whole-binding declines are not counted: a `let rec` group, a binding
+    /// that may be `[<EntryPoint>]`, a `let mutable` function, a pattern shape
+    /// the walk does not read.
     pub fn incompleteness(&self) -> &[Vec<Incomplete>] {
         &self.incompleteness
     }
@@ -672,6 +680,14 @@ pub enum Incomplete {
     /// A pattern annotation outside the modelled set, or around anything but
     /// a name.
     PatternAnnotation,
+    /// A module-level binding whose own annotation — `let x : T = …`,
+    /// `let f x : T = …`, `let (x : T) = …`, or one inside a `let` pattern —
+    /// is outside the modelled set. The binding is not walked at all: the
+    /// annotation fixes the binder's type, and nothing else may be read in its
+    /// place. Unlike [`Self::PatternAnnotation`] on a parameter, which leaves
+    /// the rest of the body walked, this is the only reason such a binding can
+    /// have.
+    BindingAnnotation,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -1424,8 +1440,9 @@ impl<'a> Gen<'a> {
     }
 
     /// Drop the census entry [`Self::begin_binding`] opened, for a binding that
-    /// turns out not to be walked here — so the census counts walked bindings,
-    /// each once.
+    /// turns out not to be walked here, and not for a reason the census counts
+    /// ([`InferredFile::incompleteness`]) — so each counted binding is counted
+    /// once.
     fn discard_census_entry(&mut self) {
         self.incompleteness.pop();
     }
@@ -1945,6 +1962,12 @@ impl<'a> Gen<'a> {
                 Some(pat @ (Pat::Paren(_) | Pat::Tuple(_))) => {
                     match self.binding_pattern_ty(&binding, &pat, BinderSite::Module) {
                         Ok(pat_ty) => self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Module),
+                        // Not walked, but counted: an annotation in the
+                        // pattern is the binding's own, so the census keeps
+                        // it under that reason.
+                        Err(Incomplete::PatternAnnotation) => {
+                            self.mark_incomplete(Incomplete::BindingAnnotation);
+                        }
                         Err(_) => self.discard_census_entry(),
                     }
                     self.solve();
@@ -2007,10 +2030,12 @@ impl<'a> Gen<'a> {
     /// An annotation outside the gate keeps the pre-R2-c whole-binding skip:
     /// nothing is walked and nothing is constrained.
     fn annotated_function_binding(&mut self, head: &LongIdentPat, rhs: Option<Expr>, ann: &Type) {
+        let mark = self.begin_binding();
         let Some(t) = self.annotation_ty(ann) else {
+            // Not walked, but counted ([`Incomplete::BindingAnnotation`]).
+            self.mark_incomplete(Incomplete::BindingAnnotation);
             return;
         };
-        let mark = self.begin_binding();
         self.cur_body = rhs.as_ref().map(|rhs| rhs.syntax().clone());
 
         let arg_vars = self.param_vars(head);
@@ -2067,8 +2092,13 @@ impl<'a> Gen<'a> {
     /// outside the gate keeps the whole-binding skip (no walk), as before.
     fn bind_annotated_named(&mut self, named: &NamedPat, ann: &Type, rhs: Option<Expr>) {
         self.begin_binding();
-        let walked = if let Some(t) = self.annotation_ty(ann)
-            && let Some(tok) = named.ident()
+        let Some(t) = self.annotation_ty(ann) else {
+            // Not walked, but counted ([`Incomplete::BindingAnnotation`]).
+            self.mark_incomplete(Incomplete::BindingAnnotation);
+            self.solve();
+            return;
+        };
+        let walked = if let Some(tok) = named.ident()
             && let Some(def) = self.def_at(tok.text_range())
         {
             let dv = self.def_var(def);
@@ -6325,15 +6355,22 @@ fn ident_text(tok: &SyntaxToken) -> String {
 }
 
 /// Whether an application's callee is a **member access** — the shape a method
-/// call `recv.Method(args)` has in function position (Stage 3.3d). A
-/// `LONG_IDENT_EXPR` (`s.M`) or `DOT_GET_EXPR` (`"hi".M`) callee routes to method
-/// typing; parentheses are transparent. Any other callee (a bare value `f`, a
-/// nested application) is an ordinary value application. Pure classification (no
+/// call `recv.Method(args)` has in function position (Stage 3.3d). A dotted
+/// `LONG_IDENT_EXPR` (`s.M`) or a `DOT_GET_EXPR` (`"hi".M`) callee routes to
+/// method typing; parentheses are transparent. Any other callee (a bare value
+/// `f`, `(+)` or `(|P|_|)`, a nested application) is an ordinary value
+/// application. Pure classification (no
 /// side effects), so [`Gen::infer_app`] can commit to the method path only when it
 /// applies; [`Gen::method_callee`] then does the resolution and may still defer.
 fn is_member_access_callee(e: &Expr) -> bool {
     match e {
-        Expr::LongIdent(_) | Expr::DotGet(_) => true,
+        // A single segment — an operator or active-pattern name in
+        // parentheses, `(+)` or `(|P|_|)` — names a value, and so does a path
+        // through an active-pattern segment: neither is a member access.
+        Expr::LongIdent(li) => li
+            .long_ident()
+            .is_some_and(|l| l.active_pat_names().next().is_none() && l.idents().nth(1).is_some()),
+        Expr::DotGet(_) => true,
         Expr::Paren(p) => p
             .inner()
             .is_some_and(|inner| is_member_access_callee(&inner)),
@@ -7404,7 +7441,7 @@ mod tests {
         );
     }
 
-    /// The completeness census records one entry per walked binding, empty for
+    /// The completeness census records one entry per counted binding, empty for
     /// a complete one, naming each unmodelled construct it met — the input the
     /// corpus sweep's blocker report reads.
     #[test]
@@ -7437,6 +7474,36 @@ mod tests {
                 vec![Incomplete::Operator(OperatorGap::Unresolved)],
                 vec![Incomplete::Operator(OperatorGap::Unresolved)],
                 vec![Incomplete::Operator(OperatorGap::Unresolved)],
+            ]
+        );
+    }
+
+    /// A binding the walk skips because its own annotation is outside the
+    /// modelled set is still a binding the census counts, under its own
+    /// reason: leaving it out would drop exactly the bindings that blocker
+    /// stops from the denominator. And a single-segment callee — an operator
+    /// or active-pattern name in parentheses — is a value application, not a
+    /// method call, so its reason is the callee's shape.
+    #[test]
+    fn census_counts_unreadable_binding_annotations_and_bare_callees() {
+        use super::Incomplete;
+        let src = "module M\nlet y : Foo = 1\nlet (z: Foo) = 1\nlet f x : Foo = x\n\
+                   let (a: Foo), b = (1, 2)\nlet (|Pos|) x = x\nlet r = (|Pos|) 1\n";
+        let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = primitive_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+        let inferred = super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default());
+        assert_eq!(
+            inferred.incompleteness(),
+            [
+                vec![Incomplete::BindingAnnotation],
+                vec![Incomplete::BindingAnnotation],
+                vec![Incomplete::BindingAnnotation],
+                vec![Incomplete::BindingAnnotation],
+                vec![],
+                vec![Incomplete::CalleeShape(super::SyntaxKind::LONG_IDENT_EXPR)],
             ]
         );
     }

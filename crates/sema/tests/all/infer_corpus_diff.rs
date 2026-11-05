@@ -73,7 +73,7 @@
 //! incomplete, which switches off its argument checks and its generalisation —
 //! so most of what inference could say about real code is withheld by the
 //! *completeness* gate, not by any one rule. The sweep prints, from
-//! [`borzoi_sema::InferredFile::incompleteness`], how many walked bindings are
+//! [`borzoi_sema::InferredFile::incompleteness`], how many counted bindings are
 //! complete and, per [`borzoi_sema::Incomplete`] reason, how many bindings have
 //! it as their **only observed** reason and how many have it at all. The first
 //! ranks what modelling that construct could unlock — a heuristic, not a bound:
@@ -664,7 +664,7 @@ fn inferred_types_match_fcs_over_corpus() {
         );
     }
     eprintln!(
-        "\ninference completeness: {} of {} walked bindings complete ({:.1}%)",
+        "\ninference completeness: {} of {} counted bindings complete ({:.1}%)",
         t.complete_bindings,
         t.bindings,
         100.0 * t.complete_bindings as f64 / t.bindings.max(1) as f64

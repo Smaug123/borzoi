@@ -1569,7 +1569,7 @@ pub struct InferenceCensus {
 }
 
 impl InferenceCensus {
-    /// Count one file's walked bindings.
+    /// Count one file's counted bindings ([`InferredFile::incompleteness`]).
     pub fn record(&mut self, inferred: &InferredFile) {
         for reasons in inferred.incompleteness() {
             self.bindings += 1;

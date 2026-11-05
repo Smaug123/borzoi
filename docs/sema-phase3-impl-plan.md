@@ -110,15 +110,16 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-10-30, after statically resolved operators over known
-operands; 2 602 walked bindings, 38.9 % complete — 38.2 % before `equality` and
-`comparison` constraints, when a constrained assembly operator was the only
-observed reason of 37 and present in 71):
+corpus sample (2026-11-05: 1 011 of 2 647 counted bindings complete, 38.2 %;
+the same 1 011 were 38.9 % of the 2 602 walked bindings before the census
+counted the bindings its own annotation stops, below):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
 | value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 409 | 552 |
-| method call on a receiver that is not an in-file value | 163 | 272 |
+| callee that is an operator or active-pattern name in parentheses, `(\|P\|_\|) x` (116 in FSharp.Core's `Linq.fs`) | 118 | 118 |
+| method call whose head the resolver deferred (a project or test-framework name, alone in its file) | 45 | 154 |
+| binding whose own annotation is outside the modelled set (not walked) | 45 | 45 |
 | `use`, `let rec` or `let!` inside an expression | 64 | 90 |
 | use of an in-file binder F# may reject for its attributes | 55 | 131 |
 | pattern annotation outside the modelled set | 49 | 331 |
@@ -137,6 +138,26 @@ construction: re-run after that stage, it is unchanged. The whole-project
 gate prints the census over real projects twice, folded over Compile order
 and each file alone (`project-corpus-diff inference census`), and that is
 where the stage is measured.
+
+Until 2026-11-05 the census also left out every binding whose own annotation
+(`let x : T`, `let f x : T`, `let (x : T)`) is outside the modelled set — not
+walked, so not counted — which hid exactly the bindings that blocker stops.
+They are now counted under `BindingAnnotation`: 45 on the sample, and 312 of
+797 on the whole-project gate (485 before), where the same 26 are complete.
+The same change routes a single-segment callee (`(+)`, `(|P|_|)`) as the value
+application it is: the 118 bindings it moves were filed under the method-call
+row, which on this sample is otherwise a resolver deferral (a head the file
+alone cannot know), and on the whole-project gate the only reason of one
+binding. Neither change commits or withdraws a type.
+
+Of the 312 annotations behind those bindings on the whole-project gate, 154
+(49 %) name a type declared in the same file, 98 (31 %) a name the resolver
+declines as `ShadowableType` — mostly a type an earlier file declares, which
+the resolver tracks only by simple name, as a shadow guard — 29 (9 %) a type
+variable, and 27 (9 %) an FSharp.Core generic abbreviation applied
+(`unit option`, `string list`), which the annotation bridge declines. So the
+project's own types are the next stage: resolved in type position first, then
+given a `Ty`.
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -730,7 +751,8 @@ type the definition shows 9 times (35 before: an `inline` `trace`, and two
 functions with return annotations, whose definition hover comes from the
 annotation renderer rather than from inference); 176 such hovers stay withheld
 because the earlier binding has no certain type. Completeness does not move
-there (26 of 485 walked bindings, folded or each file alone); the per-file
+there (26 of 485 walked bindings, folded or each file alone, before the
+census counted the bindings an unreadable annotation stops); the per-file
 reason `PrecedingValue(NotInferred)`, present in 92 bindings when each file is
 inferred alone, is what main recorded as `NotInFileValue`, and the fold
 replaces it with the earlier binding's own reason: `Untyped` present in 39,
