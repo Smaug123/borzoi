@@ -507,6 +507,12 @@ const REJECTED_HEADS: &[(&str, &str, &str)] = &[
         "type T<'a when 'a : struct> = { V : 'a }",
         "T<string>",
     ),
+    // The same constraint, written after the type's name.
+    (
+        "constraint-after-name",
+        "type T<'a> when 'a : struct = { V : 'a }",
+        "T<string>",
+    ),
     (
         "measure-given-a-type",
         "type T<[<Measure>] 'u> = { V : float<'u> }",
@@ -526,7 +532,7 @@ const REJECTED_HEADS: &[(&str, &str, &str)] = &[
 
 #[test]
 fn a_rejected_annotation_head_commits_only_what_fcs_kept() {
-    let mut programs: Vec<(String, String)> = REJECTED_HEADS
+    let programs: Vec<(String, String)> = REJECTED_HEADS
         .iter()
         .map(|(label, decl, spell)| {
             (

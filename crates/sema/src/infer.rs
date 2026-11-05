@@ -1760,12 +1760,14 @@ impl<'a> Gen<'a> {
             // A type parameter with a constraint or an attribute (a measure):
             // nothing here checks an argument against either, and F# rejects
             // an application that violates one, recovering the binder.
-            let unchecked_parameters = defn.typar_decls().is_some_and(|decls| {
-                decls.constraint_clause().is_some()
-                    || decls
+            // `TypeDefn::constraints` reads both places a constraint can be
+            // written: inside the parameter list and after the type's name.
+            let unchecked_parameters = defn.constraints().next().is_some()
+                || defn.typar_decls().is_some_and(|decls| {
+                    decls
                         .typars()
                         .any(|t| t.is_head_type() || t.attributes().next().is_some())
-            });
+                });
             if !nominal
                 || unchecked_parameters
                 || self.attribute_may_be(defn.syntax(), |h| {
