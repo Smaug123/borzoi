@@ -460,6 +460,18 @@
 //! module-qualified callee is a value application, not a method call. What
 //! the reading declines records [`Incomplete::AssemblyValue`].
 //!
+//! **Preceding files' values.** A use the resolver resolved to an earlier
+//! Compile-order file's top-level value ([`Resolution::Item`] of an item this
+//! file does not own) is typed from what that file's inference published for
+//! the binder ([`PrecedingTypes`], threaded by [`crate::infer_project()`]): its
+//! ground type or generalised scheme, instantiated and loosened exactly as an
+//! in-file scheme's use is ([`Gen::nonlocal_value_use`], and
+//! [`Gen::receiver_var`] for a member access's receiver). FCS fixed that type
+//! when it checked the earlier file, so nothing in this file can change it.
+//! A value the earlier file published no type for records
+//! [`Incomplete::PrecedingValue`] with that file's reason; the verdict each
+//! module-level binder publishes is decided in [`Gen::finish`].
+//!
 //! [D8]: ../../../docs/type-checker-plan.md
 
 use std::collections::{HashMap, HashSet};
@@ -923,7 +935,7 @@ struct SuspendedMember {
 /// from its variable, emitted only when fully [`ground`](Ty::is_ground).
 ///
 /// `preceding` is what the files before this one in Compile order published
-/// for their top-level values ([`crate::infer_project`] folds it): a use the
+/// for their top-level values ([`crate::infer_project()`] folds it): a use the
 /// resolver resolves to one of them instantiates its published type. A single
 /// file inferred on its own passes [`PrecedingTypes::default`], and every such
 /// use declines.

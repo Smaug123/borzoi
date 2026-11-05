@@ -6,7 +6,7 @@
 //! proof.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
 use std::num::NonZeroUsize;
@@ -37,7 +37,8 @@ use borzoi_sema::test_support::{
 };
 use borzoi_sema::{
     AssemblyEnv, DeclineCause, DeclineTier, Def, DeferredReason, InferredFile, InferredProject,
-    OpenOpacity, Resolution, ResolvedFile, ResolvedProject, infer_project,
+    OpenOpacity, PrecedingTypes, Resolution, ResolvedFile, ResolvedProject, infer_file,
+    infer_project,
 };
 
 use crate::deferral_shape::{DeferralCause, DeferralShape};
@@ -1553,8 +1554,88 @@ impl DeclineCensus {
     }
 }
 
+/// Inference's completeness census over a set of files
+/// ([`borzoi_sema::InferredFile::incompleteness`]): how many module-level
+/// bindings were walked, how many were complete, and for each reason a binding
+/// was incomplete, how many bindings it was the only observed reason of and
+/// how many it was present in. A measurement, printed in the text report and
+/// gated by nothing.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct InferenceCensus {
+    pub bindings: usize,
+    pub complete: usize,
+    pub only: BTreeMap<String, usize>,
+    pub present: BTreeMap<String, usize>,
+}
+
+impl InferenceCensus {
+    /// Count one file's walked bindings.
+    pub fn record(&mut self, inferred: &InferredFile) {
+        for reasons in inferred.incompleteness() {
+            self.bindings += 1;
+            let distinct: BTreeSet<String> = reasons.iter().map(|r| format!("{r:?}")).collect();
+            match distinct.len() {
+                0 => self.complete += 1,
+                1 => {
+                    let only = distinct.iter().next().expect("one reason").clone();
+                    *self.only.entry(only).or_default() += 1;
+                }
+                _ => {}
+            }
+            for reason in distinct {
+                *self.present.entry(reason).or_default() += 1;
+            }
+        }
+    }
+
+    pub fn add_assign(&mut self, other: &InferenceCensus) {
+        self.bindings += other.bindings;
+        self.complete += other.complete;
+        for (k, v) in &other.only {
+            *self.only.entry(k.clone()).or_default() += v;
+        }
+        for (k, v) in &other.present {
+            *self.present.entry(k.clone()).or_default() += v;
+        }
+    }
+
+    /// The census as report lines, the ten reasons most often the only one
+    /// first.
+    pub fn render_text(&self, label: &str) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        writeln!(
+            out,
+            "project-corpus-diff inference census ({label}): {} of {} bindings complete",
+            self.complete, self.bindings
+        )
+        .expect("write String");
+        let mut rows: Vec<(&String, usize, usize)> = self
+            .present
+            .iter()
+            .map(|(k, &present)| (k, self.only.get(k).copied().unwrap_or(0), present))
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(b.0)));
+        for (reason, only, present) in rows.into_iter().take(10) {
+            writeln!(
+                out,
+                "project-corpus-diff inference census ({label}):   {reason}: only reason of {only}, present in {present}"
+            )
+            .expect("write String");
+        }
+        out
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Comparison {
+    /// Inference's completeness census over the compared files, folded over
+    /// Compile order as the LSP infers them.
+    pub inference_census: InferenceCensus,
+    /// The same files inferred each on its own, with nothing published by
+    /// the files before them — the census per-file inference would give, for
+    /// comparison.
+    pub inference_census_per_file: InferenceCensus,
     pub files_compared: usize,
     pub uses_reported: usize,
     pub uses_considered: usize,
@@ -1931,6 +2012,13 @@ pub struct CorpusSummary {
     /// What the plain copy's hover probes showed of their symbol's type
     /// ([`handler_diff::HoverTypeCensus`]).
     pub hover_types: handler_diff::HoverTypeCensus,
+    /// Aggregate of [`Comparison::inference_census`]. Text report only: it
+    /// is a measurement for the inference plan, not a metric series.
+    #[serde(skip)]
+    pub inference_census: InferenceCensus,
+    /// Aggregate of [`Comparison::inference_census_per_file`]; text only.
+    #[serde(skip)]
+    pub inference_census_per_file: InferenceCensus,
 }
 
 impl CorpusSummary {
@@ -2030,6 +2118,10 @@ impl CorpusSummary {
         self.unoracled_definitions += comparison.unoracled_definitions;
         self.unoracled_or_pattern_aliases += comparison.unoracled_or_pattern_aliases;
         self.unmodelled_binders += comparison.unmodelled_binders.len();
+        self.inference_census
+            .add_assign(&comparison.inference_census);
+        self.inference_census_per_file
+            .add_assign(&comparison.inference_census_per_file);
     }
 
     pub fn total_uses_considered(&self) -> usize {
@@ -2184,6 +2276,16 @@ impl CorpusSummary {
         )
         .expect("write String");
         out.push_str(&self.hover_types.render_text());
+        out.push_str(
+            &self
+                .inference_census
+                .render_text("folded over Compile order"),
+        );
+        out.push_str(
+            &self
+                .inference_census_per_file
+                .render_text("each file alone"),
+        );
         if !self.build_properties.is_empty() {
             let properties = self
                 .build_properties
@@ -3774,6 +3876,17 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
         comparison.uses_reported += file_uses.uses.len();
         let rf = loaded.resolved.file(file_idx);
         let (inferred, members) = infer_for_comparison(loaded, &inferred_project, file_idx);
+        if let (Some(inferred), Some(impl_file)) =
+            (inferred, loaded.parses.files[file_idx].file.as_impl())
+        {
+            comparison.inference_census.record(inferred);
+            comparison.inference_census_per_file.record(&infer_file(
+                impl_file,
+                rf,
+                &loaded.assembly_env,
+                &PrecedingTypes::default(),
+            ));
+        }
         let shape = oracle_shape(file_uses);
         for u in &file_uses.uses {
             let outcome = grade_use(
@@ -6705,6 +6818,8 @@ mod tests {
             end: 11,
         };
         let comparison = Comparison {
+            inference_census: InferenceCensus::default(),
+            inference_census_per_file: InferenceCensus::default(),
             files_compared: 2,
             uses_reported: 8,
             uses_considered: 4,
