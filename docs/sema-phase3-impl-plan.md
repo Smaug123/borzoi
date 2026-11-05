@@ -68,6 +68,9 @@ isolation.
 - **CE-1** — expression-level `let … in` and `e1; e2` in inference: a local
   types when its RHS is ground on its own, and anything open marks the binding
   incomplete; per [`ce-desugaring-plan.md`](ce-desugaring-plan.md).
+- **Preceding files' values** — inference folded over Compile order
+  (`infer_project`): a use of an earlier file's top-level value is typed from
+  what that file published for it; details below.
 - **Overloads OV-0–OV-7, OV-9** (#872–#899 and follow-ups) — the research probes,
   the `overloads` oracle, assembly flags, cross-assembly dedup, the speculation
   API, the applicability matcher, the instance-call engine with its
@@ -128,7 +131,12 @@ observed reason of 37 and present in 71):
 
 The sample checks each file in isolation against FSharp.Core and the BCL
 alone, so most of the first row is a preceding file's value, which no
-per-file sample can resolve.
+per-file sample can resolve. Inference now types those uses in a project
+(*Preceding files' values*, below), which this sample cannot see by
+construction: re-run after that stage, it is unchanged. The whole-project
+gate prints the census over real projects twice, folded over Compile order
+and each file alone (`project-corpus-diff inference census`), and that is
+where the stage is measured.
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -659,6 +667,80 @@ Measured on the stride-13 corpus sample: agreements 994 + 953 → 994 + 1 068
 (115 parameters, none lost), 0 divergences, 3 more commits ungraded in
 unconverted declarations; completeness is unchanged, since nothing about a
 binding's walk moved.
+
+**Preceding files' values.** Inference folds over Compile order beside the
+resolver (`infer_project`): each file publishes, for every top-level value it
+exports, the type its own inference committed for the binder — ground, or a
+generalised scheme — keyed by the resolver's `ItemId`, and a later file's use
+the resolver resolved to that item (`Resolution::Item` of an earlier file) is
+typed from it, instantiated and loosened exactly as an in-file scheme's use is
+(`Gen::nonlocal_value_use`, as a bare name, a module-qualified path, an infix
+operator, or a member access's receiver). Choosing the binder stays with the
+resolver. FCS fixes an earlier file's value when it checks that file (and
+applies its defaults at the file's end), so nothing in a later file changes
+it, and what a file publishes is exactly what its own binder hover claims,
+graded where it is defined.
+
+Everything else declines with a `PrecedingGap`, which keeps "did not look"
+(`NotInferred`, `NotWalked`) apart from "looked, and nothing is certain"
+(`Untyped`, `Signature`, `Inline`, `RejectedUse`, `NotAValue`); an item absent
+from the table is `NotInferred`, never a licence. A file with a signature
+declines every value: what a later file sees is the signature's type, and a
+signature-only attribute (an error-level `[<Obsolete>]` on a `val`) makes a
+use `obj` on code FCS accepts; reading the `.fsi`'s own annotation would need
+the signature's types resolved in its scope, which nothing does yet. A value
+whose attributes, an enclosing module's, or **the file's own top-level module
+header's** may reject a use declines (the header case is one no in-file use
+meets). `inline` values decline too, by request: no input has shown one typed
+wrong, so that gate is defence in depth. The LSP caches the fold per project
+and reuses each leading file whose resolved file and env are the very ones it
+was inferred from (`infer_project_reusing`).
+
+`infer_cross_file_diff` is the differential, against a new `types-project`
+request of `fcs-dump file-batch` (every file of a project checked as one, both
+typed-tree oracles per file). Earlier files declare values generic,
+monomorphic, loosened, constrained, inline, mutable, incomplete, recursive,
+attributed, operators, in a nested, a `rec`, a rejected and a namespaced
+module, cases and an exception constructor; later files use each in every
+modelled form (value, application, partial application, pipes, composition,
+paren callee, qualified path, member access, method call, operator, a
+parameter argued through it) × five positions — 1 453 well-typed cells — and
+every commit in every file is graded certain-implies-exact. Each value
+declared again in one file under a name of the same length is the
+**relocation twin**: whatever the in-file walk commits for a twin cell, the
+cross-file cell must commit identically (1 656 obligations; 712 cells), and
+each declined kind must record its reason. The ill-typed family (718 cells,
+1 032 FCS errors) applies each value at a contradictory type and relates one
+parameter through two earlier functions of different domains in both orders.
+Signature screening, a syntax error before a value, a rejecting header and
+shadowing by a later file or a second opened module have their own cases, and
+a reusing fold must infer what a cold one does. Deleting the fold, the
+rejected-use gate (a wrong `int` for an `[<Obsolete>]` module's value), the
+inline gate, the walked/unwalked split, the loosening at a use (a wrong type
+for `p |> A.a_fo`), the qualified path or the cross-file receiver fails a
+test; four guards survive deletion because another layer covers them: the
+screened-implementation arm (the resolver exports only signature-derived
+values for a paired file), each of the two not-a-value arms (deleting both
+fails), and the three own-file-item checks (the current file is never in the
+table it is inferred against).
+
+Measured on the whole-project gate (six projects): 0 divergences; hovers on an
+earlier file's value agree with FCS's type 26 times (0 before), and withhold a
+type the definition shows 9 times (35 before: an `inline` `trace`, and two
+functions with return annotations, whose definition hover comes from the
+annotation renderer rather than from inference); 176 such hovers stay withheld
+because the earlier binding has no certain type. Completeness does not move
+there (26 of 485 walked bindings, folded or each file alone); the per-file
+reason `PrecedingValue(NotInferred)`, present in 92 bindings when each file is
+inferred alone, is what main recorded as `NotInFileValue`, and the fold
+replaces it with the earlier binding's own reason: `Untyped` present in 39,
+`Signature` in 31, `Inline` in 23, `NotAValue` (a case constructor) in 8,
+`RejectedUse` in 1. The four bindings whose only reason it was stay
+incomplete — two case constructors, one untyped value, one signature-screened
+value — so on this corpus the next levers are the earlier bindings' own
+blockers and the `.fsi`'s annotations, not the threading. The
+stride-13 census below checks each file alone, so it cannot see this stage
+and is unchanged.
 
 ### Remaining 3.x hard piles (census-priority order)
 

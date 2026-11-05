@@ -3922,9 +3922,12 @@ fn hover_types_are_graded_per_kind() {
             ("Lib.fs", 23, "Zero"),
             (C::ProjectMember, V::Withheld(W::InFile(L::StaticMember))),
         ),
-        // An earlier file's binder: typed where it is declared, and not.
+        // An earlier file's binder: typed where it is declared, and so at
+        // its use; typed where it is declared but withheld at its use (an
+        // `inline` one); and not typed at all.
+        (("Use.fs", 5, "answer"), (C::EarlierFileValue, V::Agrees)),
         (
-            ("Use.fs", 5, "answer"),
+            ("Use.fs", 9, "seven"),
             (
                 C::EarlierFileValue,
                 V::Withheld(W::EarlierFileTypedAtDefinition),
@@ -4015,6 +4018,7 @@ let sb = System.Text.StringBuilder()
 let len = "abc".Length
 let mapped = List.map twice [ 1 ]
 let write () = System.Console.WriteLine "x"
+let inline seven () = 7
 "#;
 
 const KINDS_USE_SOURCE: &str = r#"module Use
@@ -4025,6 +4029,7 @@ let a = answer + 1
 let b = twice 4
 let c = apply twice 5
 let d = useTwice
+let e = seven ()
 "#;
 
 const ZOO_SOURCE: &str = r#"module Zoo

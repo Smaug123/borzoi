@@ -39,8 +39,7 @@ use borzoi_assembly::Member;
 use borzoi_assembly::pdb::embedded_portable_pdb;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, EntityHandle, MemberIndex, ProjectItems, Resolution, SyntaxRecovery, infer_file,
-    resolve_file,
+    AssemblyEnv, EntityHandle, MemberIndex, ProjectItems, Resolution, SyntaxRecovery, resolve_file,
 };
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, Uri};
 
@@ -237,20 +236,17 @@ fn project_definition(state: &mut State, uri: &Uri, byte: usize) -> Option<Locat
             // (Stage 1 keeps signature slots inert), so the member-resolution
             // enrichment is impl-only; a signature buffer falls straight
             // through to the resolver's verdict.
-            let inferred = parses.files[file_idx].file.as_impl().map(|impl_file| {
-                let dotnet_root = workspace.dotnet_root_for_project(&project);
-                let target_framework = workspace.served_tfm_for_project(&project);
-                let env = semantic.assembly_env_for_project(
-                    &project,
-                    dotnet_root.as_deref(),
-                    &target_framework,
-                    workspace,
-                );
-                let _span = tracing::info_span!("infer_file").entered();
-                infer_file(impl_file, file, &env)
-            });
+            // Inference folds the prefix in Compile order (a receiver may be
+            // an earlier file's value) and is cached per project.
+            let inferred = match parses.files[file_idx].file.as_impl() {
+                Some(_) => semantic.inferred_prefix_for(&project, file_idx, workspace, docs),
+                None => None,
+            };
+            let inferred_file = inferred
+                .as_ref()
+                .and_then(|(_, _, inferred)| inferred.file(file_idx));
             // A deferred or absent verdict is D5 silence: `?` / the arms below.
-            served_resolution_with_range(file, inferred.as_ref(), byte)?.1
+            served_resolution_with_range(file, inferred_file, byte)?.1
         }
     };
     // A referenced-assembly member or entity resolves to source via its DLL's

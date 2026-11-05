@@ -170,8 +170,8 @@ fn project_unavailable(
     // just the prefix up to it — the same slice as `project_hover`. The env comes
     // from the same paired call for the same reason it does there: inference must
     // run against the exact env the fold resolved against.
-    let Some((resolved, env)) =
-        semantic.resolved_prefix_and_env_for(&project, idx, workspace, docs)
+    let Some((resolved, _env, inferred_project)) =
+        semantic.inferred_prefix_for(&project, idx, workspace, docs)
     else {
         return ProjectClassify::NotInProject;
     };
@@ -183,20 +183,13 @@ fn project_unavailable(
     };
     // The explanation must be about the verdict the LSP would *act* on, and
     // go-to-definition acts on inference's member resolution where the resolver
-    // deferred. This runs only for a cursor both `project_hover` and
-    // `single_file_hover` already declined, so it is the cold path — but those
-    // two inferred as well, and nothing carries a solved file between them.
-    // Threading one `InferredFile` through the three would need `project_hover`
-    // to classify from its own pass, which changes when `single_file_hover` gets
-    // a look at a project cursor; tracked rather than done here.
-    let inferred = {
-        let _span = tracing::info_span!("infer_file").entered();
-        infer_file(impl_file, file, &env)
-    };
+    // deferred. The project's inference fold is cached, so this reads the
+    // pass `project_hover` already ran.
+    let inferred = inferred_project.file(idx);
     let root = impl_file.syntax();
     ProjectClassify::InProject(unavailable_hover(
         file,
-        Some(&inferred),
+        inferred,
         root,
         text,
         byte,
@@ -296,22 +289,19 @@ fn project_hover(
     // resolved against — a re-fetched env can shift the handles the resolution
     // recorded (see `resolved_prefix_and_env_for`) — so take both from one
     // paired call.
-    let (resolved, env) =
-        semantic.resolved_prefix_and_env_for(&project, target_file_idx, workspace, docs)?;
+    let (resolved, env, inferred_project) =
+        semantic.inferred_prefix_for(&project, target_file_idx, workspace, docs)?;
     let file = resolved.file(target_file_idx);
     // A `.fsi` Compile slot is inert in Stage 1 (no resolutions, no impl tree
     // to infer over) — decline so the caller's single-file fallback answers
     // for a signature buffer.
     let impl_file = parses.files[target_file_idx].file.as_impl()?;
 
-    // Inference is per-file and pure (no IO — it reads only the parsed file, its
-    // resolution, and the assembly env), so run it once up front: it enriches a
-    // resolved-name hover with the binder's type *and* serves the literal /
+    // Inference is folded over the prefix in Compile order (a use of an earlier
+    // file's value takes the type that file published) and cached: it enriches
+    // a resolved-name hover with the binder's type *and* serves the literal /
     // member-access fallback below.
-    let inferred = {
-        let _span = tracing::info_span!("infer_file").entered();
-        infer_file(impl_file, file, &env)
-    };
+    let inferred = inferred_project.file(target_file_idx)?;
 
     // A name resolution under the cursor takes precedence (it's the more specific
     // answer; we enrich it with the binder's inferred type when we have one).
@@ -326,9 +316,17 @@ fn project_hover(
         ) {
             hover_body(semantic, &resolved, file, res, &env, None)
         } else {
+            // An in-file binder's type is this file's; a preceding file's
+            // top-level value's is what that file published for it.
             let ty = file
                 .resolved_def_id(res)
-                .and_then(|def| inferred.def_type(def));
+                .and_then(|def| inferred.def_type(def))
+                .or_else(|| match res {
+                    Resolution::Item(id) if !file.owns_item(id) => {
+                        inferred_project.item_type(id).ok()
+                    }
+                    _ => None,
+                });
             hover_body(semantic, &resolved, file, res, &Arc::default(), ty).map(|mut body| {
                 body.documentation =
                     source_documentation(&parses.files, &resolved, target_file_idx, range, res);
@@ -346,7 +344,7 @@ fn project_hover(
     // receiver's type. Render it via the same `Resolution::Member` path an
     // assembly-path member (`System.Console.WriteLine`) takes, so hover on
     // `Length` in `s.Length` shows the member, not just the whole access's type.
-    if let Some((range, res)) = smallest_member_resolution_with_range(&inferred, byte)
+    if let Some((range, res)) = smallest_member_resolution_with_range(inferred, byte)
         && let Some(body) = hover_body(semantic, &resolved, file, res, &env, None)
     {
         return Some(make_hover(body, text, range));
@@ -355,7 +353,7 @@ fn project_hover(
     // Fallback: an inferred expression type (a literal or a tuple), where no
     // name resolution surfaced a hover.
     let root = impl_file.syntax();
-    let (range, ty) = innermost_inferred_type_with_range(&inferred, root, byte)?;
+    let (range, ty) = innermost_inferred_type_with_range(inferred, root, byte)?;
     Some(make_hover(
         literal_hover_body(text, root, range, ty),
         text,
@@ -381,7 +379,12 @@ fn single_file_hover(
     // member-access typing has no env to resolve into and simply defers.
     let env = AssemblyEnv::default();
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
 
     // Name resolution first (locals / same-file top-level bindings), enriched
     // with the binder's inferred type when we have one.

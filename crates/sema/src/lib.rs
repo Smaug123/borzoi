@@ -40,6 +40,7 @@ mod def;
 mod diagnostics;
 mod function_ty;
 mod infer;
+mod infer_project;
 mod member_ty;
 mod overload;
 mod qnof;
@@ -60,6 +61,9 @@ pub use def::{Def, DefId, DefKind, SemanticClass};
 pub use diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
 pub use function_ty::FunctionTyGap;
 pub use infer::{BuiltinGap, ConstraintGap, Incomplete, InferredFile, OperatorGap, infer_file};
+pub use infer_project::{
+    InferredProject, PrecedingGap, PrecedingTypes, infer_project, infer_project_reusing,
+};
 pub use overload::{ArityWindow, arity_window};
 pub use qnof::{QualifiedNameOfFile, qualified_names};
 pub use recovery::SyntaxRecovery;

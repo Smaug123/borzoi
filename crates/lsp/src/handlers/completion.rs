@@ -33,7 +33,7 @@ use crate::uri::UriExt as _;
 use borzoi_cst::syntax::{
     AstNode, DotGetExpr, Expr, ImplFile, LongIdentExpr, SyntaxKind, SyntaxNode, SyntaxToken,
 };
-use borzoi_sema::{AssemblyEnv, InferredFile, ResolvedFile, Ty, infer_file};
+use borzoi_sema::{AssemblyEnv, InferredFile, InferredProject, Resolution, ResolvedFile, Ty};
 use lsp_types::{CompletionItem, CompletionParams, CompletionResponse, Position};
 use rowan::TextSize;
 
@@ -95,8 +95,6 @@ fn member_candidates(
         .paths
         .iter()
         .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
-    let resolved = semantic.resolved_prefix_for(&project, file_idx, workspace, docs)?;
-    let file = resolved.file(file_idx);
     // Completion needs the file's implementation tree; a `.fsi` Compile slot
     // is inert in Stage 1, so decline (no member completion on signatures).
     let impl_file = parses.files[file_idx].file.as_impl()?;
@@ -105,22 +103,15 @@ fn member_candidates(
     // Find the receiver expression whose member is being completed at `byte`.
     let receiver = receiver_at(impl_file, byte)?;
 
-    // Inference gives the receiver's ground type. Its `AssemblyEnv` is the same
-    // input the resolver/inference use; caching amortises the DLL reads.
-    let dotnet_root = workspace.dotnet_root_for_project(&project);
-    let target_framework = workspace.served_tfm_for_project(&project);
-    let env = semantic.assembly_env_for_project(
-        &project,
-        dotnet_root.as_deref(),
-        &target_framework,
-        workspace,
-    );
-    let inferred = {
-        let _span = tracing::info_span!("infer_file").entered();
-        infer_file(impl_file, file, &env)
-    };
+    // Inference gives the receiver's ground type. It folds the prefix in
+    // Compile order (a receiver may be an earlier file's value), against the
+    // env the fold resolved against.
+    let (resolved, env, inferred_project) =
+        semantic.inferred_prefix_for(&project, file_idx, workspace, docs)?;
+    let file = resolved.file(file_idx);
+    let inferred = inferred_project.file(file_idx)?;
 
-    let recv_ty = receiver_type(&receiver, file, &inferred)?;
+    let recv_ty = receiver_type(&receiver, file, inferred, &inferred_project)?;
     // A ground `Ty::Named` receiver resolves to an entity; anything else (open,
     // an array / tuple / function head, a generic named type) offers nothing.
     let names = members_of(&env, &recv_ty)?;
@@ -258,12 +249,24 @@ fn receiver_of_expr(mut expr: Expr, dot_get: rowan::TextRange) -> Option<Receive
 /// - An `IdentHead` receiver resolves to an in-file binder; its type is the
 ///   binder's `def_type` (a value/parameter typed by inference).
 /// - A `DotGet` receiver's type is inference's receiver type for that access.
-fn receiver_type(receiver: &Receiver, file: &ResolvedFile, inferred: &InferredFile) -> Option<Ty> {
+fn receiver_type(
+    receiver: &Receiver,
+    file: &ResolvedFile,
+    inferred: &InferredFile,
+    project: &InferredProject,
+) -> Option<Ty> {
     match receiver {
         Receiver::IdentHead(head) => {
             let res = file.resolution_at(head.text_range())?;
-            let def = file.resolved_def_id(res)?;
-            inferred.def_type(def).cloned()
+            match (file.resolved_def_id(res), res) {
+                (Some(def), _) => inferred.def_type(def).cloned(),
+                // An earlier file's top-level value: the type that file
+                // published for it.
+                (None, Resolution::Item(id)) if !file.owns_item(id) => {
+                    project.item_type(id).ok().cloned()
+                }
+                (None, _) => None,
+            }
         }
         Receiver::DotGet(range) => inferred.dot_get_receiver_type(*range).cloned(),
     }

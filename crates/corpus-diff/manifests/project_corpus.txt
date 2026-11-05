@@ -1683,7 +1683,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj A
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:168:21-25 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:169:22-26 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:171:12-17 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:171:12-28 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:175:16-21 "child" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:175:16-28 "Height"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AdjustHeightsHeap.fs:175:31-44 "Height"	project-deferral qualified-access member_access_on_value
@@ -5615,7 +5614,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj N
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:593:70-106 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:593:72-99 "MyParentIndexInChildAtIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:596:12-17 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:596:12-28 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:597:30-66 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:597:32-59 "MyParentIndexInChildAtIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:600:35-39 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
@@ -5634,7 +5632,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj N
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:611:36-40 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:611:74-78 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:614:12-17 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:614:12-28 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:615:13-46 "MyChildIndexInParentAtIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:616:13-47 "MyParentIndexInChildAtIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:618:39-43 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
@@ -5689,7 +5686,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj N
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:653:37-71 "MyParentIndexInChildAtIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:654:37-71 "MyParentIndexInChildAtIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:656:12-17 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:656:12-28 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:657:21-27 "child1" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:657:21-55 "MyChildIndexInParentAtIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:658:21-27 "child2" hover-type plain	local withheld-in-file-parameter at first,middle,last
@@ -6297,13 +6293,11 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:158:22-35 "RecomputeHeap"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:158:48-52 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:160:13-18 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:160:13-29 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:161:13-15 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:161:17-21 "Node"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:161:45-47 "(||)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:161:53-57 "Node"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:165:12-17 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:165:12-28 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:166:21-32 "Height"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:166:36-52 "maxHeightAllowed" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:168:22-33 "Height"	project-deferral qualified-access member_access_on_value
@@ -7348,7 +7342,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1172:34-39 "Value"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1172:63-71 "FakeUnit"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1174:12-17 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1174:12-28 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1175:13-22 "invariant" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1177:33-41 "NodeEval"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1177:42-50 "FakeUnit"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace x2
@@ -7356,7 +7349,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1179:22-26 "Eval"	project-deferral unrecorded member_definition_name
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:117:11-17 "Status"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:20-25 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:20-36 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:37-39 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:45-49 "Node"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1180:68-72 "node" hover-type plain	local withheld-in-file-parameter at first,middle,last
@@ -8409,7 +8401,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2128:37-58 "onObservabilityChange" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2129:49-50 "e" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2131:16-21 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2131:16-32 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2132:34-72 "CurrentlyRunningNode"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2132:40-51 "OnlyInDebug"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2133:21-70 "ExpertNodesCreatedByCurrentNode"	project-deferral qualified-access member_access_on_value
@@ -8446,7 +8437,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2173:34-38 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2174:25-35 "State"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2179:20-25 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2179:20-36 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2182:23-29 "Expert"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2182:23-39 "makeStale"	project-deferral qualified-access project_path_shadow@root
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2183:19-30 "StaleResult"	project-deferral unrecorded qualifier
@@ -8501,7 +8491,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2230:25-35 "State"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2232:19-35 "expertKindOfNode" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2235:20-25 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2235:20-36 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2236:55-60 "state" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2239:33-49 "Value"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2239:38-43 "Index"	project-deferral qualified-access member_access_on_value
@@ -8853,7 +8842,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:583:37-46 "Unchecked"	assembly-deferral unbound-name qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:583:37-56 "defaultof"	assembly-deferral qualified-access unexplained
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:588:16-21 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:588:16-32 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:589:30-34 "Node"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:589:53-57 "node" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:590:25-36 "NodeHelpers"	project-deferral qualified-access qualifier
@@ -8879,7 +8867,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:613:77-86 "Node"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:613:87-102 "ChildIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:615:20-25 "Debug"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:615:20-36 "globalFlag" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:616:29-41 "Height"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:618:20-32 "Height"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:618:36-52 "Height"	project-deferral qualified-access member_access_on_value

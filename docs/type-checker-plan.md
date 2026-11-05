@@ -428,6 +428,10 @@ in [`sema-phase3-impl-plan.md`](sema-phase3-impl-plan.md)):
   completeness-gated, coercion-free `ArgCheck` application wake with deferred
   poisoning (3.3c, #727), and single-candidate method-call typing to the method's
   return type behind an arity gate (3.3d, #732). The ~7–12 % B2 payoff.
+- **Preceding files' values** — inference is folded over Compile order
+  (`infer_project`, D2's fold for types): each file publishes its top-level
+  values' certain types, and a later file's use the resolver resolved to one
+  instantiates it; everything uncertain declines with its reason.
 - **3.x-inh** (#735) — member inheritance: a base-chain walk lets inherited fields,
   properties, and single-candidate methods type and resolve to their declaring base
   entity. Dot-completion remains exact-entity-only (no inherited members).

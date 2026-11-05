@@ -3821,6 +3821,16 @@ impl ResolvedFile {
     /// with its binding. Same in-file restriction: a cross-file
     /// [`Resolution::Item`], `Entity`, `Member`, `Deferred`, and `Unresolved`
     /// return `None`.
+    /// Whether the item handle `id` is one of **this file's** exports — its
+    /// own top-level binding, whatever arena its def lives in (a
+    /// signature-derived export's def is in the paired `.fsi`, but the handle
+    /// is still this file's).
+    pub fn owns_item(&self, id: ItemId) -> bool {
+        id.index()
+            .checked_sub(self.item_base as usize)
+            .is_some_and(|local| local < self.exports.items.len())
+    }
+
     pub fn resolved_def_id(&self, res: Resolution) -> Option<DefId> {
         match res {
             Resolution::Local(id) => Some(id),

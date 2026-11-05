@@ -456,9 +456,21 @@
 //! qualified `List.map` over the whole path — is typed as FCS types a use of a
 //! value (`TcVal`): the member's IL signature read as its F# type
 //! ([`crate::function_ty::module_function_scheme`]), instantiated and loosened
-//! as a generalised in-file binder's is ([`Gen::assembly_value_use`]). A
+//! as a generalised in-file binder's is ([`Gen::nonlocal_value_use`]). A
 //! module-qualified callee is a value application, not a method call. What
 //! the reading declines records [`Incomplete::AssemblyValue`].
+//!
+//! **Preceding files' values.** A use the resolver resolved to an earlier
+//! Compile-order file's top-level value ([`Resolution::Item`] of an item this
+//! file does not own) is typed from what that file's inference published for
+//! the binder ([`PrecedingTypes`], threaded by [`crate::infer_project()`]): its
+//! ground type or generalised scheme, instantiated and loosened exactly as an
+//! in-file scheme's use is ([`Gen::nonlocal_value_use`], and
+//! [`Gen::receiver_var`] for a member access's receiver). FCS fixed that type
+//! when it checked the earlier file, so nothing in this file can change it.
+//! A value the earlier file published no type for records
+//! [`Incomplete::PrecedingValue`] with that file's reason; the verdict each
+//! module-level binder publishes is decided in [`Gen::finish`].
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
@@ -479,6 +491,7 @@ use crate::def::DefId;
 use crate::function_ty::{
     Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, builtin_operator, module_function_scheme,
 };
+use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -517,6 +530,10 @@ pub struct InferredFile {
     /// `DOT_GET_EXPR`'s range — recorded whether or not the access resolves.
     /// See [`Self::dot_get_receiver_type`].
     receiver_types: HashMap<TextRange, Ty>,
+    /// What this file publishes for each binder a module-level `let` binds:
+    /// its certain type, or why it has none — read by
+    /// [`PrecedingTypes::publish`] for the binders the file exports.
+    module_values: HashMap<DefId, ModuleValue>,
 }
 
 impl InferredFile {
@@ -583,6 +600,12 @@ impl InferredFile {
         &self.incompleteness
     }
 
+    /// What this file publishes for the module-level binder `def`, or `None`
+    /// when `def` is not one the walk met as a module-level binder.
+    pub(crate) fn module_value(&self, def: DefId) -> Option<&ModuleValue> {
+        self.module_values.get(&def)
+    }
+
     pub fn len(&self) -> usize {
         self.types.len()
     }
@@ -609,10 +632,13 @@ pub enum Incomplete {
     /// An expression form inference does not model at all, by its syntax kind:
     /// a `match`, a record, a bang or `use`/`rec` `let`, …
     Unmodelled(SyntaxKind),
-    /// A value reference the resolver resolved neither to an in-file binder nor
-    /// to a referenced assembly's member: a preceding file's value, or a name
-    /// it deferred.
+    /// A value reference the resolver resolved to none of an in-file binder,
+    /// a referenced assembly's member, or a preceding file's top-level value:
+    /// a name it deferred, a case, a type.
     NotInFileValue,
+    /// A use of a preceding Compile-order file's top-level value whose type
+    /// that file did not publish, and why.
+    PrecedingValue(PrecedingGap),
     /// A use of a referenced assembly's member (`List.map`, a bare `id`) whose
     /// F# type is not read off its signature, and why.
     AssemblyValue(FunctionTyGap),
@@ -720,8 +746,7 @@ pub enum ConstraintGap {
 /// [`Incomplete::Operator`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OperatorGap {
-    /// The resolver named no binder for the operator: a deferred lookup, or a
-    /// definition in a preceding file.
+    /// The resolver named no value for the operator: a deferred lookup.
     Unresolved,
     /// A referenced assembly's operator with a constraint on a type parameter
     /// — an F#-only one (`=` needs `equality`, `+` is statically resolved) or
@@ -743,6 +768,17 @@ enum BinderSite {
     Local,
     /// A module-level `let`.
     Module,
+}
+
+/// What [`Gen::finish`] needs to know of a module-level binder's binding,
+/// beyond its type, to decide what it publishes.
+#[derive(Debug, Clone, Copy)]
+struct ModuleBinder {
+    /// The binding is `inline`.
+    inline: bool,
+    /// Its top-level module's header carries an attribute that may reject a
+    /// use from outside ([`Gen::in_rejecting_header`]).
+    header_rejects: bool,
 }
 
 /// A pattern as inference reads it ([`Gen::pattern_shape`]): the shapes it
@@ -908,9 +944,20 @@ struct SuspendedMember {
 /// eager `Eq`s first, then a worklist waking each suspended `HasMember` once its
 /// receiver's head is concrete — and each recorded expression's type is read back
 /// from its variable, emitted only when fully [`ground`](Ty::is_ground).
-pub fn infer_file(file: &ImplFile, resolved: &ResolvedFile, env: &AssemblyEnv) -> InferredFile {
+///
+/// `preceding` is what the files before this one in Compile order published
+/// for their top-level values ([`crate::infer_project()`] folds it): a use the
+/// resolver resolves to one of them instantiates its published type. A single
+/// file inferred on its own passes [`PrecedingTypes::default`], and every such
+/// use declines.
+pub fn infer_file(
+    file: &ImplFile,
+    resolved: &ResolvedFile,
+    env: &AssemblyEnv,
+    preceding: &PrecedingTypes,
+) -> InferredFile {
     let ext_scope = ExtensionScope::of(resolved, env);
-    let mut cx = Gen::new(resolved, env, ext_scope);
+    let mut cx = Gen::new(resolved, env, ext_scope, preceding);
     cx.rejected_defs = cx.rejected_use_defs(file);
     cx.walk(file);
     cx.solve();
@@ -1087,6 +1134,15 @@ impl ExtensionScope {
 /// binder. Grouped into one value so the per-node rules read locally.
 struct Gen<'a> {
     resolved: &'a ResolvedFile,
+    /// What the preceding Compile-order files published for their top-level
+    /// values ([`infer_file`]'s `preceding`).
+    preceding: &'a PrecedingTypes,
+    /// Every binder a module-level `let` binds ([`Self::own_binders`]): the
+    /// binders [`Self::finish`] decides a [`ModuleValue`] for.
+    module_binders: HashMap<DefId, ModuleBinder>,
+    /// The module-level binders whose binding was walked for its type
+    /// ([`Self::type_let_decl`]), whether or not it found one.
+    walked_binders: HashSet<DefId>,
     /// The flattened referenced-assembly view a member access resolves *into*
     /// (Stage 3.3a): the receiver's [`Ty::Named`] head is looked up here for its
     /// instance data member. Read-only (pure — values in).
@@ -1290,9 +1346,17 @@ struct WorklistOutcome {
 }
 
 impl<'a> Gen<'a> {
-    fn new(resolved: &'a ResolvedFile, env: &'a AssemblyEnv, ext_scope: ExtensionScope) -> Self {
+    fn new(
+        resolved: &'a ResolvedFile,
+        env: &'a AssemblyEnv,
+        ext_scope: ExtensionScope,
+        preceding: &'a PrecedingTypes,
+    ) -> Self {
         Gen {
             resolved,
+            preceding,
+            module_binders: HashMap::new(),
+            walked_binders: HashSet::new(),
             env,
             ext_scope,
             table: InferTable::new(),
@@ -1554,15 +1618,7 @@ impl<'a> Gen<'a> {
     /// included: a parameter is used only inside the binding, where declining
     /// costs nothing a use outside would not.
     fn rejected_use_defs(&self, file: &ImplFile) -> HashSet<TextRange> {
-        let env = self.env;
-        let rejects = |h: EntityHandle| {
-            matches!(
-                env.entity_full_name(h).as_str(),
-                "System.ObsoleteAttribute"
-                    | "Microsoft.FSharp.Core.CompilerMessageAttribute"
-                    | "Microsoft.FSharp.Core.RequiresExplicitTypeArgumentsAttribute"
-            )
-        };
+        let rejects = |h: EntityHandle| self.rejects_use(h);
         let in_rejected_module = |node: &SyntaxNode| {
             node.ancestors().any(|a| {
                 a.kind() == SyntaxKind::NESTED_MODULE_DECL && self.attribute_may_be(&a, rejects)
@@ -1600,6 +1656,30 @@ impl<'a> Gen<'a> {
             }
         }
         out
+    }
+
+    /// Whether the attribute type `h` makes F# reject (or warn about) a use of
+    /// what it is on: an `[<Obsolete>]`, a `[<CompilerMessage>]`, a
+    /// `[<RequiresExplicitTypeArguments>]`.
+    fn rejects_use(&self, h: EntityHandle) -> bool {
+        matches!(
+            self.env.entity_full_name(h).as_str(),
+            "System.ObsoleteAttribute"
+                | "Microsoft.FSharp.Core.CompilerMessageAttribute"
+                | "Microsoft.FSharp.Core.RequiresExplicitTypeArgumentsAttribute"
+        )
+    }
+
+    /// Whether `node` sits in a top-level module whose header carries an
+    /// attribute that may make F# reject a use of its contents
+    /// ([`Self::rejects_use`]). A use from another file reaches the value
+    /// through that module, so such a value is never published
+    /// ([`Self::finish`]); a use inside the module is the in-file rule's.
+    fn in_rejecting_header(&self, node: &SyntaxNode) -> bool {
+        node.ancestors().any(|a| {
+            a.kind() == SyntaxKind::MODULE_OR_NAMESPACE
+                && self.attribute_may_be(&a, |h| self.rejects_use(h))
+        })
     }
 
     /// Whether a use of the in-file binder `def` may be one F# rejects for the
@@ -1662,8 +1742,25 @@ impl<'a> Gen<'a> {
     /// `mono u` retype a `let rec u` as `mono`'s domain. Parameters are not
     /// binders of the declaration and are left to their function.
     fn own_binders(&mut self, binding: &Binding) {
+        let inline = binding.is_inline();
+        let header_rejects = self.in_rejecting_header(binding.syntax());
+        for def in self.binding_defs(binding) {
+            self.def_var(def);
+            self.module_binders.insert(
+                def,
+                ModuleBinder {
+                    inline,
+                    header_rejects,
+                },
+            );
+        }
+    }
+
+    /// Every binder a module-level binding's head binds — the names of a
+    /// value pattern, or a function's name — but not its parameters.
+    fn binding_defs(&self, binding: &Binding) -> Vec<DefId> {
         let Some(pat) = binding.pat() else {
-            return;
+            return Vec::new();
         };
         let names: Vec<NamedPat> = match &pat {
             Pat::LongIdent(head)
@@ -1688,9 +1785,7 @@ impl<'a> Gen<'a> {
         {
             defs.push(def);
         }
-        for def in defs {
-            self.def_var(def);
-        }
+        defs
     }
 
     /// Type one module-level `let` declaration ([`Self::let_binding`]).
@@ -1730,6 +1825,12 @@ impl<'a> Gen<'a> {
             // denotes a primitive alias is bound to it. Function bindings with
             // return annotations stay skipped (their body↔annotation relation is
             // subsumption — Stage R2-c), as do mutable binders (v1 scope).
+            // From here the binding is walked for its type, whether or not it
+            // finds one.
+            if binding.return_type().is_some() || binding.expr().is_some() {
+                let walked = self.binding_defs(&binding);
+                self.walked_binders.extend(walked);
+            }
             if let Some(ann) = binding.return_type() {
                 self.annotated_value_binding(&binding, &ann);
                 continue;
@@ -2450,7 +2551,7 @@ impl<'a> Gen<'a> {
                     // A referenced assembly's value, read off its signature;
                     // anything else that is not an in-file binder (a
                     // preceding file's, a deferred name) is unmodelled.
-                    let uv = self.assembly_value_or_incomplete(tok.text_range())?;
+                    let uv = self.nonlocal_value_or_incomplete(tok.text_range())?;
                     self.emit(tok.text_range(), uv, expected);
                     return Some(uv);
                 };
@@ -3041,7 +3142,7 @@ impl<'a> Gen<'a> {
     /// (`int a`, `Operators.int a`) or as a prefix operator (`-a`). Any other
     /// use — the operator as a value (`(+) a b`, `List.map int`, `a |> int`)
     /// — is not, and declines as a constrained signature
-    /// ([`Self::assembly_value_use`]).
+    /// ([`Self::nonlocal_value_use`]).
     ///
     /// FCS solves the operator's constraint where it checks the application,
     /// from its operands' types as it knows them there; one it does not know
@@ -3158,15 +3259,17 @@ impl<'a> Gen<'a> {
     /// - **An in-file binder** is an applied value like any other
     ///   ([`Self::value_use`]).
     /// - **An assembly's operator** — a member of one of its F# modules — is a
-    ///   use of an assembly value ([`Self::assembly_value_use`]). Only a
+    ///   use of an assembly value ([`Self::nonlocal_value_use`]). Only a
     ///   signature with no constraint on any type parameter qualifies:
     ///   instantiating a constrained one as a plain variable would claim a
     ///   constraint is modelled that is not, which is what walk-completeness
     ///   rests on.
+    /// - **A preceding file's operator** is a use of the type that file
+    ///   published for it ([`Self::nonlocal_value_use`]).
     ///
-    /// Anything else — a deferred or cross-file lookup, a signature that does
-    /// not carry over — declines, marking the binding incomplete with the
-    /// reason.
+    /// Anything else — a deferred lookup, a signature that does not carry
+    /// over, a preceding file's operator it published no type for — declines,
+    /// marking the binding incomplete with the reason.
     fn operator_value(&mut self, op: &Expr) -> Option<TyVid> {
         let tok = match op {
             Expr::LongIdent(li) => li.long_ident().and_then(|li| {
@@ -3189,17 +3292,19 @@ impl<'a> Gen<'a> {
             }
             return Some(self.value_use(def));
         }
-        match self.assembly_value_use(tok.text_range()) {
+        match self.nonlocal_value_use(tok.text_range()) {
             Ok(v) => Some(v),
             Err(why) => {
                 let why = match why {
                     Incomplete::AssemblyValue(FunctionTyGap::Constrained) => {
-                        OperatorGap::Constrained
+                        Incomplete::Operator(OperatorGap::Constrained)
                     }
-                    Incomplete::AssemblyValue(_) => OperatorGap::Signature,
-                    _ => OperatorGap::Unresolved,
+                    Incomplete::AssemblyValue(_) => Incomplete::Operator(OperatorGap::Signature),
+                    // A preceding file's operator, untyped there: its own reason.
+                    preceding @ Incomplete::PrecedingValue(_) => preceding,
+                    _ => Incomplete::Operator(OperatorGap::Unresolved),
                 };
-                self.mark_incomplete(Incomplete::Operator(why));
+                self.mark_incomplete(why);
                 None
             }
         }
@@ -3220,11 +3325,27 @@ impl<'a> Gen<'a> {
     /// parameter, a unit of measure, an argument-group shape, a type the bridge
     /// does not carry, an attribute that rejects the use — declines with its
     /// reason. The resolver's map holds no assembly reading under an
-    /// incomplete projection, and a preceding file's value is not a
-    /// [`Resolution::Member`], so both decline as [`Incomplete::NotInFileValue`].
-    fn assembly_value_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
-        let Some(Resolution::Member { parent, idx }) = self.resolved.resolution_at(at) else {
-            return Err(Incomplete::NotInFileValue);
+    /// incomplete projection, so that declines as [`Incomplete::NotInFileValue`].
+    ///
+    /// A use the resolver resolved to a **preceding file's** top-level value
+    /// ([`Resolution::Item`] of an earlier file) is the same kind of use: FCS
+    /// types it from the value's type, fixed when that file was checked, so it
+    /// instantiates and loosens the type that file published
+    /// ([`PrecedingTypes`]) as an in-file binder's would be. A value that
+    /// file published no type for declines with the reason it recorded
+    /// ([`Incomplete::PrecedingValue`]).
+    fn nonlocal_value_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
+        let (parent, idx) = match self.resolved.resolution_at(at) {
+            Some(Resolution::Member { parent, idx }) => (parent, idx),
+            Some(Resolution::Item(id)) if !self.resolved.owns_item(id) => {
+                let ty = self
+                    .preceding
+                    .get(id)
+                    .map_err(Incomplete::PrecedingValue)?
+                    .clone();
+                return Ok(self.scheme_use(&ty));
+            }
+            _ => return Err(Incomplete::NotInFileValue),
         };
         let scheme = match self.env.member_at(parent, idx) {
             Member::Method(m) => module_function_scheme(self.env, parent, m),
@@ -3268,13 +3389,14 @@ impl<'a> Gen<'a> {
     }
 
     /// The range of a qualified path `M.f` that names a referenced F# module's
-    /// member: the shape of a module-qualified value (`List.map`,
-    /// `Microsoft.FSharp.Core.Operators.id`). The resolver records such a
-    /// member over the whole path, as FCS reports it, so that is the range
-    /// read. `None` for a path whose head is an in-file binder (a member access
-    /// on a value), for one with an active-pattern segment, and for every other
-    /// record — a path that only begins with a module value (`M.v.Length`)
-    /// among them.
+    /// member, or a preceding file's top-level value: the shape of a
+    /// module-qualified value (`List.map`,
+    /// `Microsoft.FSharp.Core.Operators.id`, `Shared.helper`). The resolver
+    /// records such a value over the whole path, as FCS reports it, so that is
+    /// the range read. `None` for a path whose head is an in-file binder (a
+    /// member access on a value), for one with an active-pattern segment, and
+    /// for every other record — a path that only begins with a module value
+    /// (`M.v.Length`) among them.
     fn module_value_path(&self, li: &LongIdentExpr) -> Option<TextRange> {
         let long_ident = li.long_ident()?;
         if long_ident.active_pat_names().next().is_some() {
@@ -3289,6 +3411,7 @@ impl<'a> Gen<'a> {
         let whole = TextRange::new(head.text_range().start(), last.text_range().end());
         match self.resolved.resolution_at(whole)? {
             Resolution::Member { parent, .. } if self.env.is_module(parent) => Some(whole),
+            Resolution::Item(id) if !self.resolved.owns_item(id) => Some(whole),
             _ => None,
         }
     }
@@ -3376,7 +3499,7 @@ impl<'a> Gen<'a> {
                     return None;
                 };
                 let Some(def) = self.def_at(tok.text_range()) else {
-                    return self.assembly_value_or_incomplete(tok.text_range());
+                    return self.nonlocal_value_or_incomplete(tok.text_range());
                 };
                 if self.use_may_be_rejected(def) {
                     self.mark_incomplete(Incomplete::RejectedUse);
@@ -3386,7 +3509,7 @@ impl<'a> Gen<'a> {
             }
             // A module-qualified value (`List.map f`).
             Expr::LongIdent(li) => match self.module_value_path(li) {
-                Some(whole) => self.assembly_value_or_incomplete(whole),
+                Some(whole) => self.nonlocal_value_or_incomplete(whole),
                 None => {
                     self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
                     None
@@ -3399,10 +3522,10 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// [`Self::assembly_value_use`], recording why the binding is incomplete
+    /// [`Self::nonlocal_value_use`], recording why the binding is incomplete
     /// when it declines.
-    fn assembly_value_or_incomplete(&mut self, at: TextRange) -> Option<TyVid> {
-        match self.assembly_value_use(at) {
+    fn nonlocal_value_or_incomplete(&mut self, at: TextRange) -> Option<TyVid> {
+        match self.nonlocal_value_use(at) {
             Ok(v) => Some(v),
             Err(why) => {
                 self.mark_incomplete(why);
@@ -3889,7 +4012,7 @@ impl<'a> Gen<'a> {
         // A module-qualified value (`List.length`), whose node FCS keys at
         // the whole path.
         if let Some(whole) = self.module_value_path(li) {
-            let uv = self.assembly_value_or_incomplete(whole)?;
+            let uv = self.nonlocal_value_or_incomplete(whole)?;
             self.emit(whole, uv, expected);
             return Some(uv);
         }
@@ -3908,10 +4031,12 @@ impl<'a> Gen<'a> {
                 return None;
             }
         };
-        // The head must resolve to an in-file value binder; otherwise this is a
-        // qualified static path (or unresolved) we do not model here.
+        // The head must resolve to a value binder, in this file or a preceding
+        // one; otherwise this is a qualified static path (or unresolved) we do
+        // not model here.
+        let recorded = self.reasons_recorded();
         let Some(recv) = self.receiver_var(head) else {
-            self.mark_incomplete(Incomplete::QualifiedPath);
+            self.mark_consequence(recorded, Incomplete::QualifiedPath);
             return None;
         };
         // Emit the receiver's own value node (coercion-free — synth), guarded on
@@ -3967,11 +4092,32 @@ impl<'a> Gen<'a> {
     /// ident resolution but for a receiver: a generalised binder instantiates its
     /// scheme afresh; a plain in-file binder contributes its variable (poisoned if
     /// it is an *environment* reference, so a still-open receiver blocks
-    /// generalisation). `None` if the head does not resolve to an in-file binder (a
-    /// qualified static path, a cross-file/assembly name, or unresolved) — the
-    /// caller then defers, leaving any static-member resolution untouched.
+    /// generalisation). A head the resolver resolved to a **preceding file's**
+    /// top-level value takes the type that file published, instantiated as a
+    /// scheme's is; one it published no type for records why. `None` if the
+    /// head does not resolve to such a value either (a qualified static path,
+    /// an assembly name, or unresolved) — the caller then defers, leaving any
+    /// static-member resolution untouched.
     fn receiver_var(&mut self, head: &SyntaxToken) -> Option<TyVid> {
-        let def = self.def_at(head.text_range())?;
+        let Some(def) = self.def_at(head.text_range()) else {
+            let Some(Resolution::Item(id)) = self.resolved.resolution_at(head.text_range()) else {
+                return None;
+            };
+            if self.resolved.owns_item(id) {
+                return None;
+            }
+            let ty = match self.preceding.get(id) {
+                Ok(ty) => ty.clone(),
+                Err(gap) => {
+                    self.mark_incomplete(Incomplete::PrecedingValue(gap));
+                    return None;
+                }
+            };
+            let body = self.instantiate(&ty);
+            let uv = self.table.fresh();
+            self.eq(Ty::Var(uv), body);
+            return Some(uv);
+        };
         if let Some(scheme) = self.def_schemes.get(&def).cloned() {
             let body = self.instantiate(&scheme);
             let uv = self.table.fresh();
@@ -5509,12 +5655,34 @@ impl<'a> Gen<'a> {
                 ty.is_ground().then_some((range, ty))
             })
             .collect();
+        // What each module-level binder publishes to later files. A rejected
+        // use or an `inline` binding declines whatever its type; otherwise the
+        // binder's published type is exactly its hover type above.
+        let module_values = self
+            .module_binders
+            .iter()
+            .map(|(&def, binder)| {
+                let verdict = if self.use_may_be_rejected(def) || binder.header_rejects {
+                    ModuleValue::Declined(PrecedingGap::RejectedUse)
+                } else if binder.inline {
+                    ModuleValue::Declined(PrecedingGap::Inline)
+                } else if let Some(ty) = def_types.get(&def) {
+                    ModuleValue::Typed(ty.clone())
+                } else if self.walked_binders.contains(&def) {
+                    ModuleValue::Declined(PrecedingGap::Untyped)
+                } else {
+                    ModuleValue::Declined(PrecedingGap::NotWalked)
+                };
+                (def, verdict)
+            })
+            .collect();
         InferredFile {
             types,
             def_types,
             member_resolutions,
             incompleteness: std::mem::take(&mut self.incompleteness),
             receiver_types,
+            module_values,
         }
     }
 }
@@ -6576,7 +6744,7 @@ mod tests {
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = super::infer_file(&file, &resolved, &env);
+        let inferred = super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default());
         inferred
             .def_types()
             .iter()
@@ -6598,7 +6766,7 @@ mod tests {
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = super::infer_file(&file, &resolved, &env);
+        let inferred = super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default());
         inferred.types().values().map(super::Ty::render).collect()
     }
 
@@ -7251,7 +7419,7 @@ mod tests {
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = super::infer_file(&file, &resolved, &env);
+        let inferred = super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default());
         assert_eq!(
             inferred.incompleteness(),
             [
@@ -7516,7 +7684,7 @@ mod tests {
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = super::infer_file(&file, &resolved, &env);
+        let inferred = super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default());
         // Key on the exact one-byte `y` token range: the tuple node itself
         // starts at the same offset (its parens are a separate wrapper).
         let y_use_at = src.rfind("(y,").expect("tuple") + 1;
@@ -7753,7 +7921,13 @@ mod tests {
         // distinct vars; no `Param` survives.
         let resolved = empty_resolved();
         let env = AssemblyEnv::default();
-        let mut cx = Gen::new(&resolved, &env, super::ExtensionScope::default());
+        let preceding = crate::PrecedingTypes::default();
+        let mut cx = Gen::new(
+            &resolved,
+            &env,
+            super::ExtensionScope::default(),
+            &preceding,
+        );
         let scheme = Ty::Fun {
             arg: Box::new(Ty::Param(0)),
             ret: Box::new(Ty::Tuple(vec![Ty::Param(0), Ty::Param(1)])),
@@ -7799,7 +7973,13 @@ mod tests {
         // through the table so the fresh vars are real keys.
         let resolved = empty_resolved();
         let env = AssemblyEnv::default();
-        let mut cx = Gen::new(&resolved, &env, super::ExtensionScope::default());
+        let preceding = crate::PrecedingTypes::default();
+        let mut cx = Gen::new(
+            &resolved,
+            &env,
+            super::ExtensionScope::default(),
+            &preceding,
+        );
         let mark = cx.table.mark();
         let scheme = Ty::Fun {
             arg: Box::new(Ty::Param(0)),
