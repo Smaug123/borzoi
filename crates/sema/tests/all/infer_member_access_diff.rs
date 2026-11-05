@@ -143,7 +143,12 @@ fn fsharp_core_env_no_longer_defers_unrelated_overload_names() {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = infer_file(&file, &resolved, &env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            &env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         let def_types: HashMap<String, String> = inferred
             .def_types()
             .iter()
@@ -258,7 +263,12 @@ fn open_of_extension_bearing_namespace_defers_only_colliding_names() {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = infer_file(&file, &resolved, &env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            &env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         let def_types: HashMap<String, String> = inferred
             .def_types()
             .iter()
@@ -350,7 +360,12 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types = inferred
         .def_types()
         .iter()
@@ -374,7 +389,12 @@ fn assert_sound(src: &str) -> usize {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
 
     let path = temp_fs_file("member_diff", src);
     let json = invoke_fcs_dump("types", &path);
@@ -577,7 +597,12 @@ fn infer_core_full(src: &str) -> (InferredFile, ResolvedFile) {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     (inferred, resolved)
 }
 
@@ -594,7 +619,12 @@ fn infer_bcl_full(src: &str) -> (InferredFile, ResolvedFile) {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     (inferred, resolved)
 }
 
@@ -1110,7 +1140,12 @@ fn unproven_object_base_edge_sinks_the_chain_rather_than_capping() {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-        let inferred = infer_file(&file, &resolved, env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         inferred
             .def_types()
             .iter()
@@ -1153,7 +1188,12 @@ fn enclosing_namespace_extension_defers_the_overload_gate() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -1172,7 +1212,12 @@ fn enclosing_namespace_extension_defers_the_overload_gate() {
     let recovery = SyntaxRecovery::of(&cparsed);
     let cfile = ImplFile::cast(cparsed.root).expect("impl file");
     let cresolved = resolve_file(&cfile, &ProjectItems::default(), &env, &recovery);
-    let cinferred = infer_file(&cfile, &cresolved, &env);
+    let cinferred = infer_file(
+        &cfile,
+        &cresolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let ctypes: HashMap<String, String> = cinferred
         .def_types()
         .iter()
@@ -1255,7 +1300,12 @@ fn single_params_method_routes_through_the_matcher() {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = infer_file(&file, &resolved, &env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            &env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         inferred
             .def_types()
             .iter()
@@ -1401,7 +1451,12 @@ fn interface_receiver_method_call_defers() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     assert_eq!(
         inferred.member_resolution_at(ident_range(src, "M")),
         None,
@@ -1517,7 +1572,12 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     inferred
         .types()
         .values()
@@ -1641,7 +1701,12 @@ fn skipped_member_in_scope_defers_the_overload_gate() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -1667,7 +1732,12 @@ fn dropped_type_uncertainty_is_namespace_scoped() {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-        let inferred = infer_file(&file, &resolved, env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         inferred
             .def_types()
             .iter()
@@ -1755,7 +1825,12 @@ fn dropped_type_in_the_receiver_namespace_defers_the_member() {
             let recovery = SyntaxRecovery::of(&parsed);
             let file = ImplFile::cast(parsed.root).expect("impl file");
             let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-            let inferred = infer_file(&file, &resolved, &env);
+            let inferred = infer_file(
+                &file,
+                &resolved,
+                &env,
+                &borzoi_sema::PrecedingTypes::default(),
+            );
             let def_types: HashMap<String, String> = inferred
                 .def_types()
                 .iter()
@@ -1815,7 +1890,12 @@ fn annotated_receiver_door_is_sealed_by_the_resolver() {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-        let inferred = infer_file(&file, &resolved, env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         inferred
             .def_types()
             .iter()
@@ -1854,7 +1934,12 @@ fn unknowable_auto_opens_defer_the_overload_gate() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -1886,7 +1971,12 @@ fn root_namespace_extension_defers_the_overload_gate() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -1912,7 +2002,12 @@ fn cross_file_extension_class_defers_the_overload_gate() {
     let f2 = "module M2\nlet s = \"hi\"\nlet n = s.Substring(1)\n";
     let (files, project) = clean_project(&[f1, f2], &env);
     let f2_resolved = project.file(1);
-    let inferred = infer_file(&files[1], f2_resolved, &env);
+    let inferred = infer_file(
+        &files[1],
+        f2_resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -1928,7 +2023,12 @@ fn cross_file_extension_class_defers_the_overload_gate() {
     // no *preceding* extension source is in scope — the overload commits.
     let (reordered, project2) = clean_project(&[f2, f1], &env);
     let call_first = project2.file(0);
-    let inferred2 = infer_file(&reordered[0], call_first, &env);
+    let inferred2 = infer_file(
+        &reordered[0],
+        call_first,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let types2: HashMap<String, String> = inferred2
         .def_types()
         .iter()
@@ -2188,7 +2288,12 @@ fn trailing_comma_argument_list_defers() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -2342,7 +2447,12 @@ fn void_method_call_defers_type_but_records_resolution() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
 
     // The identity is recorded so hover / go-to-def works on the method name…
     assert!(
@@ -2446,7 +2556,12 @@ fn omitted_out_parameter_single_candidate_defers() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -2478,7 +2593,12 @@ fn omitted_out_parameter_fully_supplied_also_defers() {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-        let inferred = infer_file(&file, &resolved, &env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            &env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         (inferred, resolved)
     };
     // No resolution recorded — a byref/out winner never commits.
@@ -2659,7 +2779,12 @@ fn non_extension_attribute_no_longer_defers_the_overload() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -2701,7 +2826,12 @@ fn a_real_extension_attribute_still_defers_the_overload() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -2733,7 +2863,12 @@ fn augmentation_defers_only_its_own_member_names() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -2764,7 +2899,12 @@ fn augmentation_defers_only_its_own_member_names() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -2793,7 +2933,12 @@ fn augmentation_operator_member_defers_only_its_compiled_name() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -2820,7 +2965,12 @@ fn preceding_augmentation_defers_only_its_member_names() {
     let run = |f1: &str, f2: &str| -> Option<String> {
         let (files, project) = clean_project(&[f1, f2], &env);
         let rf2 = &project.files()[1];
-        let inferred = infer_file(&files[1], rf2, &env);
+        let inferred = infer_file(
+            &files[1],
+            rf2,
+            &env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         inferred
             .def_types()
             .iter()
@@ -2951,7 +3101,12 @@ fn assert_sound_core(src: &str) -> HashMap<String, String> {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
 
     let path = temp_fs_file("ao1_commit", src);
     let json = invoke_fcs_dump("types", &path);
@@ -3021,7 +3176,12 @@ fn auto_open_module_augmentation_defers_only_its_member_names() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -3051,7 +3211,12 @@ fn auto_open_module_with_extension_attribute_still_defers_wholesale() {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
@@ -3068,7 +3233,12 @@ fn auto_open_module_with_extension_attribute_still_defers_wholesale() {
     let f2 = "module M2\nlet s = \"hi\"\nlet n = s.Substring(1)\n";
     let (files, project) = clean_project(&[f1, f2], &env);
     let rf2 = &project.files()[1];
-    let inferred = infer_file(&files[1], rf2, &env);
+    let inferred = infer_file(
+        &files[1],
+        rf2,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let n_ty = inferred
         .def_types()
         .iter()
@@ -3089,7 +3259,12 @@ fn preceding_plain_auto_open_no_longer_defers_the_overload() {
     let run = |f1: &str, f2: &str| -> Option<String> {
         let (files, project) = clean_project(&[f1, f2], &env);
         let rf2 = &project.files()[1];
-        let inferred = infer_file(&files[1], rf2, &env);
+        let inferred = infer_file(
+            &files[1],
+            rf2,
+            &env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         inferred
             .def_types()
             .iter()
@@ -3123,7 +3298,12 @@ fn preceding_plain_auto_open_no_longer_defers_the_overload() {
     // augmentation compiled AFTER the call file does not defer it.
     let (files, project) = clean_project(&[caller, colliding], &env);
     let rf1 = &project.files()[0];
-    let inferred = infer_file(&files[0], rf1, &env);
+    let inferred = infer_file(
+        &files[0],
+        rf1,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let n_ty = inferred
         .def_types()
         .iter()

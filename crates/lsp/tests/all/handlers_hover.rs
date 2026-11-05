@@ -425,10 +425,50 @@ fn cross_file_qualified_reference_hovers_target_binder() {
 
     // Cursor on `foo` (the use) — cross-file `Item` resolution. We get the
     // same hover body whether the cursor is on the use or on the binder,
-    // because both refer to the same `Item`.
+    // because both refer to the same `Item`; its type is the one the earlier
+    // file published for it.
     let foo_col = b_src.find("foo").unwrap() as u32;
     let hover = run(&mut state, &b_uri, 1, foo_col).expect("cross-file hover");
-    assert_eq!(body(&hover), "`foo` — value");
+    assert_eq!(body(&hover), "`foo : int` — value");
+}
+
+/// A use of an earlier file's generic function hovers with its generalised
+/// type, and a later binder applying it takes the instantiated result — the
+/// project's inference fold, not per-file inference, serves the hover.
+#[test]
+fn a_use_of_an_earlier_files_generic_function_is_typed() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("P.fsproj");
+    let a = tmp.path().join("A.fs");
+    let b = tmp.path().join("B.fs");
+    write(
+        &proj,
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fs" />
+            <Compile Include="B.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    write(&a, "module Shared\nlet ident x = x\n");
+    let b_src = "module Other\nlet bar = Shared.ident true\n";
+    write(&b, b_src);
+
+    let b_uri = Uri::from_file_path(&b).unwrap();
+    let mut state = State::default();
+    state.docs.insert(b_uri.clone(), b_src.to_string());
+
+    let line1 = b_src.lines().nth(1).unwrap();
+    let ident_col = line1.find("ident").unwrap() as u32;
+    let hover = run(&mut state, &b_uri, 1, ident_col).expect("cross-file hover");
+    assert!(
+        body(&hover).contains("'a -> 'a"),
+        "the earlier file's generic type: {}",
+        body(&hover)
+    );
+    let bar_col = line1.find("bar").unwrap() as u32;
+    let hover = run(&mut state, &b_uri, 1, bar_col).expect("binder hover");
+    assert_eq!(body(&hover), "`bar : bool` — value");
 }
 
 /// The project hover folds only the Compile **prefix** up to the cursor's file,
@@ -465,7 +505,7 @@ fn project_hover_folds_only_the_prefix_up_to_the_cursor_file() {
     // Cursor on `foo` in B (file 1) — cross-file `Item` resolving into A (file 0).
     let foo_col = b_src.find("foo").unwrap() as u32;
     let hover = run(&mut state, &b_uri, 1, foo_col).expect("cross-file hover");
-    assert_eq!(body(&hover), "`foo` — value");
+    assert_eq!(body(&hover), "`foo : int` — value");
 
     // The fold covered only the prefix [A, B]; C (file 2) was never folded.
     assert_eq!(

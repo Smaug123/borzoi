@@ -134,6 +134,51 @@ pub fn invoke_fcs_dump_with_refs(subcommand: &str, source: &Path, refs: &[&Path]
     line
 }
 
+/// Check `paths` (Compile order, `.fsi` slots included) as **one project** and
+/// return each file's `types` and `binder-types` payloads, in the shapes the
+/// single-file projections emit — so [`GradedDumps::read`] reads them as it
+/// reads a single file's. A later file's nodes are typed with the earlier
+/// files' values in scope: the oracle for cross-file inference. A signature
+/// slot reports no nodes and no binders.
+pub fn invoke_fcs_dump_types_project(paths: &[&Path]) -> Vec<(String, String)> {
+    let request = serde_json::json!({
+        "kind": "types-project",
+        "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "refs": Vec::<String>::new(),
+    })
+    .to_string();
+    let line = fcs_file_batch_pool().request(&request);
+    reject_batch_error(&line, "types-project");
+    let reply: serde_json::Value =
+        serde_json::from_str(&line).expect("fcs-dump types-project JSON shape");
+    let files = reply["Files"]
+        .as_array()
+        .expect("types-project reply has a Files array");
+    assert_eq!(
+        files.len(),
+        paths.len(),
+        "types-project answered for a different number of files"
+    );
+    files
+        .iter()
+        .map(|f| {
+            let types = serde_json::json!({
+                "File": f["Path"],
+                "Exprs": f["Exprs"],
+                "Errors": f["Errors"],
+                "Unconverted": f["Unconverted"],
+            });
+            let binders = serde_json::json!({
+                "File": f["Path"],
+                "Binders": f["Binders"],
+                "Errors": f["Errors"],
+                "Unconverted": f["Unconverted"],
+            });
+            (types.to_string(), binders.to_string())
+        })
+        .collect()
+}
+
 /// Like [`invoke_fcs_dump`], but a check the resident handler reports as failed
 /// comes back as `Err(message)` instead of a panic — for a corpus sweep, where
 /// one file FCS cannot check is a count, not a failure of the sweep.

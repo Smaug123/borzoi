@@ -140,7 +140,12 @@ fn run() -> Run {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types = inferred
         .def_types()
         .iter()

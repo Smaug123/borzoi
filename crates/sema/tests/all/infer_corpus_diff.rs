@@ -353,7 +353,12 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root.clone())?;
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-        let inferred = infer_file(&file, &resolved, env);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
         let exprs: Vec<((usize, usize), String)> = inferred
             .types()
             .iter()

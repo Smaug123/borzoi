@@ -48,7 +48,12 @@ fn analyse(src: &str, env: &AssemblyEnv) -> (ResolvedFile, InferredFile, SyntaxN
     let recovery = SyntaxRecovery::of(&parse);
     let file = ImplFile::cast(parse.root).expect("source parses as an impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-    let inferred = infer_file(&file, &resolved, env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     (resolved, inferred, file.syntax().clone())
 }
 

@@ -76,6 +76,21 @@ fn member_completion_folds_only_the_prefix_up_to_the_cursor_file() {
     );
 }
 
+/// A receiver that is an earlier file's value takes the type that file
+/// published, so `s.` offers its members in a later file too.
+#[test]
+fn a_receiver_from_an_earlier_file_offers_its_members() {
+    let (mut state, uris) = runtime_project_state_files(&[
+        ("Lib.fs", "module Lib\nlet s = \"hi\"\n"),
+        ("Use.fs", "module Use\nopen Lib\nlet n = s.\n"),
+    ]);
+    let labels = labels(&mut state, &uris[1], 2, 10).expect("member completions after `s.`");
+    assert!(
+        labels.iter().any(|l| l == "Length"),
+        "expected `Length` among {labels:?}"
+    );
+}
+
 #[test]
 fn trailing_dot_offers_string_instance_members() {
     // `s.` — completion offers `System.String`'s public instance members,

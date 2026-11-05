@@ -7098,6 +7098,75 @@ let private dumpOverloads (absolute: string) =
     Console.Out.Write(json)
     Console.Out.WriteLine()
 
+/// The `types` and `binder-types` projections of every file of a multi-file
+/// project, checked in Compile order as one project — so a later file's nodes
+/// are typed with the earlier files' values in scope, as a real build types
+/// them. The oracle for cross-file inference
+/// (`crates/sema/tests/all/infer_cross_file_diff.rs`).
+///
+/// Options come from script resolution of the first file (the SDK's
+/// references plus `refArgs`), as [`usesProjectFiles`] takes them. Each file
+/// reports `{ Path, Exprs, Binders, Errors, Unconverted }`, where `Errors` is
+/// every error-severity diagnostic of the file's parse and check. A signature
+/// file has no implementation file, so it reports no nodes and no binders, only
+/// its errors.
+let private typesProjectFiles (checker: FSharpChecker) (paths: string[]) (refArgs: string[]) =
+    let firstText = SourceText.ofString (File.ReadAllText(paths.[0]))
+    let scriptOpts, scriptDiags =
+        checker.GetProjectOptionsFromScript(
+            paths.[0], firstText, assumeDotNetFramework = false, useSdkRefs = true)
+        |> Async.RunSynchronously
+    let blocking =
+        scriptDiags
+        |> List.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    if not (List.isEmpty blocking) then
+        let summary =
+            blocking
+            |> List.map (fun d -> sprintf "FS%04d: %s" d.ErrorNumber d.Message)
+            |> String.concat "; "
+        failwithf "types-project: reference resolution failed: %s" summary
+    let projOpts =
+        { scriptOpts with
+            ProjectFileName =
+                let dir = Option.ofObj (Path.GetDirectoryName(paths.[0])) |> Option.defaultValue "."
+                Path.Combine(dir, "fcs-dump-types-project.fsproj")
+            SourceFiles = paths
+            OtherOptions =
+                Array.append
+                    (scriptOpts.OtherOptions |> Array.filter (fun o -> o.StartsWith("-") || o.StartsWith("/")))
+                    refArgs
+            UseScriptResolutionRules = false }
+    paths
+    |> Array.map (fun absolute ->
+        let sourceText = SourceText.ofString (File.ReadAllText(absolute))
+        let parseResults, checkAnswer =
+            checker.ParseAndCheckFileInProject(
+                absolute, 0, sourceText, projOpts, userOpName = "fcs-dump-types-project")
+            |> Async.RunSynchronously
+        let checkResults =
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded r -> r
+            | FSharpCheckFileAnswer.Aborted ->
+                failwithf "types-project: type-check aborted for %s" absolute
+        let errors =
+            Array.append parseResults.Diagnostics checkResults.Diagnostics
+            |> Array.filter (fun d ->
+                d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+            |> Array.map (fun d -> {| Line = d.StartLine; Code = d.ErrorNumber; Message = d.Message |})
+        let exprs, binders, unconverted =
+            match checkResults.ImplementationFile with
+            | Some impl ->
+                let exprs, u1 = collectExprTypes true impl
+                let binders, u2 = collectBinderTypes impl
+                let u = Array.append u1 (u2 |> Array.filter (fun x -> not (Array.contains x u1)))
+                exprs, binders, u
+            | None -> [||], [||], [||]
+        {| Path = absolute
+           Exprs = exprs
+           Binders = binders
+           Errors = errors
+           Unconverted = unconverted |})
+
 /// Resident, multi-projection single-file oracle: the amortised-startup engine
 /// behind `sema`'s per-case differential loops (`resolve_diff`, `infer_*_diff`,
 /// `attr_resolution_diff`, `overloads_oracle`, …). Each of those otherwise spawns
@@ -7141,7 +7210,6 @@ let private fileBatchCore () =
             use doc = JsonDocument.Parse(line: string)
             let root = doc.RootElement
             let kind = reqString root "kind"
-            let path = reqString root "path"
             let refs =
                 match root.TryGetProperty("refs") with
                 | true, arr when arr.ValueKind = JsonValueKind.Array ->
@@ -7149,6 +7217,21 @@ let private fileBatchCore () =
                     |> Seq.choose (fun e -> Option.ofObj (e.GetString()))
                     |> Seq.toList
                 | _ -> []
+            if kind = "types-project" then
+                let paths =
+                    match root.TryGetProperty("paths") with
+                    | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                        arr.EnumerateArray()
+                        |> Seq.choose (fun e -> Option.ofObj (e.GetString()))
+                        |> Seq.map Path.GetFullPath
+                        |> Seq.toArray
+                    | _ -> [||]
+                if Array.isEmpty paths then
+                    failwith "no paths in types-project request"
+                let files = typesProjectFiles checker paths (extraRefArgsOf refs)
+                JsonSerializer.Serialize({| Files = files |}, compact)
+            else
+            let path = reqString root "path"
             let absolute = Path.GetFullPath path
             let refArgs = extraRefArgsOf refs
 

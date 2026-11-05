@@ -42,7 +42,12 @@ fn recovery_of(src: &str) -> SyntaxRecovery {
 fn infer(file: &ImplFile, recovery: &SyntaxRecovery) -> InferredFile {
     let env = AssemblyEnv::default();
     let resolved = resolve_file(file, &ProjectItems::default(), &env, recovery);
-    infer_file(file, &resolved, &env)
+    infer_file(
+        file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    )
 }
 
 /// Parse `source` (asserting it is in our subset) and infer it.
@@ -772,7 +777,7 @@ proptest! {
         // marker and the target chase, not a hard-coded alias table.
         let env = crate::common::full_bcl_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery_of(&src));
-        let inferred = infer_file(&file, &resolved, env);
+        let inferred = infer_file(&file, &resolved, env, &borzoi_sema::PrecedingTypes::default());
         prop_assert!(
             inferred.types().is_empty(),
             "the literal node must stay deferred: {:?}",

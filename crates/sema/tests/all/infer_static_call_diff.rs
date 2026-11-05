@@ -54,7 +54,12 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
     let def_types = inferred
         .def_types()
         .iter()
@@ -77,7 +82,12 @@ fn assert_sound(src: &str) -> usize {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
-    let inferred = infer_file(&file, &resolved, &env);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        &env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
 
     let path = temp_fs_file("static_call_diff", src);
     let json = invoke_fcs_dump("types", &path);
@@ -588,7 +598,12 @@ fn infer_with(env: &AssemblyEnv, src: &str) -> InferredFile {
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-    infer_file(&file, &resolved, env)
+    infer_file(
+        &file,
+        &resolved,
+        env,
+        &borzoi_sema::PrecedingTypes::default(),
+    )
 }
 
 #[test]

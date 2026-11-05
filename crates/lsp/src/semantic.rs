@@ -24,7 +24,8 @@ use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
 use borzoi_sema::{
-    AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery,
+    AbbreviationVisibility, AssemblyEnv, InferredProject, ProjectFile, ResolvedProject, SourceFile,
+    SyntaxRecovery,
 };
 use lsp_types::Uri;
 
@@ -224,6 +225,17 @@ struct CachedParse {
 /// invalidation, a referenced-DLL change, or a transient-sidecar recovery — is a
 /// fresh Arc, so the pointer check fails and the fold falls back to cold. This
 /// makes "same env" machine-checked rather than a reasoned invariant.
+/// One project's inference fold ([`SemanticState::inferred_prefix_for`]),
+/// with the env it was inferred against. It answers for a later request only
+/// while the env is the same allocation, and only for the leading files whose
+/// resolution is too ([`InferredProject::shared_prefix`]): a file's types
+/// depend on its resolution, the env, and what every earlier file published.
+#[derive(Debug)]
+struct CachedInference {
+    env: Arc<AssemblyEnv>,
+    inferred: Arc<InferredProject>,
+}
+
 #[derive(Debug)]
 struct PrevFold {
     files: Vec<ProjectFile>,
@@ -332,6 +344,12 @@ pub struct SemanticState {
     /// sort earlier, shifting handles), so a consumer classifying those handles
     /// must use *this* env — see [`Self::resolved_project_and_env_for`].
     resolved_projects: HashMap<ProjectId, (Arc<ResolvedProject>, Arc<AssemblyEnv>)>,
+    /// Per-project inference fold over the deepest resolved prefix inferred so
+    /// far ([`Self::inferred_prefix_for`]). Never served stale — every hit
+    /// re-checks the resolved files and env by pointer — and kept across edits
+    /// so the next fold reuses the unchanged leading files. Cleared with the
+    /// resolved projects to bound memory.
+    inferred_projects: HashMap<ProjectId, CachedInference>,
     /// Per-project *previous* fold, kept for incremental re-resolution (stage 2).
     /// Unlike `resolved_projects` — which every text-sync drops — this **survives**
     /// text-sync, so after a keystroke [`Self::resolved_project_for`] can fold the
@@ -502,6 +520,7 @@ impl SemanticState {
         self.observed_fold_refusals.clear();
         self.file_parses.clear();
         self.resolved_projects.clear();
+        self.inferred_projects.clear();
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
@@ -525,6 +544,7 @@ impl SemanticState {
     /// `(size, mtime)`-validated per DLL.
     pub fn invalidate_assembly_state(&mut self) {
         self.resolved_projects.clear();
+        self.inferred_projects.clear();
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
@@ -1139,6 +1159,57 @@ impl SemanticState {
             }
         }
         Some((resolved, env))
+    }
+
+    /// The Compile **prefix** up to and including `up_to_index`, resolved and
+    /// **inferred** in Compile order ([`borzoi_sema::infer_project`]), with the
+    /// env both ran against ([`Self::resolved_prefix_and_env_for`]). A file's
+    /// inference reads what every earlier file published for its top-level
+    /// values, so a single-file request infers the whole prefix — once: the
+    /// fold is cached, and a later fold reuses each leading file whose resolved
+    /// file and env are the very ones it was inferred from.
+    ///
+    /// `None` when the project cannot be resolved; the inferred project covers
+    /// the same files as the resolved one returned beside it.
+    pub fn inferred_prefix_for(
+        &mut self,
+        project: &Path,
+        up_to_index: usize,
+        workspace: &mut Workspace,
+        docs: &HashMap<Uri, String>,
+    ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>, Arc<InferredProject>)> {
+        let (resolved, env) =
+            self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)?;
+        let key = ProjectId::new(project);
+        let want = up_to_index.saturating_add(1).min(resolved.len());
+        let cached = self
+            .inferred_projects
+            .get(&key)
+            .filter(|cached| Arc::ptr_eq(&cached.env, &env))
+            .map(|cached| Arc::clone(&cached.inferred));
+        if let Some(cached) = &cached
+            && cached.shared_prefix(&resolved) >= want
+        {
+            return Some((resolved, env, Arc::clone(cached)));
+        }
+        let files = self.project_parses.get(&key)?.files.clone();
+        let inferred = {
+            let _span = tracing::info_span!("infer_project").entered();
+            Arc::new(match &cached {
+                // Folded against this very env, so its shared leading files
+                // carry over.
+                Some(prev) => borzoi_sema::infer_project_reusing(&files, &resolved, &env, prev),
+                None => borzoi_sema::infer_project(&files, &resolved, &env),
+            })
+        };
+        self.inferred_projects.insert(
+            key,
+            CachedInference {
+                env: Arc::clone(&env),
+                inferred: Arc::clone(&inferred),
+            },
+        );
+        Some((resolved, env, inferred))
     }
 
     /// The [`ResolvedProject`] for `project` — the env-less view of

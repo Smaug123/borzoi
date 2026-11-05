@@ -36,8 +36,8 @@ use borzoi_sema::test_support::{
     assembly_full_name_agrees, certified_expected as certified_structural, logical_full_name,
 };
 use borzoi_sema::{
-    AssemblyEnv, DeclineCause, DeclineTier, Def, DeferredReason, InferredFile, OpenOpacity,
-    Resolution, ResolvedFile, ResolvedProject, infer_file,
+    AssemblyEnv, DeclineCause, DeclineTier, Def, DeferredReason, InferredFile, InferredProject,
+    OpenOpacity, Resolution, ResolvedFile, ResolvedProject, infer_project,
 };
 
 use crate::deferral_shape::{DeferralCause, DeferralShape};
@@ -3543,22 +3543,24 @@ impl MemberCommits {
     }
 }
 
-/// Solve `file_idx`: the inferred file, for the forward pass to hand to the
-/// LSP's served-answer rule, and the member answers it serves, for the reverse
-/// pass.
+/// `file_idx`'s inference, out of the project's fold (`inferred`, which runs
+/// in Compile order as the LSP's does, so a use of an earlier file's value
+/// takes the type that file published): the inferred file, for the forward
+/// pass to hand to the LSP's served-answer rule, and the member answers it
+/// serves, for the reverse pass.
 ///
 /// No inference for a `.fsi` Compile slot: a signature file has no
 /// implementation tree to infer over, which is why the LSP's enrichment is
 /// impl-only too.
-fn infer_for_comparison(
+fn infer_for_comparison<'a>(
     loaded: &LoadedProject,
+    inferred: &'a InferredProject,
     file_idx: usize,
-) -> (Option<InferredFile>, MemberCommits) {
-    let Some(impl_file) = loaded.parses.files[file_idx].file.as_impl() else {
+) -> (Option<&'a InferredFile>, MemberCommits) {
+    let Some(inferred) = inferred.file(file_idx) else {
         return (None, MemberCommits::default());
     };
     let rf = loaded.resolved.file(file_idx);
-    let inferred = infer_file(impl_file, rf, &loaded.assembly_env);
     let answered: Vec<TextRange> = rf
         .resolutions()
         .iter()
@@ -3728,6 +3730,8 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
         .map(|(idx, p)| (path_key(p), idx))
         .collect();
     let mut comparable_fcs_files = Vec::new();
+    let inferred_project =
+        infer_project(&loaded.parses.files, &loaded.resolved, &loaded.assembly_env);
 
     for file_uses in fcs {
         let loaded_idx = index_by_path.get(&path_key(&file_uses.path)).copied();
@@ -3769,14 +3773,14 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
         });
         comparison.uses_reported += file_uses.uses.len();
         let rf = loaded.resolved.file(file_idx);
-        let (inferred, members) = infer_for_comparison(loaded, file_idx);
+        let (inferred, members) = infer_for_comparison(loaded, &inferred_project, file_idx);
         let shape = oracle_shape(file_uses);
         for u in &file_uses.uses {
             let outcome = grade_use(
                 loaded,
                 file_idx,
                 rf,
-                inferred.as_ref(),
+                inferred,
                 file_uses,
                 &shape,
                 u,
