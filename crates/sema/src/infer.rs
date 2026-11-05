@@ -770,6 +770,17 @@ enum BinderSite {
     Module,
 }
 
+/// What [`Gen::finish`] needs to know of a module-level binder's binding,
+/// beyond its type, to decide what it publishes.
+#[derive(Debug, Clone, Copy)]
+struct ModuleBinder {
+    /// The binding is `inline`.
+    inline: bool,
+    /// Its top-level module's header carries an attribute that may reject a
+    /// use from outside ([`Gen::in_rejecting_header`]).
+    header_rejects: bool,
+}
+
 /// A pattern as inference reads it ([`Gen::pattern_shape`]): the shapes it
 /// types, each name already resolved to its binder.
 #[derive(Debug, Clone)]
@@ -1126,10 +1137,9 @@ struct Gen<'a> {
     /// What the preceding Compile-order files published for their top-level
     /// values ([`infer_file`]'s `preceding`).
     preceding: &'a PrecedingTypes,
-    /// Every binder a module-level `let` binds, with whether its binding is
-    /// `inline` ([`Self::own_binders`]): the binders [`Self::finish`] decides
-    /// a [`ModuleValue`] for.
-    module_binders: HashMap<DefId, bool>,
+    /// Every binder a module-level `let` binds ([`Self::own_binders`]): the
+    /// binders [`Self::finish`] decides a [`ModuleValue`] for.
+    module_binders: HashMap<DefId, ModuleBinder>,
     /// The module-level binders whose binding was walked for its type
     /// ([`Self::type_let_decl`]), whether or not it found one.
     walked_binders: HashSet<DefId>,
@@ -1608,15 +1618,7 @@ impl<'a> Gen<'a> {
     /// included: a parameter is used only inside the binding, where declining
     /// costs nothing a use outside would not.
     fn rejected_use_defs(&self, file: &ImplFile) -> HashSet<TextRange> {
-        let env = self.env;
-        let rejects = |h: EntityHandle| {
-            matches!(
-                env.entity_full_name(h).as_str(),
-                "System.ObsoleteAttribute"
-                    | "Microsoft.FSharp.Core.CompilerMessageAttribute"
-                    | "Microsoft.FSharp.Core.RequiresExplicitTypeArgumentsAttribute"
-            )
-        };
+        let rejects = |h: EntityHandle| self.rejects_use(h);
         let in_rejected_module = |node: &SyntaxNode| {
             node.ancestors().any(|a| {
                 a.kind() == SyntaxKind::NESTED_MODULE_DECL && self.attribute_may_be(&a, rejects)
@@ -1654,6 +1656,30 @@ impl<'a> Gen<'a> {
             }
         }
         out
+    }
+
+    /// Whether the attribute type `h` makes F# reject (or warn about) a use of
+    /// what it is on: an `[<Obsolete>]`, a `[<CompilerMessage>]`, a
+    /// `[<RequiresExplicitTypeArguments>]`.
+    fn rejects_use(&self, h: EntityHandle) -> bool {
+        matches!(
+            self.env.entity_full_name(h).as_str(),
+            "System.ObsoleteAttribute"
+                | "Microsoft.FSharp.Core.CompilerMessageAttribute"
+                | "Microsoft.FSharp.Core.RequiresExplicitTypeArgumentsAttribute"
+        )
+    }
+
+    /// Whether `node` sits in a top-level module whose header carries an
+    /// attribute that may make F# reject a use of its contents
+    /// ([`Self::rejects_use`]). A use from another file reaches the value
+    /// through that module, so such a value is never published
+    /// ([`Self::finish`]); a use inside the module is the in-file rule's.
+    fn in_rejecting_header(&self, node: &SyntaxNode) -> bool {
+        node.ancestors().any(|a| {
+            a.kind() == SyntaxKind::MODULE_OR_NAMESPACE
+                && self.attribute_may_be(&a, |h| self.rejects_use(h))
+        })
     }
 
     /// Whether a use of the in-file binder `def` may be one F# rejects for the
@@ -1717,9 +1743,16 @@ impl<'a> Gen<'a> {
     /// binders of the declaration and are left to their function.
     fn own_binders(&mut self, binding: &Binding) {
         let inline = binding.is_inline();
+        let header_rejects = self.in_rejecting_header(binding.syntax());
         for def in self.binding_defs(binding) {
             self.def_var(def);
-            self.module_binders.insert(def, inline);
+            self.module_binders.insert(
+                def,
+                ModuleBinder {
+                    inline,
+                    header_rejects,
+                },
+            );
         }
     }
 
@@ -5628,10 +5661,10 @@ impl<'a> Gen<'a> {
         let module_values = self
             .module_binders
             .iter()
-            .map(|(&def, &inline)| {
-                let verdict = if self.use_may_be_rejected(def) {
+            .map(|(&def, binder)| {
+                let verdict = if self.use_may_be_rejected(def) || binder.header_rejects {
                     ModuleValue::Declined(PrecedingGap::RejectedUse)
-                } else if inline {
+                } else if binder.inline {
                     ModuleValue::Declined(PrecedingGap::Inline)
                 } else if let Some(ty) = def_types.get(&def) {
                     ModuleValue::Typed(ty.clone())

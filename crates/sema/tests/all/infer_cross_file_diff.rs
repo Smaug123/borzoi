@@ -1386,3 +1386,42 @@ fn a_reusing_fold_infers_what_a_cold_fold_does() {
         "the reused file's publication carries over"
     );
 }
+
+/// A rejecting attribute on a file's own top-level module header reaches
+/// every use of its values from another file — a case no in-file use meets —
+/// so each such value is declined, at error and warning level alike.
+#[test]
+fn a_rejecting_header_module_declines_every_value() {
+    let err = "[<System.Obsolete(\"e\", true)>]\nmodule O\n\nlet o_v = 1\nlet o_f (x: int) = x\n";
+    let warn = "[<System.Obsolete(\"w\")>]\nmodule OW\n\nlet ow_v = 1\n";
+    let qualified =
+        "module B\n\nlet u1 = O.o_v\nlet u2 = O.o_f 1\nlet u3 = OW.ow_v\nlet u4 = (O.o_v, 0)\n";
+    let opened = "module C\n\nopen OW\n\nlet u5 = ow_v\nlet u6 = ow_v + 1\n";
+    let folded = fold(&[
+        ("O.fs", err),
+        ("OW.fs", warn),
+        ("B.fs", qualified),
+        ("C.fs", opened),
+    ]);
+    let g = grade("cross_file_rejecting_header", &folded);
+    for idx in [2, 3] {
+        let census = census_by_binding(&folded, idx);
+        let source = &folded.sources[idx].1;
+        for (name, reasons) in &census {
+            let start = source.find(&format!("let {name} ")).expect("binding");
+            let end = start + source[start..].find('\n').expect("line end");
+            if resolves_cross_file(&folded, idx, start, end) {
+                assert!(
+                    reasons.contains(&Incomplete::PrecedingValue(PrecedingGap::RejectedUse)),
+                    "{name}: a value of a rejecting module must decline, census {reasons:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        g.binders[2].is_empty() && g.binders[3].is_empty(),
+        "nothing in a later file is typed: {:?} {:?}",
+        g.binders[2],
+        g.binders[3]
+    );
+}

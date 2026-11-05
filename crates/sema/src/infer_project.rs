@@ -60,8 +60,9 @@ pub enum PrecedingGap {
     Inline,
     /// A binding whose attributes may make F# reject a use of it (an
     /// `[<Obsolete>]`, a `[<CompilerMessage>]`, a
-    /// `[<RequiresExplicitTypeArguments>]`, on it or a module around it): FCS
-    /// types such a use as its error type when the level is an error.
+    /// `[<RequiresExplicitTypeArguments>]`, on it or a module around it, the
+    /// file's own top-level module included): FCS types such a use as its
+    /// error type when the level is an error.
     RejectedUse,
     /// An export that is not a `let`-bound value: a union, enum or exception
     /// case, an active pattern.
