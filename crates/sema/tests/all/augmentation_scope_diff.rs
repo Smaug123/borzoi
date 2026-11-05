@@ -30,8 +30,8 @@
 //! constructor parameter and field, and a member that uses every one of those
 //! names and the member's own parameter. Every use FCS declares in the file
 //! must be committed to FCS's declaration where the resolver walks the member
-//! with a pinned scope, and must never be committed elsewhere where it does
-//! not (`Kind::pinned`, [`Host::must_commit`]).
+//! with a proven scope, and must never be committed elsewhere where it does
+//! not ([`SUBSET_ROWS`], [`Host::must_commit`]).
 
 use std::path::PathBuf;
 
@@ -63,9 +63,6 @@ struct Kind {
     annotation: &'static str,
     /// Whether the type can carry its own members (`Host::Own`).
     own_members: bool,
-    /// Whether the resolver pins an intrinsic augmentation of it, and so must
-    /// commit inside one.
-    pinned: bool,
     /// Whether an intrinsic augmentation of it may declare `static let`.
     static_let: bool,
     /// Whether an optional extension may declare the member (not a
@@ -92,7 +89,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore A; ignore B; ignore p; 0)",
         annotation: "T<int>",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -109,7 +105,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore A; ignore B; ignore p; 0)",
         annotation: "T<int>",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -126,7 +121,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore a; ignore b; ignore p; 0)",
         annotation: "T<int>",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -143,7 +137,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore a; ignore b; ignore p; 0)",
         annotation: "T",
         own_members: true,
-        pinned: true,
         static_let: true,
         extension_member: true,
         body_t_commits: false,
@@ -160,7 +153,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore p; 0)",
         annotation: "T<int>",
         own_members: false,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -178,7 +170,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore T; ignore p; 0)",
         annotation: "T",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -196,7 +187,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore T; ignore p; 0)",
         annotation: "T",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: true,
@@ -215,7 +205,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore T; ignore p; 0)",
         annotation: "T",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -233,7 +222,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore A; ignore B; ignore p; 0)",
         annotation: "T",
         own_members: true,
-        pinned: true,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -253,7 +241,6 @@ const KINDS: &[Kind] = &[
         body: "(ignore a; ignore b; ignore p; 0)",
         annotation: "T",
         own_members: false,
-        pinned: true,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -272,7 +259,6 @@ const KINDS: &[Kind] = &[
         body: "T ()",
         annotation: "T",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: true,
         body_t_commits: false,
@@ -290,15 +276,20 @@ const KINDS: &[Kind] = &[
         body: "T () then (ignore self; ignore x)",
         annotation: "T",
         own_members: true,
-        pinned: false,
         static_let: false,
         extension_member: false,
         body_t_commits: false,
     },
 ];
 
+/// The intrinsic-augmentation rows inside the subset whose scope sema proves
+/// (`Resolver::proven_augmentation_target`), by kind label: every graded use in
+/// them must commit. Listed by name, so a change that narrows the subset has
+/// to name each row it gives up rather than lower a count.
+const SUBSET_ROWS: &[&str] = &["plain-class", "plain-union", "plain-record"];
+
 /// Where the member is declared.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Host {
     /// In the type's own definition (appended to its declaration).
     Own,
@@ -338,7 +329,7 @@ impl Host {
             Host::Own => true,
             // An extension is outside the subset whose scope sema proves.
             Host::Optional => false,
-            Host::Intrinsic | Host::IntrinsicRenamed => kind.pinned,
+            Host::Intrinsic | Host::IntrinsicRenamed => SUBSET_ROWS.contains(&kind.label),
             Host::AfterOpen | Host::RecForward | Host::StaticLet | Host::RecLaterValues => false,
         }
     }
@@ -462,6 +453,10 @@ fn member_scopes_agree_with_fcs() {
     let mut graded = 0usize;
     let mut committed = 0usize;
     let mut must_graded = 0usize;
+    // Must-commit uses graded per subset row, so each row is shown to be
+    // exercised, not only the subset as a whole.
+    let mut subset_graded: std::collections::BTreeMap<&str, usize> =
+        SUBSET_ROWS.iter().map(|row| (*row, 0)).collect();
     for ((kind, host, src), file) in programs.iter().zip(&census) {
         let label = kind.label;
         if !file.ok || file.has_check_errors {
@@ -498,6 +493,11 @@ fn member_scopes_agree_with_fcs() {
             graded += 1;
             if host.must_commit(kind) {
                 must_graded += 1;
+                if *host == Host::Intrinsic
+                    && let Some(n) = subset_graded.get_mut(kind.label)
+                {
+                    *n += 1;
+                }
             }
             match (u.decl, ours) {
                 (CensusDecl::InFile(s, e), Some(def)) if def == span(s, e) => committed += 1,
@@ -524,10 +524,17 @@ fn member_scopes_agree_with_fcs() {
         rejected.join("\n")
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let unexercised: Vec<&str> = subset_graded
+        .iter()
+        .filter(|(_, n)| **n == 0)
+        .map(|(row, _)| *row)
+        .collect();
     assert!(
-        // The must-commit uses are the proven subset's (non-generic class,
-        // union and record intrinsic augmentations, and own members): 86 today.
-        graded >= programs.len() * 2 && must_graded >= 80 && committed >= must_graded,
+        unexercised.is_empty(),
+        "subset rows with no must-commit use graded: {unexercised:?}"
+    );
+    assert!(
+        graded >= programs.len() * 2 && must_graded > 0 && committed >= must_graded,
         "the grid is vacuous: {committed} of {graded} uses committed, {must_graded} must commit"
     );
 }
