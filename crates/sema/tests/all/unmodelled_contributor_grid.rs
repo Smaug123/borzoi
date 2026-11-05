@@ -32,10 +32,10 @@ use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    FileUses, NormalisedProjectUse, ensure_ce_extension_fixture_built,
-    ensure_contributor_ext_fixture_built, ensure_contributor_fixture_built, ensure_fsharp_core_dll,
-    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
-    unmodelled_project_binder_failures,
+    FileUses, NormalisedProjectUse, ensure_attribute_alias_fixture_built,
+    ensure_ce_extension_fixture_built, ensure_contributor_ext_fixture_built,
+    ensure_contributor_fixture_built, ensure_fsharp_core_dll, invoke_fcs_dump_project_with_refs,
+    parse_fcs_uses_project, temp_fs_tree, unmodelled_project_binder_failures,
 };
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
@@ -168,6 +168,9 @@ enum Route {
     AutoOpenModule,
     /// The attribute spelled through a same-file abbreviation.
     AutoOpenAliased,
+    /// The attribute spelled through an abbreviation in a referenced DLL the
+    /// resolver could not read.
+    AutoOpenAliasedUnread,
     /// The attribute spelled fully qualified, with its `Attribute` suffix.
     AutoOpenQualified,
     /// The attribute sharing a list with another.
@@ -354,10 +357,11 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 76] = [
+    const ALL: [Route; 77] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
+        Route::AutoOpenAliasedUnread,
         Route::AutoOpenQualified,
         Route::AutoOpenInList,
         Route::AutoOpenBarlessUnion,
@@ -521,6 +525,10 @@ impl Route {
             Route::AutoOpenAliased => (
                 vec![],
                 "module GridProbe\ntype GridAO = AutoOpenAttribute\n@OWN\n[<GridAO>]\nmodule GridAuto =\n    @MEMBER\n@USE\n",
+            ),
+            Route::AutoOpenAliasedUnread => (
+                vec![],
+                "module GridProbe\n@OWN\n[<AliasFix.AO>]\nmodule GridAuto =\n    @MEMBER\n@USE\n",
             ),
             Route::AutoOpenQualified => (
                 vec![],
@@ -973,6 +981,9 @@ struct Cell {
     control: bool,
     /// The referenced assemblies beside FSharp.Core.
     refs: Vec<&'static Path>,
+    /// References FCS reads but the resolver does not: its env is marked
+    /// incomplete instead, as the host marks one for a DLL it could not read.
+    unread: Vec<&'static Path>,
     /// Whether FCS must check the cell cleanly, where the grid says.
     clean: Option<bool>,
     /// Something stands in front of the unshadowed reading — a contributor,
@@ -981,7 +992,7 @@ struct Cell {
     shadowed: bool,
 }
 
-fn cells(fixture: &'static Path, ext_fixture: &'static Path) -> Vec<Cell> {
+fn cells(fixture: &'static Path, ext_fixture: &'static Path, alias: &'static Path) -> Vec<Cell> {
     let mut cells = Vec::new();
     for kind in Kind::ALL {
         for route in Route::ALL {
@@ -1009,6 +1020,11 @@ fn cells(fixture: &'static Path, ext_fixture: &'static Path) -> Vec<Cell> {
                         vec![fixture, ext_fixture]
                     } else {
                         vec![fixture]
+                    },
+                    unread: if route == Route::AutoOpenAliasedUnread {
+                        vec![alias]
+                    } else {
+                        vec![]
                     },
                     clean: None,
                     shadowed: !route.adds_nothing(),
@@ -1158,8 +1174,9 @@ pub(crate) fn env_of(dlls: &[&Path]) -> AssemblyEnv {
 fn every_contributor_route_agrees_with_fcs() {
     let fixture = ensure_contributor_fixture_built();
     let ext_fixture = ensure_contributor_ext_fixture_built();
+    let alias = ensure_attribute_alias_fixture_built();
     grade(
-        &cells(fixture, ext_fixture),
+        &cells(fixture, ext_fixture, alias),
         "unmodelled_contributor_grid",
         "every_contributor_route",
     );
@@ -1172,8 +1189,9 @@ fn every_contributor_route_agrees_with_fcs() {
 fn every_computation_expression_cell_agrees_with_fcs() {
     let fixture = ensure_contributor_fixture_built();
     let extension = ensure_ce_extension_fixture_built();
+    let alias = ensure_attribute_alias_fixture_built();
     grade(
-        &ce_cells(fixture, extension),
+        &ce_cells(fixture, extension, alias),
         "unmodelled_contributor_grid_ce",
         "every_computation_expression_cell",
     );
@@ -1183,13 +1201,20 @@ fn every_computation_expression_cell_agrees_with_fcs() {
 /// `manifest`.
 fn grade(all: &[Cell], manifest: &str, test: &str) {
     let fsharp_core = ensure_fsharp_core_dll();
-    let mut envs: Vec<(Vec<&Path>, AssemblyEnv)> = Vec::new();
+    type EnvKey<'p> = (Vec<&'p Path>, Vec<&'p Path>);
+    let mut envs: Vec<(EnvKey, AssemblyEnv)> = Vec::new();
     for cell in all {
-        if !envs.iter().any(|(refs, _)| *refs == cell.refs) {
+        let key = (cell.refs.clone(), cell.unread.clone());
+        if !envs.iter().any(|(k, _)| *k == key) {
             let dlls: Vec<&Path> = std::iter::once(fsharp_core.as_path())
                 .chain(cell.refs.iter().copied())
                 .collect();
-            envs.push((cell.refs.clone(), env_of(&dlls)));
+            let mut env = env_of(&dlls);
+            // The host's marks for a reference it could not read.
+            if !cell.unread.is_empty() {
+                env.mark_referenced_assemblies_incomplete();
+            }
+            envs.push((key, env));
         }
     }
 
@@ -1214,7 +1239,8 @@ fn grade(all: &[Cell], manifest: &str, test: &str) {
                         .collect();
                     let (root, written) = temp_fs_tree("contributor_grid", &rel);
                     let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
-                    let json = invoke_fcs_dump_project_with_refs(&paths, &cell.refs);
+                    let refs: Vec<&Path> = cell.refs.iter().chain(&cell.unread).copied().collect();
+                    let json = invoke_fcs_dump_project_with_refs(&paths, &refs);
                     let fcs = parse_fcs_uses_project(&json, &written);
                     let _ = std::fs::remove_dir_all(&root);
                     *answers[i].lock().unwrap() = Some((written, fcs));
@@ -1226,7 +1252,7 @@ fn grade(all: &[Cell], manifest: &str, test: &str) {
         let (written, fcs) = answer.into_inner().unwrap().expect("every cell was asked");
         let env = &envs
             .iter()
-            .find(|(refs, _)| *refs == cell.refs)
+            .find(|((refs, unread), _)| *refs == cell.refs && *unread == cell.unread)
             .expect("an env per reference set")
             .1;
         let rel: Vec<(&str, &str)> = cell
@@ -1435,6 +1461,9 @@ enum CeBuilder {
     OpAliasedSuffixed,
     /// The same abbreviation declared in an earlier file.
     OpAliasedSuffixedEarlier,
+    /// The same abbreviation in a referenced DLL the resolver could not
+    /// read.
+    OpAliasedSuffixedUnread,
     /// The same abbreviation declared in an earlier file's signature.
     OpAliasedSuffixedSignature,
     /// The attribute spelled fully qualified, with its `Attribute` suffix.
@@ -1498,7 +1527,7 @@ enum CeForm {
 }
 
 impl CeBuilder {
-    const ALL: [CeBuilder; 37] = [
+    const ALL: [CeBuilder; 38] = [
         CeBuilder::Async,
         CeBuilder::Task,
         CeBuilder::Seq,
@@ -1513,6 +1542,7 @@ impl CeBuilder {
         CeBuilder::OpAliased,
         CeBuilder::OpAliasedSuffixed,
         CeBuilder::OpAliasedSuffixedEarlier,
+        CeBuilder::OpAliasedSuffixedUnread,
         CeBuilder::OpAliasedSuffixedSignature,
         CeBuilder::OpQualified,
         CeBuilder::OpInherited,
@@ -1603,11 +1633,14 @@ impl CeBuilder {
     /// one of every builder's, and an expression over a builder it cannot
     /// list marks every name in it, the nested builder's own included. The
     /// walk does not resolve a base class an `inherit` names, so it cannot
-    /// list an inheriting builder's operations, nor an abbreviation's.
+    /// list an inheriting builder's operations, nor an abbreviation's, nor
+    /// those of a builder whose every attribute may be a custom operation
+    /// under an alias the env could not read.
     fn walk_reaches_async(self) -> bool {
         matches!(
             self,
             CeBuilder::OpInherited
+                | CeBuilder::OpAliasedSuffixedUnread
                 | CeBuilder::OpAbbreviated
                 | CeBuilder::OpAugmented
                 | CeBuilder::SignatureExtension
@@ -1825,6 +1858,7 @@ impl CeBuilder {
             CeBuilder::OpAliasedSuffixedEarlier | CeBuilder::OpAliasedSuffixedSignature => {
                 suffixed_alias_builder("GridAlias.GridCO")
             }
+            CeBuilder::OpAliasedSuffixedUnread => suffixed_alias_builder("AliasFix.GridCO"),
             CeBuilder::OpAliased => ["type GridCO = CustomOperationAttribute".to_string()]
                 .into_iter()
                 .chain(grid_builder(
@@ -2112,7 +2146,7 @@ fn place_probe(template: &str, name: &str) -> (String, Option<TextRange>) {
     (text.replace("@P", name), probe)
 }
 
-fn ce_cells(fixture: &'static Path, extension: &'static Path) -> Vec<Cell> {
+fn ce_cells(fixture: &'static Path, extension: &'static Path, alias: &'static Path) -> Vec<Cell> {
     let mut cells = Vec::new();
     for kind in CeKind::ALL {
         for builder in CeBuilder::ALL {
@@ -2141,6 +2175,11 @@ fn ce_cells(fixture: &'static Path, extension: &'static Path) -> Vec<Cell> {
                     probe: probe.expect("every computation-expression cell has a probe"),
                     control: ce_control(kind, builder, use_),
                     refs,
+                    unread: if builder == CeBuilder::OpAliasedSuffixedUnread {
+                        vec![alias]
+                    } else {
+                        vec![]
+                    },
                     clean: Some(ce_expect_clean(kind, builder, use_)),
                     shadowed: builder.offers(),
                 });
