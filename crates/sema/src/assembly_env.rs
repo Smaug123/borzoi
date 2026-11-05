@@ -5295,6 +5295,25 @@ impl AssemblyEnv {
         self.resolve_abbreviation_cached(marker, true)
     }
 
+    /// Whether the abbreviation `marker`'s **decoded** target is structural —
+    /// a type variable, a function, a tuple, or FSharp.Core's array tycon
+    /// (`'T array = 'T[]`) — and so names no entity at all: nothing the
+    /// abbreviation stands for could be an attribute, carry members, or be a
+    /// type another reading supplies. A target that was not decoded, or names
+    /// a tycon (resolvable or not), is `false`: it may stand for anything.
+    ///
+    /// The type walk reads this only for a path that ends on the abbreviation
+    /// (`Resolver::assembly_type_path_from_root`), where FCS binds the
+    /// abbreviation itself and where its target leads does not matter.
+    pub fn abbreviation_target_is_structural(&self, marker: EntityHandle) -> bool {
+        match self.entity(marker).abbreviation_target.as_ref() {
+            Some(AbbreviationTarget::Var(_) | AbbreviationTarget::Fun(..)) => true,
+            Some(AbbreviationTarget::Tuple { .. }) => true,
+            Some(AbbreviationTarget::Named { path, .. }) => is_array_tycon_path(path),
+            None => false,
+        }
+    }
+
     fn resolve_abbreviation_cached(
         &self,
         marker: EntityHandle,
@@ -10438,4 +10457,21 @@ pub(crate) mod from_views_tests {
             "the same-named sibling view's module is a different DLL's: FCS never opens it"
         );
     }
+}
+
+/// Whether a pickled tycon path names FSharp.Core's array tycon of some rank
+/// (`Microsoft.FSharp.Core.[]`1`, `[,]`1`, …): a name F# syntax cannot give a
+/// declared type, so the path alone identifies the intrinsic.
+fn is_array_tycon_path(path: &[String]) -> bool {
+    let [m, f, c, last] = path else {
+        return false;
+    };
+    let shape = last.split('`').next().unwrap_or(last);
+    m == "Microsoft"
+        && f == "FSharp"
+        && c == "Core"
+        && shape.len() >= 2
+        && shape.starts_with('[')
+        && shape.ends_with(']')
+        && shape[1..shape.len() - 1].chars().all(|ch| ch == ',')
 }

@@ -53,6 +53,9 @@ const ASSEMBLY_READING_SOURCES: &[&str] = &[
     "module M\nlet f (x : System.Text.StringBuilder) = x\n",
     // A type reached through an `open` rather than spelled out.
     "module M\nopen System\nlet f (x : String) = x\n",
+    // A terminal abbreviation whose target is structural (`'T array = 'T[]`),
+    // committed as the abbreviation itself.
+    "module M\nlet f (x : _ array) = ()\n",
     // A static member: the whole dotted span records a `Member`, the type
     // segment an `Entity`.
     "module M\nlet x = System.String.Empty\n",
