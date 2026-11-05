@@ -36,10 +36,12 @@
 use std::path::PathBuf;
 
 use crate::common::{
-    CensusDecl, census_resolve_uses, invoke_fcs_dump_census, parse_census_jsonl, temp_fs_file,
+    CensusDecl, census_oracle_binders, census_resolve_uses, invoke_fcs_dump_census,
+    parse_census_jsonl, temp_fs_file, unmodelled_binder_failures,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_sema::test_support::binder_completeness::{BinderVerdict, binder_verdict};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
@@ -284,9 +286,18 @@ const KINDS: &[Kind] = &[
 
 /// The intrinsic-augmentation rows inside the subset whose scope sema proves
 /// (`Resolver::proven_augmentation_target`), by kind label: every graded use in
-/// them must commit. Listed by name, so a change that narrows the subset has
-/// to name each row it gives up rather than lower a count.
-const SUBSET_ROWS: &[&str] = &["plain-class", "plain-union", "plain-record"];
+/// them must commit, and the member's parameter and self identifier must be
+/// binders of the walk's own, which binder completeness then grades. Every
+/// other augmentation row is left unwalked, and every use in its members must
+/// decline. Listed by name, so a change that narrows the subset has to name
+/// each row it gives up rather than lower a count.
+const SUBSET_ROWS: &[&str] = &[
+    "plain-class",
+    "plain-union",
+    "plain-record",
+    "constructor-class",
+    "constructor-as-self",
+];
 
 /// Where the member is declared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,6 +468,11 @@ fn member_scopes_agree_with_fcs() {
     // exercised, not only the subset as a whole.
     let mut subset_graded: std::collections::BTreeMap<&str, usize> =
         SUBSET_ROWS.iter().map(|row| (*row, 0)).collect();
+    // Member binders interned per subset row.
+    let mut subset_interned: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
+    // Uses graded inside unwalked augmentations' members.
+    let mut unwalked_graded = 0usize;
     for ((kind, host, src), file) in programs.iter().zip(&census) {
         let label = kind.label;
         if !file.ok || file.has_check_errors {
@@ -475,6 +491,36 @@ fn member_scopes_agree_with_fcs() {
         // The member's own line and body are graded, and the annotation after
         // an `open`.
         let member_at = src.find(kind.member).expect("the member");
+        // The member's line through its body, which is one line.
+        let member_end =
+            member_at + src[member_at..].find(kind.body).expect("the body") + kind.body.len();
+        let in_subset = *host == Host::Intrinsic && SUBSET_ROWS.contains(&label);
+        // Binder completeness over the whole program, and inside a walked
+        // augmentation the member's own binders are the walk's.
+        let binders = census_oracle_binders(file, src);
+        failures.extend(unmodelled_binder_failures(
+            &format!("{label} {host:?}"),
+            src,
+            &rf,
+            &binders,
+        ));
+        if in_subset {
+            for b in binders.iter().filter(|b| {
+                // Declared in the member's head: its self identifier and
+                // parameter.
+                (member_at..member_at + kind.member.len()).contains(&usize::from(b.range.start()))
+                    && ["p", "x", "this", "self"].contains(&&*b.name)
+            }) {
+                if binder_verdict(&rf, b) == BinderVerdict::Interned {
+                    *subset_interned.entry(label).or_default() += 1;
+                } else {
+                    failures.push(format!(
+                        "{label} {host:?}: the member's binder `{}` at {:?} is not the walk's own\n{src}",
+                        b.name, b.range
+                    ));
+                }
+            }
+        }
         let annotation_at = src.find("let z").unwrap_or(member_at);
         for u in census_resolve_uses(file, src) {
             if u.is_from_definition || u.start == u.end || u.start < member_at.min(annotation_at) {
@@ -498,6 +544,21 @@ fn member_scopes_agree_with_fcs() {
                 {
                     *n += 1;
                 }
+            }
+            // Outside the subset an augmentation's member bodies are unwalked:
+            // every value-position use there declines. A type parameter or a
+            // type name in the member's signature is the type resolver's,
+            // which reads the header's frame whatever the subset says.
+            let in_augmentation = *host != Host::Own && (member_at..member_end).contains(&u.start);
+            if in_augmentation && !in_subset && !["'a", "T"].contains(&text) {
+                unwalked_graded += 1;
+                if res.is_some() {
+                    failures.push(format!(
+                        "{label} {host:?}: `{text}` at {at:?} in an augmentation outside the \
+                         subset recorded {res:?}\n{src}"
+                    ));
+                }
+                continue;
             }
             match (u.decl, ours) {
                 (CensusDecl::InFile(s, e), Some(def)) if def == span(s, e) => committed += 1,
@@ -526,15 +587,22 @@ fn member_scopes_agree_with_fcs() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     let unexercised: Vec<&str> = subset_graded
         .iter()
-        .filter(|(_, n)| **n == 0)
+        // `constructor-class`'s member, `static member Create ()`, declares
+        // no binder to intern.
+        .filter(|(row, n)| {
+            **n == 0 || (**row != "constructor-class" && !subset_interned.contains_key(*row))
+        })
         .map(|(row, _)| *row)
         .collect();
     assert!(
         unexercised.is_empty(),
-        "subset rows with no must-commit use graded: {unexercised:?}"
+        "subset rows with no must-commit use graded or no member binder interned: {unexercised:?}"
     );
     assert!(
-        graded >= programs.len() * 2 && must_graded > 0 && committed >= must_graded,
+        graded >= programs.len() * 2
+            && must_graded > 0
+            && committed >= must_graded
+            && unwalked_graded > 0,
         "the grid is vacuous: {committed} of {graded} uses committed, {must_graded} must commit"
     );
 }
