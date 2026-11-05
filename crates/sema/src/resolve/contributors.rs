@@ -26,12 +26,11 @@
 use std::collections::{BTreeSet, HashSet};
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, Expr, ModuleDecl, ModuleOrNamespace,
-    ModuleOrNamespaceKind, NestedModuleDecl, SigFile, SyntaxKind, SyntaxNode, Type, TypeDefn,
-    TypeDefnRepr, TypeDefnsDecl, UnionCase,
+    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, Expr, MemberDefn, MemberLeading,
+    ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigFile,
+    SyntaxKind, SyntaxNode, Type, TypeDefn, TypeDefnRepr, TypeDefnsDecl, UnionCase,
 };
 
-use super::decls::type_slot_class;
 use super::model::SlotClass;
 use super::model::{ProjectItems, ResolvedFile};
 use super::state::{MarkReach, ScopeEntry};
@@ -113,6 +112,11 @@ pub(super) struct FileContributions {
     /// `CustomOperationAttribute` or an abbreviation of it, after which any
     /// attribute may be one.
     pub(super) declares_custom_operation_alias: bool,
+    /// Whether the file declares a type spelled like `StructAttribute` or
+    /// `MeasureAttribute` or an abbreviation of one
+    /// ([`crate::assembly_env::SLOT_ATTRIBUTE_NAMES`]), after which any
+    /// attribute may be one ([`Resolver::type_slot_class`]).
+    pub(super) declares_slot_attribute_alias: bool,
 }
 
 /// Every name anything declared in `node` can bear: each identifier written
@@ -143,6 +147,59 @@ pub(super) fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
         })
         .collect();
     names.extend(operator_case_names(node));
+    names
+}
+
+/// The names an augmentation's members may put in bare scope where its type
+/// is folded: each member's name, with its accessor forms, an operator under
+/// its compiled name (`op_PlusDot`, which `id_text` gives). A self
+/// identifier or a parameter is never one. Where a member's name cannot be
+/// read, or an `inherit` brings names it does not spell, every name the
+/// augmentation spells ([`declared_identifiers`]).
+fn augmentation_member_names(defn: &TypeDefn) -> BTreeSet<String> {
+    let mut members: Vec<MemberDefn> = defn.members().collect();
+    if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
+        members.extend(om.members());
+    }
+    let mut names = BTreeSet::new();
+    for m in &members {
+        let name = match m {
+            MemberDefn::Member(mm) => {
+                if mm.leading_keyword() == MemberLeading::New {
+                    continue;
+                }
+                mm.binding().and_then(|b| b.pat()).and_then(|p| match p {
+                    Pat::LongIdent(l)
+                        if !l
+                            .syntax()
+                            .children()
+                            .any(|c| ActivePatName::can_cast(c.kind())) =>
+                    {
+                        l.head().and_then(|h| h.idents().last())
+                    }
+                    Pat::Named(n) if n.active_pat_name().is_none() => n.ident(),
+                    _ => None,
+                })
+            }
+            MemberDefn::GetSetMember(g) => g.name().and_then(|n| n.idents().last()),
+            MemberDefn::AutoProperty(a) => a.ident(),
+            MemberDefn::AbstractSlot(s) => s.val_sig().and_then(|v| v.ident()),
+            MemberDefn::ValField(v) => v.ident(),
+            MemberDefn::MemberSig(ms) => ms.val_sig().and_then(|v| v.ident()),
+            MemberDefn::Inherit(_) => None,
+            // Private to the type, or reachable only through an interface.
+            MemberDefn::Interface(_) | MemberDefn::LetBindings(_) | MemberDefn::Do(_) => continue,
+        };
+        let Some(name) = name else {
+            return declared_identifiers(defn.syntax());
+        };
+        let name = id_text(&name).to_string();
+        names.extend(
+            ["", "get_", "set_", "add_", "remove_"]
+                .into_iter()
+                .map(|prefix| format!("{prefix}{name}")),
+        );
+    }
     names
 }
 
@@ -249,6 +306,25 @@ impl Resolver<'_> {
         self.may_carry_core_attribute(attrs, "AutoOpen")
     }
 
+    /// Whether attribute lists certainly mark their target
+    /// `[<RequireQualifiedAccess>]`: spelled so, while written names can be
+    /// trusted ([`Self::attribute_spellings_trusted`]).
+    pub(super) fn certainly_require_qualified_access(
+        &self,
+        attrs: impl Iterator<Item = AttributeList>,
+    ) -> bool {
+        let spellings: Vec<String> = attrs
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .filter_map(|attr| attr.type_name())
+            .filter_map(|li| li.idents().last())
+            .map(|seg| id_text(&seg).to_string())
+            .collect();
+        spellings
+            .iter()
+            .any(|s| s == "RequireQualifiedAccess" || s == "RequireQualifiedAccessAttribute")
+            && self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
+    }
+
     /// Whether attribute lists *may* mark their target
     /// `[<RequireQualifiedAccess>]`.
     pub(super) fn may_require_qualified_access(
@@ -256,6 +332,18 @@ impl Resolver<'_> {
         attrs: impl Iterator<Item = AttributeList>,
     ) -> bool {
         self.may_carry_core_attribute(attrs, "RequireQualifiedAccess")
+    }
+
+    /// Whether an augmentation of `name` may extend an `[<AutoOpen>]` type's
+    /// fold: one of the block's own (`block`), or one the walk has met in an
+    /// earlier block of any container, since a namespace's blocks share its
+    /// types.
+    fn may_augment_auto_open(&self, block: &HashSet<String>, name: &str) -> bool {
+        block.contains(name)
+            || self
+                .auto_open_type_paths
+                .iter()
+                .any(|path| path.last().is_some_and(|last| last == name))
     }
 
     /// What a block of module declarations puts in bare scope when the block
@@ -267,6 +355,47 @@ impl Resolver<'_> {
         &self,
         decls: impl Iterator<Item = ModuleDecl>,
     ) -> Contribution {
+        let decls: Vec<ModuleDecl> = decls.collect();
+        // The block's own types and exceptions that may be `[<AutoOpen>]`: an
+        // intrinsic augmentation of one adds to the statics its fold brings.
+        // An augmentation of any other type adds nothing bare: an intrinsic
+        // augmentation sits in its type's own module, so one of a type
+        // declared elsewhere is an extension, whose members are reachable
+        // only through the type. The match is exhaustive so that a new kind
+        // of declaration has to be classified here.
+        let mut auto_open_types: HashSet<String> = HashSet::new();
+        for decl in &decls {
+            match decl {
+                ModuleDecl::Types(types) => {
+                    auto_open_types.extend(
+                        types
+                            .defns()
+                            .filter(|defn| {
+                                !is_type_augmentation(defn)
+                                    && defn.typar_decls().is_none()
+                                    && self.may_auto_open(defn.attributes())
+                            })
+                            .filter_map(|defn| defn.long_id().and_then(|li| li.idents().last()))
+                            .map(|name| id_text(&name).to_string()),
+                    );
+                }
+                ModuleDecl::Exception(exn) => {
+                    if self.may_auto_open(exn.attributes())
+                        && let Some(name) = exn.union_case().and_then(|c| c.ident())
+                    {
+                        auto_open_types.insert(id_text(&name).to_string());
+                    }
+                }
+                ModuleDecl::Expr(_)
+                | ModuleDecl::Let(_)
+                | ModuleDecl::Open(_)
+                | ModuleDecl::NestedModule(_)
+                | ModuleDecl::ModuleAbbrev(_)
+                | ModuleDecl::Extern(_)
+                | ModuleDecl::Attributes(_)
+                | ModuleDecl::HashDirective(_) => {}
+            }
+        }
         let mut out = Contribution::default();
         for decl in decls {
             match decl {
@@ -315,8 +444,15 @@ impl Resolver<'_> {
                         }
                         // An intrinsic augmentation's statics join its type's
                         // surface, which an `[<AutoOpen>]` type folds.
-                        if is_type_augmentation(&defn) {
-                            out.values.extend(declared_identifiers(defn.syntax()));
+                        if is_type_augmentation(&defn)
+                            && defn
+                                .long_id()
+                                .and_then(|li| li.idents().last())
+                                .is_some_and(|name| {
+                                    self.may_augment_auto_open(&auto_open_types, &id_text(&name))
+                                })
+                        {
+                            out.values.extend(augmentation_member_names(&defn));
                         }
                     }
                 }
@@ -355,7 +491,7 @@ impl Resolver<'_> {
     /// through the walk's type tables, which hold no contributor's.
     fn type_names(&self, defn: &TypeDefn) -> Contribution {
         let mut out = Contribution::default();
-        if type_slot_class(defn) != SlotClass::Keeps
+        if self.type_slot_class(defn) != SlotClass::Keeps
             && let Some(name) = defn.long_id().and_then(|li| li.idents().last())
         {
             out.values.insert(id_text(&name).to_string());
@@ -515,6 +651,12 @@ impl Resolver<'_> {
     pub(super) fn exception_contribution(&mut self, exn: &ExceptionDefnDecl) {
         if !self.may_auto_open(exn.attributes()) {
             return;
+        }
+        // Its later augmentations extend what it folds, as a type's do.
+        if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
+            let mut path = self.container_path.clone();
+            path.push(id_text(&name).to_string());
+            self.auto_open_type_paths.insert(path);
         }
         let contribution = Contribution {
             values: declared_identifiers(exn.syntax()),
@@ -726,6 +868,15 @@ pub(super) fn signature_contributions(
         super::custom_operations::signature_renames_custom_operation(sig.syntax());
     rf.contributions.declares_custom_operation_alias = custom_operation_alias;
     let co_alias_declared = custom_operation_alias || preceding.custom_operation_alias_declared;
+    // A signature that aliases `StructAttribute` lets a later file's
+    // attribute be `[<Struct>]` whatever it is spelled.
+    rf.contributions.declares_slot_attribute_alias = sig
+        .syntax()
+        .descendants()
+        .filter_map(TypeDefn::cast)
+        .any(|defn| {
+            super::type_defn_renames_attribute(&defn, crate::assembly_env::SLOT_ATTRIBUTE_NAMES)
+        });
     let co_aliases = assemblies.custom_operation_aliases();
     rf.contributions.custom_operations =
         super::custom_operations::signature_custom_operations(sig.syntax(), &|s| {

@@ -1,7 +1,8 @@
 //! Module/namespace declaration walking and export construction.
 
 use borzoi_cst::syntax::{
-    AstNode, ModuleDecl, NestedModuleDecl, SyntaxToken, TypeDefn, TypeDefnRepr,
+    AstNode, Attribute, ModuleDecl, NestedModuleDecl, SyntaxToken, Type, TypeAbbrev, TypeDefn,
+    TypeDefnRepr,
 };
 
 use crate::def::{DefId, DefKind};
@@ -79,44 +80,93 @@ fn merge_auto_open_shadow(
         .or_insert(new);
 }
 
-/// Classify whether `defn`'s name enters FCS's unqualified slot (see
-/// [`SlotClass`]): `[<Struct>]` forces a struct type regardless of repr
-/// (probe M20m); enums are structs (M20b); an object model is class/struct
-/// when explicitly kinded or carrying a primary constructor (M20a), an
-/// explicit interface never enters (M20o), and an unspecified kind is
-/// inference-dependent; unions/records never enter (M20k/M20l); everything
-/// else — abbreviations (target-chased, M20n), delegates (langversion-gated),
-/// bodyless/IL reprs — is statically undecidable.
-pub(super) fn type_slot_class(defn: &TypeDefn) -> SlotClass {
-    match defn.repr() {
-        Some(TypeDefnRepr::Enum(_)) => SlotClass::Evicts,
-        Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => {
-            // A genuine `[<Struct>]` union/record IS a struct type and evicts
-            // (probe M20m) — but sema cannot resolve attribute types. A
-            // CUSTOM attribute named `Struct` would be mistaken for it while
-            // FCS keeps the type ordinary (codex round 7), and an
-            // abbreviation can spell `StructAttribute` any way at all
-            // (`type S = StructAttribute`, then `[<S>]`). So an attributed
-            // union/record is Unknown — defer in contest, never a wrong
-            // target either way (the genuine-marker resolve is the
-            // availability price).
-            if defn.attributes().next().is_some() {
-                SlotClass::Unknown
-            } else {
-                SlotClass::Keeps
+impl Resolver<'_> {
+    /// Classify whether `defn`'s name enters FCS's unqualified slot (see
+    /// [`SlotClass`]): `[<Struct>]` forces a struct type regardless of repr
+    /// (probe M20m); enums are structs (M20b); an object model is class/struct
+    /// when explicitly kinded or carrying a primary constructor (M20a), an
+    /// explicit interface never enters (M20o), and an unspecified kind is
+    /// inference-dependent; unions/records never enter (M20k/M20l), and nor
+    /// does `type T = T`, which FCS reads as a union whatever is in scope
+    /// (`TyconCoreAbbrevThatIsReallyAUnion`); everything else — abbreviations
+    /// (target-chased, M20n), delegates (langversion-gated), bodyless/IL
+    /// reprs — is statically undecidable.
+    pub(super) fn type_slot_class(&self, defn: &TypeDefn) -> SlotClass {
+        match defn.repr() {
+            Some(TypeDefnRepr::Enum(_)) => SlotClass::Evicts,
+            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => {
+                self.union_like_slot_class(defn)
             }
-        }
-        Some(TypeDefnRepr::ObjectModel(om)) => {
-            if om.is_interface() {
-                SlotClass::Keeps
-            } else if om.is_class() || om.is_struct() || defn.implicit_ctor().is_some() {
-                SlotClass::Evicts
-            } else {
-                SlotClass::Unknown
+            Some(TypeDefnRepr::Abbrev(a)) if abbrev_names_itself(defn, &a) => {
+                self.union_like_slot_class(defn)
             }
+            Some(TypeDefnRepr::ObjectModel(om)) => {
+                if om.is_interface() {
+                    SlotClass::Keeps
+                } else if om.is_class() || om.is_struct() || defn.implicit_ctor().is_some() {
+                    SlotClass::Evicts
+                } else {
+                    SlotClass::Unknown
+                }
+            }
+            _ => SlotClass::Unknown,
         }
-        _ => SlotClass::Unknown,
     }
+
+    /// A record's or union's slot class: [`SlotClass::Keeps`] unless one of
+    /// its attributes may be `[<Struct>]` (a genuine struct union or record
+    /// evicts, probe M20m) or `[<Measure>]` (which keeps `type T = T` from
+    /// being a union). An attribute may be either when it is spelled like
+    /// one, or when written names cannot be trusted: an abbreviation can spell
+    /// `StructAttribute` any way at all (`type S = StructAttribute`, then
+    /// `[<S>]`), and this file, an earlier one or a referenced assembly may
+    /// declare one. Otherwise the attribute is provably something else,
+    /// `[<RequireQualifiedAccess>]` say, and the type keeps the slot.
+    fn union_like_slot_class(&self, defn: &TypeDefn) -> SlotClass {
+        let attrs: Vec<_> = defn
+            .attributes()
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .collect();
+        if attrs.is_empty() {
+            return SlotClass::Keeps;
+        }
+        let aliases = self.assemblies.slot_attribute_aliases();
+        let trusted = !self.contributions.declares_slot_attribute_alias
+            && !self.preceding.slot_attribute_alias_declared
+            && !aliases.certain;
+        let may_change_slot = |attr: &Attribute| {
+            let Some(last) = attr.type_name().and_then(|li| li.idents().last()) else {
+                // An attribute whose name cannot be read may be either.
+                return true;
+            };
+            let spelled = id_text(&last);
+            !trusted
+                || crate::assembly_env::SLOT_ATTRIBUTE_NAMES.contains(&&*spelled)
+                || aliases.possible.contains(&*spelled)
+        };
+        if attrs.iter().any(may_change_slot) {
+            SlotClass::Unknown
+        } else {
+            SlotClass::Keeps
+        }
+    }
+}
+
+/// Whether `defn` is `type T = T`: an abbreviation whose target is a bare
+/// identifier spelled like the type's own name, which FCS reads as a union
+/// with the nullary case `T` (`TyconCoreAbbrevThatIsReallyAUnion`). Only an
+/// unparenthesised target counts, as only that one is FCS's union shape.
+fn abbrev_names_itself(defn: &TypeDefn, abbrev: &TypeAbbrev) -> bool {
+    let Some(Type::LongIdent(target)) = abbrev.ty() else {
+        return false;
+    };
+    let (Some(target), Some(name)) = (
+        target.long_ident().and_then(single_ident),
+        defn.long_id().and_then(|li| li.idents().last()),
+    ) else {
+        return false;
+    };
+    id_text(&target) == id_text(&name)
 }
 
 impl<'a> Resolver<'a> {
@@ -514,15 +564,37 @@ impl<'a> Resolver<'a> {
                         if type_auto_open {
                             self.note_hidden_value_module(self.container_path.clone());
                         }
-                        let slot = type_slot_class(defn);
+                        let slot = self.type_slot_class(defn);
                         // The type's access-root (own `private` plus any enclosing
                         // `private` module) — a same-file module-qualified `A.Foo.Red`
                         // from an inaccessible site does not resolve the type's
                         // case/member.
                         let type_access_root =
                             self.export_access_root_len(type_header_is_private(defn));
-                        let arity = defn.typar_decls().map_or(0, |d| d.typars().count());
-                        self.define_type(&name, slot, type_access_root, arity);
+                        let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+                        self.define_type(&name, arity, slot, type_access_root);
+                        if let Some(own) = self
+                            .type_defs_by_arity
+                            .get(&self.container_path)
+                            .and_then(|m| m.get(&(id_text(&name).to_string(), arity)))
+                            .copied()
+                        {
+                            self.block_type_defs.insert(own);
+                            let covered_kind = match defn.repr() {
+                                Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => true,
+                                Some(TypeDefnRepr::ObjectModel(om)) => {
+                                    om.is_class()
+                                        || defn.implicit_ctor().is_some()
+                                            && !om.is_struct()
+                                            && !om.is_interface()
+                                }
+                                _ => false,
+                            };
+                            if arity == 0 && covered_kind && !self.may_auto_open(defn.attributes())
+                            {
+                                self.augmentable_types.insert(own);
+                            }
+                        }
                         // The cross-file type index: any genuine non-abbreviation
                         // repr's cases are fully indexed below (a union/enum's by
                         // `define_union_cases` / `define_enum_cases`; other reprs
@@ -602,6 +674,18 @@ impl<'a> Resolver<'a> {
                         self.define_type_members(defn, &name);
                     }
                 }
+                // An abbreviation-shaped union case, once every type of the
+                // group is defined: a target naming a later type of the group
+                // is that type, not a case.
+                for defn in &defns {
+                    if !is_type_augmentation(defn)
+                        && let Some(name) = defn.long_id().and_then(single_ident)
+                    {
+                        let require_qualified =
+                            self.certainly_require_qualified_access(defn.attributes());
+                        self.shadow_abbreviation_case(defn, &name, require_qualified);
+                    }
+                }
                 // In a `rec` block, the block's modules enter after its types,
                 // ahead of every member body: their `[<AutoOpen>]` contents
                 // outrank the cases just pushed.
@@ -627,13 +711,14 @@ impl<'a> Resolver<'a> {
                     {
                         let segs: Vec<SyntaxToken> = li.idents().collect();
                         // An augmentation head (`type T with …`) resolves in-file
-                        // only: an in-file `T` resolves via `lookup_type_def`
-                        // (arity-agnostic). It must *not* fall through to the
+                        // only: an in-file `T` of the head's arity resolves via
+                        // `in_file_type_at`. It must *not* fall through to the
                         // arity-keyed assembly lookup — the augmented type's typars
                         // aren't on this `long_id`, so a generic assembly target
                         // (`type Demo.Pair<'T> with …`) would mis-key to arity 0 and
                         // resolve a wrong same-named entity (D5).
-                        self.resolve_in_file_type_path(&segs);
+                        let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+                        self.resolve_in_file_type_path(&segs, arity);
                         // The augmentation's members join the in-file member
                         // index — visible only from here on (FCS FS0039 before
                         // the augmentation, probe M4a) — or, when the head is
@@ -644,15 +729,16 @@ impl<'a> Resolver<'a> {
                     // The type header's generic parameters (`type Foo<'T>`) are in
                     // scope throughout its body: the abbreviation/record/union RHS
                     // resolved by `resolve_type_defn`, and every member signature
-                    // and body reached by `resolve_type_member_bodies`. (An
-                    // augmentation carries no `<…>` on its head, so this pushes
-                    // nothing there.)
-                    let pushed_typars = self.enter_typars(defn.typar_decls());
+                    // and body reached by `resolve_type_member_bodies`. An
+                    // intrinsic augmentation's members see the augmented type's
+                    // own parameters instead ([`MemberScope`](super::types::MemberScope)).
+                    let scope = self.member_scope_of(defn);
+                    let pushed_typars = self.enter_type_typars(defn, &scope);
                     self.resolve_type_defn(defn);
                     // Descend into the type's member bodies (self-id, params,
                     // ctor params, class fields) — the value-resolution slice
                     // that `resolve_type_defn` (type uses only) does not cover.
-                    self.resolve_type_member_bodies(defn);
+                    self.resolve_type_member_bodies(defn, &scope);
                     self.leave_typars(pushed_typars);
                     self.decline_abbreviation_case(defn);
                 }
@@ -793,7 +879,6 @@ impl<'a> Resolver<'a> {
                 );
             }
             ModuleDecl::Open(open) => {
-                self.open_decls_seen += 1;
                 // Resolution-explain trace (see `ResolutionTrace`): snapshot the
                 // three opaque-open flags *before* this open, and capture its
                 // range / path / kind, so the record pushed at the end of this
@@ -852,10 +937,11 @@ impl<'a> Resolver<'a> {
                 // paths) rather than resolving anything from it.
                 // EX-3 §2(d): every `open` of any kind bumps the latest-open
                 // position — F# is latest-wins across bindings and opens alike,
-                // so an in-file attribute-type commit whose definition precedes
-                // any open must defer (the open could supply the candidate at
-                // higher priority; see `attribute_candidate`). Monotone: never
-                // restored on nested-module exit, which only over-defers.
+                // so an in-file type commit whose definition precedes any open
+                // in scope must defer (the open could supply the type at higher
+                // priority; see `attribute_candidate`, `decide_type_path`). An
+                // open is scoped to its module, so leaving a nested module
+                // restores the position.
                 self.latest_open_pos = self
                     .latest_open_pos
                     .max(open.syntax().text_range().start().into());
@@ -1663,6 +1749,7 @@ impl<'a> Resolver<'a> {
         let saved_unmodelled_open = self.unmodelled_open_active;
         let saved_opaque_value_open = self.opaque_value_open;
         let saved_opaque_dotted_open = self.opaque_dotted_open;
+        let saved_latest_open_pos = self.latest_open_pos;
         let saved_recursive_module = self.recursive_module_active;
         let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
         let saved_nested_locals = self.nested_module_locals.clone();
@@ -1739,6 +1826,7 @@ impl<'a> Resolver<'a> {
         self.unmodelled_open_active = saved_unmodelled_open;
         self.opaque_value_open = saved_opaque_value_open;
         self.opaque_dotted_open = saved_opaque_dotted_open;
+        self.latest_open_pos = saved_latest_open_pos;
         self.recursive_module_active = saved_recursive_module;
         if let Some(saved) = saved_rec_module_names {
             self.rec_module_names = saved;

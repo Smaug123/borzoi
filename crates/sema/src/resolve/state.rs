@@ -118,6 +118,13 @@ pub(super) struct ScopeEntry {
     /// into a top-level container's frame: a mark records a position in one
     /// block's walk.
     pub(super) mark: Option<MarkReach>,
+    /// `true` for a source entry standing for a name that may be a union case
+    /// the walk cannot decide: `type T = X`'s case `X`, when FCS may read the
+    /// abbreviation as a union ([`Resolver::shadow_abbreviation_case`]). It
+    /// declines in expression position like any `Deferred` entry, and in
+    /// pattern position too ([`Resolver::case_reference`]), where a plain
+    /// value would be skipped: the case would shadow an earlier one there.
+    pub(super) undecided_case: bool,
 }
 
 /// Which namespaces a contributor mark ([`ScopeEntry::mark`]) shadows in.
@@ -151,6 +158,7 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: None,
             mark: None,
+            undecided_case: false,
         }
     }
 
@@ -213,6 +221,21 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: Some(DeclineCause::UnmodelledContributor),
             mark: Some(reach),
+            undecided_case: false,
+        }
+    }
+
+    /// A source entry for a name that may be a union case the walk cannot
+    /// decide ([`Self::undecided_case`]): in scope, shadowing by position in
+    /// both namespaces, naming nothing.
+    pub(super) fn undecided_case(name: String, generation: usize) -> Self {
+        ScopeEntry {
+            undecided_case: true,
+            ..ScopeEntry::binding(
+                name,
+                Resolution::Deferred(DeferredReason::UnboundName),
+                generation,
+            )
         }
     }
 
@@ -241,6 +264,7 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: None,
             mark: None,
+            undecided_case: false,
         }
     }
 
@@ -268,6 +292,7 @@ impl ScopeEntry {
             maybe_constant_pattern: false,
             decline: None,
             mark: None,
+            undecided_case: false,
         }
     }
 }
@@ -890,6 +915,16 @@ pub(super) struct Resolver<'a> {
     /// handle, an enum / RQA-union case its dedicated type-qualified handle; only an
     /// anonymous-root case (no cross-file handle) is a [`Resolution::Local`].
     pub(super) type_cases: HashMap<Vec<String>, HashMap<String, HashMap<String, Resolution>>>,
+    /// Each in-file union's cases, by its [`Self::type_defs`] binder, in
+    /// declaration order: the frame its own members see. FCS puts a type's
+    /// union cases above the module scope inside its members and its intrinsic
+    /// augmentations' members, `[<RequireQualifiedAccess>]` or not, so they
+    /// shadow a same-named module value there even when it is declared later.
+    pub(super) own_union_cases: HashMap<DefId, Vec<(String, Resolution)>>,
+    /// Each in-file type's generic-parameter frame, by its binder. An intrinsic augmentation's `'T` is the
+    /// augmented type's own parameter (FCS declares its uses there), so the
+    /// augmentation's members resolve against this frame, not its header's.
+    pub(super) type_typar_frames: HashMap<DefId, Vec<(String, DefId)>>,
     /// In-file **type members**, keyed like [`Self::type_cases`] (container path →
     /// *type* name → [`TypeMemberSet`]). Populated for every genuine type
     /// definition from its object-model / trailing members, and *merged into* by
@@ -920,7 +955,7 @@ pub(super) struct Resolver<'a> {
     /// not an enclosing `enum Color`'s case. [`type_case_path`](Self::type_case_path)
     /// consults this while walking outward so it defers rather than wrongly
     /// reaching the enclosing enum. (Type-position resolution
-    /// [`lookup_type_def`](Self::lookup_type_def) does *not* consult it — a module
+    /// [`lookup_type_def_at_arity`](Self::lookup_type_def_at_arity) does *not* consult it — a module
     /// does not shadow a type in the type namespace.)
     pub(super) module_like_names: HashMap<Vec<String>, HashSet<String>>,
     /// The **value scope of each top-level container** — a `namespace`/`module`
@@ -1290,9 +1325,8 @@ pub(super) struct Resolver<'a> {
     pub(super) case_field_names: HashMap<DefId, Option<Vec<String>>>,
     /// The subset of [`Self::own_type_simple_names`] with a **generic**
     /// declaration anywhere in the file. FCS's attribute lookup is arity-0
-    /// (`DefiniteEmpty`), so it skips a generic local type where the
-    /// arity-agnostic `lookup_type_def` would hand it back — an in-file
-    /// attribute commit for such a name must defer (codex round 7).
+    /// (`DefiniteEmpty`), so it skips a generic local type — an in-file
+    /// attribute commit for such a name defers (codex round 7).
     pub(super) own_generic_type_simple_names: HashSet<String>,
     /// How many type or exception declarations this file makes under each
     /// simple name, anywhere — later ones, nested modules and `rec` blocks
@@ -1300,23 +1334,32 @@ pub(super) struct Resolver<'a> {
     /// yet is already in scope, so more here than
     /// [`Self::type_decl_counts`] can see is a possible forward shadow.
     pub(super) own_type_decl_counts: HashMap<String, usize>,
-    /// How many type declarations the walk has passed under each simple name,
-    /// per container — keyed like [`Self::type_defs`], which keeps only the
-    /// latest of them. Summed along the container chain, more than one means
-    /// the latest in-file hit may not be the one FCS binds: it picks between
-    /// same-named types by the written arity
-    /// ([`DeclineCause::InFileTypeNameReused`]).
-    pub(super) type_decl_counts: HashMap<Vec<String>, HashMap<String, usize>>,
-    /// Each in-file type definition's generic arity.
+    /// How many type declarations the walk has passed under each simple name
+    /// and arity, per container — keyed like [`Self::type_defs`], which keeps
+    /// only the latest of them. Summed along the container chain at one
+    /// arity, more than one means the latest in-file hit may not be the one
+    /// FCS binds (of two same-arity declarations in one scope it binds the
+    /// first) ([`DeclineCause::InFileTypeNameReused`]).
+    pub(super) type_decl_counts: HashMap<Vec<String>, HashMap<String, HashMap<usize, usize>>>,
+    /// Each in-file type's generic arity, by its [`Self::type_defs`] binder.
+    /// FCS looks a type name up by name *and* arity first, so `E<int>` beside
+    /// `type E` and `type E<'T>` binds the generic one whatever their order,
+    /// and may bind a same-named type of another container, file or assembly
+    /// that a lookup keyed by name alone never weighs. See
+    /// [`Self::lookup_type_def_at_arity`].
     pub(super) type_def_arities: HashMap<DefId, usize>,
-    /// How many `open` declarations the walk has passed, anywhere in the
-    /// file — monotone, never reset at a module boundary.
-    pub(super) open_decls_seen: usize,
-    /// [`Self::open_decls_seen`] at each in-file type's definition. An `open`
-    /// after a type's definition can bring a same-named type that FCS binds
-    /// instead (latest wins), so an in-file hit with any `open` since is
-    /// declined ([`DeclineCause::InFileTypeOpenedOver`]).
-    pub(super) type_def_open_marks: HashMap<DefId, usize>,
+    /// The simple names and arities of this file's genuine type definitions
+    /// (any container, any position), each with whether some definition is
+    /// generic or could declare union cases (a union, or an abbreviation whose
+    /// target may be read as a case, `type T = T`). An augmentation can only
+    /// be intrinsic to a type of its head's arity, so one whose name and arity
+    /// no such definition makes *scoped* sees the module scope alone whether
+    /// FCS reads it as intrinsic or optional, and is walked without deciding
+    /// which ([`MemberScope`](super::types::MemberScope)).
+    pub(super) own_type_scoped: HashMap<(String, usize), bool>,
+    /// [`Self::type_defs`] keyed by name and arity, so a container declaring
+    /// a name at two arities keeps both (last-wins per arity).
+    pub(super) type_defs_by_arity: HashMap<Vec<String>, HashMap<(String, usize), DefId>>,
     /// The subset of [`Self::own_type_simple_names`] declared by an
     /// `exception` anywhere in the file. Exceptions never enter `type_defs`,
     /// so an in-file *type* hit for such a name may be reaching past a closer
@@ -1338,7 +1381,7 @@ pub(super) struct Resolver<'a> {
     /// block-scoped [`Self::auto_open_type_shadow_names`] guard cannot see a
     /// straddle — a block-1 direct type, a block-2 auto-open redeclaration,
     /// and a block-3 attribute bind the *auto-open's* type in FCS while
-    /// `lookup_type_def` retains block 1's (codex on AO-2). Position-blind
+    /// the in-file lookup retains block 1's (codex on AO-2). Position-blind
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
@@ -1358,16 +1401,25 @@ pub(super) struct Resolver<'a> {
     /// `true` when some augmentation member's *name* is not walkable (an
     /// operator head, an `inherit`) — the gate keeps the wholesale defer.
     pub(super) augmentation_names_unknowable: bool,
-    /// The start offset of the latest `open` (of any kind) seen so far in this
-    /// top-level block — monotone (nested-module exits do not restore it; a
-    /// stale high-water mark only over-defers). The attribute resolution's
-    /// positional contest: F# is latest-wins across bindings and opens alike,
-    /// so an in-file attribute-type commit whose definition *precedes* an open
-    /// must defer — the open could supply the candidate at higher priority
-    /// (`type ObsoleteAttribute … ; open System; [<Obsolete>]` binds
+    /// The start offset of the latest `open` (of any kind) in scope in this
+    /// top-level block: an open is scoped to its module, so leaving a nested
+    /// module restores it. The positional contest of the attribute and type
+    /// resolutions: F# is latest-wins across bindings and opens alike, so an
+    /// in-file type commit whose definition *precedes* an open must defer —
+    /// the open could supply the name at higher priority (`type
+    /// ObsoleteAttribute … ; open System; [<Obsolete>]` binds
     /// `System.ObsoleteAttribute` in FCS). Reset per top-level block with the
     /// rest of the open state.
     pub(super) latest_open_pos: u32,
+    /// The in-file types the current top-level block declares. Reset per
+    /// block: a namespace reopened in a later block, `namespace global`
+    /// included, makes an augmentation there an extension to FCS.
+    pub(super) block_type_defs: HashSet<DefId>,
+    /// The in-file types an augmentation of which may be walked
+    /// ([`Resolver::member_scope_of`]): non-generic, of a kind the scope
+    /// tables cover (a class, a union or a record), and certainly not
+    /// `[<AutoOpen>]`.
+    pub(super) augmentable_types: HashSet<DefId>,
     /// `true` while walking a `module rec` / `namespace rec` block. Later type
     /// declarations are in scope for earlier type annotations there, so a bare
     /// single-segment type name must defer unless already resolved in-file.

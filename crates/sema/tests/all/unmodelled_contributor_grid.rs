@@ -293,6 +293,29 @@ enum Route {
     AutoOpenAliasedStructRecord,
     /// The same record, declared directly in the probe's module.
     AliasedStructRecord,
+    /// A record of the name whose only attribute is a trusted
+    /// `[<RequireQualifiedAccess>]`: provably not a struct, so it never takes
+    /// the slot.
+    RqaRecord,
+    /// `type N = N` under a trusted `[<RequireQualifiedAccess>]`: a union
+    /// (`TyconCoreAbbrevThatIsReallyAUnion`) that is provably not a struct,
+    /// and whose case is not bare, so it adds nothing.
+    RqaSelfUnion,
+    /// `type N = N` under an attribute spelled `RQA` that a same-file
+    /// abbreviation makes `StructAttribute`.
+    AliasedStructSelfUnion,
+    /// `type N = N` under `[<Struct; RequireQualifiedAccess>]`.
+    StructRqaSelfUnion,
+    /// `type N = N` under `[<RQA; RequireQualifiedAccess>]`, `RQA` an
+    /// earlier file's abbreviation of `StructAttribute`.
+    EarlierFileStructAliasSelfUnion,
+    /// The same, the earlier file's abbreviation declared in its signature
+    /// too.
+    SignatureStructAliasSelfUnion,
+    /// `type N = N` under `[<RequireQualifiedAccess>]`, a same-file
+    /// abbreviation of `StructAttribute` named so: neither spelling is
+    /// trusted.
+    ImpersonatedRqaSelfUnion,
     /// An abbreviation of a constructible type, named so.
     ConstructibleAbbrev,
     /// A generic class of the name, then a non-generic union of it: both take
@@ -354,10 +377,30 @@ enum Route {
     AutoOpenExceptionInModule,
     /// The same exception declared directly in the probe's module.
     AutoOpenException,
+    /// An `[<AutoOpen>]` type's static, an own binder of its name after the
+    /// type, then a use in an intrinsic augmentation's member.
+    AutoOpenTypeStaticInAugmentation,
+    /// The same, the use after the augmentation, at module level.
+    AutoOpenTypeStaticAfterAugmentation,
+    /// [`Route::AutoOpenTypeStaticInAugmentation`] for an exception.
+    AutoOpenExceptionStaticInAugmentation,
+    /// [`Route::AutoOpenTypeStaticAfterAugmentation`] for an exception.
+    AutoOpenExceptionStaticAfterAugmentation,
+    /// An earlier file's `namespace global` `[<AutoOpen>]` type, augmented
+    /// with the static in a second `namespace global` block.
+    EarlierGlobalTypeAugmentedLaterBlock,
+    /// The same in a named namespace, opened.
+    EarlierNamespaceTypeAugmentedLaterBlock,
+    /// The same, both blocks in the probe file, opened from a later block.
+    NamespaceTypeAugmentedLaterBlock,
+    /// An earlier file's `[<AutoOpen>]` type, opened, then extended with the
+    /// static in an `[<AutoOpen>]` module of the probe file: an extension,
+    /// not its intrinsic augmentation.
+    EarlierAutoOpenTypeExtended,
 }
 
 impl Route {
-    const ALL: [Route; 77] = [
+    const ALL: [Route; 92] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -413,6 +456,13 @@ impl Route {
         Route::ConstructibleType,
         Route::AutoOpenAliasedStructRecord,
         Route::AliasedStructRecord,
+        Route::RqaRecord,
+        Route::RqaSelfUnion,
+        Route::AliasedStructSelfUnion,
+        Route::StructRqaSelfUnion,
+        Route::EarlierFileStructAliasSelfUnion,
+        Route::SignatureStructAliasSelfUnion,
+        Route::ImpersonatedRqaSelfUnion,
         Route::ConstructibleAbbrev,
         Route::GenericClassThenUnion,
         Route::EarlierNamespaceCtor,
@@ -435,6 +485,14 @@ impl Route {
         Route::AutoOpenOperatorCase,
         Route::AutoOpenExceptionInModule,
         Route::AutoOpenException,
+        Route::AutoOpenTypeStaticInAugmentation,
+        Route::AutoOpenTypeStaticAfterAugmentation,
+        Route::AutoOpenExceptionStaticInAugmentation,
+        Route::AutoOpenExceptionStaticAfterAugmentation,
+        Route::EarlierGlobalTypeAugmentedLaterBlock,
+        Route::EarlierNamespaceTypeAugmentedLaterBlock,
+        Route::NamespaceTypeAugmentedLaterBlock,
+        Route::EarlierAutoOpenTypeExtended,
     ];
 
     /// Whether the route adds nothing the probe could bind — FCS's answer is
@@ -454,6 +512,8 @@ impl Route {
                 | Route::TypeGroupLocalLet
                 | Route::TypeGroupLocalHead
                 | Route::OpenTypeOverloadPattern
+                | Route::RqaRecord
+                | Route::RqaSelfUnion
         )
     }
 
@@ -483,6 +543,10 @@ impl Route {
                 | Route::AutoOpenTypeAccessor
                 | Route::AutoOpenOperatorCase
                 | Route::OpenTypeOverloadPattern
+                | Route::AutoOpenTypeStaticInAugmentation
+                | Route::AutoOpenTypeStaticAfterAugmentation
+                | Route::AutoOpenExceptionStaticInAugmentation
+                | Route::AutoOpenExceptionStaticAfterAugmentation
         )
     }
 
@@ -494,7 +558,14 @@ impl Route {
             | Route::ActivePattern
             | Route::RqaAliased
             | Route::EarlierNamespaceRqaAliased
-            | Route::AutoOpenBarlessUnion => kind.is_case(),
+            | Route::AutoOpenBarlessUnion
+            // `type N = N` makes `N` a union case, which must be capitalised.
+            | Route::RqaSelfUnion
+            | Route::AliasedStructSelfUnion
+            | Route::StructRqaSelfUnion
+            | Route::EarlierFileStructAliasSelfUnion
+            | Route::SignatureStructAliasSelfUnion
+            | Route::ImpersonatedRqaSelfUnion => kind.is_case(),
             // A capitalised parameter is a pattern, not a binder.
             Route::TypeGroupParameter
             | Route::TypeGroupLocalLet
@@ -505,6 +576,11 @@ impl Route {
             // The probe is a fixed name, not the kind's: one kind runs it.
             Route::AutoOpenTypeAccessor | Route::AutoOpenOperatorCase => kind == Kind::OwnValue,
             Route::OpenTypeOverloadPattern => kind == Kind::OwnCase,
+            // The route writes its own binder of the name, a value.
+            Route::AutoOpenTypeStaticInAugmentation
+            | Route::AutoOpenTypeStaticAfterAugmentation
+            | Route::AutoOpenExceptionStaticInAugmentation
+            | Route::AutoOpenExceptionStaticAfterAugmentation => kind == Kind::OwnValue,
             _ => true,
         }
     }
@@ -697,6 +773,31 @@ impl Route {
                 )],
                 "module GridProbe\n@OWN\nopen GridNs\n@USE\n",
             ),
+            Route::EarlierGlobalTypeAugmentedLaterBlock => (
+                vec![(
+                    "GridRoot.fs",
+                    "namespace global\n[<AutoOpen>]\ntype GridRootT() = class end\nnamespace global\ntype GridRootT with\n    @STATIC\n",
+                )],
+                PLAIN,
+            ),
+            Route::EarlierNamespaceTypeAugmentedLaterBlock => (
+                vec![(
+                    "GridNs.fs",
+                    "namespace GridNs\n[<AutoOpen>]\ntype GridT() = class end\nnamespace GridNs\ntype GridT with\n    @STATIC\n",
+                )],
+                "module GridProbe\n@OWN\nopen GridNs\n@USE\n",
+            ),
+            Route::EarlierAutoOpenTypeExtended => (
+                vec![(
+                    "GridNs.fs",
+                    "namespace GridNs\n[<AutoOpen>]\ntype GridT() = class end\n",
+                )],
+                "module GridProbe\nopen GridNs\n@OWN\n[<AutoOpen>]\nmodule GridAuto =\n    type GridT with\n        @STATIC\n@USE\n",
+            ),
+            Route::NamespaceTypeAugmentedLaterBlock => (
+                vec![],
+                "namespace GridNs\n[<AutoOpen>]\ntype GridT() = class end\nnamespace GridNs\ntype GridT with\n    @STATIC\nnamespace GridUse\nmodule GridProbe =\n    @OWN\n    open GridNs\n    @USE\n",
+            ),
             Route::EarlierNamespaceType => (
                 vec![(
                     "GridNs.fs",
@@ -799,6 +900,46 @@ impl Route {
                 vec![],
                 "module GridProbe\n@OWN\nopen GridFixExt\nopen type GridFixExt.Plain2\n@USE\n",
             ),
+            Route::RqaRecord => (
+                vec![],
+                "module GridProbe\n@OWN\n[<RequireQualifiedAccess>]\ntype @NAME = { GridF: int }\n@USE\n",
+            ),
+            Route::RqaSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\n[<RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::AliasedStructSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\ntype RQA = StructAttribute\n[<RQA>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::StructRqaSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\n[<Struct; RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::EarlierFileStructAliasSelfUnion => (
+                vec![(
+                    "GridAlias.fs",
+                    "module GridAlias\ntype RQA = StructAttribute\n",
+                )],
+                "module GridProbe\nopen GridAlias\n@OWN\n[<RQA; RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::SignatureStructAliasSelfUnion => (
+                vec![
+                    (
+                        "GridAlias.fsi",
+                        "module GridAlias\ntype RQA = StructAttribute\n",
+                    ),
+                    (
+                        "GridAlias.fs",
+                        "module GridAlias\ntype RQA = StructAttribute\n",
+                    ),
+                ],
+                "module GridProbe\nopen GridAlias\n@OWN\n[<RQA; RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
+            Route::ImpersonatedRqaSelfUnion => (
+                vec![],
+                "module GridProbe\n@OWN\ntype RequireQualifiedAccess = StructAttribute\n[<RequireQualifiedAccess>]\ntype @NAME = @NAME\n@USE\n",
+            ),
             Route::ConstructibleType => (vec![], "module GridProbe\n@OWN\n@CTOR\n@USE\n"),
             Route::ConstructibleAbbrev => (vec![], "module GridProbe\n@OWN\n@OBJ\n@USE\n"),
             Route::GenericClassThenUnion => (
@@ -880,6 +1021,22 @@ impl Route {
             Route::AutoOpenException => (
                 vec![],
                 "module GridProbe\n@OWN\n[<AutoOpen>]\nexception GridEx of int with\n    @STATIC\n@USE\n",
+            ),
+            Route::AutoOpenTypeStaticInAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\ntype GridT() =\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridT with\n    static member GridUse() = @P 1\n",
+            ),
+            Route::AutoOpenTypeStaticAfterAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\ntype GridT() =\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridT with\n    static member GridUse() = 0\nlet probe = @P 1\n",
+            ),
+            Route::AutoOpenExceptionStaticInAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\nexception GridEx of int with\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridEx with\n    static member GridUse() = @P 1\n",
+            ),
+            Route::AutoOpenExceptionStaticAfterAugmentation => (
+                vec![],
+                "module GridProbe\n[<AutoOpen>]\nexception GridEx of int with\n    static member @NAME(x: int) = x\nlet @NAME (x: int) = x + 1\ntype GridEx with\n    static member GridUse() = 0\nlet probe = @P 1\n",
             ),
             Route::ActivePattern => (vec![], "module GridProbe\n@OWN\n@AP\n@USE\n"),
         }

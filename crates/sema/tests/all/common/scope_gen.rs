@@ -1,7 +1,8 @@
 //! A generator of random, **well-typed** F# programs over a scope graph:
 //! modules nested two deep, `open`s of sibling, nested and `[<AutoOpen>]`
 //! modules, classes with constructor parameters, `let` fields, instance and
-//! static members, and expression blocks with every binding construct sema
+//! static members, augmentations of those classes (`type T with`, intrinsic in
+//! the declaring module and optional elsewhere), and expression blocks with every binding construct sema
 //! models — `let`, `let rec … and …`, `use`, `for … in`, `for … to`, `while`,
 //! `try … with`, `try … finally`, `match` with or-patterns, `if`, lambdas.
 //!
@@ -46,7 +47,11 @@
 //! * in a class, a `let` field sees the constructor parameters and earlier
 //!   fields (and may shadow a parameter), an instance member sees those, its
 //!   self identifier and its own parameters, and a static member sees only
-//!   module values and its own parameters.
+//!   module values and its own parameters;
+//! * an augmentation's member, intrinsic or optional, sees what a module-level
+//!   function there would — module values, plus its self identifier and its
+//!   own parameters — and none of the class's constructor parameters or `let`
+//!   fields.
 //!
 //! Where an `open` would bring one name from both a module and its
 //! `[<AutoOpen>]` child, which one wins is not something the model claims to
@@ -115,6 +120,12 @@ pub enum RefKind {
     ObjectSelfIdentifier,
     /// An object-expression member's parameter.
     ObjectMemberParam,
+    /// An augmentation (`type T with`) member's self identifier.
+    AugmentationSelfIdentifier,
+    /// An augmentation's instance member parameter.
+    AugmentationMemberParam,
+    /// An augmentation's static member parameter.
+    AugmentationStaticMemberParam,
     /// A union case, constructed or matched.
     UnionCase,
     /// `T.S(…)`: a static member through its type.
@@ -151,6 +162,9 @@ impl RefKind {
         RefKind::StaticMemberParam,
         RefKind::ObjectSelfIdentifier,
         RefKind::ObjectMemberParam,
+        RefKind::AugmentationSelfIdentifier,
+        RefKind::AugmentationMemberParam,
+        RefKind::AugmentationStaticMemberParam,
         RefKind::UnionCase,
         RefKind::StaticMember,
         RefKind::Construction,
@@ -199,6 +213,15 @@ forms! {
     InstanceMember,
     /// `static member S(a: int) : int = …`.
     StaticMemberDecl,
+    /// `type T with …` in the module that declares `T`: an intrinsic
+    /// augmentation.
+    IntrinsicAugmentation,
+    /// `type T with …` in a module other than `T`'s: an optional extension.
+    OptionalAugmentation,
+    /// In an augmentation's body, a use of a module value named like the
+    /// augmented class's constructor parameter or a `let` field — the use a
+    /// resolver handing augmentations the class's scope would get wrong.
+    AugmentationSeesModuleNotClass,
     /// A block-level `let x = …`.
     LocalLet,
     /// A block-level `let f p = …`.
@@ -255,6 +278,9 @@ pub struct PlantedRef {
     pub range: TextRange,
     pub expected: Expected,
     pub kind: RefKind,
+    /// Planted in an augmentation's member body, whose scope sema commits
+    /// only inside a proven subset of augmentations, so it may decline.
+    pub in_augmentation: bool,
 }
 
 /// The product of generation.
@@ -280,6 +306,9 @@ pub fn generate(nums: Vec<u32>) -> Generated {
         next_uid: 0,
         next_module: 0,
         next_type: 0,
+        next_augmentation: 0,
+        augmentation_depth: 0,
+        augmented_class_names: Vec::new(),
         binder_ranges: HashMap::new(),
         refs: Vec::new(),
         forms: HashMap::new(),
@@ -331,6 +360,9 @@ enum Site {
     StaticParam,
     ObjectSelf,
     ObjectParam,
+    AugSelfId,
+    AugMemberParam,
+    AugStaticParam,
 }
 
 /// How a scope entry was brought into scope.
@@ -422,6 +454,9 @@ struct TypeInfo {
     type_uid: usize,
     /// The static member `S`'s binder.
     static_uid: usize,
+    /// The constructor parameter's and `let` fields' names: in scope in the
+    /// type's own members, not in an augmentation's.
+    class_names: Vec<String>,
 }
 
 #[derive(Default)]
@@ -448,6 +483,12 @@ struct Gen {
     next_uid: usize,
     next_module: usize,
     next_type: usize,
+    next_augmentation: usize,
+    /// How many augmentation member bodies enclose the text being emitted.
+    augmentation_depth: usize,
+    /// While an augmentation's members are generated: the augmented class's
+    /// constructor-parameter and field names, which its bodies do not see.
+    augmented_class_names: Vec<String>,
     binder_ranges: HashMap<usize, TextRange>,
     refs: Vec<PlantedRef>,
     forms: HashMap<Form, usize>,
@@ -524,6 +565,7 @@ impl Gen {
             range: span(start, self.out.len()),
             expected,
             kind,
+            in_augmentation: self.augmentation_depth > 0,
         });
     }
 
@@ -535,6 +577,9 @@ impl Gen {
         }
         if across {
             self.form(Form::ShadowedAcrossTypes);
+        }
+        if b.site == Site::ModuleLet && self.augmented_class_names.contains(&b.name) {
+            self.form(Form::AugmentationSeesModuleNotClass);
         }
         let kind = match via {
             Via::Opened => RefKind::OpenedValue,
@@ -557,6 +602,9 @@ impl Gen {
                 Site::StaticParam => RefKind::StaticMemberParam,
                 Site::ObjectSelf => RefKind::ObjectSelfIdentifier,
                 Site::ObjectParam => RefKind::ObjectMemberParam,
+                Site::AugSelfId => RefKind::AugmentationSelfIdentifier,
+                Site::AugMemberParam => RefKind::AugmentationMemberParam,
+                Site::AugStaticParam => RefKind::AugmentationStaticMemberParam,
             },
         };
         let name = b.name.clone();
@@ -637,6 +685,7 @@ impl Gen {
             3 | 4 if depth < MAX_MODULE_DEPTH => self.nested_module(scope, m, indent, depth),
             5 => self.open(scope, m, indent),
             6 => self.type_decl(scope, m, indent),
+            7 => self.augmentation(scope, m, indent),
             _ => self.module_let(scope, m, indent),
         }
     }
@@ -952,9 +1001,99 @@ impl Gen {
             name: tname.clone(),
             type_uid: tb.uid,
             static_uid: sb.uid,
+            class_names: std::iter::once(pname.to_string())
+                .chain(field_names)
+                .collect(),
         });
         self.modules[m].types.push(t);
         scope.types.push((tname, t));
+    }
+
+    /// `type T with` and two members, for a class `T` visible by name: an
+    /// intrinsic augmentation when `T` is declared in module `m`, an optional
+    /// extension otherwise. Either way a member body sees the module scope,
+    /// its self identifier and its parameters, and **not** the class's
+    /// constructor parameter or `let` fields: those are scoped to the type's
+    /// own definition (FCS binds a same-named module value instead).
+    fn augmentation(&mut self, scope: &mut Scope, m: usize, indent: usize) {
+        if scope.types.is_empty() {
+            return self.module_let(scope, m, indent);
+        }
+        let (tname, t) = scope.types[self.choice(scope.types.len())].clone();
+        self.form(if self.modules[m].types.contains(&t) {
+            Form::IntrinsicAugmentation
+        } else {
+            Form::OptionalAugmentation
+        });
+        let k = self.next_augmentation;
+        self.next_augmentation += 1;
+        self.augmentation_depth += 1;
+        self.augmented_class_names = self.types[t].class_names.clone();
+        // FCS reports no use at the head, so nothing is planted there.
+        self.s("type ");
+        self.s(&tname);
+        self.s(" with");
+
+        self.nl(indent + 4);
+        self.s("member ");
+        let self_name = INT_NAMES[self.choice(INT_NAMES.len())];
+        let me = self.binder(self_name, Ty::Obj, Site::AugSelfId);
+        self.s(&format!(".Aug{k}("));
+        let qfree: Vec<&str> = INT_NAMES
+            .iter()
+            .copied()
+            .filter(|n| *n != self_name)
+            .collect();
+        let qname = qfree[self.choice(qfree.len())];
+        let q = self.binder(qname, Ty::Int, Site::AugMemberParam);
+        self.s(": int) : int =");
+        let mut member_scope = scope.clone();
+        member_scope.push(&me, Via::Direct);
+        member_scope.push(&q, Via::Direct);
+        self.nl(indent + 8);
+        self.augmentation_hazard(&member_scope, indent + 8);
+        // The self identifier competes with every other `Obj` binder for the
+        // body's uses, so half the time it gets one of its own.
+        if self.flip() {
+            self.s("ignore ");
+            self.use_binder(&member_scope, &me, Via::Direct);
+            self.nl(indent + 8);
+        }
+        self.block(&mut member_scope, indent + 8, 1);
+
+        self.nl(indent + 4);
+        self.s(&format!("static member SAug{k}("));
+        let aname = INT_NAMES[self.choice(INT_NAMES.len())];
+        let a = self.binder(aname, Ty::Int, Site::AugStaticParam);
+        self.s(": int) : int =");
+        let mut static_scope = scope.clone();
+        static_scope.push(&a, Via::Direct);
+        self.nl(indent + 8);
+        self.augmentation_hazard(&static_scope, indent + 8);
+        self.block(&mut static_scope, indent + 8, 1);
+        self.augmented_class_names.clear();
+        self.augmentation_depth -= 1;
+    }
+
+    /// Sometimes, `ignore v` on its own line, where `v` is a module value
+    /// named like one of the augmented class's constructor parameter or
+    /// fields: the use whose answer depends on the augmentation *not* seeing
+    /// the class's scope. Random blocks reach it too, but rarely.
+    fn augmentation_hazard(&mut self, scope: &Scope, indent: usize) {
+        let names = self.augmented_class_names.clone();
+        let hazards = self.visible_of(scope, |_| true);
+        let hazards: Vec<Binder> = hazards
+            .into_iter()
+            .filter(|b| b.site == Site::ModuleLet && names.contains(&b.name))
+            .collect();
+        if hazards.is_empty() || !self.flip() {
+            return;
+        }
+        let b = hazards[self.choice(hazards.len())].clone();
+        let via = self.via_of(scope, &b);
+        self.s("ignore ");
+        self.use_binder(scope, &b, via);
+        self.nl(indent);
     }
 
     // ---- expressions ----

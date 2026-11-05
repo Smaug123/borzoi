@@ -81,14 +81,6 @@ fn assert_binds(rf: &ResolvedFile, use_r: TextRange, def_r: TextRange, label: &s
     assert_eq!(def.range, def_r, "{label}: bound the wrong binder");
 }
 
-#[track_caller]
-fn assert_defers(rf: &ResolvedFile, use_r: TextRange, label: &str) {
-    match rf.resolution_at(use_r) {
-        None | Some(Resolution::Deferred(_)) => {}
-        other => panic!("{label}: expected a deferral at {use_r:?}, got {other:?}"),
-    }
-}
-
 #[test]
 fn member_body_binds_param_self_field_and_ctor_param() {
     let src = "\
@@ -276,12 +268,12 @@ type T() =
 }
 
 #[test]
-fn augmentation_member_body_does_not_wrongly_bind_module_value() {
-    // Soundness: an augmentation body is not walked with the original type's
-    // private-field scope (we don't have it), so its field references must
-    // *defer*, never bind a same-named module value. Here `acc` in the
-    // augmentation would be a wrong bind to the module `acc` if we walked it
-    // blind — FCS resolves it to the type's private field. We defer instead.
+fn augmentation_member_body_binds_the_module_value_not_the_class_field() {
+    // An augmentation's members do not see the augmented type's constructor
+    // parameters or `let` fields: those are scoped to the type's own
+    // definition. So `acc` in B is the module `acc`, while A's is the field
+    // (`fcs-dump uses`: B's `acc` is declared at `let acc = 1`). A ctor
+    // parameter in an augmentation is FS0039, so the same holds for it.
     let src = "\
 module M
 let acc = 1
@@ -292,20 +284,59 @@ type T with
     member x.B() : int = acc
 ";
     let rf = resolve(src);
-    // The genuine member A binds the class field (`let acc = 2`).
-    let field_def = ident_at(src, "let acc = 2", "acc");
     assert_binds(
         &rf,
         ident_at(src, "A() : int = acc", "acc"),
-        field_def,
+        ident_at(src, "let acc = 2", "acc"),
         "genuine member field",
     );
-    // The augmentation member B must NOT bind the module `acc`.
-    assert_defers(
+    assert_binds(
         &rf,
         ident_at(src, "B() : int = acc", "acc"),
-        "augmentation body defers",
+        ident_at(src, "let acc = 1", "acc"),
+        "augmentation member sees the module value",
     );
+}
+
+#[test]
+fn optional_extension_member_body_is_left_unwalked() {
+    // The shape of WoofWare.Incremental's `InternalObserverInvariant.fs`: an
+    // optional extension of a generic type, in an `[<AutoOpen>]` module, whose
+    // static member calls a module function of the same module. It is outside
+    // the subset whose scope is proven (a generic target, declared in another
+    // container), so its bodies are opaque regions that record nothing.
+    let src = "\
+namespace N
+
+type Obs<'a> = { Value : 'a }
+
+[<AutoOpen>]
+module internal ObsInvariant =
+    let private check (a : Obs<'a>) : bool = true
+
+    type Obs<'a> with
+        static member invariant (t : 'a Obs) =
+            if not (check t) then failwith \"bad\"
+        member this.Self (u : int) : int = (if check this then u else u)
+";
+    let rf = resolve(src);
+    for (context, ident) in [
+        ("(check t)", "check"),
+        ("(check t)", "t"),
+        ("check this", "this"),
+        ("then u else", "u"),
+    ] {
+        let at = ident_at(src, context, ident);
+        assert_eq!(
+            rf.resolution_at(at),
+            None,
+            "`{ident}` in `{context}` was resolved"
+        );
+        assert!(
+            rf.in_opaque_region(at),
+            "`{ident}` in `{context}` is outside every opaque region"
+        );
+    }
 }
 
 // --- static contexts do not see the instance scope (D5 soundness) ---
@@ -480,4 +511,32 @@ type T() =
             "member param bound the module recognizer, not the class-local one"
         );
     }
+}
+
+/// An augmentation whose header misses the type's arity (`type T with` for
+/// `type T<'a>`) is FS0957 to FCS, which still binds its members' names
+/// against the union's cases. Neither reading is the module scope alone, so a
+/// member body there commits nothing a case could take.
+#[test]
+fn augmentation_missing_the_types_arity_commits_no_case_name() {
+    let src = "\
+module M
+type T<'a> =
+    | A
+    | B of 'a
+let A = 1
+type T with
+    member _.M = A
+";
+    let rf = resolve(src);
+    let use_r = ident_at(src, "member _.M = A", "A");
+    let committed = rf
+        .resolution_at(use_r)
+        .filter(|r| matches!(r, Resolution::Local(_) | Resolution::Item(_)))
+        .and_then(|r| rf.resolved_def(r))
+        .map(|d| d.range);
+    assert_eq!(
+        committed, None,
+        "a body under an arity-missing header committed `A` to {committed:?}"
+    );
 }

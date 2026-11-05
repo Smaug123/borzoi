@@ -446,8 +446,8 @@ impl Item {
                     "    let q{n} = 2\n    NA{n}(?o{n} = Some o{n}, q{n} = q{n}), (q{n} = 2)"
                 ));
             }
-            // Same-named types of different arity (resolution does not choose
-            // between them by arity yet, #323).
+            // Same-named types of different arity (#323: resolution declines a
+            // type-position use of the wrong arity, and reaches the rest by name).
             Template::ArityNamesakes => {
                 attr(out);
                 out.push_str(&format!("type AN{n}<'a> = 'a list\n"));

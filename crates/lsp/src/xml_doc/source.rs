@@ -120,8 +120,9 @@ pub enum SourceDocDecline {
     /// A use of a type supplies a different number of type arguments than the
     /// type resolution chose declares, so FCS binds another type there — a
     /// source namesake or a referenced assembly's (`Action<int>` against a
-    /// project's `type Action`). Resolution declines the shapes of this it
-    /// knows (#323); this keeps the doc honest if one reaches here.
+    /// project's `type Action`). Resolution declines such a use in type
+    /// position; this holds the line for the occurrences it reaches by name
+    /// alone (#323).
     ArityMismatch,
     /// `T.M` where the type resolution chose declares no `M`: FCS looks `M`
     /// up in every same-named type (`NameResolution`'s arity-sorted tycon

@@ -673,8 +673,14 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "augmentation_member_param",
-        fcs: "SynMemberDefn.Member of an intrinsic augmentation",
+        fcs: "SynMemberDefn.Member of an intrinsic augmentation the walk proves the scope of",
         template: "type T() = class end\ntype T with\n    member _.M(«x»: int) = ignore USE\n",
+        status: Status::Interned,
+    },
+    Construct {
+        id: "augmentation_member_param_unproven",
+        fcs: "SynMemberDefn.Member of an intrinsic augmentation of a generic type, outside the proven subset",
+        template: "type T<'a>() = class end\ntype T<'a> with\n    member _.M(«x»: int) = ignore USE\n",
         status: Status::Opaque,
     },
     Construct {

@@ -135,14 +135,33 @@ pub fn resolve_file(
             r.own_extension_statics.extend(names.iter().cloned());
             r.contributions.extension_statics.extend(names);
         }
+        if type_defn_renames_attribute(&defn, crate::assembly_env::SLOT_ATTRIBUTE_NAMES) {
+            r.contributions.declares_slot_attribute_alias = true;
+        }
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
+            if !is_type_augmentation(&defn) {
+                let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+                let scoped = arity > 0
+                    || match defn.repr() {
+                        Some(TypeDefnRepr::Union(_)) => true,
+                        Some(TypeDefnRepr::Abbrev(a)) => a
+                            .ty()
+                            .as_ref()
+                            .and_then(abbrev_target_single_ident)
+                            .is_some(),
+                        _ => false,
+                    };
+                *r.own_type_scoped
+                    .entry((id_text(&name).to_string(), arity))
+                    .or_default() |= scoped;
+            }
             // A generic declaration of the name disqualifies an in-file
             // attribute commit: FCS's attribute lookup is arity-0
             // (`DefiniteEmpty`), so it skips a generic local and binds an
-            // assembly arity-0 type instead, while `lookup_type_def` is
-            // arity-agnostic and would hand the generic local back
-            // (codex round 7).
+            // assembly arity-0 type instead, and the in-file lookup only
+            // pins a local of the written arity in the innermost container
+            // declaring the name (codex round 7).
             if defn.typar_decls().is_some() {
                 r.own_generic_type_simple_names
                     .insert(id_text(&name).to_string());
@@ -389,6 +408,7 @@ pub fn resolve_file(
         r.assembly_open_prefixes = Vec::new();
         r.open_generation = 0;
         r.latest_open_pos = 0;
+        r.block_type_defs = HashSet::new();
         r.pattern_suppressed_case_ids = HashSet::new();
         r.unmodelled_open_active = false;
         r.opaque_value_open = false;
@@ -2192,8 +2212,10 @@ impl<'a> Resolver<'a> {
             own_type_decl_counts: HashMap::new(),
             type_decl_counts: HashMap::new(),
             type_def_arities: HashMap::new(),
-            open_decls_seen: 0,
-            type_def_open_marks: HashMap::new(),
+            type_defs_by_arity: HashMap::new(),
+            own_type_scoped: HashMap::new(),
+            own_union_cases: HashMap::new(),
+            type_typar_frames: HashMap::new(),
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
@@ -2202,6 +2224,8 @@ impl<'a> Resolver<'a> {
             augmentation_static_names: HashSet::new(),
             augmentation_names_unknowable: false,
             latest_open_pos: 0,
+            block_type_defs: HashSet::new(),
+            augmentable_types: HashSet::new(),
             module_aliases: HashMap::new(),
             unmodelled_open_active: false,
             opaque_value_open: false,
@@ -2714,8 +2738,12 @@ pub(crate) fn collect_nested_module_names(
 /// written attribute names. The definition's own attribute lists are not
 /// read: using an attribute renames nothing.
 pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
-    let spelled_core =
-        |t: &SyntaxToken| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(t));
+    type_defn_renames_attribute(defn, crate::assembly_env::CORE_ATTRIBUTE_NAMES)
+}
+
+/// [`type_defn_renames_core_attribute`], for the attributes written `names`.
+pub(super) fn type_defn_renames_attribute(defn: &TypeDefn, names: &[&str]) -> bool {
+    let spelled_core = |t: &SyntaxToken| names.contains(&&*id_text(t));
     let named_core = defn
         .long_id()
         .and_then(|li| li.idents().last())

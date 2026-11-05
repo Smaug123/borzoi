@@ -24,6 +24,26 @@ use super::model::{
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
 };
+use crate::recovery::SyntaxRecovery;
+
+/// Which names a type definition's member bodies see beyond the module scope,
+/// their self identifier and their parameters ([`Resolver::member_scope_of`]).
+/// `own` is the type's binder, the key of [`Resolver::own_union_cases`] and
+/// [`Resolver::type_typar_frames`].
+pub(super) enum MemberScope {
+    /// A genuine definition: its constructor parameters and fields, its own
+    /// type parameters, and its own union cases above the module scope.
+    Genuine { own: Option<DefId> },
+    /// An intrinsic augmentation of the in-file union `own` (`type T with` in
+    /// the module that declares `T`): `T`'s type parameters and union cases.
+    /// Like every augmentation, not `T`'s constructor parameters or fields,
+    /// which are scoped to `T`'s own definition.
+    Intrinsic { own: DefId },
+    /// An augmentation outside the subset whose scope is proven
+    /// ([`Resolver::member_scope_of`]): its member bodies are not walked, and
+    /// every name in them declines.
+    Unwalked,
+}
 
 /// The token-free decision of [`Resolver::decide_type_path`] — how a
 /// type-syntactic dotted path resolves, computed without touching the
@@ -35,7 +55,8 @@ use super::state::{
 pub(super) enum TypePathResolution {
     /// A single segment names an in-file `type` def, which shadows any
     /// assembly type of that name (the decision returns this only for a
-    /// single segment — in-file lookup is arity-agnostic and never dotted).
+    /// single segment, and only at the use's own arity — in-file lookup is
+    /// never dotted).
     InFileType(DefId),
     /// The path resolved through the assembly precedence tiers — the
     /// per-segment records to apply, keyed by segment index (a
@@ -158,22 +179,27 @@ impl<'a> Resolver<'a> {
     pub(super) fn define_type(
         &mut self,
         name: &SyntaxToken,
+        arity: usize,
         slot: SlotClass,
         access_root_len: Option<usize>,
-        arity: usize,
     ) {
         let def = Def::from_token(name, DefKind::Type);
         let key = def.key().to_string();
         let range = def.range;
         let id = self.intern(def);
-        self.record(range, Resolution::Local(id));
-        self.type_def_open_marks.insert(id, self.open_decls_seen);
         self.type_def_arities.insert(id, arity);
+        self.type_defs_by_arity
+            .entry(self.container_path.clone())
+            .or_default()
+            .insert((key.clone(), arity), id);
+        self.record(range, Resolution::Local(id));
         *self
             .type_decl_counts
             .entry(self.container_path.clone())
             .or_default()
             .entry(key.clone())
+            .or_default()
+            .entry(arity)
             .or_default() += 1;
         // Filed under the current container path (see [`Self::type_defs`]). Last
         // definition of a name wins — a redefinition shadows the earlier one for
@@ -321,6 +347,12 @@ impl<'a> Resolver<'a> {
         // (oracle-pinned D3), so its export inherits that privacy.
         let type_is_private = super::decls::header_is_private(defn.syntax());
         let type_key = id_text(type_name).to_string();
+        // The type was just defined, so the name's latest binder is it.
+        let own_key = self
+            .type_defs
+            .get(&self.container_path)
+            .and_then(|m| m.get(&type_key))
+            .copied();
         for case in u.cases() {
             // An operator-named case (`([])` / `( :: )`, FSharp.Core's `list`) has
             // no identifier token; FCS records its compiled `op_Nil` /
@@ -409,6 +441,12 @@ impl<'a> Resolver<'a> {
                 .entry(type_key.clone())
                 .or_default()
                 .insert(name.clone(), res);
+            if let Some(own) = own_key {
+                self.own_union_cases
+                    .entry(own)
+                    .or_default()
+                    .push((name.clone(), res));
+            }
             // The defining occurrence resolves to itself.
             self.record(range, res);
             if !require_qualified {
@@ -423,6 +461,63 @@ impl<'a> Resolver<'a> {
                     .entries
                     .push(ScopeEntry::binding(name, res, generation));
             }
+        }
+    }
+
+    /// `type T = X` parses as an abbreviation, but FCS reads it as a union with
+    /// the nullary case `X` when `X` is `T` itself or names no type in scope
+    /// (`TyconCoreAbbrevThatIsReallyAUnion`), and the case then shadows a
+    /// same-named value or case. Unless `X` resolves as a type here, the name
+    /// `X` is shadowed with a deferral in both namespaces
+    /// ([`ScopeEntry::undecided_case`]): which reading FCS takes is not
+    /// decided. A case certainly `[<RequireQualifiedAccess>]` is reachable only
+    /// as `T.X` and shadows nothing.
+    pub(super) fn shadow_abbreviation_case(
+        &mut self,
+        defn: &TypeDefn,
+        type_name: &SyntaxToken,
+        require_qualified: bool,
+    ) {
+        let Some(TypeDefnRepr::Abbrev(a)) = defn.repr() else {
+            return;
+        };
+        let Some(target) = a.ty().as_ref().and_then(super::abbrev_target_single_ident) else {
+            return;
+        };
+        let case = id_text(&target).to_string();
+        let names_a_type = case != id_text(type_name)
+            && matches!(
+                self.decide_type_path(std::slice::from_ref(&case), 0),
+                TypePathResolution::InFileType(_) | TypePathResolution::Assembly { .. }
+            );
+        if names_a_type {
+            return;
+        }
+        // The type's own members see its cases, `[<RequireQualifiedAccess>]`
+        // or not, so the case is one of its own, declining
+        // ([`Self::resolve_type_member_bodies`]).
+        // Keyed by name and arity: a same-named type of another arity later
+        // in the group is the name's latest binder.
+        let key = (
+            id_text(type_name).to_string(),
+            defn.typar_decls().map_or(0, |t| t.typars().count()),
+        );
+        if let Some(own) = self
+            .type_defs_by_arity
+            .get(&self.container_path)
+            .and_then(|m| m.get(&key))
+            .copied()
+        {
+            self.own_union_cases.entry(own).or_default().push((
+                case.clone(),
+                Resolution::Deferred(DeferredReason::UnboundName),
+            ));
+        }
+        if !require_qualified {
+            let generation = self.open_generation;
+            self.module_frame()
+                .entries
+                .push(ScopeEntry::undecided_case(case, generation));
         }
     }
 
@@ -816,33 +911,215 @@ impl<'a> Resolver<'a> {
     ///   to every member body;
     /// * a per-member **member frame** — the member's self-id + curried params.
     ///
-    /// Only **genuine** definitions are walked: an *augmentation* (`type T with
-    /// …`) lacks the original type's ctor-param / field scope, so walking its
-    /// bodies blind could bind a same-named module value where FCS binds the
-    /// type's private field — a D5 divergence. Augmentation bodies defer wholesale
-    /// (sound under-resolution), a later slice.
-    pub(super) fn resolve_type_member_bodies(&mut self, defn: &TypeDefn) {
-        if super::is_type_augmentation(defn) {
-            // The walk does not enter an augmentation's members, so it commits
-            // no use there that their binders could capture.
-            let mut members: Vec<MemberDefn> = defn.members().collect();
-            if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
-                members.extend(om.members());
-            }
-            self.opaque_regions.extend(
-                members
-                    .iter()
-                    .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
-            );
-            return;
-        }
+    /// Beneath both, the type's own union cases ([`Self::own_union_cases`]).
+    ///
+    /// An *augmentation* (`type T with …`), intrinsic or optional, has neither
+    /// the type frame nor the field frame: the primary-constructor parameters
+    /// and class `let` fields are scoped to the type's own definition, so a
+    /// same-named name in an augmentation body is whatever the enclosing module
+    /// sees (FCS binds `let acc = 1; type T() = let acc = 2 … ; type T with
+    /// member _.B = acc` to the module `acc`). An intrinsic one still sees the
+    /// type's union cases and type parameters; an optional one sees neither
+    /// ([`MemberScope`]). An augmentation that declares its own `static let`
+    /// or `do` (FCS accepts one on a non-generic class) is not walked.
+    pub(super) fn resolve_type_member_bodies(&mut self, defn: &TypeDefn, scope: &MemberScope) {
         // The same member union `define_type_members` files: object-model repr
         // members plus any trailing members.
         let mut members: Vec<MemberDefn> = defn.members().collect();
         if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
             members.extend(om.members());
         }
+        // An augmentation's own `static let` / `do` fields are a scope we do
+        // not build, so one declaring any is outside the proven subset too.
+        let own_fields = members
+            .iter()
+            .any(|m| matches!(m, MemberDefn::LetBindings(_) | MemberDefn::Do(_)));
+        let own = match scope {
+            MemberScope::Genuine { own } => *own,
+            MemberScope::Intrinsic { own } if !own_fields => Some(*own),
+            MemberScope::Intrinsic { .. } | MemberScope::Unwalked => {
+                self.skip_unproven_augmentation(&members);
+                return;
+            }
+        };
+        // The type's own union cases, above the module scope. A case the walk
+        // cannot decide (`type T = T`'s) declines in both namespaces.
+        let mut cases: Vec<ScopeEntry> = own
+            .and_then(|k| self.own_union_cases.get(&k))
+            .map(|cases| {
+                cases
+                    .iter()
+                    .map(|(name, res)| match res {
+                        Resolution::Deferred(_) => {
+                            ScopeEntry::undecided_case(name.clone(), self.open_generation)
+                        }
+                        _ => ScopeEntry::binding(name.clone(), *res, self.open_generation),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // An intrinsic augmentation's members see the augmented type's own
+        // name again, which a constructible type holds as its constructor
+        // ahead of any module value. A same-named type the walk has met that
+        // may take the slot ([`SlotClass`]) therefore declines the name:
+        // whether the augmentation is that type's intrinsic one is not
+        // decided here.
+        if super::is_type_augmentation(defn)
+            && let Some(name) = defn.long_id().and_then(|li| li.idents().last())
+        {
+            let name = id_text(&name).to_string();
+            if self.type_in_scope_may_take_slot(&name) {
+                cases.push(ScopeEntry::binding(
+                    name,
+                    Resolution::Deferred(DeferredReason::UnboundName),
+                    self.open_generation,
+                ));
+            }
+        }
+        let pushed_cases = !cases.is_empty();
+        if pushed_cases {
+            self.scopes.push(Frame { entries: cases });
+        }
+        if super::is_type_augmentation(defn) {
+            {
+                // `base` is taken to be a receiver whatever the type's kind:
+                // it hides an enclosing value of the name and declines.
+                for m in &members {
+                    self.resolve_member_body(m, &[], &[], true);
+                }
+            }
+        } else {
+            self.resolve_genuine_member_bodies(defn, &members);
+        }
+        if pushed_cases {
+            self.scopes.pop();
+        }
+    }
 
+    /// An unproven augmentation's member bodies are not walked: each is an
+    /// opaque region ([`super::model::OpaqueRegion`]), in which the walk
+    /// records nothing, so every use there stays a deferral and binder
+    /// completeness reads its binders as unmodelled.
+    fn skip_unproven_augmentation(&mut self, members: &[MemberDefn]) {
+        self.opaque_regions.extend(
+            members
+                .iter()
+                .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
+        );
+    }
+
+    /// Whether a type of `name` declared along the container chain may take
+    /// FCS's unqualified slot (its [`SlotClass`] is not
+    /// [`SlotClass::Keeps`]).
+    fn type_in_scope_may_take_slot(&self, name: &str) -> bool {
+        (0..=self.container_path.len()).any(|k| {
+            self.type_slot_history
+                .get(&self.container_path[..k])
+                .and_then(|m| m.get(name))
+                .is_some_and(|entries| entries.iter().any(|(_, class)| *class != SlotClass::Keeps))
+        })
+    }
+
+    /// Which scope a type definition's members see, beyond the module scope
+    /// and their own self identifier and parameters.
+    pub(super) fn member_scope_of(&self, defn: &TypeDefn) -> MemberScope {
+        let header = defn.typar_decls().map_or(0, |t| t.typars().count());
+        let here = |name: &str, arity: usize| {
+            self.type_defs_by_arity
+                .get(&self.container_path)
+                .and_then(|m| m.get(&(name.to_string(), arity)))
+                .copied()
+        };
+        if !super::is_type_augmentation(defn) {
+            return MemberScope::Genuine {
+                own: defn
+                    .long_id()
+                    .and_then(super::single_ident)
+                    .and_then(|t| here(&id_text(&t), header)),
+            };
+        }
+        match self.proven_augmentation_target(defn, header) {
+            Some(own) => MemberScope::Intrinsic { own },
+            None => MemberScope::Unwalked,
+        }
+    }
+
+    /// The type an augmentation is proven intrinsic to, when its member
+    /// bodies see exactly the module scope, that type's union cases and its
+    /// constructor's name: the positive subset `augmentation_scope_diff`,
+    /// `abbreviation_case_diff` and `unmodelled_contributor_grid` hold to FCS.
+    /// Each condition says the shape is in the subset; anything not shown to
+    /// be is `None`, and its bodies are left unwalked as opaque regions
+    /// ([`super::model::OpaqueRegion`]).
+    fn proven_augmentation_target(&self, defn: &TypeDefn, header: usize) -> Option<DefId> {
+        // The file parsed without recovery.
+        let clean = matches!(&self.recovery, SyntaxRecovery::Reported(spans) if spans.is_empty());
+        // A source-ordered, named container: not a `rec` block, and not
+        // `namespace global` or an anonymous module.
+        let ordered = !self.recursive_module_active && !self.container_path.is_empty();
+        if !(clean && ordered) {
+            return None;
+        }
+        // A single-segment, non-generic header.
+        let segs: Vec<SyntaxToken> = defn.long_id()?.idents().collect();
+        let [head] = segs.as_slice() else {
+            return None;
+        };
+        if header != 0 {
+            return None;
+        }
+        let name = id_text(head).to_string();
+        // The file's only type or exception of the name, declared in this
+        // container and this block, at arity 0, of a covered kind and
+        // certainly not `[<AutoOpen>]`.
+        let only_declaration = self.own_type_decl_counts.get(&name) == Some(&1);
+        let own = self
+            .type_defs_by_arity
+            .get(&self.container_path)
+            .and_then(|m| m.get(&(name.clone(), 0)))
+            .copied()?;
+        let pinned = only_declaration
+            && self.block_type_defs.contains(&own)
+            && self.augmentable_types.contains(&own);
+        // No `open` since the declaration, and no `[<AutoOpen>]` module of the
+        // file declaring a type of the name.
+        let unopened = !self.opened_after(own) && !self.own_auto_open_type_names.contains(&name);
+        (pinned && unopened).then_some(own)
+    }
+
+    /// Intern a type definition's header type parameters and push the frame its
+    /// body resolves against: its own, except for an intrinsic augmentation,
+    /// whose members see the augmented type's parameters under the type's own
+    /// names (FCS accepts a renamed or reordered header, and its members still
+    /// mean the original `'a` by `'a`). A genuine definition's frame is filed
+    /// for its later augmentations. Returns whether a frame was pushed.
+    pub(super) fn enter_type_typars(&mut self, defn: &TypeDefn, scope: &MemberScope) -> bool {
+        let header = defn.typar_decls().map(|d| self.intern_typars(&d));
+        let frame = match scope {
+            MemberScope::Genuine { own } => {
+                if let Some(own) = own {
+                    self.type_typar_frames
+                        .insert(*own, header.clone().unwrap_or_default());
+                }
+                header
+            }
+            MemberScope::Intrinsic { own } => {
+                header.map(|_| self.type_typar_frames.get(own).cloned().unwrap_or_default())
+            }
+            MemberScope::Unwalked => header,
+        };
+        match frame {
+            Some(f) => {
+                self.typar_scopes.push(f);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A genuine definition's member bodies, against its constructor
+    /// parameters and fields.
+    fn resolve_genuine_member_bodies(&mut self, defn: &TypeDefn, members: &[MemberDefn]) {
         // F# splits a type's field scope by staticness. Two owned accumulators,
         // built in source order:
         //  * `instance_entries` — the ctor params, `as self`, then *every* field
@@ -870,7 +1147,7 @@ impl<'a> Resolver<'a> {
         // FCS declares the members' `base` value at the `inherit` member,
         // keyword to arguments. The walk never resolves `base`, so it is an
         // opaque binder.
-        for m in &members {
+        for m in members {
             if let MemberDefn::Inherit(i) = m {
                 let mut tokens = i
                     .syntax()
@@ -889,7 +1166,7 @@ impl<'a> Resolver<'a> {
 
         // Class-level `let`/`do`, in source order — each RHS/body sees the fields
         // (of matching or wider staticness) declared before it.
-        for m in &members {
+        for m in members {
             match m {
                 MemberDefn::LetBindings(lb) => {
                     self.resolve_class_let(lb, &mut static_entries, &mut instance_entries);
@@ -912,7 +1189,7 @@ impl<'a> Resolver<'a> {
             defn.repr(),
             Some(TypeDefnRepr::Record(_) | TypeDefnRepr::Union(_))
         );
-        for m in &members {
+        for m in members {
             self.resolve_member_body(m, &static_entries, &instance_entries, has_base);
         }
     }
@@ -1121,6 +1398,24 @@ impl<'a> Resolver<'a> {
                 entries.extend(self.instance_receiver_entries(self_tok.as_ref(), has_base));
             }
             entries.extend(self.pattern_locals(l.args(), BinderRole::Param));
+            // A secondary constructor's `new (…) as self = …` binds its own
+            // self identifier for the body.
+            let is_constructor = l.head().is_some_and(|h| {
+                h.syntax()
+                    .children_with_tokens()
+                    .any(|t| t.kind() == SyntaxKind::NEW_TOK)
+            });
+            if is_constructor
+                && let Some(tok) = b
+                    .syntax()
+                    .children_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .skip_while(|t| t.kind() != SyntaxKind::AS_TOK)
+                    .find(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                && let Some(entry) = self.bind_self_ident(&tok)
+            {
+                entries.push(entry);
+            }
         }
         // A secondary constructor's `as this`: in scope in its body, the
         // `then` block included.
@@ -1594,7 +1889,8 @@ impl<'a> Resolver<'a> {
         {
             let import_pos = shadow.import_pos;
             let later_in_file_type = self
-                .lookup_type_def(only)
+                .lookup_type_def_at_arity(only, arity)
+                .and_then(|(_, found)| found)
                 .is_some_and(|id| u32::from(self.defs[id.index()].range.start()) > import_pos);
             if !later_in_file_type {
                 return TypePathResolution::Deferred(DeclineSite::pre_walk(
@@ -1603,71 +1899,18 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        // A single-segment in-file `type` shadows any assembly type of that name
-        // (arity-agnostic, as F# in-file type lookup is). This outranks the
-        // manifest module-shaped auto-open veto below: file content shadows
-        // every implicit open (fsi-verified — a local `type DirectShadow`
-        // wins against the fixture's auto-opened one).
+        // A single-segment in-file `type` shadows any assembly type of that name.
+        // This outranks the manifest module-shaped auto-open veto below: file
+        // content shadows every implicit open (fsi-verified — a local `type
+        // DirectShadow` wins against the fixture's auto-opened one), where the
+        // in-file declaration is pinned ([`Self::in_file_type_at`]).
         if let [only] = names
-            && let Some((id, found_at)) = self.lookup_type_def_with_container(only)
+            && let Some(found) = self.in_file_type_at(only, arity)
         {
-            // A namespace does not see its parent namespace's types unopened
-            // (`namespace N.Inner` binds FSharp.Core's `int` over an `N.int`);
-            // only enclosing *modules* are lexical scopes.
-            if found_at < self.enclosing_namespace().len() {
-                return TypePathResolution::Deferred(DeclineSite::pre_walk(
-                    DeclineCause::InFileTypeOutsideNamespace,
-                ));
-            }
-            // The hit is the latest declaration of the name in the enclosing
-            // containers so far. FCS may bind another when those containers
-            // declare the name more than once (it picks by the written
-            // arity), or, in a `rec` block, when a declaration the walk has
-            // not reached yet uses it.
-            let visible: usize = (0..=self.container_path.len())
-                .filter_map(|k| {
-                    self.type_decl_counts
-                        .get(&self.container_path[..k])
-                        .and_then(|m| m.get(only.as_str()))
-                })
-                .sum();
-            let declared = self.own_type_decl_counts.get(only).copied().unwrap_or(0);
-            if visible > 1
-                || (self.recursive_module_active && declared > visible)
-                || self.own_exception_simple_names.contains(only.as_str())
-            {
-                return TypePathResolution::Deferred(DeclineSite::pre_walk(
-                    DeclineCause::InFileTypeNameReused,
-                ));
-            }
-            // An `open` since the definition may bring a same-named type,
-            // which FCS binds instead: the latest of the two wins.
-            if self
-                .type_def_open_marks
-                .get(&id)
-                .is_none_or(|&mark| mark < self.open_decls_seen)
-            {
-                return TypePathResolution::Deferred(DeclineSite::pre_walk(
-                    DeclineCause::InFileTypeOpenedOver,
-                ));
-            }
-            // An explicit application names the type of that arity: an
-            // opened generic `List<'T>` beside an in-file `List`.
-            let decl_arity = self.type_def_arities.get(&id).copied();
-            if arity > 0 && decl_arity != Some(arity) {
-                return TypePathResolution::Deferred(DeclineSite::pre_walk(
-                    DeclineCause::InFileArityMismatch,
-                ));
-            }
-            // A bare name prefers a non-generic type: with type arguments
-            // omitted, FCS binds any arity-0 `Action` in scope — an
-            // assembly's, an opened module's — over an in-file `Action<'T>`.
-            if arity == 0 && decl_arity != Some(0) {
-                return TypePathResolution::Deferred(DeclineSite::pre_walk(
-                    DeclineCause::InFileArityMismatch,
-                ));
-            }
-            return TypePathResolution::InFileType(id);
+            return match found {
+                Ok(id) => TypePathResolution::InFileType(id),
+                Err(cause) => TypePathResolution::Deferred(DeclineSite::pre_walk(cause)),
+            };
         }
 
         // Inside a `rec` block a forward-declared project type may not be in
@@ -2165,7 +2408,7 @@ impl<'a> Resolver<'a> {
                 //   the walk's block-scoped shadow guard cannot see it — a
                 //   block-1 direct type, block-2 auto-open redeclaration,
                 //   block-3 attribute binds the auto-open's type while
-                //   `lookup_type_def` retains block 1's (codex on AO-2);
+                //   the in-file lookup retains block 1's (codex on AO-2);
                 // - inside a `rec` block, a closer forward-declared type may
                 //   not be in `type_defs` yet, so an outer hit may be the
                 //   wrong scope (same review) — the walk's own rec guard sits
@@ -2672,16 +2915,16 @@ impl<'a> Resolver<'a> {
                 && !self.preceding.is_exact_nested_module(names))
     }
 
-    /// In-file-only type-path resolution: record a [`Resolution::Local`] when a
-    /// single segment names an in-file `type` def (arity-agnostic, as F# in-file
-    /// type lookup is). Returns whether it recorded. Used both as the first step
-    /// of [`Self::resolve_type_path`] and on its own for an augmentation head,
-    /// where an assembly lookup would be unsound — the augmented type's generic
-    /// arity is not on the `long_id` there, so a keyed assembly lookup could pick
-    /// the wrong arity (`type Demo.Pair<'T> with …` is ``Pair`1``, not `Pair`).
-    pub(super) fn resolve_in_file_type_path(&mut self, segs: &[SyntaxToken]) -> bool {
+    /// In-file-only type-path resolution for an augmentation head: record a
+    /// [`Resolution::Local`] when a single segment names a pinned in-file
+    /// `type` def of the head's `arity` ([`Self::in_file_type_at`]). Returns whether it
+    /// recorded. An assembly lookup would be unsound here — the augmented
+    /// type's generic arity is not on the `long_id`, so a keyed assembly lookup
+    /// could pick the wrong arity (`type Demo.Pair<'T> with …` is ``Pair`1``,
+    /// not `Pair`).
+    pub(super) fn resolve_in_file_type_path(&mut self, segs: &[SyntaxToken], arity: usize) -> bool {
         if let [only] = segs
-            && let Some(id) = self.lookup_type_def(&id_text(only))
+            && let Some(Ok(id)) = self.in_file_type_at(&id_text(only), arity)
         {
             self.record(only.text_range(), Resolution::Local(id));
             return true;
@@ -2689,29 +2932,93 @@ impl<'a> Resolver<'a> {
         false
     }
 
-    /// The in-file `type` def named `name` visible from the current container:
-    /// the innermost match found by walking the container path outward, since a
-    /// nested module sees its enclosing module/namespace's types and a nested
-    /// type of the same name shadows the enclosing one. `None` if no in-file type
-    /// of that name is in scope. (Cross-file / assembly types are a later slice.)
-    /// `name` is already a name ([`id_text`]), not a token's text.
-    /// [`Self::lookup_type_def`], with the length of the container path the
-    /// def was found under.
-    fn lookup_type_def_with_container(&self, name: &str) -> Option<(DefId, usize)> {
-        (0..=self.container_path.len()).rev().find_map(|k| {
-            self.type_defs
-                .get(&self.container_path[..k])
-                .and_then(|m| m.get(name))
-                .map(|id| (*id, k))
-        })
+    /// Whether an `open` follows the definition of in-file type `id`
+    /// ([`Self::latest_open_pos`](super::state::Resolver)), so it could
+    /// supply a same-named type that wins.
+    pub(super) fn opened_after(&self, id: DefId) -> bool {
+        self.latest_open_pos > u32::from(self.defs[id.index()].range.start())
     }
 
-    pub(super) fn lookup_type_def(&self, name: &str) -> Option<DefId> {
+    /// The in-file `type` def a single-segment type name at `arity` binds, if
+    /// the file declares the name in scope at all: `Ok` when that declaration
+    /// is pinned, otherwise the cause it is not. FCS looks a type name up by
+    /// name and arity, latest write first, so the latest in-file declaration
+    /// of the name at `arity` in the innermost container declaring the name
+    /// ([`Self::lookup_type_def_at_arity`]) is its answer unless:
+    ///
+    /// * that container is an ancestor *namespace*, which a namespace does not
+    ///   see unopened (`namespace N.Inner` binds FSharp.Core's `int` over an
+    ///   `N.int`); only enclosing modules are lexical scopes;
+    /// * that container declares the name only at other arities, so FCS binds
+    ///   a type of `arity` further out, in an earlier file or an assembly
+    ///   (`List<int>` beside an in-file `List`);
+    /// * the enclosing containers declare the name twice at `arity` (FCS
+    ///   binds the first of a same-scope pair), a `rec` block declares it
+    ///   where the walk has not reached, or an `exception` of the name sits
+    ///   outside `type_defs`;
+    /// * an `open` in scope follows the declaration and may bring a
+    ///   same-named type that wins ([`Self::opened_after`]).
+    pub(super) fn in_file_type_at(
+        &self,
+        name: &str,
+        arity: usize,
+    ) -> Option<Result<DefId, DeclineCause>> {
+        let (found_at, found) = self.lookup_type_def_at_arity(name, arity)?;
+        if found_at < self.enclosing_namespace().len() {
+            return Some(Err(DeclineCause::InFileTypeOutsideNamespace));
+        }
+        let Some(id) = found else {
+            return Some(Err(DeclineCause::InFileArityMismatch));
+        };
+        let (at_arity, any_arity) = (0..=self.container_path.len())
+            .filter_map(|k| {
+                self.type_decl_counts
+                    .get(&self.container_path[..k])
+                    .and_then(|m| m.get(name))
+            })
+            .fold((0, 0), |(at, any), by_arity| {
+                (
+                    at + by_arity.get(&arity).copied().unwrap_or(0),
+                    any + by_arity.values().sum::<usize>(),
+                )
+            });
+        let declared = self.own_type_decl_counts.get(name).copied().unwrap_or(0);
+        if at_arity > 1
+            || (self.recursive_module_active && declared > any_arity)
+            || self.own_exception_simple_names.contains(name)
+        {
+            return Some(Err(DeclineCause::InFileTypeNameReused));
+        }
+        if self.opened_after(id) {
+            return Some(Err(DeclineCause::InFileTypeOpenedOver));
+        }
+        Some(Ok(id))
+    }
+
+    /// The in-file `type` def named `name` at `arity`, from the innermost
+    /// visible container declaring the name at all, with that container's
+    /// path length: `None` when none does, and no def when that container
+    /// declares the name only at other arities. Within one container both
+    /// arities are kept ([`Self::type_defs_by_arity`]), so `type E` beside
+    /// `type E<'T>` answers `E` and `E<int>` alike, whatever their order.
+    pub(super) fn lookup_type_def_at_arity(
+        &self,
+        name: &str,
+        arity: usize,
+    ) -> Option<(usize, Option<DefId>)> {
         (0..=self.container_path.len()).rev().find_map(|k| {
+            let prefix = &self.container_path[..k];
             self.type_defs
-                .get(&self.container_path[..k])
-                .and_then(|m| m.get(name))
-                .copied()
+                .get(prefix)
+                .is_some_and(|m| m.contains_key(name))
+                .then(|| {
+                    let found = self
+                        .type_defs_by_arity
+                        .get(prefix)
+                        .and_then(|m| m.get(&(name.to_string(), arity)))
+                        .copied();
+                    (k, found)
+                })
         })
     }
 

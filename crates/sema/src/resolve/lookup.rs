@@ -2713,6 +2713,12 @@ impl<'a> Resolver<'a> {
                     Some(MarkReach::Expression) => continue,
                     None => {}
                 }
+                // A name that may be a union case the walk cannot decide
+                // shadows an earlier case: decline rather than skip it as a
+                // value.
+                if entry.undecided_case {
+                    return Err(None);
+                }
                 // An opened entry that an unmodelled open could shadow with a *case*
                 // (F#: the latest open wins) cannot be trusted in pattern position —
                 // defer rather than return a possibly-shadowed case (a wrong
@@ -4845,7 +4851,7 @@ impl<'a> Resolver<'a> {
     /// member). The case resolution is the case's canonical identity (a
     /// [`Resolution::Item`] in a real-root file, else [`Resolution::Local`]).
     ///
-    /// Walks the container path outward like [`lookup_type_def`](Self::lookup_type_def):
+    /// Walks the container path outward like [`lookup_type_def_at_arity`](Self::lookup_type_def_at_arity):
     /// the **innermost** match of that name fixes the result. A *module-like* name
     /// (nested module / abbreviation, [`Self::module_like_names`]) at a level
     /// shadows any enclosing type for member access, so the path defers there
