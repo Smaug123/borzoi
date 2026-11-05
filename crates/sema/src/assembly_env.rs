@@ -10497,7 +10497,7 @@ pub(crate) mod from_views_tests {
 }
 
 /// Whether a pickled tycon path names FSharp.Core's array tycon of some rank
-/// (`Microsoft.FSharp.Core.[]`1`, `[,]`1`, …): a name F# syntax cannot give a
+/// (``Microsoft.FSharp.Core.[]`1``, ``[,]`1``, …): a name F# syntax cannot give a
 /// declared type, so the path alone identifies the intrinsic.
 pub(crate) fn is_array_tycon_path(path: &[String]) -> bool {
     let [m, f, c, last] = path else {

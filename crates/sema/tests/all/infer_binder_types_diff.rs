@@ -833,16 +833,19 @@ fn typed_pattern_head_matches_fcs() {
     assert_eq!(assert_binder_sound(source), 1);
 }
 
-/// Shadow shapes must defer — the gate sees the resolver's record (`Local` for
-/// an in-file `type int64` [R3], the open-module resolution [R4], and the R2-0
+/// Shadow shapes never type the primitive. An in-file `type int64` [R3] is
+/// the project type FCS names (`M.int64`); the rest defer — the gate sees the
+/// resolver's record (the open-module resolution [R4], and the R2-0
 /// `Deferred(ShadowableType)` markers for a same-file `[<AutoOpen>]` type [V1]
 /// and a `module rec` forward type [V2]) and stays silent; whatever else we
 /// emit agrees with FCS.
 #[test]
 fn shadowed_annotations_defer() {
+    // R3: an in-file `type int64` shadows the primitive, and names itself.
+    let r3 = "module M\ntype int64 = A of int\nlet x : int64 = A 1\n";
+    assert_eq!(binder_render(r3, "x").as_deref(), Some("M.int64"));
+    assert!(assert_binder_sound(r3) >= 1);
     for source in [
-        // R3: an in-file `type int64` shadows the primitive.
-        "module M\ntype int64 = A of int\nlet x : int64 = A 1\n",
         // R4: an opened module's `type int64` shadows it.
         "module M\nmodule Inner =\n    type int64 = A\nopen Inner\nlet x : int64 = A\n",
         // V1: a same-file `[<AutoOpen>]` module's nested type shadows it.
@@ -863,10 +866,11 @@ fn shadowed_annotations_defer() {
     }
 }
 
-/// R5/R7: a measure application (`float<m>`) and a generic application
-/// (`int64 option`) are non-bare heads, deferred *by shape* — while a bare
-/// `float` beside the measure still types (`System.Double`, not the measured
-/// type), agreeing with FCS.
+/// R5/R7: a measure application (`float<m>`) is a non-bare head, deferred *by
+/// shape* — while a bare `float` beside the measure still types
+/// (`System.Double`, not the measured type) — and a generic application of
+/// FSharp.Core's abbreviation (`int64 option`) types as the target FCS names,
+/// agreeing with FCS.
 #[test]
 fn measure_and_generic_annotations_defer() {
     let source = "module M\n[<Measure>] type m\nlet x : float<m> = 3.0<m>\nlet y : float = 1.0\n";
@@ -875,8 +879,11 @@ fn measure_and_generic_annotations_defer() {
     assert_eq!(assert_binder_sound(source), 1);
 
     let generic = "module M\nlet x : int64 option = None\n";
-    assert_eq!(binder_render(generic, "x"), None);
-    assert_eq!(assert_binder_sound(generic), 0);
+    assert_eq!(
+        binder_render(generic, "x").as_deref(),
+        Some("Microsoft.FSharp.Core.FSharpOption<System.Int64>")
+    );
+    assert_eq!(assert_binder_sound(generic), 1);
 }
 
 // ============================================================================
@@ -1344,12 +1351,14 @@ fn a_generic_application_defers_on_input_fsharp_rejects() {
 }
 
 /// The heads a generic application still defers on. Each is a *decline*, so each
-/// is sound; together they are why `int option` does not type yet.
+/// is sound.
 ///
-/// - an **abbreviation** head (`int option`, `int list`): an alias may permute or
-///   fix its target's arguments (`type Swap<'a, 'b> = Map<'b, 'a>`), so applying
-///   the written arguments positionally to the chased tycon can produce a
-///   different type, and arity alone does not rule it out;
+/// - an **abbreviation** head that is not FSharp.Core's own: an alias may permute
+///   or fix its target's arguments (`type Swap<'a, 'b> = Map<'b, 'a>`), so
+///   applying the written arguments positionally to the chased tycon can produce
+///   a different type, and arity alone does not rule it out. FSharp.Core's own
+///   (`int option`, `int list`, `array<int>`) read through to their target, each
+///   checked to apply exactly its parameters in order (below);
 /// - a **source-renamed** head (`Result`, compiled `FSharpResult`; `Map`,
 ///   compiled `FSharpMap`): [`Ty`] carries one path and this needs two — the
 ///   compiled name is FCS's canonical currency, the source name is what hover
@@ -1367,9 +1376,24 @@ fn a_generic_application_defers_on_input_fsharp_rejects() {
 ///   line.
 #[test]
 fn the_heads_a_generic_application_defers_on() {
+    // FSharp.Core's own abbreviations read through to the type FCS names.
+    for (source, name, ty) in [
+        (
+            "module M\nlet x : int option = None\n",
+            "x",
+            "Microsoft.FSharp.Core.FSharpOption<System.Int32>",
+        ),
+        (
+            "module M\nlet l : int list = []\n",
+            "l",
+            "Microsoft.FSharp.Collections.FSharpList<System.Int32>",
+        ),
+        ("module M\nlet a : array<int> = [||]\n", "a", "System.Int32[]"),
+    ] {
+        assert_eq!(binder_render(source, name).as_deref(), Some(ty), "{source:?}");
+        assert!(assert_binder_sound(source) >= 1, "{source:?}");
+    }
     for (source, name) in [
-        ("module M\nlet x : int option = None\n", "x"),
-        ("module M\nlet l : int list = []\n", "l"),
         ("module M\nlet r : Result<int, string> = Ok 1\n", "r"),
         (
             "module M\nlet t : System.Tuple<int, string> = System.Tuple<int, string>(1, \"a\")\n",
@@ -1383,7 +1407,6 @@ fn the_heads_a_generic_application_defers_on() {
             "module M\nlet g : Microsoft.FSharp.Core.FSharpFunc<int, bool> = failwith \"\"\n",
             "g",
         ),
-        ("module M\nlet a : array<int> = [||]\n", "a"),
     ] {
         assert_eq!(
             binder_render(source, name),

@@ -432,6 +432,9 @@ in [`sema-phase3-impl-plan.md`](sema-phase3-impl-plan.md)):
   (`infer_project`, D2's fold for types): each file publishes its top-level
   values' certain types, and a later file's use the resolver resolved to one
   instantiates it; everything uncertain declines with its reason.
+- **Project-type annotations** — `Ty::Project` (a project type by FCS's path
+  and arity) and the bridge from an in-file type's annotation to it, plus
+  FSharp.Core's applied abbreviations read through to their target.
 - **3.x-inh** (#735) — member inheritance: a base-chain walk lets inherited fields,
   properties, and single-candidate methods type and resolve to their declaring base
   entity. Dot-completion remains exact-entity-only (no inherited members).

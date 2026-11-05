@@ -64,10 +64,9 @@ G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:46:19-29 "_arg1"
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:50:16-26 "_arg1"	compiler-generated
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:69:7-29 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:69:8-29 "``.ctor``"	shadowed-constructor
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:80:56-61 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:80:66-71 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:84:43-48 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
-G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:84:53-58 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:84:43-48 "array" handlers plain definition first	declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:84:43-48 "array" handlers plain definition last	declined expected served-assembly
+G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:84:43-48 "array" handlers plain definition middle	declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:85:23-26 "prf" hover-type plain	local withheld-in-file-parameter at first,middle,last
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:95:101-104 "Set" handlers plain definition first	declined expected served-assembly
 G-Research/TypeEquality/TypeEquality/TypeEquality.fsproj Teq.fs:95:101-104 "Set" handlers plain definition last	declined expected served-assembly
@@ -560,14 +559,11 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:241
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:242:17-19 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:242:20-46 "StartLine"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:242:24-36 "KeywordRange"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:242:50-60 "lineNumber" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:243:17-19 "(&&)"	assembly-deferral unbound-name operator
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:243:20-30 "lineNumber" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:243:34-58 "EndLine"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:243:38-50 "KeywordRange"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:250:13-15 "(::)"	assembly-deferral unrecorded operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:250:21-22 "m" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:26:15-23 "funcExpr" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:27:36-62 "Contains"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:27:63-75 "idText"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj AstWalker.fs:27:85-97 "idText"	assembly-deferral qualified-access member_access_on_value
@@ -926,7 +922,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:565:4
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:565:44-65 "FilePath"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:565:50-56 "Caller"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:569:17-26 "AstWalker"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:569:17-43 "findSnapshotList" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at middle,last
+Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:569:17-43 "findSnapshotList" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:56:13-21 "Snapshot"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:56:24-38 "Snapshot"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Builder.fs:570:21-42 "FilePath"	project-deferral qualified-access member_access_on_value
@@ -1085,9 +1081,7 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:107:62-6
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:107:65-68 "acc" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:10:17-20 "int"	ambiguous-oracle-range x4
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:111:29-34 "line"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:111:35-40 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:111:47-52 "line"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:111:53-58 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:111:76-81 "line"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:112:69-74 "line"	project-deferral unrecorded type_parameter x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:113:23-24 "a" hover-type plain	local withheld-in-file-parameter at first,middle,last
@@ -1120,14 +1114,10 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:148:49-5
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:148:70-73 "ops" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:151:61-64 "pos"	project-deferral unrecorded measure
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:151:74-76 "(::)"	assembly-deferral unrecorded operator
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:156:27-32 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:156:46-51 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:156:71-72 "b" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:156:76-80 "Diff"	project-deferral unbound-name head_slot_unordered@pre_walk
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:160:32-37 "line"	project-deferral unrecorded type_parameter x2
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:160:38-43 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:160:50-55 "line"	ambiguous-oracle-range x2
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:160:56-61 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:160:71-76 "line"	ambiguous-oracle-range x2
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:162:15-23 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:162:25-26 "b" hover-type plain	local withheld-in-file-parameter at first,middle,last
@@ -1225,7 +1215,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:3:6-12 "
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:48:3-25 "RequireQualifiedAccessAttribute"	assembly-deferral shadowable-type attribute_unrulable@pre_walk	shadowed-constructor
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:48:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:51:42-47 "line"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:51:48-53 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:51:69-74 "line"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:52:25-35 "Dictionary"	assembly-deferral unbound-name unexplained
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:52:36-41 "line"	project-deferral unrecorded type_parameter
@@ -1254,7 +1243,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:70:65-74
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:73:13-26 "LinePositions"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:74:13-23 "LineCounts"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:78:67-72 "line"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:78:74-79 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:78:93-98 "line"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:79:17-31 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj Diff.fs:86:40-41 "n" hover-type plain	local withheld-in-file-value at first,middle,last
@@ -1458,15 +1446,11 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.f
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:103:28-39 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:103:40-42 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:103:60-62 "(&&)"	assembly-deferral unbound-name operator
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:113:15-23 "startPos" hover-type plain	local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:119:13-21 "startPos" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:119:29-40 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:120:13-15 "(||)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:121:13-15 "(||)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:122:13-15 "(||)"	assembly-deferral unbound-name operator
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:127:28-32 "text" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:127:28-40 "IndexOf"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:132:31-35 "text" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:132:31-45 "Substring"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:139:24-36 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:144:28-40 "Length"	assembly-deferral qualified-access member_access_on_value
@@ -1487,7 +1471,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.f
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:16:98-110 "Content"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:170:33-35 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:171:33-35 "(&&)"	assembly-deferral unbound-name operator
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:174:33-56 "parseTripleQuotedString" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:177:51-68 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:178:33-35 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:179:33-35 "(&&)"	assembly-deferral unbound-name operator
@@ -1510,13 +1493,11 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.f
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:210:13-15 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:210:17-32 "IndexOf"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:215:21-36 "Replace"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:223:12-16 "info" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:223:12-26 "StartLine"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:223:29-41 "EndLine"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:227:24-38 "StartLine"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:228:34-38 "line" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:228:34-48 "Substring"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:228:53-57 "info" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:228:53-69 "StartColumn"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:229:33-47 "Substring"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:229:48-62 "EndColumn"	project-deferral qualified-access member_access_on_value
@@ -1544,7 +1525,6 @@ Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.f
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:286:13-36 "WriteLine"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:286:88-92 "info" hover-type perturbed	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:286:95-99 "info" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
-Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:297:9-16 "sources" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:301:45-61 "SnapshotLocation"	project-deferral shadowable-type project_type_path_shadow@enclosing_namespace
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:302:39-70 "StartColumn"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj SnapshotUpdate.fs:302:46-58 "KeywordRange"	project-deferral qualified-access member_access_on_value
@@ -2337,7 +2317,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj D
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:72:13-26 "Append"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:74:9-15 "result" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:74:9-24 "ToString"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:78:13-16 "dot" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:78:13-22 "Label"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:84:13-27 "Attributes"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj DotUserInfo.fs:85:30-38 "KeyValue"	assembly-deferral unrecorded unexplained
@@ -6411,7 +6390,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:55:28-59 "heightInRecomputeHeap" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:58:33-42 "NodeCrate"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:63:60-69 "NodeCrate"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:63:71-76 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:66:12-17 "Debug"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:67:45-67 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj RecomputeHeap.fs:67:47-60 "NodesByHeight"	project-deferral qualified-access member_access_on_value
@@ -7911,7 +7889,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1696:24-29 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1696:43-47 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1696:48-50 "a"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1696:52-57 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1696:67-71 "acc"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1696:78-82 "acc"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1696:86-88 "a"	project-deferral unrecorded type_parameter
@@ -7930,7 +7907,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1710:68-70 "(::)"	assembly-deferral unrecorded operator
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1713:14-19 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1715:21-25 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1715:30-35 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1718:19-29 "FoldUpdate"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1719:11-15 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:171:13-29 "StabilizationNum"	project-deferral qualified-access qualifier
@@ -7956,7 +7932,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1742:15-19 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1742:20-22 "a"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1742:20-22 "a" handlers plain hover first	declined expected declined-project
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1742:31-36 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1743:17-19 "b"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1744:14-16 "b"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1744:20-22 "a"	project-deferral unrecorded type_parameter
@@ -7976,7 +7951,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1762:14-19 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1764:15-19 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1764:20-22 "a"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1764:32-37 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1765:17-19 "b"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1766:14-16 "b"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1766:20-22 "a"	project-deferral unrecorded type_parameter
@@ -8002,24 +7976,20 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1781:77-82 "accum" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1783:25-30 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1783:41-45 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1783:52-57 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1783:71-75 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1792:14-24 "FoldUpdate"	project-deferral unbound-name qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1792:14-33 "FInverse"	project-deferral qualified-access project_path_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1795:21-26 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1795:37-41 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1795:48-53 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1795:57-61 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1796:21-26 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1796:37-41 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1796:48-53 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1796:57-61 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1799:14-19 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:179:20-37 "AdjustHeightsHeap"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:179:45-64 "AdjustHeightsHeap"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1801:18-22 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1801:23-25 "a"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1801:27-32 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1802:17-19 "b"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1802:17-19 "b" handlers plain hover first	declined expected declined-project
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1803:16-18 "b"	project-deferral unrecorded type_parameter
@@ -8036,7 +8006,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1810:14-19 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1812:18-22 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1812:23-25 "a"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1812:35-40 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1813:17-19 "b"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1814:16-18 "b"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1814:22-24 "a"	project-deferral unrecorded type_parameter
@@ -8062,7 +8031,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1823:40-42 "T"	project-deferral unrecorded member_signature
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1824:14-19 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1825:18-22 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1825:27-32 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1826:11-15 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1828:13-14 "t" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1828:20-25 "nodes" hover-type plain	local withheld-in-file-parameter at first,middle,last
@@ -8367,7 +8335,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2092:17-59 "NumNodesRecomputedDirectlyBecauseMinHeight"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2093:17-27 "NumVarSets"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2098:61-66 "State"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2099:38-49 "initialSize" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:209:17-38 "DisallowedObservers"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2100:21-35 "CurrentScope"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2101:48-59 "initialSize" hover-type plain	local withheld-in-file-value at first,middle,last
@@ -9417,12 +9384,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj T
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:255:36-52 "StabilizationNum"	project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:262:33-39 "Cutoff"	project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:266:33-49 "StabilizationNum"	project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:26:51-56 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:29:7-29 "RequireQualifiedAccessAttribute"	assembly-match attribute x2	shadowed-constructor x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:29:8-29 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:330:43-58 "OnUpdateHandler"	project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:331:55-60 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:332:55-60 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:334:32-43 "DotUserInfo"	project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:340:21-26 "Apply"	project-deferral unrecorded member_definition_name
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:340:32-38 "TEval"	project-deferral unrecorded type_parameter x2
@@ -9635,7 +9599,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj U
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:25:34-38 "acc"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:27:21-25 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:27:26-28 "a"	project-deferral unrecorded type_parameter
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:27:30-35 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:28:17-21 "Node"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:28:22-26 "acc"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs:29:11-29 "UnorderedArrayFold"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
@@ -9850,12 +9813,11 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:113:24-38 "Substring"	assembly-match member
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:114:13-24 "ToString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:15:27-37 "PackedTrie"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:15:62-67 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:16:12-23 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:1:20-36 "LiangHyphenation"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:21:54-65 "Length"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:25:34-55 "ToLowerInvariant"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:25:34-55 "ToLowerInvariant"	assembly-match member
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:26:69-77 "extended" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:29:30-38 "extended" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:29:30-45 "Length"	assembly-deferral qualified-access member_access_on_value
@@ -9883,7 +9845,6 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:69:13-18 "trace" hover-type plain	earlier-file-value withheld-earlier-file-typed-at-definition at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:71:55-65 "ToString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:82:38-48 "PackedTrie"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:82:72-77 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:84:22-33 "ResizeArray"	assembly-deferral unbound-name unexplained
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:86:22-39 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Hyphenation.fs:87:28-29 "i" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
@@ -9895,7 +9856,6 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs	compared records=174 definitions=34
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs handlers perturbed	selected=11
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs handlers plain	selected=25
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:11:42-47 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:1:20-36 "LiangHyphenation"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:1:37-49 "Construction"	project-deferral unrecorded declaration_path
@@ -9914,13 +9874,10 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:48:17-26 "Left"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:48:35-42 "sibling" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:50:28-44 "findOrAddSibling" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:53:44-49 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:54:15-37 "PatternPriorities"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:55:19-41 "PatternPriorities"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:57:30-45 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:57:46-63 "Length"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:58:20-30 "priorities" hover-type plain	local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:59:37-47 "priorities" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:64:16-30 "LinkedTrieNode"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:69:32-45 "ParsedPattern"	project-deferral shadowable-type project_type_path_shadow@enclosing_namespace x2
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:70:12-32 "Length"	assembly-deferral qualified-access member_access_on_value
@@ -9931,7 +9888,6 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:75:17-24 "current" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:75:28-42 "LinkedTrieNode"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:78:13-27 "LinkedTrieNode"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:78:13-43 "mergePriorities" hover-type plain	in-file-value withheld-in-file-function at middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj LinkedTrie.fs:78:44-62 "Priorities"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Object.fs	compared records=19 definitions=4
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Object.fs handlers perturbed	selected=11
@@ -9946,7 +9902,6 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj PackedTrieBuilder.fs handlers perturbed	selected=11
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj PackedTrieBuilder.fs handlers plain	selected=11
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj PackedTrieBuilder.fs:14:22-29 "Pattern"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj PackedTrieBuilder.fs:14:22-35 "parse" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj PackedTrieBuilder.fs:14:36-43 "pattern" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj PackedTrieBuilder.fs:15:9-27 "Insert"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj PackedTrieBuilder.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
@@ -9971,15 +9926,12 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs	compared records=110 definitions=17
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs handlers perturbed	selected=11
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs handlers plain	selected=17
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:11:22-27 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:15:27-32 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:19:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:19:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:1:20-36 "LiangHyphenation"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:24:21-32 "ResizeArray"	assembly-deferral unbound-name unexplained
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:25:26-37 "ResizeArray"	assembly-deferral unbound-name unexplained
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:28:18-25 "pattern" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:29:16-17 "c" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:29:25-27 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Pattern.fs:29:28-29 "c" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
@@ -10022,14 +9974,12 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:114:27-43 "ReadInt32"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:116:21-24 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:116:25-34 "trieIndex"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:116:36-41 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:117:24-35 "basesLength" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:117:83-99 "ReadInt32"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:11:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:11:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:120:23-26 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:120:27-40 "alphabetIndex"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:120:42-47 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:120:72-85 "alphabetIndex"	project-deferral unrecorded measure
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:121:33-49 "ReadInt32"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:125:23-39 "ReadInt32"	assembly-deferral qualified-access member_access_on_value
@@ -10046,13 +9996,11 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:147:13-25 "AlphabetSize"	project-deferral unrecorded field_label
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:148:13-30 "PatternPriorities"	project-deferral unrecorded field_label
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:153:27-37 "PackedTrie"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:153:46-51 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:154:26-38 "MemoryStream"	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:155:24-34 "GZipStream"	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:156:9-26 "serializeToStream" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:157:9-19 "Close"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:158:9-23 "ToArray"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:162:34-39 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:162:43-53 "PackedTrie"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:163:25-37 "MemoryStream"	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:164:24-34 "GZipStream"	shadowed-constructor
@@ -10067,10 +10015,6 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:188:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:1:20-36 "LiangHyphenation"	project-deferral unrecorded declaration_path
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:203:38-61 "getResourceNameFragment" hover-type perturbed	in-file-value withheld-in-file-function at first,middle,last
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:203:45-68 "getResourceNameFragment" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:203:62-70 "language" hover-type perturbed	local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:203:69-77 "language" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:208:43-53 "PackedTrie"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:211:58-85 "Assembly"	assembly-deferral unrecorded member_access_on_expression
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Serialization.fs:211:65-75 "PackedTrie"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
@@ -10154,14 +10098,11 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:111:39-47 "existing" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:114:21-31 "Add"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:115:21-35 "Item"	ambiguous-oracle-range
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:13:51-56 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:17:29-39 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:1:20-36 "LiangHyphenation"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:1:37-49 "Construction"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:20:35-36 "b" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:25:43-48 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:25:67-72 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:28:37-48 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:28:51-62 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj SuffixCompression.fs:32:25-27 "(&&)"	assembly-deferral unbound-name operator
@@ -10243,10 +10184,8 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:128:38-64 "sortedNodesWithTransitions" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:129:31-42 "nodeToState" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:129:31-49 "Item"	ambiguous-oracle-range
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:12:108-113 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:12:41-55 "LinkedTrieNode"	project-deferral shadowable-type project_auto_open_shadow@explicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:12:66-80 "LinkedTrieNode"	project-deferral shadowable-type project_auto_open_shadow@explicit_open
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:12:81-86 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:12:89-92 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:12:93-106 "alphabetIndex"	project-deferral shadowable-type project_auto_open_shadow@explicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:132:52-74 "PatternPriorities"	project-deferral qualified-access member_access_on_value
@@ -10311,10 +10250,8 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:62:15-25 "Right"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:67:17-31 "LinkedTrieNode"	project-deferral shadowable-type project_auto_open_shadow@explicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:68:18-32 "LinkedTrieNode"	project-deferral shadowable-type project_auto_open_shadow@explicit_open
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:68:33-38 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:69:20-23 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:69:24-37 "alphabetIndex"	project-deferral shadowable-type project_auto_open_shadow@explicit_open
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:69:39-44 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:71:11-21 "PackedTrie"	project-deferral shadowable-type project_auto_open_shadow@explicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:76:17-21 "Data"	project-deferral unrecorded field_label
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj TriePacking.fs:77:17-22 "Bases"	project-deferral unrecorded field_label
@@ -10342,7 +10279,6 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:101:38-48 "Link"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:102:31-41 "Link"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:107:66-69 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:107:89-94 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:108:9-31 "PatternPriorities"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:12:3-10 "MeasureAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:12:4-10 "``.ctor``"	shadowed-constructor
@@ -10358,14 +10294,9 @@ Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphe
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:49:51-61 "Value"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:4:3-10 "MeasureAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:4:4-10 "``.ctor``"	shadowed-constructor
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:60:32-37 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:62:17-20 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk x2
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:62:32-37 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:64:19-22 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk x2
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:64:38-43 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:66:24-27 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk x2
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:69:34-39 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
-Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:69:47-52 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:75:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:75:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj Types.fs:78:16-19 "int"	assembly-deferral shadowable-type wrong_arity_occupant@whole_walk
@@ -10386,10 +10317,8 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs handlers plain	selected=21
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:100:11-25 "TypeAttributes"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:100:11-40 "NestedAssembly"	assembly-deferral unrecorded case_pattern_head_occupied@explicit_open
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:100:96-102 "target" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:101:11-25 "TypeAttributes"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:101:11-39 "NestedPrivate"	assembly-deferral unrecorded case_pattern_head_occupied@explicit_open
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:104:17-22 "level" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:104:17-27 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:105:11-25 "TypeAttributes"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:105:11-38 "NestedFamily"	assembly-deferral unrecorded case_pattern_head_occupied@explicit_open
@@ -10397,7 +10326,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:106:11-42 "NestedFamORAssem"	assembly-deferral unrecorded case_pattern_head_occupied@explicit_open
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:107:11-25 "TypeAttributes"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:107:11-43 "NestedFamANDAssem"	assembly-deferral unrecorded case_pattern_head_occupied@explicit_open
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:111:17-22 "level" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:111:17-27 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:112:108-118 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:123:9-25 "TypeChain"	project-deferral qualified-access member_access_on_value
@@ -10429,7 +10357,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:44:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:44:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:52:43-61 "FriendAssemblyName"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:52:62-67 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:54:43-61 "FriendAssemblyName"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:76:12-26 "friendDeclares" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AccessCheck.fs:76:27-65 "IgnoresAccessChecksTo"	project-deferral qualified-access member_access_on_value
@@ -10516,7 +10443,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1068:58-72 "ImmutableArray" handlers plain definition middle	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1068:79-89 "TypeRefs"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1068:79-93 "Item"	ambiguous-oracle-range
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1079:25-26 "a" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1079:25-36 "TypeSpecs"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1079:25-40 "Item"	ambiguous-oracle-range
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1079:25-50 "Signature"	project-deferral unrecorded member_access_on_expression
@@ -10538,7 +10464,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1090:23-31 "Assembly"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1094:25-46 "FullName"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1094:33-37 "Name"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1096:25-26 "a" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1096:25-40 "FullName"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1096:27-31 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1098:39-65 "TypeDefHandle"	project-deferral qualified-access member_access_on_value
@@ -10555,7 +10480,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1103:23-27 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1104:21-31 "unexpected" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1113:27-37 "FullName"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1113:9-25 "loadedAssemblies" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1113:9-38 "Item"	ambiguous-oracle-range
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1118:16-30 "BaseClassTypes"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1120:15-23 "TypeInfo"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
@@ -10584,14 +10508,12 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1156:9-17 "TypeInfo"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1157:13-16 "bct" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1161:14-24 "getTypeRef" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1162:26-42 "loadedAssemblies" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1166:16-30 "BaseClassTypes"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1168:15-23 "TypeInfo"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1168:24-32 "TypeDefn"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1168:34-42 "TypeDefn"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1169:11-19 "TypeDefn"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1171:9-17 "TypeInfo"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1177:14-25 "getTypeSpec" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1177:26-42 "loadedAssemblies" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1181:16-30 "BaseClassTypes"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1183:15-23 "TypeInfo"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
@@ -10604,9 +10526,7 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1189:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1191:16-24 "Assembly"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1192:20-28 "Assembly"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1192:20-37 "readFile" hover-type plain	in-file-value withheld-in-file-function at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1193:32-40 "Assembly"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1193:32-61 "findManifestResource" hover-type plain	in-file-value withheld-in-file-function at middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1194:26-34 "Assembly"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1195:39-47 "Assembly"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:1197:33-41 "Assembly"	project-deferral qualified-access qualifier
@@ -10883,7 +10803,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:468:43-71 "GetUserString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:471:13-54 "GetNamespaceDefinitionRoot"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:472:16-25 "Namespace"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:472:16-30 "make" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:472:31-55 "GetString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:472:56-93 "GetNamespaceDefinition"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:475:26-59 "CreateBuilder"	assembly-deferral qualified-access assembly_type_member
@@ -10925,7 +10844,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:505:17-33 "Add"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:505:35-41 "handle" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:507:35-48 "MetadataToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:507:35-54 "toInt" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:507:55-67 "Parent"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:509:36-48 "EntityHandle" handlers plain definition first	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:509:36-48 "EntityHandle" handlers plain definition last	declined expected served-assembly
@@ -11027,7 +10945,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:592:58-62 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:593:13-25 "OriginalPath"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:597:20-32 "KeyValuePair"	assembly-deferral unbound-name unexplained
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:597:83-89 "cached" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:599:101-105 "pair" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:599:35-47 "KeyValuePair" handlers plain definition first	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:599:35-47 "KeyValuePair" handlers plain definition last	declined expected served-assembly
@@ -11044,7 +10961,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:610:38-42 "File" handlers plain definition middle	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:610:56-68 "FullPath"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:611:43-55 "MemoryStream"	shadowed-constructor
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:612:41-53 "readUncached" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:612:74-86 "FullPath"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:614:26-26 "DumpedAssembly"	zero-width
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:615:30-42 "OwnsPeReader"	project-deferral unrecorded field_label
@@ -11053,9 +10969,7 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:61:82-90 "PawPrint"	project-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:621:13-19 "cached" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:621:13-25 "Value"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:621:29-39 "withLogger" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:621:54-66 "FullPath"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:631:9-21 "readUncached" hover-type plain	in-file-value withheld-in-file-function at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:634:24-26 "(||)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:634:42-56 "MaxValue" handlers plain definition last	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:634:42-56 "MaxValue" handlers plain definition middle	declined expected served-assembly
@@ -11082,21 +10996,17 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:683:57-66 "CorHeader"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:685:12-52 "RelativeVirtualAddress"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:689:12-34 "Size"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:690:45-57 "resourceName" hover-type plain	local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:692:73-88 "Offset"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:692:73-88 "Offset"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:694:46-68 "Size"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:696:129-151 "Size"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:699:19-59 "RelativeVirtualAddress"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:6:13-24 "Collections"	assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:6:25-34 "Immutable"	assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:6:6-12 "System"	assembly-deferral unrecorded declaration_path
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:700:62-74 "resourceName" hover-type plain	local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:702:27-31 "assy" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:702:27-55 "GetSectionData"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:702:32-40 "PeReader"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:703:30-51 "GetReader"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:707:12-25 "Length"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:709:40-52 "resourceName" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:712:13-30 "ReadUInt32"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:714:40-54 "resourceOffset" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:716:39-61 "Size"	assembly-deferral qualified-access member_access_on_value
@@ -11105,7 +11015,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:720:28-49 "RemainingBytes"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:722:109-130 "RemainingBytes"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:729:13-29 "AssemblyFullName"	project-deferral unrecorded field_label
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:729:32-36 "assy" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:729:32-50 "FullName"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:729:37-41 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:72:18-25 "ILogger" handlers plain definition first	declined expected served-assembly x2
@@ -11172,7 +11081,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:7:6-12 "System"	assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:800:74-78 "name" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:807:13-21 "KeyValue"	assembly-deferral unbound-name assembly_case_untargeted@pre_walk
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:807:34-40 "dumped" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:807:34-49 "TypeDefs"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:808:13-30 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:808:44-57 "Namespace"	project-deferral qualified-access member_access_on_value
@@ -11245,7 +11153,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:854:24-48 "GenericParamFromMetadata"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:854:50-58 "TypeDefn"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:859:13-33 "ResolvedTypeIdentity"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:859:13-50 "ofTypeDefinition" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:859:51-60 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:859:61-77 "TypeDefHandle"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:865:21-41 "ResolvedTypeIdentity"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
@@ -11304,7 +11211,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:950:61-75 "TypeDefinition"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:950:80-97 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:951:30-50 "ResolvedTypeIdentity"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:951:30-67 "ofTypeDefinition" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:951:68-87 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:951:88-108 "TypeDefHandle"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:955:21-38 "Name"	project-deferral qualified-access member_access_on_value
@@ -11384,10 +11290,8 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:27:13-18 "Flags"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:27:21-30 "Flags"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:28:13-17 "Name"	project-deferral unrecorded field_label
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:28:20-23 "ref" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:28:20-39 "GetAssemblyName"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:29:13-20 "Version"	project-deferral unrecorded field_label
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:29:23-26 "ref" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:29:23-34 "Version"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:3:6-12 "System"	assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj AssemblyReference.fs:4:13-23 "Reflection"	assembly-deferral unrecorded declaration_path
@@ -11860,7 +11764,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ConcreteType.fs	compared records=236 definitions=50
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ConcreteType.fs handlers perturbed	selected=11
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ConcreteType.fs handlers plain	selected=27
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ConcreteType.fs:14:15-16 "f" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ConcreteType.fs:18:3-17 "CustomEqualityAttribute"	assembly-match attribute x2	shadowed-constructor x2
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ConcreteType.fs:18:4-17 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ConcreteType.fs:19:3-15 "NoComparisonAttribute"	assembly-match attribute x2	shadowed-constructor x2
@@ -12371,9 +12274,9 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:76:17-23 "System"	assembly-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:76:24-34 "Reflection"	assembly-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:76:35-43 "Metadata"	assembly-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:79:22-33 "Parent"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:79:22-33 "Parent"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:79:37-50 "MetadataToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:80:20-36 "Constructor"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:80:20-36 "Constructor"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:80:40-53 "MetadataToken"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:83:16-32 "IsNil"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj CustomAttribute.fs:83:21-26 "Value"	assembly-deferral qualified-access member_access_on_value
@@ -12392,9 +12295,8 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:16:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:1:20-28 "PawPrint"	project-deferral unrecorded declaration_path
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:20:20-22 "mr" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:20:20-32 "GetString"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:20:33-43 "Name"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:20:33-43 "Name"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:23:13-19 "Handle"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:24:13-17 "Name"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj EventDefn.fs:25:13-18 "Attrs"	project-deferral unrecorded field_label
@@ -12422,11 +12324,11 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:73:15-21 "System"	assembly-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:73:22-32 "Reflection"	assembly-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:73:33-41 "Metadata"	assembly-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:76:30-37 "Name"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:77:28-40 "Namespace"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:76:30-37 "Name"	assembly-match member
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:77:28-40 "Namespace"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:78:20-33 "MetadataToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:78:49-66 "Implementation"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:79:21-43 "NamespaceDefinition"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:78:49-66 "Implementation"	assembly-match member
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:79:21-43 "NamespaceDefinition"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:82:16-30 "IsForwarder"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:84:19-32 "MetadataToken"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:85:19-32 "MetadataToken"	project-deferral qualified-access qualifier
@@ -12439,7 +12341,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:96:28-39 "IsNil"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:97:13-26 "NamespaceDefn"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:98:13-22 "TypeAttrs"	project-deferral unrecorded field_label
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:98:25-27 "ty" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:98:25-38 "Attributes"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj ExportedType.fs:99:13-17 "Data"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FieldInfo.fs	compared records=311 definitions=56
@@ -12553,12 +12454,12 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs	compared records=780 definitions=115
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs handlers perturbed	selected=11
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs handlers plain	selected=84
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:102:14-22 "Flags"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:105:22-37 "GetPublicKey"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:102:14-22 "Flags"	assembly-match member
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:105:22-37 "GetPublicKey"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:107:23-25 "pk" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:107:26-28 "(||)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:107:29-38 "Length"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:112:23-43 "GetPublicKeyToken"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:112:23-43 "GetPublicKeyToken"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:114:23-26 "pkt" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:114:27-29 "(||)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:114:30-33 "pkt" hover-type plain	local withheld-in-file-value at first,middle,last
@@ -12629,7 +12530,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:230:54-66 "AssemblyName" handlers plain definition first	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:230:54-66 "AssemblyName" handlers plain definition last	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:230:54-66 "AssemblyName" handlers plain definition middle	declined expected served-assembly
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:232:15-18 "ref" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:232:15-28 "PublicKey"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:233:56-64 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:233:65-73 "Name"	assembly-deferral qualified-access member_access_on_value
@@ -12646,7 +12546,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:261:49-70 "Length"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:267:33-41 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:267:42-50 "Name"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:296:19-22 "ref" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:296:19-32 "PublicKey"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:299:34-36 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:305:24-45 "Length"	assembly-deferral qualified-access member_access_on_value
@@ -12672,8 +12571,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:378:15-26 "Culture"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:382:25-40 "CultureName"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:386:13-26 "Equals"	assembly-deferral qualified-access assembly_type_member
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:398:49-54 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:402:52-57 "array"	assembly-deferral shadowable-type alias_target_unchaseable@implicit_open x2
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:416:65-73 "WoofWare"	project-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:416:65-98 "CustomAttribute"	project-deferral unrecorded project_type_path_shadow@root x2
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:416:74-82 "PawPrint"	project-deferral unrecorded qualifier
@@ -12735,7 +12632,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:503:15-62 "TryGetValue"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:503:21-50 "CustomAttributesByParentToken"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:508:33-46 "MetadataToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:508:33-52 "ofInt" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:511:23-36 "MetadataToken"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:512:31-59 "TryGetValue"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj FriendAssemblies.fs:512:37-47 "Attributes"	project-deferral qualified-access member_access_on_value
@@ -13123,7 +13019,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:50:39-41 "mr" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:50:39-63 "DecodeMethodSignature"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:50:65-73 "TypeDefn"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:50:65-86 "typeProvider" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:106-116 "Choice2Of2" handlers plain definition first	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:106-116 "Choice2Of2" handlers plain definition last	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:106-116 "Choice2Of2" handlers plain definition middle	declined expected served-assembly
@@ -13522,7 +13417,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:451:90-108 "SourcedStringToken"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:452:21-38 "ReadUInt32"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:453:9-27 "SourcedStringToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:453:9-33 "ofInt" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:456:38-43 "byref"	assembly-deferral unrecorded unexplained
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:457:18-33 "ReadByte"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:460:23-38 "ReadByte"	assembly-deferral qualified-access member_access_on_value
@@ -14640,11 +14534,9 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:861:34-66 "GetTypeDefinition"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:863:31-55 "GetString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:863:56-68 "Namespace"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:863:70-84 "metadataReader" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:863:70-94 "GetString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:863:95-102 "Name"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:865:15-28 "MetadataToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:866:33-47 "metadataReader" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:866:33-67 "GetMethodDefinition"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:867:37-46 "methodDef" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:867:37-63 "GetDeclaringType"	assembly-deferral qualified-access member_access_on_value
@@ -14657,7 +14549,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:874:27-51 "GetString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:874:52-54 "td" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:874:52-64 "Namespace"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:874:66-80 "metadataReader" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:874:66-90 "GetString"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:874:91-98 "Name"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:87:11-30 "ExceptionRegionKind"	assembly-deferral unrecorded qualifier
@@ -14686,7 +14577,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:945:37-38 "n" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:962:23-52 "GetCustomAttributes"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:963:16-29 "IsNone"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:964:28-42 "metadataReader" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:964:28-61 "GetCustomAttribute"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:966:63-79 "Constructor"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:968:28-44 "IsNil"	assembly-deferral qualified-access member_access_on_value
@@ -14744,7 +14634,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:34:49-68 "MethodSpecification" handlers plain definition middle	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:35:25-42 "DecodeSignature"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:35:44-52 "TypeDefn"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:35:44-65 "typeProvider" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:39:13-19 "Method"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:39:22-35 "MetadataToken"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:39:43-63 "GetHashCode"	assembly-deferral qualified-access member_access_on_value
@@ -15351,7 +15240,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:264:24-43 "IsEmpty"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:264:27-35 "Generics"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:26:51-61 "ToString"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:273:15-21 "handle" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:275:19-40 "Mapping"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:275:56-58 "id" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:278:21-37 "Name"	assembly-deferral qualified-access member_access_on_value
@@ -15363,7 +15251,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:281:21-23 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:281:24-43 "IsEmpty"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:281:27-35 "Generics"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:290:15-21 "handle" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:292:19-40 "Mapping"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:292:56-58 "id" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:295:21-37 "Name"	assembly-deferral qualified-access member_access_on_value
@@ -15460,8 +15347,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:417:21-23 "(&&)"	assembly-deferral unbound-name operator
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:417:24-43 "IsEmpty"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:417:27-35 "Generics"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:445:15-21 "handle" hover-type plain	local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:451:15-21 "handle" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:452:64-73 "signature" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:457:28-47 "ImmutableDictionary" handlers plain definition first	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:457:28-47 "ImmutableDictionary" handlers plain definition last	declined expected served-assembly
@@ -15719,7 +15604,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:788:41-72 "GenericParameterCount"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:789:17-39 "RequiredParameterCount"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:789:42-74 "RequiredParameterCount"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:78:9-22 "concreteTypes" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:78:9-35 "ReverseIndex"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:795:38-52 "DumpedAssembly"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace x2
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:800:23-31 "TypeDefn"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace x2
@@ -15761,7 +15645,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:855:16-34 "TypeConcretization"	project-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:855:16-56 "ConcretizationContext"	project-deferral unrecorded descends_into_nested_module@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:855:57-71 "DumpedAssembly"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:85:34-47 "concreteTypes" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:860:33-41 "TypeDefn"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:861:48-66 "TypeConcretization"	project-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:861:48-88 "ConcretizationContext"	project-deferral unrecorded descends_into_nested_module@pre_walk
@@ -15967,7 +15850,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeDefn.fs:161:19-27 "ToString"	assembly-deferral unrecorded member_definition_name
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeDefn.fs:181:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeDefn.fs:181:4-25 "``.ctor``"	shadowed-constructor
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeDefn.fs:184:15-17 "pt" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeDefn.fs:1:11-19 "WoofWare"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeDefn.fs:1:20-28 "PawPrint"	project-deferral unrecorded declaration_path
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeDefn.fs:20:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute x2	shadowed-constructor x2
@@ -16153,7 +16035,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:30:35-47 "AssemblyName" handlers plain definition first	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:30:35-47 "AssemblyName" handlers plain definition last	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:30:35-47 "AssemblyName" handlers plain definition middle	declined expected served-assembly
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:31:14-26 "assemblyName" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:31:28-41 "MetadataToken"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:33:35-47 "AssemblyName" handlers plain definition first	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:33:35-47 "AssemblyName" handlers plain definition last	declined expected served-assembly
@@ -16200,7 +16081,8 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:74:61-91 "ComparableTypeDefinitionHandle"	project-deferral shadowable-type project_auto_open_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:76:13-37 "DefiningAssemblyFullName"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:77:13-23 "Definition"	project-deferral unrecorded field_label
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:81:14-35 "FullName"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:81:14-35 "FullName"	assembly-match member
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:81:14-35 "FullName" handlers plain definition last	declined expected served-assembly-member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:81:37-67 "ComparableTypeDefinitionHandle"	project-deferral unbound-name qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeIdentity.fs:81:37-72 "Make"	project-deferral qualified-access project_path_shadow@enclosing_namespace
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs	compared records=1553 definitions=240
@@ -16458,7 +16340,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:321:25-63 "GetMethodImplementation"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:325:25-36 "Declaration"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:325:39-52 "MetadataToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:325:39-67 "ofEntityHandle" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:325:68-87 "MethodDeclaration"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:326:25-29 "Body"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:326:32-45 "MetadataToken"	project-deferral qualified-access qualifier
@@ -16505,7 +16386,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:379:28-69 "GetInterfaceImplementation"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:382:21-36 "InterfaceHandle"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:382:39-52 "MetadataToken"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:382:39-67 "ofEntityHandle" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:382:68-82 "Interface"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:383:21-39 "RelativeToAssembly"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeInfo.fs:385:20-30 "Add"	assembly-deferral qualified-access member_access_on_value
@@ -16747,11 +16627,11 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:7:4-19 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:84:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:84:4-25 "``.ctor``"	shadowed-constructor
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:87:23-54 "GetTypeReference"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:87:23-54 "GetTypeReference"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:88:26-50 "GetString"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:88:51-63 "Name"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:88:51-63 "Name"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:89:31-55 "GetString"	assembly-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:89:56-73 "Namespace"	assembly-deferral qualified-access member_access_on_value
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:89:56-73 "Namespace"	assembly-match member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:8:3-17 "CustomEqualityAttribute"	assembly-match attribute x2	shadowed-constructor x2
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:8:4-17 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeRef.fs:92:19-32 "MetadataToken"	project-deferral qualified-access qualifier
