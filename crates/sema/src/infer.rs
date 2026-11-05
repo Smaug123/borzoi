@@ -1710,9 +1710,13 @@ impl<'a> Gen<'a> {
     /// - it is not a nominal type F# names by its own path: an abbreviation
     ///   (FCS names its target), an augmentation, inline IL, or a bodyless
     ///   type (a measure);
-    /// - it may carry `[<CompiledName>]`, or an enclosing module may carry
-    ///   `[<CompilationRepresentation>]` — by the resolver's verdict on each
-    ///   attribute ([`Self::attribute_may_be`]);
+    /// - a type parameter carries a constraint or an attribute (a measure):
+    ///   no argument is checked against either, and F# rejects an
+    ///   application violating one, recovering the binder to a variable;
+    /// - it may carry `[<CompiledName>]` or an attribute that may make F#
+    ///   reject a use ([`Self::rejects_use`]), or an enclosing module may carry
+    ///   `[<CompilationRepresentation>]` or such an attribute — by the
+    ///   resolver's verdict on each attribute ([`Self::attribute_may_be`]);
     /// - an enclosing module shares its name with any type the file declares;
     /// - the file has no `module` or `namespace` header, or is
     ///   `namespace global`.
@@ -1753,13 +1757,29 @@ impl<'a> Gen<'a> {
                 Some(TypeDefnRepr::ObjectModel(om)) => !om.is_augmentation(),
                 Some(TypeDefnRepr::Abbrev(_) | TypeDefnRepr::InlineIl(_)) | None => false,
             };
+            // A type parameter with a constraint or an attribute (a measure):
+            // nothing here checks an argument against either, and F# rejects
+            // an application that violates one, recovering the binder.
+            let unchecked_parameters = defn.typar_decls().is_some_and(|decls| {
+                decls.constraint_clause().is_some()
+                    || decls
+                        .typars()
+                        .any(|t| t.is_head_type() || t.attributes().next().is_some())
+            });
             if !nominal
-                || self.attribute_may_be(defn.syntax(), |h| env.is_compiled_name_attribute(h))
+                || unchecked_parameters
+                || self.attribute_may_be(defn.syntax(), |h| {
+                    env.is_compiled_name_attribute(h) || self.rejects_use(h)
+                })
             {
                 continue;
             }
+            // A module whose attribute renames it, or may make F# reject a use
+            // reaching the type through it.
             let renames_module = |node: &SyntaxNode| {
-                self.attribute_may_be(node, |h| env.is_compilation_representation_attribute(h))
+                self.attribute_may_be(node, |h| {
+                    env.is_compilation_representation_attribute(h) || self.rejects_use(h)
+                })
             };
             let mut path = vec![ident_text(&name)];
             let mut provable = true;

@@ -117,6 +117,20 @@ const KINDS: &[Kind] = &[
     ),
     k("measure", "[<Measure>]\ntype {T}", "float<{P}{T}>", false),
     k("exception", "exception {T} of int", "{P}{T}", false),
+    // A constrained type parameter, satisfied: valid F#, but nothing here
+    // checks an argument against a constraint, so it declines.
+    k(
+        "constrained",
+        "type {T}<'a when 'a : struct> = { V : 'a }",
+        "{P}{T}<int>",
+        false,
+    ),
+    k(
+        "warned",
+        "[<System.Obsolete(\"old\")>]\ntype {T} = { X : int }",
+        "{P}{T}",
+        false,
+    ),
 ];
 
 const fn k(label: &'static str, decl: &'static str, spell: &'static str, commits: bool) -> Kind {
@@ -406,6 +420,14 @@ fn project_type_annotations_commit_what_fcs_does() {
                     let p (x : T) = x\n\nmodule Ext =\n    open M\n    type T with\n        \
                     member _.Z = 1\n";
     programs.push(("extension-elsewhere".to_string(), extended.to_string()));
+    // An error-level attribute on the module the type is declared in, used
+    // inside it: F# accepts it, and the type declines.
+    programs.push((
+        "obsolete-error-module".to_string(),
+        "namespace N\n\n[<System.Obsolete(\"no\", true)>]\nmodule M =\n    \
+         type T = { X : int }\n    let f (x : T) = x\n"
+            .to_string(),
+    ));
     must_commit.push("extension-elsewhere".to_string());
     let g = grade(&programs, false);
     assert!(g.wrong.is_empty(), "wrong commits:\n{}", g.wrong.join("\n"));
@@ -472,4 +494,55 @@ fn ill_typed_project_type_annotations_commit_only_what_fcs_kept() {
     // The family is not vacuous: binders FCS types positionally are committed.
     let committed: usize = g.committed.values().map(Vec::len).sum();
     assert!(committed >= ILL_TYPED.len(), "committed only {committed}");
+}
+
+/// Annotations whose *head* F# rejects: an argument violating a type
+/// parameter's constraint, a measure parameter given a type, and a type (or
+/// its module) carrying an error-level use attribute. FCS errors and recovers
+/// the binder to a type variable, so committing the written type is a wrong
+/// answer, not a commit on an erroring line.
+const REJECTED_HEADS: &[(&str, &str, &str)] = &[
+    (
+        "constraint-violated",
+        "type T<'a when 'a : struct> = { V : 'a }",
+        "T<string>",
+    ),
+    (
+        "measure-given-a-type",
+        "type T<[<Measure>] 'u> = { V : float<'u> }",
+        "T<int>",
+    ),
+    (
+        "obsolete-error",
+        "[<System.Obsolete(\"no\", true)>]\ntype T = { X : int }",
+        "T",
+    ),
+    (
+        "compiler-message-error",
+        "[<CompilerMessage(\"no\", 42, IsError = true)>]\ntype T = { X : int }",
+        "T",
+    ),
+];
+
+#[test]
+fn a_rejected_annotation_head_commits_only_what_fcs_kept() {
+    let mut programs: Vec<(String, String)> = REJECTED_HEADS
+        .iter()
+        .map(|(label, decl, spell)| {
+            (
+                (*label).to_string(),
+                format!(
+                    "namespace N\n\n{decl}\n\nmodule Uses =\n    let f (x : {spell}) = x\n    \
+                     let v : {spell} = Unchecked.defaultof<_>\n"
+                ),
+            )
+        })
+        .collect();
+    let g = grade(&programs, true);
+    assert!(g.wrong.is_empty(), "wrong commits:\n{}", g.wrong.join("\n"));
+    assert!(
+        g.rejected.is_empty(),
+        "every cell must be rejected by FCS:\n{}",
+        g.rejected.join("\n")
+    );
 }

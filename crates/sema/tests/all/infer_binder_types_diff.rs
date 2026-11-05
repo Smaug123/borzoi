@@ -1388,9 +1388,17 @@ fn the_heads_a_generic_application_defers_on() {
             "l",
             "Microsoft.FSharp.Collections.FSharpList<System.Int32>",
         ),
-        ("module M\nlet a : array<int> = [||]\n", "a", "System.Int32[]"),
+        (
+            "module M\nlet a : array<int> = [||]\n",
+            "a",
+            "System.Int32[]",
+        ),
     ] {
-        assert_eq!(binder_render(source, name).as_deref(), Some(ty), "{source:?}");
+        assert_eq!(
+            binder_render(source, name).as_deref(),
+            Some(ty),
+            "{source:?}"
+        );
         assert!(assert_binder_sound(source) >= 1, "{source:?}");
     }
     for (source, name) in [
