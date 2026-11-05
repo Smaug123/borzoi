@@ -308,7 +308,9 @@ fn collect_params(ty: &Ty, out: &mut Vec<u32>) {
             }
         }
         Ty::Var(_) => {}
-        Ty::Named { args, .. } => args.iter().for_each(|a| collect_params(a, out)),
+        Ty::Named { args, .. } | Ty::Project { args, .. } => {
+            args.iter().for_each(|a| collect_params(a, out))
+        }
         Ty::Array { elem, .. } => collect_params(elem, out),
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_params(e, out)),
         Ty::Fun { arg, ret } => {

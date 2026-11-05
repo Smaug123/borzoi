@@ -146,6 +146,10 @@ impl InferTable {
                 path,
                 args: args.iter().map(|a| self.resolve(a)).collect(),
             },
+            Ty::Project { path, args } => Ty::Project {
+                path,
+                args: args.iter().map(|a| self.resolve(a)).collect(),
+            },
             // `Param` or an unbound `Var` — nothing more to do.
             resolved => resolved,
         }
@@ -163,7 +167,9 @@ impl InferTable {
             // equivalence class. A `Named`'s own path cannot either, but its
             // generic ARGUMENTS are types and can.
             Ty::Param(_) => false,
-            Ty::Named { args, .. } => args.iter().any(|a| self.occurs(v, a)),
+            Ty::Named { args, .. } | Ty::Project { args, .. } => {
+                args.iter().any(|a| self.occurs(v, a))
+            }
             Ty::Array { elem, .. } => self.occurs(v, &elem),
             Ty::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
             Ty::Fun { arg, ret } => self.occurs(v, &arg) || self.occurs(v, &ret),
@@ -268,7 +274,8 @@ impl InferTable {
             // Two applications are equal when their heads are and their
             // arguments unify pairwise. A differing arity is a mismatch, not a
             // partial match: `Dictionary<int>` is not a `Dictionary<int, string>`.
-            (Ty::Named { path: pa, args: aa }, Ty::Named { path: pb, args: ab }) => {
+            (Ty::Named { path: pa, args: aa }, Ty::Named { path: pb, args: ab })
+            | (Ty::Project { path: pa, args: aa }, Ty::Project { path: pb, args: ab }) => {
                 if pa != pb || aa.len() != ab.len() {
                     return Err(UnifyError::Mismatch);
                 }
@@ -375,6 +382,10 @@ mod tests {
                     path,
                     args: args.iter().map(|a| self.resolve(a)).collect(),
                 },
+                Ty::Project { path, args } => Ty::Project {
+                    path,
+                    args: args.iter().map(|a| self.resolve(a)).collect(),
+                },
                 resolved => resolved,
             }
         }
@@ -384,6 +395,7 @@ mod tests {
                 Ty::Var(v2) => v2.index() == v,
                 Ty::Param(_) => false,
                 Ty::Named { args, .. } => args.iter().any(|a| self.occurs(v, a)),
+                Ty::Project { args, .. } => args.iter().any(|a| self.occurs(v, a)),
                 Ty::Array { elem, .. } => self.occurs(v, &elem),
                 Ty::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
                 Ty::Fun { arg, ret } => self.occurs(v, &arg) || self.occurs(v, &ret),
@@ -403,6 +415,15 @@ mod tests {
                     Ok(())
                 }
                 (Ty::Named { path: pa, args: aa }, Ty::Named { path: pb, args: ab }) => {
+                    if pa != pb || aa.len() != ab.len() {
+                        return Err(UnifyError::Mismatch);
+                    }
+                    for (x, y) in aa.iter().zip(ab.iter()) {
+                        self.unify(x, y)?;
+                    }
+                    Ok(())
+                }
+                (Ty::Project { path: pa, args: aa }, Ty::Project { path: pb, args: ab }) => {
                     if pa != pb || aa.len() != ab.len() {
                         return Err(UnifyError::Mismatch);
                     }
@@ -476,6 +497,10 @@ mod tests {
                 path: path.clone(),
                 args: args.iter().map(|a| canon_one(a, rename, next)).collect(),
             },
+            Ty::Project { path, args } => Ty::Project {
+                path: path.clone(),
+                args: args.iter().map(|a| canon_one(a, rename, next)).collect(),
+            },
             Ty::Param(i) => Ty::Param(*i),
             Ty::Array { elem, rank } => Ty::Array {
                 elem: Box::new(canon_one(elem, rename, next)),
@@ -507,6 +532,12 @@ mod tests {
                 "A.B",
             ])
             .prop_map(Ty::named),
+            // Project types, one at the same path as the assembly type `A.B`:
+            // the two are different types and never unify.
+            prop::sample::select(vec!["A.B", "P.Q"]).prop_map(|p: &str| Ty::Project {
+                path: p.split('.').map(str::to_owned).collect(),
+                args: Vec::new(),
+            }),
         ];
         // Nested arrays / tuples / functions / generic applications around the
         // leaves; bounded depth keeps shrinking quick. Exercises the structural
@@ -529,9 +560,19 @@ mod tests {
                 }),
                 (
                     prop::sample::select(vec!["G.One", "G.Two"]),
-                    prop::collection::vec(inner, 1..3),
+                    prop::collection::vec(inner.clone(), 1..3),
                 )
                     .prop_map(|(head, args)| Ty::Named {
+                        path: head.split('.').map(str::to_owned).collect(),
+                        args,
+                    }),
+                // An applied project type, at a path an applied `Named` also
+                // takes, so a variable is reachable inside one.
+                (
+                    prop::sample::select(vec!["G.One", "P.R"]),
+                    prop::collection::vec(inner, 1..3),
+                )
+                    .prop_map(|(head, args)| Ty::Project {
                         path: head.split('.').map(str::to_owned).collect(),
                         args,
                     }),
@@ -569,7 +610,9 @@ mod tests {
     fn free_vars(ty: &Ty, out: &mut Vec<TyVid>) {
         match ty {
             Ty::Var(v) => out.push(*v),
-            Ty::Named { args, .. } => args.iter().for_each(|a| free_vars(a, out)),
+            Ty::Named { args, .. } | Ty::Project { args, .. } => {
+                args.iter().for_each(|a| free_vars(a, out))
+            }
             Ty::Array { elem, .. } => free_vars(elem, out),
             Ty::Tuple(elems) => elems.iter().for_each(|e| free_vars(e, out)),
             Ty::Fun { arg, ret } => {

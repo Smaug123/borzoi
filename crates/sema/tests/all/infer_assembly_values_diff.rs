@@ -1145,7 +1145,7 @@ fn takes_only_surely_sealed(ty: &borzoi_sema::Ty) -> bool {
     let sealed = |t: &Ty| match t {
         Ty::Param(_) | Ty::Fun { .. } | Ty::Array { .. } | Ty::Tuple(_) => true,
         Ty::Named { path, .. } => SEALED.contains(&path.join(".").as_str()),
-        Ty::Var(_) => false,
+        Ty::Var(_) | Ty::Project { .. } => false,
     };
     let mut ty = ty;
     while let Ty::Fun { arg, ret } = ty {

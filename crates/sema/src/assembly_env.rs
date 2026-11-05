@@ -3454,6 +3454,21 @@ impl AssemblyEnv {
         e.name == "EntryPointAttribute" && e.namespace == ["Microsoft", "FSharp", "Core"]
     }
 
+    /// Whether `handle` is FSharp.Core's `CompiledNameAttribute`, which renames
+    /// the entity it is on.
+    pub fn is_compiled_name_attribute(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        e.name == "CompiledNameAttribute" && e.namespace == ["Microsoft", "FSharp", "Core"]
+    }
+
+    /// Whether `handle` is FSharp.Core's `CompilationRepresentationAttribute`,
+    /// whose `ModuleSuffix` flag renames the module it is on.
+    pub fn is_compilation_representation_attribute(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        e.name == "CompilationRepresentationAttribute"
+            && e.namespace == ["Microsoft", "FSharp", "Core"]
+    }
+
     /// The source (else IL) simple name of `handle`.
     fn entity_source_name(&self, handle: EntityHandle) -> &str {
         let e = self.entity(handle);
