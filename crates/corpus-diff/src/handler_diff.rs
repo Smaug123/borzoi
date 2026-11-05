@@ -1731,10 +1731,11 @@ mod tests {
 
     /// The type grading is not vacuous: an oracle whose type for a value is
     /// planted wrong makes the real handler's (right) hover a divergence —
-    /// at the use in the value's own file, and, for an earlier file's value,
-    /// at the declaration the withheld verdict asks about. The unplanted
-    /// oracle is the control: no divergence, and the probes it plants on agree
-    /// or are withheld as the planted ones are not.
+    /// at a use in the value's own file or a later one, where the hover shows
+    /// the type, and, for an earlier file's value whose use withholds it (an
+    /// `inline` one), at the declaration the withheld verdict asks about. The
+    /// unplanted oracle is the control: no divergence, and the probes it plants
+    /// on agree or are withheld as the planted ones are not.
     #[test]
     #[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
     fn a_planted_wrong_type_is_a_divergence() {
@@ -1749,9 +1750,12 @@ mod tests {
         );
         write(
             "Lib.fs",
-            "module Lib\n\nlet answer = 42\nlet more = answer + 1\n",
+            "module Lib\n\nlet answer = 42\nlet more = answer + 1\nlet inline doubled () = 42\n",
         );
-        write("Use.fs", "module Use\n\nlet a = Lib.answer + 1\n");
+        write(
+            "Use.fs",
+            "module Use\n\nlet a = Lib.answer + 1\nlet b = Lib.doubled () + 1\n",
+        );
         let options = crate::LoadOptions::default();
         let loaded = crate::load_lsp_project_with_options(&dir.path().join("P.fsproj"), &options)
             .expect("loads");
@@ -1779,43 +1783,60 @@ mod tests {
                 &comparison,
             )
         };
-        let grades = |report: &HandlerReport, file: usize| -> BTreeSet<TypeVerdict> {
+        let grades = |report: &HandlerReport, file: usize, name: &str| -> BTreeSet<TypeVerdict> {
             report
                 .probes
                 .iter()
                 .filter(|p| p.variant == Variant::Plain && p.file == sources[file].0)
-                .filter(|p| p.name == "answer" && p.handler == Handler::Hover)
+                .filter(|p| p.name == name && p.handler == Handler::Hover)
                 .filter_map(|p| p.hover_type.map(|g| g.verdict))
                 .collect()
         };
 
         let control = run(&fcs);
         assert_eq!(control.divergences, Vec::new());
-        assert_eq!(grades(&control, 0), BTreeSet::from([TypeVerdict::Agrees]));
         assert_eq!(
-            grades(&control, 1),
+            grades(&control, 0, "answer"),
+            BTreeSet::from([TypeVerdict::Agrees])
+        );
+        assert_eq!(
+            grades(&control, 1, "answer"),
+            BTreeSet::from([TypeVerdict::Agrees])
+        );
+        assert_eq!(
+            grades(&control, 1, "doubled"),
             BTreeSet::from([TypeVerdict::Withheld(
                 Withheld::EarlierFileTypedAtDefinition
             )])
         );
 
-        for (file, expected) in [
+        for (file, name, expected) in [
             (
                 0,
+                "answer",
                 "the hover shows \"answer\" as type \"int\"; FCS's is \"string\"",
             ),
-            (1, "at its declaration in an earlier file, the hover shows"),
+            (
+                1,
+                "answer",
+                "the hover shows \"answer\" as type \"int\"; FCS's is \"string\"",
+            ),
+            (
+                1,
+                "doubled",
+                "at its declaration in an earlier file, the hover shows",
+            ),
         ] {
             let mut planted = fcs.clone();
             let mut count = 0;
             for u in planted[file].uses.iter_mut() {
-                if u.name == "answer" && !u.is_from_definition {
+                if u.name == name && !u.is_from_definition {
                     let value = u.value.as_mut().expect("FCS types a value");
                     value.type_canon = Some("System.String".to_string());
                     count += 1;
                 }
             }
-            assert_eq!(count, 1, "one use of `answer` in file {file}");
+            assert_eq!(count, 1, "one use of `{name}` in file {file}");
             let report = run(&planted);
             let details: Vec<&str> = report
                 .divergences
@@ -1825,7 +1846,7 @@ mod tests {
                 .collect();
             assert!(
                 !details.is_empty() && details.iter().all(|d| d.contains(expected)),
-                "file {file}: {details:#?}"
+                "file {file}, `{name}`: {details:#?}"
             );
         }
     }

@@ -1599,8 +1599,8 @@ impl InferenceCensus {
         }
     }
 
-    /// The census as report lines, the ten reasons most often the only one
-    /// first.
+    /// The census as report lines, every reason, those most often the only
+    /// one first.
     pub fn render_text(&self, label: &str) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -1616,7 +1616,7 @@ impl InferenceCensus {
             .map(|(k, &present)| (k, self.only.get(k).copied().unwrap_or(0), present))
             .collect();
         rows.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(b.0)));
-        for (reason, only, present) in rows.into_iter().take(10) {
+        for (reason, only, present) in rows {
             writeln!(
                 out,
                 "project-corpus-diff inference census ({label}):   {reason}: only reason of {only}, present in {present}"
