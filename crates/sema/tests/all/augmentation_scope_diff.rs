@@ -606,3 +606,204 @@ fn member_scopes_agree_with_fcs() {
         "the grid is vacuous: {committed} of {graded} uses committed, {must_graded} must commit"
     );
 }
+
+/// How an augmentation's header spells its type's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spelling {
+    /// `T`.
+    Plain,
+    /// ``` ``T`` ```.
+    Backticked,
+    /// The compiled name ``` ``T`N`` ```, for N = 0, 1 and 2.
+    Mangled(usize),
+    /// A backticked name with a space, ``` ``T x`` ```.
+    Spaced,
+    /// `Prog.T`, or `O.T` for a target of another module.
+    Qualified,
+    /// ``` ``T`1`` ``` where the container also declares a type literally
+    /// named so.
+    MangledWithLiteral,
+}
+
+impl Spelling {
+    const ALL: [Spelling; 8] = [
+        Spelling::Plain,
+        Spelling::Backticked,
+        Spelling::Mangled(0),
+        Spelling::Mangled(1),
+        Spelling::Mangled(2),
+        Spelling::Spaced,
+        Spelling::Qualified,
+        Spelling::MangledWithLiteral,
+    ];
+}
+
+/// What the module holds under the header's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    /// `[<RequireQualifiedAccess>] type T<'a> = A | B of 'a`.
+    GenericLocal,
+    /// A class `type T()`.
+    NonGenericLocal,
+    /// `[<RequireQualifiedAccess>] type T = A | B of int`.
+    Union,
+    /// `type T = { F: int }`.
+    Record,
+    /// `module T`, and no type of the name.
+    ModuleOnly,
+    /// Nothing of the name.
+    Absent,
+    /// The union, in another module the file opens.
+    Opened,
+}
+
+impl Target {
+    const ALL: [Target; 7] = [
+        Target::GenericLocal,
+        Target::NonGenericLocal,
+        Target::Union,
+        Target::Record,
+        Target::ModuleOnly,
+        Target::Absent,
+        Target::Opened,
+    ];
+
+    /// The declaration, the header's type parameters, and the module a
+    /// qualified header names.
+    fn decl(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Target::GenericLocal => (
+                "[<RequireQualifiedAccess>]\ntype T<'a> =\n    | A\n    | B of 'a\n",
+                "<'a>",
+                "Prog",
+            ),
+            Target::NonGenericLocal => ("type T() =\n    member _.X = 1\n", "", "Prog"),
+            Target::Union => (
+                "[<RequireQualifiedAccess>]\ntype T =\n    | A\n    | B of int\n",
+                "",
+                "Prog",
+            ),
+            Target::Record => ("type T = { F: int }\n", "", "Prog"),
+            Target::ModuleOnly => ("module T =\n    let x = 1\n", "", "Prog"),
+            Target::Absent => ("", "", "Prog"),
+            Target::Opened => (
+                "module O =\n    [<RequireQualifiedAccess>]\n    type T =\n        | A\n        | B of int\nopen O\n",
+                "",
+                "O",
+            ),
+        }
+    }
+}
+
+/// Every header spelling against every kind of target, with the
+/// augmentation beside the declaration (where an intrinsic one sits) and in a
+/// nested module (where an extension sits). FCS's verdict on the member's
+/// `A`, and whether it checks the program cleanly, are pinned cell by cell in a
+/// manifest; ours must never commit where FCS binds otherwise.
+#[test]
+fn header_spellings_agree_with_fcs() {
+    use crate::common::corpus_manifest::{check_manifest, regenerate};
+    use borzoi_oracle_harness::manifest::Manifest;
+
+    let mut cells = Vec::new();
+    for target in Target::ALL {
+        for spelling in Spelling::ALL {
+            for nested in [false, true] {
+                let (decl, typars, qualifier) = target.decl();
+                let name = match spelling {
+                    Spelling::Plain => "T".to_string(),
+                    Spelling::Backticked => "``T``".to_string(),
+                    Spelling::Mangled(n) => format!("``T`{n}``"),
+                    Spelling::Spaced => "``T x``".to_string(),
+                    Spelling::Qualified => format!("{qualifier}.T"),
+                    Spelling::MangledWithLiteral => "``T`1``".to_string(),
+                };
+                let literal = if spelling == Spelling::MangledWithLiteral {
+                    "type ``T`1`` =\n    | C\n"
+                } else {
+                    ""
+                };
+                let indent = if nested { "    " } else { "" };
+                let host = if nested { "module N =\n" } else { "" };
+                let src = format!(
+                    "module Prog\n\nlet A = 10\n{decl}{literal}{host}{indent}type {name}{typars} with\n{indent}    member _.M = A\n"
+                );
+                let place = if nested { "nested" } else { "beside" };
+                cells.push((format!("{target:?} / {spelling:?} / {place}"), src));
+            }
+        }
+    }
+    let paths: Vec<PathBuf> = cells
+        .iter()
+        .map(|(_, src)| temp_fs_file("augmentation_header", src))
+        .collect();
+    let census = parse_census_jsonl(&invoke_fcs_dump_census(&paths));
+    for p in &paths {
+        let _ = std::fs::remove_file(p);
+    }
+    assert_eq!(census.len(), cells.len(), "one census line per program");
+
+    let mut failures = Vec::new();
+    let mut entries = Vec::new();
+    for ((label, src), file) in cells.iter().zip(&census) {
+        let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let rf = resolve_file(
+            &ImplFile::cast(parsed.root).unwrap(),
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
+        let at = src.rfind("= A").unwrap() + 2;
+        let value_at = src.find("let A").unwrap() + 4;
+        let describe = |start: usize| {
+            if start == value_at {
+                "value".to_string()
+            } else if src[start..].starts_with('A') {
+                "case".to_string()
+            } else {
+                format!("other@{start}")
+            }
+        };
+        let theirs = census_resolve_uses(file, src)
+            .into_iter()
+            .find(|u| u.start == at && !u.is_from_definition)
+            .map(|u| u.decl);
+        let fcs = match theirs {
+            Some(CensusDecl::InFile(s, _)) => describe(s),
+            Some(CensusDecl::OtherFile) => "other-file".to_string(),
+            Some(CensusDecl::Absent) | None => "-".to_string(),
+        };
+        let clean = if file.ok && !file.has_check_errors {
+            "clean"
+        } else {
+            "erroring"
+        };
+        let ours = rf
+            .resolution_at(span(at, at + 1))
+            .filter(|r| matches!(r, Resolution::Local(_) | Resolution::Item(_)))
+            .and_then(|r| rf.resolved_def(r))
+            .map(|d| usize::from(d.range.start()));
+        let verdict = match (ours, theirs) {
+            (None, _) => "decline".to_string(),
+            (Some(o), Some(CensusDecl::InFile(s, _))) if o == s => {
+                format!("commit {}", describe(o))
+            }
+            (Some(o), _) => {
+                failures.push(format!(
+                    "  {label} [WRONG]: ours {}, FCS {fcs} ({clean})\n{src}",
+                    describe(o)
+                ));
+                format!("WRONG {}", describe(o))
+            }
+        };
+        entries.push(format!("{label} | fcs {fcs} ({clean}) | ours {verdict}"));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let manifest = Manifest::from_entries(entries).expect("manifest entries");
+    check_manifest(
+        "augmentation_header_spellings",
+        &manifest,
+        &regenerate("augmentation_scope_diff::header_spellings_agree_with_fcs"),
+    );
+}

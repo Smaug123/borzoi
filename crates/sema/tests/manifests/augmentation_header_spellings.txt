@@ -1,0 +1,115 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all augmentation_scope_diff::header_spellings_agree_with_fcs
+Absent / Backticked / beside | fcs - (erroring) | ours decline
+Absent / Backticked / nested | fcs - (erroring) | ours decline
+Absent / Mangled(0) / beside | fcs - (erroring) | ours decline
+Absent / Mangled(0) / nested | fcs - (erroring) | ours decline
+Absent / Mangled(1) / beside | fcs - (erroring) | ours decline
+Absent / Mangled(1) / nested | fcs - (erroring) | ours decline
+Absent / Mangled(2) / beside | fcs - (erroring) | ours decline
+Absent / Mangled(2) / nested | fcs - (erroring) | ours decline
+Absent / MangledWithLiteral / beside | fcs value (erroring) | ours commit value
+Absent / MangledWithLiteral / nested | fcs value (erroring) | ours decline
+Absent / Plain / beside | fcs - (erroring) | ours decline
+Absent / Plain / nested | fcs - (erroring) | ours decline
+Absent / Qualified / beside | fcs - (erroring) | ours decline
+Absent / Qualified / nested | fcs - (erroring) | ours decline
+Absent / Spaced / beside | fcs - (erroring) | ours decline
+Absent / Spaced / nested | fcs - (erroring) | ours decline
+GenericLocal / Backticked / beside | fcs case (clean) | ours decline
+GenericLocal / Backticked / nested | fcs value (clean) | ours decline
+GenericLocal / Mangled(0) / beside | fcs - (erroring) | ours decline
+GenericLocal / Mangled(0) / nested | fcs - (erroring) | ours decline
+GenericLocal / Mangled(1) / beside | fcs case (clean) | ours decline
+GenericLocal / Mangled(1) / nested | fcs value (clean) | ours decline
+GenericLocal / Mangled(2) / beside | fcs - (erroring) | ours decline
+GenericLocal / Mangled(2) / nested | fcs - (erroring) | ours decline
+GenericLocal / MangledWithLiteral / beside | fcs case (erroring) | ours decline
+GenericLocal / MangledWithLiteral / nested | fcs value (erroring) | ours decline
+GenericLocal / Plain / beside | fcs case (clean) | ours decline
+GenericLocal / Plain / nested | fcs value (clean) | ours decline
+GenericLocal / Qualified / beside | fcs - (erroring) | ours decline
+GenericLocal / Qualified / nested | fcs - (erroring) | ours decline
+GenericLocal / Spaced / beside | fcs - (erroring) | ours decline
+GenericLocal / Spaced / nested | fcs - (erroring) | ours decline
+ModuleOnly / Backticked / beside | fcs - (erroring) | ours decline
+ModuleOnly / Backticked / nested | fcs - (erroring) | ours decline
+ModuleOnly / Mangled(0) / beside | fcs - (erroring) | ours decline
+ModuleOnly / Mangled(0) / nested | fcs - (erroring) | ours decline
+ModuleOnly / Mangled(1) / beside | fcs - (erroring) | ours decline
+ModuleOnly / Mangled(1) / nested | fcs - (erroring) | ours decline
+ModuleOnly / Mangled(2) / beside | fcs - (erroring) | ours decline
+ModuleOnly / Mangled(2) / nested | fcs - (erroring) | ours decline
+ModuleOnly / MangledWithLiteral / beside | fcs value (erroring) | ours commit value
+ModuleOnly / MangledWithLiteral / nested | fcs value (erroring) | ours decline
+ModuleOnly / Plain / beside | fcs - (erroring) | ours decline
+ModuleOnly / Plain / nested | fcs - (erroring) | ours decline
+ModuleOnly / Qualified / beside | fcs - (erroring) | ours decline
+ModuleOnly / Qualified / nested | fcs - (erroring) | ours decline
+ModuleOnly / Spaced / beside | fcs - (erroring) | ours decline
+ModuleOnly / Spaced / nested | fcs - (erroring) | ours decline
+NonGenericLocal / Backticked / beside | fcs value (clean) | ours commit value
+NonGenericLocal / Backticked / nested | fcs value (clean) | ours decline
+NonGenericLocal / Mangled(0) / beside | fcs value (clean) | ours decline
+NonGenericLocal / Mangled(0) / nested | fcs value (clean) | ours decline
+NonGenericLocal / Mangled(1) / beside | fcs - (erroring) | ours decline
+NonGenericLocal / Mangled(1) / nested | fcs - (erroring) | ours decline
+NonGenericLocal / Mangled(2) / beside | fcs - (erroring) | ours decline
+NonGenericLocal / Mangled(2) / nested | fcs - (erroring) | ours decline
+NonGenericLocal / MangledWithLiteral / beside | fcs value (erroring) | ours commit value
+NonGenericLocal / MangledWithLiteral / nested | fcs value (erroring) | ours decline
+NonGenericLocal / Plain / beside | fcs value (clean) | ours commit value
+NonGenericLocal / Plain / nested | fcs value (clean) | ours decline
+NonGenericLocal / Qualified / beside | fcs - (erroring) | ours decline
+NonGenericLocal / Qualified / nested | fcs - (erroring) | ours decline
+NonGenericLocal / Spaced / beside | fcs - (erroring) | ours decline
+NonGenericLocal / Spaced / nested | fcs - (erroring) | ours decline
+Opened / Backticked / beside | fcs value (clean) | ours decline
+Opened / Backticked / nested | fcs value (clean) | ours decline
+Opened / Mangled(0) / beside | fcs value (clean) | ours decline
+Opened / Mangled(0) / nested | fcs value (clean) | ours decline
+Opened / Mangled(1) / beside | fcs - (erroring) | ours decline
+Opened / Mangled(1) / nested | fcs - (erroring) | ours decline
+Opened / Mangled(2) / beside | fcs - (erroring) | ours decline
+Opened / Mangled(2) / nested | fcs - (erroring) | ours decline
+Opened / MangledWithLiteral / beside | fcs value (erroring) | ours commit value
+Opened / MangledWithLiteral / nested | fcs value (erroring) | ours decline
+Opened / Plain / beside | fcs value (clean) | ours decline
+Opened / Plain / nested | fcs value (clean) | ours decline
+Opened / Qualified / beside | fcs value (clean) | ours decline
+Opened / Qualified / nested | fcs value (clean) | ours decline
+Opened / Spaced / beside | fcs - (erroring) | ours decline
+Opened / Spaced / nested | fcs - (erroring) | ours decline
+Record / Backticked / beside | fcs value (clean) | ours commit value
+Record / Backticked / nested | fcs value (clean) | ours decline
+Record / Mangled(0) / beside | fcs value (clean) | ours decline
+Record / Mangled(0) / nested | fcs value (clean) | ours decline
+Record / Mangled(1) / beside | fcs - (erroring) | ours decline
+Record / Mangled(1) / nested | fcs - (erroring) | ours decline
+Record / Mangled(2) / beside | fcs - (erroring) | ours decline
+Record / Mangled(2) / nested | fcs - (erroring) | ours decline
+Record / MangledWithLiteral / beside | fcs value (erroring) | ours commit value
+Record / MangledWithLiteral / nested | fcs value (erroring) | ours decline
+Record / Plain / beside | fcs value (clean) | ours commit value
+Record / Plain / nested | fcs value (clean) | ours decline
+Record / Qualified / beside | fcs - (erroring) | ours decline
+Record / Qualified / nested | fcs - (erroring) | ours decline
+Record / Spaced / beside | fcs - (erroring) | ours decline
+Record / Spaced / nested | fcs - (erroring) | ours decline
+Union / Backticked / beside | fcs case (clean) | ours commit case
+Union / Backticked / nested | fcs value (clean) | ours decline
+Union / Mangled(0) / beside | fcs case (clean) | ours decline
+Union / Mangled(0) / nested | fcs value (clean) | ours decline
+Union / Mangled(1) / beside | fcs - (erroring) | ours decline
+Union / Mangled(1) / nested | fcs - (erroring) | ours decline
+Union / Mangled(2) / beside | fcs - (erroring) | ours decline
+Union / Mangled(2) / nested | fcs - (erroring) | ours decline
+Union / MangledWithLiteral / beside | fcs value (erroring) | ours commit value
+Union / MangledWithLiteral / nested | fcs value (erroring) | ours decline
+Union / Plain / beside | fcs case (clean) | ours commit case
+Union / Plain / nested | fcs value (clean) | ours decline
+Union / Qualified / beside | fcs - (erroring) | ours decline
+Union / Qualified / nested | fcs - (erroring) | ours decline
+Union / Spaced / beside | fcs - (erroring) | ours decline
+Union / Spaced / nested | fcs - (erroring) | ours decline
