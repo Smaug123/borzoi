@@ -451,9 +451,15 @@ fn project_resolution_matches_fcs() {
                 // FCS resolved this use to an in-project declaration.
                 match res {
                     None | Some(Resolution::Deferred(_)) => tally.gaps += 1,
-                    Some(r @ (Resolution::Local(_) | Resolution::Item(_))) => {
+                    Some(
+                        r @ (Resolution::Local(_)
+                        | Resolution::Item(_)
+                        | Resolution::EarlierFileType { .. }),
+                    ) => {
                         let (def_idx, def) = match r {
-                            Resolution::Item(_) => proj.item_def(r).expect("item def for Item"),
+                            Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
+                                proj.item_def(r).expect("item def for Item")
+                            }
                             Resolution::Local(_) => (i, rf.resolved_def(r).expect("local def")),
                             _ => unreachable!(),
                         };

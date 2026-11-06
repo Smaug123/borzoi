@@ -1241,9 +1241,14 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
                                 let decl = u.decl.as_ref().expect("checked");
                                 match ours {
                                     None | Some(Resolution::Deferred(_)) => deferrals += 1,
-                                    Some(res @ (Resolution::Item(_) | Resolution::Local(_))) => {
+                                    Some(
+                                        res @ (Resolution::Item(_)
+                                        | Resolution::Local(_)
+                                        | Resolution::EarlierFileType { .. }),
+                                    ) => {
                                         let (def_idx, def_range) = match res {
-                                            Resolution::Item(_) => {
+                                            Resolution::Item(_)
+                                            | Resolution::EarlierFileType { .. } => {
                                                 let (idx, def) =
                                                     proj.item_def(res).expect("item def");
                                                 (idx, def.range)

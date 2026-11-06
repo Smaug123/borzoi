@@ -201,6 +201,24 @@ let g = Shapes.Circle 2.0
 let h : Shapes.Shape = g
 ";
 
+/// A type in a namespace, and a later file of that namespace naming it bare:
+/// the use resolves to the earlier file's type through the enclosing
+/// namespace (`Resolution::EarlierFileType`).
+const GEO_FS: &str = "namespace Geo
+
+/// A point in the plane.
+type Point = { X : float; Y : float }
+";
+
+const GEO_USE_FS: &str = "namespace Geo
+
+module Uses =
+    let origin : Point = { X = 0.0; Y = 0.0 }
+";
+
+/// The files a use in which always names a declaration in another file.
+const CONSUMERS: &[&str] = &["Use.fs", "GeoUse.fs"];
+
 /// One obligation: in file `file`, the occurrence ending at the end of the
 /// `nth` match of the identifier `needle` (a qualified use `M.x` is graded over
 /// its whole dotted span) must be graded, and agree on exactly `doc`.
@@ -254,6 +272,13 @@ const OBLIGATIONS: &[Obligation] = &[
         nth: 0,
         doc: &[" Round, from the signature."],
     },
+    // An earlier file's type, named bare through the enclosing namespace.
+    Obligation {
+        file: "GeoUse.fs",
+        needle: "Point",
+        nth: 0,
+        doc: &[" A point in the plane."],
+    },
     // Inside the implementation, its own doc.
     Obligation {
         file: "Shapes.fs",
@@ -272,6 +297,8 @@ fn fixture_project_docs_agree_with_fcs() {
         ("Shapes.fs", SHAPES_FS),
         ("Maths.fs", MATHS_FS),
         ("Use.fs", USE_FS),
+        ("Geo.fs", GEO_FS),
+        ("GeoUse.fs", GEO_USE_FS),
     ];
     let (mut state, uris) = runtime_project_state_files(&files);
     let project = uris[0]
@@ -315,8 +342,8 @@ fn fixture_project_docs_agree_with_fcs() {
             .iter()
             .find(|g| g.file == file && usize::from(g.range.end()) == end && !g.is_definition);
         let expected: Vec<String> = o.doc.iter().map(|l| l.to_string()).collect();
-        // Every use in `Use.fs` is of a declaration in another file.
-        let may_be_same_file = o.file != "Use.fs";
+        // Every use in a consumer is of a declaration in another file.
+        let may_be_same_file = !CONSUMERS.contains(&o.file);
         let met = site.is_some_and(|g| {
             (may_be_same_file || g.declared_in.is_some_and(|d| d != file))
                 && g.verdict == (Verdict::Agree { attached: true })

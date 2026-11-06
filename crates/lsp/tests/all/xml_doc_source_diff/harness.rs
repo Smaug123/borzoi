@@ -208,8 +208,14 @@ impl OurProject {
     fn def_of(&self, from: usize, res: Resolution) -> Option<(usize, &Def)> {
         match res {
             Resolution::Local(id) => Some((from, self.resolved.file(from).def(id))),
-            Resolution::Item(_) => self.resolved.item_def(res),
-            _ => None,
+            Resolution::Item(_) | Resolution::EarlierFileType { .. } => self.resolved.item_def(res),
+            // No source binder; exhaustive, so a new kind of project binder
+            // cannot slip past the grader unread.
+            Resolution::Entity(_)
+            | Resolution::Member { .. }
+            | Resolution::UnionCase { .. }
+            | Resolution::Deferred(_)
+            | Resolution::Unresolved => None,
         }
     }
 }

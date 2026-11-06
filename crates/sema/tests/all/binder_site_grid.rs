@@ -1168,15 +1168,20 @@ fn binders_declined_in_one_file_stay_declined_in_the_next() {
                         u32::try_from(u.start).unwrap().into(),
                         u32::try_from(u.end).unwrap().into(),
                     );
-                    let Some(res @ (Resolution::Local(_) | Resolution::Item(_))) =
-                        proj.file(i).resolution_at(range)
+                    let Some(
+                        res @ (Resolution::Local(_)
+                        | Resolution::Item(_)
+                        | Resolution::EarlierFileType { .. }),
+                    ) = proj.file(i).resolution_at(range)
                     else {
                         continue;
                     };
                     let ours = match res {
-                        Resolution::Item(_) => proj.item_def(res).map(|(f, d)| {
-                            (written[f].0.file_name().map(ToOwned::to_owned), d.range)
-                        }),
+                        Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
+                            proj.item_def(res).map(|(f, d)| {
+                                (written[f].0.file_name().map(ToOwned::to_owned), d.range)
+                            })
+                        }
                         _ => proj
                             .file(i)
                             .resolved_def(res)
