@@ -1176,7 +1176,15 @@ impl Gen<'_> {
             }
             // A match over an option, its payload bound in the `Some` arm.
             8 => {
-                let scrutinee = self.expr(T::Opt, depth - 1);
+                // A bare option variable half the time: the header's `hn` is
+                // an earlier binding whose type stays open, which a pattern
+                // over it must not retype.
+                let opts = self.vars_of(&Kind::Mono(T::Opt));
+                let scrutinee = if !opts.is_empty() && self.rng.chance(50) {
+                    opts[self.rng.below(opts.len())].clone()
+                } else {
+                    self.expr(T::Opt, depth - 1)
+                };
                 let w = self.fresh("w");
                 self.env.push(Var {
                     name: w.clone(),
@@ -1185,6 +1193,14 @@ impl Gen<'_> {
                 let some = self.expr(t, depth - 1);
                 self.env.pop();
                 let none = self.expr(t, depth - 1);
+                // A constant payload pattern grounds the scrutinee's payload
+                // type where a fresh name leaves it open; the `Some` arm then
+                // needs a catch-all after it.
+                if self.rng.chance(30) {
+                    let k = self.literal(T::Int);
+                    let some = some.replace(&w, &k);
+                    return format!("(match {scrutinee} with Some {k} -> {some} | _ -> {none})");
+                }
                 if self.rng.chance(50) {
                     format!("(match {scrutinee} with Some {w} -> {some} | None -> {none})")
                 } else {
@@ -1464,7 +1480,7 @@ impl Gen<'_> {
 /// pattern binding `hp` and `hq`.
 const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet mo (o: obj) = 3\n\
                       let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n\
-                      let ho = Some 5\n";
+                      let ho = Some 5\nlet hn = None\n";
 
 /// The names every generated function body may use besides its parameters.
 fn header_vars() -> Vec<Var> {
@@ -1479,6 +1495,12 @@ fn header_vars() -> Vec<Var> {
         },
         Var {
             name: "ho".into(),
+            kind: Kind::Mono(T::Opt),
+        },
+        // An earlier binding whose type stays open (`'a option`): every use
+        // at `int option` is one FCS instantiates and must not retype it.
+        Var {
+            name: "hn".into(),
             kind: Kind::Mono(T::Opt),
         },
     ]

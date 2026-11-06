@@ -14,7 +14,8 @@ use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{ProjectItems, SyntaxRecovery, infer_file, resolve_file};
 
-const HEADER: &str = "module M\n";
+/// `ga` is an earlier binding whose type stays open (`'a option`).
+const HEADER: &str = "module M\nlet ga = None\n";
 
 /// `(id, parameters, scrutinee, clauses, modelled)`. `modelled` says every
 /// pattern, guard and result is in the modelled subset, and the match has
@@ -200,6 +201,16 @@ const MATCHES: &[(&str, &str, &str, &str, bool)] = &[
         "(o: int option) g",
         "o",
         "| Some v when g v -> v | _ -> 0",
+        false,
+    ),
+    // A pattern of structure over an earlier binding's open variable would
+    // retype that binding; a name bound twice is FS0038.
+    ("earlierOpen", "()", "ga", "| Some 1 -> 2 | _ -> 3", false),
+    (
+        "dupBinder",
+        "(t: int * string)",
+        "t",
+        "| (x, x) -> x | _ -> \"\"",
         false,
     ),
     (
@@ -450,4 +461,20 @@ fn every_match_in_every_context_agrees_with_fcs() {
         tally.committed_erroring >= 5,
         "the ill-typed rows commit nothing: {tally:?}"
     );
+}
+
+/// A pattern of structure over a scrutinee typed through a local FCS
+/// generalises (`let g1 = idf in match g1 ho with Some 1 -> …`) must not
+/// ground the local: FCS keeps `idf : 'a -> 'a` at its right-hand side.
+#[test]
+fn a_pattern_does_not_ground_a_generalisable_local_through_the_scrutinee() {
+    for body in [
+        "(let g1 = idf in (match (if b then (g1 ho) else None) with Some 1 -> 1 | _ -> 2))",
+        "(let g1 = idf in (match g1 ho with Some 1 -> 1 | _ -> 2))",
+        "(let g1 = idf in (match g1 ho with Some v -> v | None -> 2))",
+        "(let g1 = idf in (match (if g1 b then ho else None) with Some 1 -> 1 | _ -> 2))",
+    ] {
+        let src = format!("module M\nlet idf x = x\nlet ho = Some 5\nlet t (b: bool) = {body}\n");
+        check(&src, &[], &mut Tally::default());
+    }
 }

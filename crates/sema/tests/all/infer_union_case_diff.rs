@@ -289,8 +289,9 @@ fn every_case_in_every_context_agrees_with_fcs() {
 /// maker reads exactly — a sealed, an unsealed and a generic field, several
 /// fields (applied to a syntactic tuple, to a tuple-typed value, and
 /// unapplied) — and one per guard of `union_case_scheme`: a measure direct
-/// and behind an abbreviation, an error-level obsolete case, a constrained
-/// type parameter. Each guard's rows are what a deletion of it breaks.
+/// and behind an abbreviation, an error-level obsolete case, a union that is
+/// itself error-obsolete or error-`CompilerMessage`d, a constrained type
+/// parameter. Each guard's rows are what a deletion of it breaks.
 const FIXTURE_CASES: &[(&str, &str, bool)] = &[
     ("ustr", "UStr \"s\"", true),
     ("ustrFn", "UStr", true),
@@ -309,6 +310,9 @@ const FIXTURE_CASES: &[(&str, &str, bool)] = &[
     ("udist", "UDist", false),
     ("uold", "UOld 1", false),
     ("uoldFn", "UOld", false),
+    ("ubad", "UBad 1", false),
+    ("ubadFn", "UBad", false),
+    ("umsg", "UMsg 1", false),
     ("ucon", "UCon", false),
     ("uconLit", "UCon 1", false),
 ];

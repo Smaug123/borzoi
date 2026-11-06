@@ -1101,6 +1101,10 @@ type UOld =
     | [<System.Obsolete(\"gone\", true)>] UOld of int
     | UNew of int
 type UCon<'T when 'T : comparison> = UCon of 'T
+[<System.Obsolete(\"no\", true)>]
+type UBad = UBad of int
+[<CompilerMessage(\"no\", 9999, IsError = true)>]
+type UMsg = UMsg of int
 
 type CBox<'T when 'T : comparison> = { C: 'T }
 

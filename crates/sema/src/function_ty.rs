@@ -468,7 +468,8 @@ impl UnionCaseScheme {
 ///   no unit of measure — directly, or behind a named type
 ///   ([`AssemblyEnv::head_hides_no_measure`]);
 /// - the case carries no attribute: F# checks a case's attributes at each use
-///   (an `[<Obsolete>]` one can reject it), and only the pickle has them;
+///   (an `[<Obsolete>]` one can reject it), and only the pickle has them; nor
+///   does the union or a module enclosing it carry a rejecting one;
 /// - the maker's return reads back as the union applied to its parameters in
 ///   order — which the bridge declines for a union constraining any of them
 ///   ([`Bridge::generic_path`]), since nothing here checks a use's arguments
@@ -494,6 +495,16 @@ pub(crate) fn union_case_scheme(
         return Err(FunctionTyGap::Unread);
     };
     if *attributed {
+        return Err(FunctionTyGap::Rejected);
+    }
+    // F# checks each entity on the way to the case too — the union and every
+    // module enclosing it — so an error-level `[<Obsolete>]` or
+    // `[<CompilerMessage>]` on any of them rejects the use, as for a module
+    // function ([`use_checks`]).
+    let chain = env
+        .enclosing_chain_from_root(union)
+        .ok_or(FunctionTyGap::Unread)?;
+    if chain.iter().any(|&h| rejected_by_attributes(env.entity(h))) {
         return Err(FunctionTyGap::Rejected);
     }
     match measures {

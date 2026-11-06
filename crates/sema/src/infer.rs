@@ -3090,6 +3090,12 @@ impl<'a> Gen<'a> {
                         self.mark_incomplete(Incomplete::Recovery);
                         return None;
                     };
+                    // A name bound twice is FS0038 (FCS keeps the second),
+                    // as for a `let` pattern.
+                    if binds_a_name_twice(std::slice::from_ref(&pat)) {
+                        self.mark_incomplete(Incomplete::DuplicateBinder);
+                        return None;
+                    }
                     let shape = match self.pattern_shape(&pat) {
                         Ok(shape) => shape,
                         Err(why) => {
@@ -3099,6 +3105,24 @@ impl<'a> Gen<'a> {
                     };
                     shape.names(&mut self.match_locals);
                     let pt = self.gen_pattern(&shape, BinderSite::Local);
+                    // As for a `let` pattern ([`Self::pattern_rhs`]): a
+                    // pattern of structure must not give an earlier binding's
+                    // open variable a shape of this binding's variables
+                    // (`let a = None` then `match a with Some 1 -> …` would
+                    // retype `a`, which FCS keeps `'a option`).
+                    // Nor one whose resolution FCS decides by something
+                    // inference does not see — a local FCS may generalise
+                    // (`let g = idf in match g ho with Some 1 -> …` keeps
+                    // `idf : 'a -> 'a`) — the variables an argument check
+                    // refuses to bind too ([`Self::touches_opaque`]).
+                    self.settle();
+                    if !matches!(pt, Ty::Var(_))
+                        && (self.mentions_inherited_open(sv)
+                            || self.touches_opaque(sv, sv, node_span(m.syntax())))
+                    {
+                        self.mark_incomplete(Incomplete::InheritedOpen);
+                        return None;
+                    }
                     self.eq(Ty::Var(sv), pt);
                     if clause.guard().is_some() {
                         self.constrain_bool(clause.guard());
