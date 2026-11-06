@@ -35,7 +35,7 @@ use std::sync::Arc;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, resolve_project, resolve_project_incremental,
+    AssemblyEnv, Resolution, resolve_project, resolve_project_incremental,
     resolve_project_incremental_with_reuse,
 };
 use proptest::prelude::*;
@@ -71,6 +71,10 @@ enum Body {
     /// dangling reference, so the equality still holds — and the incremental fold
     /// must recompute the referrer, which is the point.
     Ref { file: u32, name: String },
+    /// `(let z = {n} in z)` — a body that binds a local, so editing between it
+    /// and a literal renumbers every def after it in the file, the types
+    /// declared later included, while leaving the exports as they were.
+    LetIn(u32),
 }
 
 #[derive(Clone, PartialEq)]
@@ -84,8 +88,24 @@ enum Decl {
         attr: bool,
         body: Body,
     },
-    /// `let {name} px = {body}` — a curried function export.
-    Func { name: String, body: Body },
+    /// `let {name} px = {body}` — a curried function export; `param` annotates
+    /// `px` with an earlier file's record `R{param}`, a type-position use of an
+    /// earlier file's type.
+    Func {
+        name: String,
+        param: Option<u32>,
+        body: Body,
+    },
+    /// `type R{id} = { F{id} : int }` — a record type, declared at namespace
+    /// level after the module in a namespace file, so the defs of every body
+    /// before it number ahead of it. Edits make it generic or `private`, which
+    /// leaves its exported path as it was and changes what a later file's use
+    /// of it resolves to.
+    Record {
+        id: u32,
+        generic: bool,
+        private: bool,
+    },
     /// `type U{id} = A{id} | B{id}` — a union type plus its two constructor
     /// cases, exercising the type / qualified-case export channels.
     Union { id: u32 },
@@ -97,6 +117,10 @@ struct File {
     /// Whether the file declares a nested `[<AutoOpen>] module Aut{uid}` —
     /// contributes both an exportable auto-open path and the extension signal.
     auto_open: bool,
+    /// Whether the file is `namespace Lib` holding `module M{uid}`, rather than
+    /// a top-level `module M{uid}`: a later namespace file sees its records
+    /// bare, through the enclosing namespace.
+    namespace: bool,
     decls: Vec<Decl>,
 }
 
@@ -108,36 +132,81 @@ impl File {
             .iter()
             .filter_map(|d| match d {
                 Decl::Val { name, .. } | Decl::Func { name, .. } => Some(name.clone()),
-                Decl::Union { .. } => None,
+                Decl::Union { .. } | Decl::Record { .. } => None,
             })
             .collect()
     }
 
     fn render(&self) -> String {
-        let mut out = format!("module M{}\n", self.uid);
+        let (mut out, pad) = if self.namespace {
+            (
+                format!(
+                    "namespace Lib\nmodule M{} =\n    let anchor = 0\n",
+                    self.uid
+                ),
+                "    ",
+            )
+        } else {
+            (format!("module M{}\n", self.uid), "")
+        };
+        let mut records = String::new();
         for decl in &self.decls {
             match decl {
                 Decl::Val { name, attr, body } => {
                     if *attr {
-                        out.push_str("[<System.Obsolete>]\n");
+                        out.push_str(&format!("{pad}[<System.Obsolete>]\n"));
                     }
-                    out.push_str(&format!("let {name} = {}\n", render_body(body)));
+                    out.push_str(&format!("{pad}let {name} = {}\n", render_body(body)));
                 }
-                Decl::Func { name, body } => {
-                    out.push_str(&format!("let {name} px = {}\n", render_body(body)));
+                Decl::Func { name, param, body } => {
+                    let px = match param {
+                        Some(id) => format!("(px : R{id})"),
+                        None => "px".to_string(),
+                    };
+                    out.push_str(&format!("{pad}let {name} {px} = {}\n", render_body(body)));
                 }
                 Decl::Union { id } => {
-                    out.push_str(&format!("type U{id} = A{id} | B{id}\n"));
+                    out.push_str(&format!("{pad}type U{id} = A{id} | B{id}\n"));
+                }
+                Decl::Record {
+                    id,
+                    generic,
+                    private,
+                } => {
+                    let access = if *private { "private " } else { "" };
+                    let record = if *generic {
+                        format!("type {access}R{id}<'a> = {{ F{id} : 'a }}\n")
+                    } else {
+                        format!("type {access}R{id} = {{ F{id} : int }}\n")
+                    };
+                    if self.namespace {
+                        records.push_str(&record);
+                    } else {
+                        out.push_str(&record);
+                    }
                 }
             }
         }
         if self.auto_open {
             out.push_str(&format!(
-                "[<AutoOpen>]\nmodule Aut{} =\n    let auto = 1\n",
+                "{pad}[<AutoOpen>]\n{pad}module Aut{} =\n{pad}    let auto = 1\n",
                 self.uid
             ));
         }
+        out.push_str(&records);
         out
+    }
+
+    /// The records this file declares, the pool a later file's annotation may
+    /// name.
+    fn record_ids(&self) -> Vec<u32> {
+        self.decls
+            .iter()
+            .filter_map(|d| match d {
+                Decl::Record { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -145,6 +214,7 @@ fn render_body(body: &Body) -> String {
     match body {
         Body::Lit(n) => n.to_string(),
         Body::Ref { file, name } => format!("M{file}.{name}"),
+        Body::LetIn(n) => format!("(let z = {n} in z)"),
     }
 }
 
@@ -236,6 +306,7 @@ fn generate(nums: Vec<u32>) -> Scenario {
 
 fn initial_file(t: &mut Tape, names: &mut Names, uid: u32, earlier: &[File]) -> File {
     let auto_open = t.flip();
+    let namespace = t.flip();
     let n_decls = t.between(0, 3);
     let mut decls = Vec::with_capacity(n_decls);
     for _ in 0..n_decls {
@@ -244,12 +315,13 @@ fn initial_file(t: &mut Tape, names: &mut Names, uid: u32, earlier: &[File]) -> 
     File {
         uid,
         auto_open,
+        namespace,
         decls,
     }
 }
 
 fn gen_decl(t: &mut Tape, names: &mut Names, earlier: &[File]) -> Decl {
-    match t.choice(3) {
+    match t.choice(4) {
         0 => Decl::Val {
             name: names.value(),
             attr: t.flip(),
@@ -257,10 +329,23 @@ fn gen_decl(t: &mut Tape, names: &mut Names, earlier: &[File]) -> Decl {
         },
         1 => Decl::Func {
             name: names.func(),
+            param: gen_param(t, earlier),
             body: gen_body(t, earlier),
+        },
+        2 => Decl::Record {
+            id: names.union(),
+            generic: false,
+            private: false,
         },
         _ => Decl::Union { id: names.union() },
     }
+}
+
+/// A function parameter's annotation: an earlier file's record, when there is
+/// one and the tape says so.
+fn gen_param(t: &mut Tape, earlier: &[File]) -> Option<u32> {
+    let records: Vec<u32> = earlier.iter().flat_map(File::record_ids).collect();
+    (!records.is_empty() && t.flip()).then(|| records[t.choice(records.len())])
 }
 
 /// A body: a literal, or — when an earlier file exports a value — a cross-file
@@ -281,7 +366,7 @@ fn gen_body(t: &mut Tape, earlier: &[File]) -> Body {
 
 fn apply_edit(t: &mut Tape, names: &mut Names, files: &mut [File]) {
     let fi = t.choice(files.len());
-    match t.choice(6) {
+    match t.choice(11) {
         // Perturb a Lit body (or turn a dangling Ref back into a Lit): exports
         // unchanged, resolutions change — the suffix must stay reusable.
         0 => {
@@ -290,9 +375,14 @@ fn apply_edit(t: &mut Tape, names: &mut Names, files: &mut [File]) {
                 let di = t.choice(f.decls.len());
                 match &mut f.decls[di] {
                     Decl::Val { body, .. } | Decl::Func { body, .. } => {
-                        *body = Body::Lit(t.choice(9) as u32);
+                        let n = t.choice(9) as u32;
+                        *body = if t.flip() {
+                            Body::Lit(n)
+                        } else {
+                            Body::LetIn(n)
+                        };
                     }
-                    Decl::Union { .. } => {}
+                    Decl::Union { .. } | Decl::Record { .. } => {}
                 }
             }
         }
@@ -334,6 +424,67 @@ fn apply_edit(t: &mut Tape, names: &mut Names, files: &mut [File]) {
         // Toggle the nested auto-open module: changes both the exportable
         // auto-open paths and the extension signal.
         4 => files[fi].auto_open = !files[fi].auto_open,
+        // Add a record type: a new type later namespace files may name.
+        6 => files[fi].decls.push(Decl::Record {
+            id: names.union(),
+            generic: false,
+            private: false,
+        }),
+        // Annotate a function's parameter with an earlier file's record, or
+        // drop the annotation.
+        7 => {
+            let (earlier, rest) = files.split_at_mut(fi);
+            let f = &mut rest[0];
+            let funcs: Vec<usize> = f
+                .decls
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| matches!(d, Decl::Func { .. }))
+                .map(|(i, _)| i)
+                .collect();
+            if !funcs.is_empty() {
+                let di = funcs[t.choice(funcs.len())];
+                let new_param = gen_param(t, earlier);
+                if let Decl::Func { param, .. } = &mut f.decls[di] {
+                    *param = new_param;
+                }
+            }
+        }
+        // Make a record generic or `private`, or undo it: its exported path is
+        // unchanged, what a later use of it names is not.
+        8 | 9 => {
+            let toggle_generic = t.flip();
+            let f = &mut files[fi];
+            let records: Vec<usize> = f
+                .decls
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| matches!(d, Decl::Record { .. }))
+                .map(|(i, _)| i)
+                .collect();
+            if !records.is_empty() {
+                let di = records[t.choice(records.len())];
+                if let Decl::Record {
+                    generic, private, ..
+                } = &mut f.decls[di]
+                {
+                    if toggle_generic {
+                        *generic = !*generic;
+                    } else {
+                        *private = !*private;
+                    }
+                }
+            }
+        }
+        // Swap two adjacent declarations: the same declarations, in another
+        // order.
+        10 => {
+            let f = &mut files[fi];
+            if f.decls.len() >= 2 {
+                let di = t.choice(f.decls.len() - 1);
+                f.decls.swap(di, di + 1);
+            }
+        }
         // Add a union type: new type + case exports.
         _ => files[fi].decls.push(Decl::Union { id: names.union() }),
     }
@@ -359,6 +510,10 @@ struct Tally {
     steps_with_suffix_reuse: usize,
     /// Total files reused across all steps.
     files_reused: usize,
+    /// Files reused after a recomputed one that name an earlier file's type
+    /// (`Resolution::EarlierFileType`): the identity a stale reuse would
+    /// leave pointing at the wrong type.
+    suffix_reused_earlier_types: usize,
 }
 
 impl Tally {
@@ -367,6 +522,7 @@ impl Tally {
         self.steps_with_reuse += other.steps_with_reuse;
         self.steps_with_suffix_reuse += other.steps_with_suffix_reuse;
         self.files_reused += other.files_reused;
+        self.suffix_reused_earlier_types += other.suffix_reused_earlier_types;
     }
 }
 
@@ -429,6 +585,17 @@ fn check(scenario: &Scenario) -> Result<Tally, TestCaseError> {
         let first_recompute = reused.iter().position(|&r| !r);
         if first_recompute.is_some_and(|fr| reused[fr..].iter().any(|&r| r)) {
             tally.steps_with_suffix_reuse += 1;
+        }
+        if let Some(fr) = first_recompute {
+            tally.suffix_reused_earlier_types += (fr..reused.len())
+                .filter(|&i| reused[i])
+                .filter(|&i| {
+                    incr.file(i)
+                        .resolutions()
+                        .values()
+                        .any(|r| matches!(r, Resolution::EarlierFileType { .. }))
+                })
+                .count();
         }
 
         prev_sources = sources.clone();
@@ -579,7 +746,7 @@ fn seeded_tape(seed: u64) -> Vec<u32> {
 #[test]
 fn generator_exercises_suffix_reuse() {
     let mut total = Tally::default();
-    for seed in 0..600u64 {
+    for seed in 0..3000u64 {
         let scenario = generate(seeded_tape(seed));
         let t = check(&scenario).expect("incremental == batch over the seeded scenarios");
         total.add(t);
@@ -595,6 +762,10 @@ fn generator_exercises_suffix_reuse() {
         "suffix reuse (a reused file after a recomputed one) never occurred across {} \
          steps — the export-neutral-edit optimization is untested by the generator: {total:?}",
         total.steps
+    );
+    assert!(
+        total.suffix_reused_earlier_types > 0,
+        "no file naming an earlier file's type was reused after a recomputed one: {total:?}"
     );
 }
 
@@ -790,5 +961,74 @@ fn a_different_recovery_reading_of_one_tree_is_not_reused() {
         incr,
         resolve_project_files(&new_files, &env),
         "incremental ≡ batch"
+    );
+}
+
+/// A signature slot contributes its type names to later files, so the
+/// incremental fold must build it exactly as the cold fold does: extending a
+/// cached prefix across a `.fsi` that declares another `T` must decline the
+/// later file's bare `T`, as the cold fold does, rather than bind the
+/// earlier `Lib.T`.
+#[test]
+fn a_signature_slot_contributes_its_types_in_the_incremental_fold() {
+    use borzoi_cst::parser::parse_sig;
+    use borzoi_cst::syntax::SigFile;
+    use borzoi_sema::{
+        ProjectFile, SourceFile, SyntaxRecovery, qualified_names, resolve_project_files,
+        resolve_project_files_prefix, resolve_project_files_prefix_incremental,
+    };
+    let sources = [
+        ("P.fs", "namespace Lib\ntype T = { X : int }\n"),
+        ("A.fsi", "namespace Other\ntype T = { Y : int }\n"),
+        ("B.fs", "namespace Lib\nmodule B =\n    let f (x : T) = x\n"),
+        ("A.fs", "namespace Other\ntype T = { Y : int }\n"),
+    ];
+    let parsed: Vec<(SourceFile, SyntaxRecovery)> = sources
+        .iter()
+        .map(|(name, src)| {
+            if name.ends_with(".fsi") {
+                let p = parse_sig(src);
+                let recovery = SyntaxRecovery::of(&p);
+                (
+                    SourceFile::Sig(SigFile::cast(p.root).expect("sig")),
+                    recovery,
+                )
+            } else {
+                let p = parse(src);
+                let recovery = SyntaxRecovery::of(&p);
+                (
+                    SourceFile::Impl(ImplFile::cast(p.root).expect("impl")),
+                    recovery,
+                )
+            }
+        })
+        .collect();
+    let paths: Vec<std::path::PathBuf> = sources.iter().map(|(n, _)| n.into()).collect();
+    let srcs: Vec<SourceFile> = parsed.iter().map(|(f, _)| f.clone()).collect();
+    let files: Vec<ProjectFile> = parsed
+        .into_iter()
+        .zip(qualified_names(&srcs, &paths))
+        .map(|((file, recovery), qnof)| ProjectFile::new(file, qnof, recovery))
+        .collect();
+    let env = AssemblyEnv::default();
+    let cold = resolve_project_files(&files, &env);
+    let prefix = resolve_project_files_prefix(&files, 1, &env);
+    let (extended, _) =
+        resolve_project_files_prefix_incremental(&files, &prefix, &files, files.len(), &env);
+    assert!(
+        extended == cold,
+        "extending a cached prefix across the signature differs from a cold fold"
+    );
+    let use_at = sources[2].1.find("T)").expect("the use");
+    let at = rowan::TextRange::new(
+        u32::try_from(use_at).unwrap().into(),
+        u32::try_from(use_at + 1).unwrap().into(),
+    );
+    assert!(
+        !matches!(
+            cold.file(2).resolution_at(at),
+            Some(Resolution::EarlierFileType { .. })
+        ),
+        "a signature declaring `T` contests the earlier file's `Lib.T`"
     );
 }

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc d267020f11f09e97c41aab7794e609c8de5275045345ca2ac04ae1619ed6521c # shrinks to nums = []
+cc 5655b624b5f9d1cbee9fc2da937294fd20e2dbfad1baddd06a53100704968beb # shrinks to nums = [2547082238, 0, 0, 2214624133, 3174134834, 0, 0, 2171241218, 1087440132, 0, 0, 1377225820, 0, 0, 0, 2476470991, 3575187498, 1435846869, 63253196, 0, 0, 0, 815179002, 0, 0, 1019680314, 834261276, 0, 0, 0, 0, 0, 0, 0, 0, 2460056892, 1737800160, 288744457]

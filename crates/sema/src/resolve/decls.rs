@@ -584,15 +584,12 @@ impl<'a> Resolver<'a> {
                             if !self.anonymous_root {
                                 let mut path = self.container_path.clone();
                                 path.push(id_text(&name).to_string());
-                                self.placed_type_decls
-                                    .entry(id_text(&name).to_string())
-                                    .or_default()
-                                    .push(DeclaredType {
-                                        def: own,
-                                        path,
-                                        arity,
-                                        access_root: type_access_root,
-                                    });
+                                self.placed_types.push(DeclaredType {
+                                    def: own,
+                                    path,
+                                    arity,
+                                    access_root: type_access_root,
+                                });
                             }
                             self.block_type_defs.insert(own);
                             let covered_kind = match defn.repr() {

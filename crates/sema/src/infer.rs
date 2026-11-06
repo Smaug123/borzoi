@@ -1851,8 +1851,8 @@ impl<'a> Gen<'a> {
     /// [`Self::project_annotation_ty`] for a type an earlier file declares:
     /// the path and arity that file's inference published for it
     /// ([`PrecedingTypes::earlier_type`]), under the same arity check.
-    fn earlier_annotation_ty(&self, file: u32, def: DefId, args: Vec<Ty>) -> Option<Ty> {
-        let (path, arity) = self.preceding.earlier_type(file as usize, def)?;
+    fn earlier_annotation_ty(&self, file: u32, index: u32, args: Vec<Ty>) -> Option<Ty> {
+        let (path, arity) = self.preceding.earlier_type(file as usize, index)?;
         (args.len() == *arity).then(|| Ty::Project {
             path: path.clone(),
             args,
@@ -2359,8 +2359,8 @@ impl<'a> Gen<'a> {
                     [.., last] => match self.resolved.resolution_at(last.text_range()) {
                         Some(Resolution::Entity(handle)) => self.entity_annotation_ty(handle),
                         Some(Resolution::Local(def)) => self.project_annotation_ty(def, Vec::new()),
-                        Some(Resolution::EarlierFileType { file, def }) => {
-                            self.earlier_annotation_ty(file, def, Vec::new())
+                        Some(Resolution::EarlierFileType { file, index }) => {
+                            self.earlier_annotation_ty(file, index, Vec::new())
                         }
                         _ => None,
                     },
@@ -2438,8 +2438,8 @@ impl<'a> Gen<'a> {
                 match head? {
                     Resolution::Entity(handle) => self.applied_annotation_ty(handle, args),
                     Resolution::Local(def) => self.project_annotation_ty(def, args),
-                    Resolution::EarlierFileType { file, def } => {
-                        self.earlier_annotation_ty(file, def, args)
+                    Resolution::EarlierFileType { file, index } => {
+                        self.earlier_annotation_ty(file, index, args)
                     }
                     _ => None,
                 }

@@ -92,10 +92,11 @@ pub(crate) enum ModuleValue {
 pub struct PrecedingTypes {
     items: HashMap<ItemId, ModuleValue>,
     /// The types each earlier file's annotations bridge, keyed by the file's
-    /// Compile index and the type's def — the identity a later file's
+    /// Compile index and the type's position among those it declares — the
+    /// identity a later file's
     /// [`Resolution::EarlierFileType`](crate::Resolution::EarlierFileType)
     /// carries — with the path and arity of the [`Ty::Project`] it denotes.
-    types: HashMap<(usize, DefId), (Vec<String>, usize)>,
+    types: HashMap<(usize, u32), (Vec<String>, usize)>,
 }
 
 impl PrecedingTypes {
@@ -112,10 +113,10 @@ impl PrecedingTypes {
     }
 
     /// The path and arity of the [`Ty::Project`] an annotation naming the
-    /// type `def` of the earlier file `file` denotes; `None` for a type that
-    /// file's inference would not bridge either.
-    pub(crate) fn earlier_type(&self, file: usize, def: DefId) -> Option<&(Vec<String>, usize)> {
-        self.types.get(&(file, def))
+    /// type at position `index` of the earlier file `file` denotes; `None` for
+    /// a type that file's inference would not bridge either.
+    pub(crate) fn earlier_type(&self, file: usize, index: u32) -> Option<&(Vec<String>, usize)> {
+        self.types.get(&(file, index))
     }
 
     /// Publish one file's exports, in Compile order, after the file is
@@ -135,8 +136,11 @@ impl PrecedingTypes {
         screened: bool,
     ) {
         if let Some(inferred) = inferred.filter(|_| !screened) {
-            for (def, ty) in inferred.project_types() {
-                self.types.insert((file, *def), ty.clone());
+            for (index, def) in resolved.placed_type_defs().enumerate() {
+                if let Some(ty) = inferred.project_types().get(&def) {
+                    let index = u32::try_from(index).expect("more than u32::MAX types in a file");
+                    self.types.insert((file, index), ty.clone());
+                }
             }
         }
         for export in resolved.exports().iter() {

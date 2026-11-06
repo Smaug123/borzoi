@@ -1334,12 +1334,12 @@ pub(super) struct Resolver<'a> {
     /// yet is already in scope, so more here than
     /// [`Self::type_decl_counts`] can see is a possible forward shadow.
     pub(super) own_type_decl_counts: HashMap<String, usize>,
-    /// The type definitions the walk placed, by simple name: each one's def,
-    /// full path and arity, for [`ResolvedFile::type_decls`](super::model::ResolvedFile). Only a
+    /// The type definitions the walk placed, in walk order, for
+    /// [`ResolvedFile::placed_types`](super::model::ResolvedFile). Only a
     /// definition with a real path — not under an anonymous (headerless)
-    /// root, not `private` — is placed; [`Self::own_type_decl_counts`] says how
-    /// many declarations of the name there are in all.
-    pub(super) placed_type_decls: HashMap<String, Vec<DeclaredType>>,
+    /// root — is placed; [`Self::own_type_decl_counts`] says how many
+    /// declarations of the name there are in all.
+    pub(super) placed_types: Vec<DeclaredType>,
     /// How many type declarations the walk has passed under each simple name
     /// and arity, per container — keyed like [`Self::type_defs`], which keeps
     /// only the latest of them. Summed along the container chain at one

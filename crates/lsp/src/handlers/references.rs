@@ -331,17 +331,18 @@ fn same_path(path: &std::path::Path, request_uri: &Uri) -> bool {
 /// The project-wide identity of `res`, an occurrence in Compile-order file
 /// `file_idx` (`file`): a type is [`Resolution::Local`] in the file declaring
 /// it and [`Resolution::EarlierFileType`] in every later one, so a `Local`
-/// naming a type definition is keyed the second way. Every other resolution
-/// is its own key; a `Local` stays file-scoped because nothing outside its
-/// file names it.
+/// naming a type the file places for later files is keyed the second way.
+/// Every other resolution is its own key; a `Local` stays file-scoped because
+/// nothing outside its file names it.
 fn occurrence_key(file: &ResolvedFile, file_idx: usize, res: Resolution) -> Resolution {
     match res {
-        Resolution::Local(def) if matches!(file.def(def).kind, borzoi_sema::DefKind::Type) => {
-            Resolution::EarlierFileType {
+        Resolution::Local(def) => match file.placed_type_index(def) {
+            Some(index) => Resolution::EarlierFileType {
                 file: u32::try_from(file_idx).expect("more than u32::MAX files"),
-                def,
-            }
-        }
+                index,
+            },
+            None => res,
+        },
         other => other,
     }
 }

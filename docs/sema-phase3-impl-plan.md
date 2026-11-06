@@ -849,10 +849,15 @@ file of `namespace Lib` names it, and likewise past an earlier top-level
 `[<AutoOpen>]` module's type: wrong targets, both FCS-probed.
 
 Each file now records every type it declares with its full path, arity, def
-and access root (`ResolvedFile::type_decls`), and a declaration it cannot place
-— a headerless file's, an exception, a signature's, the implementation of a
-signatured file — as unplaced; the fold threads them to later files
-(`ProjectItems::earlier_types`). For a single-segment name that an earlier file
+and access root, in declaration order (`ResolvedFile::placed_types`), and
+counts each declaration it cannot place — a headerless file's, an exception,
+a signature's — as unplaced; the fold threads them to later files
+(`ProjectItems::earlier_types`), withholding a signatured file's placements. A
+later file names such a type by the declaring file's index and the type's
+position in that order, as it names an export by its `ItemId`, so an edit that
+renumbers the declaring file's defs leaves a reused later file naming the same
+type; the incremental fold compares each placed type's path, arity and access
+root, and both folds build a signature's slot through one function. For a single-segment name that an earlier file
 declares a type of and the use can access (FCS skips one it cannot, probed in
 both directions for `private` types and modules), `Resolver::earlier_file_type`
 asks the explicit `open`s first: a reading there is a later write, and the walk

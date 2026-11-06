@@ -228,12 +228,24 @@ pub(super) struct DeclaredType {
     pub(super) access_root: Option<usize>,
 }
 
+impl DeclaredType {
+    /// Whether `other` gives a later file the same type: everything but the
+    /// def, which a later file reaches through the declaring file's position
+    /// ([`Resolution::EarlierFileType`]).
+    pub(super) fn same_for_later_files(&self, other: &DeclaredType) -> bool {
+        self.path == other.path
+            && self.arity == other.arity
+            && self.access_root == other.access_root
+    }
+}
+
 /// A [`DeclaredType`] of an earlier Compile-order file, with that file's
 /// index: the identity a later file's [`Resolution::EarlierFileType`] carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EarlierType {
     pub(super) file: usize,
-    pub(super) def: DefId,
+    /// Its position in the file's [`ResolvedFile::placed_types`].
+    pub(super) index: u32,
     pub(super) path: Vec<String>,
     pub(super) arity: usize,
     /// See [`DeclaredType::access_root`].
@@ -322,7 +334,8 @@ pub struct ProjectItems {
     /// spurious name match only defers).
     pub(super) project_type_simple_names: HashSet<String>,
     /// Every earlier file's type declarations, by simple name
-    /// ([`ResolvedFile::type_decls`]): the placed ones with their file, and a
+    /// ([`ResolvedFile::placed_types`], [`ResolvedFile::unplaced_types`]): the
+    /// placed ones with their file and position, and a
     /// `None` for each the declaring file could not place or whose
     /// implementation a signature screens. What lets a later file prove that
     /// a type an earlier file declares is the **only** project type of its
@@ -1293,19 +1306,25 @@ impl ProjectItems {
         // A signature screens its implementation: what a later file sees is
         // the signature's declaration, which may differ, so the
         // implementation's placements are withheld.
-        for (name, decls) in &file.type_decls {
-            let entries = self.earlier_types.entry(name.clone()).or_default();
-            entries.extend(decls.iter().map(|decl| {
-                decl.as_ref()
-                    .filter(|_| paired_screen.is_none())
-                    .map(|d| EarlierType {
-                        file: file_idx,
-                        def: d.def,
-                        path: d.path.clone(),
-                        arity: d.arity,
-                        access_root: d.access_root,
-                    })
-            }));
+        for (index, t) in file.placed_types.iter().enumerate() {
+            let name = t.path.last().expect("a placed type has a name");
+            let entry = paired_screen.is_none().then(|| EarlierType {
+                file: file_idx,
+                index: u32::try_from(index).expect("more than u32::MAX types in a file"),
+                path: t.path.clone(),
+                arity: t.arity,
+                access_root: t.access_root,
+            });
+            self.earlier_types
+                .entry(name.clone())
+                .or_default()
+                .push(entry);
+        }
+        for (name, &unplaced) in &file.unplaced_types {
+            self.earlier_types
+                .entry(name.clone())
+                .or_default()
+                .extend(std::iter::repeat_n(None, unplaced));
         }
         // The dotted half of the same shadow, fed from the same file in the
         // same call: the veto's soundness is that a name the project declares
@@ -2154,10 +2173,12 @@ pub enum Resolution {
     /// A top-level module binding (this file, or an earlier Compile-order one).
     Item(ItemId),
     /// A type an **earlier** Compile-order file declares, by that file's
-    /// Compile index and the type's def in its arena. A use of the file's own
-    /// type is [`Self::Local`]; [`ResolvedProject::item_def`] maps this one to
-    /// its definition.
-    EarlierFileType { file: u32, def: DefId },
+    /// Compile index and the type's position among the types the file
+    /// declares (`ResolvedFile::placed_types`), which an edit elsewhere in
+    /// the file does not move. A use of the file's own type is
+    /// [`Self::Local`]; [`ResolvedProject::item_def`] maps this one to its
+    /// definition.
+    EarlierFileType { file: u32, index: u32 },
     /// A type/module in a referenced assembly (the type a qualified path roots
     /// at, e.g. `Console` in `System.Console.WriteLine`).
     Entity(EntityHandle),
@@ -3086,14 +3107,19 @@ pub struct ResolvedFile {
     /// fold — header-independent, so a headerless file's types guard later
     /// files' attribute candidates too.
     pub(super) own_type_simple_names: HashSet<String>,
-    /// Every type the file declares, by simple name, for
-    /// [`ProjectItems::earlier_types`]: `Some` for a declaration whose full
-    /// path, arity and def the walk placed, `None` for one it did not (a
-    /// headerless file's, a `private` one, a signature's, one the walk never
-    /// reached). A name with no placed declaration still has an entry, so a
-    /// later file can never mistake "declared here, unplaced" for "not
-    /// declared".
-    pub(super) type_decls: HashMap<String, Vec<Option<DeclaredType>>>,
+    /// Every type definition the walk placed — a real path, a def, an arity,
+    /// an access root — in walk order, for [`ProjectItems::earlier_types`].
+    /// A later file names one by its position here
+    /// ([`Resolution::EarlierFileType`]), as it names an export by its
+    /// [`ItemId`]: an edit elsewhere in this file renumbers its defs but not
+    /// this order, so a later file reused across the edit still names the
+    /// same type.
+    pub(super) placed_types: Vec<DeclaredType>,
+    /// How many declarations of each name the file makes that the walk did
+    /// not place (a headerless file's, an exception, an augmentation head, a
+    /// signature's, one the walk never reached), so a later file can never
+    /// mistake "declared here, unplaced" for "not declared".
+    pub(super) unplaced_types: HashMap<String, usize>,
     /// The file's syntactic whole-file module-simple-name pre-scan (see
     /// [`Resolver::own_module_simple_names`](super::state::Resolver)), carried
     /// into [`ProjectItems::project_module_simple_names`] by the Compile-order
@@ -3333,6 +3359,16 @@ impl ResolvedFile {
         self.exports.items.len() == other.exports.items.len()
             && FileExportIndices::from_decls(self) == FileExportIndices::from_decls(other)
             && self.own_type_simple_names == other.own_type_simple_names
+            // What a later file reads of the types: each placed one's
+            // position, path, arity and access root (never its def, which a
+            // body edit renumbers), and the unplaced counts.
+            && self.placed_types.len() == other.placed_types.len()
+            && self
+                .placed_types
+                .iter()
+                .zip(&other.placed_types)
+                .all(|(a, b)| a.same_for_later_files(b))
+            && self.unplaced_types == other.unplaced_types
             && self.own_module_simple_names == other.own_module_simple_names
             && self.contributions == other.contributions
             && self.declares_core_attribute_alias == other.declares_core_attribute_alias
@@ -3375,8 +3411,9 @@ impl ResolvedFile {
             opaque_regions: vec![OpaqueRegion::WholeFile],
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
+            placed_types: Vec::new(),
             // Filled by the fold from the signature's own declarations.
-            type_decls: HashMap::new(),
+            unplaced_types: HashMap::new(),
             own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             contributions: FileContributions::default(),
@@ -3929,6 +3966,21 @@ impl ResolvedFile {
             .is_some_and(|local| local < self.exports.items.len())
     }
 
+    /// The position of the type definition `def` among the types this file
+    /// declares for later files — the `index` a later file's
+    /// [`Resolution::EarlierFileType`] names it by — or `None` when `def` is
+    /// not a type the walk placed.
+    pub fn placed_type_index(&self, def: DefId) -> Option<u32> {
+        let index = self.placed_types.iter().position(|t| t.def == def)?;
+        Some(u32::try_from(index).expect("more than u32::MAX types in a file"))
+    }
+
+    /// Each placed type's def, by its position: what a later file's
+    /// [`Resolution::EarlierFileType`] `index` denotes.
+    pub(crate) fn placed_type_defs(&self) -> impl Iterator<Item = DefId> + '_ {
+        self.placed_types.iter().map(|t| t.def)
+    }
+
     pub fn resolved_def_id(&self, res: Resolution) -> Option<DefId> {
         match res {
             Resolution::Local(id) => Some(id),
@@ -3996,9 +4048,11 @@ impl ResolvedProject {
     pub fn item_def(&self, res: Resolution) -> Option<(usize, &Def)> {
         let id = match res {
             Resolution::Item(id) => id,
-            Resolution::EarlierFileType { file, def } => {
-                let file = file as usize;
-                return Some((file, self.files.get(file)?.defs.get(def.index())?));
+            Resolution::EarlierFileType { file, index } => {
+                let idx = file as usize;
+                let rf = self.files.get(idx)?;
+                let def = rf.placed_types.get(index as usize)?.def;
+                return Some((idx, rf.defs.get(def.index())?));
             }
             _ => return None,
         };

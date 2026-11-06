@@ -79,7 +79,6 @@ mod model;
 mod state;
 mod types;
 
-use model::DeclaredType;
 pub use model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
     ItemId, OpaqueRegion, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace,
@@ -1650,18 +1649,7 @@ fn resolve_project_files_impl(
             // its own slot; it carries its screen, its exported idents'
             // arena, and the stashed surface the paired implementation's
             // slot materialises.
-            SourceFile::Sig(sig) => {
-                let surface = signature_surface(sig, &pf.qnof);
-                let mut rf = ResolvedFile::signature_slot(
-                    preceding.next_base(),
-                    surface.screen,
-                    surface.defs,
-                    surface.exports,
-                );
-                contributors::signature_contributions(sig, &preceding, assemblies, &mut rf);
-                rf.type_decls = signature_type_decls(sig);
-                rf
-            }
+            SourceFile::Sig(sig) => signature_slot(sig, pf, &preceding, assemblies),
             SourceFile::Impl(file) => {
                 // Per-file span so the fold's cost is attributable in the LSP's
                 // traces: `file` is the Compile item's path (empty when
@@ -1781,11 +1769,34 @@ fn thread_forward(
         .extend(rf.augmentation_static_names.iter().cloned());
 }
 
+/// The [`ResolvedFile`] a signature file's Compile slot holds, as both the
+/// cold and the incremental fold build it: it owns no `ItemId` range and
+/// records nothing at its own slot; it carries its screen, its exported
+/// idents' arena, the stashed surface the paired implementation's slot
+/// materialises, and its type declarations, every one unplaced.
+fn signature_slot(
+    sig: &SigFile,
+    pf: &ProjectFile,
+    preceding: &ProjectItems,
+    assemblies: &AssemblyEnv,
+) -> ResolvedFile {
+    let surface = signature_surface(sig, &pf.qnof);
+    let mut rf = ResolvedFile::signature_slot(
+        preceding.next_base(),
+        surface.screen,
+        surface.defs,
+        surface.exports,
+    );
+    contributors::signature_contributions(sig, preceding, assemblies, &mut rf);
+    rf.unplaced_types = signature_type_decls(sig);
+    rf
+}
+
 /// A signature's type and exception names, each declaration unplaced: a
 /// later file sees the signature's type, which may not be the
-/// implementation's ([`ResolvedFile::type_decls`]).
-fn signature_type_decls(sig: &SigFile) -> HashMap<String, Vec<Option<DeclaredType>>> {
-    let mut out: HashMap<String, Vec<Option<DeclaredType>>> = HashMap::new();
+/// implementation's ([`ResolvedFile::unplaced_types`]).
+fn signature_type_decls(sig: &SigFile) -> HashMap<String, usize> {
+    let mut out: HashMap<String, usize> = HashMap::new();
     let type_names = sig
         .syntax()
         .descendants()
@@ -1797,9 +1808,7 @@ fn signature_type_decls(sig: &SigFile) -> HashMap<String, Vec<Option<DeclaredTyp
         .filter_map(ExceptionDefnDecl::cast)
         .filter_map(|exn| exn.union_case().and_then(|c| c.ident()));
     for name in type_names.chain(exception_names) {
-        out.entry(id_text(&name).to_string())
-            .or_default()
-            .push(None);
+        *out.entry(id_text(&name).to_string()).or_default() += 1;
     }
     out
 }
@@ -2079,17 +2088,7 @@ fn resolve_project_files_incremental_impl(
             Arc::clone(&prev.files[i])
         } else {
             let mut rf = match &pf.file {
-                SourceFile::Sig(sig) => {
-                    let surface = signature_surface(sig, &pf.qnof);
-                    let mut rf = ResolvedFile::signature_slot(
-                        preceding.next_base(),
-                        surface.screen,
-                        surface.defs,
-                        surface.exports,
-                    );
-                    contributors::signature_contributions(sig, &preceding, assemblies, &mut rf);
-                    rf
-                }
+                SourceFile::Sig(sig) => signature_slot(sig, pf, &preceding, assemblies),
                 SourceFile::Impl(file) => {
                     let mut rf = resolve_file(file, &preceding, assemblies, &pf.recovery);
                     rf.preceding_declares_extension_source = ext.wholesale;
@@ -2235,7 +2234,7 @@ impl<'a> Resolver<'a> {
             case_field_names: HashMap::new(),
             own_generic_type_simple_names: HashSet::new(),
             own_type_decl_counts: HashMap::new(),
-            placed_type_decls: HashMap::new(),
+            placed_types: Vec::new(),
             type_decl_counts: HashMap::new(),
             type_def_arities: HashMap::new(),
             type_defs_by_arity: HashMap::new(),
@@ -2494,39 +2493,34 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// [`ResolvedFile::type_decls`]: every name the file declares a type,
-    /// exception or augmentation head under, with its placed declarations and
-    /// a `None` for each declaration the walk did not place. An augmentation
-    /// head alone declares nothing, but is kept as one unplaced entry: it may
-    /// name a type of another file, and nothing here says which.
-    fn type_decls(&self) -> HashMap<String, Vec<Option<DeclaredType>>> {
+    /// [`ResolvedFile::unplaced_types`]: how many declarations of each name
+    /// the file makes — a type, an exception, an augmentation head — that
+    /// the walk did not place. An augmentation head alone declares nothing,
+    /// but counts as one: it may name a type of another file, and nothing
+    /// here says which.
+    fn unplaced_types(&self) -> HashMap<String, usize> {
         self.own_type_simple_names
             .iter()
-            .map(|name| {
+            .filter_map(|name| {
                 let placed = self
-                    .placed_type_decls
-                    .get(name)
-                    .map_or(&[][..], Vec::as_slice);
+                    .placed_types
+                    .iter()
+                    .filter(|t| t.path.last() == Some(name))
+                    .count();
                 let declared = self
                     .own_type_decl_counts
                     .get(name)
                     .copied()
                     .unwrap_or(0)
                     .max(1);
-                let unplaced = declared.saturating_sub(placed.len());
-                let decls = placed
-                    .iter()
-                    .cloned()
-                    .map(Some)
-                    .chain(std::iter::repeat_n(None, unplaced))
-                    .collect();
-                (name.clone(), decls)
+                let unplaced = declared.saturating_sub(placed);
+                (unplaced > 0).then(|| (name.clone(), unplaced))
             })
             .collect()
     }
 
     fn finish(mut self) -> ResolvedFile {
-        let type_decls = self.type_decls();
+        let unplaced_types = self.unplaced_types();
         self.seal_assembly_readings();
         self.debug_assert_shadowable_types_are_attributed();
         self.debug_assert_commit_maps_are_disjoint();
@@ -2538,7 +2532,8 @@ impl<'a> Resolver<'a> {
             opaque_binders: self.opaque_binders,
             opaque_regions: self.opaque_regions,
             attribute_resolutions: self.attribute_resolutions,
-            type_decls,
+            placed_types: std::mem::take(&mut self.placed_types),
+            unplaced_types,
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,

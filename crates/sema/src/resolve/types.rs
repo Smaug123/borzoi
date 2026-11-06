@@ -61,7 +61,7 @@ pub(super) enum TypePathResolution {
     /// A single segment names a type an earlier Compile-order file declares
     /// in the enclosing namespace
     /// ([`Resolver::earlier_file_type`]).
-    EarlierFileType { file: u32, def: DefId },
+    EarlierFileType { file: u32, index: u32 },
     /// The path resolved through the assembly precedence tiers — the
     /// per-segment records to apply, keyed by segment index (a
     /// namespace-qualifier or unresolvable-tail segment is
@@ -1831,10 +1831,10 @@ impl<'a> Resolver<'a> {
             TypePathResolution::InFileType(id) => {
                 self.record(segs[0].text_range(), Resolution::Local(id));
             }
-            TypePathResolution::EarlierFileType { file, def } => {
+            TypePathResolution::EarlierFileType { file, index } => {
                 self.record(
                     segs[0].text_range(),
-                    Resolution::EarlierFileType { file, def },
+                    Resolution::EarlierFileType { file, index },
                 );
             }
             // The assembly tiers resolved — map each index-keyed record back to
@@ -3052,7 +3052,7 @@ impl<'a> Resolver<'a> {
         }
         Some(TypePathResolution::EarlierFileType {
             file: u32::try_from(candidate.file).expect("more than u32::MAX files"),
-            def: candidate.def,
+            index: candidate.index,
         })
     }
 
