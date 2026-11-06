@@ -17,6 +17,9 @@
 //! what the harnesses share for suppressing *expected* panic messages now that
 //! each crate's cases live in one test binary and a hook swap would race.
 //!
+//! [`nuget_oracle`] is the one oracle driver kept here rather than beside its
+//! crate's tests, because more than one crate grades against it.
+//!
 //! Test-only: a `dev-dependency` of the harnesses — and a regular dependency of
 //! `borzoi-corpus-diff`, which is itself an unpublished test shell whose gate
 //! runs in its binary — never of shipping code.
@@ -25,6 +28,7 @@ pub mod corpus_key;
 pub mod fcs_position;
 pub mod manifest;
 pub mod module_tree;
+pub mod nuget_oracle;
 pub mod panic_silence;
 
 use std::ffi::OsStr;
