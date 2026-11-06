@@ -53,6 +53,7 @@ mod projector_required_members;
 mod projector_source_names;
 mod projector_type_shapes;
 mod projector_typeref_shapes;
+mod projector_union_case_makers;
 mod well_known_attributes_sync;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is

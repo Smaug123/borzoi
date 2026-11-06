@@ -1645,7 +1645,9 @@ impl AssemblyEnv {
                     return None;
                 }
                 let cases = match &entity.union_cases {
-                    UnionCases::Known(cases) => Cases::Known(cases.clone()),
+                    UnionCases::Known(cases) => {
+                        Cases::Known(cases.iter().map(|c| c.name.clone()).collect())
+                    }
                     UnionCases::Unknowable => Cases::Unknowable,
                 };
                 Some((handle, cases, entity.generic_parameters.len()))
@@ -3974,7 +3976,7 @@ impl AssemblyEnv {
         let UnionCases::Known(cases) = &entity.union_cases else {
             return None;
         };
-        let mut found = cases.iter().enumerate().filter(|(_, c)| *c == name);
+        let mut found = cases.iter().enumerate().filter(|(_, c)| c.name == name);
         match (found.next(), found.next()) {
             (Some((i, _)), None) => Some(UnionCaseIndex::new(i)),
             _ => None,
@@ -3984,7 +3986,7 @@ impl AssemblyEnv {
     /// The source name of case `case` of union `union`.
     pub fn union_case_name(&self, union: EntityHandle, case: UnionCaseIndex) -> &str {
         match &self.entity(union).union_cases {
-            UnionCases::Known(cases) => &cases[case.index()],
+            UnionCases::Known(cases) => &cases[case.index()].name,
             UnionCases::Unknowable => {
                 unreachable!("a UnionCaseIndex is only made over a Known case list")
             }
@@ -4361,8 +4363,8 @@ impl AssemblyEnv {
                     UnionCases::Known(cases) => {
                         for case in cases {
                             out.entries.push(OpenFoldName {
-                                name: case.clone(),
-                                target: match self.union_case_index(child, case) {
+                                name: case.name.clone(),
+                                target: match self.union_case_index(child, &case.name) {
                                     Some(idx) => OpenFoldTarget::UnionCase {
                                         union: child,
                                         case: idx,
@@ -6233,7 +6235,7 @@ impl AssemblyEnv {
             c.kind == EntityKind::Union
                 && match &c.union_cases {
                     UnionCases::Unknowable => true,
-                    UnionCases::Known(cases) => cases.iter().any(|case| case == name),
+                    UnionCases::Known(cases) => cases.iter().any(|case| case.name == name),
                 }
         })
     }
@@ -7667,6 +7669,7 @@ pub(crate) mod from_views_tests {
             source_name: None,
             extension_member_names: vec![],
             union_cases: UnionCases::Unknowable,
+            union_case_makers: Vec::new(),
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],

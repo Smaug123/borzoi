@@ -1057,6 +1057,7 @@ fn env_with_substring_extension_in(namespace: &[&str]) -> AssemblyEnv {
         interfaces: vec![],
         extension_member_names: vec![],
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..template_ent
@@ -1107,6 +1108,7 @@ fn env_with_object_derived_demo_type() -> AssemblyEnv {
         interfaces: vec![],
         extension_member_names: vec![],
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..string
@@ -1409,6 +1411,7 @@ fn interface_receiver_method_call_defers() {
         interfaces: ifaces,
         extension_member_names: vec![],
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..template.clone()
@@ -1555,6 +1558,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         interfaces: vec![],
         extension_member_names: vec![],
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..template
@@ -1680,6 +1684,7 @@ fn skipped_member_in_scope_defers_the_overload_gate() {
         interfaces: vec![],
         extension_member_names: vec![],
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         skipped_members: vec![SkippedMember {

@@ -1019,6 +1019,7 @@ fn synth_entity(
         source_name: None,
         extension_member_names: vec![],
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         custom_attrs: vec![],

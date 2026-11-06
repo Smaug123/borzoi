@@ -285,7 +285,7 @@ fn normalise_entity(e: &Entity) -> NormalisedEntity {
             .map(format_compiler_feature_required)
             .collect(),
         union_cases: match &e.union_cases {
-            UnionCases::Known(names) => Some(names.clone()),
+            UnionCases::Known(cases) => Some(cases.iter().map(|c| c.name.clone()).collect()),
             UnionCases::Unknowable => None,
         },
     }

@@ -505,6 +505,7 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{DefId, DefKind};
 use crate::function_ty::{
     Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, builtin_operator, module_function_scheme,
+    union_case_scheme,
 };
 use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::member_ty::type_ref_to_ty;
@@ -726,6 +727,14 @@ pub enum Incomplete {
     /// typed through that loosening: `let f (g: obj -> 'a) = g` is
     /// `(obj -> 'a) -> 'b -> 'a` in FCS. Its variables are poisoned.
     LoosenedUse,
+    /// A use of a referenced assembly's union case whose F# type is not read
+    /// off its maker, and why ([`union_case_scheme`]).
+    AssemblyCase(FunctionTyGap),
+    /// A use of a union case whose shape this stage does not type: a case of
+    /// several fields (FCS demands a syntactic tuple for them), or one whose
+    /// field type FCS would check its argument against by coercion (`obj`,
+    /// an interface, an unsealed class).
+    CaseShape,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -3666,6 +3675,9 @@ impl<'a> Gen<'a> {
                     .clone();
                 return Ok(self.scheme_use(&ty));
             }
+            Some(Resolution::UnionCase { union, case }) => {
+                return self.assembly_case_use(union, case);
+            }
             _ => return Err(Incomplete::NotInFileValue),
         };
         let scheme = match self.env.member_at(parent, idx) {
@@ -3674,6 +3686,27 @@ impl<'a> Gen<'a> {
         }
         .map_err(Incomplete::AssemblyValue)?;
         Ok(self.constrained_scheme_use(&scheme))
+    }
+
+    /// The type variable of a use of case `case` of the referenced union
+    /// `union`, as a value: the union for a nullary case (`None`), else the
+    /// function from its field (`Some`), each of the union's type parameters
+    /// instantiated fresh. FCS checks a case's argument against its field
+    /// type by coercion where the field is not a type variable
+    /// (`TcExprsWithFlexes`); against a sealed field that is equality, so
+    /// only a case whose fields are all sealed or type variables is typed, and
+    /// only a case of at most one field, since several demand a syntactic
+    /// tuple this use does not see.
+    fn assembly_case_use(
+        &mut self,
+        union: EntityHandle,
+        case: crate::assembly_env::UnionCaseIndex,
+    ) -> Result<TyVid, Incomplete> {
+        let scheme = union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
+        if scheme.fields.len() > 1 || !scheme.fields.iter().all(|f| is_sealed(self.env, f)) {
+            return Err(Incomplete::CaseShape);
+        }
+        Ok(self.scheme_use(&scheme.value_ty()))
     }
 
     /// [`Self::scheme_use`] over a module function's reading: each type
@@ -7376,6 +7409,7 @@ mod tests {
             source_name: None,
             extension_member_names: vec![],
             union_cases: UnionCases::Unknowable,
+            union_case_makers: Vec::new(),
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],

@@ -33,6 +33,14 @@ fn load(dll: &Path) -> Vec<Entity> {
         .expect("enumerate fixture types")
 }
 
+/// The union's listed case names, or `None` when they are unknowable.
+fn case_names(e: &Entity) -> Option<Vec<String>> {
+    match &e.union_cases {
+        UnionCases::Known(cases) => Some(cases.iter().map(|c| c.name.clone()).collect()),
+        UnionCases::Unknowable => None,
+    }
+}
+
 /// The entity named `name`, searched recursively.
 fn entity_named<'a>(entities: &'a [Entity], name: &str) -> &'a Entity {
     fn find<'a>(entities: &'a [Entity], name: &str) -> Option<&'a Entity> {
@@ -55,8 +63,8 @@ fn union_cases_are_lifted_from_the_pickle_in_declaration_order() {
     let choice = entity_named(&entities, "Choice");
     assert_eq!(choice.kind, EntityKind::Union);
     assert_eq!(
-        choice.union_cases,
-        UnionCases::Known(vec!["Yes".to_string(), "No".to_string()])
+        case_names(choice),
+        Some(vec!["Yes".to_string(), "No".to_string()])
     );
 }
 
@@ -70,8 +78,8 @@ fn an_rqa_union_still_carries_its_case_names() {
     let rqa = entity_named(&entities, "RqaUnion");
     assert!(rqa.is_require_qualified_access);
     assert_eq!(
-        rqa.union_cases,
-        UnionCases::Known(vec!["A".to_string(), "B".to_string()])
+        case_names(rqa),
+        Some(vec!["A".to_string(), "B".to_string()])
     );
 }
 
@@ -94,8 +102,8 @@ fn a_union_with_static_members_keeps_its_cases() {
     let tallied = entity_named(&entities, "Tallied");
     assert_eq!(tallied.kind, EntityKind::Union);
     assert_eq!(
-        tallied.union_cases,
-        UnionCases::Known(vec!["Zero".to_string(), "Some'".to_string()])
+        case_names(tallied),
+        Some(vec!["Zero".to_string(), "Some'".to_string()])
     );
 }
 
@@ -105,8 +113,8 @@ fn a_plain_union_in_a_module_keeps_its_cases() {
     let verdict = entity_named(&entities, "Verdict");
     assert_eq!(verdict.kind, EntityKind::Union);
     assert_eq!(
-        verdict.union_cases,
-        UnionCases::Known(vec!["Accepted".to_string(), "Rejected".to_string()])
+        case_names(verdict),
+        Some(vec!["Accepted".to_string(), "Rejected".to_string()])
     );
 }
 
@@ -184,8 +192,8 @@ fn a_union_whose_testers_are_unpublished_surfaces_none() {
     let coin = entity_named(&entities, "Coin");
     assert_eq!(coin.kind, EntityKind::Union);
     assert_eq!(
-        coin.union_cases,
-        UnionCases::Known(vec!["Heads".to_string(), "Tails".to_string()]),
+        case_names(coin),
+        Some(vec!["Heads".to_string(), "Tails".to_string()]),
         "precondition: the cases ARE known, so a case-derived rule would fire"
     );
     assert_eq!(union_property_names(coin), Vec::<&str>::new());
@@ -310,14 +318,8 @@ fn arity_overloaded_unions_keep_their_own_cases() {
         .iter()
         .find(|e| e.name == "Ambig" && e.generic_parameters.len() == 1)
         .expect("arity-1 Ambig");
-    assert_eq!(
-        plain.union_cases,
-        UnionCases::Known(vec!["AmbigA".to_string()])
-    );
-    assert_eq!(
-        generic.union_cases,
-        UnionCases::Known(vec!["AmbigB".to_string()])
-    );
+    assert_eq!(case_names(plain), Some(vec!["AmbigA".to_string()]));
+    assert_eq!(case_names(generic), Some(vec!["AmbigB".to_string()]));
 }
 
 /// Every entity named `name`, in projection order, searched recursively.
@@ -442,8 +444,8 @@ fn a_class_sharing_a_unions_projected_key_keeps_its_own_members() {
     // The union at that key is unambiguous — one union row — so it keeps both
     // its cases and its published testers.
     assert_eq!(
-        union.union_cases,
-        UnionCases::Known(vec!["A".to_string(), "B".to_string()])
+        case_names(union),
+        Some(vec!["A".to_string(), "B".to_string()])
     );
     assert_eq!(union_property_names(union), vec!["IsA", "IsB"]);
 }

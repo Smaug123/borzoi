@@ -57,13 +57,13 @@ use crate::error::ImportError;
 use crate::fsharp_pickle::model::{
     FSharpTyparConstraint, IsType, PickledAttribExpr, PickledAttribute, PickledCcu, PickledConst,
     PickledEntity, PickledExnRepr, PickledExpr, PickledMemberKind, PickledTcRef, PickledTyconRepr,
-    PickledType, PickledVal, TupleKind, TyparKind,
+    PickledType, PickledUnionCase, PickledVal, TupleKind, TyparKind,
 };
 use crate::model::{
-    AbbreviationTarget, Access, ArgGroup, ArgGroups, AssemblyIdentity, Augmentation,
+    AbbreviationTarget, Access, ArgGroup, ArgGroups, AssemblyIdentity, Augmentation, CaseFields,
     CompilerMessage, CurriedArg, CurriedArgs, Entity, EntityKind, EqualityComparison,
     FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete,
-    ReadValFacts, SkippedMember, TypeParameter, UnionCases, ValMeasures,
+    ReadValFacts, SkippedMember, TypeParameter, UnionCase, UnionCases, ValMeasures,
 };
 use std::collections::HashMap;
 
@@ -971,7 +971,7 @@ pub(crate) fn apply_union_cases(
         Vec<String>,
         String,
         usize,
-        Vec<String>,
+        Vec<UnionCase>,
         Vec<String>,
     )> = Vec::new();
     // A union whose representation is HIDDEN BY A SIGNATURE pickles as `NoRepr`
@@ -1020,8 +1020,17 @@ pub(crate) fn apply_union_cases(
                             // which is a real observation ("knowably zero
                             // accessible cases"), distinct from the absent-pickle
                             // `None`.
-                            .filter(|c| c.access.is_empty())
-                            .map(|c| c.ident.name.clone())
+                            .enumerate()
+                            .filter(|(_, c)| c.access.is_empty())
+                            .map(|(i, c)| UnionCase {
+                                name: c.ident.name.clone(),
+                                // The pickle lists every case, accessible or
+                                // not, in declaration order: the position fsc
+                                // writes on the case's maker.
+                                declaration_index: u32::try_from(i)
+                                    .expect("a union has fewer than 2^32 cases"),
+                                fields: case_fields(pickled, c),
+                            })
                             .collect(),
                         // The entity's PUBLISHED members, by the name each is
                         // pickled under — an accessor's own (`get_IsOne`), not
@@ -1709,6 +1718,27 @@ fn val_type_facts(pickled: &PickledCcu, v: &PickledVal) -> Result<ValTypeFacts, 
         Some(measures) => (Some(readings), Some(measures)),
         None => (None, None),
     })
+}
+
+/// What the pickle says of one union case's fields ([`CaseFields`]): how
+/// many, whether a unit of measure appears in their types (the scan a module
+/// function's val gets, over the fields in order), and whether the case is
+/// attributed. A type the scan cannot read leaves the fields unknowable.
+fn case_fields(pickled: &PickledCcu, case: &PickledUnionCase) -> CaseFields {
+    let mut scan = ValMeasureScan::default();
+    for field in &case.fields {
+        if scan.scan(pickled, &field.ty).is_err() {
+            return CaseFields::Unknowable;
+        }
+    }
+    match scan.reading() {
+        Some(measures) => CaseFields::Read {
+            count: case.fields.len(),
+            measures,
+            attributed: !case.attribs.is_empty(),
+        },
+        None => CaseFields::Unknowable,
+    }
 }
 
 /// [`val_type_facts`]'s result: the constraint readings and the measure
@@ -3416,6 +3446,7 @@ fn abbreviation_marker(
         // extension members.
         extension_member_names: Vec::new(),
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         custom_attrs: Vec::new(),
@@ -4862,6 +4893,7 @@ mod tests {
         Entity {
             extension_member_names: Vec::new(),
             union_cases: UnionCases::Unknowable,
+            union_case_makers: Vec::new(),
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             assembly: dummy_assembly(),

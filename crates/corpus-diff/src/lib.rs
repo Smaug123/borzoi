@@ -5782,6 +5782,7 @@ mod tests {
             source_name: None,
             extension_member_names: vec![],
             union_cases: UnionCases::Unknowable,
+            union_case_makers: Vec::new(),
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],
@@ -6161,7 +6162,7 @@ mod tests {
     #[test]
     fn a_union_case_agrees_only_with_a_union_case_record() {
         let mut union = fixture_entity("Holder", EntityKind::Union, 1, &[]);
-        union.union_cases = UnionCases::Known(vec!["Case".to_string()]);
+        union.union_cases = UnionCases::Known(vec![borzoi_assembly::UnionCase::unread("Case", 0)]);
         let env = AssemblyEnv::from_entities(vec![union]);
         let holder = fixture_handle(&env, "Holder", 1, false);
         let res = Resolution::UnionCase {
