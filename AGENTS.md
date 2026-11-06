@@ -63,6 +63,13 @@ This is a Cargo workspace with nine members:
   (`OutDir`/`OutputPath`/`DefineConstants` are untrusted under every global set
   on a real SDK project), which makes such a dimension a coverage investment,
   not a soundness fix.
+  The oracle has one op that executes rather than evaluates: `restoreCone`
+  builds `GenerateRestoreGraphFile` in-process and reports every target and
+  task that ran, with file hashes and task-assembly identities.
+  `restore_cone_census.rs` pins that cone per project and per installed SDK
+  (stage 8 of `docs/nuget-dgspec-boundary-plan.md`), under the global
+  properties `borzoi_oracle_harness::restore_globals` holds to `restore.rs`'s
+  command line.
 - `crates/assembly/` — `borzoi-assembly`. F#-flavoured reader for
   ECMA-335 assemblies: owned `Entity`/`Member`/`TypeRef` model, the
   `EcmaView` trait, and a projector over an *in-crate* ECMA-335 reader
@@ -496,8 +503,9 @@ change that could move what the LSP answers, which is most changes to `cst`,
 the project-corpus resolution differential and its exact manifest, the
 `borzoi-corpus-diff` crate's tests (its FCS-driven fixtures included), the
 whole-assembly projection sweep over the corpus's packages, and the
-restore-graph and project source-doc differentials with their exact manifests
-(`crates/lsp/tests/manifests/`). With every step it keeps going past a
+restore-graph and project source-doc differentials and the restore-cone census
+with their exact manifests (`crates/lsp/tests/manifests/`,
+`crates/msbuild/tests/manifests/`). With every step it keeps going past a
 failure and names the failed steps at the end.
 
 Run locally, it first materialises the pinned project corpus (clones, and

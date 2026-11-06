@@ -26,6 +26,7 @@ pub mod fcs_position;
 pub mod manifest;
 pub mod module_tree;
 pub mod panic_silence;
+pub mod restore_globals;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
