@@ -1082,7 +1082,12 @@ check is applied as an equality under a rolled-back snapshot, declines
 contradicts a check-mode relation dropped before it (an arm checked against
 the first); an unmodelled construct leaves no relation to probe, so on an
 incomplete binding a pattern of structure relates only a ground scrutinee
-(`Some x -> (if x then …) | Some "" -> …` makes `x` `bool` in FCS). FCS's
+(`Some x -> (if x then …) | Some "" -> …` makes `x` `bool` in FCS); and a
+suspended member lookup whose receiver the pattern could make known declines
+it, since FCS looked the member up before the pattern, on a receiver it did
+not yet know (FS0072). The probe decides every kind of pending constraint in
+one exhaustive `match`, so a new kind of suspension must be decided there.
+FCS's
 dumps cannot grade these — they decline to convert a declaration FCS
 error-recovered — so their tests pin FCS's answer directly. Three things FCS's dump cannot
 grade decline or go unemitted: a one-clause match (FCS elaborates it to a

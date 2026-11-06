@@ -603,3 +603,41 @@ fn a_later_pattern_does_not_override_an_earlier_clause() {
         }
     }
 }
+
+/// A member access before the match on a receiver the pattern makes known:
+/// FCS looked the member up before the pattern, on a receiver it did not yet
+/// know (FS0072), and keeps `o : 'a`. Pinned, since FCS's dumps cannot grade
+/// the error-recovered declaration: neither `o` nor the access may read as
+/// `string`'s.
+#[test]
+fn a_pattern_does_not_wake_an_earlier_member_lookup() {
+    for body in [
+        "(o.Length, match o with \"a\" -> 1 | _ -> 2)",
+        "(o.Length, match o with Some v -> 1 | None -> 2)",
+    ] {
+        let src = format!("module M\nlet f o = {body}\n");
+        let parsed = parse(&src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = full_bcl_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
+        assert!(
+            inferred.member_resolutions().is_empty(),
+            "a member resolved in {body}"
+        );
+        for (def, ty) in inferred.def_types() {
+            let name = resolved.def(*def).name.to_string();
+            assert!(
+                !matches!(name.as_str(), "o" | "f"),
+                "`{name} : {}` published in {body}",
+                ty.render()
+            );
+        }
+    }
+}

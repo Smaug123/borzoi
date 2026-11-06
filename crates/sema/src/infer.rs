@@ -730,10 +730,10 @@ pub enum Incomplete {
     /// A use of a referenced assembly's union case whose F# type is not read
     /// off its maker, and why (`function_ty::union_case_scheme`).
     AssemblyCase(FunctionTyGap),
-    /// A `match` pattern that contradicts a relation FCS applied before it in
-    /// source order which inference has not applied (a pending argument
-    /// check, a dropped check-mode relation), or that would refine an open
-    /// scrutinee after an unmodelled construct.
+    /// A `match` pattern that would get ahead of a relation FCS applied before
+    /// it in source order which inference has not (a pending argument check,
+    /// a dropped check-mode relation, a suspended member lookup), or that
+    /// would refine an open scrutinee after an unmodelled construct.
     PatternAfterCheck,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
@@ -3142,7 +3142,7 @@ impl<'a> Gen<'a> {
                     // that contradicts one (`(fs x, match x with 1 -> …)` with
                     // `fs : string -> _`) is the one FCS rejects, and relating
                     // it now would fix the scrutinee in the check's place.
-                    if !matches!(pt, Ty::Var(_)) && self.pattern_contradicts_pending_check(sv, &pt)
+                    if !matches!(pt, Ty::Var(_)) && self.pattern_preempts_earlier_relation(sv, &pt)
                     {
                         self.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
@@ -5284,29 +5284,54 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Whether relating the pattern type `pt` to the scrutinee `sv` fails once
-    /// every argument check still pending, and every check-mode relation
-    /// dropped ([`Self::dropped`]) — each walked before the pattern, so each
-    /// applied before it by FCS, which checks in source order — is applied as
-    /// an equality. Probed under a snapshot, which is rolled back:
-    /// nothing is applied. A check FCS would meet by coercion fails here where
-    /// FCS succeeds, which only declines.
-    fn pattern_contradicts_pending_check(&mut self, sv: TyVid, pt: &Ty) -> bool {
-        let checks: Vec<(TyVid, TyVid)> = self
-            .constraints
-            .iter()
-            .filter_map(|c| match c {
-                Constraint::ArgCheck(ac) => Some((ac.arg, ac.dom)),
-                _ => None,
-            })
-            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
-            .collect();
-        if checks.is_empty() {
+    /// Whether relating the pattern type `pt` to the scrutinee `sv` would get
+    /// ahead of a relation FCS, which checks in source order, applied before
+    /// the pattern and inference has not: every constraint still pending was
+    /// walked before the pattern. Each kind is decided here, so a new kind of
+    /// suspended constraint must be:
+    ///
+    /// - a pending equality, argument check or dropped check-mode relation
+    ///   ([`Self::dropped`]) is applied as an equality under a snapshot, rolled
+    ///   back after, and the pattern contradicts it if relating `pt` then
+    ///   fails (a check FCS meets by coercion fails here where FCS succeeds,
+    ///   which only declines);
+    /// - a suspended member lookup whose receiver the pattern could make
+    ///   known is one FCS made on a receiver it did not yet know, an error
+    ///   (FS0072), so the pattern must not wake it
+    ///   (`(o.Length, match o with "a" -> …)`).
+    fn pattern_preempts_earlier_relation(&mut self, sv: TyVid, pt: &Ty) -> bool {
+        let mut eqs: Vec<(Ty, Ty)> = Vec::new();
+        let mut receivers: Vec<TyVid> = Vec::new();
+        for c in &self.constraints {
+            match c {
+                Constraint::Eq(a, b) => eqs.push((a.clone(), b.clone())),
+                Constraint::ArgCheck(ac) => eqs.push((Ty::Var(ac.arg), Ty::Var(ac.dom))),
+                Constraint::HasMember { recv, .. } => receivers.push(*recv),
+            }
+        }
+        eqs.extend(
+            self.dropped
+                .iter()
+                .map(|&(a, b, _)| (Ty::Var(a), Ty::Var(b))),
+        );
+        let mut scrutinee_roots: HashSet<TyVid> = HashSet::new();
+        collect_var_roots(&self.table.resolve(&Ty::Var(sv)), &mut scrutinee_roots);
+        for recv in receivers {
+            let mut recv_roots: HashSet<TyVid> = HashSet::new();
+            collect_var_roots(&self.table.resolve(&Ty::Var(recv)), &mut recv_roots);
+            if recv_roots
+                .iter()
+                .any(|&r| scrutinee_roots.iter().any(|&v| self.table.unioned(r, v)))
+            {
+                return true;
+            }
+        }
+        if eqs.is_empty() {
             return false;
         }
         let snapshot = self.table.snapshot();
-        for (arg, dom) in checks {
-            let _ = self.table.unify_atomic(&Ty::Var(arg), &Ty::Var(dom));
+        for (a, b) in eqs {
+            let _ = self.table.unify_atomic(&a, &b);
         }
         let contradicts = self.table.unify_atomic(&Ty::Var(sv), pt).is_err();
         self.table.rollback_to(snapshot);
