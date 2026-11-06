@@ -1091,6 +1091,9 @@ jobs:
       - name: Gate on the restore-graph oracle
         run: bash tools/ci/project-corpus-gate.sh restore-graph
 
+      - name: Gate on the restore-cone census
+        run: bash tools/ci/project-corpus-gate.sh restore-cone
+
       - name: Gate on whole-project source docs
         run: bash tools/ci/project-corpus-gate.sh xml-doc-source
 
