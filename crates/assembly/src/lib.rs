@@ -22,6 +22,8 @@
 //! and that class of bug is invisible to the compiler — a new wrapper variant
 //! leaves every such guard well-typed. Read that module before adding one.
 
+#[cfg(feature = "test-support")]
+pub mod accessor_metamorphic;
 pub mod display;
 pub mod doc_id;
 mod ecma335_assembly;

@@ -3146,37 +3146,52 @@ impl Ecma335Assembly {
             (None, None) => false,
         };
         // A metadata consumer compares the property's own signature, which
-        // is the one the accessor gives only if their index parameters have
-        // the same projected types (a modopt and nullability aside) and
-        // byref-ness; an unreadable one counts as agreeing, and its modifiers
+        // is the one the accessors give only if each accessor's index
+        // parameters have the same projected types (a modopt and nullability
+        // aside) and byref-ness, the getter returns the property's type, and
+        // the setter takes it by value last and returns nothing. An
+        // unreadable `PropertySig` counts as agreeing, and its modifiers
         // decline comparisons through `drops_optional_modifier`.
-        let signature_agrees = if let Ok(declared) = &p.index_parameters {
-            // F# compiles some instance properties (`FSharpOption.IsNone`)
-            // with static accessors taking the instance first: an instance
-            // `PropertySig` over a static accessor, whose first parameter is
-            // not an index.
-            let accessor_index = match (p.has_this, is_static) {
-                (Some(true), false) | (Some(false), true) => Some(index_params),
-                (Some(true), true) => index_params.split_first().map(|(_, rest)| rest),
-                (Some(false), false) | (None, _) => None,
-            };
-            accessor_index.is_some_and(|index_params| {
-                declared.len() == index_params.len()
-                    && declared.iter().zip(index_params).all(|(d, a)| {
-                        let (d_byref, d_ty) = match &d.ty {
-                            TypeSig::ByRef(inner) => (true, self.project_type_ref(inner).ok()),
-                            _ => (false, self.project_type_ref(d).ok()),
-                        };
-                        d_byref == a.is_byref
-                            && d_ty.map(|t| nullability_erased(&t))
-                                == Some(nullability_erased(&a.ty))
+        let index_agrees = |index_params: &[Parameter]| match &p.index_parameters {
+            Ok(declared) => {
+                // F# compiles some instance properties (`FSharpOption.IsNone`)
+                // with static accessors taking the instance first: an
+                // instance `PropertySig` over a static accessor, whose first
+                // parameter is not an index.
+                let accessor_index = match (p.has_this, is_static) {
+                    (Some(true), false) | (Some(false), true) => Some(index_params),
+                    (Some(true), true) => index_params.split_first().map(|(_, rest)| rest),
+                    (Some(false), false) | (None, _) => None,
+                };
+                accessor_index.is_some_and(|index_params| {
+                    declared.len() == index_params.len()
+                        && declared.iter().zip(index_params).all(|(d, a)| {
+                            let (d_byref, d_ty) = match &d.ty {
+                                TypeSig::ByRef(inner) => (true, self.project_type_ref(inner).ok()),
+                                _ => (false, self.project_type_ref(d).ok()),
+                            };
+                            d_byref == a.is_byref
+                                && d_ty.map(|t| nullability_erased(&t))
+                                    == Some(nullability_erased(&a.ty))
+                        })
+                })
+            }
+            Err(_) => true,
+        };
+        let signature_agrees = proj_getter.as_ref().is_none_or(|g| {
+            index_agrees(&g.signature.parameters)
+                // A `ref` property's type is the byref the getter returns.
+                && nullability_erased(&g.signature.return_type) == nullability_erased(&ty)
+        }) && proj_setter.as_ref().is_none_or(|s| {
+            matches!(s.signature.return_type, TypeRef::Primitive(Primitive::Void))
+                && s.signature
+                    .parameters
+                    .split_last()
+                    .is_some_and(|(value, index)| {
+                        !value.is_byref
+                            && nullability_erased(&value.ty) == nullability_erased(&ty)
+                            && index_agrees(index)
                     })
-            })
-        } else {
-            true
-        } && proj_getter.as_ref().is_none_or(|g| {
-            // A `ref` property's type is the byref the getter returns.
-            nullability_erased(&g.signature.return_type) == nullability_erased(&ty)
         });
 
         // An explicit interface property carries its `MethodImpl` on its

@@ -230,3 +230,54 @@ fn package_cache_shape_census() {
         eprintln!("  {cause} {package}: {n}");
     }
 }
+
+/// Retyping any one accessor position of every property and event in the
+/// reference pack and in csc output leaves no bindable member that was
+/// compiler-shaped still shaped (`borzoi_assembly::accessor_metamorphic`).
+#[test]
+fn a_retyped_accessor_is_never_compiler_shaped() {
+    use borzoi_assembly::accessor_metamorphic::{POSITIONS, retyped_accessors_are_unshaped};
+    let dir = sdk_ref_pack_dir();
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "dll"))
+        .collect();
+    paths.sort();
+    paths.push(ensure_member_shapes_built().to_path_buf());
+    let mut failures = Vec::new();
+    for position in POSITIONS {
+        let mut retyped = 0;
+        let mut findings = Vec::new();
+        for path in &paths {
+            let bytes = std::fs::read(path).unwrap();
+            let Ok(outcome) = borzoi_assembly::accessor_metamorphic::retyped_accessors_are_unshaped(
+                &bytes, position,
+            ) else {
+                continue;
+            };
+            retyped += outcome.retyped;
+            findings.extend(outcome.findings);
+        }
+        eprintln!(
+            "{position:?}: {retyped} retyped, {} still shaped",
+            findings.len()
+        );
+        assert!(retyped > 0, "{position:?}: the probe retyped nothing");
+        if !findings.is_empty() {
+            failures.push(format!(
+                "{position:?}: {} of {retyped}, e.g.\n  {}",
+                findings.len(),
+                findings
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            ));
+        }
+    }
+    let _ = retyped_accessors_are_unshaped;
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

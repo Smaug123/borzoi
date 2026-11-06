@@ -97,7 +97,7 @@ pub fn compiler_shape(entity: &Entity) -> Result<(), Unshaped> {
 /// Whether another assembly can bind `member`: it is visible outside its
 /// assembly, virtual, or implements an interface member through a
 /// `MethodImpl` row.
-fn bindable(member: &Member) -> bool {
+pub(crate) fn bindable(member: &Member) -> bool {
     let visible = |access: Access| !matches!(access, Access::Private | Access::Internal);
     let slots_virtual = |slots: &[AccessorSlot]| slots.iter().any(|s| s.is_virtual);
     match member {
