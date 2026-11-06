@@ -13,7 +13,8 @@
 //   Type   = {"ns":s,"name":n,"kind":"class"|"interface"|"struct",
 //             "abstract":b,"sealed":b,"base":TypeRef|null,"interfaces":[TypeRef..],
 //             "methods":[Method..],"properties":[{"name":n,"type":Sig,"getter":i}..],
-//             "events":[{"name":n,"type":TypeRef,"add":i,"remove":i,"fire":i|null}..]}
+//             "events":[{"name":n,"type":TypeRef,"add":i,"remove":i,"fire":i|null}..],
+//             "generic":[name..]}                  (type parameters; the name carries its `n)
 //           (`getter`, `add`, `remove`, `fire`: indices into the type's methods)
 //   Method = {"name":n,"access":"public"|"private","static":b,"virtual":b,
 //             "newslot":b,"abstract":b,"final":b,"specialName":b,
@@ -25,6 +26,7 @@
 //           | {"szarray":TypeRef}               (the vector `T[]`)
 //           | {"array":TypeRef}                 (rank 1, no bounds: `T[*]`)
 //           | {"var":i} | {"mvar":i}            (`!i`, `!!i`, whatever the owner declares)
+//           | {"inst":TypeRef,"args":[TypeRef..]} (a generic instantiation; as a base, a TypeSpec)
 // Every non-abstract method gets the body `ret`: the bodies are never run.
 // -> {"ok":true}
 
@@ -80,6 +82,18 @@ internal static class Emit
         EntityHandle Ref(JsonNode node)
         {
             var o = node.AsObject();
+            if (o["inst"] is JsonNode generic)
+            {
+                var blob = new BlobBuilder();
+                var args = o["args"]!.AsArray();
+                var arguments = new BlobEncoder(blob).TypeSpecificationSignature()
+                    .GenericInstantiation(Ref(generic), args.Count, isValueType: false);
+                foreach (var a in args)
+                {
+                    EncodeType(arguments.AddArgument(), a!);
+                }
+                return mb.AddTypeSpecification(mb.GetOrAddBlob(blob));
+            }
             var scope = (int)o["scope"]!;
             var ns = (string)o["ns"]!;
             var n = (string)o["name"]!;
@@ -108,6 +122,16 @@ internal static class Emit
                 enc.Array(
                     e => EncodeType(e, arrayOf),
                     shape => shape.Shape(1, ImmutableArray<int>.Empty, ImmutableArray<int>.Empty));
+                return;
+            }
+            if (t["inst"] is JsonNode generic)
+            {
+                var args = t["args"]!.AsArray();
+                var arguments = enc.GenericInstantiation(Ref(generic), args.Count, isValueType: false);
+                foreach (var a in args)
+                {
+                    EncodeType(arguments.AddArgument(), a!);
+                }
                 return;
             }
             if (t["var"] is JsonNode var)
@@ -177,6 +201,8 @@ internal static class Emit
         // added in coded-index order, as the table is sorted.
         var semantics = new List<(EntityHandle, int, MethodSemanticsAttributes, MethodDefinitionHandle)>();
         var eventMaps = new List<(TypeDefinitionHandle, EventDefinitionHandle)>();
+        // Added after the types, in type order, as the table is sorted by owner.
+        var genericParams = new List<(TypeDefinitionHandle, string, int)>();
         var interfaces = new List<(TypeDefinitionHandle, EntityHandle)>();
         var propertyMaps = new List<(TypeDefinitionHandle, PropertyDefinitionHandle)>();
         // Method and parameter rows are laid out first, type by type, so each
@@ -209,6 +235,11 @@ internal static class Emit
             var baseType = t["base"] is { } b ? Ref(b) : default;
             mb.AddTypeDefinition(attrs, mb.GetOrAddString((string)t["ns"]!), mb.GetOrAddString((string)t["name"]!),
                 baseType, MetadataTokens.FieldDefinitionHandle(1), firstMethod[i]);
+            var typeParameters = t["generic"]?.AsArray() ?? new JsonArray();
+            for (var g = 0; g < typeParameters.Count; g++)
+            {
+                genericParams.Add((handle, (string)typeParameters[g]!, g));
+            }
             foreach (var iface in t["interfaces"]!.AsArray())
             {
                 interfaces.Add((handle, Ref(iface!)));
@@ -308,6 +339,10 @@ internal static class Emit
         foreach (var (type, first) in eventMaps)
         {
             mb.AddEventMap(type, first);
+        }
+        foreach (var (owner, parameterName, index) in genericParams)
+        {
+            mb.AddGenericParameter(owner, GenericParameterAttributes.None, mb.GetOrAddString(parameterName), index);
         }
         foreach (var (association, _, kind, method) in semantics.OrderBy(x => x.Item2))
         {

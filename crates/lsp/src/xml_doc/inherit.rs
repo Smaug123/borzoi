@@ -50,7 +50,7 @@ use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
 
 use super::candidate::{
     Candidate, Instantiation, NoCandidate, ParameterSlot, Reached, Undecidable, candidate,
-    il_faithful, inherits_automatically, shape_of, type_parameters_in_scope,
+    il_faithful, inherits_automatically, shape_of, shaped_throughout, type_parameters_in_scope,
 };
 use super::key::{DocIdIndex, DocTarget, type_name};
 use super::lookup::{DocLookup, DocSources, Located, xml_path_for};
@@ -190,6 +190,9 @@ pub enum TypeArgMiss {
     /// A type constructed from its own type parameters somewhere other than
     /// where the rendering of that case is modelled.
     SelfConstructed,
+    /// A type the ID spells, or one enclosing it, is not compiler-shaped
+    /// ([`borzoi_assembly::shape::compiler_shape`]).
+    Unshaped(Unshaped),
 }
 
 /// A longer chain of inheritance (one `<inheritdoc>` inheriting another's)
@@ -690,30 +693,6 @@ fn is_member_id_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '`' | '#')
 }
 
-/// Whether every type definition `ty` names (written in `from`'s metadata),
-/// and every type enclosing one, is compiler-shaped.
-fn shaped_throughout(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Result<(), Unshaped> {
-    match ty {
-        TypeRef::Named { type_args, .. } => {
-            if let IlTypeDefinition::Resolved(def) =
-                super::candidate::roslyn_type_definition(env, from, ty)
-            {
-                for h in env.enclosing_chain(def) {
-                    shape_of(env, h)?;
-                }
-            }
-            type_args
-                .iter()
-                .try_for_each(|a| shaped_throughout(env, from, &a.ty))
-        }
-        TypeRef::Array { element, .. } => shaped_throughout(env, from, &element.ty),
-        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
-            shaped_throughout(env, from, inner)
-        }
-        TypeRef::Primitive(_) | TypeRef::Ptr(None) | TypeRef::Var { .. } => Ok(()),
-    }
-}
-
 /// Whether every named type and primitive in `ty` (written in `from`'s
 /// metadata, and binding throughout: [`binds_throughout`]) has an ID that no
 /// other type of the env carries, so that the spelling in a documentation ID
@@ -862,6 +841,10 @@ fn type_argument_id(
             ) {
                 return Err(TypeArgMiss::Unbound);
             }
+            // Every type the ID spells must be compiler-shaped: a raw name
+            // the projection normalises (``Z`1`` on a non-generic type)
+            // spells another ID than Roslyn's.
+            shaped_throughout(env, inst.context, arg).map_err(TypeArgMiss::Unshaped)?;
             let enclosing = env.enclosing_chain_from_root(inst.context);
             let id = reference_enc(env, inst.context, enclosing.as_deref(), arg)?;
             Ok(Some(format!("T:{id}")))

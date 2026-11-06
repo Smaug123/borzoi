@@ -2016,3 +2016,38 @@ fn a_cref_to_a_type_whose_arity_suffix_disagrees_declines() {
     );
     assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
 }
+
+/// `D : B<Z>` inheriting `B<T>`'s summary, which names `T` by
+/// `<typeparamref>`: Roslyn rewrites it to the argument's ID. With `Z` a
+/// non-generic type named ``Z`1``, that ID is ``T:F.Z`1`` to Roslyn and
+/// `T:F.Z` to the projection, so the expansion declines.
+#[test]
+fn a_type_argument_whose_arity_suffix_disagrees_declines() {
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let local = |name: &str| json!({"scope": -1, "ns": "F", "name": name});
+    let types = vec![
+        class("F", "Z`1", Some(object(&cx)), vec![]),
+        json!({"ns": "F", "name": "B`1", "kind": "class", "base": object(&cx), "interfaces": [],
+            "methods": [], "properties": [], "generic": ["T"]}),
+        class(
+            "F",
+            "D",
+            Some(json!({"inst": local("B`1"), "args": [local("Z`1")]})),
+            vec![],
+        ),
+    ];
+    let docs: Entries = vec![
+        ("T:F.Z".into(), full("T:F.Z")),
+        (
+            "T:F.B`1".into(),
+            vec![r#"<summary>Of <typeparamref name="T"/>.</summary>"#.to_string()],
+        ),
+        ("T:F.D".into(), bare()),
+    ];
+    let verdict = lo_world("a type argument's arity suffix", types, &docs, "T:F.D");
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}

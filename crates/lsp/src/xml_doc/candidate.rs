@@ -213,6 +213,8 @@ impl Instantiation {
 /// unification picks. So equality and inequality alike are unproven, and
 /// every comparison over such a type declines.
 pub fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<String> {
+    // A type outside the certified domain is no comparison's currency.
+    shaped_throughout(env, from, ty).ok()?;
     Some(match ty {
         // A primitive is the core library's special type; without one it is
         // an error type to Roslyn, whose comparisons are not modelled.
@@ -255,6 +257,32 @@ pub fn type_key(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Option<S
             if *readonly { " readonly" } else { "" }
         ),
     })
+}
+
+/// Whether every type definition `ty` names (written in `from`'s metadata),
+/// and every type enclosing one, is compiler-shaped.
+pub(crate) fn shaped_throughout(
+    env: &AssemblyEnv,
+    from: EntityHandle,
+    ty: &TypeRef,
+) -> Result<(), Unshaped> {
+    match ty {
+        TypeRef::Named { type_args, .. } => {
+            if let IlTypeDefinition::Resolved(def) = roslyn_type_definition(env, from, ty) {
+                for h in env.enclosing_chain(def) {
+                    shape_of(env, h)?;
+                }
+            }
+            type_args
+                .iter()
+                .try_for_each(|a| shaped_throughout(env, from, &a.ty))
+        }
+        TypeRef::Array { element, .. } => shaped_throughout(env, from, &element.ty),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
+            shaped_throughout(env, from, inner)
+        }
+        TypeRef::Primitive(_) | TypeRef::Ptr(None) | TypeRef::Var { .. } => Ok(()),
+    }
 }
 
 /// Whether `entity` has the name of one of the special types a signature
