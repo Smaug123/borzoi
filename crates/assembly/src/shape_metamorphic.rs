@@ -27,7 +27,9 @@
 //!
 //! **Encodings.** C# spells a special type by its element type (`string`,
 //! never `class System.String`), constructs a generic type with exactly its
-//! arity's arguments, and gives an instance property instance accessors.
+//! arity's arguments, writes an array as the vector or as a zero-based
+//! unsized shape of rank two or more, and gives an instance property instance
+//! accessors.
 //! Re-encode every ordinary method's signature, or every instance property's
 //! getter, one other way ([`Encoding`]) and re-project: each member that was
 //! compiler-shaped must now be rejected for that reason, judged alone.
@@ -103,19 +105,26 @@ pub fn retyped_accessors_are_unshaped(
         let Some((after, _)) = retyped.iter().find(|(e, _)| same_type(e, before)) else {
             continue;
         };
-        for (i, member) in before.members.iter().enumerate().filter(|(_, m)| {
-            matches!(m, Member::Property(_) | Member::Event(_))
+        let in_scope = |m: &Member| matches!(m, Member::Property(_) | Member::Event(_));
+        let touched = |m: &Member| has_position(m, position);
+        let paired = match counterparts(&before.members, &after.members, &in_scope, &touched) {
+            Ok(paired) => paired,
+            Err(lost) => {
+                outcome
+                    .findings
+                    .push(format!("{}: {lost}", qualified(before)));
+                continue;
+            }
+        };
+        for (member, now) in before.members.iter().zip(paired).filter(|(m, _)| {
+            in_scope(m)
                 && bindable(m)
-                && has_position(m, position)
+                && touched(m)
                 && compiler_shape(&alone(before, m), enclosing).is_ok()
         }) {
             outcome.retyped += 1;
-            // Overloads share a name (two indexers `Item`): match the same
-            // occurrence of the name.
-            let namesake =
-                |m: &&Member| member_name(m) == member_name(member) && same_kind(m, member);
-            let occurrence = before.members[..i].iter().filter(namesake).count();
-            let Some(now) = after.members.iter().filter(namesake).nth(occurrence) else {
+            // Dropped by the projector: never certified.
+            let Some(now) = now else {
                 continue;
             };
             if compiler_shape(&alone(after, now), enclosing).is_ok() {
@@ -228,6 +237,65 @@ fn retype_method(m: &mut Method, position: Position) -> bool {
             }
         }
     }
+}
+
+/// Each member of `before` that `in_scope` admits paired with its
+/// re-projection among `after`, or `None` where the projector dropped it.
+///
+/// Only the members `touched` says were rewritten may differ, so within one
+/// group of namesakes (overloads, two indexers `Item`) an untouched member
+/// survives verbatim and in order. A touched member is the next survivor,
+/// unless that survivor is the next untouched member verbatim: then it was
+/// dropped. An untouched member that does not survive verbatim means
+/// `touched` is wrong, and the alignment is lost: `Err`, never a guess.
+fn counterparts<'a>(
+    before: &[Member],
+    after: &'a [Member],
+    in_scope: &dyn Fn(&Member) -> bool,
+    touched: &dyn Fn(&Member) -> bool,
+) -> Result<Vec<Option<&'a Member>>, String> {
+    let mut paired = vec![None; before.len()];
+    let mut grouped = vec![false; before.len()];
+    for lead in 0..before.len() {
+        if grouped[lead] || !in_scope(&before[lead]) {
+            continue;
+        }
+        let namesake = |m: &Member| {
+            member_name(m) == member_name(&before[lead]) && same_kind(m, &before[lead])
+        };
+        let group: Vec<usize> = (lead..before.len())
+            .filter(|&i| namesake(&before[i]))
+            .collect();
+        let mut survivors = after.iter().filter(|m| namesake(m)).peekable();
+        for (k, &i) in group.iter().enumerate() {
+            grouped[i] = true;
+            if touched(&before[i]) {
+                let next_untouched = group[k + 1..]
+                    .iter()
+                    .map(|&n| &before[n])
+                    .find(|m| !touched(m));
+                if survivors.peek().is_some_and(|&s| Some(s) != next_untouched) {
+                    paired[i] = survivors.next();
+                }
+            } else {
+                let survivor = survivors.next();
+                if survivor != Some(&before[i]) {
+                    return Err(format!(
+                        "{}: an untouched member did not survive verbatim",
+                        member_name(&before[i])
+                    ));
+                }
+                paired[i] = survivor;
+            }
+        }
+        if survivors.next().is_some() {
+            return Err(format!(
+                "{}: more re-projected namesakes than before",
+                member_name(&before[lead])
+            ));
+        }
+    }
+    Ok(paired)
 }
 
 fn qualified(e: &Entity) -> String {
@@ -454,12 +522,24 @@ pub enum Encoding {
     /// Every instance property's getter made static, taking an `int` first,
     /// as F# writes an instance property over a static accessor.
     StaticGetterOverInstanceProperty,
+    /// Every vector in an ordinary method's signature written as the rank-1
+    /// array shape `[0:]`.
+    RankOneArray,
+    /// Every array in an ordinary method's signature given the lower bound 3
+    /// in its first dimension.
+    NonZeroLowerBound,
+    /// Every array in an ordinary method's signature given the size 2 in its
+    /// first dimension.
+    DeclaredSize,
 }
 
-pub const ENCODINGS: [Encoding; 3] = [
+pub const ENCODINGS: [Encoding; 6] = [
     Encoding::SpecialByReference,
     Encoding::ExtraTypeArgument,
     Encoding::StaticGetterOverInstanceProperty,
+    Encoding::RankOneArray,
+    Encoding::NonZeroLowerBound,
+    Encoding::DeclaredSize,
 ];
 
 /// Re-encode the assembly in `bytes` by `encoding` and report each member
@@ -490,16 +570,29 @@ pub fn reencoded_signatures_are_unshaped(
         let Some((after, _)) = encoded.iter().find(|(e, _)| same_type(e, before)) else {
             continue;
         };
-        for (i, member) in before.members.iter().enumerate().filter(|(_, m)| {
-            bindable(m)
-                && touched_by(m, encoding)
+        let in_scope = |m: &Member| match encoding {
+            Encoding::StaticGetterOverInstanceProperty => matches!(m, Member::Property(_)),
+            _ => matches!(m, Member::Method(_)),
+        };
+        let touched = |m: &Member| touched_by(m, encoding);
+        let paired = match counterparts(&before.members, &after.members, &in_scope, &touched) {
+            Ok(paired) => paired,
+            Err(lost) => {
+                outcome
+                    .findings
+                    .push(format!("{}: {lost}", qualified(before)));
+                continue;
+            }
+        };
+        for (member, now) in before.members.iter().zip(paired).filter(|(m, _)| {
+            in_scope(m)
+                && bindable(m)
+                && touched(m)
                 && compiler_shape(&alone(before, m), enclosing).is_ok()
         }) {
             outcome.retyped += 1;
-            let namesake =
-                |m: &&Member| member_name(m) == member_name(member) && same_kind(m, member);
-            let occurrence = before.members[..i].iter().filter(namesake).count();
-            let Some(now) = after.members.iter().filter(namesake).nth(occurrence) else {
+            // Dropped by the projector: never certified.
+            let Some(now) = now else {
                 continue;
             };
             let verdict = compiler_shape(&alone(after, now), enclosing);
@@ -540,6 +633,10 @@ fn touched_by(member: &Member, encoding: Encoding) -> bool {
         Encoding::StaticGetterOverInstanceProperty => {
             return matches!(member, Member::Property(p) if !p.is_static && p.has_getter);
         }
+        Encoding::RankOneArray => &|t| matches!(t, ModelTypeRef::Array { rank: 1, .. }),
+        Encoding::NonZeroLowerBound | Encoding::DeclaredSize => {
+            &|t| matches!(t, ModelTypeRef::Array { .. })
+        }
     };
     match member {
         Member::Method(m) if !m.is_constructor => std::iter::once(&m.signature.return_type)
@@ -559,7 +656,7 @@ fn encode(image: &mut Image, encoding: Encoding) -> bool {
                 .type_refs
                 .iter()
                 .find(|r| r.name.namespace == "System" && r.name.name == "Object")
-                .and_then(|r| r.scope.clone().ok())
+                .and_then(|r| r.scope.ok())
             else {
                 return false;
             };
@@ -616,9 +713,17 @@ fn encode(image: &mut Image, encoding: Encoding) -> bool {
                     );
                 }
             }
-            Encoding::SpecialByReference | Encoding::ExtraTypeArgument => {
+            Encoding::SpecialByReference
+            | Encoding::ExtraTypeArgument
+            | Encoding::RankOneArray
+            | Encoding::NonZeroLowerBound
+            | Encoding::DeclaredSize => {
                 for (k, m) in td.methods.iter_mut().enumerate() {
-                    if accessors.contains(&(k as u32)) {
+                    // A constructor is left alone: re-encoding an attribute's
+                    // (`NullableAttribute(byte[])`) would break the decoding of
+                    // every use of it, dropping members the encoding never
+                    // touched.
+                    if accessors.contains(&(k as u32)) || m.name == ".ctor" || m.name == ".cctor" {
                         continue;
                     }
                     reencode_method(m, encoding, string_ref);
@@ -659,10 +764,45 @@ fn reencode(t: &mut ModifiedType, encoding: Encoding, string_ref: Option<TypeRef
                 args.push(ModifiedType::plain(TypeSig::Primitive(Primitive::Int32)));
             }
         }
-        TypeSig::SzArray(e) | TypeSig::ByRef(e) | TypeSig::Ptr(Some(e)) => {
+        TypeSig::SzArray(e) => {
             reencode(e, encoding, string_ref);
+            let shape = match encoding {
+                Encoding::RankOneArray => Some((Vec::new(), vec![0])),
+                Encoding::NonZeroLowerBound => Some((Vec::new(), vec![3])),
+                Encoding::DeclaredSize => Some((vec![2], vec![0])),
+                _ => None,
+            };
+            if let Some((sizes, lower_bounds)) = shape {
+                let element =
+                    std::mem::replace(e, Box::new(ModifiedType::plain(TypeSig::TypedByRef)));
+                t.ty = TypeSig::Array {
+                    element,
+                    rank: 1,
+                    sizes,
+                    lower_bounds,
+                };
+            }
         }
-        TypeSig::Array { element, .. } => reencode(element, encoding, string_ref),
+        TypeSig::ByRef(e) | TypeSig::Ptr(Some(e)) => reencode(e, encoding, string_ref),
+        TypeSig::Array {
+            element,
+            sizes,
+            lower_bounds,
+            ..
+        } => {
+            reencode(element, encoding, string_ref);
+            match encoding {
+                Encoding::NonZeroLowerBound => {
+                    lower_bounds.resize(lower_bounds.len().max(1), 0);
+                    lower_bounds[0] = 3;
+                }
+                Encoding::DeclaredSize => {
+                    sizes.resize(sizes.len().max(1), 0);
+                    sizes[0] = 2;
+                }
+                _ => {}
+            }
+        }
         _ => {}
     }
 }

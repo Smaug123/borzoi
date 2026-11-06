@@ -25,7 +25,9 @@
 //   TypeRef = {"prim":"I4"|"String"|"Object"|"Bool"}
 //           | {"scope":-1|i,"ns":s,"name":n}   (-1: a type this module defines)
 //           | {"szarray":TypeRef}               (the vector `T[]`)
-//           | {"array":TypeRef}                 (rank 1, no bounds: `T[*]`)
+//           | {"array":TypeRef,"rank":r,"sizes":[n..],"lobounds":[n..]}
+//                                               (an array shape; rank 1 and no
+//                                               sizes or bounds by default: `T[*]`)
 //           | {"var":i} | {"mvar":i}            (`!i`, `!!i`, whatever the owner declares)
 //           | {"inst":TypeRef,"args":[TypeRef..]} (a generic instantiation; as a base, a TypeSpec)
 // Every non-abstract method gets the body `ret`: the bodies are never run.
@@ -112,7 +114,7 @@ internal static class Emit
         void EncodeType(SignatureTypeEncoder enc, JsonNode t)
         {
             // `{"szarray": element}` is the vector `T[]`; `{"array": element}`
-            // the rank-1 array with no bounds, `T[*]`.
+            // an array shape, by default the rank-1 array with no bounds, `T[*]`.
             if (t["szarray"] is JsonNode vectorOf)
             {
                 EncodeType(enc.SZArray(), vectorOf);
@@ -120,9 +122,14 @@ internal static class Emit
             }
             if (t["array"] is JsonNode arrayOf)
             {
+                var rank = t["rank"]?.GetValue<int>() ?? 1;
+                ImmutableArray<int> Ints(string key) =>
+                    (t[key]?.AsArray() ?? new JsonArray()).Select(n => n!.GetValue<int>()).ToImmutableArray();
+                var sizes = Ints("sizes");
+                var lowerBounds = Ints("lobounds");
                 enc.Array(
                     e => EncodeType(e, arrayOf),
-                    shape => shape.Shape(1, ImmutableArray<int>.Empty, ImmutableArray<int>.Empty));
+                    shape => shape.Shape(rank, sizes, lowerBounds));
                 return;
             }
             if (t["inst"] is JsonNode generic)

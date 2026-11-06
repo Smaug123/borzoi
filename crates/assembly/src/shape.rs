@@ -44,8 +44,9 @@ pub enum Unshaped {
     /// declare.
     TypeParameterIndex,
     /// A signature spells a special type by reference (`class System.String`
-    /// where C# writes the `string` element type), or constructs a generic
-    /// type with another number of arguments than its name's arity.
+    /// where C# writes the `string` element type), constructs a generic type
+    /// with another number of arguments than its name's arity, or writes an
+    /// array shape C# does not (`T[*]`, `T[3:,0:]`, a declared size).
     SignatureEncoding,
     /// A signature carries an optional custom modifier: C# and VB write
     /// none outside function pointers, F# none at all.
@@ -334,8 +335,9 @@ fn is_plain_char(c: char) -> bool {
         )
 }
 
-/// Whether `ty` is encoded as C# writes it: every construction with as many
-/// arguments as its name's arity, and — in a member's signature or a type
+/// Whether `ty` is encoded as C# writes it: every array of a shape C# writes
+/// ([`array_shape_as_csharp`]), every construction with as many arguments as
+/// its name's arity, and — in a member's signature or a type
 /// argument, where C# writes a special type by its element type — no special
 /// type spelled by reference (`class System.String`). `System.TypedReference`
 /// is exempt: the projection reads its element type as that named type.
@@ -356,10 +358,29 @@ fn encoded_as_csharp(ty: &TypeRef, in_signature: bool) -> bool {
                     && SPECIAL_TYPES.contains(&name.as_str()))
                 && type_args.iter().all(|a| encoded_as_csharp(&a.ty, true))
         }
-        TypeRef::Array { element, .. } => encoded_as_csharp(&element.ty, true),
+        TypeRef::Array {
+            element,
+            rank,
+            sizes,
+            lower_bounds,
+        } => {
+            array_shape_as_csharp(*rank, sizes, lower_bounds)
+                && encoded_as_csharp(&element.ty, true)
+        }
         TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => encoded_as_csharp(inner, true),
         TypeRef::Primitive(_) | TypeRef::Ptr(None) | TypeRef::Var { .. } => true,
     }
+}
+
+/// Whether an array has a shape C# writes: the vector `T[]`, or `T[,…]` of
+/// rank two or more with no sizes and every lower bound written as zero.
+fn array_shape_as_csharp(rank: u8, sizes: &[u32], lower_bounds: &[i32]) -> bool {
+    let vector = rank == 1 && sizes.is_empty() && lower_bounds.is_empty();
+    let multidimensional = rank >= 2
+        && sizes.is_empty()
+        && lower_bounds.len() == usize::from(rank)
+        && lower_bounds.iter().all(|&b| b == 0);
+    vector || multidimensional
 }
 
 /// The types of namespace `System` a signature spells by their own element

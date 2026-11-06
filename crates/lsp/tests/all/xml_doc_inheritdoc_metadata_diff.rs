@@ -2178,3 +2178,71 @@ fn a_cref_to_an_instance_property_over_a_static_getter_declines() {
     );
     assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
 }
+
+/// An array shape: rank, sizes, lower bounds.
+type ArrayShape<'a> = (u32, &'a [u32], &'a [i32]);
+
+/// A `cref` to a method `M(int[...])` whose parameter has the array `shape`,
+/// spelled `id`.
+fn array_cref_world(label: &str, shape: ArrayShape, id: &str) -> Verdict {
+    let (rank, sizes, lobounds) = shape;
+    let parameter = json!({"type": {"array": {"prim": "I4"}, "rank": rank, "sizes": sizes,
+        "lobounds": lobounds}, "mods": []});
+    let m = method(
+        "M",
+        "public",
+        (false, false, false, false),
+        false,
+        Value::Null,
+        vec![parameter],
+        vec![],
+    );
+    cref_world(label, (vec![m], vec![]), id)
+}
+
+/// C# writes `int[,]` as a rank-2 shape with no sizes and both lower bounds
+/// zero; a `cref` to it expands, as Roslyn's does.
+#[test]
+fn a_cref_to_a_method_taking_a_csharp_multidimensional_array_expands() {
+    let verdict = array_cref_world(
+        "C#'s int[,]",
+        (2, &[], &[0, 0]),
+        "M:N.C.M(System.Int32[0:,0:])",
+    );
+    assert!(matches!(verdict, Verdict::Agrees), "{verdict:?}");
+}
+
+/// Array shapes C# never writes — a non-zero lower bound, a declared size, a
+/// rank-1 array that is not the vector — are outside the domain, so a `cref`
+/// spelling the shape's own documentation ID declines.
+#[test]
+fn a_cref_to_a_method_taking_an_array_shape_csharp_does_not_write_declines() {
+    let shapes: [(&str, ArrayShape, &str); 4] = [
+        (
+            "a non-zero lower bound",
+            (2, &[], &[3, 0]),
+            "M:N.C.M(System.Int32[3:,0:])",
+        ),
+        (
+            "a declared size",
+            (2, &[2], &[0, 0]),
+            "M:N.C.M(System.Int32[0:2,0:])",
+        ),
+        (
+            "a rank-1 array",
+            (1, &[], &[0]),
+            "M:N.C.M(System.Int32[0:])",
+        ),
+        (
+            "a rank-2 array with no bounds",
+            (2, &[], &[]),
+            "M:N.C.M(System.Int32[0:,0:])",
+        ),
+    ];
+    let undeclined: Vec<_> = shapes
+        .into_iter()
+        .map(|(label, shape, id)| (label, array_cref_world(label, shape, id)))
+        .filter(|(_, verdict)| !matches!(verdict, Verdict::Declined { .. }))
+        .collect();
+    assert!(undeclined.is_empty(), "{undeclined:#?}");
+}
