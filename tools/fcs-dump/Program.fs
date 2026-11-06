@@ -4993,15 +4993,20 @@ let private canonicalTyparName (i: int) : string =
 /// inference never produces.
 let private renderTypeCanonical (t: FSharpType) : string =
     // A rename table threaded through one top-level render call, mapping each
-    // generic-parameter *name* to its canonical index by first appearance. Fresh
-    // per call, so distinct binders each start their numbering at `'a`.
-    let rename = System.Collections.Generic.Dictionary<string, int>()
-    let canonTypar (name: string) : string =
-        match rename.TryGetValue name with
+    // generic parameter to its canonical index by first appearance. Fresh per
+    // call, so distinct binders each start their numbering at `'a`. Keyed on
+    // the parameter itself (`FSharpGenericParameter` compares by typar
+    // identity), not its name: FCS names a generalised inference variable
+    // `'a`, `'b`, … without avoiding the names a type annotation wrote, so in
+    // `let f (x: 'a) y = 1` both parameters' variables are named `a`, and a
+    // name-keyed table renders `'a -> 'a -> int` for FCS's `'a -> 'b -> int`.
+    let rename = System.Collections.Generic.Dictionary<FSharpGenericParameter, int>()
+    let canonTypar (tp: FSharpGenericParameter) : string =
+        match rename.TryGetValue tp with
         | true, i -> canonicalTyparName i
         | false, _ ->
             let i = rename.Count
-            rename.[name] <- i
+            rename.[tp] <- i
             canonicalTyparName i
     // Strip every abbreviation layer. Grouping is a property of the *type*, not
     // of how it was spelled, so each precedence test below asks the stripped
@@ -5085,7 +5090,7 @@ let private renderTypeCanonical (t: FSharpType) : string =
             // side never produces, so any accidental match is impossible.
             if tp.IsMeasure then sprintf "<measure:%s>" tp.Name
             elif tp.IsSolveAtCompileTime then sprintf "<srtp:%s>" tp.Name
-            else canonTypar tp.Name
+            else canonTypar tp
         elif t.HasTypeDefinition && t.TypeDefinition.IsArrayType
              && t.GenericArguments.Count = 1 then
             // Recurse, so the canonical convention holds under the array rather
@@ -6662,6 +6667,15 @@ let private convertPerDeclaration
     let parts = List.map walk impl.Declarations
     List.collect fst parts, List.collect snd parts
 
+/// The `types` dump's warnings, `{ Line, Code }` each, for a consumer that
+/// grades a cell by what FCS said about it: FS0064 ("less generic than
+/// indicated by the type annotations") marks a written type variable the body
+/// fixed.
+let private warningRecords (diags: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    diags
+    |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning)
+    |> Array.map (fun d -> {| Line = d.StartLine; Code = d.ErrorNumber |})
+
 /// Walk one implementation file's typed tree, emitting `{ Range, Kind, Type,
 /// TypeCanon }` for every expression node carrying a real source location in
 /// *this* file, and the declarations whose typed tree could not be converted
@@ -6799,7 +6813,12 @@ let private dumpTypes (absolute: string) =
             {| Line = d.StartLine
                Code = d.ErrorNumber
                Message = d.Message |})
-    let payload = {| File = absolute; Exprs = exprs; Errors = errors; Unconverted = unconverted |}
+    let payload =
+        {| File = absolute
+           Exprs = exprs
+           Errors = errors
+           Warnings = warningRecords diags
+           Unconverted = unconverted |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
     Console.Out.WriteLine()
@@ -7295,6 +7314,7 @@ let private fileBatchCore () =
                     {| File = absolute
                        Exprs = exprs
                        Errors = errorLines ()
+                       Warnings = warningRecords checkResults.Diagnostics
                        Unconverted = unconverted |}, compact)
             | "binder-types" ->
                 let binders, unconverted = collectBinderTypes (implFile ())
