@@ -730,11 +730,6 @@ pub enum Incomplete {
     /// A use of a referenced assembly's union case whose F# type is not read
     /// off its maker, and why ([`union_case_scheme`]).
     AssemblyCase(FunctionTyGap),
-    /// A use of a union case whose shape this stage does not type: a case of
-    /// several fields (FCS demands a syntactic tuple for them), or one whose
-    /// field type FCS would check its argument against by coercion (`obj`,
-    /// an interface, an unsealed class).
-    CaseShape,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -2884,7 +2879,20 @@ impl<'a> Gen<'a> {
                     // anything else that is not an in-file binder (a
                     // preceding file's, a deferred name) is unmodelled.
                     let uv = self.nonlocal_value_or_incomplete(tok.text_range())?;
-                    self.emit(tok.text_range(), uv, expected);
+                    // FCS eta-expands a case of fields used unapplied
+                    // (`List.map Some`), and its node at the case's range is
+                    // the case built inside the expansion: the union, never
+                    // the function. So nothing is emitted for such a use.
+                    let unapplied_case = match self.resolved.resolution_at(tok.text_range()) {
+                        Some(Resolution::UnionCase { union, case }) => {
+                            union_case_scheme(self.env, union, case)
+                                .is_ok_and(|scheme| !scheme.fields.is_empty())
+                        }
+                        _ => false,
+                    };
+                    if !unapplied_case {
+                        self.emit(tok.text_range(), uv, expected);
+                    }
                     return Some(uv);
                 };
                 if self.declines_use(def) {
@@ -3690,23 +3698,25 @@ impl<'a> Gen<'a> {
 
     /// The type variable of a use of case `case` of the referenced union
     /// `union`, as a value: the union for a nullary case (`None`), else the
-    /// function from its field (`Some`), each of the union's type parameters
-    /// instantiated fresh. FCS checks a case's argument against its field
-    /// type by coercion where the field is not a type variable
-    /// (`TcExprsWithFlexes`); against a sealed field that is equality, so
-    /// only a case whose fields are all sealed or type variables is typed, and
-    /// only a case of at most one field, since several demand a syntactic
-    /// tuple this use does not see.
+    /// function from its field, or the tuple of its fields, to the union
+    /// (`Some`, `UPair`), each of the union's type parameters instantiated
+    /// fresh. Unlike a value's use, a case's is not loosened
+    /// (`MakeApplicableExprWithFlex` is `TcVal`'s): unapplied, FCS
+    /// eta-expands it at exactly its field types (`UObj` is `obj -> UObj`),
+    /// and applied, it checks each argument against an unsealed field by
+    /// coercion (`TcExprsWithFlexes`), which an application's argument check
+    /// reproduces — as `infer_union_case_diff`'s unsealed and many-field rows
+    /// hold it to.
     fn assembly_case_use(
         &mut self,
         union: EntityHandle,
         case: crate::assembly_env::UnionCaseIndex,
     ) -> Result<TyVid, Incomplete> {
         let scheme = union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
-        if scheme.fields.len() > 1 || !scheme.fields.iter().all(|f| is_sealed(self.env, f)) {
-            return Err(Incomplete::CaseShape);
-        }
-        Ok(self.scheme_use(&scheme.value_ty()))
+        let ty = self.instantiate(&scheme.value_ty());
+        let uv = self.table.fresh();
+        self.eq(Ty::Var(uv), ty);
+        Ok(uv)
     }
 
     /// [`Self::scheme_use`] over a module function's reading: each type

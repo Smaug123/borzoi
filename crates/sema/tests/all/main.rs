@@ -50,6 +50,7 @@ mod infer_preceding_type_diff;
 mod infer_project_type_annotation_diff;
 mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
+mod infer_union_case_diff;
 mod manifest_autoopen_surface_diff;
 mod member_hiding_diff;
 mod module_function_measures_diff;

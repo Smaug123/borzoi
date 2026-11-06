@@ -999,9 +999,11 @@ enum T {
     /// `int * string`.
     Pair,
     Unit,
+    /// `int option`: built from FSharp.Core's union cases.
+    Opt,
 }
 
-const TYPES: [T; 5] = [T::Int, T::Str, T::Bool, T::Pair, T::Unit];
+const TYPES: [T; 6] = [T::Int, T::Str, T::Bool, T::Pair, T::Unit, T::Opt];
 
 /// What an in-scope name can be used as.
 #[derive(Debug, Clone, PartialEq)]
@@ -1069,6 +1071,7 @@ impl Gen<'_> {
             T::Bool => ["true", "false"][self.rng.below(2)].to_string(),
             T::Pair => ["pr", "uu", "(7, \"p\")"][self.rng.below(3)].to_string(),
             T::Unit => "()".to_string(),
+            T::Opt => ["None", "(Some 3)", "(Some hp)"][self.rng.below(3)].to_string(),
         }
     }
 
@@ -1160,6 +1163,10 @@ impl Gen<'_> {
                 let a = self.expr(T::Int, depth - 1);
                 let b = self.expr(T::Str, depth - 1);
                 format!("({a}, {b})")
+            }
+            8 if t == T::Opt => {
+                let a = self.expr(T::Int, depth - 1);
+                format!("(Some {a})")
             }
             // FSharp.Core's pipes and composition, which inference types as
             // applications of their signatures.
@@ -1596,6 +1603,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40) * 2;
     let mut total = Committed::default();
     let mut wrapped_lets = 0usize;
+    let mut uncheckable = 0usize;
     for seed in 0..files.max(1) as u64 {
         let mut rng = Rng(seed ^ 0x5eed_ba77);
         let mut src = format!("{HEADER}let k0 = 1\n");
@@ -1647,9 +1655,28 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
             };
             src.push_str(&format!("let {stem}{i} {params} ={sep}{body}\n"));
         }
+        // FCS aborts the whole file on some of these (no implementation
+        // file); such a file grades nothing, and is counted.
+        let path = temp_fs_file("infer_local_let_ill_typed_probe", &src);
+        let checkable = try_invoke_fcs_dump("types", &path);
+        let _ = std::fs::remove_file(&path);
+        if let Err(e) = checkable {
+            if std::env::var_os("BORZOI_SHOW_UNCHECKABLE").is_some() {
+                eprintln!("uncheckable: {e}\n{src}");
+            }
+            uncheckable += 1;
+            continue;
+        }
         total += check(&src, false);
     }
-    eprintln!("ill-typed family: {total:?}, lets inside rejected constructs: {wrapped_lets}");
+    eprintln!(
+        "ill-typed family: {total:?}, lets inside rejected constructs: {wrapped_lets}, \
+         uncheckable files: {uncheckable}"
+    );
+    assert!(
+        uncheckable * 4 <= files,
+        "FCS could not check {uncheckable} of {files} files"
+    );
     assert!(
         total.fcs_errors >= 50,
         "the family stopped producing ill-typed programs: {total:?}"

@@ -469,10 +469,10 @@ impl UnionCaseScheme {
 ///   ([`AssemblyEnv::head_hides_no_measure`]);
 /// - the case carries no attribute: F# checks a case's attributes at each use
 ///   (an `[<Obsolete>]` one can reject it), and only the pickle has them;
-/// - the union's type parameters are unconstrained ([`constrained_parameter`]):
-///   nothing here checks a use's arguments against a constraint;
 /// - the maker's return reads back as the union applied to its parameters in
-///   order, and the maker is the only one at that position.
+///   order — which the bridge declines for a union constraining any of them
+///   ([`Bridge::generic_path`]), since nothing here checks a use's arguments
+///   against a constraint — and the maker is the only one at that position.
 ///
 /// Anything else is a [`FunctionTyGap`], and the caller declines.
 pub(crate) fn union_case_scheme(
@@ -506,13 +506,6 @@ pub(crate) fn union_case_scheme(
                 return Err(FunctionTyGap::Measures);
             }
         }
-    }
-    if entity
-        .generic_parameters
-        .iter()
-        .any(|p| constrained_parameter(p))
-    {
-        return Err(FunctionTyGap::Constrained);
     }
     let mut makers = entity
         .union_case_makers
