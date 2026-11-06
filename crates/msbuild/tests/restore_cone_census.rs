@@ -313,8 +313,8 @@ struct Cone {
     files: BTreeMap<PathBuf, String>,
     /// Each task assembly's identity, rendered.
     assemblies: BTreeMap<PathBuf, String>,
-    /// Every assembly the oracle process has loaded during any census build so
-    /// far, rendered as name and informational version.
+    /// Every assembly this subject's oracle process loaded while its build ran,
+    /// rendered as name and informational version.
     loaded: BTreeMap<PathBuf, String>,
     /// The spec the build wrote, normalised.
     spec: Value,
@@ -647,15 +647,15 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
                     format!("sha256:{}", &hash[..HASH_DIGITS]),
                 ));
             }
-            // Cumulative over the oracle's builds, so the last answer has them
-            // all. Only the SDK's own: the runtime's assemblies are the BCL any
-            // replacement runs on.
-            per_sdk.loaded = cone
-                .loaded
-                .iter()
-                .map(|(path, identity)| (subject.spell(&cone, path), identity.clone()))
-                .filter(|(spelling, _)| spelling.starts_with("sdk:"))
-                .collect();
+            // Each subject has its own oracle process, so the SDK's set is the
+            // union over subjects. Only the SDK's own assemblies: the runtime's
+            // are the BCL any replacement runs on.
+            per_sdk.loaded.extend(
+                cone.loaded
+                    .iter()
+                    .map(|(path, identity)| (subject.spell(&cone, path), identity.clone()))
+                    .filter(|(spelling, _)| spelling.starts_with("sdk:")),
+            );
             for (assembly, identity) in &cone.assemblies {
                 shared.insert((
                     format!("{sdk} assembly {}", subject.spell(&cone, assembly)),
