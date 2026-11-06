@@ -861,6 +861,15 @@ enum PatShape {
     Case(UnionCaseScheme, Option<Box<PatShape>>),
 }
 
+/// Where a pattern is read ([`Gen::pattern_shape_in`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatSite {
+    /// A `let` or parameter pattern.
+    Binding,
+    /// A `match` clause's pattern.
+    Match,
+}
+
 impl PatShape {
     /// Add every name the pattern binds to `out`.
     fn names(&self, out: &mut HashSet<DefId>) {
@@ -3096,7 +3105,7 @@ impl<'a> Gen<'a> {
                         self.mark_incomplete(Incomplete::DuplicateBinder);
                         return None;
                     }
-                    let shape = match self.pattern_shape(&pat) {
+                    let shape = match self.pattern_shape_in(&pat, PatSite::Match) {
                         Ok(shape) => shape,
                         Err(why) => {
                             self.mark_incomplete(why);
@@ -3124,6 +3133,10 @@ impl<'a> Gen<'a> {
                         return None;
                     }
                     self.eq(Ty::Var(sv), pt);
+                    // The pattern's names are typed before the clause's uses
+                    // of them are walked, so a use reads a known type
+                    // ([`Self::value_use`]).
+                    self.settle();
                     if clause.guard().is_some() {
                         self.constrain_bool(clause.guard());
                     }
@@ -4056,13 +4069,19 @@ impl<'a> Gen<'a> {
             return self.scheme_use(&scheme);
         }
         let dv = self.def_var(def);
-        let current_param = self.is_current_param(def) || self.match_locals.contains(&def);
+        let match_local = self.match_locals.contains(&def);
+        let current_param = self.is_current_param(def) || match_local;
         if !current_param {
             self.poison.push(dv);
             self.opaque.push((dv, None));
         }
         let known = match self.param_annotations.get(&def) {
             Some(ann) => Some(ann.clone()),
+            // A match's pattern variable is typed by its pattern before its
+            // clause is walked: a use of one whose type is known then is
+            // loosened as FCS loosens it (`Some g -> g` with
+            // `g : obj -> int` is `'a -> int` at the use).
+            None if match_local => Some(self.table.resolve(&Ty::Var(dv))).filter(Ty::is_ground),
             None if current_param => None,
             None => Some(self.table.resolve(&Ty::Var(dv))).filter(Ty::is_ground),
         };
@@ -5127,6 +5146,15 @@ impl<'a> Gen<'a> {
     /// is an annotation around anything but a name, or outside the modelled set
     /// ([`Self::annotation_ty`]).
     fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
+        self.pattern_shape_in(pat, PatSite::Binding)
+    }
+
+    /// [`Self::pattern_shape`] at `site`: a `match` clause's pattern reads
+    /// union cases and constants, and declines an annotated name; a `let` or
+    /// parameter pattern reads neither (an incomplete pattern there is rare,
+    /// and its relation to the RHS is [`Self::pattern_rhs`]'s, which does not
+    /// guard what a case's structure could bind).
+    fn pattern_shape_in(&self, pat: &Pat, site: PatSite) -> Result<PatShape, Incomplete> {
         // Recovery drops what it cannot parse, so a recovered pattern's
         // surviving children look well-formed: `(a,b,)` reads as a pair, where
         // FCS keeps a third, recovery element. And it can spill past the
@@ -5147,15 +5175,16 @@ impl<'a> Gen<'a> {
             // A name the resolver reads as a referenced assembly's union case
             // (`None`) is that case, applied to nothing.
             Pat::Named(named)
-                if named
-                    .ident()
-                    .is_some_and(|tok| self.def_at(tok.text_range()).is_none()) =>
+                if site == PatSite::Match
+                    && named
+                        .ident()
+                        .is_some_and(|tok| self.def_at(tok.text_range()).is_none()) =>
             {
                 let tok = named.ident().ok_or(Incomplete::Recovery)?;
                 self.case_pattern(tok.text_range(), None)
             }
             Pat::Named(named) => Ok(PatShape::Name(named_def(named)?)),
-            Pat::LongIdent(li) => {
+            Pat::LongIdent(li) if site == PatSite::Match => {
                 // `Case` or `Case p`: at most one argument, no named fields,
                 // no type arguments, no active pattern, and a head of one
                 // name the resolver reads as a case.
@@ -5177,7 +5206,7 @@ impl<'a> Gen<'a> {
                 };
                 self.case_pattern(tok.text_range(), arg.as_ref())
             }
-            Pat::Const(c) if !c.syntax().text().is_empty() => {
+            Pat::Const(c) if site == PatSite::Match && !c.syntax().text().is_empty() => {
                 let kind = c.literal().map(|l| l.kind());
                 match kind {
                     Some(
@@ -5191,6 +5220,10 @@ impl<'a> Gen<'a> {
                     _ => Err(Incomplete::PatternShape(pat.syntax().kind())),
                 }
             }
+            // FCS relates a `match` pattern's annotation to the scrutinee by
+            // equality and rejects a mismatch, keeping no binder; the
+            // annotation would already have typed the name.
+            Pat::Typed(_) if site == PatSite::Match => Err(Incomplete::CoercedPattern),
             Pat::Typed(typed) => {
                 let Some(t) = typed.ty().and_then(|ty| self.annotation_ty(&ty)) else {
                     return Err(Incomplete::PatternAnnotation);
@@ -5205,7 +5238,7 @@ impl<'a> Gen<'a> {
             Pat::Tuple(tuple) => {
                 let elems = tuple
                     .elements()
-                    .map(|el| self.pattern_shape(&el))
+                    .map(|el| self.pattern_shape_in(&el, site))
                     .collect::<Result<Vec<_>, _>>()?;
                 if elems.len() < 2 {
                     return Err(Incomplete::Recovery);
@@ -5213,7 +5246,7 @@ impl<'a> Gen<'a> {
                 Ok(PatShape::Tuple(elems))
             }
             Pat::Paren(p) => match p.inner() {
-                Some(inner) => self.pattern_shape(&inner),
+                Some(inner) => self.pattern_shape_in(&inner, site),
                 None => Err(Incomplete::Recovery),
             },
             // `()` is a constant pattern whose node is zero-width: the
@@ -5251,9 +5284,9 @@ impl<'a> Gen<'a> {
                 let inner = unparen(arg).ok_or(Incomplete::Recovery)?;
                 match (&inner, n) {
                     (Pat::Wildcard(_), _) => Some(Box::new(PatShape::Wildcard)),
-                    (_, 1) => Some(Box::new(self.pattern_shape(arg)?)),
+                    (_, 1) => Some(Box::new(self.pattern_shape_in(arg, PatSite::Match)?)),
                     (Pat::Tuple(t), n) if !t.is_struct() && t.elements().count() == n => {
-                        Some(Box::new(self.pattern_shape(&inner)?))
+                        Some(Box::new(self.pattern_shape_in(&inner, PatSite::Match)?))
                     }
                     _ => return Err(Incomplete::PatternShape(SyntaxKind::LONG_IDENT_PAT)),
                 }

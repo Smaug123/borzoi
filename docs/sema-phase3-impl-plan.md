@@ -1068,7 +1068,13 @@ The arms agree as an `if`'s branches do. Patterns: name, wildcard, constant
 over its field, the tuple of its fields, or `_` for all of them. A match's
 pattern variables are never generalised, so a use of one is the binding's own
 variable, as a parameter's is — not another binding's opaque one, which kept
-`match f x with Some v -> v` open until it was. Three things FCS's dump cannot
+`match f x with Some v -> v` open until it was — and is typed by its pattern
+before its clause is walked, so a use of one whose type is known then is
+loosened as FCS loosens it (`Some g -> g` with `g : obj -> int` is `'a -> int`
+at the use). A pattern of structure is related to the scrutinee only where
+that cannot bind an earlier binding's open variable or one an opaque local's
+resolution mentions, the variables an argument check refuses to bind too, and
+a pattern binding a name twice declines (FS0038), as for a `let` pattern. Three things FCS's dump cannot
 grade decline or go unemitted: a one-clause match (FCS elaborates it to a
 `let`, keeping no node at its result), the match's own range, and the
 scrutinee's own node (FCS may bind it to a temporary whose `let` sits there,
@@ -1098,7 +1104,11 @@ pattern's names (`Some (Some v)`): it reported none of them.
 
 Still declining: the project's own unions, in a pattern or as a value (the
 next lever, above); `function` (lambdas are unmodelled); `try … with`;
-active, record, list, array, `:?`, `null` and OR patterns; a later arm checked
+active, record, list, array, `:?`, `null` and OR patterns; an annotated name
+in a match pattern (FCS relates it by equality and rejects a mismatch, where
+the annotation would already have typed the name); a case or constant in a
+`let` or parameter pattern (rare, and that relation's guard does not cover
+what a case's structure could bind); a later arm checked
 against an open first arm's type, as for an `if`; and a value binding of a
 generic case (`let v = None`, which FCS generalises).
 

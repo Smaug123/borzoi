@@ -213,6 +213,37 @@ const MATCHES: &[(&str, &str, &str, &str, bool)] = &[
         "| (x, x) -> x | _ -> \"\"",
         false,
     ),
+    // A function-typed payload is loosened at its use, as FCS loosens a
+    // value of a known type; an annotated pattern FCS relates by equality,
+    // and rejects on a mismatch.
+    (
+        "fnPayload",
+        "(o: (obj -> int) option) (h: obj -> int)",
+        "o",
+        "| Some g -> g | None -> h",
+        false,
+    ),
+    (
+        "fnPayloadApplied",
+        "(o: (obj -> int) option)",
+        "o",
+        "| Some g -> g 1 | None -> 0",
+        true,
+    ),
+    (
+        "annotatedPat",
+        "(s: string)",
+        "s",
+        "| (x: obj) -> x | _ -> null",
+        false,
+    ),
+    (
+        "annotatedPatSame",
+        "(s: string)",
+        "s",
+        "| (x: string) -> x | _ -> \"\"",
+        false,
+    ),
     (
         "resultOpt",
         "(o: int option)",
@@ -475,6 +506,21 @@ fn a_pattern_does_not_ground_a_generalisable_local_through_the_scrutinee() {
         "(let g1 = idf in (match (if g1 b then ho else None) with Some 1 -> 1 | _ -> 2))",
     ] {
         let src = format!("module M\nlet idf x = x\nlet ho = Some 5\nlet t (b: bool) = {body}\n");
+        check(&src, &[], &mut Tally::default());
+    }
+}
+
+/// A `let` pattern reads no union case and no constant, so nothing relates
+/// such a pattern to an opaque local (`let g = idf in let (1) = g 1 in 0`
+/// keeps `idf : 'a -> 'a` in FCS).
+#[test]
+fn let_patterns_over_cases_and_constants_commit_only_what_fcs_kept() {
+    for body in [
+        "let g = idf in let (1) = g 1 in 0",
+        "let g = idf in let (Some 1) = g (Some 1) in 0",
+        "let (Some v) = ho in v",
+    ] {
+        let src = format!("module M\nlet idf x = x\nlet ho = Some 5\nlet t () = {body}\n");
         check(&src, &[], &mut Tally::default());
     }
 }
