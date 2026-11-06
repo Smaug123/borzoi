@@ -566,3 +566,40 @@ fn a_pattern_does_not_override_an_earlier_argument_check() {
         }
     }
 }
+
+/// An earlier clause's unmodelled or dropped relation fixes a payload in FCS
+/// before a later pattern contradicts it: `if x` makes `x : bool`, an arm `1`
+/// checked against the first arm makes it `int`. FCS's dumps cannot grade
+/// these error-recovered declarations, so FCS's answer is pinned: a later
+/// pattern's `string` must not reach `x`.
+#[test]
+fn a_later_pattern_does_not_override_an_earlier_clause() {
+    for (body, x) in [
+        (
+            "match o with Some x -> (if x then 1 else 2) | Some \"\" -> 2 | None -> 3",
+            "System.Boolean",
+        ),
+        (
+            "match o with Some x -> x | Some y -> 1 | Some \"\" -> 2 | None -> 3",
+            "System.Int32",
+        ),
+    ] {
+        let src = format!("module M\nlet f o = {body}\n");
+        let parsed = parse(&src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = full_bcl_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
+        for (def, ty) in inferred.def_types() {
+            if resolved.def(*def).name.as_str() == "x" {
+                assert_eq!(ty.render(), x, "`x` in {body}");
+            }
+        }
+    }
+}

@@ -730,8 +730,10 @@ pub enum Incomplete {
     /// A use of a referenced assembly's union case whose F# type is not read
     /// off its maker, and why (`function_ty::union_case_scheme`).
     AssemblyCase(FunctionTyGap),
-    /// A `match` pattern that contradicts an argument check FCS applied
-    /// before it in source order, which inference has not yet applied.
+    /// A `match` pattern that contradicts a relation FCS applied before it in
+    /// source order which inference has not applied (a pending argument
+    /// check, a dropped check-mode relation), or that would refine an open
+    /// scrutinee after an unmodelled construct.
     PatternAfterCheck,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
@@ -3145,6 +3147,19 @@ impl<'a> Gen<'a> {
                         self.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
                     }
+                    // An unmodelled construct before the pattern may have
+                    // fixed what the scrutinee's open variables are in FCS
+                    // (`Some x -> (if x then …) | Some "" -> …` makes `x`
+                    // `bool`, then rejects the pattern), and it left no
+                    // relation to probe; so on an incomplete binding a
+                    // pattern of structure relates only a ground scrutinee.
+                    if !self.complete
+                        && !matches!(pt, Ty::Var(_))
+                        && !self.table.resolve(&Ty::Var(sv)).is_ground()
+                    {
+                        self.mark_incomplete(Incomplete::PatternAfterCheck);
+                        return None;
+                    }
                     self.eq(Ty::Var(sv), pt);
                     // The pattern's names are typed before the clause's uses
                     // of them are walked, so a use reads a known type
@@ -5270,9 +5285,10 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether relating the pattern type `pt` to the scrutinee `sv` fails once
-    /// every argument check still pending — each walked before the pattern,
-    /// so each applied before it by FCS, which checks in source order — is
-    /// applied as an equality. Probed under a snapshot, which is rolled back:
+    /// every argument check still pending, and every check-mode relation
+    /// dropped ([`Self::dropped`]) — each walked before the pattern, so each
+    /// applied before it by FCS, which checks in source order — is applied as
+    /// an equality. Probed under a snapshot, which is rolled back:
     /// nothing is applied. A check FCS would meet by coercion fails here where
     /// FCS succeeds, which only declines.
     fn pattern_contradicts_pending_check(&mut self, sv: TyVid, pt: &Ty) -> bool {
@@ -5283,6 +5299,7 @@ impl<'a> Gen<'a> {
                 Constraint::ArgCheck(ac) => Some((ac.arg, ac.dom)),
                 _ => None,
             })
+            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
             .collect();
         if checks.is_empty() {
             return false;
