@@ -15,6 +15,14 @@
 //! is loaded beside, or against the other one — the original while the
 //! renamed one is loaded, or the reverse — so that its `MethodImpl` rows
 //! name methods by names they no longer have.
+//!
+//! An interface loaded with an accessor named off the convention is outside
+//! what the expansion certifies (`borzoi_assembly::shape`), so every entry
+//! implementing it must decline ([`Dim::AccessorsOffConvention`]), whatever
+//! Roslyn makes of it; that needs no oracle. The rest — the ordinary
+//! method renamed, the implementer's rows naming names the loaded
+//! interface's accessors no longer have, or have conventionally for another
+//! member — is held to Roslyn.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -122,6 +130,10 @@ struct Case {
     /// Name swaps, applied in turn: indices into [`Case::names`] (modulo
     /// their number), each naming the method that currently has that name.
     swaps: Vec<(usize, usize)>,
+    /// Whether the swaps leave the interface's accessors alone, choosing
+    /// only among `Mi` and the neighbouring class's methods: a renaming that
+    /// keeps the interface compiler-shaped.
+    keep_accessors: bool,
     /// Which interface the class is compiled against, and which it is
     /// loaded beside.
     order: Order,
@@ -190,11 +202,16 @@ impl Case {
     /// original name's final one.
     fn renaming(&self) -> (Vec<(String, String)>, BTreeMap<String, String>) {
         let names = self.names();
+        let pool: Vec<usize> = (0..names.len())
+            .filter(|&i| {
+                !self.keep_accessors || names[i] == "Mi" || OTHERS.contains(&names[i].as_str())
+            })
+            .collect();
         // `current[r]` is the name of the row first called `names[r]`.
         let mut current = names.clone();
         let mut swaps = Vec::new();
         for &(a, b) in &self.swaps {
-            let (a, b) = (a % names.len(), b % names.len());
+            let (a, b) = (pool[a % pool.len()], pool[b % pool.len()]);
             if a == b {
                 continue;
             }
@@ -404,15 +421,17 @@ fn strategy() -> impl Strategy<Value = Case> {
             slot(false),
         ),
         prop::collection::vec((0..16usize, 0..16usize), 0..4),
+        prop::bool::weighted(0.4),
         prop_oneof![
             Just(Order::Renamed),
             Just(Order::OriginalThenRenamed),
             Just(Order::RenamedThenOriginal),
         ],
     )
-        .prop_map(|((p, q, i, e, m), swaps, order)| Case {
+        .prop_map(|((p, q, i, e, m), swaps, keep_accessors, order)| Case {
             slots: [p, q, i, e, m],
             swaps,
+            keep_accessors,
             order,
         })
 }
@@ -437,29 +456,41 @@ enum Dim {
     RenamedImplicit,
     RenamedBeside,
     Order(Order),
+    /// The loaded interface has an accessor named off the convention: out
+    /// of the certified domain.
+    AccessorsOffConvention,
 }
 
 /// The dimensions some sampled entry must expand under. The public member
 /// beside an explicit implementation is not one: it implements nothing, so
-/// its `<inheritdoc/>` has no candidate.
+/// its `<inheritdoc/>` has no candidate. Nor is a renamed member
+/// ([`REACHED_ONLY`]).
 fn expanding() -> Vec<Dim> {
     let mut out: Vec<Dim> = MEMBERS.into_iter().map(Dim::Member).collect();
     out.extend([
         Dim::Explicit,
         Dim::Implicit,
         Dim::ExplicitBesidePublic,
-        Dim::Renamed,
-        Dim::RenamedWithinInterface,
-        Dim::RenamedOutOfInterface,
-        Dim::RenamedExplicit,
-        Dim::RenamedImplicit,
-        Dim::RenamedBeside,
         Dim::Order(Order::Renamed),
         Dim::Order(Order::OriginalThenRenamed),
         Dim::Order(Order::RenamedThenOriginal),
     ]);
     out
 }
+
+/// The dimensions some sampled entry must reach, though none can expand: a
+/// renamed member is an accessor, whose interface is then out of the
+/// certified domain ([`Dim::AccessorsOffConvention`]), or `Mi`, whose
+/// documentation stays keyed by its old name, so that it inherits nothing.
+const REACHED_ONLY: [Dim; 7] = [
+    Dim::Renamed,
+    Dim::RenamedWithinInterface,
+    Dim::RenamedOutOfInterface,
+    Dim::RenamedExplicit,
+    Dim::RenamedImplicit,
+    Dim::RenamedBeside,
+    Dim::AccessorsOffConvention,
+];
 
 fn run(c: &Case) -> Vec<(Compared, BTreeSet<Dim>)> {
     let (swaps, final_names) = c.renaming();
@@ -485,17 +516,41 @@ fn run(c: &Case) -> Vec<(Compared, BTreeSet<Dim>)> {
         Order::RenamedThenOriginal => vec![dep(true, true, false), dep(false, false, true)],
     };
     let program = format!("{source}\n--- Ifc ---\n{interface}\nswaps: {swaps:?}");
+    // Generator-side truth, not the predicate's: the loaded interface is
+    // the renamed one, and some accessor of it no longer has its own name.
+    let loaded_renamed = c.order != Order::RenamedThenOriginal;
+    let off_convention = loaded_renamed
+        && final_names.iter().any(|(was, now)| {
+            !OTHERS.contains(&was.as_str())
+                && ["get_", "set_", "add_", "remove_"]
+                    .iter()
+                    .any(|p| was.starts_with(p))
+                && was != now
+        });
     let fx = fixture_with(&source, &deps)
         .unwrap_or_else(|e| panic!("the generated program does not compile: {e:#?}\n{program}"));
     let compared = compare(&fx);
     assert_sound(&compared, &program);
-    compared
+    let compared: Vec<(Compared, BTreeSet<Dim>)> = compared
         .into_iter()
         .map(|cmp| {
-            let dims = keys.get(&cmp.key).cloned().unwrap_or_default();
+            let mut dims = keys.get(&cmp.key).cloned().unwrap_or_default();
+            if off_convention && dims.iter().any(|d| matches!(d, Dim::Member(_))) {
+                dims.insert(Dim::AccessorsOffConvention);
+            }
             (cmp, dims)
         })
-        .collect()
+        .collect();
+    for (cmp, dims) in &compared {
+        assert!(
+            !(dims.contains(&Dim::AccessorsOffConvention)
+                && matches!(cmp.verdict, Verdict::Agrees)),
+            "{} expanded through an interface whose accessors are named off the \
+             convention; it must decline\n{program}",
+            cmp.key
+        );
+    }
+    compared
 }
 
 #[test]
@@ -538,6 +593,16 @@ fn the_renamed_accessor_generator_reaches_every_dimension() {
         }
     }
     assert_every_dimension_expands("renamed accessors", &expanding(), &reach);
+    let unreached: Vec<String> = REACHED_ONLY
+        .iter()
+        .filter(|d| !reach.get(d).is_some_and(|r| r.compared > 0))
+        .map(|d| format!("{d:?}"))
+        .collect();
+    assert!(
+        unreached.is_empty(),
+        "renamed accessors: dimensions no sampled entry reaches: {}",
+        unreached.join(", ")
+    );
     assert!(
         outranked > 0,
         "no public member beside an explicit implementation reached a decline Roslyn agrees with"
