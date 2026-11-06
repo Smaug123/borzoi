@@ -1,0 +1,496 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-msbuild --test restore_cone_census fixtures
+10.0.112 assembly sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 15.1.0.0 18.0.11+95017c711e6afc1085133d440e42b4bd78155701 mvid:49ab7074-8bba-42be-b6e5-8d308447cc31
+10.0.112 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.0.11+95017c711e6afc1085133d440e42b4bd78155701 mvid:1dfd2378-c17e-495e-ab52-d549adf2696e
+10.0.112 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.0.3.0 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701 mvid:eef89a75-ccbb-4f6a-bfb4-c1cd99a52911
+10.0.112 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42308 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701 mvid:b2736936-02cf-4e28-930a-d6a01d63a712
+10.0.112 census	resolved=0 forced=3 targets=51 target-files=10 user-targets=1 tasks=27 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
+10.0.112 file fixture:hooked/App.fsproj	sha256:8eaabfaba119e784
+10.0.112 file sdk:NuGet.targets	sha256:32d847234c43b287
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets	sha256:39edebe465572be7
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets	sha256:eaf05ceeec1f3c30
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets	sha256:b515258543853927
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.CrossTargeting.targets	sha256:5d4bede7317a284a
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets	sha256:6f743d1cf32799d4
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets	sha256:ffd9fabffb90c1a1
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.targets	sha256:7958c0c5010ec8d9
+10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets	sha256:6c0f262cf3a0d3ba
+10.0.112 forced cpm/app/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets x4
+10.0.112 forced cpm/app/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x3
+10.0.112 forced cpm/app/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x4
+10.0.112 forced cpm/app/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target CollectFrameworkReferences	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target CollectNuGetAuditSuppressions	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target CollectPackageDownloads	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target CollectPackageReferences	sdk:NuGet.targets x6
+10.0.112 forced cpm/app/App.fsproj target CollectPrunePackageReferences	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target GenerateRestoreGraphFile	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target GetAllRuntimeIdentifiers	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.CrossTargeting.targets x2	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.targets x4
+10.0.112 forced cpm/app/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets x3
+10.0.112 forced cpm/app/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x2
+10.0.112 forced cpm/app/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets x4
+10.0.112 forced cpm/app/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets x4
+10.0.112 forced cpm/app/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets x4
+10.0.112 forced cpm/app/App.fsproj target _CheckForUnsupportedNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets x3
+10.0.112 forced cpm/app/App.fsproj target _CheckForUnsupportedNETStandardVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.112 forced cpm/app/App.fsproj target _CollectRestoreInputs	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target _ComputeToolPackInputsToProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets x4
+10.0.112 forced cpm/app/App.fsproj target _FilterRestoreGraphProjectInputItems	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GenerateDotnetCliToolReferenceSpecs	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GenerateProjectRestoreGraph	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GenerateProjectRestoreGraphAllFrameworks	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GenerateProjectRestoreGraphPerFramework	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreDependencies	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreGraph	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreGraphProjectEntry	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreProjectPathItems	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreProjectPathItemsAllFrameworks	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreProjectPathItemsPerFramework	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreProjectPathWalk	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreProjectSpec	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GenerateRestoreSpecs	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GetAllRestoreProjectPathItems	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GetRestorePackagesPathOverride	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreProjectStyle	sdk:NuGet.targets x6
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreSettings	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreSettingsAllFrameworks	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreSettingsOverrides	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreSettingsPerFramework	sdk:NuGet.targets x4
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreSourcesOverride	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreTargetFrameworkOverride	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreTargetFrameworksAsItems	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _GetRestoreTargetFrameworksOutput	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _IsProjectRestoreSupported	sdk:NuGet.targets x2
+10.0.112 forced cpm/app/App.fsproj target _LoadRestoreGraphEntryPoints	sdk:NuGet.targets
+10.0.112 forced cpm/app/App.fsproj task ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ApplyImplicitVersions x3
+10.0.112 forced cpm/app/App.fsproj task CheckForDuplicateFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
+10.0.112 forced cpm/app/App.fsproj task CheckForDuplicateNuGetItemsTask	sdk:NuGet.Build.Tasks.dll in CollectCentralPackageVersions x4	sdk:NuGet.Build.Tasks.dll in CollectNuGetAuditSuppressions x4	sdk:NuGet.Build.Tasks.dll in CollectPackageDownloads x4	sdk:NuGet.Build.Tasks.dll in CollectPackageReferences x6	sdk:NuGet.Build.Tasks.dll in CollectPrunePackageReferences x4
+10.0.112 forced cpm/app/App.fsproj task CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in CheckForImplicitPackageReferenceOverrides x4
+10.0.112 forced cpm/app/App.fsproj task CheckIfPackageReferenceShouldBeFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in UpdateAspNetToFrameworkReference x4
+10.0.112 forced cpm/app/App.fsproj task ConvertToAbsolutePath	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItemsPerFramework x4	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectSpec x2
+10.0.112 forced cpm/app/App.fsproj task GetCentralPackageVersionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.112 forced cpm/app/App.fsproj task GetGlobalPropertyValueTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworkOverride x2
+10.0.112 forced cpm/app/App.fsproj task GetPackagesToPrune	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in AddPrunePackageReferences x4
+10.0.112 forced cpm/app/App.fsproj task GetProjectTargetFrameworksTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworksOutput x2
+10.0.112 forced cpm/app/App.fsproj task GetRestoreDotnetCliToolsTask	sdk:NuGet.Build.Tasks.dll in _GenerateDotnetCliToolReferenceSpecs
+10.0.112 forced cpm/app/App.fsproj task GetRestoreFrameworkReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.112 forced cpm/app/App.fsproj task GetRestoreNuGetAuditSuppressionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.112 forced cpm/app/App.fsproj task GetRestorePackageDownloadsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.112 forced cpm/app/App.fsproj task GetRestorePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.112 forced cpm/app/App.fsproj task GetRestoreProjectReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.112 forced cpm/app/App.fsproj task GetRestoreProjectStyleTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreProjectStyle x6
+10.0.112 forced cpm/app/App.fsproj task GetRestorePrunePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.112 forced cpm/app/App.fsproj task GetRestoreSettingsTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreSettings x2
+10.0.112 forced cpm/app/App.fsproj task MSBuild	sdk:Microsoft.Build.dll in GetAllRuntimeIdentifiers x4	sdk:Microsoft.Build.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.dll in _GenerateProjectRestoreGraphAllFrameworks x4	sdk:Microsoft.Build.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathItemsAllFrameworks x4	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathWalk x2	sdk:Microsoft.Build.dll in _GetAllRestoreProjectPathItems x2	sdk:Microsoft.Build.dll in _GetRestoreSettingsAllFrameworks x4	sdk:Microsoft.Build.dll in _GetRestoreSettingsOverrides x4
+10.0.112 forced cpm/app/App.fsproj task Message	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreGraph x3	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreSpecs
+10.0.112 forced cpm/app/App.fsproj task NuGetMessageTask	sdk:NuGet.Build.Tasks.dll in _GetAllRestoreProjectPathItems
+10.0.112 forced cpm/app/App.fsproj task ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
+10.0.112 forced cpm/app/App.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems x2	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk x2	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
+10.0.112 forced cpm/app/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
+10.0.112 forced cpm/app/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
+10.0.112 forced cpm/app/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced hooked/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.112 forced hooked/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.112 forced hooked/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target CollectFrameworkReferences	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target CollectNuGetAuditSuppressions	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target CollectPackageDownloads	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target CollectPackageReferences	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target CollectPrunePackageReferences	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target GenerateRestoreGraphFile	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
+10.0.112 forced hooked/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.112 forced hooked/App.fsproj target UserHookBeforeRestoreGraphEntry	fixture:hooked/App.fsproj
+10.0.112 forced hooked/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets
+10.0.112 forced hooked/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets
+10.0.112 forced hooked/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.112 forced hooked/App.fsproj target _CheckForUnsupportedNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.112 forced hooked/App.fsproj target _CollectRestoreInputs	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _ComputeToolPackInputsToProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets
+10.0.112 forced hooked/App.fsproj target _FilterRestoreGraphProjectInputItems	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateDotnetCliToolReferenceSpecs	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateProjectRestoreGraph	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateProjectRestoreGraphCurrentProject	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateProjectRestoreGraphPerFramework	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreDependencies	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreGraph	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreGraphProjectEntry	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreProjectPathItems	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreProjectPathItemsCurrentProject	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreProjectPathItemsPerFramework	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreProjectPathWalk	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreProjectSpec	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GenerateRestoreSpecs	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetAllRestoreProjectPathItems	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestorePackagesPathOverride	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreProjectStyle	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreSettings	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreSettingsCurrentProject	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreSettingsOverrides	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreSettingsPerFramework	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreSourcesOverride	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreTargetFrameworkOverride	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _GetRestoreTargetFrameworksOutput	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _IsProjectRestoreSupported	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj target _LoadRestoreGraphEntryPoints	sdk:NuGet.targets
+10.0.112 forced hooked/App.fsproj task ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ApplyImplicitVersions
+10.0.112 forced hooked/App.fsproj task CheckForDuplicateFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.112 forced hooked/App.fsproj task CheckForDuplicateNuGetItemsTask	sdk:NuGet.Build.Tasks.dll in CollectCentralPackageVersions	sdk:NuGet.Build.Tasks.dll in CollectNuGetAuditSuppressions	sdk:NuGet.Build.Tasks.dll in CollectPackageDownloads	sdk:NuGet.Build.Tasks.dll in CollectPackageReferences	sdk:NuGet.Build.Tasks.dll in CollectPrunePackageReferences
+10.0.112 forced hooked/App.fsproj task CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in CheckForImplicitPackageReferenceOverrides
+10.0.112 forced hooked/App.fsproj task CheckIfPackageReferenceShouldBeFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in UpdateAspNetToFrameworkReference x2
+10.0.112 forced hooked/App.fsproj task ConvertToAbsolutePath	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItemsPerFramework	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectSpec
+10.0.112 forced hooked/App.fsproj task GetProjectTargetFrameworksTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworksOutput
+10.0.112 forced hooked/App.fsproj task GetRestoreDotnetCliToolsTask	sdk:NuGet.Build.Tasks.dll in _GenerateDotnetCliToolReferenceSpecs
+10.0.112 forced hooked/App.fsproj task GetRestoreFrameworkReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced hooked/App.fsproj task GetRestoreNuGetAuditSuppressionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced hooked/App.fsproj task GetRestorePackageDownloadsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced hooked/App.fsproj task GetRestorePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced hooked/App.fsproj task GetRestoreProjectReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced hooked/App.fsproj task GetRestoreProjectStyleTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreProjectStyle
+10.0.112 forced hooked/App.fsproj task GetRestorePrunePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced hooked/App.fsproj task GetRestoreSettingsTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreSettings
+10.0.112 forced hooked/App.fsproj task MSBuild	sdk:Microsoft.Build.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.dll in _GetAllRestoreProjectPathItems x2	sdk:Microsoft.Build.dll in _GetRestoreSettingsOverrides x2
+10.0.112 forced hooked/App.fsproj task Message	sdk:Microsoft.Build.Tasks.Core.dll in UserHookBeforeRestoreGraphEntry	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreSpecs
+10.0.112 forced hooked/App.fsproj task NuGetMessageTask	sdk:NuGet.Build.Tasks.dll in _GetAllRestoreProjectPathItems
+10.0.112 forced hooked/App.fsproj task ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.112 forced hooked/App.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
+10.0.112 forced hooked/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.112 forced hooked/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
+10.0.112 forced hooked/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced net10/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
+10.0.112 forced net10/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.112 forced net10/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.112 forced net10/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target CollectFrameworkReferences	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target CollectNuGetAuditSuppressions	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target CollectPackageDownloads	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target CollectPackageReferences	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target CollectPrunePackageReferences	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target GenerateRestoreGraphFile	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
+10.0.112 forced net10/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.112 forced net10/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets
+10.0.112 forced net10/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets
+10.0.112 forced net10/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.112 forced net10/App.fsproj target _CheckForUnsupportedNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.112 forced net10/App.fsproj target _CollectRestoreInputs	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _ComputeToolPackInputsToProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets
+10.0.112 forced net10/App.fsproj target _FilterRestoreGraphProjectInputItems	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateDotnetCliToolReferenceSpecs	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateProjectRestoreGraph	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateProjectRestoreGraphCurrentProject	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateProjectRestoreGraphPerFramework	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreDependencies	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreGraph	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreGraphProjectEntry	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreProjectPathItems	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreProjectPathItemsCurrentProject	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreProjectPathItemsPerFramework	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreProjectPathWalk	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreProjectSpec	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GenerateRestoreSpecs	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetAllRestoreProjectPathItems	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestorePackagesPathOverride	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreProjectStyle	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreSettings	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreSettingsCurrentProject	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreSettingsOverrides	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreSettingsPerFramework	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreSourcesOverride	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreTargetFrameworkOverride	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _GetRestoreTargetFrameworksOutput	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _IsProjectRestoreSupported	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj target _LoadRestoreGraphEntryPoints	sdk:NuGet.targets
+10.0.112 forced net10/App.fsproj task ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ApplyImplicitVersions
+10.0.112 forced net10/App.fsproj task CheckForDuplicateFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.112 forced net10/App.fsproj task CheckForDuplicateNuGetItemsTask	sdk:NuGet.Build.Tasks.dll in CollectCentralPackageVersions	sdk:NuGet.Build.Tasks.dll in CollectNuGetAuditSuppressions	sdk:NuGet.Build.Tasks.dll in CollectPackageDownloads	sdk:NuGet.Build.Tasks.dll in CollectPackageReferences	sdk:NuGet.Build.Tasks.dll in CollectPrunePackageReferences
+10.0.112 forced net10/App.fsproj task CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in CheckForImplicitPackageReferenceOverrides
+10.0.112 forced net10/App.fsproj task CheckIfPackageReferenceShouldBeFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in UpdateAspNetToFrameworkReference x2
+10.0.112 forced net10/App.fsproj task ConvertToAbsolutePath	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItemsPerFramework	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectSpec
+10.0.112 forced net10/App.fsproj task GetPackagesToPrune	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in AddPrunePackageReferences
+10.0.112 forced net10/App.fsproj task GetProjectTargetFrameworksTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworksOutput
+10.0.112 forced net10/App.fsproj task GetRestoreDotnetCliToolsTask	sdk:NuGet.Build.Tasks.dll in _GenerateDotnetCliToolReferenceSpecs
+10.0.112 forced net10/App.fsproj task GetRestoreFrameworkReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced net10/App.fsproj task GetRestoreNuGetAuditSuppressionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced net10/App.fsproj task GetRestorePackageDownloadsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced net10/App.fsproj task GetRestorePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced net10/App.fsproj task GetRestoreProjectReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced net10/App.fsproj task GetRestoreProjectStyleTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreProjectStyle
+10.0.112 forced net10/App.fsproj task GetRestorePrunePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.112 forced net10/App.fsproj task GetRestoreSettingsTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreSettings
+10.0.112 forced net10/App.fsproj task MSBuild	sdk:Microsoft.Build.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.dll in _GetAllRestoreProjectPathItems x2	sdk:Microsoft.Build.dll in _GetRestoreSettingsOverrides x2
+10.0.112 forced net10/App.fsproj task Message	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreSpecs
+10.0.112 forced net10/App.fsproj task NuGetMessageTask	sdk:NuGet.Build.Tasks.dll in _GetAllRestoreProjectPathItems
+10.0.112 forced net10/App.fsproj task ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.112 forced net10/App.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
+10.0.112 forced net10/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.112 forced net10/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
+10.0.112 forced net10/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 loaded sdk:Microsoft.Build.NuGetSdkResolver.dll	Microsoft.Build.NuGetSdkResolver 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 18.0.11+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Microsoft.Build.Utilities.Core.dll	Microsoft.Build.Utilities.Core 18.0.11+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Microsoft.DotNet.Cli.Utils.dll	Microsoft.DotNet.Cli.Utils 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Microsoft.NET.Sdk.WorkloadMSBuildSdkResolver.dll	Microsoft.NET.Sdk.WorkloadMSBuildSdkResolver 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Microsoft.NET.Sdk.WorkloadManifestReader.dll	Microsoft.NET.Sdk.WorkloadManifestReader 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Newtonsoft.Json.dll	Newtonsoft.Json 13.0.3+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.Commands.dll	NuGet.Commands 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.Common.dll	NuGet.Common 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.Configuration.dll	NuGet.Configuration 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.Frameworks.dll	NuGet.Frameworks 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.LibraryModel.dll	NuGet.LibraryModel 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.Packaging.dll	NuGet.Packaging 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.ProjectModel.dll	NuGet.ProjectModel 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:NuGet.Versioning.dll	NuGet.Versioning 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.401 assembly sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 15.1.0.0 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:31c0f4d2-63dd-4446-bc11-0d5242ee5405
+10.0.401 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:f91f8ddc-5173-44e6-ad0f-4b9c2095563d
+10.0.401 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.9.0.0 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:561a004a-525c-43d7-8e77-88e41d2bced8
+10.0.401 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42413 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:79c66d80-39b6-4f4e-904d-f84be38c3521
+10.0.401 census	resolved=3 forced=0 targets=51 target-files=10 user-targets=1 tasks=27 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
+10.0.401 file fixture:hooked/App.fsproj	sha256:8eaabfaba119e784
+10.0.401 file sdk:NuGet.targets	sha256:ce10b22f34950346
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets	sha256:39edebe465572be7
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets	sha256:ea5fe130702f2fc8
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets	sha256:7a54e00724d8afe4
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.CrossTargeting.targets	sha256:5d4bede7317a284a
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets	sha256:6f743d1cf32799d4
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets	sha256:ffd9fabffb90c1a1
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.targets	sha256:7958c0c5010ec8d9
+10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets	sha256:6c0f262cf3a0d3ba
+10.0.401 loaded sdk:Microsoft.Build.NuGetSdkResolver.dll	Microsoft.Build.NuGetSdkResolver 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:Microsoft.Build.Utilities.Core.dll	Microsoft.Build.Utilities.Core 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.401 loaded sdk:Microsoft.DotNet.Cli.CoreUtils.dll	Microsoft.DotNet.Cli.CoreUtils 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:Microsoft.NET.Sdk.WorkloadMSBuildSdkResolver.dll	Microsoft.NET.Sdk.WorkloadMSBuildSdkResolver 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:Microsoft.NET.Sdk.WorkloadManifestReader.dll	Microsoft.NET.Sdk.WorkloadManifestReader 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:Newtonsoft.Json.dll	Newtonsoft.Json 13.0.3+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.Commands.dll	NuGet.Commands 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.Common.dll	NuGet.Common 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.Configuration.dll	NuGet.Configuration 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.Frameworks.dll	NuGet.Frameworks 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.LibraryModel.dll	NuGet.LibraryModel 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.Packaging.dll	NuGet.Packaging 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.ProjectModel.dll	NuGet.ProjectModel 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:NuGet.Versioning.dll	NuGet.Versioning 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 resolved cpm/app/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets x4
+10.0.401 resolved cpm/app/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x3
+10.0.401 resolved cpm/app/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x4
+10.0.401 resolved cpm/app/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target CollectFrameworkReferences	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target CollectNuGetAuditSuppressions	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target CollectPackageDownloads	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target CollectPackageReferences	sdk:NuGet.targets x6
+10.0.401 resolved cpm/app/App.fsproj target CollectPrunePackageReferences	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target GenerateRestoreGraphFile	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target GetAllRuntimeIdentifiers	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.CrossTargeting.targets x2	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.targets x4
+10.0.401 resolved cpm/app/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets x3
+10.0.401 resolved cpm/app/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _CheckForUnsupportedNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets x3
+10.0.401 resolved cpm/app/App.fsproj target _CheckForUnsupportedNETStandardVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.401 resolved cpm/app/App.fsproj target _CollectRestoreInputs	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _ComputeToolPackInputsToProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _FilterRestoreGraphProjectInputItems	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GenerateDotnetCliToolReferenceSpecs	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GenerateProjectRestoreGraph	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GenerateProjectRestoreGraphAllFrameworks	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GenerateProjectRestoreGraphPerFramework	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreDependencies	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreGraph	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreGraphProjectEntry	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreProjectPathItems	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreProjectPathItemsAllFrameworks	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreProjectPathItemsPerFramework	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreProjectPathWalk	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreProjectSpec	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GenerateRestoreSpecs	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GetAllRestoreProjectPathItems	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GetRestorePackagesPathOverride	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreProjectStyle	sdk:NuGet.targets x6
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreSettings	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreSettingsAllFrameworks	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreSettingsOverrides	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreSettingsPerFramework	sdk:NuGet.targets x4
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreSourcesOverride	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreTargetFrameworkOverride	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreTargetFrameworksAsItems	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _GetRestoreTargetFrameworksOutput	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _IsProjectRestoreSupported	sdk:NuGet.targets x2
+10.0.401 resolved cpm/app/App.fsproj target _LoadRestoreGraphEntryPoints	sdk:NuGet.targets
+10.0.401 resolved cpm/app/App.fsproj task ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ApplyImplicitVersions x3
+10.0.401 resolved cpm/app/App.fsproj task CheckForDuplicateFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
+10.0.401 resolved cpm/app/App.fsproj task CheckForDuplicateNuGetItemsTask	sdk:NuGet.Build.Tasks.dll in CollectCentralPackageVersions x4	sdk:NuGet.Build.Tasks.dll in CollectNuGetAuditSuppressions x4	sdk:NuGet.Build.Tasks.dll in CollectPackageDownloads x4	sdk:NuGet.Build.Tasks.dll in CollectPackageReferences x6	sdk:NuGet.Build.Tasks.dll in CollectPrunePackageReferences x4
+10.0.401 resolved cpm/app/App.fsproj task CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in CheckForImplicitPackageReferenceOverrides x4
+10.0.401 resolved cpm/app/App.fsproj task CheckIfPackageReferenceShouldBeFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in UpdateAspNetToFrameworkReference x4
+10.0.401 resolved cpm/app/App.fsproj task ConvertToAbsolutePath	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItemsPerFramework x4	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectSpec x2
+10.0.401 resolved cpm/app/App.fsproj task GetCentralPackageVersionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.401 resolved cpm/app/App.fsproj task GetGlobalPropertyValueTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworkOverride x2
+10.0.401 resolved cpm/app/App.fsproj task GetPackagesToPrune	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in AddPrunePackageReferences x4
+10.0.401 resolved cpm/app/App.fsproj task GetProjectTargetFrameworksTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworksOutput x2
+10.0.401 resolved cpm/app/App.fsproj task GetRestoreDotnetCliToolsTask	sdk:NuGet.Build.Tasks.dll in _GenerateDotnetCliToolReferenceSpecs
+10.0.401 resolved cpm/app/App.fsproj task GetRestoreFrameworkReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.401 resolved cpm/app/App.fsproj task GetRestoreNuGetAuditSuppressionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.401 resolved cpm/app/App.fsproj task GetRestorePackageDownloadsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.401 resolved cpm/app/App.fsproj task GetRestorePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.401 resolved cpm/app/App.fsproj task GetRestoreProjectReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.401 resolved cpm/app/App.fsproj task GetRestoreProjectStyleTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreProjectStyle x6
+10.0.401 resolved cpm/app/App.fsproj task GetRestorePrunePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework x4
+10.0.401 resolved cpm/app/App.fsproj task GetRestoreSettingsTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreSettings x2
+10.0.401 resolved cpm/app/App.fsproj task MSBuild	sdk:Microsoft.Build.dll in GetAllRuntimeIdentifiers x4	sdk:Microsoft.Build.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.dll in _GenerateProjectRestoreGraphAllFrameworks x4	sdk:Microsoft.Build.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathItemsAllFrameworks x4	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathWalk x2	sdk:Microsoft.Build.dll in _GetAllRestoreProjectPathItems x2	sdk:Microsoft.Build.dll in _GetRestoreSettingsAllFrameworks x4	sdk:Microsoft.Build.dll in _GetRestoreSettingsOverrides x4
+10.0.401 resolved cpm/app/App.fsproj task Message	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreGraph x3	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreSpecs
+10.0.401 resolved cpm/app/App.fsproj task NuGetMessageTask	sdk:NuGet.Build.Tasks.dll in _GetAllRestoreProjectPathItems
+10.0.401 resolved cpm/app/App.fsproj task ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
+10.0.401 resolved cpm/app/App.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems x2	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk x2	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
+10.0.401 resolved cpm/app/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
+10.0.401 resolved cpm/app/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
+10.0.401 resolved cpm/app/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved hooked/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.401 resolved hooked/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.401 resolved hooked/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target CollectFrameworkReferences	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target CollectNuGetAuditSuppressions	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target CollectPackageDownloads	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target CollectPackageReferences	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target CollectPrunePackageReferences	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target GenerateRestoreGraphFile	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
+10.0.401 resolved hooked/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.401 resolved hooked/App.fsproj target UserHookBeforeRestoreGraphEntry	fixture:hooked/App.fsproj
+10.0.401 resolved hooked/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets
+10.0.401 resolved hooked/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets
+10.0.401 resolved hooked/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.401 resolved hooked/App.fsproj target _CheckForUnsupportedNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.401 resolved hooked/App.fsproj target _CollectRestoreInputs	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _ComputeToolPackInputsToProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets
+10.0.401 resolved hooked/App.fsproj target _FilterRestoreGraphProjectInputItems	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateDotnetCliToolReferenceSpecs	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateProjectRestoreGraph	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateProjectRestoreGraphCurrentProject	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateProjectRestoreGraphPerFramework	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreDependencies	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreGraph	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreGraphProjectEntry	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreProjectPathItems	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreProjectPathItemsCurrentProject	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreProjectPathItemsPerFramework	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreProjectPathWalk	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreProjectSpec	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GenerateRestoreSpecs	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetAllRestoreProjectPathItems	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestorePackagesPathOverride	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreProjectStyle	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreSettings	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreSettingsCurrentProject	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreSettingsOverrides	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreSettingsPerFramework	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreSourcesOverride	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreTargetFrameworkOverride	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _GetRestoreTargetFrameworksOutput	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _IsProjectRestoreSupported	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj target _LoadRestoreGraphEntryPoints	sdk:NuGet.targets
+10.0.401 resolved hooked/App.fsproj task ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ApplyImplicitVersions
+10.0.401 resolved hooked/App.fsproj task CheckForDuplicateFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.401 resolved hooked/App.fsproj task CheckForDuplicateNuGetItemsTask	sdk:NuGet.Build.Tasks.dll in CollectCentralPackageVersions	sdk:NuGet.Build.Tasks.dll in CollectNuGetAuditSuppressions	sdk:NuGet.Build.Tasks.dll in CollectPackageDownloads	sdk:NuGet.Build.Tasks.dll in CollectPackageReferences	sdk:NuGet.Build.Tasks.dll in CollectPrunePackageReferences
+10.0.401 resolved hooked/App.fsproj task CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in CheckForImplicitPackageReferenceOverrides
+10.0.401 resolved hooked/App.fsproj task CheckIfPackageReferenceShouldBeFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in UpdateAspNetToFrameworkReference x2
+10.0.401 resolved hooked/App.fsproj task ConvertToAbsolutePath	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItemsPerFramework	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectSpec
+10.0.401 resolved hooked/App.fsproj task GetProjectTargetFrameworksTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworksOutput
+10.0.401 resolved hooked/App.fsproj task GetRestoreDotnetCliToolsTask	sdk:NuGet.Build.Tasks.dll in _GenerateDotnetCliToolReferenceSpecs
+10.0.401 resolved hooked/App.fsproj task GetRestoreFrameworkReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved hooked/App.fsproj task GetRestoreNuGetAuditSuppressionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved hooked/App.fsproj task GetRestorePackageDownloadsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved hooked/App.fsproj task GetRestorePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved hooked/App.fsproj task GetRestoreProjectReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved hooked/App.fsproj task GetRestoreProjectStyleTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreProjectStyle
+10.0.401 resolved hooked/App.fsproj task GetRestorePrunePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved hooked/App.fsproj task GetRestoreSettingsTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreSettings
+10.0.401 resolved hooked/App.fsproj task MSBuild	sdk:Microsoft.Build.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.dll in _GetAllRestoreProjectPathItems x2	sdk:Microsoft.Build.dll in _GetRestoreSettingsOverrides x2
+10.0.401 resolved hooked/App.fsproj task Message	sdk:Microsoft.Build.Tasks.Core.dll in UserHookBeforeRestoreGraphEntry	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreSpecs
+10.0.401 resolved hooked/App.fsproj task NuGetMessageTask	sdk:NuGet.Build.Tasks.dll in _GetAllRestoreProjectPathItems
+10.0.401 resolved hooked/App.fsproj task ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.401 resolved hooked/App.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
+10.0.401 resolved hooked/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.401 resolved hooked/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
+10.0.401 resolved hooked/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved net10/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
+10.0.401 resolved net10/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.401 resolved net10/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.401 resolved net10/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target CollectFrameworkReferences	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target CollectNuGetAuditSuppressions	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target CollectPackageDownloads	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target CollectPackageReferences	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target CollectPrunePackageReferences	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target GenerateRestoreGraphFile	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
+10.0.401 resolved net10/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
+10.0.401 resolved net10/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets
+10.0.401 resolved net10/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets
+10.0.401 resolved net10/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.401 resolved net10/App.fsproj target _CheckForUnsupportedNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
+10.0.401 resolved net10/App.fsproj target _CollectRestoreInputs	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _ComputeToolPackInputsToProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets
+10.0.401 resolved net10/App.fsproj target _FilterRestoreGraphProjectInputItems	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateDotnetCliToolReferenceSpecs	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateProjectRestoreGraph	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateProjectRestoreGraphCurrentProject	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateProjectRestoreGraphPerFramework	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreDependencies	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreGraph	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreGraphProjectEntry	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreProjectPathItems	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreProjectPathItemsCurrentProject	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreProjectPathItemsPerFramework	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreProjectPathWalk	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreProjectSpec	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GenerateRestoreSpecs	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetAllRestoreProjectPathItems	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestorePackagesPathOverride	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreProjectStyle	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreSettings	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreSettingsCurrentProject	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreSettingsOverrides	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreSettingsPerFramework	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreSourcesOverride	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreTargetFrameworkOverride	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _GetRestoreTargetFrameworksOutput	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _IsProjectRestoreSupported	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj target _LoadRestoreGraphEntryPoints	sdk:NuGet.targets
+10.0.401 resolved net10/App.fsproj task ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ApplyImplicitVersions
+10.0.401 resolved net10/App.fsproj task CheckForDuplicateFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.401 resolved net10/App.fsproj task CheckForDuplicateNuGetItemsTask	sdk:NuGet.Build.Tasks.dll in CollectCentralPackageVersions	sdk:NuGet.Build.Tasks.dll in CollectNuGetAuditSuppressions	sdk:NuGet.Build.Tasks.dll in CollectPackageDownloads	sdk:NuGet.Build.Tasks.dll in CollectPackageReferences	sdk:NuGet.Build.Tasks.dll in CollectPrunePackageReferences
+10.0.401 resolved net10/App.fsproj task CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in CheckForImplicitPackageReferenceOverrides
+10.0.401 resolved net10/App.fsproj task CheckIfPackageReferenceShouldBeFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in UpdateAspNetToFrameworkReference x2
+10.0.401 resolved net10/App.fsproj task ConvertToAbsolutePath	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItemsPerFramework	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectSpec
+10.0.401 resolved net10/App.fsproj task GetPackagesToPrune	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in AddPrunePackageReferences
+10.0.401 resolved net10/App.fsproj task GetProjectTargetFrameworksTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreTargetFrameworksOutput
+10.0.401 resolved net10/App.fsproj task GetRestoreDotnetCliToolsTask	sdk:NuGet.Build.Tasks.dll in _GenerateDotnetCliToolReferenceSpecs
+10.0.401 resolved net10/App.fsproj task GetRestoreFrameworkReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved net10/App.fsproj task GetRestoreNuGetAuditSuppressionsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved net10/App.fsproj task GetRestorePackageDownloadsTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved net10/App.fsproj task GetRestorePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved net10/App.fsproj task GetRestoreProjectReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved net10/App.fsproj task GetRestoreProjectStyleTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreProjectStyle
+10.0.401 resolved net10/App.fsproj task GetRestorePrunePackageReferencesTask	sdk:NuGet.Build.Tasks.dll in _GenerateProjectRestoreGraphPerFramework
+10.0.401 resolved net10/App.fsproj task GetRestoreSettingsTask	sdk:NuGet.Build.Tasks.dll in _GetRestoreSettings
+10.0.401 resolved net10/App.fsproj task MSBuild	sdk:Microsoft.Build.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.dll in _GetAllRestoreProjectPathItems x2	sdk:Microsoft.Build.dll in _GetRestoreSettingsOverrides x2
+10.0.401 resolved net10/App.fsproj task Message	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreGraph x2	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreSpecs
+10.0.401 resolved net10/App.fsproj task NuGetMessageTask	sdk:NuGet.Build.Tasks.dll in _GetAllRestoreProjectPathItems
+10.0.401 resolved net10/App.fsproj task ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.401 resolved net10/App.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
+10.0.401 resolved net10/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
+10.0.401 resolved net10/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
+10.0.401 resolved net10/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+spec drift 10.0.112..10.0.401 cpm/app/App.fsproj	$.projects.*.frameworks.*.framework $.projects.*.frameworks.*.runtimeIdentifierGraphPath $.projects.*.restore.SdkAnalysisLevel $.projects.*.restore.frameworks.*.framework $.projects.*.restore.sources.*
+spec drift 10.0.112..10.0.401 hooked/App.fsproj	$.projects.*.frameworks.*.dependencies.*.version $.projects.*.frameworks.*.framework $.projects.*.frameworks.*.runtimeIdentifierGraphPath $.projects.*.restore.SdkAnalysisLevel $.projects.*.restore.frameworks.*.framework $.projects.*.restore.sources.*
+spec drift 10.0.112..10.0.401 net10/App.fsproj	$.projects.*.frameworks.*.dependencies.*.version $.projects.*.frameworks.*.framework $.projects.*.frameworks.*.runtimeIdentifierGraphPath $.projects.*.restore.SdkAnalysisLevel $.projects.*.restore.frameworks.*.framework $.projects.*.restore.sources.*
