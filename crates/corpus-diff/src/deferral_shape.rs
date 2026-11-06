@@ -266,7 +266,12 @@ pub fn classify(root: &SyntaxNode, rf: &ResolvedFile, record: TextRange) -> Opti
             return Some(DeferralShape::MemberAccessOnValue);
         }
         Some(Resolution::Entity(_)) => return Some(DeferralShape::AssemblyTypeMember),
-        Some(Resolution::Deferred(_) | Resolution::Unresolved) | None => {}
+        // An earlier file's type is recorded only at a single-segment type
+        // name, never a receiver: it shapes nothing here.
+        Some(
+            Resolution::EarlierFileType { .. } | Resolution::Deferred(_) | Resolution::Unresolved,
+        )
+        | None => {}
     }
     if record.end() < last.text_range().end() {
         return Some(DeferralShape::Qualifier);

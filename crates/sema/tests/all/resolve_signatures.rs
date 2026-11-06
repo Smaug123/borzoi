@@ -821,9 +821,13 @@ pub(crate) fn assert_sig_matches_fcs(p: &SigProject) {
                         p.label, u.name
                     );
                 }
-                Some(res @ (Resolution::Item(_) | Resolution::Local(_))) => {
+                Some(
+                    res @ (Resolution::Item(_)
+                    | Resolution::Local(_)
+                    | Resolution::EarlierFileType { .. }),
+                ) => {
                     let (def_idx, def_range) = match res {
-                        Resolution::Item(_) => {
+                        Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
                             let (idx, def) = proj.item_def(res).expect("item def for Item");
                             (idx, def.range)
                         }

@@ -2858,6 +2858,7 @@ impl<'a> Resolver<'a> {
             Resolution::Member { .. }
             | Resolution::Deferred(_)
             | Resolution::Entity(_)
+            | Resolution::EarlierFileType { .. }
             | Resolution::Unresolved => return Some(false),
         };
         Some(matches!(
@@ -4822,6 +4823,7 @@ impl<'a> Resolver<'a> {
             // `lookup` only ever yields in-file `Local` / `Item` value-frame
             // entries; other kinds have no in-file value range to compare.
             Resolution::Entity(_)
+            | Resolution::EarlierFileType { .. }
             | Resolution::Member { .. }
             | Resolution::UnionCase { .. }
             | Resolution::Deferred(_)
@@ -5020,7 +5022,7 @@ impl<'a> Resolver<'a> {
     ///   a type the projector could not decode is invisible to both lookups and
     ///   may *be* the module here, so an undecodable type anywhere along the
     ///   path leaves absence unproven (codex round 2 \[P2\]).
-    fn assemblies_provably_lack_module_path(&self, mp: &[String]) -> bool {
+    pub(super) fn assemblies_provably_lack_module_path(&self, mp: &[String]) -> bool {
         !self.assemblies.has_namespace(mp)
             && self.opened_assembly_modules(mp).is_empty()
             && self.opened_assembly_type(mp).is_none()

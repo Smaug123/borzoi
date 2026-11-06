@@ -91,6 +91,11 @@ pub(crate) enum ModuleValue {
 #[derive(Debug, Default, Clone)]
 pub struct PrecedingTypes {
     items: HashMap<ItemId, ModuleValue>,
+    /// The types each earlier file's annotations bridge, keyed by the file's
+    /// Compile index and the type's def — the identity a later file's
+    /// [`Resolution::EarlierFileType`](crate::Resolution::EarlierFileType)
+    /// carries — with the path and arity of the [`Ty::Project`] it denotes.
+    types: HashMap<(usize, DefId), (Vec<String>, usize)>,
 }
 
 impl PrecedingTypes {
@@ -106,19 +111,34 @@ impl PrecedingTypes {
         }
     }
 
+    /// The path and arity of the [`Ty::Project`] an annotation naming the
+    /// type `def` of the earlier file `file` denotes; `None` for a type that
+    /// file's inference would not bridge either.
+    pub(crate) fn earlier_type(&self, file: usize, def: DefId) -> Option<&(Vec<String>, usize)> {
+        self.types.get(&(file, def))
+    }
+
     /// Publish one file's exports, in Compile order, after the file is
-    /// inferred. `inferred` is `None` for a file that was not inferred (a
-    /// signature slot); `screened` says the file has a paired signature
-    /// ([`signature_partners`]), which is then what every later file sees.
+    /// inferred. `file` is its Compile index; `inferred` is `None` for a file
+    /// that was not inferred (a signature slot); `screened` says the file has
+    /// a paired signature ([`signature_partners`]), which is then what every
+    /// later file sees.
     ///
     /// Each export the resolver threads forward gets an entry, so every
-    /// cross-file use reads a verdict this file decided.
+    /// cross-file use reads a verdict this file decided. A screened file's
+    /// types are not published: the signature may declare them differently.
     pub fn publish(
         &mut self,
+        file: usize,
         resolved: &ResolvedFile,
         inferred: Option<&InferredFile>,
         screened: bool,
     ) {
+        if let Some(inferred) = inferred.filter(|_| !screened) {
+            for (def, ty) in inferred.project_types() {
+                self.types.insert((file, *def), ty.clone());
+            }
+        }
         for export in resolved.exports().iter() {
             let verdict = match (export.case_kind(), export.def()) {
                 (Some(_), _) => ModuleValue::Declined(PrecedingGap::NotAValue),
@@ -265,7 +285,7 @@ pub fn infer_project_reusing(
         // An implementation's partner is the signature screening it; a
         // signature slot exports nothing of its own.
         let screened = files[idx].file.as_impl().is_some() && partners[idx].is_some();
-        published.publish(rf, inferred.as_deref(), screened);
+        published.publish(idx, rf, inferred.as_deref(), screened);
         out.push(inferred);
     }
     InferredProject {

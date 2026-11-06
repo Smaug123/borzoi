@@ -18,8 +18,8 @@ use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
 use super::model::{
-    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ExportedItem,
-    ItemId, Resolution, SlotClass,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, EarlierType, ExportDeclKind,
+    ExportedItem, ItemId, Resolution, SlotClass,
 };
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
@@ -58,6 +58,10 @@ pub(super) enum TypePathResolution {
     /// single segment, and only at the use's own arity — in-file lookup is
     /// never dotted).
     InFileType(DefId),
+    /// A single segment names a type an earlier Compile-order file declares
+    /// in the enclosing namespace
+    /// ([`Resolver::earlier_file_type`]).
+    EarlierFileType { file: u32, def: DefId },
     /// The path resolved through the assembly precedence tiers — the
     /// per-segment records to apply, keyed by segment index (a
     /// namespace-qualifier or unresolvable-tail segment is
@@ -1827,6 +1831,12 @@ impl<'a> Resolver<'a> {
             TypePathResolution::InFileType(id) => {
                 self.record(segs[0].text_range(), Resolution::Local(id));
             }
+            TypePathResolution::EarlierFileType { file, def } => {
+                self.record(
+                    segs[0].text_range(),
+                    Resolution::EarlierFileType { file, def },
+                );
+            }
             // The assembly tiers resolved — map each index-keyed record back to
             // its source token and apply (the leaf is the attribute
             // resolution's currency, not the shell's).
@@ -1974,6 +1984,15 @@ impl<'a> Resolver<'a> {
             return TypePathResolution::Deferred(DeclineSite::pre_walk(
                 DeclineCause::DroppedTypeCouldRoot,
             ));
+        }
+
+        // An earlier file's type of the name. FCS adds the earlier files, and
+        // then the enclosing namespace, after every assembly import and
+        // implicit open, so only an explicit `open` outranks them.
+        if let [only] = names
+            && let Some(verdict) = self.earlier_file_type(only, arity)
+        {
+            return verdict;
         }
 
         // Resolve through the shared precedence walk (opens → enclosing namespace
@@ -2437,6 +2456,12 @@ impl<'a> Resolver<'a> {
             // unrulable. The verdict is a deferral either way — only the census
             // changes.
             TypePathResolution::Deferred(site) => AttrCandidate::Deferred(site),
+            // An attribute naming an earlier file's type is not modelled: the
+            // suffixed candidate and the extension gate read only in-file and
+            // assembly types.
+            TypePathResolution::EarlierFileType { .. } => {
+                AttrCandidate::Deferred(DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow))
+            }
             _ if names
                 .last()
                 .is_some_and(|last| self.project_type_named(last)) =>
@@ -2937,6 +2962,98 @@ impl<'a> Resolver<'a> {
     /// supply a same-named type that wins.
     pub(super) fn opened_after(&self, id: DefId) -> bool {
         self.latest_open_pos > u32::from(self.defs[id.index()].range.start())
+    }
+
+    /// What a single-segment type name `name` at `arity` binds when an
+    /// earlier Compile-order file declares a type of that name; `None` when
+    /// none does, or when an explicit `open` reads the name (the rest of
+    /// [`Self::decide_type_path`] then commits that reading, as it would
+    /// anyway).
+    ///
+    /// FCS's name environment is last-write-wins over ordered additions: the
+    /// referenced assemblies (with their auto-opens, FSharp.Core's
+    /// `Microsoft.FSharp.*` among them), then the earlier files (a top-level
+    /// `[<AutoOpen>]` module among them opens there), then — on entering
+    /// `namespace N` — every fragment of `N` with its `[<AutoOpen>]` modules,
+    /// then this file's own `open`s and declarations in source order. So
+    /// below the explicit opens, any earlier file's type of the name may be
+    /// what FCS binds, and no implicit open's or root reading may commit.
+    /// The earlier file's type itself commits when it is `N.T` and nothing
+    /// written later can supply the name:
+    ///
+    /// * this file declares it: [`Self::in_file_type_at`] answered before
+    ///   this, and a declaration of the name anywhere else in the file
+    ///   declines;
+    /// * an `[<AutoOpen>]` module, or another arity of the name: both are
+    ///   project declarations, so the project must declare **no other type
+    ///   of the name at all**, and none it could not place
+    ///   ([`ProjectItems::earlier_types`](super::model::ProjectItems));
+    /// * an explicit `open`: a reading of the name through one is a later
+    ///   write, and a shadow the walk cannot rule out there declines;
+    /// * a referenced assembly's own fragment of `N` (a same-named type, an
+    ///   `[<AutoOpen>]` module): the assemblies must provably declare nothing
+    ///   at `N`.
+    ///
+    /// A declaration this use cannot access — a `private` confining it to
+    /// somewhere the use is not ([`DeclaredType::access_root`](super::model::DeclaredType)) — is
+    /// skipped, as FCS's lookup skips it.
+    ///
+    /// An `open` the walk cannot model has declined before this is asked.
+    fn earlier_file_type(&self, name: &str, arity: usize) -> Option<TypePathResolution> {
+        // The declarations this use can access; one it cannot is skipped by
+        // FCS's lookup, as if absent. One the declaring file could not place
+        // may be accessible.
+        let decls: Vec<&Option<EarlierType>> = self
+            .preceding
+            .earlier_types
+            .get(name)?
+            .iter()
+            .filter(|d| {
+                d.as_ref().is_none_or(|t| {
+                    t.access_root
+                        .is_none_or(|n| self.container_path.starts_with(&t.path[..n]))
+                })
+            })
+            .collect();
+        if decls.is_empty() {
+            return None;
+        }
+        let decline = |cause| Some(TypePathResolution::Deferred(DeclineSite::pre_walk(cause)));
+        let names = [name.to_string()];
+        match self.resolve_assembly_path_over(
+            self.explicit_open_reading_prefixes(),
+            |prefix: &[String]| self.assembly_type_path_core(prefix, &names, arity),
+            false,
+            |prefix: &[String]| self.type_position_shadow_at(prefix, &names),
+        ) {
+            TieredResolution::Resolved { .. } => return None,
+            TieredResolution::ShadowDeferred(_) => {
+                return decline(DeclineCause::EarlierTypeOpenedOver);
+            }
+            TieredResolution::NoMatch => {}
+        }
+        let [Some(candidate)] = decls.as_slice() else {
+            return decline(DeclineCause::EarlierTypeNameReused);
+        };
+        let namespace = self.enclosing_namespace();
+        if namespace.is_empty()
+            || candidate.path.len() != namespace.len() + 1
+            || !candidate.path.starts_with(namespace)
+        {
+            return decline(DeclineCause::EarlierTypeOutsideNamespace);
+        }
+        if candidate.arity != arity || self.own_type_simple_names.contains(name) {
+            return decline(DeclineCause::EarlierTypeNameReused);
+        }
+        if self.assemblies.identities_incomplete()
+            || !self.assemblies_provably_lack_module_path(namespace)
+        {
+            return decline(DeclineCause::EarlierTypeNamespaceShared);
+        }
+        Some(TypePathResolution::EarlierFileType {
+            file: u32::try_from(candidate.file).expect("more than u32::MAX files"),
+            def: candidate.def,
+        })
     }
 
     /// The in-file `type` def a single-segment type name at `arity` binds, if

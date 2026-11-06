@@ -287,6 +287,14 @@ fn wrong_commitments(src: &str, rf: &ResolvedFile, file: &FileCensus, clean: boo
                 wrong.push(format!("{:?} at {range:?}: Unresolved", &src[range]));
                 continue;
             }
+            // Single-file: nothing resolves to an earlier file.
+            Resolution::EarlierFileType { .. } => {
+                wrong.push(format!(
+                    "{:?} at {range:?}: an earlier file's type",
+                    &src[range]
+                ));
+                continue;
+            }
             // An assembly target: wrong wherever FCS names an in-file binder
             // there. FCS spans a dotted access from its head, so match on the
             // shared end.

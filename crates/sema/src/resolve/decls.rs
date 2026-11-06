@@ -9,7 +9,7 @@ use crate::def::{DefId, DefKind};
 
 use super::contributors::Contribution;
 use super::model::{
-    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
+    CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
 };
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
@@ -579,6 +579,21 @@ impl<'a> Resolver<'a> {
                             .and_then(|m| m.get(&(id_text(&name).to_string(), arity)))
                             .copied()
                         {
+                            // Placed for later files wherever it has a real
+                            // path, with the scope its `private`s leave it.
+                            if !self.anonymous_root {
+                                let mut path = self.container_path.clone();
+                                path.push(id_text(&name).to_string());
+                                self.placed_type_decls
+                                    .entry(id_text(&name).to_string())
+                                    .or_default()
+                                    .push(DeclaredType {
+                                        def: own,
+                                        path,
+                                        arity,
+                                        access_root: type_access_root,
+                                    });
+                            }
                             self.block_type_defs.insert(own);
                             let covered_kind = match defn.repr() {
                                 Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => true,

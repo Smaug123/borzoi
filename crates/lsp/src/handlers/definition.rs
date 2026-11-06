@@ -650,7 +650,7 @@ fn location_for_resolution(
                 range: range_to_lsp(&parses.texts[file_idx], def.range),
             })
         }
-        Resolution::Item(_) => {
+        Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
             let (other_idx, def) = resolved.item_def(res)?;
             // Cross-file: prefer the URI of an already-open buffer pointing
             // at the same path, so a follow-up textDocument/* request keys

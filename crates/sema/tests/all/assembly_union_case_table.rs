@@ -1666,15 +1666,17 @@ fn agrees(
     u: &NormalisedProjectUse,
 ) -> bool {
     match res {
-        Resolution::Local(_) | Resolution::Item(_) => {
+        Resolution::Local(_) | Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
             let Some(decl) = &u.decl else {
                 return false;
             };
             let (file_idx, range) = match res {
-                Resolution::Item(_) => match proj.item_def(res) {
-                    Some((i, def)) => (i, def.range),
-                    None => return false,
-                },
+                Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
+                    match proj.item_def(res) {
+                        Some((i, def)) => (i, def.range),
+                        None => return false,
+                    }
+                }
                 _ => match proj.file(row_idx).resolved_def(res) {
                     Some(def) => (row_idx, def.range),
                     None => return false,

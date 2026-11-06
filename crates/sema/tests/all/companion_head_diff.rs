@@ -241,7 +241,9 @@ fn our_targets(env: &AssemblyEnv, src: &str, plant: &Plant) -> BTreeMap<Site, Ou
         // file and binds no local, so an in-file verdict here means the walk
         // wrong-targeted a project binder — a distinct bug that must not be
         // laundered into "no claim".
-        Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => panic!(
+        Some(
+            res @ (Resolution::Local(_) | Resolution::Item(_) | Resolution::EarlierFileType { .. }),
+        ) => panic!(
             "companion probe {}: assembly path resolved to {res:?}",
             plant.name
         ),

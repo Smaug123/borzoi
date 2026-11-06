@@ -17,3 +17,10 @@ type array<'T> = 'T list
 
 /// An abbreviation that permutes its parameters.
 type swap<'a, 'b> = Choice<'b, 'a>
+
+namespace AbbrevAuto
+
+/// A type an `open AbbrevAuto` brings into scope by its auto-opened module.
+[<AutoOpen>]
+module Auto =
+    type Shadowed = { A : int }

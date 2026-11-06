@@ -97,7 +97,7 @@ fn assert_matches_fcs(project: &Project) {
                 Some(res) => {
                     // A Local lives in this file; an Item may be cross-file.
                     let (def_idx, def_range) = match res {
-                        Resolution::Item(_) => {
+                        Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
                             let (idx, def) = proj.item_def(res).expect("item def for Item");
                             (idx, def.range)
                         }

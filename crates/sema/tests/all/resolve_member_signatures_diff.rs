@@ -535,6 +535,13 @@ fn grade(program: &Program, file: &crate::common::FileCensus, clean: bool) -> Ve
             .filter(|u| range_of(u.start, u.end) == range)
             .collect();
         match res {
+            // Single-file: nothing resolves to an earlier file.
+            Resolution::EarlierFileType { .. } => {
+                v.wrong.push(format!(
+                    "{:?} at {range:?}: an earlier file's type\n{src}",
+                    &src[range]
+                ));
+            }
             Resolution::Local(_) | Resolution::Item(_) => {
                 let ours = rf.resolved_def(*res).map(|d| d.range);
                 // Our own defining occurrence: FCS may or may not report it.

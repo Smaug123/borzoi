@@ -241,15 +241,23 @@ fn project_type_shadow_through_open_marks_annotation_shadowable() {
     assert_shadowable_type(project.file(1), files[1], "int64", 0);
 }
 
+/// The earlier file's `Ns.int64` is what FCS binds in a later file of `Ns`:
+/// the namespace opens after FSharp.Core's implicit opens.
 #[test]
-fn project_type_shadow_through_enclosing_namespace_marks_annotation_shadowable() {
+fn project_type_through_enclosing_namespace_resolves_to_the_earlier_file() {
     let files = [
         "namespace Ns\ntype int64 = Shadow\n",
         "namespace Ns\nmodule M =\n    let x : int64 = 0L\n",
     ];
     let asts: Vec<ImplFile> = files.iter().map(|src| impl_file(src)).collect();
     let project = resolve_project(&asts, &AssemblyEnv::default());
-    assert_shadowable_type(project.file(1), files[1], "int64", 0);
+    let res = project
+        .file(1)
+        .resolution_at(nth(files[1], "int64", 0))
+        .expect("a resolution");
+    let (file, def) = project.item_def(res).expect("an earlier file's type");
+    assert_eq!(file, 0);
+    assert_eq!(def.range, nth(files[0], "int64", 0));
 }
 
 #[test]

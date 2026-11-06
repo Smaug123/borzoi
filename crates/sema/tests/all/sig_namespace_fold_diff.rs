@@ -534,9 +534,12 @@ fn grade_cell(shape: &Shape, reader: Reader) -> CellCommits {
                 (Resolution::Unresolved, _) => commits.wrong.push(format!(
                     "{ctx}: Unresolved at {text:?} in {file:?} where FCS resolved"
                 )),
-                (Resolution::Item(_) | Resolution::Local(_), Some(decl)) => {
+                (
+                    Resolution::Item(_) | Resolution::Local(_) | Resolution::EarlierFileType { .. },
+                    Some(decl),
+                ) => {
                     let (def_idx, def_range) = match res {
-                        Resolution::Item(_) => {
+                        Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
                             let (idx, def) = proj.item_def(res).expect("item def");
                             (idx, def.range)
                         }
@@ -560,7 +563,10 @@ fn grade_cell(shape: &Shape, reader: Reader) -> CellCommits {
                         commits.project.push(n);
                     }
                 }
-                (Resolution::Item(_) | Resolution::Local(_), None) => commits.wrong.push(format!(
+                (
+                    Resolution::Item(_) | Resolution::Local(_) | Resolution::EarlierFileType { .. },
+                    None,
+                ) => commits.wrong.push(format!(
                     "{ctx}: {text:?} in {file:?}: we commit in-project {res:?}, FCS binds \
                      {:?} in {:?}",
                     u.full_name, u.assembly

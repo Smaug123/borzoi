@@ -79,6 +79,7 @@ mod model;
 mod state;
 mod types;
 
+use model::DeclaredType;
 pub use model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
     ItemId, OpaqueRegion, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace,
@@ -1658,6 +1659,7 @@ fn resolve_project_files_impl(
                     surface.exports,
                 );
                 contributors::signature_contributions(sig, &preceding, assemblies, &mut rf);
+                rf.type_decls = signature_type_decls(sig);
                 rf
             }
             SourceFile::Impl(file) => {
@@ -1777,6 +1779,29 @@ fn thread_forward(
         .extend(rf.augmentation_instance_names.iter().cloned());
     ext.static_names
         .extend(rf.augmentation_static_names.iter().cloned());
+}
+
+/// A signature's type and exception names, each declaration unplaced: a
+/// later file sees the signature's type, which may not be the
+/// implementation's ([`ResolvedFile::type_decls`]).
+fn signature_type_decls(sig: &SigFile) -> HashMap<String, Vec<Option<DeclaredType>>> {
+    let mut out: HashMap<String, Vec<Option<DeclaredType>>> = HashMap::new();
+    let type_names = sig
+        .syntax()
+        .descendants()
+        .filter_map(TypeDefn::cast)
+        .filter_map(|defn| defn.long_id().and_then(|li| li.idents().last()));
+    let exception_names = sig
+        .syntax()
+        .descendants()
+        .filter_map(ExceptionDefnDecl::cast)
+        .filter_map(|exn| exn.union_case().and_then(|c| c.ident()));
+    for name in type_names.chain(exception_names) {
+        out.entry(id_text(&name).to_string())
+            .or_default()
+            .push(None);
+    }
+    out
 }
 
 /// The **wholesale** extension-source signal one file threads to later
@@ -2210,6 +2235,7 @@ impl<'a> Resolver<'a> {
             case_field_names: HashMap::new(),
             own_generic_type_simple_names: HashSet::new(),
             own_type_decl_counts: HashMap::new(),
+            placed_type_decls: HashMap::new(),
             type_decl_counts: HashMap::new(),
             type_def_arities: HashMap::new(),
             type_defs_by_arity: HashMap::new(),
@@ -2468,7 +2494,39 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// [`ResolvedFile::type_decls`]: every name the file declares a type,
+    /// exception or augmentation head under, with its placed declarations and
+    /// a `None` for each declaration the walk did not place. An augmentation
+    /// head alone declares nothing, but is kept as one unplaced entry: it may
+    /// name a type of another file, and nothing here says which.
+    fn type_decls(&self) -> HashMap<String, Vec<Option<DeclaredType>>> {
+        self.own_type_simple_names
+            .iter()
+            .map(|name| {
+                let placed = self
+                    .placed_type_decls
+                    .get(name)
+                    .map_or(&[][..], Vec::as_slice);
+                let declared = self
+                    .own_type_decl_counts
+                    .get(name)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(1);
+                let unplaced = declared.saturating_sub(placed.len());
+                let decls = placed
+                    .iter()
+                    .cloned()
+                    .map(Some)
+                    .chain(std::iter::repeat_n(None, unplaced))
+                    .collect();
+                (name.clone(), decls)
+            })
+            .collect()
+    }
+
     fn finish(mut self) -> ResolvedFile {
+        let type_decls = self.type_decls();
         self.seal_assembly_readings();
         self.debug_assert_shadowable_types_are_attributed();
         self.debug_assert_commit_maps_are_disjoint();
@@ -2480,6 +2538,7 @@ impl<'a> Resolver<'a> {
             opaque_binders: self.opaque_binders,
             opaque_regions: self.opaque_regions,
             attribute_resolutions: self.attribute_resolutions,
+            type_decls,
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,

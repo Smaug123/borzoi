@@ -511,6 +511,8 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
                         })
                     }
                     Some(Resolution::Unresolved) => Some("unresolved".to_string()),
+                    // Single-file: no earlier file to name.
+                    Some(Resolution::EarlierFileType { .. }) => Some("earlier-file".to_string()),
                     // Unreachable under `AssemblyEnv::default()`, which holds no
                     // entity to point at; graded rather than assumed.
                     Some(

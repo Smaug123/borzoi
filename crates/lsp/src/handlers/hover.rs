@@ -428,7 +428,7 @@ fn hover_body(
             let def = file.def(id);
             Some(format_def(&def.name, def.kind, ty).into())
         }
-        Resolution::Item(_) => {
+        Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
             let (_, def) = resolved.item_def(res)?;
             Some(format_def(&def.name, def.kind, ty).into())
         }
