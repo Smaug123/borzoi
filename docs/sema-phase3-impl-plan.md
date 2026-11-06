@@ -1074,7 +1074,13 @@ loosened as FCS loosens it (`Some g -> g` with `g : obj -> int` is `'a -> int`
 at the use). A pattern of structure is related to the scrutinee only where
 that cannot bind an earlier binding's open variable or one an opaque local's
 resolution mentions, the variables an argument check refuses to bind too, and
-a pattern binding a name twice declines (FS0038), as for a `let` pattern. Three things FCS's dump cannot
+a pattern binding a name twice declines (FS0038), as for a `let` pattern.
+FCS checks in source order, so an argument check still pending at a pattern
+was applied before it: a pattern that contradicts one, once every pending
+check is applied as an equality under a rolled-back snapshot, declines
+(`(fs x, match x with 1 -> …)` keeps `x : string`). FCS's dumps cannot grade
+that case — they decline to convert a declaration FCS error-recovered — so its
+test pins FCS's answer directly. Three things FCS's dump cannot
 grade decline or go unemitted: a one-clause match (FCS elaborates it to a
 `let`, keeping no node at its result), the match's own range, and the
 scrutinee's own node (FCS may bind it to a temporary whose `let` sits there,

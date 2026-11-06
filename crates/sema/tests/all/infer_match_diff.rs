@@ -524,3 +524,45 @@ fn let_patterns_over_cases_and_constants_commit_only_what_fcs_kept() {
         check(&src, &[], &mut Tally::default());
     }
 }
+
+/// FCS checks in source order: an earlier call fixes the scrutinee, and a
+/// pattern contradicting it is the one rejected (`fs : string -> string`,
+/// `(fs x, match x with 1 -> x | y -> y)` keeps `x : string`).
+///
+/// FCS's dumps cannot grade these — they decline to convert a declaration it
+/// error-recovered — so FCS's answer is pinned here instead: in every one,
+/// `fs x` fixes `x : string` before any pattern is checked, so whatever we
+/// publish for `x`, a pattern's names, or `f`'s domain must say `string`.
+#[test]
+fn a_pattern_does_not_override_an_earlier_argument_check() {
+    for body in [
+        "(fs x, match x with 1 -> x | y -> y)",
+        "(fs x, match x with \"a\" -> x | y -> y)",
+        "(fs x, match x with Some v -> 1 | None -> 2)",
+        "(fs x, match x with (a, b) -> 1 | _ -> 2)",
+        "(fs x, match Some x with Some 1 -> 1 | _ -> 2)",
+        "(fs x, match Some x with Some v -> v | None -> \"n\")",
+    ] {
+        let src = format!("module M\nlet fs (s: string) = s\nlet f x = {body}\n");
+        let parsed = parse(&src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = full_bcl_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
+        for (def, ty) in inferred.def_types() {
+            let name = resolved.def(*def).name.to_string();
+            let ty = ty.render();
+            match name.as_str() {
+                "x" | "y" | "v" => assert_eq!(ty, "System.String", "`{name}` in {body}"),
+                "f" => assert!(ty.starts_with("System.String ->"), "`f : {ty}` in {body}"),
+                _ => {}
+            }
+        }
+    }
+}

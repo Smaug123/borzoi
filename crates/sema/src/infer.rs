@@ -730,6 +730,9 @@ pub enum Incomplete {
     /// A use of a referenced assembly's union case whose F# type is not read
     /// off its maker, and why (`function_ty::union_case_scheme`).
     AssemblyCase(FunctionTyGap),
+    /// A `match` pattern that contradicts an argument check FCS applied
+    /// before it in source order, which inference has not yet applied.
+    PatternAfterCheck,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -3132,6 +3135,16 @@ impl<'a> Gen<'a> {
                         self.mark_incomplete(Incomplete::InheritedOpen);
                         return None;
                     }
+                    // FCS checks in source order, so an argument check still
+                    // pending here was applied before this pattern: a pattern
+                    // that contradicts one (`(fs x, match x with 1 -> …)` with
+                    // `fs : string -> _`) is the one FCS rejects, and relating
+                    // it now would fix the scrutinee in the check's place.
+                    if !matches!(pt, Ty::Var(_)) && self.pattern_contradicts_pending_check(sv, &pt)
+                    {
+                        self.mark_incomplete(Incomplete::PatternAfterCheck);
+                        return None;
+                    }
                     self.eq(Ty::Var(sv), pt);
                     // The pattern's names are typed before the clause's uses
                     // of them are walked, so a use reads a known type
@@ -5254,6 +5267,33 @@ impl<'a> Gen<'a> {
             Pat::Const(c) if c.syntax().text().is_empty() => Ok(PatShape::Unit),
             other => Err(Incomplete::PatternShape(other.syntax().kind())),
         }
+    }
+
+    /// Whether relating the pattern type `pt` to the scrutinee `sv` fails once
+    /// every argument check still pending — each walked before the pattern,
+    /// so each applied before it by FCS, which checks in source order — is
+    /// applied as an equality. Probed under a snapshot, which is rolled back:
+    /// nothing is applied. A check FCS would meet by coercion fails here where
+    /// FCS succeeds, which only declines.
+    fn pattern_contradicts_pending_check(&mut self, sv: TyVid, pt: &Ty) -> bool {
+        let checks: Vec<(TyVid, TyVid)> = self
+            .constraints
+            .iter()
+            .filter_map(|c| match c {
+                Constraint::ArgCheck(ac) => Some((ac.arg, ac.dom)),
+                _ => None,
+            })
+            .collect();
+        if checks.is_empty() {
+            return false;
+        }
+        let snapshot = self.table.snapshot();
+        for (arg, dom) in checks {
+            let _ = self.table.unify_atomic(&Ty::Var(arg), &Ty::Var(dom));
+        }
+        let contradicts = self.table.unify_atomic(&Ty::Var(sv), pt).is_err();
+        self.table.rollback_to(snapshot);
+        contradicts
     }
 
     /// The pattern of the case the resolver reads at `at`, over `arg`: `None`
