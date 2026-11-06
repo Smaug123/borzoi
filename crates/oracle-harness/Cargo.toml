@@ -10,6 +10,8 @@ borzoi-spawn.workspace = true
 # rustc's own lexer, used by `module_tree` to read `mod` declarations without
 # re-implementing Rust's string/comment/raw-literal lexing by hand.
 proc-macro2.workspace = true
+# The `nuget-oracle` protocol is JSON lines (`nuget_oracle`).
+serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

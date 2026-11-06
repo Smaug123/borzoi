@@ -104,12 +104,15 @@ run_step() { # name
         -- --ignored --nocapture
       ;;
     restore-graph)
-      # The half-A oracle of docs/nuget-dgspec-boundary-plan.md over the same
-      # restored projects: the dependency-graph spec generated without
-      # restoring must be exactly the one restore itself reads, and what the
-      # dgspec reader makes of it is pinned in `restore_graph_projects.txt`.
+      # Stages 2 and 3 of docs/nuget-dgspec-boundary-plan.md over the same
+      # projects, restored offline against the packages folder their
+      # materialising restores filled: the dependency-graph spec generated
+      # without restoring must be exactly the one restore itself reads, NuGet
+      # handed that spec must compute exactly the assets file restore wrote,
+      # and the outcome is pinned in `restore_graph_projects.txt`.
       nix develop --command env \
         BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
+        BORZOI_PROJECT_PACKAGES="$RUNNER_TEMP/project-corpus-packages" \
         cargo test -p borzoi --test all restore_graph::pinned_projects \
         -- --ignored --nocapture
       ;;

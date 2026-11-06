@@ -153,7 +153,9 @@ This is a Cargo workspace with nine members:
   sorted line per item, a line diff on any movement, `BORZOI_UPDATE_MANIFESTS=1`
   to regenerate) — the replacement for one-sided count ratchets — and
   `corpus_key`, the host-independent spelling of a corpus file and position in
-  an entry (Nix's macOS `~nix~case~hack~` suffix decoded).
+  an entry (Nix's macOS `~nix~case~hack~` suffix decoded). And `nuget_oracle`,
+  the `tools/nuget-oracle` driver, which lives here because both
+  `borzoi-nuget`'s differentials and the LSP's restore-graph oracle drive it.
 - `crates/sema/` — `borzoi-sema`. Semantic analysis (name resolution
   today, type inference later) over the `borzoi-cst` AST. `resolve_file`
   builds a position-ordered scope tree and resolves each name use to its

@@ -116,7 +116,7 @@ pub enum RestoreOutcome {
 
 /// A scratch directory removed when dropped, so a restore leaves nothing behind
 /// even if the caller returns early.
-struct ScratchDir {
+pub struct ScratchDir {
     path: PathBuf,
 }
 
@@ -153,6 +153,13 @@ impl ScratchDir {
         }
         builder.create(&path).ok()?;
         Some(Self { path })
+    }
+}
+
+impl ScratchDir {
+    /// The directory.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -345,10 +352,14 @@ fn without_verbatim_prefix(text: &str) -> std::borrow::Cow<'_, str> {
 
 /// What [`restore_graph`] produced.
 pub enum RestoreGraph {
-    /// The dependency-graph spec's text. Its paths into the scratch directory
-    /// it was written under (since removed) are the one part that differs from
-    /// run to run, so `scratch` is returned for a comparison to normalise.
-    Written { text: String, scratch: PathBuf },
+    /// The dependency-graph spec's text, and the scratch directory it was
+    /// written under, which lives as long as this value does. The spec names
+    /// that directory (its restore output path, and the empty folder that is
+    /// its only package source), so the directory is what a consumer of the
+    /// spec needs to find in place, and the one part of the spec that differs
+    /// from run to run. For [`RestoreGraphSource::Restored`] it also holds the
+    /// restore's other outputs, the assets file among them.
+    Written { text: String, scratch: ScratchDir },
     /// The project must not be restored here (as for
     /// [`restore_to_scratch_assemblies`]), or MSBuild wrote no spec.
     Declined,
@@ -426,10 +437,7 @@ pub fn restore_graph(
         (RunResult::Declined | RunResult::Succeeded, _) => {}
     }
     match std::fs::read_to_string(&written) {
-        Ok(text) => RestoreGraph::Written {
-            text,
-            scratch: scratch.path.clone(),
-        },
+        Ok(text) => RestoreGraph::Written { text, scratch },
         Err(_) => RestoreGraph::Declined,
     }
 }

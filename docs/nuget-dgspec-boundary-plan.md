@@ -1,8 +1,7 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1, 2 and 8 have landed, and so has the NuGet-identity
-> half of stage 3 (the oracle runs the SDK's own NuGet). Stage 8 chose **A₁**
-> (see its section for the numbers and the conditions). Supersedes slice 8 of
+> **Status:** stages 1–3 and 8 have landed. Stage 8 chose **A₁** (see its
+> section for the numbers and the conditions). Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -303,24 +302,51 @@ The routes check turned up two findings:
   across the LSP (membership, buffer overlays, the paths in responses) and
   would change which `Directory.Build.props` a symlink-opened project reads.
 
-### Stage 3: the decomposition is lossless
+### Stage 3: the decomposition is lossless — landed
 
-**Dependencies:** stage 2.
-**Implements:** *Why the boundary sits here* (A₀ then B₀ ≡ `restore.rs`).
-- New `tools/nuget-oracle` op `restoreDgSpec`: run `RunWithoutCommit` over a
-  supplied dgspec against the real packages folder, returning per (project, TFM)
-  the package set and compile assets, plus the identity of the `NuGet.Commands`
-  that actually ran.
-- The op runs the NuGet of the SDK being calibrated, loaded from that SDK's
-  directory, as the existing `restore` op already does (see *Per-SDK drift*).
+`tools/nuget-oracle`'s `restoreDgSpec` op runs NuGet's restore over a supplied
+dgspec as `dotnet restore` runs it (`BuildTasksUtility.RestoreAsync`: the
+spec's own request provider, settings from the config files the spec names,
+the cross-platform machine-wide settings), stopping short of the commit
+(`RestoreRunner.RunWithoutCommit`). It returns each restored project's assets
+file as `LockFileFormat` renders it, plus the identity of the
+`NuGet.Commands` that ran. The oracle runs the NuGet of the SDK the muxer
+selects from the project's directory, which is the SDK `restore.rs` restores
+with, and `tests/all/restore_graph.rs` checks that the identity it reports is
+that SDK's file.
 
-**Correctness oracle:**
-- Identity: the op's reported `NuGet.Commands` identity equals the SDK's, for
-  every SDK the corpus runs on.
-- On every corpus project, B₀ applied to A₀'s dgspec matches `restore.rs`'s
-  scratch assets file per TFM, in both package set and compile assets. A
-  mismatch here means the split itself drops information, and nothing later in
-  the plan may proceed until it is explained.
+The gate compares the **whole assets file**, not only the package set and
+compile assets the plan first named: B₀ run over A₀'s spec must produce
+exactly the file `restore.rs`'s restore wrote, up to the scratch directories
+each route was written under. It runs on every fixture that commits (a
+`net10.0` project with its SDK pruning list, a project reference, a project
+conditioned on restore's injected global) and on every corpus project in
+`restore_graph::pinned_projects`, which pins each target's library, package
+and compile-asset counts, whether each restore succeeded, and the graded
+`NuGet.Commands` identity. A fixture that drops `FSharp.Core` from the spec
+before handing it to NuGet must fail the comparison, so it cannot pass by
+comparing nothing.
+
+Every corpus project and every fixture decomposes losslessly. The run turned
+up two things:
+- **Log order is not content.** The one difference was the order of the
+  assets file's `logs`. A missing package's message is built per element of
+  the target graph's unresolved set (`UnresolvedMessages.LogAsync`), which
+  iterates in hash order, and .NET randomises string hashes per process. The
+  comparison sorts `logs`.
+- **Stage 2's corpus restores were all failing.** The gate restored corpus
+  projects against the devshell's NuGet store, which holds only what Borzoi's
+  own builds need, so every one failed resolution with `NU1101`. Stage 2's
+  comparison could not see it, because the spec is computed before resolution.
+  The gate now restores against the packages folder the corpus's own restores
+  filled (`BORZOI_PROJECT_PACKAGES`), and all six succeed.
+
+What this does not cover:
+- **One SDK.** Every corpus project resolves SDK 10.0.401, whose
+  `NuGet.Commands` is `7.9.0-rc.42413+e34a38d2…`. The identity half holds for
+  each SDK the corpus runs on, which is one.
+- **No corpus project has a project reference or prunes** (they target
+  `net5.0`, `net8.0` and `netstandard2.0`). Only the fixtures cover those.
 
 ### Stage 4: B₁ consumes the typed dgspec
 
