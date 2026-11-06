@@ -71,6 +71,13 @@ isolation.
 - **Preceding files' values** — inference folded over Compile order
   (`infer_project`): a use of an earlier file's top-level value is typed from
   what that file published for it; details below.
+- **Project-type annotations** — `Ty::Project` names a type the project
+  declares by FCS's path for it (namespace, enclosing modules' compiled names,
+  its own) and arity, unique per assembly by FS0249; an in-file type's
+  annotation bridges to it where that path is provably the written one; a
+  terminal abbreviation with a structural target (`int array`) resolves; and
+  FSharp.Core's own applied abbreviations (`int option`, `int array`) read
+  through to the type FCS names; details below.
 - **Overloads OV-0–OV-7, OV-9** (#872–#899 and follow-ups) — the research probes,
   the `overloads` oracle, assembly flags, cross-assembly dedup, the speculation
   API, the applicability matcher, the instance-call engine with its
@@ -110,23 +117,25 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-11-05: 1 011 of 2 647 counted bindings complete, 38.2 %;
-the same 1 011 were 38.9 % of the 2 602 walked bindings before the census
-counted the bindings its own annotation stops, below):
+corpus sample (2026-11-05, after project-type annotations: 1 011 of 2 647
+counted bindings complete, 38.2 %; the same 1 011 were 38.9 % of the 2 602
+walked bindings before the census counted the bindings its own annotation
+stops, below):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 409 | 552 |
-| callee that is an operator or active-pattern name in parentheses, `(\|P\|_\|) x` (116 in FSharp.Core's `Linq.fs`) | 118 | 118 |
-| method call whose head the resolver deferred (a project or test-framework name, alone in its file) | 45 | 154 |
-| binding whose own annotation is outside the modelled set (not walked) | 45 | 45 |
-| `use`, `let rec` or `let!` inside an expression | 64 | 90 |
+| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 411 | 557 |
+| callee that is an operator or active-pattern name in parentheses, `(\|P\|_\|) x` (116 in FSharp.Core's `Linq.fs`) | 118 | 119 |
+| `use`, `let rec` or `let!` inside an expression | 67 | 92 |
 | use of an in-file binder F# may reject for its attributes | 55 | 131 |
-| pattern annotation outside the modelled set | 49 | 331 |
-| `match` | 47 | 150 |
+| `match` | 53 | 155 |
+| pattern annotation outside the modelled set | 46 | 268 |
+| list or array expression | 46 | 79 |
+| method call whose head the resolver deferred (a project or test-framework name, alone in its file) | 45 | 155 |
 | computation expression | 34 | 35 |
+| binding whose own annotation is outside the modelled set (not walked) | 33 | 33 |
 | `new` | 32 | 37 |
-| assembly value with a constraint other than `equality`/`comparison` (its own, or a generic type's it applies) | 10 | 21 |
+| assembly value with a constraint other than `equality`/`comparison` (its own, or a generic type's it applies) | 10 | 22 |
 | statically resolved operator over an operand not known where it is applied | 2 | 16 |
 | assembly operator with such a constraint, used as a value | 1 | 1 |
 
@@ -155,9 +164,19 @@ Of the 312 annotations behind those bindings on the whole-project gate, 154
 declines as `ShadowableType` — mostly a type an earlier file declares, which
 the resolver tracks only by simple name, as a shadow guard — 29 (9 %) a type
 variable, and 27 (9 %) an FSharp.Core generic abbreviation applied
-(`unit option`, `string list`), which the annotation bridge declines. So the
-project's own types are the next stage: resolved in type position first, then
-given a `Ty`.
+(`unit option`, `string list`), which the annotation bridge declines.
+
+The inference half landed first (*Project-type annotations*, below), since the
+same-file half needs nothing from the resolver: a project type has a `Ty`, an
+in-file type's annotation bridges to it, and FSharp.Core's applied
+abbreviations read through to their target. Measured on the whole-project gate
+it takes complete bindings from 26 to 30 of 797 and `BindingAnnotation` from
+312 to 211, and hovers agreeing with FCS from 158 to 343; `match` becomes the
+only reason of 45 bindings (6 before), and `PatternAnnotation`'s 60 and
+`BindingAnnotation`'s 211 are now mostly earlier files' types, which the
+resolver stage is for. On the stride-13 sample the count of complete bindings
+does not move: the annotations it types expose the construct behind them
+(`match`, list literals, an earlier file's value).
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -763,6 +782,45 @@ value — so on this corpus the next levers are the earlier bindings' own
 blockers and the `.fsi`'s annotations, not the threading. The
 stride-13 census below checks each file alone, so it cannot see this stage
 and is unchanged.
+
+### Project-type annotations
+
+An annotation naming a type the project declares had no `Ty` to bridge to. It
+now has `Ty::Project { path, args }`: the path FCS gives the type — the
+namespace, each enclosing module's compiled name, the type's own — and its
+arguments. A path and an arity name one type project-wide (two at one path and
+arity are FS0249 in a single assembly, private ones included), so the same key
+will serve a type from an earlier file once the resolver resolves one, and a
+signature and its implementation agree on it. It never unifies with a
+`Ty::Named` at the same path.
+
+The bridge (`Gen::project_type_paths`) commits only where the written path is
+provably FCS's, by its rendering probed directly: a type's `[<CompiledName>]`
+renames it; a module takes a `Module` suffix beside a same-named type or under
+`CompilationRepresentation(ModuleSuffix)` but ignores `[<CompiledName>]`; a file
+without a header names its implicit module after the file. Abbreviations,
+augmentations, inline IL and bodyless types decline. Members are not modelled:
+an access on a project-typed receiver is left open and counted under
+`ProjectTypeMember` (only reason of 4, present in 14, on the whole-project
+gate). A project type is read as not sealed, admitting subsumption, and with
+equality and comparison undecided — each the reading that only declines.
+
+Two resolver-side pieces landed with it. A type-position name that ends on an
+assembly abbreviation whose decoded target is structural (`'T array = 'T[]`, a
+tuple, a function) binds the abbreviation, as FCS does, where the walk declined
+every unchaseable alias; a path that walks past one still declines. And an
+applied abbreviation reads through to its target only when it is FSharp.Core's
+own, by assembly name and public-key token, with a one-step target applied to
+exactly its parameters in order.
+
+Graded by `infer_project_type_annotation_diff` (18 kinds by 12 positions, six
+annotation sites each, an optional extension elsewhere, and an ill-typed
+family), `infer_fsharp_core_abbreviation_diff` (ten heads by six arguments by
+four contexts, and a parameter-permuting abbreviation from another assembly)
+and `resolve_terminal_abbreviation_diff` (five contesting contexts by seven
+uses, by `(assembly, full name)`). Still declining: a qualified in-file type
+(`M.T`), which the resolver records only at a single segment, and every earlier
+file's type — the resolver stage.
 
 ### Remaining 3.x hard piles (census-priority order)
 

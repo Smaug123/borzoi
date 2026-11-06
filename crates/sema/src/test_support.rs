@@ -396,7 +396,9 @@ fn first_appearance(ty: &crate::Ty, order: &mut Vec<u32>) {
             }
         }
         Ty::Var(_) => {}
-        Ty::Named { args, .. } => args.iter().for_each(|a| first_appearance(a, order)),
+        Ty::Named { args, .. } | Ty::Project { args, .. } => {
+            args.iter().for_each(|a| first_appearance(a, order))
+        }
         Ty::Array { elem, .. } => first_appearance(elem, order),
         Ty::Tuple(elems) => elems.iter().for_each(|e| first_appearance(e, order)),
         Ty::Fun { arg, ret } => {
@@ -420,6 +422,10 @@ fn renumber(ty: &crate::Ty, order: &[u32]) -> crate::Ty {
         ),
         Ty::Var(v) => Ty::Var(*v),
         Ty::Named { path, args } => Ty::Named {
+            path: path.clone(),
+            args: args.iter().map(|a| renumber(a, order)).collect(),
+        },
+        Ty::Project { path, args } => Ty::Project {
             path: path.clone(),
             args: args.iter().map(|a| renumber(a, order)).collect(),
         },

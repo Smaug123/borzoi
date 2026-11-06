@@ -49,9 +49,9 @@
 //! F#'s `| null`.
 
 use borzoi_assembly::{
-    Access, ArgGroups, AssemblyIdentity, Augmentation, EntityKind, EqualityComparison,
-    FSharpConstraints, MethodLike, Nullability, ParamDefault, Primitive, TypeParameter, TypeRef,
-    ValFacts, ValMeasures,
+    AbbreviationTarget, Access, ArgGroups, AssemblyIdentity, Augmentation, EntityKind,
+    EqualityComparison, FSharpConstraints, MethodLike, Nullability, ParamDefault, Primitive,
+    TypeParameter, TypeRef, ValFacts, ValMeasures,
 };
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
@@ -308,7 +308,9 @@ fn collect_params(ty: &Ty, out: &mut Vec<u32>) {
             }
         }
         Ty::Var(_) => {}
-        Ty::Named { args, .. } => args.iter().for_each(|a| collect_params(a, out)),
+        Ty::Named { args, .. } | Ty::Project { args, .. } => {
+            args.iter().for_each(|a| collect_params(a, out))
+        }
         Ty::Array { elem, .. } => collect_params(elem, out),
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_params(e, out)),
         Ty::Fun { arg, ret } => {
@@ -718,4 +720,63 @@ impl Bridge<'_> {
         }
         Ok(path)
     }
+}
+
+/// The type an annotation applying FSharp.Core's abbreviation `marker` to
+/// `args` denotes — the abbreviation's target, as FCS names it
+/// (`int option` is `Microsoft.FSharp.Core.FSharpOption<System.Int32>`,
+/// `int array` is `System.Int32[]`) — or `None`.
+///
+/// Read only for FSharp.Core's own abbreviation: the marker's assembly is
+/// FSharp.Core by name *and* public-key token ([`is_fsharp_core`]), never a
+/// name spelled `option`. Its target must be the array tycon, or a tycon one
+/// step away ([`AssemblyEnv::abbreviation_direct_tycon`]) applied to exactly
+/// the abbreviation's own parameters in order, whose path the signature
+/// bridge's rules accept ([`Bridge::generic_path`]): not renamed unless it is
+/// one of FSharp.Core's renamed generics, and unconstrained. A constrained
+/// abbreviation parameter declines too.
+pub(crate) fn fsharp_core_abbreviation_ty(
+    env: &AssemblyEnv,
+    marker: EntityHandle,
+    args: Vec<Ty>,
+) -> Option<Ty> {
+    let entity = env.entity(marker);
+    if entity.kind != EntityKind::Abbreviation
+        || !is_fsharp_core(&entity.assembly)
+        || entity.generic_parameters.len() != args.len()
+        || entity.generic_parameters.iter().any(constrained_parameter)
+    {
+        return None;
+    }
+    let Some(AbbreviationTarget::Named {
+        path, args: targs, ..
+    }) = entity.abbreviation_target.as_ref()
+    else {
+        return None;
+    };
+    let own_parameters = targs.len() == args.len()
+        && targs
+            .iter()
+            .enumerate()
+            .all(|(i, t)| matches!(t, AbbreviationTarget::Var(v) if usize::from(*v) == i));
+    if !own_parameters {
+        return None;
+    }
+    if crate::assembly_env::is_array_tycon_path(path) {
+        let shape = path.last()?.split('`').next()?;
+        let rank = u32::try_from(shape.len() - 1).ok()?;
+        let [elem] = <[Ty; 1]>::try_from(args).ok()?;
+        return Some(Ty::Array {
+            elem: Box::new(elem),
+            rank,
+        });
+    }
+    let target = env.abbreviation_direct_tycon(marker)?;
+    let bridge = Bridge {
+        env,
+        declaring: &entity.assembly,
+        typars: 0,
+    };
+    let path = bridge.generic_path(target).ok()?;
+    (env.entity(target).generic_parameters.len() == args.len()).then_some(Ty::Named { path, args })
 }

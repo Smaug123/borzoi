@@ -61,6 +61,17 @@ pub enum Ty {
     /// exactly one representation and structural equality is the type equality
     /// the unifier needs. Build one with [`Ty::named`].
     Named { path: Vec<String>, args: Vec<Ty> },
+    /// A type the **project** declares, by the path FCS names it with —
+    /// namespace, each enclosing module's compiled name, the type's own
+    /// (`["N", "Inner", "G"]`) — applied to `args`.
+    ///
+    /// A type is its path and its arity (`args.len()`): F# rejects two project
+    /// types at one path and arity in a single assembly (FS0249, private ones
+    /// included), whichever files declare them, so the path names one type
+    /// project-wide, from its own file or any other, and a signature and its
+    /// implementation agree on it. Never a referenced assembly's type, even
+    /// one at the same path: that is a [`Ty::Named`], and the two never unify.
+    Project { path: Vec<String>, args: Vec<Ty> },
     /// An array type. `elem` is the element type, `rank` the dimensionality
     /// (1 for `T[]`, 2 for `T[,]`, …). Stage 3.1 produces only `byte[]`.
     Array { elem: Box<Ty>, rank: u32 },
@@ -117,7 +128,7 @@ impl Ty {
     /// rather than a wrong or meaningless answer.
     pub fn is_ground(&self) -> bool {
         match self {
-            Ty::Named { args, .. } => args.iter().all(Ty::is_ground),
+            Ty::Named { args, .. } | Ty::Project { args, .. } => args.iter().all(Ty::is_ground),
             Ty::Array { elem, .. } => elem.is_ground(),
             Ty::Tuple(elems) => elems.iter().all(Ty::is_ground),
             Ty::Fun { arg, ret } => arg.is_ground() && ret.is_ground(),
@@ -135,7 +146,9 @@ impl Ty {
     /// differential (`crates/sema/tests/all/infer_literals_diff.rs`) compares.
     pub fn render(&self) -> String {
         match self {
-            Ty::Named { path, args } => render_named(&path.join("."), args, Ty::render),
+            Ty::Named { path, args } | Ty::Project { path, args } => {
+                render_named(&path.join("."), args, Ty::render)
+            }
             Ty::Array { elem, rank } => render_array(elem, *rank, Ty::render),
             // `a * b * …` with FQN elements, matching the oracle's canonical
             // tuple rendering (`fcs-dump`'s `renderTypeInScope`). A nested tuple
@@ -198,6 +211,12 @@ impl Ty {
                     });
                 render_named(&head, args, Ty::render_fsharp)
             }
+            // Spelled as F# identifiers, qualified, as the canonical form is.
+            Ty::Project { path, args } => render_named(
+                &borzoi_assembly::join_quoted(path.iter().map(String::as_str)),
+                args,
+                Ty::render_fsharp,
+            ),
             Ty::Array { elem, rank } => render_array(elem, *rank, Ty::render_fsharp),
             // The F# display form is the same `a * b` shape, with aliased
             // elements (`int * string`).

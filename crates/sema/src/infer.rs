@@ -481,13 +481,14 @@ use borzoi_assembly::{
 };
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
-    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat,
-    SequentialExpr, SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, Type,
+    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, ModuleOrNamespace,
+    ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat, SequentialExpr, SyntaxKind,
+    SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr,
 };
 use rowan::{TextRange, TextSize};
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
-use crate::def::DefId;
+use crate::def::{DefId, DefKind};
 use crate::function_ty::{
     Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, builtin_operator, module_function_scheme,
 };
@@ -680,6 +681,9 @@ pub enum Incomplete {
     /// A pattern annotation outside the modelled set, or around anything but
     /// a name.
     PatternAnnotation,
+    /// A member access on a value of a project type, whose members are not
+    /// modelled: the access is left untyped.
+    ProjectTypeMember,
     /// A module-level binding whose own annotation — `let x : T = …`,
     /// `let f x : T = …`, `let (x : T) = …`, or one inside a `let` pattern —
     /// is outside the modelled set. The binding is not walked at all: the
@@ -975,6 +979,7 @@ pub fn infer_file(
     let ext_scope = ExtensionScope::of(resolved, env);
     let mut cx = Gen::new(resolved, env, ext_scope, preceding);
     cx.rejected_defs = cx.rejected_use_defs(file);
+    cx.project_types = cx.project_type_paths(file);
     cx.walk(file);
     cx.solve();
     cx.finish()
@@ -1283,6 +1288,11 @@ struct Gen<'a> {
     /// extension-absence gate the method-call wake consults before committing an
     /// overload. Computed once in [`infer_file`] from the file and the env.
     ext_scope: ExtensionScope,
+    /// The path FCS names each in-file type definition by, and its arity,
+    /// where that path is provably the written one
+    /// ([`Self::project_type_paths`]); a type absent here is not bridged.
+    /// Computed once in [`infer_file`].
+    project_types: HashMap<DefId, (Vec<String>, usize)>,
     /// The defining ranges of the in-file binders a use of which F# may reject
     /// for their attributes ([`Self::rejected_use_defs`]); computed once in
     /// [`infer_file`].
@@ -1399,6 +1409,7 @@ impl<'a> Gen<'a> {
             scheme_inst_vars: HashSet::new(),
             constrained: Vec::new(),
             rejected_defs: HashSet::new(),
+            project_types: HashMap::new(),
             dropped: Vec::new(),
             eq_failures: 0,
             bounded_flex: Vec::new(),
@@ -1685,6 +1696,145 @@ impl<'a> Gen<'a> {
                 | "Microsoft.FSharp.Core.CompilerMessageAttribute"
                 | "Microsoft.FSharp.Core.RequiresExplicitTypeArgumentsAttribute"
         )
+    }
+
+    /// The path FCS names each in-file type definition by — its namespace,
+    /// each enclosing module's compiled name, its own — with its arity, for
+    /// the definitions where that is provably the written path
+    /// ([`Ty::Project`]). Probed against FCS's rendering: a type's
+    /// `[<CompiledName>]` renames it, a module takes a `Module` suffix beside a
+    /// same-named type or under `CompilationRepresentation(ModuleSuffix)`, and
+    /// a file without a header names its implicit module after the file. So a
+    /// definition is left out when
+    ///
+    /// - it is not a nominal type F# names by its own path: an abbreviation
+    ///   (FCS names its target), an augmentation, inline IL, or a bodyless
+    ///   type (a measure);
+    /// - a type parameter carries a constraint or an attribute (a measure):
+    ///   no argument is checked against either, and F# rejects an
+    ///   application violating one, recovering the binder to a variable;
+    /// - it may carry `[<CompiledName>]` or an attribute that may make F#
+    ///   reject a use ([`Self::rejects_use`]), or an enclosing module may carry
+    ///   `[<CompilationRepresentation>]` or such an attribute — by the
+    ///   resolver's verdict on each attribute ([`Self::attribute_may_be`]);
+    /// - an enclosing module shares its name with any type the file declares;
+    /// - the file has no `module` or `namespace` header, or is
+    ///   `namespace global`.
+    fn project_type_paths(&self, file: &ImplFile) -> HashMap<DefId, (Vec<String>, usize)> {
+        let env = self.env;
+        let type_names: HashSet<String> = file
+            .syntax()
+            .descendants()
+            .filter_map(TypeDefn::cast)
+            .filter_map(|d| d.long_id())
+            .flat_map(|li| li.idents().map(|t| ident_text(&t)).collect::<Vec<_>>())
+            .collect();
+        let mut out = HashMap::new();
+        for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+            let Some(name) = defn.long_id().and_then(|li| {
+                let mut idents = li.idents();
+                let first = idents.next()?;
+                idents.next().is_none().then_some(first)
+            }) else {
+                continue;
+            };
+            // The defining occurrence of an in-file type, not an augmentation
+            // naming one.
+            let Some(def) = self.def_at(name.text_range()) else {
+                continue;
+            };
+            let d = self.resolved.def(def);
+            if d.kind != DefKind::Type || d.range != name.text_range() {
+                continue;
+            }
+            let nominal = match defn.repr() {
+                Some(
+                    TypeDefnRepr::Record(_)
+                    | TypeDefnRepr::Union(_)
+                    | TypeDefnRepr::Enum(_)
+                    | TypeDefnRepr::Delegate(_),
+                ) => true,
+                Some(TypeDefnRepr::ObjectModel(om)) => !om.is_augmentation(),
+                Some(TypeDefnRepr::Abbrev(_) | TypeDefnRepr::InlineIl(_)) | None => false,
+            };
+            // A type parameter with a constraint or an attribute (a measure):
+            // nothing here checks an argument against either, and F# rejects
+            // an application that violates one, recovering the binder.
+            // `TypeDefn::constraints` reads both places a constraint can be
+            // written: inside the parameter list and after the type's name.
+            let unchecked_parameters = defn.constraints().next().is_some()
+                || defn.typar_decls().is_some_and(|decls| {
+                    decls
+                        .typars()
+                        .any(|t| t.is_head_type() || t.attributes().next().is_some())
+                });
+            if !nominal
+                || unchecked_parameters
+                || self.attribute_may_be(defn.syntax(), |h| {
+                    env.is_compiled_name_attribute(h) || self.rejects_use(h)
+                })
+            {
+                continue;
+            }
+            // A module whose attribute renames it, or may make F# reject a use
+            // reaching the type through it.
+            let renames_module = |node: &SyntaxNode| {
+                self.attribute_may_be(node, |h| {
+                    env.is_compilation_representation_attribute(h) || self.rejects_use(h)
+                })
+            };
+            let mut path = vec![ident_text(&name)];
+            let mut provable = true;
+            for anc in defn.syntax().ancestors().skip(1) {
+                if let Some(m) = NestedModuleDecl::cast(anc.clone()) {
+                    let Some(li) = m.long_id() else {
+                        provable = false;
+                        break;
+                    };
+                    let segs: Vec<String> = li.idents().map(|t| ident_text(&t)).collect();
+                    if renames_module(&anc) || segs.iter().any(|s| type_names.contains(s)) {
+                        provable = false;
+                        break;
+                    }
+                    path.splice(0..0, segs);
+                } else if let Some(m) = ModuleOrNamespace::cast(anc.clone()) {
+                    let header = match m.kind() {
+                        ModuleOrNamespaceKind::DeclaredNamespace => m.long_id(),
+                        ModuleOrNamespaceKind::NamedModule if !renames_module(&anc) => {
+                            m.long_id().filter(|li| {
+                                li.idents()
+                                    .last()
+                                    .is_some_and(|t| !type_names.contains(&ident_text(&t)))
+                            })
+                        }
+                        _ => None,
+                    };
+                    let Some(li) = header else {
+                        provable = false;
+                        break;
+                    };
+                    path.splice(0..0, li.idents().map(|t| ident_text(&t)));
+                    break;
+                }
+            }
+            if !provable {
+                continue;
+            }
+            let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+            out.insert(def, (path, arity));
+        }
+        out
+    }
+
+    /// The [`Ty::Project`] an annotation naming the in-file type `def` applied
+    /// to `args` denotes, when [`Self::project_type_paths`] holds its path and
+    /// the arity matches.
+    fn project_annotation_ty(&self, def: DefId, args: Vec<Ty>) -> Option<Ty> {
+        let (path, arity) = self.project_types.get(&def)?;
+        (args.len() == *arity).then(|| Ty::Project {
+            path: path.clone(),
+            args,
+        })
     }
 
     /// Whether `node` sits in a top-level module whose header carries an
@@ -2186,6 +2336,7 @@ impl<'a> Gen<'a> {
                 match idents.as_slice() {
                     [.., last] => match self.resolved.resolution_at(last.text_range()) {
                         Some(Resolution::Entity(handle)) => self.entity_annotation_ty(handle),
+                        Some(Resolution::Local(def)) => self.project_annotation_ty(def, Vec::new()),
                         _ => None,
                     },
                     [] => None,
@@ -2244,16 +2395,19 @@ impl<'a> Gen<'a> {
                     return None;
                 }
                 let last = li.idents().last()?;
-                let Some(Resolution::Entity(handle)) =
-                    self.resolved.resolution_at(last.text_range())
-                else {
+                let head = self.resolved.resolution_at(last.text_range());
+                if !matches!(head, Some(Resolution::Entity(_) | Resolution::Local(_))) {
                     return None;
-                };
+                }
                 let mut args = Vec::new();
                 for arg in app.type_args() {
                     args.push(self.annotation_ty(&arg)?);
                 }
-                self.applied_annotation_ty(handle, args)
+                match head? {
+                    Resolution::Entity(handle) => self.applied_annotation_ty(handle, args),
+                    Resolution::Local(def) => self.project_annotation_ty(def, args),
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -2408,10 +2562,12 @@ impl<'a> Gen<'a> {
         if entity.generic_parameters.len() != args.len() {
             return None;
         }
-        if matches!(
-            entity.kind,
-            EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
-        ) {
+        // FSharp.Core's own generic abbreviation (`int option`), read through
+        // to the target FCS names; any other abbreviation declines.
+        if entity.kind == EntityKind::Abbreviation {
+            return crate::function_ty::fsharp_core_abbreviation_ty(self.env, handle, args);
+        }
+        if matches!(entity.kind, EntityKind::Module | EntityKind::Measure) {
             return None;
         }
         if entity.generic_parameters.iter().any(constrained_parameter) {
@@ -4204,8 +4360,9 @@ impl<'a> Gen<'a> {
             Ty::Tuple(elems) => elems.iter().all(|e| self.no_subsumption_ty(e)),
             Ty::Var(v) => self.is_scheme_inst_root(*v),
             // Arrays, functions, and quantified `Param`s (never bound into the
-            // table) are all excluded.
-            Ty::Array { .. } | Ty::Fun { .. } | Ty::Param(_) => false,
+            // table) are all excluded, and so is a project type, which may be a
+            // class with subtypes.
+            Ty::Array { .. } | Ty::Fun { .. } | Ty::Param(_) | Ty::Project { .. } => false,
         }
     }
 
@@ -4993,6 +5150,16 @@ impl<'a> Gen<'a> {
                     Ty::Array { .. } | Ty::Tuple(_) | Ty::Fun { .. } | Ty::Param(_) => {
                         woke = true;
                     }
+                    // A project type's members are not modelled: drop the
+                    // constraint, leaving the access's (poisoned) result open,
+                    // and say so in the census, which would otherwise count the
+                    // binding complete with an untyped access in it.
+                    Ty::Project { .. } => {
+                        woke = true;
+                        if let Some(reasons) = self.incompleteness.last_mut() {
+                            reasons.push(Incomplete::ProjectTypeMember);
+                        }
+                    }
                 }
             }
             suspended = still_pending;
@@ -5550,6 +5717,13 @@ impl<'a> Gen<'a> {
                     .map(|a| self.instantiate_rec(a, fresh))
                     .collect(),
             },
+            Ty::Project { path, args } => Ty::Project {
+                path: path.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.instantiate_rec(a, fresh))
+                    .collect(),
+            },
             Ty::Array { elem, rank } => Ty::Array {
                 elem: Box::new(self.instantiate_rec(elem, fresh)),
                 rank: *rank,
@@ -6001,6 +6175,9 @@ fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
         // sound if one does.
         Ty::Param(_) => Verdict::Undecided,
         Ty::Fun { .. } => Verdict::Fails,
+        // An F# type's equality and comparison are derived from its fields and
+        // attributes, which are not read.
+        Ty::Project { .. } => Verdict::Undecided,
         Ty::Tuple(elems) => elems.iter().fold(Verdict::Holds, |acc, e| {
             worse(acc, satisfies(env, e, needs))
         }),
@@ -6147,7 +6324,7 @@ fn contains_param(ty: &Ty) -> bool {
     match ty {
         Ty::Param(_) => true,
         Ty::Var(_) => false,
-        Ty::Named { args, .. } => args.iter().any(contains_param),
+        Ty::Named { args, .. } | Ty::Project { args, .. } => args.iter().any(contains_param),
         Ty::Array { elem, .. } => contains_param(elem),
         Ty::Tuple(elems) => elems.iter().any(contains_param),
         Ty::Fun { arg, ret } => contains_param(arg) || contains_param(ret),
@@ -6164,7 +6341,9 @@ fn collect_var_roots(ty: &Ty, out: &mut HashSet<TyVid>) {
             out.insert(*v);
         }
         Ty::Param(_) => {}
-        Ty::Named { args, .. } => args.iter().for_each(|a| collect_var_roots(a, out)),
+        Ty::Named { args, .. } | Ty::Project { args, .. } => {
+            args.iter().for_each(|a| collect_var_roots(a, out))
+        }
         Ty::Array { elem, .. } => collect_var_roots(elem, out),
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_var_roots(e, out)),
         Ty::Fun { arg, ret } => {
@@ -6187,7 +6366,9 @@ fn collect_open_order(ty: &Ty, order: &mut Vec<TyVid>) {
             }
         }
         Ty::Param(_) => {}
-        Ty::Named { args, .. } => args.iter().for_each(|a| collect_open_order(a, order)),
+        Ty::Named { args, .. } | Ty::Project { args, .. } => {
+            args.iter().for_each(|a| collect_open_order(a, order))
+        }
         Ty::Array { elem, .. } => collect_open_order(elem, order),
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_open_order(e, order)),
         Ty::Fun { arg, ret } => {
@@ -6209,6 +6390,10 @@ fn subst_params(ty: &Ty, assign: &HashMap<TyVid, u32>) -> Ty {
         },
         Ty::Param(_) => ty.clone(),
         Ty::Named { path, args } => Ty::Named {
+            path: path.clone(),
+            args: args.iter().map(|a| subst_params(a, assign)).collect(),
+        },
+        Ty::Project { path, args } => Ty::Project {
             path: path.clone(),
             args: args.iter().map(|a| subst_params(a, assign)).collect(),
         },
@@ -6503,6 +6688,9 @@ fn takes_unsealed_parameter(env: &AssemblyEnv, ty: &Ty) -> bool {
 fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) | Ty::Param(_) | Ty::Fun { .. } | Ty::Tuple(_) | Ty::Array { .. } => true,
+        // Whether a project type is sealed turns on its kind and attributes,
+        // which are not read.
+        Ty::Project { .. } => false,
         Ty::Named { path, args } => {
             if (args.is_empty() && is_sealed_primitive(path)) || *ty == Ty::named(UNIT) {
                 return true;
@@ -7105,13 +7293,11 @@ mod tests {
 
     #[test]
     fn annotation_defer_shapes_stay_silent() {
+        // An in-file `type int64` shadows the primitive: the annotation names
+        // the project type, as FCS does (`M.int64`, probed), never `System.Int64`.
+        let types = def_types("module M\ntype int64 = A of int\nlet x : int64 = A 1\n");
+        assert_eq!(types.get("x").map(String::as_str), Some("M.int64"));
         for (src, why) in [
-            // An in-file `type int64` shadows the primitive: the gate sees a
-            // concrete `Local` record at the head.
-            (
-                "module M\ntype int64 = A of int\nlet x : int64 = A 1\n",
-                "in-file type shadow",
-            ),
             // Generic application (`int64 option`) is a non-bare head.
             ("module M\nlet x : int64 option = None\n", "generic app"),
             // `unit` is deliberately excluded from the v1 table.
@@ -7505,6 +7691,24 @@ mod tests {
                 vec![],
                 vec![Incomplete::CalleeShape(super::SyntaxKind::LONG_IDENT_EXPR)],
             ]
+        );
+    }
+
+    /// A member access on a value of a project type is left untyped, and the
+    /// census says so rather than counting the binding complete.
+    #[test]
+    fn a_member_of_a_project_type_is_a_census_reason() {
+        use super::Incomplete;
+        let src = "module M\ntype T = { X : int }\nlet f (x : T) = x\nlet g (x : T) = x.X\n";
+        let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = primitive_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+        let inferred = super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default());
+        assert_eq!(
+            inferred.incompleteness(),
+            [vec![], vec![Incomplete::ProjectTypeMember]]
         );
     }
 

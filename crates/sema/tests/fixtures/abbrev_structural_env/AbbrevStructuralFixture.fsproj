@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for `resolve_terminal_abbreviation_diff`: assembly abbreviations
+       whose target is structural (a tuple, a function), one named `array` to
+       contest FSharp.Core's, and a nominal `array` beside them. Kept apart
+       from `fsharp_abbrev_env` so its names reach no other test. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaAbbrevStructuralFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

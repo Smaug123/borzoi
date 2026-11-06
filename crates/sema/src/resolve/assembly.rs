@@ -1258,10 +1258,20 @@ impl<'a> Resolver<'a> {
         // chased terminal only carries the walk PAST it. An unchaseable target
         // ([`AssemblyEnv::resolve_abbreviation_tycon`] declines structural /
         // unloaded / ambiguous shapes) keeps the pre-chase shadow-defer
-        // instead.
+        // instead — unless the path ends on the marker and its decoded target
+        // is structural ([`AssemblyEnv::abbreviation_target_is_structural`]):
+        // nothing walks past a terminal name, so FCS binds the abbreviation
+        // and where its target leads is not asked (`int array`).
         let walk_root = if self.assemblies.is_abbreviation(type_handle) {
             match self.assemblies.resolve_abbreviation_tycon(type_handle) {
                 Some(terminal) => terminal,
+                None if k + 1 == n
+                    && self
+                        .assemblies
+                        .abbreviation_target_is_structural(type_handle) =>
+                {
+                    type_handle
+                }
                 None => return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable),
             }
         } else {
@@ -1312,6 +1322,12 @@ impl<'a> Resolver<'a> {
                         Some(terminal) => {
                             via_alias = true;
                             terminal
+                        }
+                        // A terminal structural alias, as at the root above.
+                        None if i + 1 == n
+                            && self.assemblies.abbreviation_target_is_structural(child) =>
+                        {
+                            child
                         }
                         None => {
                             return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable);
