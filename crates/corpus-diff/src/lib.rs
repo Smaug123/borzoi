@@ -3762,6 +3762,7 @@ fn served_answer(
             range,
             res @ (Resolution::Local(_)
             | Resolution::Item(_)
+            | Resolution::EarlierFileType { .. }
             | Resolution::Entity(_)
             | Resolution::Member { .. }
             | Resolution::UnionCase { .. }),
@@ -4000,7 +4001,7 @@ fn grade_use(
             name: u.name.clone(),
             expected: expected.clone(),
             actual: match res {
-                Resolution::Local(_) | Resolution::Item(_) => {
+                Resolution::Local(_) | Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
                     match resolution_def(loaded, file_idx, res) {
                         Some((actual_file_idx, def)) => format!(
                             "binder {:?} at {}:{}..{}",
@@ -4047,12 +4048,13 @@ fn served_answer_agrees(
     expected: &Result<&DeclSite, AssemblyDecl>,
 ) -> bool {
     match (res, expected) {
-        (Resolution::Local(_) | Resolution::Item(_), Ok(expected)) => {
-            resolution_def(loaded, file_idx, res).is_some_and(|(actual_file_idx, def)| {
-                path_key(&loaded.parses.paths[actual_file_idx]) == path_key(&expected.file)
-                    && range_pair(def.range) == (expected.start, expected.end)
-            })
-        }
+        (
+            Resolution::Local(_) | Resolution::Item(_) | Resolution::EarlierFileType { .. },
+            Ok(expected),
+        ) => resolution_def(loaded, file_idx, res).is_some_and(|(actual_file_idx, def)| {
+            path_key(&loaded.parses.paths[actual_file_idx]) == path_key(&expected.file)
+                && range_pair(def.range) == (expected.start, expected.end)
+        }),
         (
             Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. },
             Err(expected),
@@ -4070,6 +4072,7 @@ fn served_answer_agrees(
         (
             Resolution::Local(_)
             | Resolution::Item(_)
+            | Resolution::EarlierFileType { .. }
             | Resolution::Entity(_)
             | Resolution::Member { .. }
             | Resolution::UnionCase { .. }
@@ -4094,6 +4097,7 @@ fn kind_admits(res: Resolution, expected: &AssemblyDecl) -> bool {
         | Resolution::Member { .. }
         | Resolution::Local(_)
         | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
         | Resolution::Deferred(_)
         | Resolution::Unresolved => true,
     }
@@ -4258,6 +4262,7 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
         }
         Resolution::Local(_)
         | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
         | Resolution::Deferred(_)
         | Resolution::Unresolved => unreachable!("only assembly resolutions have assembly decls"),
     }
@@ -4428,10 +4433,12 @@ fn is_defining_occurrence(
     start: usize,
     end: usize,
 ) -> bool {
-    matches!(res, Resolution::Local(_) | Resolution::Item(_))
-        && resolution_def(loaded, file_idx, res).is_some_and(|(def_file_idx, def)| {
-            def_file_idx == file_idx && range_pair(def.range) == (start, end)
-        })
+    matches!(
+        res,
+        Resolution::Local(_) | Resolution::Item(_) | Resolution::EarlierFileType { .. }
+    ) && resolution_def(loaded, file_idx, res).is_some_and(|(def_file_idx, def)| {
+        def_file_idx == file_idx && range_pair(def.range) == (start, end)
+    })
 }
 
 fn is_concrete_resolution(res: Resolution) -> bool {
@@ -4439,6 +4446,7 @@ fn is_concrete_resolution(res: Resolution) -> bool {
         res,
         Resolution::Local(_)
             | Resolution::Item(_)
+            | Resolution::EarlierFileType { .. }
             | Resolution::Entity(_)
             | Resolution::Member { .. }
             | Resolution::UnionCase { .. }
@@ -4457,7 +4465,7 @@ fn fcs_use_confirms_resolution(
         return false;
     }
     match res {
-        Resolution::Local(_) | Resolution::Item(_) => {
+        Resolution::Local(_) | Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
             let UseDecl::InProject(expected) = &use_.decl else {
                 return false;
             };
@@ -4522,6 +4530,7 @@ fn assembly_names_agree(
         | Resolution::UnionCase { union: handle, .. } => handle,
         Resolution::Local(_)
         | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
         | Resolution::Deferred(_)
         | Resolution::Unresolved => return false,
     };
@@ -4587,6 +4596,7 @@ fn assembly_resolution_confirms_decl(
         }
         Resolution::Local(_)
         | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
         | Resolution::Deferred(_)
         | Resolution::Unresolved => false,
     })
@@ -4626,16 +4636,18 @@ fn fcs_oracle_summary(use_: &ProjectUse) -> String {
 
 fn resolution_summary(loaded: &LoadedProject, file_idx: usize, res: Resolution) -> String {
     match res {
-        Resolution::Local(_) | Resolution::Item(_) => match resolution_def(loaded, file_idx, res) {
-            Some((actual_file_idx, def)) => format!(
-                "project {:?} at {}:{}..{}",
-                def.name,
-                loaded.parses.paths[actual_file_idx].display(),
-                u32::from(def.range.start()),
-                u32::from(def.range.end())
-            ),
-            None => format!("{res:?} (no project def)"),
-        },
+        Resolution::Local(_) | Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
+            match resolution_def(loaded, file_idx, res) {
+                Some((actual_file_idx, def)) => format!(
+                    "project {:?} at {}:{}..{}",
+                    def.name,
+                    loaded.parses.paths[actual_file_idx].display(),
+                    u32::from(def.range.start()),
+                    u32::from(def.range.end())
+                ),
+                None => format!("{res:?} (no project def)"),
+            }
+        }
         Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
             let actual = assembly_resolution_decl(&loaded.assembly_env, res);
             format!(

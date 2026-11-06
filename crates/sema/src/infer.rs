@@ -535,6 +535,11 @@ pub struct InferredFile {
     /// its certain type, or why it has none — read by
     /// [`PrecedingTypes::publish`] for the binders the file exports.
     module_values: HashMap<DefId, ModuleValue>,
+    /// The types this file declares that an annotation may name as a
+    /// [`Ty::Project`], with their path and arity — read by
+    /// [`PrecedingTypes::publish`] so a later file's annotation naming one
+    /// ([`Resolution::EarlierFileType`]) bridges exactly as this file's would.
+    project_types: HashMap<DefId, (Vec<String>, usize)>,
 }
 
 impl InferredFile {
@@ -613,6 +618,12 @@ impl InferredFile {
     /// when `def` is not one the walk met as a module-level binder.
     pub(crate) fn module_value(&self, def: DefId) -> Option<&ModuleValue> {
         self.module_values.get(&def)
+    }
+
+    /// Every type this file declares that an annotation bridges, with its
+    /// path and arity. See [`Self::project_types`](InferredFile).
+    pub(crate) fn project_types(&self) -> &HashMap<DefId, (Vec<String>, usize)> {
+        &self.project_types
     }
 
     pub fn len(&self) -> usize {
@@ -1837,6 +1848,17 @@ impl<'a> Gen<'a> {
         })
     }
 
+    /// [`Self::project_annotation_ty`] for a type an earlier file declares:
+    /// the path and arity that file's inference published for it
+    /// ([`PrecedingTypes::earlier_type`]), under the same arity check.
+    fn earlier_annotation_ty(&self, file: u32, index: u32, args: Vec<Ty>) -> Option<Ty> {
+        let (path, arity) = self.preceding.earlier_type(file as usize, index)?;
+        (args.len() == *arity).then(|| Ty::Project {
+            path: path.clone(),
+            args,
+        })
+    }
+
     /// Whether `node` sits in a top-level module whose header carries an
     /// attribute that may make F# reject a use of its contents
     /// ([`Self::rejects_use`]). A use from another file reaches the value
@@ -2337,6 +2359,9 @@ impl<'a> Gen<'a> {
                     [.., last] => match self.resolved.resolution_at(last.text_range()) {
                         Some(Resolution::Entity(handle)) => self.entity_annotation_ty(handle),
                         Some(Resolution::Local(def)) => self.project_annotation_ty(def, Vec::new()),
+                        Some(Resolution::EarlierFileType { file, index }) => {
+                            self.earlier_annotation_ty(file, index, Vec::new())
+                        }
                         _ => None,
                     },
                     [] => None,
@@ -2396,7 +2421,14 @@ impl<'a> Gen<'a> {
                 }
                 let last = li.idents().last()?;
                 let head = self.resolved.resolution_at(last.text_range());
-                if !matches!(head, Some(Resolution::Entity(_) | Resolution::Local(_))) {
+                if !matches!(
+                    head,
+                    Some(
+                        Resolution::Entity(_)
+                            | Resolution::Local(_)
+                            | Resolution::EarlierFileType { .. }
+                    )
+                ) {
                     return None;
                 }
                 let mut args = Vec::new();
@@ -2406,6 +2438,9 @@ impl<'a> Gen<'a> {
                 match head? {
                     Resolution::Entity(handle) => self.applied_annotation_ty(handle, args),
                     Resolution::Local(def) => self.project_annotation_ty(def, args),
+                    Resolution::EarlierFileType { file, index } => {
+                        self.earlier_annotation_ty(file, index, args)
+                    }
                     _ => None,
                 }
             }
@@ -5887,6 +5922,7 @@ impl<'a> Gen<'a> {
             incompleteness: std::mem::take(&mut self.incompleteness),
             receiver_types,
             module_values,
+            project_types: std::mem::take(&mut self.project_types),
         }
     }
 }

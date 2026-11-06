@@ -986,7 +986,9 @@ impl<'a> ProjectDocs<'a> {
     pub fn doc(&mut self, from: usize, at: TextRange, res: Resolution) -> Option<SourceDoc> {
         let (file, def) = match res {
             Resolution::Local(id) => (from, self.resolved.file(from).def(id)),
-            Resolution::Item(_) => self.resolved.item_def(res)?,
+            Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
+                self.resolved.item_def(res)?
+            }
             Resolution::Entity(_)
             | Resolution::Member { .. }
             | Resolution::UnionCase { .. }

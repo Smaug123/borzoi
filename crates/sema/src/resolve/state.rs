@@ -16,8 +16,8 @@ use crate::diagnostics::SemaDiagnostic;
 
 use super::contributors::{FileContributions, RecBlock};
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem, ItemId,
-    OpenTrace, ProjectItems, Resolution, SlotClass,
+    DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
+    ItemId, OpenTrace, ProjectItems, Resolution, SlotClass,
 };
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
@@ -1334,6 +1334,12 @@ pub(super) struct Resolver<'a> {
     /// yet is already in scope, so more here than
     /// [`Self::type_decl_counts`] can see is a possible forward shadow.
     pub(super) own_type_decl_counts: HashMap<String, usize>,
+    /// The type definitions the walk placed, in walk order, for
+    /// [`ResolvedFile::placed_types`](super::model::ResolvedFile). Only a
+    /// definition with a real path — not under an anonymous (headerless)
+    /// root — is placed; [`Self::own_type_decl_counts`] says how many
+    /// declarations of the name there are in all.
+    pub(super) placed_types: Vec<DeclaredType>,
     /// How many type declarations the walk has passed under each simple name
     /// and arity, per container — keyed like [`Self::type_defs`], which keeps
     /// only the latest of them. Summed along the container chain at one

@@ -2900,6 +2900,7 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
         Some(
             res @ (Resolution::Local(_)
             | Resolution::Item(_)
+            | Resolution::EarlierFileType { .. }
             | Resolution::Member { .. }
             | Resolution::UnionCase { .. }),
         ) => {

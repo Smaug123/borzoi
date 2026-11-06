@@ -182,6 +182,7 @@ pub fn classify(
         Some(
             Resolution::Local(_)
             | Resolution::Item(_)
+            | Resolution::EarlierFileType { .. }
             | Resolution::Entity(_)
             | Resolution::Member { .. }
             | Resolution::UnionCase { .. },
@@ -343,6 +344,7 @@ mod tests {
                 Some(
                     Resolution::Local(_)
                     | Resolution::Item(_)
+                    | Resolution::EarlierFileType { .. }
                     | Resolution::Entity(_)
                     | Resolution::Member { .. }
                     | Resolution::UnionCase { .. },

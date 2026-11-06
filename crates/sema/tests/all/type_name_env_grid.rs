@@ -241,6 +241,11 @@ fn in_file_type_names_agree_with_fcs_over_every_write_sequence() {
                     wrong.push(format!("Unresolved at {range:?}\n{src}"));
                     continue;
                 }
+                // Single-file: nothing resolves to an earlier file.
+                Resolution::EarlierFileType { .. } => {
+                    wrong.push(format!("an earlier file's type at {range:?}\n{src}"));
+                    continue;
+                }
             };
             let ours = rf.resolved_def(*res).map(|d| d.range);
             if at.is_empty() && (ours == Some(range) || !clean) {

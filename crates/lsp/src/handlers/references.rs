@@ -115,6 +115,7 @@ fn resolution_kind(resolution: Resolution) -> &'static str {
     match resolution {
         Resolution::Local(_) => "local",
         Resolution::Item(_) => "item",
+        Resolution::EarlierFileType { .. } => "earlier-file-type",
         Resolution::Entity(_) => "entity",
         Resolution::Member { .. } => "member",
         Resolution::UnionCase { .. } => "union-case",
@@ -203,7 +204,7 @@ fn declaration_anchor(
             let range = resolved.file(cursor_file_idx).def(id).range;
             Some((cursor_file_idx, range))
         }
-        Resolution::Item(_) => {
+        Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
             let (file_idx, def) = resolved.item_def(target_res)?;
             Some((file_idx, def.range))
         }
@@ -225,7 +226,12 @@ fn collect_locations(
     include_declaration: bool,
     docs: &HashMap<Uri, String>,
 ) -> ReferenceScan {
-    let file_range = match target_res {
+    let target_key = decl_anchor.map_or(target_res, |(file, _)| {
+        occurrence_key(resolved.file(file), file, target_res)
+    });
+    let file_range = match target_key {
+        // A type is used by its own file and every later one.
+        Resolution::EarlierFileType { file, .. } => file as usize..resolved.len(),
         Resolution::Local(_) => {
             // Only the cursor's file can have references to a local. Find
             // it via the same path-lookup we used in `project_references`;
@@ -275,7 +281,8 @@ fn collect_locations(
         resolutions_scanned += file.resolutions().len() + file.attribute_resolutions().len();
         let ambiguous_labels =
             ambiguous_argument_label_ranges(parses.files[file_idx].file.syntax());
-        for (range, _res) in matching_in_file(file, target_res) {
+        let is_target = |res| occurrence_key(file, file_idx, res) == target_key;
+        for (range, _res) in matching_in_file(file, is_target) {
             if ambiguous_labels.contains(&range) {
                 continue;
             }
@@ -321,6 +328,25 @@ fn same_path(path: &std::path::Path, request_uri: &Uri) -> bool {
     paths_equal(&lexically_normalize(path), &lexically_normalize(&req_path))
 }
 
+/// The project-wide identity of `res`, an occurrence in Compile-order file
+/// `file_idx` (`file`): a type is [`Resolution::Local`] in the file declaring
+/// it and [`Resolution::EarlierFileType`] in every later one, so a `Local`
+/// naming a type the file places for later files is keyed the second way.
+/// Every other resolution is its own key; a `Local` stays file-scoped because
+/// nothing outside its file names it.
+fn occurrence_key(file: &ResolvedFile, file_idx: usize, res: Resolution) -> Resolution {
+    match res {
+        Resolution::Local(def) => match file.placed_type_index(def) {
+            Some(index) => Resolution::EarlierFileType {
+                file: u32::try_from(file_idx).expect("more than u32::MAX files"),
+                index,
+            },
+            None => res,
+        },
+        other => other,
+    }
+}
+
 /// Every `(range, res)` in `file.resolutions()` — chained with the
 /// attribute-type resolutions, which live in their own map (EX-3 §2(d)) but
 /// are ordinary occurrences for reference listing (`[<MyAttr>]` is a use of
@@ -330,12 +356,15 @@ fn same_path(path: &std::path::Path, request_uri: &Uri) -> bool {
 /// so without the sort two folds of the same text — a cache hit and a cold
 /// session, or two cold sessions — list the same references in different
 /// orders.
-fn matching_in_file(file: &ResolvedFile, target: Resolution) -> Vec<(TextRange, Resolution)> {
+fn matching_in_file(
+    file: &ResolvedFile,
+    is_target: impl Fn(Resolution) -> bool,
+) -> Vec<(TextRange, Resolution)> {
     let mut matches: Vec<(TextRange, Resolution)> = file
         .resolutions()
         .iter()
         .chain(file.attribute_resolutions().iter())
-        .filter(|(_, r)| **r == target)
+        .filter(|(_, r)| is_target(**r))
         .map(|(r, res)| (*r, *res))
         .collect();
     // Each map is keyed by range, so within one map the key is unique; the
@@ -409,7 +438,7 @@ fn single_file_references(
     // Attribute-type occurrences live in their own map (EX-3 §2(d)) but are
     // ordinary references of the target type — `matching_in_file` chains them
     // in, exactly as for the project path.
-    for (range, _) in matching_in_file(&resolved, target_res) {
+    for (range, _) in matching_in_file(&resolved, |res| res == target_res) {
         if ambiguous_labels.contains(&range) {
             continue;
         }

@@ -129,6 +129,7 @@ pub fn certified_expected(
         Resolution::UnionCase { union, .. } => env.enclosing_chain(union),
         Resolution::Local(_)
         | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
         | Resolution::Deferred(_)
         | Resolution::Unresolved => return None,
     };

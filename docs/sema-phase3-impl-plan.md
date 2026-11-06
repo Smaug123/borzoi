@@ -71,6 +71,10 @@ isolation.
 - **Preceding files' values** — inference folded over Compile order
   (`infer_project`): a use of an earlier file's top-level value is typed from
   what that file published for it; details below.
+- **Earlier files' types** — a single-segment type name binds a type an
+  earlier Compile-order file declares in the enclosing namespace
+  (`Resolution::EarlierFileType`), and its annotation types as that type's
+  `Ty::Project`; details below.
 - **Project-type annotations** — `Ty::Project` names a type the project
   declares by FCS's path for it (namespace, enclosing modules' compiled names,
   its own) and arity, unique per assembly by FS0249; an in-file type's
@@ -177,6 +181,15 @@ only reason of 45 bindings (6 before), and `PatternAnnotation`'s 60 and
 resolver stage is for. On the stride-13 sample the count of complete bindings
 does not move: the annotations it types expose the construct behind them
 (`match`, list literals, an earlier file's value).
+
+The resolver stage followed (*Earlier files' types*, below): a bare name an
+earlier file's type in the enclosing namespace binds now resolves to it and
+types as its `Ty::Project`. On the whole-project gate complete bindings go from
+30 to 37 of 797, `BindingAnnotation` from 211 to 160 and `PatternAnnotation`
+from 60 to 28 (only reason), and hovers agreeing with FCS from 343 to 622. The
+next ranks are `match` (only reason of 74, present in 144), `ProjectTypeMember`
+(41 of 72: member access on a project-typed receiver, which the annotations now
+expose) and `OBJ_EXPR` (34 of 68).
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -820,7 +833,60 @@ four contexts, and a parameter-permuting abbreviation from another assembly)
 and `resolve_terminal_abbreviation_diff` (five contesting contexts by seven
 uses, by `(assembly, full name)`). Still declining: a qualified in-file type
 (`M.T`), which the resolver records only at a single segment, and every earlier
-file's type — the resolver stage.
+file's type, which the next stage resolves where it sits in the enclosing
+namespace (*Earlier files' types*).
+
+### Earlier files' types
+
+FCS's name environment is last-write-wins over ordered additions: the
+referenced assemblies with their auto-opens (FSharp.Core's `Microsoft.FSharp.*`
+among them), then the earlier files (a top-level `[<AutoOpen>]` module opens
+there), then the enclosing namespace's fragments with their `[<AutoOpen>]`
+modules, then the file's own `open`s and declarations. The resolver's ladder
+puts the implicit opens above the enclosing namespace, so it committed
+FSharp.Core's `string` where an earlier file declares `Lib.string` and a later
+file of `namespace Lib` names it, and likewise past an earlier top-level
+`[<AutoOpen>]` module's type: wrong targets, both FCS-probed.
+
+Each file now records every type it declares with its full path, arity, def
+and access root, in declaration order (`ResolvedFile::placed_types`), and
+counts each declaration it cannot place — a headerless file's, an exception,
+a signature's — as unplaced; the fold threads them to later files
+(`ProjectItems::earlier_types`), withholding a signatured file's placements. A
+later file names such a type by the declaring file's index and the type's
+position in that order, as it names an export by its `ItemId`, so an edit that
+renumbers the declaring file's defs leaves a reused later file naming the same
+type; the incremental fold compares each placed type's path, arity and access
+root, and both folds build a signature's slot through one function. For a single-segment name that an earlier file
+declares a type of and the use can access (FCS skips one it cannot, probed in
+both directions for `private` types and modules), `Resolver::earlier_file_type`
+asks the explicit `open`s first: a reading there is a later write, and the walk
+commits it as before. Otherwise nothing below the explicit opens commits, and
+the earlier file's type does only when it is the project's only declaration of
+the name, placed directly in the enclosing namespace at the written arity, the
+file declares nothing of the name itself, and the assemblies provably declare
+nothing at that namespace. The use resolves to `Resolution::EarlierFileType {
+file, def }`; go-to-definition, hover, documentation and find-references treat
+it as the type's declaration, and references key a type's in-file `Local` and
+later files' uses as one symbol. Inference reads the `Ty::Project` the declaring
+file published for the type (`PrecedingTypes::earlier_type`), under the same
+checks as an in-file type and never for a signatured file.
+
+Graded by `infer_preceding_type_diff`: 21 kinds by 17 positions (the enclosing
+namespace through a `namespace` and a `module N.M` header, an assembly-shared
+namespace, `open`s of a namespace and a module, qualified paths, `[<AutoOpen>]`
+modules public and private, top-level and nested, nested modules, a headerless
+file, an unrelated namespace, a signatured file), and three kinds by those
+positions by eight shadows (none, a later project `open`, an assembly `open`,
+an in-file type, a same-named module, an `[<AutoOpen>]` redeclaration, an
+`[<AutoOpen>]` exception, another arity) by four names (`T`, and FSharp.Core's
+or the BCL's `Result`, `string`, `Random`), each program checked by FCS as a
+project and graded in the resolver by declaration site and in inference by
+type; plus an ill-typed family and an assembly `[<AutoOpen>]` module, reached
+by an explicit `open` and sharing the enclosing namespace. Still declining: a
+qualified path to a project type (`Lib.T`, `M.T`), an `open` of a project
+module, a type in an `[<AutoOpen>]` module, and every name the project declares
+twice.
 
 ### Remaining 3.x hard piles (census-priority order)
 
