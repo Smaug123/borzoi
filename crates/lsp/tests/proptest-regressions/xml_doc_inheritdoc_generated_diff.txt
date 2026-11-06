@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1a80cd1fd86bcf1ac70d7d856ce6ff1cbced0543c7daae8ec00390ebad126016 # CI: a flipped overload taking a shadowing T kept the class's T as its return type (CS0508)

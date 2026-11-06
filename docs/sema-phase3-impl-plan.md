@@ -75,6 +75,10 @@ isolation.
   earlier Compile-order file declares in the enclosing namespace
   (`Resolution::EarlierFileType`), and its annotation types as that type's
   `Ty::Project`; details below.
+- **Annotation type variables** — a `'a` in a module-level function's head
+  annotations is one inference variable per name (FCS's implicitly scoped
+  type variable), and a declared one (`let f<'a> …`) is that and rigid;
+  details below.
 - **Project-type annotations** — `Ty::Project` names a type the project
   declares by FCS's path for it (namespace, enclosing modules' compiled names,
   its own) and arity, unique per assembly by FS0249; an in-file type's
@@ -121,26 +125,26 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-11-05, after project-type annotations: 1 011 of 2 647
-counted bindings complete, 38.2 %; the same 1 011 were 38.9 % of the 2 602
+corpus sample (2026-11-06, after annotation type variables: 1 013 of 2 647
+counted bindings complete, 38.3 %; 1 011 before, and 38.9 % of the 2 602
 walked bindings before the census counted the bindings its own annotation
 stops, below):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 411 | 557 |
+| value resolved to no in-file binder and no assembly member (an earlier file's, a deferred name) | 416 | 561 |
 | callee that is an operator or active-pattern name in parentheses, `(\|P\|_\|) x` (116 in FSharp.Core's `Linq.fs`) | 118 | 119 |
-| `use`, `let rec` or `let!` inside an expression | 67 | 92 |
+| `use`, `let rec` or `let!` inside an expression | 72 | 95 |
 | use of an in-file binder F# may reject for its attributes | 55 | 131 |
-| `match` | 53 | 155 |
-| pattern annotation outside the modelled set | 46 | 268 |
+| `match` | 55 | 155 |
+| pattern annotation outside the modelled set | 45 | 254 |
 | list or array expression | 46 | 79 |
-| method call whose head the resolver deferred (a project or test-framework name, alone in its file) | 45 | 155 |
+| method call whose head the resolver deferred (a project or test-framework name, alone in its file) | 50 | 155 |
 | computation expression | 34 | 35 |
-| binding whose own annotation is outside the modelled set (not walked) | 33 | 33 |
+| binding whose own annotation is outside the modelled set (not walked) | 24 | 24 |
 | `new` | 32 | 37 |
 | assembly value with a constraint other than `equality`/`comparison` (its own, or a generic type's it applies) | 10 | 22 |
-| statically resolved operator over an operand not known where it is applied | 2 | 16 |
+| statically resolved operator over an operand not known where it is applied | 2 | 18 |
 | assembly operator with such a constraint, used as a value | 1 | 1 |
 
 The sample checks each file in isolation against FSharp.Core and the BCL
@@ -190,6 +194,31 @@ from 60 to 28 (only reason), and hovers agreeing with FCS from 343 to 622. The
 next ranks are `match` (only reason of 74, present in 144), `ProjectTypeMember`
 (41 of 72: member access on a project-typed receiver, which the annotations now
 expose) and `OBJ_EXPR` (34 of 68).
+
+Measured before the next stage (2026-11-06), by what each failing annotation
+names rather than by the census row: of `BindingAnnotation`'s 160, 124 failed
+on a type variable (`'a`, `Node<'a>`, `Teq<'a, 'b>`) and only ~30 on a project
+type the resolver declines, and of `PatternAnnotation`'s 28, 25 on a type
+variable. Bounding each candidate by the bindings it is the only reason of
+*and* whose other sub-walks record nothing — a speculative walk beneath each
+unmodelled `match` — put type variables first by a wide margin: an opaque
+stand-in for each took complete bindings from 37 to 75, where `match` could
+complete at most 10 (62 of its 74 hide an unresolved value beneath an arm),
+`ProjectTypeMember` at most 41 (37 of them an earlier file's type's members)
+and `OBJ_EXPR` at most 34 (28 of those implement `T<_>`). So the stage after
+earlier files' types was type variables (*Annotation type variables*, below),
+which takes complete bindings from 37 to 63 of 797, `BindingAnnotation` from
+160 to 59 and `PatternAnnotation` from 28 to 9 (only reason); hovers agreeing
+with FCS stay at 622, 11 parameters gained and 11 withheld — those of
+functions that declare their variables (`let setParent<'a> …`) and whose body
+is incomplete, which the stage withholds whole for soundness on ill-typed code
+(below). The next ranks are `match` (only reason
+of 102, present in 160; at most 20 completable alone), `ProjectTypeMember`
+(52 of 138, most of the accesses on an earlier file's type), `OBJ_EXPR` (47 of
+73) and `RECORD_EXPR` (24 of 59). What `BindingAnnotation` still names is now
+mostly project types: a generic application whose argument the bridge declines
+(16, `Teq<Result<'ok, 'e>, …>`), `ShadowableType` (9), a value binding's type
+variable (9), in-file and earlier generic types (11).
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -887,6 +916,96 @@ by an explicit `open` and sharing the enclosing namespace. Still declining: a
 qualified path to a project type (`Lib.T`, `M.T`), an `open` of a project
 module, a type in an `[<AutoOpen>]` module, and every name the project declares
 twice.
+
+### Annotation type variables
+
+A type variable no `<…>` declares is created by FCS at its first mention in a
+module-level declaration and is the same variable at every later one: the
+unscoped environment starts empty per declaration
+(`TcTypeOrMeasureParameter`, rigidity `WarnIfNotRigid`). It is an ordinary
+inference variable — the body may fix it (FS0064, a warning, and the binder
+then has the fixed type) and what is left generalises. So the head's
+annotations, its parameters' and its return annotation, now read each name as
+one fresh variable (`Gen::open_head_typars`); a parameter so annotated is an
+unannotated one whose binder and slot are tied to that structure, and a return
+annotation's check discharges as the equality FCS tries first (an unbound
+variable is a no-subsumption domain, as a scheme instantiation's is).
+
+A variable the head declares (`let f<'a> …`) is created rigid: a body that
+fixes it or merges two is an error (FS0670), after which FCS may report no
+binder of the declaration at all, parameters with ground annotations
+included, and every undeclared variable left open is defaulted to `obj`
+(`let f<'a> (x: 'a) y` is `'a -> obj -> …`). So a function whose head declares
+variables — read or not: `<'a when 'a : equality>` declines its annotations
+but has the same hazard, which `main` published through (`let f<'a when 'a :
+equality> (x: 'a) (n: int) = x + 1` gave `n : int` where FCS has no binder) —
+commits all or nothing: it publishes only when it is complete, its declared variables stay
+distinct and unbound as solved and with every relation it holds applied as an
+equality, and no undeclared variable is left to generalise; otherwise its
+function, parameters and every emission of its walk are withheld
+(`Incomplete::RigidTypeVariable` where nothing else stopped it). On the
+whole-project gate that costs 11 parameter hovers `main` served, in
+well-typed functions (`setParent<'a> (child : 'a Node) … (parentIndex : int)`)
+whose bodies the walk does not finish; serving them again needs a proof that
+no unmodelled subtree reaches a declared variable.
+
+A condition on a parameter whose annotation names a variable never grounds
+it: the parameter is reached through every other mention of the variable too
+(`(y: 'a) (x: 'a)`), so none of its own occurrences is provably the first
+constraint. Still declining: a head with a constraint (`'a when …`, `<'a when
+…>`), a flexible type (`#seq<'a>`), a wildcard (`_`), `'_a`, a `^a`, a measure
+or attributed declaration, named-field heads, a body that mentions one of the
+head's names (a local's or lambda's annotation, a type application — the same
+variable, related by what the walk does not read), and every value binding
+(`let x : 'a list = []`, whose generalisation the value restriction decides).
+Hover shows the canonical names `'a`, `'b`, …, not the ones written; the
+handler differential grades it by alpha-equivalence.
+
+FCS loosens every use of a function-typed value (`MakeApplicableExprWithFlex`):
+a parameter of a type that is not sealed becomes a fresh subtype of it, so
+`let f (g: obj -> 'a) = g` is `(obj -> 'a) -> 'b -> 'a`. A use whose type is
+not known where it is written is *undecided*, and must end up taking no such
+parameter; that invariant was checked only of a speculative solution
+(`Gen::verified`), which `solve` skips when no argument check discharged —
+harmless while nothing but a check could give such a use its structure, but an
+annotated type variable gives it eagerly. It is now checked of the solution
+`solve` keeps, on every path (`Gen::loosening_holds`): a use that breaks it
+poisons its variables and records `Incomplete::LoosenedUse`. On `main` no
+annotation is non-ground (`'a`, `_` and `obj -> _` decline at the bridge), so
+the skipped check had nothing to catch there. It costs 5 complete bindings on
+the whole-project gate (68 to 63) and no hover: uses of functions taking a
+project type, which inference reads as unsealed whatever it is.
+
+`fcs-dump`'s canonical rendering now numbers type parameters by identity
+rather than name: FCS names a generalised inference variable `'a`, `'b`, …
+without avoiding the names annotations wrote, so a name-keyed table rendered
+`let f (x: 'a) y = 1` as `'a -> 'a -> int`, collapsing two variables into one
+— a reading under which a wrong answer would agree. Its `types` dump also
+carries warnings, so a cell records FS0064.
+
+Graded by `infer_annotation_typar_diff`: 25 heads (variables bare, shared,
+tupled, under `list`/`option`/`[]`/a project record/a function, beside an
+unannotated or ground parameter, one variable spelled two ways (`'``a``` is
+`'a`), and the declining shapes) by 9 return
+annotations by 48 bodies (well-typed, fixing a variable, merging two through
+`pick`, conditions and fixing uses in both orders across two parameters, local,
+lambda and typed-expression mentions, and ill-typed ones), one binding per line
+so FCS's errors and FS0064 attribute to cells: every commit certain-implies-exact
+against both oracles, a per-cell obligation on the modelled subset, no generic
+commit on a declining row; the same grid under `let f<'a, 'b>`; declaration
+forms (`inline`, a sibling reusing a name, `^a`) and declining declarations;
+value bindings; the oracle's rendering pinned on the colliding cells; and
+function-typed parameters over eight domains (`obj`, a project class, an
+interface, a tuple holding `obj`, a record, `string`, a type variable, a
+function) used returned, applied, piped, passed, wrapped and paired, with a
+hole (`obj -> _`) that must decline.
+`infer_local_let_diff` adds a random ill-typed family with `(p: 'a) (q: 'a)`,
+implicit and declared, which found both rigid-variable defects (a dropped
+relation and an unmodelled `+` fixing a declared variable while a ground
+parameter published) before review. Each guard's deletion fails a test except
+the body-mention decline and the head-only reading, each the other's backstop
+(deleting both fails), and the probe applying every relation, a backstop to
+the incomplete-binding rule.
 
 ### Remaining 3.x hard piles (census-priority order)
 

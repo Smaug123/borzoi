@@ -35,8 +35,9 @@ use super::model::{
     Param, Property, RawAttribute, TypeConstraint, UnclassifiedImpl, Variance,
 };
 use super::signature::{
-    CustomMod, DecodedMethodSig, ImageTables, ModifiedType, RetType, TypeScope, TypeSig,
+    CustomMod, DecodedMethodSig, ImageTables, ModifiedType, RetType, SigError, TypeScope, TypeSig,
     decode_field_sig, decode_method_sig, decode_property_index_params, decode_property_sig,
+    property_sig_has_this,
 };
 use super::tables::{Coded, Tables, table};
 use super::typedefs::{
@@ -88,7 +89,7 @@ const ALLOWS_REF_STRUCT: u16 = 0x0020;
 /// Fold the §II.23.1.10 member-visibility field (the low 3 bits of a method's or
 /// field's flags) onto [`MemberAccess`]. Value 0 is `CompilerControlled`
 /// (privatescope) and value 7 is reserved; neither has a variant, so both are
-/// stored as a per-member [`AccessDefect`] (mirroring [`SigError`](super::signature::SigError) handling —
+/// stored as a per-member [`AccessDefect`] (mirroring [`SigError`] handling —
 /// one such member is dropped and recorded at projection, never sinking the
 /// image) rather than mapped onto `Private`.
 fn fold_member_access(flags: u32) -> Result<MemberAccess, AccessDefect> {
@@ -595,8 +596,12 @@ fn apply_method_impls(
             }
         };
 
-        let Some((iface_coded, member, classification)) =
-            resolve_method_decl(md, tables, image_tables, method_starts, out, decl)?
+        let Some(ResolvedDecl {
+            parent: iface_coded,
+            member,
+            classification,
+            declaration,
+        }) = resolve_method_decl(md, tables, image_tables, method_starts, out, decl)?
         else {
             mark_other(out);
             continue;
@@ -653,6 +658,7 @@ fn apply_method_impls(
                         interface: Ok(decl_sig.clone()),
                         member: member.clone(),
                         decl: decl_semantics,
+                        declaration: declaration.clone(),
                     });
                 }
             }
@@ -1310,7 +1316,7 @@ fn resolve_method_decl(
     method_starts: &[u32],
     members: &[TypeMembers],
     decl: u32,
-) -> Result<Option<(u32, String, DeclClassification)>, Error> {
+) -> Result<Option<ResolvedDecl>, Error> {
     let Some(tok) = tables.decode_coded(Coded::MethodDefOrRef, decl)? else {
         return Ok(None);
     };
@@ -1322,6 +1328,7 @@ fn resolve_method_decl(
         let mr = tables.row(table::MEMBER_REF, tok.rid - 1)?;
         let member = mr.string(1)?.to_string(); // Name
         let sig = mr.int(2); // Signature (blob index)
+        let declaration = decode_method_sig(mr.blob(2)?, image_tables);
         let Some(parent) = tables.decode_coded(Coded::MemberRefParent, mr.coded(0))? else {
             return Ok(None);
         };
@@ -1340,24 +1347,45 @@ fn resolve_method_decl(
                 sig,
             },
         )?;
-        Ok(Some((coded, member, semantics)))
+        Ok(Some(ResolvedDecl {
+            parent: coded,
+            member,
+            classification: semantics,
+            declaration,
+        }))
     } else if tok.table == table::METHOD_DEF {
         // A `MethodDef` declaration names a non-generic interface in this
         // module: the declaration's owning type is the interface.
         let (TypeDefId(d), decl_local) = method_owner(method_starts, tok.rid, tables)?;
-        let member = tables
-            .row(table::METHOD_DEF, tok.rid - 1)?
-            .string(3)? // Name
-            .to_string();
+        let row = tables.row(table::METHOD_DEF, tok.rid - 1)?;
+        let member = row.string(3)?.to_string(); // Name
+        let declaration = decode_method_sig(row.blob(4)?, image_tables); // Signature
         let semantics = members
             .get(d as usize)
             .map(|tm| DeclClassification::of_local(tm, decl_local))
             .unwrap_or(DeclClassification::OrdinaryMethod);
         // `TypeDef` rid is 1-based, so the row index `d` re-encodes as `d + 1`.
-        Ok(type_def_or_ref_coded(table::TYPE_DEF, d + 1).map(|coded| (coded, member, semantics)))
+        Ok(
+            type_def_or_ref_coded(table::TYPE_DEF, d + 1).map(|coded| ResolvedDecl {
+                parent: coded,
+                member,
+                classification: semantics,
+                declaration,
+            }),
+        )
     } else {
         Ok(None)
     }
+}
+
+/// A `MethodImpl` declaration, followed: its parent re-encoded as a
+/// `TypeDefOrRef` coded value, the declaration method's `Name`, what that
+/// method is, and its own signature.
+struct ResolvedDecl {
+    parent: u32,
+    member: String,
+    classification: DeclClassification,
+    declaration: Result<DecodedMethodSig, SigError>,
 }
 
 /// The parts of a `MemberRef` row a `MethodImpl` declaration is classified by:
@@ -1754,11 +1782,13 @@ fn build_property(
     let name = row.string(1)?.to_string(); // Name
     let signature = decode_property_sig(row.blob(2)?, image_tables); // Type
     let index_parameters = decode_property_index_params(row.blob(2)?, image_tables);
+    let has_this = property_sig_has_this(row.blob(2)?);
     let acc = semantics.properties.get(&rid);
     Ok(Property {
         name,
         signature,
         index_parameters,
+        has_this,
         getter: acc
             .and_then(|a| a.getter)
             .and_then(|r| accessor_method_id(r, m_range)),

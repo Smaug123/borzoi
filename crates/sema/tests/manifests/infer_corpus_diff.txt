@@ -139,6 +139,7 @@ src/Compiler/Service/ServiceParseTreeWalk.fs:1587:39-1587:42 binder	agree
 src/Compiler/Service/ServiceParseTreeWalk.fs:1594:27-1594:30 binder	agree
 src/Compiler/Service/ServiceParseTreeWalk.fs:255:39-255:47 binder	agree
 src/Compiler/Service/ServiceParseTreeWalk.fs:324:9-330:17 unconverted-decl	"traverseUntil"
+src/Compiler/Service/ServiceParseTreeWalk.fs:328:10-328:13 binder	unconverted ours="Microsoft.FSharp.Collections.FSharpList<FSharp.Compiler.Syntax.SyntaxNode>"
 src/Compiler/Service/ServiceParseTreeWalk.fs:33:17-34:19 unconverted-decl	"get_Range"
 src/Compiler/SyntaxTree/LexFilter.fs	compared
 src/Compiler/SyntaxTree/LexFilter.fs:1080:9-1081:30 unconverted-decl	"peekAdjacentTypars"
@@ -252,6 +253,7 @@ src/Compiler/Utilities/sformat.fs:478:25-478:55 expr	agree
 src/Compiler/Utilities/sformat.fs:481:9-483:89 expr	agree
 src/Compiler/Utilities/sformat.fs:504:35-504:47 binder	agree
 src/Compiler/Utilities/sformat.fs:504:64-504:67 binder	agree
+src/Compiler/Utilities/sformat.fs:569:47-569:49 binder	agree
 src/Compiler/Utilities/sformat.fs:570:17-570:20 binder	agree
 src/Compiler/Utilities/sformat.fs:570:24-570:29 expr	agree
 src/Compiler/Utilities/sformat.fs:631:18-631:21 expr	agree

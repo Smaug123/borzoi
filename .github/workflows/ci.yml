@@ -867,6 +867,19 @@ jobs:
           nix develop --command cargo test -p borzoi --test all \
             xml_doc_source_diff::corpus:: -- --ignored --nocapture
 
+      - name: Gate on the <inheritdoc> sweep against Roslyn
+        if: steps.gate.outputs.run == 'true'
+        # Every <inheritdoc> entry of the ASP.NET Core targeting pack, expanded
+        # by hover and by Roslyn's IDE (tools/inheritdoc-oracle) over the same
+        # reference set: no expansion may differ from Roslyn's, and the count
+        # expanded is pinned exactly. The packs come from `nix develop`. The
+        # generated `cref` differential and the generated-program properties
+        # run deep here (the normal suite runs a few dozen cases each).
+        run: |
+          nix develop --command cargo test -p borzoi --test all -- --ignored --nocapture \
+            xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ \
+            xml_doc_inheritdoc_generated_diff::deep_ xml_doc_inheritdoc_metadata_diff::deep_
+
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
     needs: changes
@@ -1077,6 +1090,9 @@ jobs:
 
       - name: Gate on the restore-graph oracle
         run: bash tools/ci/project-corpus-gate.sh restore-graph
+
+      - name: Gate on the restore-cone census
+        run: bash tools/ci/project-corpus-gate.sh restore-cone
 
       - name: Gate on whole-project source docs
         run: bash tools/ci/project-corpus-gate.sh xml-doc-source

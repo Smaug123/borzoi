@@ -30,6 +30,7 @@ pub mod manifest;
 pub mod module_tree;
 pub mod nuget_oracle;
 pub mod panic_silence;
+pub mod restore_globals;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};

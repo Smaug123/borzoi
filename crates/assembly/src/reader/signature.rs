@@ -608,6 +608,12 @@ pub(crate) fn decode_property_sig(
 /// after the property's type, each with its custom modifiers. A property's
 /// accessors carry the parameters the model projects, but need not repeat a
 /// modifier the `PropertySig` carries.
+/// Whether a `PropertySig` (II.23.2.5) says its property is an instance
+/// one (`HASTHIS`); `None` for an empty blob.
+pub(crate) fn property_sig_has_this(blob: &[u8]) -> Option<bool> {
+    blob.first().map(|first| first & conv::HASTHIS != 0)
+}
+
 pub(crate) fn decode_property_index_params(
     blob: &[u8],
     tables: &ImageTables,

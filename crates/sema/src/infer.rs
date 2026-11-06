@@ -433,7 +433,21 @@
 //!   unifies in source order, so a statement (`x; if x …`) or any earlier use
 //!   fixes the parameter first; our solver is unordered, so a condition grounds
 //!   its slot only when nothing could have come before it
-//!   ([`Gen::is_first_occurrence`]).
+//!   ([`Gen::is_first_occurrence`]). A parameter whose annotation names an
+//!   implicitly scoped type variable (below) is reached through every other
+//!   mention of the variable too, so a condition on it never grounds.
+//! - **A type variable in a function's head is one variable per name.** FCS
+//!   creates `'a` at its first mention in a module-level declaration and
+//!   reads every later mention as the same, ordinary inference variable, which
+//!   the body may fix (FS0064) and what is left generalises. So the head's
+//!   annotations — parameters and return — read each name as one fresh
+//!   variable ([`Gen::open_head_typars`]); a parameter so annotated is an
+//!   unannotated one whose binder and slot are tied to that structure, and a
+//!   return annotation's check discharges as the equality FCS tries first.
+//!   A mention anywhere else (a lambda's annotation, a local's, a type
+//!   application) is the same variable, so a body mentioning one of the
+//!   head's names declines the head's, as does a head with `<'a>`, `^a` or
+//!   `'_a`.
 //!
 //! **Infix operators.** `a OP b` parses as `App(App(OP, a), b)` with the inner
 //! application marked infix, and FCS checks it exactly as the application
@@ -483,7 +497,7 @@ use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
     ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, ModuleOrNamespace,
     ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat, SequentialExpr, SyntaxKind,
-    SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr,
+    SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr, VarType,
 };
 use rowan::{TextRange, TextSize};
 
@@ -703,6 +717,15 @@ pub enum Incomplete {
     /// the rest of the body walked, this is the only reason such a binding can
     /// have.
     BindingAnnotation,
+    /// A function whose head declares a type variable (`let f<'a> …`) the
+    /// body fixes or merges with another: FCS rejects it (a declared variable
+    /// is rigid), so its binder is not published and its uses are not typed.
+    RigidTypeVariable,
+    /// A use of a value whose type, as solved, takes a parameter FCS loosens
+    /// at a use (`obj`, an interface, an unsealed class) where the use was not
+    /// typed through that loosening: `let f (g: obj -> 'a) = g` is
+    /// `(obj -> 'a) -> 'b -> 'a` in FCS. Its variables are poisoned.
+    LoosenedUse,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -1295,6 +1318,37 @@ struct Gen<'a> {
     /// [`Self::check_constraints`] checks what each is solved to once the
     /// binding is solved.
     constrained: Vec<(TyVid, EqualityComparison)>,
+    /// The current binding's **implicitly scoped type variables**: each name a
+    /// `'a` in its head's annotations spells, to the one inference variable
+    /// every mention of it denotes ([`Self::open_head_typars`]). Empty where
+    /// the head declares its variables explicitly or mentions a `^a`.
+    head_typars: HashMap<String, TyVid>,
+    /// Whether [`Self::annotation_ty`] is reading the current binding's head,
+    /// the one place it reads a `'a` (as [`Self::head_typars`] has it).
+    reading_head: bool,
+    /// The current binding's parameters whose annotation mentions one of
+    /// [`Self::head_typars`].
+    typar_params: HashSet<DefId>,
+    /// Of [`Self::head_typars`], the variables the head declares
+    /// (`let f<'a> …`), in declaration order: rigid, so each must end the
+    /// binding a distinct unbound variable ([`Self::rigid_typars_hold`]).
+    rigid_typars: Vec<TyVid>,
+    /// Functions withheld for a rigid variable the body fixed
+    /// ([`Incomplete::RigidTypeVariable`]): never published, and a use of one
+    /// is not typed.
+    withheld_defs: HashSet<DefId>,
+    /// Whether the current binding, with every relation it holds applied as
+    /// the equality FCS tries first, breaks a declared variable's rigidity or
+    /// fails outright ([`Self::solve`]): FCS then rejects the declaration.
+    rigid_rejected: bool,
+    /// [`Self::emission_mark`] at the current binding's start.
+    binding_emissions: (usize, usize),
+    /// Whether the current binding's head declares type variables
+    /// (`let f<'a> …`), whether or not [`Self::open_head_typars`] reads them.
+    declares_typars: bool,
+    /// The current binding's parameters, as registered: what
+    /// [`Self::withhold_if_not_rigid`] withholds with the function.
+    binding_params: Vec<DefId>,
     /// The file's in-scope instance-extension-member surface (OV-6): the
     /// extension-absence gate the method-call wake consults before committing an
     /// overload. Computed once in [`infer_file`] from the file and the env.
@@ -1419,6 +1473,15 @@ impl<'a> Gen<'a> {
             cur_mark: 0,
             scheme_inst_vars: HashSet::new(),
             constrained: Vec::new(),
+            head_typars: HashMap::new(),
+            reading_head: false,
+            typar_params: HashSet::new(),
+            rigid_typars: Vec::new(),
+            withheld_defs: HashSet::new(),
+            rigid_rejected: false,
+            binding_emissions: (0, 0),
+            declares_typars: false,
+            binding_params: Vec::new(),
             rejected_defs: HashSet::new(),
             project_types: HashMap::new(),
             dropped: Vec::new(),
@@ -1495,6 +1558,14 @@ impl<'a> Gen<'a> {
         self.undecided_uses.clear();
         self.opaque.clear();
         self.constrained.clear();
+        self.head_typars.clear();
+        self.reading_head = false;
+        self.typar_params.clear();
+        self.rigid_typars.clear();
+        self.rigid_rejected = false;
+        self.binding_emissions = self.emission_mark();
+        self.binding_params.clear();
+        self.declares_typars = false;
         mark
     }
 
@@ -1871,6 +1942,22 @@ impl<'a> Gen<'a> {
         })
     }
 
+    /// Whether a use of the in-file binder `def` is left untyped, marking the
+    /// binding incomplete for why: F# may reject the use for the binder's
+    /// attributes ([`Self::use_may_be_rejected`]), or the binder is a function
+    /// withheld for a rigid variable its body fixed ([`Self::withheld_defs`]).
+    fn declines_use(&mut self, def: DefId) -> bool {
+        if self.use_may_be_rejected(def) {
+            self.mark_incomplete(Incomplete::RejectedUse);
+            true
+        } else if self.withheld_defs.contains(&def) {
+            self.mark_incomplete(Incomplete::RigidTypeVariable);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Whether a use of the in-file binder `def` may be one F# rejects for the
     /// binder's attributes ([`Self::rejected_use_defs`]).
     fn use_may_be_rejected(&self, def: DefId) -> bool {
@@ -2087,7 +2174,9 @@ impl<'a> Gen<'a> {
                     if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
                 {
                     self.cur_body = Some(rhs.syntax().clone());
+                    self.open_head_typars(&head, None, Some(&rhs));
                     let arg_vars = self.param_vars(&head);
+                    self.reading_head = false;
                     // FCS binds a parameter directly only if it is simple
                     // ([`is_simple_param`]); any other it elaborates through a
                     // `match` whose target is the body, and the typed tree then
@@ -2107,6 +2196,7 @@ impl<'a> Gen<'a> {
                         self.slot_binder_reunify();
                     }
                     self.solve();
+                    self.withhold_if_not_rigid(f_def);
                     if let Some(f_def) = f_def {
                         self.finalise_function(f_def, mark);
                     }
@@ -2203,7 +2293,9 @@ impl<'a> Gen<'a> {
     /// nothing is walked and nothing is constrained.
     fn annotated_function_binding(&mut self, head: &LongIdentPat, rhs: Option<Expr>, ann: &Type) {
         let mark = self.begin_binding();
+        self.open_head_typars(head, Some(ann), rhs.as_ref());
         let Some(t) = self.annotation_ty(ann) else {
+            self.reading_head = false;
             // Not walked, but counted ([`Incomplete::BindingAnnotation`]).
             self.mark_incomplete(Incomplete::BindingAnnotation);
             return;
@@ -2211,6 +2303,7 @@ impl<'a> Gen<'a> {
         self.cur_body = rhs.as_ref().map(|rhs| rhs.syntax().clone());
 
         let arg_vars = self.param_vars(head);
+        self.reading_head = false;
         let r = self.table.fresh();
         self.eq(Ty::Var(r), t);
         if let Some(rhs) = rhs {
@@ -2239,6 +2332,7 @@ impl<'a> Gen<'a> {
             self.slot_binder_reunify();
         }
         self.solve();
+        self.withhold_if_not_rigid(f_def);
         if let Some(f_def) = f_def {
             self.finalise_function(f_def, mark);
         }
@@ -2341,6 +2435,14 @@ impl<'a> Gen<'a> {
             return None;
         }
         match ty {
+            // A type variable, only in the current binding's head, where it is
+            // one of the binding's implicitly scoped variables.
+            Type::Var(v) if self.reading_head => {
+                let tok = v.ident()?;
+                self.head_typars
+                    .get(&ident_text(&tok))
+                    .map(|&tv| Ty::Var(tv))
+            }
             Type::Paren(p) => self.annotation_ty(&p.inner()?),
             Type::LongIdent(li) => {
                 let li = li.long_ident()?;
@@ -2776,8 +2878,7 @@ impl<'a> Gen<'a> {
                     self.emit(tok.text_range(), uv, expected);
                     return Some(uv);
                 };
-                if self.use_may_be_rejected(def) {
-                    self.mark_incomplete(Incomplete::RejectedUse);
+                if self.declines_use(def) {
                     return None;
                 }
                 let uv = self.value_use(def);
@@ -3507,8 +3608,7 @@ impl<'a> Gen<'a> {
             return None;
         };
         if let Some(def) = self.def_at(tok.text_range()) {
-            if self.use_may_be_rejected(def) {
-                self.mark_incomplete(Incomplete::RejectedUse);
+            if self.declines_use(def) {
                 return None;
             }
             return Some(self.value_use(def));
@@ -3722,8 +3822,7 @@ impl<'a> Gen<'a> {
                 let Some(def) = self.def_at(tok.text_range()) else {
                     return self.nonlocal_value_or_incomplete(tok.text_range());
                 };
-                if self.use_may_be_rejected(def) {
-                    self.mark_incomplete(Incomplete::RejectedUse);
+                if self.declines_use(def) {
                     return None;
                 }
                 Some(self.value_use(def))
@@ -4339,6 +4438,10 @@ impl<'a> Gen<'a> {
             self.eq(Ty::Var(uv), body);
             return Some(uv);
         };
+        if self.withheld_defs.contains(&def) {
+            self.mark_incomplete(Incomplete::RigidTypeVariable);
+            return None;
+        }
         if let Some(scheme) = self.def_schemes.get(&def).cloned() {
             let body = self.instantiate(&scheme);
             let uv = self.table.fresh();
@@ -4393,12 +4496,77 @@ impl<'a> Gen<'a> {
             // rolls the binding back ([`Self::verified`]).
             Ty::Named { .. } => is_sealed(self.env, ty),
             Ty::Tuple(elems) => elems.iter().all(|e| self.no_subsumption_ty(e)),
-            Ty::Var(v) => self.is_scheme_inst_root(*v),
+            // An implicitly scoped type variable is an ordinary inference
+            // variable while unbound, so the equality FCS tries first holds.
+            Ty::Var(v) => self.is_scheme_inst_root(*v) || self.is_head_typar_root(*v),
             // Arrays, functions, and quantified `Param`s (never bound into the
             // table) are all excluded, and so is a project type, which may be a
             // class with subtypes.
             Ty::Array { .. } | Ty::Fun { .. } | Ty::Param(_) | Ty::Project { .. } => false,
         }
+    }
+
+    /// Whether every variable the current binding's head declares
+    /// ([`Self::rigid_typars`]) is, as solved, an unbound variable distinct
+    /// from the others: FCS rejects the binding otherwise.
+    fn rigid_typars_hold(&mut self) -> bool {
+        let mut roots = Vec::new();
+        for v in self.rigid_typars.clone() {
+            match self.table.resolve(&Ty::Var(v)) {
+                Ty::Var(r) if !roots.contains(&r) => roots.push(r),
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Whether every variable still open in the resolved type `ty` is one the
+    /// current binding's head declares ([`Self::rigid_typars`]).
+    fn only_rigid_typars_open(&mut self, ty: &Ty) -> bool {
+        let mut open = Vec::new();
+        free_vars(ty, &mut open);
+        let rigid = self.rigid_typars.clone();
+        open.into_iter()
+            .all(|v| rigid.iter().any(|&r| self.table.unioned(r, v)))
+    }
+
+    /// Withhold the function `f_def` where the solved binding breaks a declared
+    /// variable's rigidity ([`Incomplete::RigidTypeVariable`]): as solved, or
+    /// with every relation it holds applied as an equality
+    /// ([`Self::rigid_under_every_relation`]). A variable declared twice
+    /// (`<'a, 'a>`, which FCS rejects) is one variable listed twice, so it is
+    /// never distinct from itself and fails here too. Called after
+    /// [`Self::solve`].
+    ///
+    /// FCS may then reject the declaration whole — it reports no binder of it,
+    /// parameters included — so the whole binding is withheld: the function,
+    /// its parameters, and everything its walk emitted. So is an
+    /// **incomplete** binding with declared variables, whether or not their
+    /// annotations are read (`<'a when 'a : equality>` is not): a relation the
+    /// walk does not model (`p + "t"`, statically resolved) may be the one that
+    /// fixes a declared variable, and nothing then rules the rejection out.
+    fn withhold_if_not_rigid(&mut self, f_def: Option<DefId>) {
+        if !self.declares_typars
+            || (self.complete && !self.rigid_rejected && self.rigid_typars_hold())
+        {
+            return;
+        }
+        // An incomplete binding has its cause recorded already.
+        if self.complete {
+            self.mark_incomplete(Incomplete::RigidTypeVariable);
+        }
+        self.discard_emissions_since(self.binding_emissions);
+        self.withheld_defs.extend(f_def);
+        self.withheld_defs
+            .extend(self.binding_params.iter().copied());
+    }
+
+    /// Whether the (resolved, unbound) variable `v` is — or is unioned with —
+    /// one of the current binding's implicitly scoped type variables
+    /// ([`Self::head_typars`]).
+    fn is_head_typar_root(&mut self, v: TyVid) -> bool {
+        let vars: Vec<TyVid> = self.head_typars.values().copied().collect();
+        vars.into_iter().any(|tv| self.table.unioned(tv, v))
     }
 
     /// Whether the (resolved, unbound) variable `v` is — or is unioned with — a
@@ -4462,7 +4630,19 @@ impl<'a> Gen<'a> {
                     .ident()
                     .and_then(|tok| self.def_at(tok.text_range()))
                     .and_then(|def| self.param_slots.get(&def).copied());
+                // A parameter whose annotation mentions an implicitly scoped
+                // type variable is reachable through every other mention of
+                // it too (`(y: 'a) (x: 'a)`), so no occurrence of its own is
+                // provably the first constraint on it. Read off the head, not
+                // the table: nothing is solved while the body is walked.
+                let shares_typar = ident
+                    .ident()
+                    .and_then(|tok| self.def_at(tok.text_range()))
+                    .is_some_and(|def| self.typar_params.contains(&def));
                 match slot {
+                    Some(_) if shares_typar => {
+                        self.mark_incomplete(Incomplete::ConditionNotFirstOccurrence);
+                    }
                     Some(slot)
                         if ident
                             .ident()
@@ -4625,6 +4805,103 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Open the implicitly scoped type variables of a module-level function
+    /// binding's head — its parameters' annotations and its return annotation
+    /// `ret` — and start reading the head ([`Self::reading_head`]).
+    ///
+    /// FCS creates a type variable no `<…>` declares at its first mention
+    /// (`TcTypeOrMeasureParameter`, rigidity `WarnIfNotRigid`), and every
+    /// later mention of the name in the module-level declaration is the same
+    /// variable: the unscoped environment starts empty per declaration. It is
+    /// an ordinary inference variable — the body may fix it (warning FS0064),
+    /// and what is left generalises — so one fresh variable per name is FCS's
+    /// own reading. Only the head's mentions are read, each name as FCS reads
+    /// it (`'``a``` is `'a`).
+    ///
+    /// A variable the head **declares** (`let f<'a> …`) is one too, but
+    /// rigid: FCS rejects a body that fixes it or merges it with another
+    /// declared one (FS0670), so it is recorded ([`Self::rigid_typars`]) and
+    /// checked once the binding is solved.
+    ///
+    /// Nothing opens, so every `'a` declines as before, where the head
+    /// declares a variable with a constraint (`<'a when …>`), an attribute
+    /// (`[<Measure>]`), a `^` or a leading `_`; mentions a
+    /// `^a` (statically resolved, whose name `'a` would share) or a `'_a`; or
+    /// binds named fields (`Case (f = p)`) rather than parameters; and where
+    /// the body `body` mentions one of the head's names (a lambda's or a
+    /// local's annotation, a type application), which is the same variable and
+    /// a relation on it the walk does not read. A declaration binding more
+    /// than one function is a `let rec`, which is not walked.
+    fn open_head_typars(&mut self, head: &LongIdentPat, ret: Option<&Type>, body: Option<&Expr>) {
+        self.declares_typars = head.typar_decls().is_some();
+        if head.name_pat_pairs().is_some() {
+            return;
+        }
+        let mut declared: Vec<String> = Vec::new();
+        if let Some(decls) = head.typar_decls() {
+            if decls.constraint_clause().is_some() {
+                return;
+            }
+            for decl in decls.typars() {
+                if decl.is_head_type()
+                    || decl.attributes().next().is_some()
+                    || decl.intersection_constraints().next().is_some()
+                {
+                    return;
+                }
+                let Some(tok) = decl.ident() else {
+                    return;
+                };
+                let name = ident_text(&tok);
+                if name.starts_with('_') {
+                    return;
+                }
+                declared.push(name);
+            }
+        }
+        let mentions: Vec<VarType> = head
+            .args()
+            .map(|arg| arg.syntax().clone())
+            .chain(ret.map(|t| t.syntax().clone()))
+            .flat_map(|n| {
+                n.descendants()
+                    .filter_map(VarType::cast)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if mentions.iter().any(VarType::is_head_type) {
+            return;
+        }
+        let mut names = declared.clone();
+        for mention in &mentions {
+            let Some(tok) = mention.ident() else {
+                return;
+            };
+            let name = ident_text(&tok);
+            if name.starts_with('_') {
+                return;
+            }
+            names.push(name);
+        }
+        let in_body = body.is_some_and(|b| {
+            b.syntax()
+                .descendants()
+                .filter_map(VarType::cast)
+                .filter_map(|v| v.ident())
+                .any(|tok| names.contains(&ident_text(&tok)))
+        });
+        if in_body {
+            return;
+        }
+        let mut typars = HashMap::new();
+        for name in names {
+            typars.entry(name).or_insert_with(|| self.table.fresh());
+        }
+        self.rigid_typars = declared.iter().map(|n| typars[n]).collect();
+        self.head_typars = typars;
+        self.reading_head = true;
+    }
+
     /// The slot variables of a function head's parameters ([`Self::param_var`]).
     ///
     /// A name bound twice among them is not typed at all: FCS rejects every
@@ -4747,7 +5024,17 @@ impl<'a> Gen<'a> {
                 if site == BinderSite::Param {
                     let dv = self.def_var(*def);
                     self.eq(Ty::Var(dv), t.clone());
-                    self.param_annotations.insert(*def, t.clone());
+                    // An annotation mentioning an implicitly scoped type
+                    // variable ([`Self::open_head_typars`]) fixes the
+                    // parameter's structure but not its type, which the body
+                    // may still fix: it is not a type known at a use.
+                    if t.is_ground() {
+                        self.param_annotations.insert(*def, t.clone());
+                    } else {
+                        self.typar_params.insert(*def);
+                    }
+                } else {
+                    debug_assert!(t.is_ground(), "a type variable outside a head");
                 }
                 t.clone()
             }
@@ -4771,6 +5058,7 @@ impl<'a> Gen<'a> {
                 self.param_slots.insert(def, slot);
                 self.param_defs.insert(def);
                 self.cur_params.push((def, slot));
+                self.binding_params.push(def);
                 slot
             }
             BinderSite::Local => {
@@ -4924,10 +5212,62 @@ impl<'a> Gen<'a> {
         // fired-and-failed check was already poisoned in the worklist; a
         // fired-and-succeeded one poisons nothing.) Members that never woke are
         // dropped.
+        if !self.rigid_typars.is_empty() {
+            self.rigid_rejected = !self.rigid_under_every_relation(&outcome);
+        }
+        // The loosening invariant holds of the solution, however it was
+        // reached: [`Self::verified`] checks it of a speculative one, and a
+        // binding where no check discharged is not speculated at all, yet an
+        // annotation can still give a use its structure
+        // (`let f (g: obj -> 'a) = g`).
+        if !self.loosening_holds() {
+            self.poison.extend(self.undecided_uses.iter().copied());
+            self.poison.extend(self.bounded_flex.iter().copied());
+            if self.complete {
+                self.mark_incomplete(Incomplete::LoosenedUse);
+            }
+        }
         for ac in outcome.args {
             self.poison_arg_check(ac);
         }
         self.check_constraints(speculative);
+    }
+
+    /// Whether the current binding's declared variables ([`Self::rigid_typars`])
+    /// stay distinct and unbound with every relation it holds — the pending
+    /// argument checks of `outcome` and the dropped check-mode relations —
+    /// applied as an equality, and none of them failing. FCS tries the
+    /// equality first, so a relation that would fix a declared variable is an
+    /// error there (FS0670), and one that fails is an error too: in either
+    /// case the declaration may be rejected whole.
+    fn rigid_under_every_relation(&mut self, outcome: &WorklistOutcome) -> bool {
+        if self.eq_failures > 0 {
+            return false;
+        }
+        let relations: Vec<(TyVid, TyVid)> = outcome
+            .args
+            .iter()
+            .map(|ac| (ac.arg, ac.dom))
+            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
+            .collect();
+        let rigid = self.rigid_typars.clone();
+        let mut holds = false;
+        let _ = self.table.probe(|t| -> Result<(), ()> {
+            let unified = relations
+                .iter()
+                .all(|(a, b)| t.unify(&Ty::Var(*a), &Ty::Var(*b)).is_ok());
+            let mut roots = Vec::new();
+            holds = unified
+                && rigid.iter().all(|v| match t.resolve(&Ty::Var(*v)) {
+                    Ty::Var(r) if !roots.contains(&r) => {
+                        roots.push(r);
+                        true
+                    }
+                    _ => false,
+                });
+            Err(())
+        });
+        holds
     }
 
     /// The worst verdict ([`satisfies`]) over the current binding's
@@ -5052,16 +5392,28 @@ impl<'a> Gen<'a> {
             let unified = relations
                 .iter()
                 .all(|(a, b)| t.unify(&Ty::Var(*a), &Ty::Var(*b)).is_ok());
-            let unbound = bounded
-                .iter()
-                .all(|v| matches!(t.resolve(&Ty::Var(*v)), Ty::Var(_)));
-            let unloosened = undecided
-                .iter()
-                .all(|v| !takes_unsealed_parameter(env, &t.resolve(&Ty::Var(*v))));
-            consistent = unified && unbound && unloosened;
+            consistent = unified && loosened_as_fcs(env, t, bounded, undecided);
             Err(())
         });
         consistent
+    }
+
+    /// The loosening half of [`Self::verified`], of the solution `solve`
+    /// kept: no bounded loosened variable is fixed and no undecided use takes
+    /// a parameter of a type that is not sealed. Of the solution *kept*, not
+    /// of every relation applied: a relation `solve` did not apply is
+    /// poisoned rather than published, so it cannot make a published use the
+    /// wrong one. The probe leaves the table as it was.
+    fn loosening_holds(&mut self) -> bool {
+        let env = self.env;
+        let bounded = &self.bounded_flex;
+        let undecided = &self.undecided_uses;
+        let mut holds = false;
+        let _ = self.table.probe(|t| -> Result<(), ()> {
+            holds = loosened_as_fcs(env, t, bounded, undecided);
+            Err(())
+        });
+        holds
     }
 
     /// Undo what a speculative solve recorded outside the table
@@ -5670,6 +6022,12 @@ impl<'a> Gen<'a> {
             // artefact of an unmodelled constraint FCS uses to ground it).
             return;
         }
+        // A head that declares its variables generalises those alone: FCS
+        // defaults every other variable left open to `obj`
+        // (`let f<'a> (x: 'a) y` is `'a -> obj -> …`), which is not modelled.
+        if !self.rigid_typars.is_empty() && !self.only_rigid_typars_open(&fn_ty) {
+            return;
+        }
         if let Some(scheme) = self.generalise(&fn_ty, mark) {
             self.def_schemes.insert(f_def, scheme);
         }
@@ -5809,7 +6167,7 @@ impl<'a> Gen<'a> {
             // from its binder variable: on an incomplete binding that variable
             // is decoupled from the function type's slot, and can be grounded
             // by a use the binding's unmodelled constraints contradict.
-            if self.param_defs.contains(&def) {
+            if self.param_defs.contains(&def) || self.withheld_defs.contains(&def) {
                 continue;
             }
             // A local binder is published only if no emission barrier discarded
@@ -5845,6 +6203,9 @@ impl<'a> Gen<'a> {
         // renumbered on its own (`'a` for the second of `'a -> 'b -> 'a`),
         // where hover would name it as its function does.
         for &def in &self.param_defs {
+            if self.withheld_defs.contains(&def) {
+                continue;
+            }
             if let Some(ann) = self.param_annotations.get(&def) {
                 def_types.insert(def, ann.clone());
                 continue;
@@ -6657,6 +7018,23 @@ fn unparenthesize(e: Expr) -> Option<Expr> {
 ///
 /// Kept in lock-step with [`literal_ty`] by a shared list would over-engineer a
 /// 16-entry match; instead a unit test asserts the two agree.
+/// Every variable still standing in the resolved type `ty`.
+fn free_vars(ty: &Ty, out: &mut Vec<TyVid>) {
+    match ty {
+        Ty::Var(v) => out.push(*v),
+        Ty::Named { args, .. } | Ty::Project { args, .. } => {
+            args.iter().for_each(|a| free_vars(a, out));
+        }
+        Ty::Array { elem, .. } => free_vars(elem, out),
+        Ty::Tuple(elems) => elems.iter().for_each(|e| free_vars(e, out)),
+        Ty::Fun { arg, ret } => {
+            free_vars(arg, out);
+            free_vars(ret, out);
+        }
+        Ty::Param(_) => {}
+    }
+}
+
 fn is_sealed_primitive(path: &[String]) -> bool {
     matches!(
         path.iter()
@@ -6697,6 +7075,23 @@ const OBJECT: &str = "System.Object";
 /// any element of a tupled one — of a known type that is not sealed: one FCS
 /// loosens at a use of a value of this type, if it knows the type there
 /// ([`Gen::value_use`]). A parameter whose type is still a variable is not.
+/// Whether, in the table `t`, every bounded loosened variable is still
+/// unbound and no undecided use takes a parameter of a type that is not
+/// sealed ([`Gen::verified`]).
+fn loosened_as_fcs(
+    env: &AssemblyEnv,
+    t: &mut InferTable,
+    bounded: &[TyVid],
+    undecided: &[TyVid],
+) -> bool {
+    bounded
+        .iter()
+        .all(|v| matches!(t.resolve(&Ty::Var(*v)), Ty::Var(_)))
+        && undecided
+            .iter()
+            .all(|v| !takes_unsealed_parameter(env, &t.resolve(&Ty::Var(*v))))
+}
+
 fn takes_unsealed_parameter(env: &AssemblyEnv, ty: &Ty) -> bool {
     let mut ty = ty;
     while let Ty::Fun { arg, ret } = ty {
@@ -6973,6 +7368,7 @@ mod tests {
             is_structural_equality: false,
             is_structural_comparison: false,
             is_allow_null_literal: false,
+            is_no_pia_local: false,
             obsolete: None,
             compiler_message: None,
             experimental: None,

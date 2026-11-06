@@ -5,7 +5,7 @@
 ///
 /// Protocol: JSONL request/response over stdin/stdout, one response line per
 /// request line, in order (the same long-lived-batch-child pattern as
-/// tools/fcs-dump and tools/nuget-oracle). Two ops:
+/// tools/fcs-dump and tools/nuget-oracle). The ops:
 ///
 ///   {"op":"eval","condition":s,"properties":{name:value, ..}}
 ///     -> {"ok":true,"value":true|false}   // MSBuild evaluated the condition
@@ -58,6 +58,22 @@
 ///     comment-split text) — this op is what lets a differential see that
 ///     layer at all.
 ///
+///   {"op":"restoreCone","project":s,"globals":{name:value, ..}}
+///     -> {"ok":true,"succeeded":b,"errors":[..],"msbuildDirectory":s,
+///         "sdkVersion":s,"targets":[..],"tasks":[..],"files":{..},
+///         "assemblies":{..},"loadedDuringBuilds":[..],"dgspec":s|null}
+///     The restore-cone census of docs/nuget-dgspec-boundary-plan.md (stage
+///     8): builds `GenerateRestoreGraphFile` on the project file in-process,
+///     under exactly `globals`, and reports every target and task that
+///     executed, the SHA-256 of each file they come from, each task assembly's
+///     identity, and the spec written to `RestoreGraphOutputPath`. See
+///     `restoreCone` below. Unlike the evaluation ops this one *executes*
+///     targets, so it reaches the SDK's task code.
+///
+/// The process takes one optional argument pair, `--msbuild-sdk <dir>`, which
+/// pins it to the MSBuild of the SDK installed at `<dir>` instead of the one
+/// `dotnet` resolves from the working directory (`registerMSBuild`).
+///
 /// `globals` — on `project` and `items` — is MSBuild's **global property** set:
 /// the `-p:` command line, and what an IDE-style consumer injects. It is not a
 /// property group write. A global outranks every document write of the same
@@ -102,6 +118,7 @@ open System.Text.Json
 open System.Xml
 open Microsoft.Build.Evaluation
 open Microsoft.Build.Exceptions
+open Microsoft.Build.Execution
 open Microsoft.Build.Locator
 
 /// The item whose presence encodes the condition's truth. Deliberately an
@@ -406,13 +423,261 @@ let private respondProject (root: JsonElement) : string =
                values = values |> Map.toSeq |> dict |}
     | None -> JsonSerializer.Serialize {| ok = false |}
 
+/// The restore target whose execution the `restoreCone` op records: half A of
+/// docs/nuget-dgspec-boundary-plan.md, what `dotnet msbuild
+/// -t:GenerateRestoreGraphFile` runs.
+[<Literal>]
+let private RestoreGraphTarget = "GenerateRestoreGraphFile"
+
+/// One target MSBuild executed (a `TargetStarted` event: its condition held and
+/// it was not already built in that project instance).
+type internal TargetRun =
+    { Name: string
+      File: string
+      Project: string }
+
+/// One task MSBuild executed (a `TaskStarted` event: its condition held). The
+/// engine's intrinsic `PropertyGroup`/`ItemGroup` inside a target raise no such
+/// event; they are MSBuild semantics, not task code.
+type internal TaskRun =
+    { Name: string
+      Target: string
+      File: string
+      Assembly: string }
+
+/// The executed targets and tasks as the `restoreCone` op reports them.
+let internal targetsJson (targets: TargetRun list) =
+    targets
+    |> List.map (fun t ->
+        {| name = t.Name
+           file = t.File
+           project = t.Project |})
+
+let internal tasksJson (tasks: TaskRun list) =
+    tasks
+    |> List.map (fun t ->
+        {| name = t.Name
+           target = t.Target
+           file = t.File
+           assembly = t.Assembly |})
+
+/// Records every target and task that starts, and every error. The containing
+/// target of a task is found through its build event context, which names the
+/// target instance it runs in.
+///
+/// Public so that `dotnet msbuild` can load it too
+/// (`-logger:MsBuildConditionOracle.Program+ConeLogger,<this assembly>;<file>`):
+/// given a file as its parameter, it writes the targets and tasks it saw there
+/// as JSON when the build ends, in the `restoreCone` op's shape. That is how the
+/// census compares the cone it measures in-process with the cone the CLI runs.
+type ConeLogger() =
+    let targets = ResizeArray<TargetRun>()
+    let tasks = ResizeArray<TaskRun>()
+    let errors = ResizeArray<string>()
+    let targetNames = Collections.Generic.Dictionary<struct (int * int * int), string>()
+    let mutable verbosity = Microsoft.Build.Framework.LoggerVerbosity.Normal
+    let mutable parameters: string = null
+
+    let contextKey (context: Microsoft.Build.Framework.BuildEventContext) =
+        struct (context.NodeId, context.ProjectContextId, context.TargetId)
+
+    member internal _.Targets = List.ofSeq targets
+    member internal _.Tasks = List.ofSeq tasks
+    member internal _.Errors = List.ofSeq errors
+
+    interface Microsoft.Build.Framework.ILogger with
+        member _.Verbosity
+            with get () = verbosity
+            and set v = verbosity <- v
+
+        member _.Parameters
+            with get () = parameters
+            and set v = parameters <- v
+
+        member _.Initialize(source: Microsoft.Build.Framework.IEventSource) =
+            source.TargetStarted.Add(fun e ->
+                targetNames[contextKey e.BuildEventContext] <- e.TargetName
+
+                targets.Add
+                    { Name = e.TargetName
+                      File = e.TargetFile
+                      Project = e.ProjectFile })
+
+            source.TaskStarted.Add(fun e ->
+                let target =
+                    match targetNames.TryGetValue(contextKey e.BuildEventContext) with
+                    | true, name -> name
+                    | _ -> failwith $"task %s{e.TaskName} started outside any recorded target"
+
+                tasks.Add
+                    { Name = e.TaskName
+                      Target = target
+                      File = e.TaskFile
+                      Assembly = e.TaskAssemblyLocation })
+
+            source.ErrorRaised.Add(fun e -> errors.Add $"%s{e.File}(%d{e.LineNumber}): %s{e.Code} %s{e.Message}")
+
+        member _.Shutdown() =
+            if not (String.IsNullOrEmpty parameters) then
+                let cone =
+                    {| targets = targetsJson (List.ofSeq targets)
+                       tasks = tasksJson (List.ofSeq tasks)
+                       errors = List.ofSeq errors |}
+
+                File.WriteAllText(parameters, JsonSerializer.Serialize cone)
+
+/// Every assembly loaded while a `restoreCone` build ran, across the process's
+/// life, by path. Task assemblies load their dependencies lazily, as the code
+/// that needs them first runs, so this is the code the builds reached, beyond
+/// the task assemblies themselves. An assembly the oracle had already loaded
+/// before its first build (MSBuild's own evaluator, the runtime) is not here.
+let private loadedDuringBuilds = Collections.Generic.HashSet<string>()
+
+let mutable private building = false
+
+let private recordLoad (args: AssemblyLoadEventArgs) =
+    if building && not args.LoadedAssembly.IsDynamic && args.LoadedAssembly.Location <> "" then
+        loadedDuringBuilds.Add args.LoadedAssembly.Location |> ignore
+
+let private sha256Hex (path: string) : string =
+    Convert.ToHexString(Security.Cryptography.SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
+
+/// A task assembly's identity, independent of the host: its simple name, its
+/// version, and its informational version, which names the commit the SDK was
+/// built from. Neither the file's bytes nor its module MVID would do: each
+/// platform's SDK compiles the IL separately and precompiles it natively, so
+/// both differ between the macOS and Linux builds of one SDK.
+let private assemblyIdentity (path: string) =
+    let name = Reflection.AssemblyName.GetAssemblyName path
+
+    {| name = name.Name
+       version = string name.Version
+       informationalVersion = Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductVersion |}
+
+/// Run `GenerateRestoreGraphFile` on `project` under `globals`, in-process, with
+/// a [`ConeLogger`] attached: the targets and tasks it executed, the content
+/// hash of every file defining one of those targets (and holding one of those
+/// tasks), the identity of every task assembly, whether the build succeeded,
+/// and the spec it wrote to `RestoreGraphOutputPath`.
+///
+/// One node, in this process, no node reuse: the census is of what runs, and
+/// an out-of-process node would run it where no logger of ours could see the
+/// task assemblies load.
+let private restoreCone (project: string) (globals: Collections.Generic.IDictionary<string, string>) =
+    use collection = new ProjectCollection()
+    let logger = ConeLogger()
+
+    let parameters =
+        BuildParameters(
+            collection,
+            Loggers = [ logger :> Microsoft.Build.Framework.ILogger ],
+            MaxNodeCount = 1,
+            EnableNodeReuse = false
+        )
+
+    let request =
+        BuildRequestData(
+            project,
+            globals,
+            null,
+            [| RestoreGraphTarget |],
+            null,
+            BuildRequestDataFlags.ProvideProjectStateAfterBuild
+        )
+
+    building <- true
+
+    let result =
+        try
+            BuildManager.DefaultBuildManager.Build(parameters, request)
+        finally
+            building <- false
+
+    let targets = logger.Targets
+    let tasks = logger.Tasks
+
+    let files =
+        Seq.append (targets |> Seq.map _.File) (tasks |> Seq.map _.File)
+        |> Seq.distinct
+        |> Seq.map (fun file -> (file, sha256Hex file))
+        |> dict
+
+    let assemblies =
+        tasks
+        |> Seq.map _.Assembly
+        |> Seq.distinct
+        |> Seq.map (fun path -> (path, assemblyIdentity path))
+        |> dict
+
+    let state = result.ProjectStateAfterBuild
+
+    let property name =
+        if isNull state then null else state.GetPropertyValue name
+
+    let dgspec =
+        match globals.TryGetValue "RestoreGraphOutputPath" with
+        | true, path when File.Exists path -> File.ReadAllText path
+        | _ -> null
+
+    {| ok = true
+       succeeded = (result.OverallResult = BuildResultCode.Success)
+       errors = logger.Errors
+       msbuildDirectory = Path.GetDirectoryName(typeof<Project>.Assembly.Location)
+       sdkVersion = property "NETCoreSdkVersion"
+       targets = targetsJson targets
+       tasks = tasksJson tasks
+       files = files
+       assemblies = assemblies
+       loadedDuringBuilds =
+        loadedDuringBuilds
+        |> Seq.sort
+        |> Seq.map (fun path ->
+            {| path = path
+               name = Reflection.AssemblyName.GetAssemblyName(path).Name
+               informationalVersion = Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductVersion |})
+        |> List.ofSeq
+       dgspec = dgspec |}
+
+let private respondRestoreCone (root: JsonElement) : string =
+    let project = root.GetProperty("project").GetString()
+
+    match readGlobals root with
+    | null -> JsonSerializer.Serialize {| error = "restoreCone needs a globals object" |}
+    | globals -> JsonSerializer.Serialize(restoreCone project globals)
+
+/// Register the MSBuild the oracle runs. With no arguments, the SDK `dotnet`
+/// resolves from the working directory (`RegisterDefaults`). With
+/// `--msbuild-sdk <dir>`, the SDK installed at `<dir>` (`<root>/sdk/<version>`),
+/// spelt exactly as given: MSBuild records paths into its own directory in what
+/// it computes (the runtime identifier graph's path lands in the restore spec),
+/// so the caller chooses the spelling the build it stands in for would see.
+/// The environment is what `MSBuildLocator.RegisterInstance` sets for a .NET
+/// SDK instance; the process fails if `<dir>` holds no MSBuild, since a census
+/// of one SDK that quietly ran another would be a census of the wrong thing.
+let private registerMSBuild (argv: string[]) =
+    match argv with
+    | [||] -> MSBuildLocator.RegisterDefaults() |> ignore
+    | [| "--msbuild-sdk"; dir |] ->
+        let dir = Path.TrimEndingDirectorySeparator(Path.GetFullPath dir)
+        let msbuild = Path.Combine(dir, "MSBuild.dll")
+
+        if not (File.Exists msbuild) then
+            failwith $"no MSBuild at %s{msbuild}"
+
+        Environment.SetEnvironmentVariable("MSBUILD_EXE_PATH", msbuild)
+        Environment.SetEnvironmentVariable("MSBuildExtensionsPath", dir)
+        Environment.SetEnvironmentVariable("MSBuildSDKsPath", Path.Combine(dir, "Sdks"))
+        MSBuildLocator.RegisterMSBuildPath dir
+    | _ -> failwith $"usage: msbuild-condition-oracle [--msbuild-sdk <dir>]; got %A{argv}"
+
 [<EntryPoint>]
-let main _argv =
+let main argv =
     // Redirect the assembly loader to the installed SDK's MSBuild before any
     // Microsoft.Build type is touched at runtime. The evaluation logic lives
     // behind `evalCondition`, which is not JIT-compiled until first called
     // (well after this line), so the pinned reference assemblies never load.
-    MSBuildLocator.RegisterDefaults() |> ignore
+    registerMSBuild argv
+    AppDomain.CurrentDomain.add_AssemblyLoad(AssemblyLoadEventHandler(fun _ args -> recordLoad args))
 
     let mutable line = Console.In.ReadLine()
 
@@ -429,6 +694,7 @@ let main _argv =
                     | "project" -> respondProject root
                     | "items" -> respondItems root
                     | "itemsMeta" -> respondItemsMeta root
+                    | "restoreCone" -> respondRestoreCone root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}
