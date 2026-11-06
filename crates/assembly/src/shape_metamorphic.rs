@@ -24,10 +24,20 @@
 //! rejected, and for exactly the renamed part. The projection is where this
 //! can fail unseen — a name it normalises (an arity suffix it strips) never
 //! reaches the predicate's character rules.
+//!
+//! **Encodings.** C# spells a special type by its element type (`string`,
+//! never `class System.String`), constructs a generic type with exactly its
+//! arity's arguments, and gives an instance property instance accessors.
+//! Re-encode every ordinary method's signature, or every instance property's
+//! getter, one other way ([`Encoding`]) and re-project: each member that was
+//! compiler-shaped must now be rejected for that reason, judged alone.
 
-use crate::reader::{Image, Method, ModifiedType, Primitive, RetType, TypeSig};
+use crate::reader::{
+    Image, Method, ModifiedType, NamedKind, Param, Primitive, RetType, TypeName, TypeRefId,
+    TypeScope, TypeSig,
+};
 use crate::shape::{Unshaped, bindable, compiler_shape};
-use crate::{Ecma335Assembly, EcmaView, Entity, ImportError, Member};
+use crate::{Ecma335Assembly, EcmaView, Entity, ImportError, Member, TypeRef as ModelTypeRef};
 
 /// One accessor position, retyped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,8 +271,13 @@ fn alone_shell(e: &Entity) -> Entity {
     shell
 }
 
+/// Whether `a` and `b` are one type: by name and by arity, which the
+/// projected name has stripped (`ValueTuple` and ``ValueTuple`1`` are both
+/// named `ValueTuple`).
 fn same_type(a: &Entity, b: &Entity) -> bool {
-    a.namespace == b.namespace && a.name == b.name
+    a.namespace == b.namespace
+        && a.name == b.name
+        && a.generic_parameters.len() == b.generic_parameters.len()
 }
 
 /// `e` cut down to `member`, which [`compiler_shape`] then judges alone.
@@ -424,5 +439,230 @@ fn apply(image: &mut Image, rename: Rename) {
                 }
             }
         }
+    }
+}
+
+/// One way to encode a signature that C# does not write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    /// Every `string` in an ordinary method's signature spelled
+    /// `class System.String`.
+    SpecialByReference,
+    /// Every generic instantiation in an ordinary method's signature given
+    /// one more argument (`int`).
+    ExtraTypeArgument,
+    /// Every instance property's getter made static, taking an `int` first,
+    /// as F# writes an instance property over a static accessor.
+    StaticGetterOverInstanceProperty,
+}
+
+pub const ENCODINGS: [Encoding; 3] = [
+    Encoding::SpecialByReference,
+    Encoding::ExtraTypeArgument,
+    Encoding::StaticGetterOverInstanceProperty,
+];
+
+/// Re-encode the assembly in `bytes` by `encoding` and report each member
+/// that was compiler-shaped and touched, and is not now rejected for the
+/// encoding ([`Unshaped::SignatureEncoding`], or for a getter
+/// [`Unshaped::PropertySignature`]), judged alone.
+pub fn reencoded_signatures_are_unshaped(
+    bytes: &[u8],
+    encoding: Encoding,
+) -> Result<AccessorOutcome, ImportError> {
+    let baseline_asm = Ecma335Assembly::parse(bytes)?;
+    let baseline = flatten(&baseline_asm.enumerate_type_defs()?);
+    let mut outcome = AccessorOutcome {
+        retyped: 0,
+        findings: Vec::new(),
+    };
+    let mut encoded_asm = baseline_asm.clone();
+    if !encode(encoded_asm.image_mut(), encoding) {
+        return Ok(outcome);
+    }
+    let encoded = flatten(&encoded_asm.enumerate_type_defs()?);
+    let want = match encoding {
+        Encoding::StaticGetterOverInstanceProperty => Unshaped::PropertySignature,
+        _ => Unshaped::SignatureEncoding,
+    };
+    for (before, enclosing) in &baseline {
+        let enclosing = enclosing.as_ref();
+        let Some((after, _)) = encoded.iter().find(|(e, _)| same_type(e, before)) else {
+            continue;
+        };
+        for (i, member) in before.members.iter().enumerate().filter(|(_, m)| {
+            bindable(m)
+                && touched_by(m, encoding)
+                && compiler_shape(&alone(before, m), enclosing).is_ok()
+        }) {
+            outcome.retyped += 1;
+            let namesake =
+                |m: &&Member| member_name(m) == member_name(member) && same_kind(m, member);
+            let occurrence = before.members[..i].iter().filter(namesake).count();
+            let Some(now) = after.members.iter().filter(namesake).nth(occurrence) else {
+                continue;
+            };
+            let verdict = compiler_shape(&alone(after, now), enclosing);
+            if verdict != Err(want) {
+                outcome.findings.push(format!(
+                    "{}.{}: {verdict:?} after {encoding:?}, want {want:?}",
+                    qualified(before),
+                    member_name(member)
+                ));
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// Whether [`encode`] re-encoded the projected `member`.
+fn touched_by(member: &Member, encoding: Encoding) -> bool {
+    fn mentions(ty: &ModelTypeRef, hit: &dyn Fn(&ModelTypeRef) -> bool) -> bool {
+        hit(ty)
+            || match ty {
+                ModelTypeRef::Named { type_args, .. } => {
+                    type_args.iter().any(|a| mentions(&a.ty, hit))
+                }
+                ModelTypeRef::Array { element, .. } => mentions(&element.ty, hit),
+                ModelTypeRef::Ptr(Some(inner)) | ModelTypeRef::ByRef { inner, .. } => {
+                    mentions(inner, hit)
+                }
+                _ => false,
+            }
+    }
+    let hit: &dyn Fn(&ModelTypeRef) -> bool = match encoding {
+        Encoding::SpecialByReference => {
+            &|t| matches!(t, ModelTypeRef::Primitive(crate::Primitive::String))
+        }
+        Encoding::ExtraTypeArgument => {
+            &|t| matches!(t, ModelTypeRef::Named { type_args, .. } if !type_args.is_empty())
+        }
+        Encoding::StaticGetterOverInstanceProperty => {
+            return matches!(member, Member::Property(p) if !p.is_static && p.has_getter);
+        }
+    };
+    match member {
+        Member::Method(m) if !m.is_constructor => std::iter::once(&m.signature.return_type)
+            .chain(m.signature.parameters.iter().map(|p| &p.ty))
+            .any(|t| mentions(t, hit)),
+        _ => false,
+    }
+}
+
+/// Re-encode by `encoding`; whether the image allowed it (a core library
+/// has no `TypeRef` to `System.Object` whose scope a `System.String`
+/// reference could share).
+fn encode(image: &mut Image, encoding: Encoding) -> bool {
+    let string_ref = match encoding {
+        Encoding::SpecialByReference => {
+            let Some(scope) = image
+                .type_refs
+                .iter()
+                .find(|r| r.name.namespace == "System" && r.name.name == "Object")
+                .and_then(|r| r.scope.clone().ok())
+            else {
+                return false;
+            };
+            image.type_refs.push(crate::reader::TypeRefRow {
+                name: TypeName {
+                    namespace: "System".into(),
+                    name: "String".into(),
+                },
+                scope: Ok(scope),
+            });
+            Some(TypeRefId(
+                u32::try_from(image.type_refs.len() - 1).unwrap_or(u32::MAX),
+            ))
+        }
+        _ => None,
+    };
+    for td in &mut image.type_defs {
+        let accessors: Vec<u32> = td
+            .properties
+            .iter()
+            .flat_map(|p| [p.getter, p.setter])
+            .chain(td.events.iter().flat_map(|e| [e.add, e.remove, e.raise]))
+            .flatten()
+            .map(|id| id.0)
+            .collect();
+        match encoding {
+            Encoding::StaticGetterOverInstanceProperty => {
+                let getters: Vec<u32> = td
+                    .properties
+                    .iter()
+                    .filter(|p| p.has_this == Some(true))
+                    .filter_map(|p| p.getter.map(|g| g.0))
+                    .collect();
+                for g in getters {
+                    let Some(m) = td.methods.get_mut(g as usize) else {
+                        continue;
+                    };
+                    let Ok(sig) = &mut m.signature else {
+                        continue;
+                    };
+                    m.is_static = true;
+                    sig.has_this = false;
+                    sig.parameters.insert(
+                        0,
+                        Param {
+                            name: None,
+                            ty: ModifiedType::plain(TypeSig::Primitive(Primitive::Int32)),
+                            is_in: false,
+                            is_out: false,
+                            optional: false,
+                            default_value: None,
+                            attributes: Vec::new(),
+                        },
+                    );
+                }
+            }
+            Encoding::SpecialByReference | Encoding::ExtraTypeArgument => {
+                for (k, m) in td.methods.iter_mut().enumerate() {
+                    if accessors.contains(&(k as u32)) {
+                        continue;
+                    }
+                    reencode_method(m, encoding, string_ref);
+                }
+            }
+        }
+    }
+    true
+}
+
+fn reencode_method(m: &mut Method, encoding: Encoding, string_ref: Option<TypeRefId>) {
+    let Ok(sig) = &mut m.signature else {
+        return;
+    };
+    if let RetType::Type(t) = &mut sig.return_type {
+        reencode(t, encoding, string_ref);
+    }
+    for p in &mut sig.parameters {
+        reencode(&mut p.ty, encoding, string_ref);
+    }
+}
+
+fn reencode(t: &mut ModifiedType, encoding: Encoding, string_ref: Option<TypeRefId>) {
+    match &mut t.ty {
+        TypeSig::Primitive(Primitive::String) if encoding == Encoding::SpecialByReference => {
+            if let Some(id) = string_ref {
+                t.ty = TypeSig::Named {
+                    kind: Some(NamedKind::Class),
+                    scope: TypeScope::Reference(id),
+                };
+            }
+        }
+        TypeSig::Generic { args, .. } => {
+            for a in args.iter_mut() {
+                reencode(a, encoding, string_ref);
+            }
+            if encoding == Encoding::ExtraTypeArgument {
+                args.push(ModifiedType::plain(TypeSig::Primitive(Primitive::Int32)));
+            }
+        }
+        TypeSig::SzArray(e) | TypeSig::ByRef(e) | TypeSig::Ptr(Some(e)) => {
+            reencode(e, encoding, string_ref);
+        }
+        TypeSig::Array { element, .. } => reencode(element, encoding, string_ref),
+        _ => {}
     }
 }

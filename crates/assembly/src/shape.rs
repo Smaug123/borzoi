@@ -43,6 +43,10 @@ pub enum Unshaped {
     /// A signature names a type parameter (`!i`, `!!i`) its owner does not
     /// declare.
     TypeParameterIndex,
+    /// A signature spells a special type by reference (`class System.String`
+    /// where C# writes the `string` element type), or constructs a generic
+    /// type with another number of arguments than its name's arity.
+    SignatureEncoding,
     /// A signature carries an optional custom modifier: C# and VB write
     /// none outside function pointers, F# none at all.
     OptionalModifier,
@@ -85,6 +89,15 @@ pub fn compiler_shape(entity: &Entity, enclosing: Option<&Entity>) -> Result<(),
     {
         return Err(Unshaped::TypeParameterIndex);
     }
+    // C# writes a base type by reference, `System.Object` included.
+    if !entity
+        .base_type
+        .iter()
+        .chain(&entity.interfaces)
+        .all(|t| encoded_as_csharp(t, false))
+    {
+        return Err(Unshaped::SignatureEncoding);
+    }
     for member in entity.members.iter().filter(|m| bindable(m)) {
         match member {
             Member::Method(m) => method_shape(m, type_arity)?,
@@ -94,6 +107,9 @@ pub fn compiler_shape(entity: &Entity, enclosing: Option<&Entity>) -> Result<(),
                 }
                 if !in_range(&f.ty, 0) {
                     return Err(Unshaped::TypeParameterIndex);
+                }
+                if !encoded_as_csharp(&f.ty, true) {
+                    return Err(Unshaped::SignatureEncoding);
                 }
             }
             Member::Property(p) => property_shape(p, type_arity)?,
@@ -140,11 +156,15 @@ fn method_shape(m: &MethodLike, type_arity: usize) -> Result<(), Unshaped> {
         return Err(Unshaped::MemberName);
     }
     let arity = m.generic_parameters.len();
-    if !std::iter::once(&m.signature.return_type)
-        .chain(m.signature.parameters.iter().map(|p| &p.ty))
-        .all(|t| vars_in_range(t, type_arity, arity))
-    {
+    let signature = || {
+        std::iter::once(&m.signature.return_type)
+            .chain(m.signature.parameters.iter().map(|p| &p.ty))
+    };
+    if !signature().all(|t| vars_in_range(t, type_arity, arity)) {
         return Err(Unshaped::TypeParameterIndex);
+    }
+    if !signature().all(|t| encoded_as_csharp(t, true)) {
+        return Err(Unshaped::SignatureEncoding);
     }
     if m.drops_optional_modifier {
         return Err(Unshaped::OptionalModifier);
@@ -159,11 +179,12 @@ fn property_shape(p: &Property, type_arity: usize) -> Result<(), Unshaped> {
     ) {
         return Err(Unshaped::MemberName);
     }
-    if !std::iter::once(&p.ty)
-        .chain(p.parameters.iter().map(|ip| &ip.ty.ty))
-        .all(|t| vars_in_range(t, type_arity, 0))
-    {
+    let signature = || std::iter::once(&p.ty).chain(p.parameters.iter().map(|ip| &ip.ty.ty));
+    if !signature().all(|t| vars_in_range(t, type_arity, 0)) {
         return Err(Unshaped::TypeParameterIndex);
+    }
+    if !signature().all(|t| encoded_as_csharp(t, true)) {
+        return Err(Unshaped::SignatureEncoding);
     }
     if p.drops_optional_modifier {
         return Err(Unshaped::OptionalModifier);
@@ -187,6 +208,9 @@ fn event_shape(e: &Event, type_arity: usize) -> Result<(), Unshaped> {
     }
     if !vars_in_range(&e.delegate_type, type_arity, 0) {
         return Err(Unshaped::TypeParameterIndex);
+    }
+    if !encoded_as_csharp(&e.delegate_type, true) {
+        return Err(Unshaped::SignatureEncoding);
     }
     if e.drops_optional_modifier {
         return Err(Unshaped::OptionalModifier);
@@ -309,6 +333,41 @@ fn is_plain_char(c: char) -> bool {
                 | '}'
         )
 }
+
+/// Whether `ty` is encoded as C# writes it: every construction with as many
+/// arguments as its name's arity, and — in a member's signature or a type
+/// argument, where C# writes a special type by its element type — no special
+/// type spelled by reference (`class System.String`). `System.TypedReference`
+/// is exempt: the projection reads its element type as that named type.
+fn encoded_as_csharp(ty: &TypeRef, in_signature: bool) -> bool {
+    match ty {
+        TypeRef::Named {
+            namespace,
+            name,
+            type_args,
+            segment_arities,
+            ..
+        } => {
+            segment_arities.iter().sum::<usize>() == type_args.len()
+                && !(in_signature
+                    && type_args.is_empty()
+                    && namespace.len() == 1
+                    && namespace[0] == "System"
+                    && SPECIAL_TYPES.contains(&name.as_str()))
+                && type_args.iter().all(|a| encoded_as_csharp(&a.ty, true))
+        }
+        TypeRef::Array { element, .. } => encoded_as_csharp(&element.ty, true),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => encoded_as_csharp(inner, true),
+        TypeRef::Primitive(_) | TypeRef::Ptr(None) | TypeRef::Var { .. } => true,
+    }
+}
+
+/// The types of namespace `System` a signature spells by their own element
+/// type.
+const SPECIAL_TYPES: [&str; 17] = [
+    "Void", "Boolean", "Char", "SByte", "Byte", "Int16", "UInt16", "Int32", "UInt32", "Int64",
+    "UInt64", "Single", "Double", "IntPtr", "UIntPtr", "Object", "String",
+];
 
 /// Whether every type parameter `ty` names is declared: a type's (`!i`)
 /// below `type_arity`, a method's (`!!i`) below `method_arity`.

@@ -3156,12 +3156,12 @@ impl Ecma335Assembly {
             Ok(declared) => {
                 // F# compiles some instance properties (`FSharpOption.IsNone`)
                 // with static accessors taking the instance first: an
-                // instance `PropertySig` over a static accessor, whose first
-                // parameter is not an index.
+                // instance `PropertySig` over a static accessor. The
+                // projection reads the accessor, a metadata consumer the
+                // property, so that disagrees too.
                 let accessor_index = match (p.has_this, is_static) {
                     (Some(true), false) | (Some(false), true) => Some(index_params),
-                    (Some(true), true) => index_params.split_first().map(|(_, rest)| rest),
-                    (Some(false), false) | (None, _) => None,
+                    (Some(true), true) | (Some(false), false) | (None, _) => None,
                 };
                 accessor_index.is_some_and(|index_params| {
                     declared.len() == index_params.len()

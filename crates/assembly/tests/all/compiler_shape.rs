@@ -339,3 +339,53 @@ fn a_name_an_id_reads_otherwise_is_never_compiler_shaped() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Re-encoding every ordinary method's signature, or every instance
+/// property's getter, in a way C# does not write leaves no compiler-shaped
+/// member accepted, nor rejected for another reason
+/// (`borzoi_assembly::shape_metamorphic`).
+#[test]
+fn a_signature_encoding_csharp_does_not_write_is_never_compiler_shaped() {
+    use borzoi_assembly::shape_metamorphic::{ENCODINGS, reencoded_signatures_are_unshaped};
+    let dir = sdk_ref_pack_dir();
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "dll"))
+        .collect();
+    paths.sort();
+    paths.push(ensure_member_shapes_built().to_path_buf());
+    let mut failures = Vec::new();
+    for encoding in ENCODINGS {
+        let mut touched = 0;
+        let mut findings = Vec::new();
+        for path in &paths {
+            let bytes = std::fs::read(path).unwrap();
+            let Ok(outcome) = reencoded_signatures_are_unshaped(&bytes, encoding) else {
+                continue;
+            };
+            touched += outcome.retyped;
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            findings.extend(outcome.findings.into_iter().map(|f| format!("{name}: {f}")));
+        }
+        eprintln!(
+            "{encoding:?}: {touched} re-encoded, {} not rejected for it",
+            findings.len()
+        );
+        assert!(touched > 0, "{encoding:?}: the probe re-encoded nothing");
+        if !findings.is_empty() {
+            failures.push(format!(
+                "{encoding:?}: {} of {touched}, e.g.\n  {}",
+                findings.len(),
+                findings
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

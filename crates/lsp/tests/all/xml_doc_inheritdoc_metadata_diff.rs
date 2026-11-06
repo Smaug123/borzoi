@@ -2086,3 +2086,95 @@ fn a_candidate_nested_in_a_type_whose_arity_suffix_disagrees_declines() {
     );
     assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
 }
+
+/// `X`'s entry inherits through `cref` from `C`'s member documented under
+/// `member_id`, the member being `member` (and, for a property, `property`).
+fn cref_world(label: &str, members: (Vec<Value>, Vec<Value>), member_id: &str) -> Verdict {
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let (methods, properties) = members;
+    let types = vec![
+        json!({"ns": "N", "name": "G`1", "kind": "class", "base": object(&cx), "interfaces": [],
+            "methods": [], "properties": [], "generic": ["T"]}),
+        json!({"ns": "N", "name": "C", "kind": "class", "base": object(&cx), "interfaces": [],
+            "methods": methods, "properties": properties}),
+        class("N", "X", Some(object(&cx)), vec![]),
+    ];
+    let docs: Entries = vec![
+        ("T:N.C".into(), full("T:N.C")),
+        (member_id.into(), full(member_id)),
+        (
+            "T:N.X".into(),
+            vec![format!(r#"<inheritdoc cref="{member_id}"/>"#)],
+        ),
+    ];
+    lo_world(label, types, &docs, "T:N.X")
+}
+
+/// C# spells `string` by its element type; a parameter encoded as
+/// `class System.String` is outside the domain, so a `cref` to its method
+/// declines.
+#[test]
+fn a_cref_to_a_method_spelling_string_by_reference_declines() {
+    let by_reference = json!({"type": {"scope": 0, "ns": "System", "name": "String"}, "mods": []});
+    let m = method(
+        "M",
+        "public",
+        (false, false, false, false),
+        false,
+        Value::Null,
+        vec![by_reference],
+        vec![],
+    );
+    let verdict = cref_world(
+        "string by reference",
+        (vec![m], vec![]),
+        "M:N.C.M(System.String)",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
+
+/// `G<T>` constructed with two arguments in a signature is no compiler's.
+#[test]
+fn a_cref_to_a_method_constructing_with_too_many_arguments_declines() {
+    let g = json!({"type": {"inst": {"scope": -1, "ns": "N", "name": "G`1"},
+        "args": [{"prim": "I4"}, {"prim": "String"}]}, "mods": []});
+    let m = method(
+        "M",
+        "public",
+        (false, false, false, false),
+        false,
+        Value::Null,
+        vec![g],
+        vec![],
+    );
+    let verdict = cref_world(
+        "too many type arguments",
+        (vec![m], vec![]),
+        "M:N.C.M(N.G{System.Int32,System.String})",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
+
+/// An instance property over a static getter taking an `int` (F#'s shape,
+/// read as IL): the projection reads the getter's parameter as an index,
+/// Roslyn reads the property, so a `cref` to it declines.
+#[test]
+fn a_cref_to_an_instance_property_over_a_static_getter_declines() {
+    let getter = json!({
+        "name": "get_P", "access": "public", "static": true, "virtual": false, "newslot": false,
+        "abstract": false, "final": false, "specialName": true,
+        "ret": {"type": {"prim": "I4"}, "mods": []},
+        "params": [{"type": {"prim": "I4"}, "mods": []}], "impls": [],
+    });
+    let property = json!({"name": "P", "type": {"type": {"prim": "I4"}, "mods": []}, "getter": 0});
+    let verdict = cref_world(
+        "an instance property over a static getter",
+        (vec![getter], vec![property]),
+        "P:N.C.P(System.Int32)",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
