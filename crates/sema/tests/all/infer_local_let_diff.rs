@@ -63,6 +63,8 @@ struct Committed {
     tupled_functions: usize,
     /// Of `exprs`, how many sit at a whole `e1; e2` sequence.
     sequentials: usize,
+    /// Of `binders`, how many are a generated match's payload (`Some w…`).
+    match_payloads: usize,
     /// Errors FCS reported on the file — nonzero only where the caller allowed it.
     fcs_errors: usize,
 }
@@ -74,6 +76,7 @@ impl std::ops::AddAssign for Committed {
         self.local_binders += o.local_binders;
         self.pattern_locals += o.pattern_locals;
         self.tupled_functions += o.tupled_functions;
+        self.match_payloads += o.match_payloads;
         self.sequentials += o.sequentials;
         self.fcs_errors += o.fcs_errors;
     }
@@ -262,6 +265,9 @@ fn check_parsed(
         }
         if def.name.starts_with("tf") {
             c.tupled_functions += 1;
+        }
+        if def.name.starts_with('w') && def.name[1..].chars().all(|ch| ch.is_ascii_digit()) {
+            c.match_payloads += 1;
         }
     }
     Some(c)
@@ -1168,6 +1174,23 @@ impl Gen<'_> {
                 let a = self.expr(T::Int, depth - 1);
                 format!("(Some {a})")
             }
+            // A match over an option, its payload bound in the `Some` arm.
+            8 => {
+                let scrutinee = self.expr(T::Opt, depth - 1);
+                let w = self.fresh("w");
+                self.env.push(Var {
+                    name: w.clone(),
+                    kind: Kind::Mono(T::Int),
+                });
+                let some = self.expr(t, depth - 1);
+                self.env.pop();
+                let none = self.expr(t, depth - 1);
+                if self.rng.chance(50) {
+                    format!("(match {scrutinee} with Some {w} -> {some} | None -> {none})")
+                } else {
+                    format!("(match {scrutinee} with None -> {none} | Some {w} -> {some})")
+                }
+            }
             // FSharp.Core's pipes and composition, which inference types as
             // applications of their signatures.
             9..=11 if self.under_coercion => self.expr(t, depth - 1),
@@ -1440,7 +1463,8 @@ impl Gen<'_> {
 /// variable is open in every later binding), and a module-level tuple
 /// pattern binding `hp` and `hq`.
 const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet mo (o: obj) = 3\n\
-                      let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n";
+                      let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n\
+                      let ho = Some 5\n";
 
 /// The names every generated function body may use besides its parameters.
 fn header_vars() -> Vec<Var> {
@@ -1452,6 +1476,10 @@ fn header_vars() -> Vec<Var> {
         Var {
             name: "hq".into(),
             kind: Kind::Mono(T::Str),
+        },
+        Var {
+            name: "ho".into(),
+            kind: Kind::Mono(T::Opt),
         },
     ]
 }
@@ -1582,6 +1610,10 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
         total.tupled_functions >= 20,
         "the sweep committed too few functions with a tupled parameter to be evidence: {total:?}"
     );
+    assert!(
+        total.match_payloads >= 5,
+        "the sweep committed too few match payloads to be evidence: {total:?}"
+    );
 }
 
 /// The ill-typed family. Each function is a generated block, wrapped in one of
@@ -1689,6 +1721,10 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
         total.exprs + total.binders >= 120,
         "the family committed too little to be evidence: {total:?}"
     );
+    assert!(
+        total.match_payloads >= 2,
+        "the family committed too few match payloads to be evidence: {total:?}"
+    );
 }
 
 /// The ill-typed family with the open parameter annotated by a type variable
@@ -1791,6 +1827,10 @@ fn generated_ill_typed_programs_with_a_shared_type_variable_commit_only_what_fcs
     assert!(
         total.binders >= 120,
         "the family committed too few binders to be evidence: {total:?}"
+    );
+    assert!(
+        total.match_payloads >= 2,
+        "the family committed too few match payloads to be evidence: {total:?}"
     );
 }
 

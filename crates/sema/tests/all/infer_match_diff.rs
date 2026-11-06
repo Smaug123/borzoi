@@ -166,6 +166,27 @@ const MATCHES: &[(&str, &str, &str, &str, bool)] = &[
         false,
     ),
     (
+        "noBar",
+        "(o: int option)",
+        "o",
+        "Some v -> v | None -> 0",
+        true,
+    ),
+    (
+        "parenScrut",
+        "(n: int)",
+        "(Some n)",
+        "Some w1 -> w1 | None -> 2",
+        true,
+    ),
+    (
+        "noneScrut",
+        "(n: int)",
+        "None",
+        "None -> n | Some w -> w",
+        true,
+    ),
+    (
         "resultOpt",
         "(o: int option)",
         "o",

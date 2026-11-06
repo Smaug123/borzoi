@@ -861,6 +861,20 @@ enum PatShape {
     Case(UnionCaseScheme, Option<Box<PatShape>>),
 }
 
+impl PatShape {
+    /// Add every name the pattern binds to `out`.
+    fn names(&self, out: &mut HashSet<DefId>) {
+        match self {
+            PatShape::Name(def) | PatShape::Annotated(def, _) => {
+                out.insert(*def);
+            }
+            PatShape::Tuple(elems) => elems.iter().for_each(|e| e.names(out)),
+            PatShape::Case(_, Some(arg)) => arg.names(out),
+            PatShape::Wildcard | PatShape::Unit | PatShape::Const(_) | PatShape::Case(_, None) => {}
+        }
+    }
+}
+
 /// A type constraint produced by generation and discharged by the solver.
 /// `Eq` (type equality) is the eager equality; `HasMember` is the **suspended**
 /// member constraint added in Stage 3.3a, which the [`Gen::solve`] loop wakes
@@ -1240,6 +1254,11 @@ struct Gen<'a> {
     /// match. Filtered at read-off rather than cut from [`Self::exprs`], whose
     /// positions emission marks record.
     ungraded_ranges: HashSet<TextRange>,
+    /// The names the current binding's `match` patterns bind. FCS never
+    /// generalises a pattern variable, so each is this binding's own
+    /// monomorphic variable, used as a parameter is ([`Self::value_use`]):
+    /// not another binding's opaque one.
+    match_locals: HashSet<DefId>,
     /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
     guards: Vec<Guard>,
     /// The guards enclosing the current walk position, innermost last; an
@@ -1474,6 +1493,7 @@ impl<'a> Gen<'a> {
             dot_get_receivers: Vec::new(),
             incompleteness: Vec::new(),
             ungraded_ranges: HashSet::new(),
+            match_locals: HashSet::new(),
             guards: Vec::new(),
             guard_stack: Vec::new(),
             guard_on_member: HashMap::new(),
@@ -1568,6 +1588,7 @@ impl<'a> Gen<'a> {
         self.cur_body = None;
         self.poison.clear();
         self.cur_params.clear();
+        self.match_locals.clear();
         self.dropped.clear();
         self.eq_failures = 0;
         self.bounded_flex.clear();
@@ -3076,6 +3097,7 @@ impl<'a> Gen<'a> {
                             return None;
                         }
                     };
+                    shape.names(&mut self.match_locals);
                     let pt = self.gen_pattern(&shape, BinderSite::Local);
                     self.eq(Ty::Var(sv), pt);
                     if clause.guard().is_some() {
@@ -4010,7 +4032,7 @@ impl<'a> Gen<'a> {
             return self.scheme_use(&scheme);
         }
         let dv = self.def_var(def);
-        let current_param = self.is_current_param(def);
+        let current_param = self.is_current_param(def) || self.match_locals.contains(&def);
         if !current_param {
             self.poison.push(dv);
             self.opaque.push((dv, None));
