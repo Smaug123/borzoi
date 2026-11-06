@@ -31,6 +31,7 @@ mod il_type_definition;
 mod implicit_namespace_matrix;
 mod infer_annotation_entity_diff;
 mod infer_annotation_shape_gen_diff;
+mod infer_annotation_typar_diff;
 mod infer_assembly_values_diff;
 mod infer_binder_types_diff;
 mod infer_builtin_operators_diff;
