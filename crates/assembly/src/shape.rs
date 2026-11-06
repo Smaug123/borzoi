@@ -33,8 +33,9 @@ use crate::model::{
 pub enum Unshaped {
     /// The type's name or a namespace segment is empty or holds a character
     /// a documentation ID or a type name gives another meaning (`.`, `,`,
-    /// `#`, `` ` ``, brackets, whitespace), or keeps a non-canonical arity
-    /// suffix.
+    /// `#`, `` ` ``, brackets, whitespace), or its `TypeDef` name's arity
+    /// suffix is not the number of type parameters it introduces (``Z`1``
+    /// on a non-generic type, which projects as `Z`).
     TypeName,
     /// A member's name is empty or holds such a character, outside an
     /// explicit implementation's qualified name.
@@ -60,11 +61,19 @@ pub enum Unshaped {
     Accessors,
 }
 
-/// `entity`'s verdict: `Ok` when every part of it is compiler-shaped, else
-/// the first part that is not.
-pub fn compiler_shape(entity: &Entity) -> Result<(), Unshaped> {
+/// `entity`'s verdict, `enclosing` being the type it is nested in: `Ok`
+/// when every part of it is compiler-shaped, else the first part that is
+/// not.
+pub fn compiler_shape(entity: &Entity, enclosing: Option<&Entity>) -> Result<(), Unshaped> {
     let type_arity = entity.generic_parameters.len();
-    if !entity.namespace.iter().all(|s| plain_name(s)) || !plain_name(&entity.name) {
+    // A nested type's parameter list repeats its enclosing type's; the
+    // suffix counts the ones it introduces.
+    let own_arity = type_arity.checked_sub(enclosing.map_or(0, |e| e.generic_parameters.len()));
+    if !entity.namespace.iter().all(|s| plain_name(s))
+        || !plain_name(&entity.name)
+        || own_arity.is_none()
+        || entity.metadata_arity_suffix != own_arity
+    {
         return Err(Unshaped::TypeName);
     }
     let in_range = |ty: &TypeRef, method_arity: usize| vars_in_range(ty, type_arity, method_arity);

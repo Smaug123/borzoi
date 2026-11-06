@@ -44,13 +44,13 @@
 use std::sync::Arc;
 
 use borzoi_assembly::doc_id::{demangle_segment, type_enc};
-use borzoi_assembly::shape::{Unshaped, compiler_shape};
+use borzoi_assembly::shape::Unshaped;
 use borzoi_assembly::{Access, Member, Primitive, TypeRef};
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
 
 use super::candidate::{
     Candidate, Instantiation, NoCandidate, ParameterSlot, Reached, Undecidable, candidate,
-    il_faithful, inherits_automatically, type_parameters_in_scope,
+    il_faithful, inherits_automatically, shape_of, type_parameters_in_scope,
 };
 use super::key::{DocIdIndex, DocTarget, type_name};
 use super::lookup::{DocLookup, DocSources, Located, xml_path_for};
@@ -142,10 +142,11 @@ pub enum CrefMiss {
     /// implementation's arguments (`` F#I{System#Int32}#M ``, the ID the
     /// compiler writes but one the lookup does not bind).
     UnspellableName,
-    /// A type enclosing the bound symbol, or one of its parent's ID, is not
-    /// compiler-shaped ([`borzoi_assembly::shape::compiler_shape`]): a raw
-    /// name a documentation ID reads otherwise (a literal `Odd#ame`), or
-    /// metadata no compiler writes.
+    /// A type enclosing the bound symbol, one of its parent's ID, or one its
+    /// signature spells, is not compiler-shaped
+    /// ([`borzoi_assembly::shape::compiler_shape`]): a raw name a
+    /// documentation ID reads otherwise (a literal `Odd#ame`, `Odd.Type`,
+    /// ``Z`1`` without a type parameter), or metadata no compiler writes.
     Unshaped(Unshaped),
     /// A type the member's signature spells has an ID more than one type
     /// carries: Roslyn's declaration-ID lookup resolves the spelling over the
@@ -236,9 +237,7 @@ pub fn expand(
         .enclosing_chain_from_root(start.owner())
         .unwrap_or_default();
     if chain.iter().all(|&h| il_faithful(env, h))
-        && let Some(why) = chain
-            .iter()
-            .find_map(|&h| compiler_shape(env.entity(h)).err())
+        && let Some(why) = chain.iter().find_map(|&h| shape_of(env, h).err())
     {
         return Expansion {
             member: entry.member,
@@ -554,7 +553,7 @@ impl Walk<'_> {
             touched.extend(env.enclosing_chain_from_root(s.owner()).unwrap_or_default());
         }
         for h in touched {
-            compiler_shape(env.entity(h)).map_err(|why| Decline::Cref(CrefMiss::Unshaped(why)))?;
+            shape_of(env, h).map_err(|why| Decline::Cref(CrefMiss::Unshaped(why)))?;
         }
         if let DocTarget::Member { parent, idx } = target {
             let member = env.member_at(parent, idx);
@@ -590,6 +589,12 @@ impl Walk<'_> {
                 .all(|t| spelled_uniquely(env, &index, parent, t))
             {
                 return Err(Decline::Cref(CrefMiss::AmbiguousSignatureType));
+            }
+            // The types the ID spells are read too, and a raw name the ID
+            // reads otherwise (`F.Odd.Type`) is outside what this certifies.
+            for t in &types {
+                shaped_throughout(env, parent, t)
+                    .map_err(|why| Decline::Cref(CrefMiss::Unshaped(why)))?;
             }
         }
         Ok(Reached::definition(env, target))
@@ -683,6 +688,30 @@ fn is_type_id_char(c: char) -> bool {
 /// `N#I#M`).
 fn is_member_id_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '`' | '#')
+}
+
+/// Whether every type definition `ty` names (written in `from`'s metadata),
+/// and every type enclosing one, is compiler-shaped.
+fn shaped_throughout(env: &AssemblyEnv, from: EntityHandle, ty: &TypeRef) -> Result<(), Unshaped> {
+    match ty {
+        TypeRef::Named { type_args, .. } => {
+            if let IlTypeDefinition::Resolved(def) =
+                super::candidate::roslyn_type_definition(env, from, ty)
+            {
+                for h in env.enclosing_chain(def) {
+                    shape_of(env, h)?;
+                }
+            }
+            type_args
+                .iter()
+                .try_for_each(|a| shaped_throughout(env, from, &a.ty))
+        }
+        TypeRef::Array { element, .. } => shaped_throughout(env, from, &element.ty),
+        TypeRef::Ptr(Some(inner)) | TypeRef::ByRef { inner, .. } => {
+            shaped_throughout(env, from, inner)
+        }
+        TypeRef::Primitive(_) | TypeRef::Ptr(None) | TypeRef::Var { .. } => Ok(()),
+    }
 }
 
 /// Whether every named type and primitive in `ty` (written in `from`'s

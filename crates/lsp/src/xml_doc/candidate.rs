@@ -396,7 +396,14 @@ fn certified(env: &AssemblyEnv, handle: EntityHandle) -> Result<(), Undecidable>
     if !il_faithful(env, handle) {
         return Err(Undecidable::NotIl);
     }
-    compiler_shape(env.entity(handle)).map_err(Undecidable::Unshaped)
+    shape_of(env, handle).map_err(Undecidable::Unshaped)
+}
+
+/// [`compiler_shape`] of `handle`, judged with the type it is nested in.
+pub(crate) fn shape_of(env: &AssemblyEnv, handle: EntityHandle) -> Result<(), Unshaped> {
+    let chain = env.enclosing_chain(handle);
+    let enclosing = chain.len().checked_sub(2).map(|i| env.entity(chain[i]));
+    compiler_shape(env.entity(handle), enclosing)
 }
 
 /// Whether `handle` is read here as the IL a metadata consumer reads: an

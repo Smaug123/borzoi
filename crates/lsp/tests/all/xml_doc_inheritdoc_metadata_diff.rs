@@ -1949,3 +1949,70 @@ fn a_method_type_parameter_its_method_lacks_declines() {
     );
     assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
 }
+
+/// A type named with a literal dot (`Odd.Type`, in namespace `F`) spells
+/// the ID `F.Odd.Type`, which Roslyn's declaration-ID lookup reads as a
+/// nested type: a `cref` naming a member whose signature takes it declines.
+#[test]
+fn a_cref_through_a_signature_type_named_with_a_dot_declines() {
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let odd = json!({"type": {"scope": -1, "ns": "F", "name": "Odd.Type"}, "mods": []});
+    let m = method(
+        "M",
+        "public",
+        (false, false, false, false),
+        false,
+        Value::Null,
+        vec![odd],
+        vec![],
+    );
+    let types = vec![
+        class("F", "Odd.Type", Some(object(&cx)), vec![]),
+        class("F", "B", Some(object(&cx)), vec![m]),
+        class("F", "X", Some(object(&cx)), vec![]),
+    ];
+    let docs: Entries = vec![
+        ("T:F.B".into(), full("T:F.B")),
+        ("M:F.B.M(F.Odd.Type)".into(), full("M:F.B.M(F.Odd.Type)")),
+        (
+            "T:F.X".into(),
+            vec![r#"<inheritdoc cref="M:F.B.M(F.Odd.Type)"/>"#.to_string()],
+        ),
+    ];
+    let verdict = lo_world("a signature type named with a dot", types, &docs, "T:F.X");
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
+
+/// A non-generic type named ``Z`1`` projects as `Z`; its ID is `T:F.Z` to
+/// us but not to Roslyn, which reads the suffix as an arity. A `cref` to
+/// `T:F.Z` declines.
+#[test]
+fn a_cref_to_a_type_whose_arity_suffix_disagrees_declines() {
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let types = vec![
+        class("F", "Z`1", Some(object(&cx)), vec![]),
+        class("F", "X", Some(object(&cx)), vec![]),
+    ];
+    let docs: Entries = vec![
+        ("T:F.Z".into(), full("T:F.Z")),
+        (
+            "T:F.X".into(),
+            vec![r#"<inheritdoc cref="T:F.Z"/>"#.to_string()],
+        ),
+    ];
+    let verdict = lo_world(
+        "an arity suffix disagreeing with the arity",
+        types,
+        &docs,
+        "T:F.X",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}

@@ -24,18 +24,23 @@ fn unshaped(path: &Path) -> (Vec<(String, Unshaped)>, usize) {
     let Ok(entities) = view.enumerate_type_defs() else {
         return (Vec::new(), 0);
     };
-    fn walk(e: &Entity, out: &mut Vec<(String, Unshaped)>, n: &mut usize) {
+    fn walk(
+        e: &Entity,
+        enclosing: Option<&Entity>,
+        out: &mut Vec<(String, Unshaped)>,
+        n: &mut usize,
+    ) {
         *n += 1;
-        if let Err(why) = compiler_shape(e) {
+        if let Err(why) = compiler_shape(e, enclosing) {
             out.push((format!("{}.{}", e.namespace.join("."), e.name), why));
         }
         for nested in &e.nested_types {
-            walk(nested, out, n);
+            walk(nested, Some(e), out, n);
         }
     }
     let (mut out, mut n) = (Vec::new(), 0);
     for e in &entities {
-        walk(e, &mut out, &mut n);
+        walk(e, None, &mut out, &mut n);
     }
     (out, n)
 }
@@ -147,16 +152,20 @@ fn package_cache_shape_census() {
             continue;
         };
         read += 1;
-        fn walk(e: &Entity, f: &mut dyn FnMut(&Entity)) {
-            f(e);
+        fn walk(
+            e: &Entity,
+            enclosing: Option<&Entity>,
+            f: &mut dyn FnMut(&Entity, Option<&Entity>),
+        ) {
+            f(e, enclosing);
             for n in &e.nested_types {
-                walk(n, f);
+                walk(n, Some(e), f);
             }
         }
         for e in &entities {
-            walk(e, &mut |e| {
+            walk(e, None, &mut |e, enclosing| {
                 types += 1;
-                let Err(why) = compiler_shape(e) else {
+                let Err(why) = compiler_shape(e, enclosing) else {
                     return;
                 };
                 let package = path
@@ -173,7 +182,7 @@ fn package_cache_shape_census() {
                         .find(|m| {
                             let mut one = e.clone();
                             one.members = vec![(*m).clone()];
-                            compiler_shape(&one).is_err()
+                            compiler_shape(&one, enclosing).is_err()
                         })
                         .map(|m| match m {
                             borzoi_assembly::Member::Method(m) => m.name.clone(),
@@ -193,7 +202,7 @@ fn package_cache_shape_census() {
                         .find(|m| {
                             let mut one = e.clone();
                             one.members = vec![(*m).clone()];
-                            compiler_shape(&one).is_err()
+                            compiler_shape(&one, enclosing).is_err()
                         })
                         .map(|m| format!("{m:?}").chars().take(160).collect::<String>())
                         .unwrap_or_default();
@@ -233,10 +242,10 @@ fn package_cache_shape_census() {
 
 /// Retyping any one accessor position of every property and event in the
 /// reference pack and in csc output leaves no bindable member that was
-/// compiler-shaped still shaped (`borzoi_assembly::accessor_metamorphic`).
+/// compiler-shaped still shaped (`borzoi_assembly::shape_metamorphic`).
 #[test]
 fn a_retyped_accessor_is_never_compiler_shaped() {
-    use borzoi_assembly::accessor_metamorphic::{POSITIONS, retyped_accessors_are_unshaped};
+    use borzoi_assembly::shape_metamorphic::{POSITIONS, retyped_accessors_are_unshaped};
     let dir = sdk_ref_pack_dir();
     let mut paths: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
@@ -252,7 +261,7 @@ fn a_retyped_accessor_is_never_compiler_shaped() {
         let mut findings = Vec::new();
         for path in &paths {
             let bytes = std::fs::read(path).unwrap();
-            let Ok(outcome) = borzoi_assembly::accessor_metamorphic::retyped_accessors_are_unshaped(
+            let Ok(outcome) = borzoi_assembly::shape_metamorphic::retyped_accessors_are_unshaped(
                 &bytes, position,
             ) else {
                 continue;
@@ -279,5 +288,54 @@ fn a_retyped_accessor_is_never_compiler_shaped() {
         }
     }
     let _ = retyped_accessors_are_unshaped;
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Renaming every type, or every ordinary method, in a way a documentation
+/// ID reads otherwise leaves no compiler-shaped type accepted, nor rejected
+/// for another reason (`borzoi_assembly::shape_metamorphic`).
+#[test]
+fn a_name_an_id_reads_otherwise_is_never_compiler_shaped() {
+    use borzoi_assembly::shape_metamorphic::{RENAMES, renamed_names_are_unshaped};
+    let dir = sdk_ref_pack_dir();
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "dll"))
+        .collect();
+    paths.sort();
+    paths.push(ensure_member_shapes_built().to_path_buf());
+    let mut failures = Vec::new();
+    for rename in RENAMES {
+        let mut renamed = 0;
+        let mut findings = Vec::new();
+        for path in &paths {
+            let bytes = std::fs::read(path).unwrap();
+            let Ok(outcome) = renamed_names_are_unshaped(&bytes, rename) else {
+                continue;
+            };
+            renamed += outcome.retyped;
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            findings.extend(outcome.findings.into_iter().map(|f| format!("{name}: {f}")));
+        }
+        eprintln!(
+            "{rename:?}: {renamed} renamed, {} not rejected for it",
+            findings.len()
+        );
+        assert!(renamed > 0, "{rename:?}: the probe renamed nothing");
+        if !findings.is_empty() {
+            failures.push(format!(
+                "{rename:?}: {} of {renamed}, e.g.\n  {}",
+                findings.len(),
+                findings
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            ));
+        }
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

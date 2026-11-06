@@ -1,6 +1,7 @@
-//! [`compiler_shape`]'s accessor rules, checked
-//! as a metamorphic property over real assemblies.
+//! [`compiler_shape`]'s accessor and name rules, checked as metamorphic
+//! properties over real assemblies.
 //!
+//! **Accessors.**
 //! C# writes a property's getter as `(index…) → T`, its setter as
 //! `(index…, T) → void`, and an event's adder and remover as
 //! `(D) → void`, for the property's type `T` and the event's delegate `D`.
@@ -15,9 +16,17 @@
 //! member's rejection cannot hide another's acceptance, and each position is
 //! retyped in a pass of its own, so a check on one position cannot stand in
 //! for a missing check on another.
+//!
+//! **Names.** A documentation ID reads a dot in a type's name as nesting, a
+//! backtick suffix as an arity, and a `#` or backtick in a member's name as
+//! syntax. Rename every type, or every ordinary method, one such way
+//! ([`Rename`]) and re-project: each type that was compiler-shaped must now be
+//! rejected, and for exactly the renamed part. The projection is where this
+//! can fail unseen — a name it normalises (an arity suffix it strips) never
+//! reaches the predicate's character rules.
 
 use crate::reader::{Image, Method, ModifiedType, Primitive, RetType, TypeSig};
-use crate::shape::{bindable, compiler_shape};
+use crate::shape::{Unshaped, bindable, compiler_shape};
 use crate::{Ecma335Assembly, EcmaView, Entity, ImportError, Member};
 
 /// One accessor position, retyped.
@@ -79,15 +88,16 @@ pub fn retyped_accessors_are_unshaped(
         retyped: 0,
         findings: Vec::new(),
     };
-    for before in &baseline {
-        let Some(after) = retyped.iter().find(|e| same_type(e, before)) else {
+    for (before, enclosing) in &baseline {
+        let enclosing = enclosing.as_ref();
+        let Some((after, _)) = retyped.iter().find(|(e, _)| same_type(e, before)) else {
             continue;
         };
         for (i, member) in before.members.iter().enumerate().filter(|(_, m)| {
             matches!(m, Member::Property(_) | Member::Event(_))
                 && bindable(m)
                 && has_position(m, position)
-                && compiler_shape(&alone(before, m)).is_ok()
+                && compiler_shape(&alone(before, m), enclosing).is_ok()
         }) {
             outcome.retyped += 1;
             // Overloads share a name (two indexers `Item`): match the same
@@ -98,7 +108,7 @@ pub fn retyped_accessors_are_unshaped(
             let Some(now) = after.members.iter().filter(namesake).nth(occurrence) else {
                 continue;
             };
-            if compiler_shape(&alone(after, now)).is_ok() {
+            if compiler_shape(&alone(after, now), enclosing).is_ok() {
                 outcome.findings.push(format!(
                     "{}.{}: still compiler-shaped with its {position:?} retyped",
                     qualified(before),
@@ -214,24 +224,41 @@ fn qualified(e: &Entity) -> String {
     format!("{}.{}", e.namespace.join("."), e.name)
 }
 
-fn flatten(entities: &[Entity]) -> Vec<Entity> {
-    fn walk(e: &Entity, prefix: Option<&str>, out: &mut Vec<Entity>) {
+/// Every type, nested ones under their enclosing types' names, each with
+/// the type it is nested in.
+fn flatten(entities: &[Entity]) -> Vec<(Entity, Option<Entity>)> {
+    fn walk(
+        e: &Entity,
+        prefix: Option<&str>,
+        enclosing: Option<&Entity>,
+        out: &mut Vec<(Entity, Option<Entity>)>,
+    ) {
         let mut named = e.clone();
         if let Some(p) = prefix {
             named.namespace = Vec::new();
             named.name = format!("{p}+{}", e.name);
         }
         let key = qualified(&named);
-        out.push(named);
+        named.nested_types = Vec::new();
+        out.push((named, enclosing.map(alone_shell)));
         for n in &e.nested_types {
-            walk(n, Some(key.trim_start_matches('.')), out);
+            walk(n, Some(key.trim_start_matches('.')), Some(e), out);
         }
     }
     let mut out = Vec::new();
     for e in entities {
-        walk(e, None, &mut out);
+        walk(e, None, None, &mut out);
     }
     out
+}
+
+/// `e` without members or nested types: all an enclosing type contributes
+/// to its nested type's verdict is its type parameters.
+fn alone_shell(e: &Entity) -> Entity {
+    let mut shell = e.clone();
+    shell.members = Vec::new();
+    shell.nested_types = Vec::new();
+    shell
 }
 
 fn same_type(a: &Entity, b: &Entity) -> bool {
@@ -257,4 +284,145 @@ fn member_name(m: &Member) -> &str {
 
 fn same_kind(a: &Member, b: &Member) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// One way to rename types or methods so that a documentation ID reads the
+/// name otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rename {
+    /// A dot inside every type's name (`Foo` → `F.oo`).
+    DotInTypeName,
+    /// Every type's arity suffix one more than its own arity (`Foo` →
+    /// ``Foo`1``, ``List`1`` → ``List`2``).
+    WrongAritySuffix,
+    // Neither applies to a core library: renaming `System.Object` or a
+    // marker attribute the projector reads (`IsByRefLikeAttribute`, …)
+    // changes how other types project, which is another property than this
+    // one.
+    /// A `#` inside every ordinary method's name.
+    HashInMethodName,
+    /// A backtick inside every ordinary method's name.
+    BacktickInMethodName,
+}
+
+pub const RENAMES: [Rename; 4] = [
+    Rename::DotInTypeName,
+    Rename::WrongAritySuffix,
+    Rename::HashInMethodName,
+    Rename::BacktickInMethodName,
+];
+
+/// Apply `rename` to the assembly in `bytes` and report each type that was
+/// compiler-shaped and is not now rejected for the renamed part. A type
+/// rename must make every such type [`Unshaped::TypeName`]; a method rename
+/// every such type with a bindable ordinary method [`Unshaped::MemberName`].
+pub fn renamed_names_are_unshaped(
+    bytes: &[u8],
+    rename: Rename,
+) -> Result<AccessorOutcome, ImportError> {
+    let baseline_asm = Ecma335Assembly::parse(bytes)?;
+    let baseline = flatten(&baseline_asm.enumerate_type_defs()?);
+    let renames_types = matches!(rename, Rename::DotInTypeName | Rename::WrongAritySuffix);
+    if renames_types
+        && baseline
+            .iter()
+            .any(|(e, _)| e.namespace == ["System"] && e.name == "Object")
+    {
+        return Ok(AccessorOutcome {
+            retyped: 0,
+            findings: Vec::new(),
+        });
+    }
+    let mut renamed_asm = baseline_asm.clone();
+    apply(renamed_asm.image_mut(), rename);
+    let renamed = flatten(&renamed_asm.enumerate_type_defs()?);
+    let mut outcome = AccessorOutcome {
+        retyped: 0,
+        findings: Vec::new(),
+    };
+    if baseline.len() != renamed.len() {
+        outcome.findings.push(format!(
+            "{rename:?}: the type count moved: {} -> {}",
+            baseline.len(),
+            renamed.len()
+        ));
+        return Ok(outcome);
+    }
+    let want = match rename {
+        Rename::DotInTypeName | Rename::WrongAritySuffix => Unshaped::TypeName,
+        Rename::HashInMethodName | Rename::BacktickInMethodName => Unshaped::MemberName,
+    };
+    for ((before, enclosing), (after, renamed_enclosing)) in baseline.iter().zip(&renamed) {
+        if compiler_shape(before, enclosing.as_ref()).is_err() {
+            continue;
+        }
+        let affected = match want {
+            Unshaped::MemberName => before.members.iter().any(|m| {
+                matches!(m, Member::Method(method) if !method.is_constructor) && bindable(m)
+            }),
+            _ => true,
+        };
+        if !affected {
+            continue;
+        }
+        outcome.retyped += 1;
+        let verdict = compiler_shape(after, renamed_enclosing.as_ref());
+        if verdict != Err(want) {
+            outcome.findings.push(format!(
+                "{} (now {}.{}): {verdict:?} after {rename:?}, want {want:?}",
+                qualified(before),
+                after.namespace.join("."),
+                after.name
+            ));
+        }
+    }
+    Ok(outcome)
+}
+
+fn apply(image: &mut Image, rename: Rename) {
+    // Row 0 is `<Module>`, which no consumer reads as a type.
+    let arities: Vec<usize> = (0..image.type_defs.len())
+        .map(|i| {
+            let td = &image.type_defs[i];
+            let outer = td
+                .enclosing
+                .map_or(0, |e| image.type_defs[e.0 as usize].generic_params.len());
+            td.generic_params.len().saturating_sub(outer)
+        })
+        .collect();
+    for (i, td) in image.type_defs.iter_mut().enumerate().skip(1) {
+        match rename {
+            Rename::DotInTypeName => {
+                let name = &td.name.name;
+                let at = name.chars().next().map_or(0, char::len_utf8);
+                td.name.name = format!("{}.{}", &name[..at], &name[at..]);
+            }
+            Rename::WrongAritySuffix => {
+                let bare = crate::ecma335_assembly::strip_arity(&td.name.name).to_string();
+                td.name.name = format!("{bare}`{}", arities[i] + 1);
+            }
+            Rename::HashInMethodName | Rename::BacktickInMethodName => {
+                let accessors: Vec<u32> = td
+                    .properties
+                    .iter()
+                    .flat_map(|p| [p.getter, p.setter])
+                    .chain(td.events.iter().flat_map(|e| [e.add, e.remove, e.raise]))
+                    .flatten()
+                    .map(|id| id.0)
+                    .collect();
+                let mark = if rename == Rename::HashInMethodName {
+                    '#'
+                } else {
+                    '`'
+                };
+                for (k, m) in td.methods.iter_mut().enumerate() {
+                    if accessors.contains(&(k as u32)) || m.name.starts_with('.') {
+                        continue;
+                    }
+                    let at = m.name.chars().next().map_or(0, char::len_utf8);
+                    m.name = format!("{}{mark}{}", &m.name[..at], &m.name[at..]);
+                }
+            }
+        }
+    }
 }
