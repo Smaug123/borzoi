@@ -188,8 +188,20 @@ const MATCHES: &[(&str, &str, &str, &str, bool)] = &[
     ),
     // A guard fixes an unannotated parameter to `bool`, and an unmodelled
     // guard (`g v`) constrains what it calls.
-    ("guardOpenParam", "(o: int option) b", "o", "| Some v when b -> v | _ -> 0", true),
-    ("guardCall", "(o: int option) g", "o", "| Some v when g v -> v | _ -> 0", false),
+    (
+        "guardOpenParam",
+        "(o: int option) b",
+        "o",
+        "| Some v when b -> v | _ -> 0",
+        true,
+    ),
+    (
+        "guardCall",
+        "(o: int option) g",
+        "o",
+        "| Some v when g v -> v | _ -> 0",
+        false,
+    ),
     (
         "resultOpt",
         "(o: int option)",

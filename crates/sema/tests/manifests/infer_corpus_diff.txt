@@ -41,6 +41,7 @@ src/Compiler/AbstractIL/ilsign.fs:62:26-62:47 expr	agree
 src/Compiler/AbstractIL/ilsign.fs:62:9-62:23 binder	agree
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs	compared
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:163:13-164:22 unconverted-decl	"|IsSimpleOrBoundExpr|_|"
+src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:165:15-165:19 expr	unconverted ours="System.Boolean"
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:31:5-56:37 unconverted-decl	"GroupUpdatesToNestedFields"
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:61:5-61:120 unconverted-decl	"TransformAstForNestedUpdates"
 src/Compiler/Checking/OverloadResolutionCache.fs	compared
@@ -82,6 +83,8 @@ src/Compiler/Driver/CreateILModule.fs:359:39-359:87 expr	agree
 src/Compiler/Driver/CreateILModule.fs:41:9-42:40 unconverted-decl	"TryFindIntAttribute"
 src/Compiler/Driver/CreateILModule.fs:49:9-50:40 unconverted-decl	"TryFindBoolAttribute"
 src/Compiler/Driver/CreateILModule.fs:58:26-58:39 binder	agree
+src/Compiler/Driver/CreateILModule.fs:654:13-654:22 binder	agree
+src/Compiler/Driver/CreateILModule.fs:656:23-656:34 expr	agree
 src/Compiler/Driver/XmlDocFileWriter.fs	compared
 src/Compiler/Driver/XmlDocFileWriter.fs:15:32-15:47 expr	agree
 src/Compiler/Facilities/prim-lexing.fs	compared
@@ -123,6 +126,9 @@ src/Compiler/Service/QuickParse.fs:457:13-457:18 expr	agree
 src/Compiler/Service/QuickParse.fs:58:33-58:42 binder	agree
 src/Compiler/Service/QuickParse.fs:58:53-58:61 binder	agree
 src/Compiler/Service/QuickParse.fs:73:43-73:47 binder	agree
+src/Compiler/Service/QuickParse.fs:76:15-76:42 expr	agree
+src/Compiler/Service/QuickParse.fs:76:44-76:71 expr	agree
+src/Compiler/Service/QuickParse.fs:76:73-76:98 expr	agree
 src/Compiler/Service/QuickParse.fs:81:45-81:52 binder	agree
 src/Compiler/Service/QuickParse.fs:81:63-81:68 binder	agree
 src/Compiler/Service/QuickParse.fs:81:9-81:43 binder	agree
@@ -259,6 +265,7 @@ src/Compiler/Utilities/sformat.fs:570:24-570:29 expr	agree
 src/Compiler/Utilities/sformat.fs:631:18-631:21 expr	agree
 src/Compiler/Utilities/sformat.fs:631:9-631:15 binder	agree
 src/Compiler/Utilities/sformat.fs:758:22-758:23 expr	agree
+src/Compiler/Utilities/sformat.fs:917:31-917:37 expr	agree
 src/Compiler/Utilities/sformat.fs:975:9-977:66 expr	agree
 src/FSharp.Build/SubstituteText.fs	compared
 src/FSharp.Core/Linq.fs	compared
@@ -1918,6 +1925,8 @@ tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/And/andPattern0
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/ConsList/E_consPattern01.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/ConsList/E_consPattern01.fs:12:12-12:13 binder	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs	compared
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs:12:11-12:15 expr	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/DynamicTypeTest/Regression01.fs:18:22-18:26 expr	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Expression/NoCounterExampleTryWith01.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/AsHighOrderFunc01.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/AsHighOrderFunc01.fs:7:19-7:20 binder	agree
@@ -1944,12 +1953,25 @@ tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Named/activePat
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:14:20-14:29 binder	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:14:48-14:56 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:17:42-17:46 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:17:51-17:55 expr	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:17:9-17:13 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:18:40-18:43 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:18:48-18:51 expr	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:18:9-18:12 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:20:11-20:20 expr	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:20:22-20:30 expr	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Record/structRecordPatterns02.fs:21:24-21:29 expr	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns01.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns01.fs:6:13-6:15 expr	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns01.fs:6:9-6:10 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns01.fs:8:7-8:8 binder	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Simple/simplePatterns14.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/MatchNaN.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/type_int.fs	compared
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/type_int.fs:6:12-6:13 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/type_int.fs:6:5-6:11 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/type_int.fs:8:14-8:18 expr	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Tuple/W_IncompleteMatches01.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/E_UnionPattern05.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/unionPattern04.fs	compared
@@ -2041,6 +2063,8 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs	compare
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:13:9-13:10 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:15-18:16 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:9-18:10 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:19:11-19:12 expr	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:19:13-19:14 expr	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/MethodImplAttribute/MethodImplAttribute.NoInlining_InlineKeyword.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/EqualsOnUnions01.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/NonEscapingArguments02.fs	compared
@@ -2402,6 +2426,8 @@ tests/fsharp/core/topinit/lib_deterministic_init45.fs:4:5-4:6 binder	agree
 tests/fsharp/core/topinit/lib_deterministic_init45.fs:4:9-4:10 expr	agree
 tests/fsharp/core/topinit/lib_deterministic_init45.fs:5:5-5:6 binder	agree
 tests/fsharp/core/topinit/lib_deterministic_init45.fs:5:9-5:13 expr	agree
+tests/fsharp/core/topinit/lib_deterministic_init45.fs:8:30-8:31 expr	agree
+tests/fsharp/core/topinit/lib_deterministic_init45.fs:8:5-8:6 binder	agree
 tests/fsharp/core/topinit/lib_deterministic_init57.fs	compared
 tests/fsharp/core/topinit/lib_deterministic_init57.fs:10:13-10:22 binder	agree
 tests/fsharp/core/topinit/lib_deterministic_init57.fs:10:25-10:26 expr	agree

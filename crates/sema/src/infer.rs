@@ -728,7 +728,7 @@ pub enum Incomplete {
     /// `(obj -> 'a) -> 'b -> 'a` in FCS. Its variables are poisoned.
     LoosenedUse,
     /// A use of a referenced assembly's union case whose F# type is not read
-    /// off its maker, and why ([`union_case_scheme`]).
+    /// off its maker, and why (`function_ty::union_case_scheme`).
     AssemblyCase(FunctionTyGap),
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
