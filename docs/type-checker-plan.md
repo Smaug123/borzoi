@@ -435,6 +435,9 @@ in [`sema-phase3-impl-plan.md`](sema-phase3-impl-plan.md)):
 - **Project-type annotations** — `Ty::Project` (a project type by FCS's path
   and arity) and the bridge from an in-file type's annotation to it, plus
   FSharp.Core's applied abbreviations read through to their target.
+- **Earlier files' types** — a bare type name binds the type an earlier file
+  declares in the enclosing namespace where that is FCS's answer, and its
+  annotation types as that type's `Ty::Project`.
 - **3.x-inh** (#735) — member inheritance: a base-chain walk lets inherited fields,
   properties, and single-candidate methods type and resolve to their declaring base
   entity. Dot-completion remains exact-entity-only (no inherited members).
