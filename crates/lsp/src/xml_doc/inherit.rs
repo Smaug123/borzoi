@@ -159,11 +159,13 @@ pub enum CrefMiss {
     /// The ID may be a property's or event's accessor's, which Roslyn binds
     /// as a method of its own and the model has no target for.
     MaybeAccessor,
-    /// The ID names a property with parameters other than C#'s ordinary
-    /// indexer (named `Item`, its type's default member). Roslyn's lookup
-    /// reads the name `Item` as "an indexer" and any other name as a
-    /// non-indexer's, so an indexer's own ID under another name
-    /// (`[IndexerName("Foo")]`, an explicit `I.this[]`) binds nothing.
+    /// The ID names a property that is neither C#'s ordinary indexer
+    /// (named `Item`, its type's default member) nor a parameterless
+    /// property named otherwise. Roslyn's lookup reads a property's name
+    /// `Item` as "an indexer" and any other name as a non-indexer's, so an
+    /// indexer's own ID under another name (`[IndexerName("Foo")]`, an
+    /// explicit `I.this[]`) binds nothing, and nor does a plain property
+    /// named `Item`.
     NotTheIndexer,
     /// Some referenced DLL could not be read at all, and may declare a symbol
     /// of the ID too.
@@ -565,13 +567,15 @@ impl Walk<'_> {
             if matches!(member, Member::Method(m) if m.module_value.is_some()) {
                 return Err(Decline::Cref(CrefMiss::NotIl));
             }
-            if let Member::Property(p) = member
-                && !p.parameters.is_empty()
-                && !(p.name == "Item"
+            if let Member::Property(p) = member {
+                let indexer = !p.parameters.is_empty();
+                let the_indexer = indexer
+                    && p.name == "Item"
                     && matches!(&env.entity(parent).default_member,
-                        Some(DefaultMember::Named(n)) if n == "Item"))
-            {
-                return Err(Decline::Cref(CrefMiss::NotTheIndexer));
+                        Some(DefaultMember::Named(n)) if n == "Item");
+                if (indexer || p.name == "Item") && !the_indexer {
+                    return Err(Decline::Cref(CrefMiss::NotTheIndexer));
+                }
             }
             // A member dropped from any type of the parent's ID — in this
             // assembly or another — may carry the ID too, under a name its

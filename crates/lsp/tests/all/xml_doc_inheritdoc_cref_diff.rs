@@ -137,6 +137,9 @@ enum Member {
     NamedIndexer,
     /// An explicit implementation of `II.this[int]`.
     ExplicitIndexer,
+    /// `int Item { get; }`, a property whose name Roslyn's lookup reads as
+    /// an indexer's.
+    ItemProperty,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +222,7 @@ fn member() -> impl Strategy<Value = Member> {
         1 => Just(Member::Indexer),
         1 => Just(Member::NamedIndexer),
         1 => Just(Member::ExplicitIndexer),
+        1 => Just(Member::ItemProperty),
     ]
 }
 
@@ -326,6 +330,10 @@ fn members_source(members: &[Member], tag: &str, out: &mut String) {
                      public int this[int i] => 0;\n",
                 );
             }
+            Member::ItemProperty => {
+                doc(out, "Item");
+                out.push_str("public int Item => 0;\n");
+            }
             Member::ExplicitIndexer => {
                 doc(out, "II.this[int]");
                 out.push_str("int F.II.this[int i] => 0;\n");
@@ -406,6 +414,10 @@ fn dep_source(dep: &DepSpec, index: usize) -> Option<String> {
             .iter()
             .any(|m| matches!(m, Member::Indexer | Member::NamedIndexer));
         if has_indexer && t.attr == Attr::DefaultMemberNull {
+            return None;
+        }
+        // An indexer named `Item` reserves the name (CS0102).
+        if t.members.contains(&Member::Indexer) && t.members.contains(&Member::ItemProperty) {
             return None;
         }
         let attr = match t.attr {
@@ -616,6 +628,7 @@ fn the_cref_generator_reaches_every_dimension() {
         Dim::Member(Member::Indexer),
         Dim::Member(Member::NamedIndexer),
         Dim::Member(Member::ExplicitIndexer),
+        Dim::Member(Member::ItemProperty),
     ];
     every.extend(
         [

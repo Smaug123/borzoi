@@ -2937,7 +2937,10 @@ public class C : I
 /// C#'s ordinary indexer (`Item`, its type's default member) is certified:
 /// `P:N.J.Item(System.Int32)` names no indexer of `J`'s, and an explicit
 /// implementation's (`P:N.E.N#I#Item(System.Int32)`) is not that shape, so
-/// both decline too, whatever Roslyn binds. (Roslyn cannot look up
+/// both decline too, whatever Roslyn binds. Roslyn reads a property's name
+/// `Item` as an indexer's even without parameters, so `P:N.B.Item` binds
+/// nothing either and declines; a field or method named `Item` is not read
+/// so, and expands. (Roslyn cannot look up
 /// `P:N.K.Foo(System.Int32)` as a start either, so this harness, which
 /// starts from an ID, cannot reach an implicit `<inheritdoc/>` on one.)
 #[test]
@@ -2965,10 +2968,37 @@ public class E : I
     int I.this[int i] => 0;
 }
 
+public class B
+{
+    /// <summary>B's property.</summary>
+    public int Item { get; set; }
+}
+
+public class BF
+{
+    /// <summary>BF's field.</summary>
+    public int Item;
+}
+
+public class BM
+{
+    /// <summary>BM's method.</summary>
+    public void Item() { }
+}
+
 public class X
 {
     /// <inheritdoc cref="P:N.I.Item(System.Int32)"/>
     public void A() { }
+
+    /// <inheritdoc cref="P:N.B.Item"/>
+    public void PropertyItem() { }
+
+    /// <inheritdoc cref="F:N.BF.Item"/>
+    public void FieldItem() { }
+
+    /// <inheritdoc cref="M:N.BM.Item"/>
+    public void MethodItem() { }
 
     /// <inheritdoc cref="P:N.J.Foo(System.Int32)"/>
     public void B() { }
@@ -2989,10 +3019,12 @@ public class X
     census.assert_sound();
     let v = verdicts(&compared);
     let mut wrong = Vec::new();
-    if !matches!(v.get("M:N.X.A"), Some(Verdict::Agrees)) {
-        wrong.push(format!("M:N.X.A should expand: {:?}", v.get("M:N.X.A")));
+    for key in ["M:N.X.A", "M:N.X.FieldItem", "M:N.X.MethodItem"] {
+        if !matches!(v.get(key), Some(Verdict::Agrees)) {
+            wrong.push(format!("{key} should expand: {:?}", v.get(key)));
+        }
     }
-    for key in ["M:N.X.B", "M:N.X.C", "M:N.X.D"] {
+    for key in ["M:N.X.B", "M:N.X.C", "M:N.X.D", "M:N.X.PropertyItem"] {
         if !matches!(v.get(key), Some(Verdict::Declined { .. })) {
             wrong.push(format!("{key} should decline: {:?}", v.get(key)));
         }
