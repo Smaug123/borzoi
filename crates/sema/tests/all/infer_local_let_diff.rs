@@ -1664,6 +1664,109 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     );
 }
 
+/// The ill-typed family with the open parameter annotated by a type variable
+/// that a second parameter shares: `(p: 'a) (q: 'a)`, implicitly scoped or
+/// declared (`let f<'a> …`, rigid).
+/// The two are one variable, so a constraint through either reaches the
+/// other — a route to a parameter that is none of its own occurrences, which
+/// the first-occurrence rules a condition and an argument check rely on do
+/// not see. Whatever we commit, FCS must have kept.
+#[test]
+fn generated_ill_typed_programs_with_a_shared_type_variable_commit_only_what_fcs_kept() {
+    let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40) * 2;
+    let mut total = Committed::default();
+    let mut uncheckable = 0usize;
+    for seed in 0..files.max(1) as u64 {
+        let mut rng = Rng(seed ^ 0x7a9a_5eed);
+        let mut src = format!("{HEADER}let k0 = 1\n");
+        for i in 0..6 {
+            let modelled_only = rng.chance(50);
+            let t = TYPES[rng.below(TYPES.len())];
+            // The last two declare the variable (`<'a>`), which makes it
+            // rigid: a body fixing `p` is then an error, not FS0064.
+            let (stem, params) = match rng.below(5) {
+                0 => ("f", "(s: string) (b: bool) (p: 'a) (q: 'a)".to_string()),
+                1 => ("tf", "(s: string, b: bool, p: 'a, q: 'a)".to_string()),
+                2 => (
+                    "f",
+                    "(p: 'a) (s: string) (q: 'a list) (b: bool)".to_string(),
+                ),
+                3 => (
+                    "f",
+                    "<'a> (s: string) (b: bool) (p: 'a) (q: 'a)".to_string(),
+                ),
+                _ => ("tf", "<'a> (s: string, b: bool, p: 'a, q: 'a)".to_string()),
+            };
+            let q_kind = if params.contains("'a list") {
+                Kind::Mono(T::Unit)
+            } else {
+                Kind::Open
+            };
+            let mut env = header_vars();
+            env.extend([
+                Var {
+                    name: "s".into(),
+                    kind: Kind::Mono(T::Str),
+                },
+                Var {
+                    name: "b".into(),
+                    kind: Kind::Mono(T::Bool),
+                },
+                Var {
+                    name: "p".into(),
+                    kind: Kind::Open,
+                },
+            ]);
+            // `q : 'a list` is used only where its type is irrelevant to the
+            // generator, which it reads off as `unit`-shaped filler: FCS
+            // rejects those uses, which is the point.
+            env.push(Var {
+                name: "q".into(),
+                kind: q_kind,
+            });
+            let mut g = Gen {
+                rng: &mut rng,
+                env,
+                next: 0,
+                generic_uses: Vec::new(),
+                modelled_only,
+                open_anywhere: true,
+                under_coercion: false,
+            };
+            let block = g.block(t, 3, i % 2 == 0);
+            let sep = if block.starts_with('\n') { "" } else { " " };
+            let gap = if params.starts_with('<') { "" } else { " " };
+            src.push_str(&format!("let {stem}{i}{gap}{params} ={sep}{block}\n"));
+        }
+        // FCS aborts the whole file on some of these (no implementation
+        // file); such a file grades nothing, and is counted.
+        let path = temp_fs_file("infer_local_let_typar_probe", &src);
+        let checkable = try_invoke_fcs_dump("types", &path);
+        let _ = std::fs::remove_file(&path);
+        if let Err(e) = checkable {
+            if std::env::var_os("BORZOI_SHOW_UNCHECKABLE").is_some() {
+                eprintln!("uncheckable: {e}\n{src}");
+            }
+            uncheckable += 1;
+            continue;
+        }
+        total += check(&src, false);
+    }
+    eprintln!("shared type variable family: {total:?}, uncheckable files: {uncheckable}");
+    assert!(
+        uncheckable * 4 <= files,
+        "FCS could not check {uncheckable} of {files} files"
+    );
+    assert!(
+        total.fcs_errors >= 50,
+        "the family stopped producing ill-typed programs: {total:?}"
+    );
+    assert!(
+        total.binders >= 120,
+        "the family committed too few binders to be evidence: {total:?}"
+    );
+}
+
 /// Recovery, generatively: each generated file broken by one edit at a comma
 /// or parenthesis inside a `let` head (doubled, dropped, or a comma inserted),
 /// which is where a pattern recovers into something that still looks
