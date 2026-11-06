@@ -561,6 +561,24 @@ pub(crate) fn union_case_scheme(
     })
 }
 
+/// The path [`Ty::Named`] carries for the generic type `handle` applied in
+/// an annotation, under the signature bridge's rules ([`Bridge::generic_path`]):
+/// its compiled path when F# names it so, or for one of FSharp.Core's own
+/// renamed generics (`Result` is `FSharpResult`) the compiled path that
+/// [`Ty::render_fsharp`] shows by its F# name. `None` where the bridge
+/// declines.
+pub(crate) fn applied_type_path(env: &AssemblyEnv, handle: EntityHandle) -> Option<Vec<String>> {
+    let entity = env.entity(handle);
+    Bridge {
+        env,
+        declaring: &entity.assembly,
+        typars: 0,
+        type_typars: 0,
+    }
+    .generic_path(handle)
+    .ok()
+}
+
 /// The curried domains of `method`'s F# type, from its bridged IL parameter
 /// types `params` split by the val's pickled argument groups
 /// ([`MethodLike::arg_groups`], [`CurriedArgs::split`](borzoi_assembly::CurriedArgs::split)): a group of one

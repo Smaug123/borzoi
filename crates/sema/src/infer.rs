@@ -504,8 +504,8 @@ use rowan::{TextRange, TextSize};
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{DefId, DefKind};
 use crate::function_ty::{
-    Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, builtin_operator, module_function_scheme,
-    union_case_scheme,
+    Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, UnionCaseScheme, builtin_operator,
+    module_function_scheme, union_case_scheme,
 };
 use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::member_ty::type_ref_to_ty;
@@ -853,6 +853,12 @@ enum PatShape {
     Unit,
     /// A (reference) tuple of two or more elements.
     Tuple(Vec<PatShape>),
+    /// A constant (`1`, `"s"`, `'c'`, `true`), of its literal's type.
+    Const(Ty),
+    /// A referenced assembly's union case (`None`, `Some x`, `Ok _`): the
+    /// case's scheme, and the pattern over its fields — `None` for a nullary
+    /// case, and for `Case _`, which matches every field at once.
+    Case(UnionCaseScheme, Option<Box<PatShape>>),
 }
 
 /// A type constraint produced by generation and discharged by the solver.
@@ -1229,6 +1235,11 @@ struct Gen<'a> {
     /// Each begun binding's incompleteness reasons, for
     /// [`InferredFile::incompleteness`].
     incompleteness: Vec<Vec<Incomplete>>,
+    /// Ranges whose emission [`Self::finish`] drops: a `match` scrutinee's own
+    /// node, which FCS may cover with a temporary's `let` typed as the whole
+    /// match. Filtered at read-off rather than cut from [`Self::exprs`], whose
+    /// positions emission marks record.
+    ungraded_ranges: HashSet<TextRange>,
     /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
     guards: Vec<Guard>,
     /// The guards enclosing the current walk position, innermost last; an
@@ -1462,6 +1473,7 @@ impl<'a> Gen<'a> {
             local_emits: Vec::new(),
             dot_get_receivers: Vec::new(),
             incompleteness: Vec::new(),
+            ungraded_ranges: HashSet::new(),
             guards: Vec::new(),
             guard_stack: Vec::new(),
             guard_on_member: HashMap::new(),
@@ -2719,14 +2731,16 @@ impl<'a> Gen<'a> {
         // and a renamed entity needs two — FCS's canonical currency is the
         // COMPILED name (`Microsoft.FSharp.Core.FSharpResult`) while
         // [`Ty::render_fsharp`] must show the source name a user can write
-        // (`Result`). Its table of FSharp.Core's renamed generics
-        // (`FSHARP_CORE_RENAMED`) is what the signature bridge checks a renamed
-        // type against; this bridge does not, so it declines every renamed one
-        // rather than show a compiled name that does not resolve in F# source.
+        // (`Result`). The exception is FSharp.Core's own renamed generics
+        // (`FSHARP_CORE_RENAMED`), which [`Ty::render_fsharp`] shows by their
+        // F# name: a renamed head is read through the signature bridge's rule
+        // for them ([`crate::function_ty::applied_type_path`]), so the two
+        // bridges name one type one way.
         let mut path: Vec<String> = entity.namespace.clone();
         path.push(entity.name.clone());
         if self.env.entity_full_name(handle) != path.join(".") {
-            return None;
+            let path = crate::function_ty::applied_type_path(self.env, handle)?;
+            return Some(Ty::Named { path, args });
         }
         if matches!(
             path.iter()
@@ -3015,6 +3029,75 @@ impl<'a> Gen<'a> {
                         Some(exp)
                     }
                 }
+            }
+            // `match e with p1 when g1 -> r1 | …`, in FCS's checking order
+            // (`TcMatchClauses`): the scrutinee first, then each clause in
+            // source order — its pattern against the scrutinee's type, by
+            // equality; its guard as a condition, `bool` by equality; its
+            // result. The arms agree as an `if`'s branches do: with no
+            // expected type the first synthesises the match's type and the
+            // rest are checked against it, else each is checked against the
+            // expected type.
+            Expr::Match(m) => {
+                let Some(scrutinee) = m.scrutinee() else {
+                    self.mark_incomplete(Incomplete::Recovery);
+                    return None;
+                };
+                // FCS elaborates a match of one clause to other nodes than
+                // its source's (`match o with _ -> "s"` keeps no node at
+                // `"s"`), so its dump cannot grade one; such a match is the
+                // rare spelling of a `let`, and declines.
+                if m.clauses().nth(1).is_none() {
+                    self.mark_incomplete(Incomplete::Unmodelled(SyntaxKind::MATCH_EXPR));
+                    return None;
+                }
+                let mark = self.emission_mark();
+                let sv = self.infer_expr(&scrutinee, None)?;
+                // FCS may bind the scrutinee to a temporary at the
+                // scrutinee's own range — a `let` node typed as the whole
+                // match (`match c with 'a' -> true | _ -> false` reports
+                // `bool` at `c`) — so the scrutinee's own node, the last its
+                // walk emitted, is not one FCS's dump can grade. What it
+                // contains is.
+                if let Some(&(range, _, _)) = self.exprs[mark.0..].last() {
+                    self.ungraded_ranges.insert(range);
+                }
+                let mut result = expected;
+                let mut any = false;
+                for clause in m.clauses() {
+                    let (Some(pat), Some(body)) = (clause.pat(), clause.result()) else {
+                        self.mark_incomplete(Incomplete::Recovery);
+                        return None;
+                    };
+                    let shape = match self.pattern_shape(&pat) {
+                        Ok(shape) => shape,
+                        Err(why) => {
+                            self.mark_incomplete(why);
+                            return None;
+                        }
+                    };
+                    let pt = self.gen_pattern(&shape, BinderSite::Local);
+                    self.eq(Ty::Var(sv), pt);
+                    if clause.guard().is_some() {
+                        self.constrain_bool(clause.guard());
+                    }
+                    match result {
+                        None => result = Some(self.infer_expr(&body, None)?),
+                        Some(exp) => {
+                            self.infer_expr(&body, Some(exp));
+                        }
+                    }
+                    any = true;
+                }
+                if !any {
+                    self.mark_incomplete(Incomplete::Recovery);
+                    return None;
+                }
+                // Nothing is emitted at the match itself: FCS elaborates
+                // some matches to other nodes (a single irrefutable clause,
+                // `match o with x -> x`, is a `let`), so whether its dump has
+                // a node there is its decision compiler's to say.
+                result
             }
             // A lambda `fun x … -> body`. Walk the body so its sub-expressions get
             // typed, carrying the lambda's **mode**: coercion-free (synth) only when
@@ -5015,7 +5098,53 @@ impl<'a> Gen<'a> {
                 .ok_or(Incomplete::Recovery)
         };
         match pat {
+            // A name the resolver reads as a referenced assembly's union case
+            // (`None`) is that case, applied to nothing.
+            Pat::Named(named)
+                if named
+                    .ident()
+                    .is_some_and(|tok| self.def_at(tok.text_range()).is_none()) =>
+            {
+                let tok = named.ident().ok_or(Incomplete::Recovery)?;
+                self.case_pattern(tok.text_range(), None)
+            }
             Pat::Named(named) => Ok(PatShape::Name(named_def(named)?)),
+            Pat::LongIdent(li) => {
+                // `Case` or `Case p`: at most one argument, no named fields,
+                // no type arguments, no active pattern, and a head of one
+                // name the resolver reads as a case.
+                let mut args = li.args();
+                let arg = match (args.next(), args.next()) {
+                    (arg, None) => arg,
+                    _ => return Err(Incomplete::PatternShape(pat.syntax().kind())),
+                };
+                if li.name_pat_pairs().is_some() {
+                    return Err(Incomplete::PatternShape(pat.syntax().kind()));
+                }
+                let head = li
+                    .head()
+                    .filter(|_| li.typar_decls().is_none() && li.active_pat_name().is_none())
+                    .ok_or(Incomplete::PatternShape(pat.syntax().kind()))?;
+                let mut idents = head.idents();
+                let (Some(tok), None) = (idents.next(), idents.next()) else {
+                    return Err(Incomplete::PatternShape(pat.syntax().kind()));
+                };
+                self.case_pattern(tok.text_range(), arg.as_ref())
+            }
+            Pat::Const(c) if !c.syntax().text().is_empty() => {
+                let kind = c.literal().map(|l| l.kind());
+                match kind {
+                    Some(
+                        SyntaxKind::INT32_LIT
+                        | SyntaxKind::STRING_LIT
+                        | SyntaxKind::CHAR_LIT
+                        | SyntaxKind::BOOL_LIT,
+                    ) => Ok(PatShape::Const(
+                        literal_kind_ty(kind.expect("matched")).expect("a typed literal"),
+                    )),
+                    _ => Err(Incomplete::PatternShape(pat.syntax().kind())),
+                }
+            }
             Pat::Typed(typed) => {
                 let Some(t) = typed.ty().and_then(|ty| self.annotation_ty(&ty)) else {
                     return Err(Incomplete::PatternAnnotation);
@@ -5046,6 +5175,45 @@ impl<'a> Gen<'a> {
             Pat::Const(c) if c.syntax().text().is_empty() => Ok(PatShape::Unit),
             other => Err(Incomplete::PatternShape(other.syntax().kind())),
         }
+    }
+
+    /// The pattern of the case the resolver reads at `at`, over `arg`: `None`
+    /// for a case written alone. A nullary case takes no argument; a case of
+    /// one field takes a pattern of it; a case of several takes a tuple
+    /// pattern of exactly that many; and any case of fields takes `_` for
+    /// all of them. Anything else — a case of fields written alone, a
+    /// mismatched arity, a case the maker cannot vouch for, a name that is
+    /// not a referenced assembly's case — declines.
+    fn case_pattern(&self, at: TextRange, arg: Option<&Pat>) -> Result<PatShape, Incomplete> {
+        let Some(Resolution::UnionCase { union, case }) = self.resolved.resolution_at(at) else {
+            return Err(Incomplete::NotInFileValue);
+        };
+        let scheme = union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
+        let unparen = |p: &Pat| -> Option<Pat> {
+            let mut p = p.clone();
+            while let Pat::Paren(inner) = &p {
+                p = inner.inner()?;
+            }
+            Some(p)
+        };
+        let arg = match (arg, scheme.fields.len()) {
+            (None, 0) => None,
+            (None, _) | (Some(_), 0) => {
+                return Err(Incomplete::PatternShape(SyntaxKind::LONG_IDENT_PAT));
+            }
+            (Some(arg), n) => {
+                let inner = unparen(arg).ok_or(Incomplete::Recovery)?;
+                match (&inner, n) {
+                    (Pat::Wildcard(_), _) => Some(Box::new(PatShape::Wildcard)),
+                    (_, 1) => Some(Box::new(self.pattern_shape(arg)?)),
+                    (Pat::Tuple(t), n) if !t.is_struct() && t.elements().count() == n => {
+                        Some(Box::new(self.pattern_shape(&inner)?))
+                    }
+                    _ => return Err(Incomplete::PatternShape(SyntaxKind::LONG_IDENT_PAT)),
+                }
+            }
+        };
+        Ok(PatShape::Case(scheme, arg))
     }
 
     /// Generate a read pattern's type, registering each name for `site`.
@@ -5086,6 +5254,19 @@ impl<'a> Gen<'a> {
             PatShape::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
             }
+            PatShape::Const(t) => t.clone(),
+            PatShape::Case(scheme, arg) => match self.instantiate(&scheme.value_ty()) {
+                Ty::Fun { arg: fields, ret } => {
+                    if let Some(arg) = arg
+                        && !matches!(**arg, PatShape::Wildcard)
+                    {
+                        let at = self.gen_pattern(arg, site);
+                        self.eq(at, *fields);
+                    }
+                    *ret
+                }
+                union => union,
+            },
         }
     }
 
@@ -6196,7 +6377,7 @@ impl<'a> Gen<'a> {
             .collect();
         let mut types = HashMap::new();
         for (range, var, guard) in exprs {
-            if !self.guard_holds(guard) {
+            if !self.guard_holds(guard) || self.ungraded_ranges.contains(&range) {
                 continue;
             }
             let ty = self.table.resolve(&Ty::Var(var));
@@ -7202,7 +7383,12 @@ fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
 }
 
 fn literal_ty(c: &ConstExpr) -> Option<Ty> {
-    let kind = c.literal()?.kind();
+    literal_kind_ty(c.literal()?.kind())
+}
+
+/// The type of a literal token of `kind`, where it is fixed in isolation
+/// ([`literal_ty`]).
+fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
     let prim = |path: &str| Some(Ty::named(path));
     match kind {
         // Integers (default and every explicit suffix).
@@ -7981,9 +8167,9 @@ mod tests {
             "module M\nlet a : int option = None\nlet h x = (x, a)\n",
             // `let rec` group skipped whole.
             "module M\nlet rec a = 1\nlet h x = (x, a)\n",
-            // A pattern binding with a constant element, which `pattern_ty`
+            // A pattern binding with a list element, which `pattern_ty`
             // rejects after `a` has its variable.
-            "module M\nlet (a, 1) = (1, 1)\nlet h x = (x, a)\n",
+            "module M\nlet (a, [_]) = (1, [1])\nlet h x = (x, a)\n",
         ] {
             let types = def_types(src);
             assert_eq!(

@@ -6898,6 +6898,13 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
             | LetRec(binds, _) ->
                 for (v, _, _) in binds do
                     local v |> Option.iter found.Add
+            // A match's pattern variables: FCS's decision compiler binds a
+            // variable either by a `let` in its target (`Some v`) or as one of
+            // the target's own variables (`Some (Some v)`), so both are read.
+            | DecisionTree(_, targets) ->
+                for (vars, _) in targets do
+                    for v in vars do
+                        local v |> Option.iter found.Add
             | _ -> ()
             for sub in e.ImmediateSubExpressions do
                 walkLocals sub

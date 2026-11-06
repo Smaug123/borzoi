@@ -42,6 +42,7 @@ mod infer_equality_constraints_diff;
 mod infer_fsharp_core_abbreviation_diff;
 mod infer_literals_diff;
 mod infer_local_let_diff;
+mod infer_match_diff;
 mod infer_measure_erasure_diff;
 mod infer_member_access_diff;
 mod infer_operators_diff;
