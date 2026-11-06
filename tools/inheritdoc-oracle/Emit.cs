@@ -14,7 +14,8 @@
 //             "abstract":b,"sealed":b,"base":TypeRef|null,"interfaces":[TypeRef..],
 //             "methods":[Method..],"properties":[{"name":n,"type":Sig,"getter":i}..],
 //             "events":[{"name":n,"type":TypeRef,"add":i,"remove":i,"fire":i|null}..],
-//             "generic":[name..]}                  (type parameters; the name carries its `n)
+//             "generic":[name..],                  (type parameters; the name carries its `n)
+//             "nestedIn":i}                        (nested in the i-th described type; ns "")
 //           (`getter`, `add`, `remove`, `fire`: indices into the type's methods)
 //   Method = {"name":n,"access":"public"|"private","static":b,"virtual":b,
 //             "newslot":b,"abstract":b,"final":b,"specialName":b,
@@ -203,6 +204,8 @@ internal static class Emit
         var eventMaps = new List<(TypeDefinitionHandle, EventDefinitionHandle)>();
         // Added after the types, in type order, as the table is sorted by owner.
         var genericParams = new List<(TypeDefinitionHandle, string, int)>();
+        // Likewise sorted, by nested type.
+        var nestings = new List<(TypeDefinitionHandle, TypeDefinitionHandle)>();
         var interfaces = new List<(TypeDefinitionHandle, EntityHandle)>();
         var propertyMaps = new List<(TypeDefinitionHandle, PropertyDefinitionHandle)>();
         // Method and parameter rows are laid out first, type by type, so each
@@ -219,7 +222,7 @@ internal static class Emit
             var t = types[i];
             var handle = MetadataTokens.TypeDefinitionHandle(i + 2);
             var kind = (string)t["kind"]!;
-            var attrs = TypeAttributes.Public;
+            var attrs = t["nestedIn"] is null ? TypeAttributes.Public : TypeAttributes.NestedPublic;
             if (kind == "interface")
             {
                 attrs |= TypeAttributes.Interface | TypeAttributes.Abstract;
@@ -235,6 +238,10 @@ internal static class Emit
             var baseType = t["base"] is { } b ? Ref(b) : default;
             mb.AddTypeDefinition(attrs, mb.GetOrAddString((string)t["ns"]!), mb.GetOrAddString((string)t["name"]!),
                 baseType, MetadataTokens.FieldDefinitionHandle(1), firstMethod[i]);
+            if (t["nestedIn"] is JsonNode outer)
+            {
+                nestings.Add((handle, MetadataTokens.TypeDefinitionHandle((int)outer + 2)));
+            }
             var typeParameters = t["generic"]?.AsArray() ?? new JsonArray();
             for (var g = 0; g < typeParameters.Count; g++)
             {
@@ -339,6 +346,10 @@ internal static class Emit
         foreach (var (type, first) in eventMaps)
         {
             mb.AddEventMap(type, first);
+        }
+        foreach (var (nested, enclosing) in nestings)
+        {
+            mb.AddNestedType(nested, enclosing);
         }
         foreach (var (owner, parameterName, index) in genericParams)
         {

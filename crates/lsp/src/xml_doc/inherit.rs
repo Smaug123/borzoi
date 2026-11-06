@@ -240,7 +240,7 @@ pub fn expand(
         .enclosing_chain_from_root(start.owner())
         .unwrap_or_default();
     if chain.iter().all(|&h| il_faithful(env, h))
-        && let Some(why) = chain.iter().find_map(|&h| shape_of(env, h).err())
+        && let Err(why) = shape_of(env, start.owner())
     {
         return Expansion {
             member: entry.member,
@@ -551,11 +551,7 @@ impl Walk<'_> {
         // name a documentation ID reads otherwise (a literal `Odd#ame`, a
         // type named `A.B`) or metadata no compiler writes is outside what
         // this binder certifies.
-        let mut touched = chain.clone();
-        for s in &siblings {
-            touched.extend(env.enclosing_chain_from_root(s.owner()).unwrap_or_default());
-        }
-        for h in touched {
+        for h in std::iter::once(owner).chain(siblings.iter().map(|s| s.owner())) {
             shape_of(env, h).map_err(|why| Decline::Cref(CrefMiss::Unshaped(why)))?;
         }
         if let DocTarget::Member { parent, idx } = target {

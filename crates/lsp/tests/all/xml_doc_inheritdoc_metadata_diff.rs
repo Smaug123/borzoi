@@ -2051,3 +2051,38 @@ fn a_type_argument_whose_arity_suffix_disagrees_declines() {
     let verdict = lo_world("a type argument's arity suffix", types, &docs, "T:F.D");
     assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
 }
+
+/// `D : B` inheriting from `B`, nested in a non-generic type named ``Z`1``:
+/// `B`'s ID is ``T:F.Z`1.B`` to Roslyn and `T:F.Z.B` to the projection, so
+/// the candidate's enclosing type is outside the domain and `D` declines.
+#[test]
+fn a_candidate_nested_in_a_type_whose_arity_suffix_disagrees_declines() {
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let types = vec![
+        class("F", "Z`1", Some(object(&cx)), vec![]),
+        json!({"ns": "", "name": "B", "kind": "class", "base": object(&cx), "interfaces": [],
+            "methods": [], "properties": [], "nestedIn": 0}),
+        class(
+            "F",
+            "D",
+            Some(json!({"scope": -1, "ns": "", "name": "B"})),
+            vec![],
+        ),
+    ];
+    let docs: Entries = vec![
+        ("T:F.Z".into(), full("T:F.Z")),
+        ("T:F.Z.B".into(), full("T:F.Z.B")),
+        ("T:F.D".into(), bare()),
+    ];
+    let verdict = lo_world(
+        "a candidate nested in a type's arity suffix",
+        types,
+        &docs,
+        "T:F.D",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
