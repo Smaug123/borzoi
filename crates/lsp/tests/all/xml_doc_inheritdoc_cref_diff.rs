@@ -130,6 +130,13 @@ enum Member {
     GetP,
     /// An explicit implementation of `IG<int>.M(int)`.
     ExplicitGeneric,
+    /// `int this[int i]`, the indexer `Item`.
+    Indexer,
+    /// `[IndexerName("Foo")] int this[int i]`, whose ID Roslyn's lookup
+    /// does not bind.
+    NamedIndexer,
+    /// An explicit implementation of `II.this[int]`.
+    ExplicitIndexer,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +216,9 @@ fn member() -> impl Strategy<Value = Member> {
         1 => Just(Member::FnPtrProperty),
         1 => Just(Member::GetP),
         1 => Just(Member::ExplicitGeneric),
+        1 => Just(Member::Indexer),
+        1 => Just(Member::NamedIndexer),
+        1 => Just(Member::ExplicitIndexer),
     ]
 }
 
@@ -263,6 +273,7 @@ fn members_source(members: &[Member], tag: &str, out: &mut String) {
         out.push_str(&format!("/// <summary>{tag} {what}.</summary>\n"));
     };
     let mut property = false;
+    let mut indexer = false;
     // A member drawn twice is one member, not a duplicate definition.
     let members: BTreeSet<Member> = members.iter().copied().collect();
     for m in &members {
@@ -300,6 +311,25 @@ fn members_source(members: &[Member], tag: &str, out: &mut String) {
                 doc(out, "IG<int>.M");
                 out.push_str("void F.IG<int>.M(int t) { }\n");
             }
+            // One `this[int]` per type.
+            Member::Indexer | Member::NamedIndexer if indexer => {}
+            Member::Indexer => {
+                indexer = true;
+                doc(out, "this[int]");
+                out.push_str("public int this[int i] => 0;\n");
+            }
+            Member::NamedIndexer => {
+                indexer = true;
+                doc(out, "Foo[int]");
+                out.push_str(
+                    "[System.Runtime.CompilerServices.IndexerName(\"Foo\")]\n\
+                     public int this[int i] => 0;\n",
+                );
+            }
+            Member::ExplicitIndexer => {
+                doc(out, "II.this[int]");
+                out.push_str("int F.II.this[int i] => 0;\n");
+            }
         }
     }
 }
@@ -329,6 +359,11 @@ fn dep_source(dep: &DepSpec, index: usize) -> Option<String> {
     if all.contains(&Member::ExplicitGeneric) {
         out.push_str(&format!(
             "namespace F {{ /// <summary>{tag} IG.</summary>\npublic interface IG<T> {{\n/// <summary>{tag} IG.M.</summary>\nvoid M(T t); }} }}\n"
+        ));
+    }
+    if all.contains(&Member::ExplicitIndexer) {
+        out.push_str(&format!(
+            "namespace F {{ /// <summary>{tag} II.</summary>\npublic interface II {{\n/// <summary>{tag} II.this[int].</summary>\nint this[int i] {{ get; }} }} }}\n"
         ));
     }
     if dep.types.iter().any(|t| t.attr == Attr::TypeIdentifier) {
@@ -365,6 +400,14 @@ fn dep_source(dep: &DepSpec, index: usize) -> Option<String> {
         if has_property && t.members.contains(&Member::GetP) {
             return None;
         }
+        // Nor may a type with an indexer carry `[DefaultMember]` (CS0646).
+        let has_indexer = t
+            .members
+            .iter()
+            .any(|m| matches!(m, Member::Indexer | Member::NamedIndexer));
+        if has_indexer && t.attr == Attr::DefaultMemberNull {
+            return None;
+        }
         let attr = match t.attr {
             Attr::None => "",
             Attr::TypeIdentifier => {
@@ -372,10 +415,18 @@ fn dep_source(dep: &DepSpec, index: usize) -> Option<String> {
             }
             Attr::DefaultMemberNull => "[System.Reflection.DefaultMember(null)]\n",
         };
-        let base = if t.members.contains(&Member::ExplicitGeneric) {
-            " : F.IG<int>"
+        let interfaces: Vec<&str> = [
+            (Member::ExplicitGeneric, "F.IG<int>"),
+            (Member::ExplicitIndexer, "F.II"),
+        ]
+        .into_iter()
+        .filter(|(m, _)| t.members.contains(m))
+        .map(|(_, i)| i)
+        .collect();
+        let base = if interfaces.is_empty() {
+            String::new()
         } else {
-            ""
+            format!(" : {}", interfaces.join(", "))
         };
         let mut body = String::new();
         members_source(&t.members, &tag, &mut body);
@@ -528,7 +579,10 @@ fn the_cref_generator_reaches_every_dimension() {
     let mut drawn = BTreeSet::new();
     let mut total = Census::default();
     let mut built = 0;
-    for _ in 0..40 {
+    // Most members' crefs decline by design (a dropped or duplicated
+    // neighbour declines the whole world's), so the commits are a fraction
+    // of the draws: about one per compiling world.
+    for _ in 0..120 {
         let w = strategy.new_tree(&mut runner).unwrap().current();
         if let Some(census) = run(&w) {
             built += 1;
@@ -537,9 +591,9 @@ fn the_cref_generator_reaches_every_dimension() {
         }
     }
     total.print("generated crefs (liveness sample)");
-    assert!(built >= 20, "only {built}/40 worlds compile");
+    assert!(built >= 60, "only {built}/120 worlds compile");
     assert!(
-        total.agrees >= 20,
+        total.agrees >= 60,
         "only {} expansions commit",
         total.agrees
     );
@@ -559,6 +613,9 @@ fn the_cref_generator_reaches_every_dimension() {
         Dim::Member(Member::FnPtrProperty),
         Dim::Member(Member::GetP),
         Dim::Member(Member::ExplicitGeneric),
+        Dim::Member(Member::Indexer),
+        Dim::Member(Member::NamedIndexer),
+        Dim::Member(Member::ExplicitIndexer),
     ];
     every.extend(
         [

@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use borzoi_assembly::doc_id::{demangle_segment, type_enc};
 use borzoi_assembly::shape::Unshaped;
-use borzoi_assembly::{Access, Member, Primitive, TypeRef};
+use borzoi_assembly::{Access, DefaultMember, Member, Primitive, TypeRef};
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
 
 use super::candidate::{
@@ -159,6 +159,12 @@ pub enum CrefMiss {
     /// The ID may be a property's or event's accessor's, which Roslyn binds
     /// as a method of its own and the model has no target for.
     MaybeAccessor,
+    /// The ID names a property with parameters other than C#'s ordinary
+    /// indexer (named `Item`, its type's default member). Roslyn's lookup
+    /// reads the name `Item` as "an indexer" and any other name as a
+    /// non-indexer's, so an indexer's own ID under another name
+    /// (`[IndexerName("Foo")]`, an explicit `I.this[]`) binds nothing.
+    NotTheIndexer,
     /// Some referenced DLL could not be read at all, and may declare a symbol
     /// of the ID too.
     IncompleteAssemblySet,
@@ -558,6 +564,14 @@ impl Walk<'_> {
             let member = env.member_at(parent, idx);
             if matches!(member, Member::Method(m) if m.module_value.is_some()) {
                 return Err(Decline::Cref(CrefMiss::NotIl));
+            }
+            if let Member::Property(p) = member
+                && !p.parameters.is_empty()
+                && !(p.name == "Item"
+                    && matches!(&env.entity(parent).default_member,
+                        Some(DefaultMember::Named(n)) if n == "Item"))
+            {
+                return Err(Decline::Cref(CrefMiss::NotTheIndexer));
             }
             // A member dropped from any type of the parent's ID — in this
             // assembly or another — may carry the ID too, under a name its

@@ -2930,3 +2930,72 @@ public class C : I
     let v = sound_verdict(&fx, "a dropped explicit implementation", "M:F.C.M``1");
     assert!(matches!(v, Verdict::Declined { .. }), "{v:?}");
 }
+
+/// An indexer C# names apart from `Item` (`[IndexerName("Foo")]`): Roslyn's
+/// declaration-ID lookup does not bind `P:N.J.Foo(System.Int32)`, though it
+/// is the indexer's own documentation ID, so a `cref` to it declines. Only
+/// C#'s ordinary indexer (`Item`, its type's default member) is certified:
+/// `P:N.J.Item(System.Int32)` names no indexer of `J`'s, and an explicit
+/// implementation's (`P:N.E.N#I#Item(System.Int32)`) is not that shape, so
+/// both decline too, whatever Roslyn binds. (Roslyn cannot look up
+/// `P:N.K.Foo(System.Int32)` as a start either, so this harness, which
+/// starts from an ID, cannot reach an implicit `<inheritdoc/>` on one.)
+#[test]
+fn a_cref_to_an_indexer_named_apart_from_item_declines() {
+    let fx = fixture(
+        r#"
+namespace N;
+
+public interface I
+{
+    /// <summary>I's indexer.</summary>
+    int this[int i] { get; }
+}
+
+public interface J
+{
+    /// <summary>J's indexer.</summary>
+    [System.Runtime.CompilerServices.IndexerName("Foo")]
+    int this[int i] { get; }
+}
+
+public class E : I
+{
+    /// <summary>E's indexer.</summary>
+    int I.this[int i] => 0;
+}
+
+public class X
+{
+    /// <inheritdoc cref="P:N.I.Item(System.Int32)"/>
+    public void A() { }
+
+    /// <inheritdoc cref="P:N.J.Foo(System.Int32)"/>
+    public void B() { }
+
+    /// <inheritdoc cref="P:N.J.Item(System.Int32)"/>
+    public void C() { }
+
+    /// <inheritdoc cref="P:N.E.N#I#Item(System.Int32)"/>
+    public void D() { }
+}
+"#,
+    )
+    .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
+    let compared = compare(&fx);
+    let mut census = Census::default();
+    census.add(&compared);
+    census.print("an indexer named apart from Item");
+    census.assert_sound();
+    let v = verdicts(&compared);
+    let mut wrong = Vec::new();
+    if !matches!(v.get("M:N.X.A"), Some(Verdict::Agrees)) {
+        wrong.push(format!("M:N.X.A should expand: {:?}", v.get("M:N.X.A")));
+    }
+    for key in ["M:N.X.B", "M:N.X.C", "M:N.X.D"] {
+        if !matches!(v.get(key), Some(Verdict::Declined { .. })) {
+            wrong.push(format!("{key} should decline: {:?}", v.get(key)));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
