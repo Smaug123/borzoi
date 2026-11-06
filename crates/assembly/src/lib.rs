@@ -35,6 +35,7 @@ pub mod modifier_metamorphic;
 pub mod op_name;
 pub mod pdb;
 mod reader;
+pub mod shape;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod view;

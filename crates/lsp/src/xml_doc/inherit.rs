@@ -44,6 +44,7 @@
 use std::sync::Arc;
 
 use borzoi_assembly::doc_id::{demangle_segment, type_enc};
+use borzoi_assembly::shape::{Unshaped, compiler_shape};
 use borzoi_assembly::{Access, Member, Primitive, TypeRef};
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
 
@@ -83,6 +84,11 @@ pub enum Decline {
     NoCandidate(NoCandidate),
     /// A bare `<inheritdoc/>` whose candidate the env cannot settle.
     Undecidable(Undecidable),
+    /// A type enclosing the documented symbol is read as IL but is not
+    /// compiler-shaped ([`borzoi_assembly::shape::compiler_shape`]): the
+    /// expansion certifies only what C# writes, beginning with the symbol
+    /// whose entry it expands.
+    Unshaped(Unshaped),
     /// A `cref` that does not name exactly one symbol Roslyn would bind.
     Cref(CrefMiss),
     /// The inherited symbol's documentation could not be read.
@@ -130,14 +136,17 @@ pub enum CrefMiss {
     /// all: an ID does not say which namespace and nesting split it names.
     DroppedNearby,
     /// The ID's path, or a signature type's, is not spelled in the ID
-    /// alphabet, or the bound symbol's raw names do not round-trip through
-    /// it: a compiler-generated member name (an F# witness `M$W`, which the
-    /// projection may omit without a record), a delimiter of the ID syntax in
-    /// a name (`Odd,ame`, a literal `Odd#ame`, which Roslyn's declaration-ID
-    /// lookup reads otherwise), or a constructed explicit implementation's
-    /// arguments (`` F#I{System#Int32}#M ``, the ID the compiler writes but
-    /// one the lookup does not bind).
+    /// alphabet: a compiler-generated member name (an F# witness `M$W`,
+    /// which the projection may omit without a record), a delimiter of the
+    /// ID syntax in a name (`Odd,ame`), or a constructed explicit
+    /// implementation's arguments (`` F#I{System#Int32}#M ``, the ID the
+    /// compiler writes but one the lookup does not bind).
     UnspellableName,
+    /// A type enclosing the bound symbol, or one of its parent's ID, is not
+    /// compiler-shaped ([`borzoi_assembly::shape::compiler_shape`]): a raw
+    /// name a documentation ID reads otherwise (a literal `Odd#ame`), or
+    /// metadata no compiler writes.
+    Unshaped(Unshaped),
     /// A type the member's signature spells has an ID more than one type
     /// carries: Roslyn's declaration-ID lookup resolves the spelling over the
     /// whole compilation, where it is ambiguous, whichever one the member's
@@ -219,6 +228,21 @@ pub fn expand(
         return Expansion {
             member: entry.member,
             outcome: Outcome::NoInheritdoc,
+        };
+    }
+    // A type read in F#'s source view is not judged here: the rules that
+    // read it decline it as not IL ([`il_faithful`]) where that matters.
+    let chain = env
+        .enclosing_chain_from_root(start.owner())
+        .unwrap_or_default();
+    if chain.iter().all(|&h| il_faithful(env, h))
+        && let Some(why) = chain
+            .iter()
+            .find_map(|&h| compiler_shape(env.entity(h)).err())
+    {
+        return Expansion {
+            member: entry.member,
+            outcome: Outcome::Declined(Decline::Unshaped(why)),
         };
     }
     let mut walk = Walk {
@@ -505,23 +529,12 @@ impl Walk<'_> {
         if chain.is_empty() || !chain.iter().all(|&h| il_faithful(env, h)) {
             return Err(Decline::Cref(CrefMiss::NotIl));
         }
-        let raw_member = match target {
-            DocTarget::Member { parent, idx } => Some(match env.member_at(parent, idx) {
-                Member::Method(m) => m.name.as_str(),
-                Member::Property(p) => p.name.as_str(),
-                Member::Event(e) => e.name.as_str(),
-                Member::Field(f) => f.name.as_str(),
-            }),
-            DocTarget::Entity(_) => None,
-        };
-        if !raw_names_round_trip(env, &chain, raw_member) {
-            return Err(Decline::Cref(CrefMiss::UnspellableName));
-        }
         // Every type of the declaring type's ID must be read as IL: a type in
         // F#'s source view keeps metadata members (a module value's getter)
         // out of the index, so one of them may carry the ID too.
+        let mut siblings = Vec::new();
         if let DocTarget::Member { parent, .. } = target {
-            let siblings = match type_name(env, parent) {
+            siblings = match type_name(env, parent) {
                 Ok(name) => index.targets(&name.type_id()).to_vec(),
                 Err(_) => return Err(Decline::Cref(CrefMiss::NotIl)),
             };
@@ -531,6 +544,17 @@ impl Walk<'_> {
             }) {
                 return Err(Decline::Cref(CrefMiss::NotIl));
             }
+        }
+        // And compiler-shaped, as the symbol's enclosing types must be: a
+        // name a documentation ID reads otherwise (a literal `Odd#ame`, a
+        // type named `A.B`) or metadata no compiler writes is outside what
+        // this binder certifies.
+        let mut touched = chain.clone();
+        for s in &siblings {
+            touched.extend(env.enclosing_chain_from_root(s.owner()).unwrap_or_default());
+        }
+        for h in touched {
+            compiler_shape(env.entity(h)).map_err(|why| Decline::Cref(CrefMiss::Unshaped(why)))?;
         }
         if let DocTarget::Member { parent, idx } = target {
             let member = env.member_at(parent, idx);
@@ -659,18 +683,6 @@ fn is_type_id_char(c: char) -> bool {
 /// `N#I#M`).
 fn is_member_id_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '`' | '#')
-}
-
-/// Whether a symbol's raw metadata names round-trip through its ID: no type
-/// of `chain` (its enclosers and itself) is named with a character the ID
-/// gives another meaning (`#`, `.`, `,`, `` ` ``), nor `member` with a
-/// literal `#` or `` ` `` (an ID's `#` reads back as `.`, its `` ` `` as an
-/// arity).
-fn raw_names_round_trip(env: &AssemblyEnv, chain: &[EntityHandle], member: Option<&str>) -> bool {
-    chain
-        .iter()
-        .all(|&h| !env.entity(h).name.contains(['#', '.', ',', '`']))
-        && member.is_none_or(|m| !m.contains(['#', '`']))
 }
 
 /// Whether every named type and primitive in `ty` (written in `from`'s

@@ -255,6 +255,8 @@ fn event(name: &str, delegate_type: TypeRef) -> Event {
         delegate_type,
         is_static: false,
         has_fire: false,
+        signature_disagrees_with_accessors: false,
+        drops_optional_modifier: false,
         nullability: Nullability::Oblivious,
         custom_attrs: vec![],
         implements: Vec::new(),

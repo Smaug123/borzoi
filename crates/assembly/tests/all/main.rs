@@ -11,6 +11,7 @@ mod abbreviation_target_diff;
 mod assembly_auto_opens;
 mod assembly_diff;
 mod bcl_ref_pack_sweep;
+mod compiler_shape;
 mod display_member;
 mod display_type;
 mod doc_id_csharp_diff;

@@ -15,8 +15,16 @@
 //! 5. a class inherits from its base type, an interface from its first
 //!    declared interface, and a struct, enum or delegate from nothing.
 //!
-//! Each rule is reproduced from the metadata the way Roslyn's PE importer
-//! reads it — the C# overriding and interface-mapping rules
+//! **The domain.** Every type the walk touches must be read as IL
+//! ([`il_faithful`]) and be compiler-shaped
+//! ([`borzoi_assembly::shape::compiler_shape`]): its accessors named and
+//! typed as compilers write them, no `fire` accessor, no optional modifier,
+//! no type parameter its owner lacks. Outside that domain the candidate is
+//! [`Undecidable::Unshaped`], whatever Roslyn would make of it, so metadata
+//! no compiler writes is never a question of reproducing Roslyn.
+//!
+//! Inside it, each rule is reproduced from the metadata the way Roslyn's PE
+//! importer reads it — the C# overriding and interface-mapping rules
 //! (`OverriddenOrHiddenMembersHelpers`, `TypeSymbol
 //! .ComputeImplementationForInterfaceMember`, `MakeAllInterfaces`), not the
 //! CLR's. Where the env cannot settle the answer exactly the result is
@@ -38,6 +46,7 @@
 //!   cannot tell apart (two candidates at one level) is undecidable.
 
 use borzoi_assembly::doc_id::type_enc;
+use borzoi_assembly::shape::{Unshaped, compiler_shape};
 use borzoi_assembly::{
     Access, AccessorSlot, AssemblyIdentity, DeclaredSignature, Entity, EntityKind,
     ImplementedMember, InterfaceMemberImpl, Member, NullableType, Primitive, TypeRef,
@@ -331,6 +340,8 @@ pub enum NoCandidate {
 pub enum Undecidable {
     /// A type on the walk is projected in F#'s source view, not as IL.
     NotIl,
+    /// A type on the walk is not compiler-shaped (see the module docs).
+    Unshaped(Unshaped),
     /// A type reference on the walk does not bind.
     TypeUnbound(IlTypeDefinition),
     /// A `MethodImpl` row on the member the projection does not surface (a
@@ -368,17 +379,6 @@ pub enum Undecidable {
     /// `object` (or `dynamic`), a native-sized integer (or `nint`), a tuple
     /// (its element names) — carried in an attribute the model does not keep.
     AttributeCarriedDistinction,
-    /// A compared signature carries an optional custom modifier (`modopt`)
-    /// the projection drops, and Roslyn's runtime comparers compare (#339).
-    DroppedModifier,
-    /// A property whose own signature disagrees with its accessors'
-    /// ([`borzoi_assembly::Property::signature_disagrees_with_accessors`]):
-    /// Roslyn compares the former, the projection reads the latter.
-    PropertySignature,
-    /// A property or event, implemented implicitly, where some accessor
-    /// involved is not named by the `get_`/`set_`/`add_`/`remove_`
-    /// convention.
-    UnconventionalAccessors,
 }
 
 impl From<Undecidable> for Candidate {
@@ -389,6 +389,15 @@ impl From<Undecidable> for Candidate {
 
 /// More base types than any real hierarchy has.
 const MAX_CHAIN: usize = 64;
+
+/// Whether the walk may read `handle`: as IL ([`il_faithful`]), and
+/// compiler-shaped.
+fn certified(env: &AssemblyEnv, handle: EntityHandle) -> Result<(), Undecidable> {
+    if !il_faithful(env, handle) {
+        return Err(Undecidable::NotIl);
+    }
+    compiler_shape(env.entity(handle)).map_err(Undecidable::Unshaped)
+}
 
 /// Whether `handle` is read here as the IL a metadata consumer reads: an
 /// assembly without an authoritative F# signature, and an IL type kind.
@@ -481,9 +490,7 @@ fn bind(
         IlTypeDefinition::Resolved(def) => def,
         other => return Err(Undecidable::TypeUnbound(other)),
     };
-    if !il_faithful(env, def) {
-        return Err(Undecidable::NotIl);
-    }
+    certified(env, def)?;
     // The reference's type arguments leave `from`'s metadata here, so a
     // same-module reference among them must name its module explicitly to
     // keep meaning the same type wherever it is bound later.
@@ -537,8 +544,8 @@ fn qualify(ty: &TypeRef, module: &AssemblyIdentity) -> TypeRef {
 }
 
 fn type_candidate(env: &AssemblyEnv, handle: EntityHandle, inst: &Instantiation) -> Candidate {
-    if !il_faithful(env, handle) {
-        return Undecidable::NotIl.into();
+    if let Err(why) = certified(env, handle) {
+        return why.into();
     }
     let entity = env.entity(handle);
     let reference = match entity.kind {
@@ -567,8 +574,8 @@ fn member_candidate(
     idx: MemberIndex,
     inst: &Instantiation,
 ) -> Candidate {
-    if !il_faithful(env, parent) {
-        return Undecidable::NotIl.into();
+    if let Err(why) = certified(env, parent) {
+        return why.into();
     }
     let member = env.member_at(parent, idx);
     let facts = match MemberFacts::of(member) {
@@ -621,9 +628,7 @@ pub fn inherits_automatically(env: &AssemblyEnv, at: &Reached) -> Result<bool, U
     let DocTarget::Member { parent, idx } = at.target else {
         return Ok(false);
     };
-    if !il_faithful(env, parent) {
-        return Err(Undecidable::NotIl);
-    }
+    certified(env, parent)?;
     let member = env.member_at(parent, idx);
     let Some(facts) = MemberFacts::of(member) else {
         return Ok(false);
@@ -780,17 +785,6 @@ fn signature(
     inst: &Instantiation,
     byrefs: Byrefs,
 ) -> Result<Signature, Undecidable> {
-    let dropped = match member {
-        Member::Method(m) => m.drops_optional_modifier,
-        Member::Property(p) => p.drops_optional_modifier,
-        Member::Event(_) | Member::Field(_) => false,
-    };
-    if dropped {
-        return Err(Undecidable::DroppedModifier);
-    }
-    if matches!(member, Member::Property(p) if p.signature_disagrees_with_accessors) {
-        return Err(Undecidable::PropertySignature);
-    }
     signature_of(env, declaring, member, inst, byrefs).ok_or(Undecidable::TypeIdentity)
 }
 
@@ -1066,13 +1060,12 @@ enum AccessorRole {
     Set,
     Add,
     Remove,
-    Fire,
 }
 
 /// Each accessor slot of a property or event with the role it plays, read
-/// off the slots' role order (getter then setter; adder, remover, then
-/// fire); `None` for any other member, and where one method plays several
-/// roles, so that the slots are fewer than the roles.
+/// off the slots' role order (getter then setter; adder then remover);
+/// `None` for any other member, and where one method plays several roles,
+/// so that the slots are fewer than the roles.
 fn slot_roles(m: &Member) -> Option<Vec<(AccessorRole, &AccessorSlot)>> {
     let (roles, slots): (Vec<AccessorRole>, &[AccessorSlot]) = match m {
         Member::Property(p) => (
@@ -1086,14 +1079,10 @@ fn slot_roles(m: &Member) -> Option<Vec<(AccessorRole, &AccessorSlot)>> {
             &p.accessor_slots,
         ),
         Member::Event(e) => (
-            [
-                (true, AccessorRole::Add),
-                (true, AccessorRole::Remove),
-                (e.has_fire, AccessorRole::Fire),
-            ]
-            .into_iter()
-            .filter_map(|(has, role)| has.then_some(role))
-            .collect(),
+            [(true, AccessorRole::Add), (true, AccessorRole::Remove)]
+                .into_iter()
+                .filter_map(|(has, role)| has.then_some(role))
+                .collect(),
             &e.accessor_slots,
         ),
         Member::Method(_) | Member::Field(_) => return None,
@@ -1211,9 +1200,8 @@ fn accessor_shapes(
     iface: EntityHandle,
     member: &Member,
 ) -> Option<Vec<MethodShape>> {
-    if matches!(member, Member::Property(p) if p.signature_disagrees_with_accessors) {
-        return None;
-    }
+    // Compiler-shaped, the accessors' signatures are the property's or
+    // event's own.
     let key = |t: &TypeRef| type_key(env, iface, t);
     let void = || key(&TypeRef::Primitive(Primitive::Void));
     Some(match member {
@@ -1293,33 +1281,6 @@ fn may_name(implemented: &ImplementedMember, im: &Member) -> bool {
                     .any(|p| raw.strip_prefix(p) == Some(name))
         }
     }
-}
-
-/// Whether a property's or event's accessors are named by the convention:
-/// `get_P`/`set_P`, `add_E`/`remove_E`/`raise_E` (for an explicit
-/// implementation `I.P`, `I.get_P`). Methods and fields trivially are.
-fn conventional_accessors(member: &Member) -> bool {
-    let (name, slots, prefixes): (&str, &[borzoi_assembly::AccessorSlot], &[&str]) = match member {
-        Member::Property(p) => (&p.name, &p.accessor_slots, &["get_", "set_"]),
-        Member::Event(e) => (&e.name, &e.accessor_slots, &["add_", "remove_", "raise_"]),
-        Member::Method(_) | Member::Field(_) => return true,
-    };
-    // An explicit implementation's name is qualified (`I.P`), and so are
-    // its accessors' (`I.get_P`).
-    let (qualifier, simple) = match name.rsplit_once('.') {
-        Some((q, simple)) => (Some(q), simple),
-        None => (None, name),
-    };
-    slots.iter().all(|s| {
-        let unqualified = match qualifier {
-            Some(q) => s
-                .name
-                .strip_prefix(q)
-                .and_then(|rest| rest.strip_prefix('.')),
-            None => Some(s.name.as_str()),
-        };
-        unqualified.is_some_and(|u| prefixes.iter().any(|p| u.strip_prefix(p) == Some(simple)))
-    })
 }
 
 /// Whether `handle` dropped a member named `name` while projecting.
@@ -1742,18 +1703,6 @@ fn interface_candidate(
     // spell that member's name.
     if !env.entity(parent).skipped_members.is_empty() {
         return Undecidable::Shadowed.into();
-    }
-    // A property or event implements an interface's implicitly by name here,
-    // but at run time each accessor implements the interface *method* of its
-    // own name, and Roslyn reconciles the two in ways not modelled. They agree
-    // when every accessor involved is named by the convention.
-    let accessors_conventional =
-        |h: EntityHandle| members(env, h).all(|(_, m)| conventional_accessors(m));
-    if matches!(member, Member::Property(_) | Member::Event(_))
-        && (!accessors_conventional(parent)
-            || interfaces.iter().any(|i| !accessors_conventional(i.def)))
-    {
-        return Undecidable::UnconventionalAccessors.into();
     }
     for iface in &interfaces {
         // Roslyn looks for an implicit implementation on a type only from

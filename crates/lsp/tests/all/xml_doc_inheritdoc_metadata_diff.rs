@@ -24,6 +24,12 @@
 //! Roslyn's expansion over the same reference set. A census per dimension
 //! counts what each reached, and a liveness check over a fixed sample
 //! requires every dimension to reach both an expansion and a decline.
+//!
+//! Some dimensions build metadata no C#, VB or F# compiler writes
+//! ([`OUT_OF_DOMAIN`]). The expansion certifies only compiler-shaped
+//! metadata, so an entry carrying one of them must decline, whatever Roslyn
+//! makes of it: that property needs no oracle, and a disagreement Roslyn
+//! would show there is not one the expansion can reach.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1193,8 +1199,32 @@ fn build(w: &World) -> Built {
     }
 }
 
+/// Dimensions whose metadata no C#, VB or F# compiler writes: why each is
+/// outside the domain the expansion certifies. An entry carrying one never
+/// expands.
+const OUT_OF_DOMAIN: [(Dim, &str); 5] = [
+    (
+        Dim::GetterRotated,
+        "a getter named as another property's (`get_P1` for `P0`)",
+    ),
+    (Dim::GetterOdd, "a getter outside the `get_` convention"),
+    (
+        Dim::ModOpt,
+        "an optional `IsConst` modifier, which only C++/CLI writes",
+    ),
+    (
+        Dim::ModMismatch,
+        "an override whose return modifiers differ from its base's",
+    ),
+    (
+        Dim::Misdeclared,
+        "a `MethodImpl` declaration whose signature names no member",
+    ),
+];
+
 /// One world's comparisons, with each entry's dimensions. Panics on a
-/// disagreement.
+/// disagreement, and on an expansion of an entry carrying an
+/// [`OUT_OF_DOMAIN`] dimension.
 fn run(w: &World) -> Vec<(Compared, BTreeSet<Dim>)> {
     let built = build(w);
     let fx = fixture_from(built.dir, built.hi.clone(), built.references.clone());
@@ -1209,13 +1239,25 @@ fn run(w: &World) -> Vec<(Compared, BTreeSet<Dim>)> {
             c.key
         );
     }
-    compared
+    let compared: Vec<(Compared, BTreeSet<Dim>)> = compared
         .into_iter()
         .map(|c| {
             let d = built.dims.get(&c.key).cloned().unwrap_or_default();
             (c, d)
         })
-        .collect()
+        .collect();
+    for (c, dims) in &compared {
+        if let Some((d, why)) = OUT_OF_DOMAIN.iter().find(|(d, _)| dims.contains(d))
+            && matches!(c.verdict, Verdict::Agrees)
+        {
+            panic!(
+                "{} expanded over metadata no compiler writes ({d:?}: {why}); \
+                 it must decline\nworld: {w:#?}",
+                c.key
+            );
+        }
+    }
+    compared
 }
 
 fn check(cases: u32) {
@@ -1327,7 +1369,10 @@ fn the_metadata_generator_reaches_every_dimension() {
         .iter()
         .filter(|d| {
             !reach.get(d).is_some_and(|r| {
-                r.declined > 0 && (r.expanded > 0 || DECLINE_ONLY.iter().any(|(x, _)| x == *d))
+                r.declined > 0
+                    && (r.expanded > 0
+                        || DECLINE_ONLY.iter().any(|(x, _)| x == *d)
+                        || OUT_OF_DOMAIN.iter().any(|(x, _)| x == *d))
             })
         })
         .map(|d| format!("{d:?}"))
@@ -1745,6 +1790,161 @@ fn a_special_type_named_by_reference_declines() {
             vec![],
             vec![],
         ),
+        "M:N.C.M",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
+
+/// `Lo` declaring `types` with `docs`, compared against Roslyn and held
+/// sound: `key`'s verdict.
+fn lo_world(label: &str, types: Vec<Value>, docs: &Entries, key: &str) -> Verdict {
+    let dir = TempDir::new().unwrap();
+    let (runtime, core) = system_runtime();
+    let lo = Ident::new("Lo", "1.0.0.0", "");
+    let path = emit(dir.path(), "Lo", &lo, &[core], types, json!([]));
+    std::fs::write(
+        path.with_extension("xml"),
+        render_xml("Lo", docs, Layout::Indented),
+    )
+    .unwrap();
+    let fx = fixture_from(dir, path.clone(), vec![runtime.clone(), path]);
+    let compared = compare(&fx);
+    let mut census = crate::common::inheritdoc_diff::Census::default();
+    census.add(&compared);
+    census.print(label);
+    census.assert_sound();
+    compared
+        .into_iter()
+        .find(|c| c.key == key)
+        .map(|c| c.verdict)
+        .unwrap_or_else(|| panic!("{label}: no entry {key}"))
+}
+
+/// `B` and `C : B` each declaring event `E` (`System.EventHandler`) through
+/// accessors `add_E`, `remove_E` and `raise_E` with the given flags:
+/// `(virtual, newslot)` for the adder and remover, then for the raiser.
+/// `accessor_param` is the adder's and remover's parameter.
+fn event_types(
+    c_add: (bool, bool),
+    c_fire: (bool, bool),
+    fire: bool,
+    accessor_param: &Value,
+) -> Vec<Value> {
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let handler = json!({"scope": 0, "ns": "System", "name": "EventHandler"});
+    let void = Value::Null;
+    let accessors = |add: (bool, bool), fire_flags: (bool, bool)| {
+        let m = |name: &str, (virtual_, newslot): (bool, bool), params: Vec<Value>| {
+            method(
+                name,
+                "public",
+                (virtual_, newslot, false, false),
+                true,
+                void.clone(),
+                params,
+                vec![],
+            )
+        };
+        vec![
+            m("add_E", add, vec![accessor_param.clone()]),
+            m("remove_E", add, vec![accessor_param.clone()]),
+            m("raise_E", fire_flags, vec![]),
+        ]
+    };
+    let event = json!([{"name": "E", "type": handler, "add": 0, "remove": 1, "fire": if fire { json!(2) } else { Value::Null }}]);
+    let local = |name: &str| json!({"scope": -1, "ns": "N", "name": name});
+    vec![
+        json!({"ns": "N", "name": "B", "kind": "class", "base": object(&cx), "interfaces": [], "properties": [],
+            "methods": accessors((true, true), (true, true)), "events": event}),
+        json!({"ns": "N", "name": "C", "kind": "class", "base": local("B"), "interfaces": [], "properties": [],
+            "methods": accessors(c_add, c_fire), "events": event}),
+    ]
+}
+
+fn event_docs() -> Entries {
+    vec![
+        ("T:N.B".into(), full("T:N.B")),
+        ("E:N.B.E".into(), full("E:N.B.E")),
+        ("T:N.C".into(), full("T:N.C")),
+        ("E:N.C.E".into(), bare()),
+    ]
+}
+
+/// No C#, VB or F# compiler writes an event's `fire` accessor (ILAsm and
+/// C++/CLI do), so an event that has one declines. Here only `C`'s raiser
+/// overrides `B`'s, its adder and remover are new slots.
+#[test]
+fn an_event_with_a_fire_accessor_declines() {
+    let sig = json!({"type": {"scope": 0, "ns": "System", "name": "EventHandler"}, "mods": []});
+    let verdict = lo_world(
+        "an event with a fire accessor",
+        event_types((true, true), (true, false), true, &sig),
+        &event_docs(),
+        "E:N.C.E",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
+
+/// Compilers write an event's adder and remover to take the event's own
+/// delegate type; accessors taking `object` for a `System.EventHandler`
+/// event decline.
+#[test]
+fn an_event_whose_accessors_disagree_with_its_type_declines() {
+    let sig = json!({"type": {"prim": "Object"}, "mods": []});
+    let verdict = lo_world(
+        "an event whose accessors disagree with its type",
+        event_types((true, false), (true, true), false, &sig),
+        &event_docs(),
+        "E:N.C.E",
+    );
+    assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");
+}
+
+/// A signature naming a method type parameter (`!!0`) its method does not
+/// declare is no compiler's: `C.M(): !!0` overriding `B.M(): !!0`, neither
+/// generic, declines.
+#[test]
+fn a_method_type_parameter_its_method_lacks_declines() {
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let mvar = json!({"type": {"mvar": 0}, "mods": []});
+    let m = |newslot| {
+        method(
+            "M",
+            "public",
+            (true, newslot, false, false),
+            false,
+            mvar.clone(),
+            vec![],
+            vec![],
+        )
+    };
+    let types = vec![
+        class("N", "B", Some(object(&cx)), vec![m(true)]),
+        class(
+            "N",
+            "C",
+            Some(json!({"scope": -1, "ns": "N", "name": "B"})),
+            vec![m(false)],
+        ),
+    ];
+    let docs: Entries = vec![
+        ("T:N.B".into(), full("T:N.B")),
+        ("M:N.B.M".into(), full("M:N.B.M")),
+        ("T:N.C".into(), full("T:N.C")),
+        ("M:N.C.M".into(), bare()),
+    ];
+    let verdict = lo_world(
+        "a method type parameter its method lacks",
+        types,
+        &docs,
         "M:N.C.M",
     );
     assert!(matches!(verdict, Verdict::Declined { .. }), "{verdict:?}");

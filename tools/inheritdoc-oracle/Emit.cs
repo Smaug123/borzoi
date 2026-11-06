@@ -2,7 +2,8 @@
 // System.Reflection.Metadata's MetadataBuilder — for metadata shapes no C#
 // compiler writes (accessors named apart from their properties, assembly
 // references of any version, culture or case, forwarders, custom modifiers,
-// `MethodImpl` rows, arbitrary vtable flags, a hand-made core library).
+// `MethodImpl` rows, arbitrary vtable flags, a hand-made core library, an
+// event's `fire` accessor, a method type parameter its method lacks).
 //
 // Request:
 //   {"op":"emit","path":p,
@@ -11,7 +12,9 @@
 //    "types":[Type..], "forwarders":[{"ns":s,"name":n,"ref":i}..]}
 //   Type   = {"ns":s,"name":n,"kind":"class"|"interface"|"struct",
 //             "abstract":b,"sealed":b,"base":TypeRef|null,"interfaces":[TypeRef..],
-//             "methods":[Method..],"properties":[{"name":n,"type":Sig,"getter":i}..]}
+//             "methods":[Method..],"properties":[{"name":n,"type":Sig,"getter":i}..],
+//             "events":[{"name":n,"type":TypeRef,"add":i,"remove":i,"fire":i|null}..]}
+//           (`getter`, `add`, `remove`, `fire`: indices into the type's methods)
 //   Method = {"name":n,"access":"public"|"private","static":b,"virtual":b,
 //             "newslot":b,"abstract":b,"final":b,"specialName":b,
 //             "ret":Sig|null (void),"params":[Sig..],
@@ -21,6 +24,7 @@
 //           | {"scope":-1|i,"ns":s,"name":n}   (-1: a type this module defines)
 //           | {"szarray":TypeRef}               (the vector `T[]`)
 //           | {"array":TypeRef}                 (rank 1, no bounds: `T[*]`)
+//           | {"var":i} | {"mvar":i}            (`!i`, `!!i`, whatever the owner declares)
 // Every non-abstract method gets the body `ret`: the bodies are never run.
 // -> {"ok":true}
 
@@ -106,6 +110,16 @@ internal static class Emit
                     shape => shape.Shape(1, ImmutableArray<int>.Empty, ImmutableArray<int>.Empty));
                 return;
             }
+            if (t["var"] is JsonNode var)
+            {
+                enc.GenericTypeParameter((int)var);
+                return;
+            }
+            if (t["mvar"] is JsonNode mvar)
+            {
+                enc.GenericMethodTypeParameter((int)mvar);
+                return;
+            }
             switch ((string?)t["prim"])
             {
                 case "I4": enc.Int32(); return;
@@ -157,8 +171,12 @@ internal static class Emit
         var methodRow = 1;
         var paramRow = 1;
         var propertyRow = 1;
+        var eventRow = 1;
         var impls = new List<(TypeDefinitionHandle, MethodDefinitionHandle, JsonObject)>();
-        var semantics = new List<(PropertyDefinitionHandle, MethodDefinitionHandle)>();
+        // Each row as (association, its HasSemantics coded index, kind, method),
+        // added in coded-index order, as the table is sorted.
+        var semantics = new List<(EntityHandle, int, MethodSemanticsAttributes, MethodDefinitionHandle)>();
+        var eventMaps = new List<(TypeDefinitionHandle, EventDefinitionHandle)>();
         var interfaces = new List<(TypeDefinitionHandle, EntityHandle)>();
         var propertyMaps = new List<(TypeDefinitionHandle, PropertyDefinitionHandle)>();
         // Method and parameter rows are laid out first, type by type, so each
@@ -251,8 +269,31 @@ internal static class Emit
                     },
                     _ => { });
                 var ph = mb.AddProperty(PropertyAttributes.None, mb.GetOrAddString((string)p["name"]!), mb.GetOrAddBlob(blob));
+                semantics.Add((ph, (propertyRow << 1) | 1, MethodSemanticsAttributes.Getter, methods[(int)p["getter"]!]));
                 propertyRow++;
-                semantics.Add((ph, methods[(int)p["getter"]!]));
+            }
+            var events = t["events"]?.AsArray() ?? new JsonArray();
+            if (events.Count > 0)
+            {
+                eventMaps.Add((handle, MetadataTokens.EventDefinitionHandle(eventRow)));
+            }
+            foreach (var enode in events)
+            {
+                var e = enode!.AsObject();
+                var eh = mb.AddEvent(EventAttributes.None, mb.GetOrAddString((string)e["name"]!), Ref(e["type"]!));
+                foreach (var (role, semantic) in new[]
+                         {
+                             ("add", MethodSemanticsAttributes.Adder),
+                             ("remove", MethodSemanticsAttributes.Remover),
+                             ("fire", MethodSemanticsAttributes.Raiser),
+                         })
+                {
+                    if (e[role] is JsonNode index)
+                    {
+                        semantics.Add((eh, eventRow << 1, semantic, methods[(int)index]));
+                    }
+                }
+                eventRow++;
             }
         }
         foreach (var (type, iface) in interfaces.OrderBy(x => MetadataTokens.GetRowNumber(x.Item1))
@@ -264,9 +305,13 @@ internal static class Emit
         {
             mb.AddPropertyMap(type, first);
         }
-        foreach (var (property, getter) in semantics)
+        foreach (var (type, first) in eventMaps)
         {
-            mb.AddMethodSemantics(property, MethodSemanticsAttributes.Getter, getter);
+            mb.AddEventMap(type, first);
+        }
+        foreach (var (association, _, kind, method) in semantics.OrderBy(x => x.Item2))
+        {
+            mb.AddMethodSemantics(association, kind, method);
         }
         foreach (var (type, body, decl) in impls)
         {

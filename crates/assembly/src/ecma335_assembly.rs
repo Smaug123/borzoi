@@ -3288,16 +3288,28 @@ impl Ecma335Assembly {
         };
         self.reject_generic_accessor("event", &e.name, "add", add)?;
         self.reject_generic_accessor("event", &e.name, "remove", remove)?;
-        self.project_method(add, type_context, false)?;
-        self.project_method(remove, type_context, false)?;
-        let fire = match e.raise {
+        // Modifiers aside, which `drops_optional_modifier` records.
+        let delegate = nullability_erased(&walked.ty);
+        let takes_the_delegate = |accessor: &MethodLike| {
+            matches!(
+                accessor.signature.return_type,
+                TypeRef::Primitive(Primitive::Void)
+            ) && matches!(
+                accessor.signature.parameters.as_slice(),
+                [p] if !p.is_byref && nullability_erased(&p.ty) == delegate
+            )
+        };
+        let proj_add = self.project_method(add, type_context, false)?;
+        let proj_remove = self.project_method(remove, type_context, false)?;
+        let signature_agrees = takes_the_delegate(&proj_add) && takes_the_delegate(&proj_remove);
+        let (fire, fire_drops_modifier) = match e.raise {
             Some(raise) => {
                 let fire = &td.methods[raise.0 as usize];
                 self.reject_generic_accessor("event", &e.name, "raise", fire)?;
-                self.project_method(fire, type_context, false)?;
-                Some(fire)
+                let proj_fire = self.project_method(fire, type_context, false)?;
+                (Some(fire), proj_fire.drops_optional_modifier)
             }
-            None => None,
+            None => (None, false),
         };
 
         if add.is_static != remove.is_static {
@@ -3338,6 +3350,11 @@ impl Ecma335Assembly {
             delegate_type: walked.ty,
             is_static: add.is_static,
             has_fire: e.raise.is_some(),
+            signature_disagrees_with_accessors: !signature_agrees,
+            drops_optional_modifier: carries_optional_modifier(sig)
+                || proj_add.drops_optional_modifier
+                || proj_remove.drops_optional_modifier
+                || fire_drops_modifier,
             nullability: walked.nullability,
             custom_attrs: Vec::new(),
             implements,

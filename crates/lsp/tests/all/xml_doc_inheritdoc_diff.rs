@@ -1174,11 +1174,12 @@ fn swap_getter_names(dll: &std::path::Path) {
 }
 
 /// An explicit implementation of a property of an interface in another
-/// assembly is a `MethodImpl` row naming the interface's *accessor*. The
-/// property that owns the accessor is what Roslyn inherits from, whatever the
-/// accessor is called: `I.P` here, though its getter is named `get_Q`.
+/// assembly is a `MethodImpl` row naming the interface's *accessor*, which
+/// Roslyn follows to the property that owns it, whatever the accessor is
+/// called. With `I.P`'s getter named `get_Q`, `I` is not compiler-shaped, so
+/// both implementations decline rather than reproduce that.
 #[test]
-fn an_external_accessor_belongs_to_its_owner_not_its_name() {
+fn an_external_accessor_named_apart_from_its_owner_declines() {
     let fx = fixture_with(
         r#"
 namespace F;
@@ -1212,7 +1213,7 @@ public class C : N.I
     let v = verdicts(&compared);
     for key in ["P:F.C.N#I#P", "P:F.C.N#I#Q"] {
         assert!(
-            matches!(v.get(key), Some(Verdict::Agrees)),
+            matches!(v.get(key), Some(Verdict::Declined { cause, .. }) if cause.contains("Unshaped")),
             "{key}: {:?}",
             v.get(key)
         );

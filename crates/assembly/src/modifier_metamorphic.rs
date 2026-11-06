@@ -171,7 +171,7 @@ enum Scope {
 }
 
 /// **P1**: decorating every signature node with an unrecognised `modopt` must
-/// not move the projection, beyond each decorated method and property
+/// not move the projection, beyond each decorated method, property and event
 /// recording that it dropped one (`drops_optional_modifier`, #339).
 ///
 /// The modifier names a type the projector has no policy for, which is the
@@ -827,12 +827,13 @@ fn member_name(m: &Member) -> &str {
 }
 
 /// Whether `m` records a dropped `modopt`; `None` for a member kind whose
-/// signature cannot carry one in the model (a field, an event).
+/// signature cannot carry one in the model (a field).
 fn drops_optional_modifier(m: &Member) -> Option<bool> {
     match m {
         Member::Method(m) => Some(m.drops_optional_modifier),
         Member::Property(p) => Some(p.drops_optional_modifier),
-        Member::Field(_) | Member::Event(_) => None,
+        Member::Event(e) => Some(e.drops_optional_modifier),
+        Member::Field(_) => None,
     }
 }
 
@@ -842,7 +843,8 @@ fn without_dropped_modifier(m: &Member) -> Member {
     match &mut m {
         Member::Method(m) => m.drops_optional_modifier = false,
         Member::Property(p) => p.drops_optional_modifier = false,
-        Member::Field(_) | Member::Event(_) => {}
+        Member::Event(e) => e.drops_optional_modifier = false,
+        Member::Field(_) => {}
     }
     m
 }

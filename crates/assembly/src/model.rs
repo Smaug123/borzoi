@@ -2290,6 +2290,15 @@ pub struct Event {
     pub delegate_type: TypeRef,
     pub is_static: bool,
     pub has_fire: bool,
+    /// Whether the adder or remover does anything but take exactly the
+    /// delegate type (by value, unmodified) and return nothing, as every
+    /// compiler writes them.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub signature_disagrees_with_accessors: bool,
+    /// As [`MethodLike::drops_optional_modifier`], over the delegate type and
+    /// every accessor.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub drops_optional_modifier: bool,
     /// Nullable-reference-type state of the delegate type (phase 4m.2).
     /// Decoded from `[NullableAttribute(byte)]` on the event row when
     /// present, falling back to the enclosing type's

@@ -203,6 +203,17 @@ This is a Cargo workspace with nine members:
   `BORZOI_INHERITDOC_CASES` overriding them all — and the ignored
   `xml_doc_inheritdoc_sweep` (the ASP.NET Core pack, plus a NuGet cache under
   `BORZOI_INHERITDOC_SWEEP_ROOT`) hold every `<inheritdoc>` expansion to it.
+  The expansion certifies only metadata shaped as C# writes it: every type it
+  reads must pass `borzoi_assembly::shape::compiler_shape`, or it declines.
+  So a disagreement with Roslyn over metadata outside that shape (an event's
+  `fire` accessor, accessors named apart from their property, a `modopt`) is
+  a bug in the predicate, which must reject it, not a Roslyn rule to model;
+  and a review finding on such metadata that already declines is closed. The
+  metadata generator asserts the decline for its out-of-domain dimensions
+  without the oracle. What the predicate rejects in real packages is measured,
+  not guessed: `compiler_shape::package_cache_shape_census` (ignored,
+  `BORZOI_SHAPE_SWEEP_ROOT`) counts it by cause over a NuGet cache, and the
+  reference pack and csc output must pass it whole.
 - `crates/corpus-diff/` — `borzoi-corpus-diff`. Test-only, unpublished: an
   empirical whole-project name-resolution differential. It loads real F#
   projects through the same runtime path the LSP uses (`Workspace` +
