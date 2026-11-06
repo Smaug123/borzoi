@@ -1,11 +1,11 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi-msbuild --test restore_cone_census pinned_projects -- --ignored
-10.0.112 assembly sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 15.1.0.0 18.0.11+95017c711e6afc1085133d440e42b4bd78155701 mvid:49ab7074-8bba-42be-b6e5-8d308447cc31
-10.0.112 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.0.11+95017c711e6afc1085133d440e42b4bd78155701 mvid:1dfd2378-c17e-495e-ab52-d549adf2696e
-10.0.112 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.0.3.0 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701 mvid:eef89a75-ccbb-4f6a-bfb4-c1cd99a52911
-10.0.112 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42308 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701 mvid:b2736936-02cf-4e28-930a-d6a01d63a712
-10.0.112 census	resolved=0 forced=6 targets=50 target-files=9 user-targets=0 tasks=26 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
+10.0.112 assembly sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 15.1.0.0 18.0.11+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.0.11+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.0.3.0 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42308 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701
+10.0.112 census	resolved=0 forced=6 targets=50 target-files=9 user-targets=0 tasks=26 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=18
 10.0.112 file sdk:NuGet.targets	sha256:32d847234c43b287
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets	sha256:39edebe465572be7
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets	sha256:eaf05ceeec1f3c30
@@ -415,13 +415,12 @@
 10.0.112 loaded sdk:NuGet.Packaging.dll	NuGet.Packaging 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 loaded sdk:NuGet.ProjectModel.dll	NuGet.ProjectModel 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 loaded sdk:NuGet.Versioning.dll	NuGet.Versioning 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
-10.0.112 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701
-10.0.401 assembly sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 15.1.0.0 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:31c0f4d2-63dd-4446-bc11-0d5242ee5405
-10.0.401 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:f91f8ddc-5173-44e6-ad0f-4b9c2095563d
-10.0.401 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.9.0.0 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:561a004a-525c-43d7-8e77-88e41d2bced8
-10.0.401 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42413 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab mvid:79c66d80-39b6-4f4e-904d-f84be38c3521
-10.0.401 census	resolved=6 forced=0 targets=50 target-files=9 user-targets=0 tasks=26 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
+10.0.401 assembly sdk:Microsoft.Build.Tasks.Core.dll	Microsoft.Build.Tasks.Core 15.1.0.0 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.9.0.0 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42413 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 census	resolved=6 forced=0 targets=50 target-files=9 user-targets=0 tasks=26 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=18
 10.0.401 file sdk:NuGet.targets	sha256:ce10b22f34950346
 10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets	sha256:39edebe465572be7
 10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets	sha256:ea5fe130702f2fc8
@@ -448,7 +447,6 @@
 10.0.401 loaded sdk:NuGet.Packaging.dll	NuGet.Packaging 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
 10.0.401 loaded sdk:NuGet.ProjectModel.dll	NuGet.ProjectModel 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
 10.0.401 loaded sdk:NuGet.Versioning.dll	NuGet.Versioning 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
-10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
 10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets

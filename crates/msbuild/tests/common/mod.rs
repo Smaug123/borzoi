@@ -136,6 +136,12 @@ fn ensure_oracle_built() -> &'static Path {
         .as_path()
 }
 
+/// The oracle's managed assembly, which also holds the `ConeLogger` that
+/// `dotnet msbuild -logger:` can load.
+pub fn oracle_assembly() -> PathBuf {
+    ensure_oracle_built().with_extension("dll")
+}
+
 /// Hash the inputs whose change should force a rebuild: the tool's sources
 /// and the flake lock (which pins the SDK and thus the MSBuild the oracle
 /// loads via MSBuildLocator).
@@ -297,13 +303,21 @@ impl Oracle {
 
     /// An oracle running the MSBuild of exactly the SDK installed at `sdk_dir`
     /// (`<dotnet root>/sdk/<version>`), rather than the one `dotnet` resolves
-    /// from the working directory. The oracle refuses to start if no SDK is
-    /// installed there.
-    pub fn spawn_for_sdk(sdk_dir: &Path) -> Oracle {
-        Oracle::spawn_with(vec!["--msbuild-sdk".into(), sdk_dir.as_os_str().to_owned()])
+    /// from the working directory, with `working_dir` as its working directory
+    /// (which MSBuild reports as `MSBuildStartupDirectory`). The oracle refuses
+    /// to start if no SDK is installed there.
+    pub fn spawn_for_sdk(sdk_dir: &Path, working_dir: &Path) -> Oracle {
+        Oracle::spawn_in(
+            vec!["--msbuild-sdk".into(), sdk_dir.as_os_str().to_owned()],
+            Some(working_dir.to_path_buf()),
+        )
     }
 
     fn spawn_with(args: Vec<std::ffi::OsString>) -> Oracle {
+        Oracle::spawn_in(args, None)
+    }
+
+    fn spawn_in(args: Vec<std::ffi::OsString>, working_dir: Option<PathBuf>) -> Oracle {
         let bin = ensure_oracle_built().to_path_buf();
         // A factory rather than a bare program+args: the child's environment must
         // be scrubbed (see `scrub_oracle_env`), and every respawn must scrub it
@@ -311,6 +325,9 @@ impl Oracle {
         let factory = move || {
             let mut cmd = Command::new(&bin);
             cmd.args(&args);
+            if let Some(dir) = &working_dir {
+                cmd.current_dir(dir);
+            }
             scrub_oracle_env(&mut cmd);
             cmd
         };

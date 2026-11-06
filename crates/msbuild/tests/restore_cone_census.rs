@@ -16,10 +16,14 @@
 //! so the cone does not move with the host's environment. Two checks make the
 //! census a census of A₀ rather than of something nearby:
 //!
-//! - **Same computation.** Under the SDK `dotnet` resolves for the project, the
-//!   spec the in-process build writes must equal the one `dotnet msbuild
-//!   -t:GenerateRestoreGraphFile` writes under the same globals, up to the
-//!   scratch directory.
+//! - **Same computation.** Under the SDK `dotnet` resolves for the project,
+//!   `dotnet msbuild -t:GenerateRestoreGraphFile` under the same globals, with
+//!   the oracle's logger attached, must execute exactly the targets and tasks
+//!   the in-process build does, and write the same spec up to the scratch
+//!   directory. The cone is compared, not only the spec, because a target that
+//!   runs in one and not the other can leave the spec unchanged. Each oracle
+//!   runs from its project's directory, as `restore.rs` runs `dotnet`, since
+//!   MSBuild exposes that directory to the build (`MSBuildStartupDirectory`).
 //! - **Same SDK.** The oracle is pinned to one installed SDK (`--msbuild-sdk`)
 //!   and reports the SDK version its evaluation imported, which must be that
 //!   one.
@@ -41,9 +45,10 @@
 //! `dotnet:` relative to the dotnet root, and `project:`/`fixture:` relative to
 //! the tree the project lives in. A file anywhere else fails the census, which
 //! has no spelling for it. Target files are identified by the leading
-//! [`HASH_DIGITS`] hex digits of their SHA-256; task assemblies by name,
-//! version, informational version and module MVID, since their bytes differ by
-//! platform (ReadyToRun) while their IL does not.
+//! [`HASH_DIGITS`] hex digits of their SHA-256, which agree between the macOS
+//! and Linux builds of one SDK. Task assemblies are identified by name, version
+//! and informational version (which names the commit the SDK was built from):
+//! their bytes and module MVIDs differ between those builds.
 
 mod common;
 
@@ -141,16 +146,23 @@ impl Scratch {
     }
 }
 
-/// The spec `dotnet msbuild -t:GenerateRestoreGraphFile` writes for `project`
-/// under the census globals, run from the project's directory as `restore.rs`
-/// runs it.
-fn generated_by_cli(project: &Path) -> Value {
+/// What `dotnet msbuild -t:GenerateRestoreGraphFile` executes and writes for
+/// `project` under the census globals, run from the project's directory as
+/// `restore.rs` runs it, with the oracle's `ConeLogger` attached: the executed
+/// cone (as [`Cone::executed`] spells it) and the normalised spec.
+fn generated_by_cli(project: &Path) -> (Executed, Value) {
     let scratch = Scratch::new();
+    let recorded = scratch.path.join("cli-cone.json");
+    let mut logger = std::ffi::OsString::from("-logger:MsBuildConditionOracle.Program+ConeLogger,");
+    logger.push(common::oracle_assembly());
+    logger.push(";");
+    logger.push(&recorded);
     let mut args: Vec<std::ffi::OsString> = vec![
         "msbuild".into(),
         project.into(),
         "-nologo".into(),
         format!("-t:{GENERATE_RESTORE_GRAPH_TARGET}").into(),
+        logger,
     ];
     for (name, value) in scratch.globals() {
         let mut arg = std::ffi::OsString::from(format!("-p:{name}="));
@@ -161,7 +173,52 @@ fn generated_by_cli(project: &Path) -> Value {
     dotnet(project.parent().unwrap(), &args);
     let spec = std::fs::read_to_string(&scratch.output)
         .unwrap_or_else(|e| panic!("{}: dotnet msbuild wrote no spec: {e}", project.display()));
-    scratch.normalised(&spec)
+    let cone: Value =
+        serde_json::from_str(&std::fs::read_to_string(&recorded).unwrap_or_else(|e| {
+            panic!("{}: the CLI's logger wrote nothing: {e}", project.display())
+        }))
+        .expect("the logger writes JSON");
+    assert_eq!(
+        cone["errors"],
+        serde_json::json!([]),
+        "{}",
+        project.display()
+    );
+    (executed(&cone), scratch.normalised(&spec))
+}
+
+/// An executed cone as a multiset: each target as `(name, file)` and each task
+/// as `(name, containing target, assembly)`, sorted. Order is not compared, since
+/// the CLI may build on several nodes.
+#[derive(Debug, PartialEq, Eq)]
+struct Executed {
+    targets: Vec<(String, String)>,
+    tasks: Vec<(String, String, String)>,
+}
+
+fn executed(answer: &Value) -> Executed {
+    let list = |field: &str| {
+        answer[field]
+            .as_array()
+            .unwrap_or_else(|| panic!("{field}"))
+    };
+    let mut targets: Vec<_> = list("targets")
+        .iter()
+        .map(|t| (string(t, "name"), string(t, "file")))
+        .collect();
+    let mut tasks: Vec<_> = list("tasks")
+        .iter()
+        .map(|t| {
+            (
+                string(t, "name"),
+                string(t, "target"),
+                string(t, "assembly"),
+            )
+        })
+        .collect();
+    targets.sort();
+    tasks.sort();
+    Executed { targets, tasks }
 }
 
 /// The first place two JSON values differ: `in-process` is `a`, `cli` is `b`.
@@ -261,6 +318,8 @@ struct Cone {
     loaded: BTreeMap<PathBuf, String>,
     /// The spec the build wrote, normalised.
     spec: Value,
+    /// The executed targets and tasks, for comparison with the CLI's.
+    executed: Executed,
 }
 
 fn string(value: &Value, field: &str) -> String {
@@ -332,11 +391,10 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         .iter()
         .map(|(path, id)| {
             let rendered = format!(
-                "{} {} {} mvid:{}",
+                "{} {} {}",
                 string(id, "name"),
                 string(id, "version"),
-                string(id, "informationalVersion"),
-                string(id, "mvid")
+                string(id, "informationalVersion")
             );
             (PathBuf::from(path), rendered)
         })
@@ -353,6 +411,7 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         })
         .collect();
     let spec = scratch.normalised(&string(&answer, "dgspec"));
+    let executed = executed(&answer);
     Cone {
         sdk_dir: sdk_dir.to_path_buf(),
         targets,
@@ -361,6 +420,7 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         assemblies,
         loaded,
         spec,
+        executed,
     }
 }
 
@@ -505,7 +565,6 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
         // graph) that `dotnet msbuild` does not.
         let sdk_dir = std::fs::canonicalize(dotnet_root_from_env().join("sdk").join(sdk))
             .unwrap_or_else(|e| panic!("SDK {sdk} is not installed under DOTNET_ROOT: {e}"));
-        let mut oracle = Oracle::spawn_for_sdk(&sdk_dir);
         let mut per_sdk = SdkCensus::default();
         for ((subject, resolved), previous) in subjects.iter().zip(&resolved).zip(&mut previous) {
             let how = if resolved == sdk {
@@ -513,6 +572,9 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
             } else {
                 "forced"
             };
+            // One oracle per project, from its directory: MSBuild fixes the
+            // startup directory once per process.
+            let mut oracle = Oracle::spawn_for_sdk(&sdk_dir, subject.project.parent().unwrap());
             let cone = cone(&mut oracle, &subject.project, sdk, &sdk_dir);
             if let Some((before, spec)) = previous.replace((sdk.clone(), cone.spec.clone())) {
                 let mut places = BTreeSet::new();
@@ -529,7 +591,12 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
             }
             if how == "resolved" {
                 per_sdk.resolved += 1;
-                let cli = generated_by_cli(&subject.project);
+                let (cli_cone, cli) = generated_by_cli(&subject.project);
+                assert_eq!(
+                    cone.executed, cli_cone,
+                    "{}: the in-process build executed another cone than `dotnet msbuild` does",
+                    subject.key
+                );
                 if let Some(difference) = first_difference(&cone.spec, &cli, "$") {
                     panic!(
                         "{}: the in-process build wrote another spec than `dotnet msbuild` \
@@ -692,7 +759,9 @@ const CPM_LIB: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
 </Project>
 "#;
 
-/// The user target [`HOOKED`] hooks into the restore targets.
+/// The user target [`HOOKED`] hooks into the restore targets. It runs only when
+/// MSBuild starts from the project's directory, as `restore.rs` starts it, so
+/// the census must start there too to see it.
 const USER_HOOK: &str = "UserHookBeforeRestoreGraphEntry";
 
 const HOOKED: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
@@ -702,7 +771,8 @@ const HOOKED: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <Compile Include="App.fs" />
   </ItemGroup>
-  <Target Name="UserHookBeforeRestoreGraphEntry" BeforeTargets="_GenerateRestoreGraphProjectEntry">
+  <Target Name="UserHookBeforeRestoreGraphEntry" BeforeTargets="_GenerateRestoreGraphProjectEntry"
+          Condition="'$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)'">
     <Message Text="a user target in the restore cone" />
   </Target>
 </Project>

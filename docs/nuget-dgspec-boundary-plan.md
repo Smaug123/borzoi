@@ -154,8 +154,10 @@ that `NuGet.Commands` can change. Each therefore keys its trust on the identity
 of the code it models:
 
 - **A₁:** the content hash of each SDK file defining a target in the restore
-  cone, *and* the identity of each task assembly the cone runs (module MVID
-  and informational version). Stage 8 found the spec moving between SDKs in a
+  cone, *and* the identity of each task assembly the cone runs: its
+  informational version, which names the commit the SDK was built from. The
+  assembly's bytes and module MVID differ between the macOS and Linux builds of
+  one SDK, so neither is a portable key. Stage 8 found the spec moving between SDKs in a
   field that task code writes and no executed target changed to produce, so
   target files alone are not the code A₁ models.
 - **B₁:** the identity of the NuGet that would perform the restore. That is the
@@ -374,20 +376,29 @@ argument for argument.
 For each target and task that starts, the op records:
 - its name;
 - the SHA-256 of the file defining each target;
-- each task assembly's name, version, informational version and module MVID.
+- each task assembly's name, version and informational version.
 
-The assembly identity uses the MVID rather than a file hash, because a hash
-would also move with per-platform native precompilation, which the IL does not.
-The op also records every SDK assembly loaded while the builds ran, which is
+The target files' hashes agree between the macOS and Linux builds of each
+SDK. The task assemblies' bytes and module MVIDs do not: every one of the
+eight checked differs, because each platform's build compiles the IL
+separately and precompiles it natively. The informational version, which names
+the commit the SDK was built from, agrees for all 46 SDK assemblies the
+manifest names. So that is the identity the manifest pins. The op also records every SDK assembly loaded while the builds ran, which is
 the code the tasks reach.
 
 `borzoi-msbuild`'s `restore_cone_census.rs` drives the op. Two checks make it
 a census of A₀ rather than of something nearby:
 
 - **Same computation.** Under the SDK that `dotnet` resolves for the project,
-  the in-process build writes the same spec as `dotnet msbuild
-  -t:GenerateRestoreGraphFile` under the same globals, up to the scratch
-  directory. That check found the SDK directory's spelling to be part of the
+  `dotnet msbuild -t:GenerateRestoreGraphFile` runs under the same globals with
+  the oracle's logger attached. It must execute exactly the targets and tasks
+  the in-process build does, and write the same spec up to the scratch
+  directory. The cone is compared as well as the spec, because a target that
+  runs on one side only can leave the spec unchanged. One such context
+  difference is the startup directory: MSBuild exposes it to the build as
+  `MSBuildStartupDirectory`, so each oracle runs from its project's directory,
+  as `restore.rs` runs `dotnet`. The hooked fixture's target runs only from
+  there. The spec comparison found the SDK directory's spelling to be part of the
   computation. The devshell's `DOTNET_ROOT` reaches each SDK through a link,
   and MSBuild records paths into its own directory (the runtime identifier
   graph's, the SDK's `library-packs` sources). So the oracle is pinned to the

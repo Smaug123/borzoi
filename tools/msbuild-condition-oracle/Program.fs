@@ -431,7 +431,7 @@ let private RestoreGraphTarget = "GenerateRestoreGraphFile"
 
 /// One target MSBuild executed (a `TargetStarted` event: its condition held and
 /// it was not already built in that project instance).
-type private TargetRun =
+type internal TargetRun =
     { Name: string
       File: string
       Project: string }
@@ -439,16 +439,38 @@ type private TargetRun =
 /// One task MSBuild executed (a `TaskStarted` event: its condition held). The
 /// engine's intrinsic `PropertyGroup`/`ItemGroup` inside a target raise no such
 /// event; they are MSBuild semantics, not task code.
-type private TaskRun =
+type internal TaskRun =
     { Name: string
       Target: string
       File: string
       Assembly: string }
 
+/// The executed targets and tasks as the `restoreCone` op reports them.
+let internal targetsJson (targets: TargetRun list) =
+    targets
+    |> List.map (fun t ->
+        {| name = t.Name
+           file = t.File
+           project = t.Project |})
+
+let internal tasksJson (tasks: TaskRun list) =
+    tasks
+    |> List.map (fun t ->
+        {| name = t.Name
+           target = t.Target
+           file = t.File
+           assembly = t.Assembly |})
+
 /// Records every target and task that starts, and every error. The containing
 /// target of a task is found through its build event context, which names the
 /// target instance it runs in.
-type private ConeLogger() =
+///
+/// Public so that `dotnet msbuild` can load it too
+/// (`-logger:MsBuildConditionOracle.Program+ConeLogger,<this assembly>;<file>`):
+/// given a file as its parameter, it writes the targets and tasks it saw there
+/// as JSON when the build ends, in the `restoreCone` op's shape. That is how the
+/// census compares the cone it measures in-process with the cone the CLI runs.
+type ConeLogger() =
     let targets = ResizeArray<TargetRun>()
     let tasks = ResizeArray<TaskRun>()
     let errors = ResizeArray<string>()
@@ -459,9 +481,9 @@ type private ConeLogger() =
     let contextKey (context: Microsoft.Build.Framework.BuildEventContext) =
         struct (context.NodeId, context.ProjectContextId, context.TargetId)
 
-    member _.Targets = List.ofSeq targets
-    member _.Tasks = List.ofSeq tasks
-    member _.Errors = List.ofSeq errors
+    member internal _.Targets = List.ofSeq targets
+    member internal _.Tasks = List.ofSeq tasks
+    member internal _.Errors = List.ofSeq errors
 
     interface Microsoft.Build.Framework.ILogger with
         member _.Verbosity
@@ -495,7 +517,14 @@ type private ConeLogger() =
 
             source.ErrorRaised.Add(fun e -> errors.Add $"%s{e.File}(%d{e.LineNumber}): %s{e.Code} %s{e.Message}")
 
-        member _.Shutdown() = ()
+        member _.Shutdown() =
+            if not (String.IsNullOrEmpty parameters) then
+                let cone =
+                    {| targets = targetsJson (List.ofSeq targets)
+                       tasks = tasksJson (List.ofSeq tasks)
+                       errors = List.ofSeq errors |}
+
+                File.WriteAllText(parameters, JsonSerializer.Serialize cone)
 
 /// Every assembly loaded while a `restoreCone` build ran, across the process's
 /// life, by path. Task assemblies load their dependencies lazily, as the code
@@ -513,23 +542,17 @@ let private recordLoad (args: AssemblyLoadEventArgs) =
 let private sha256Hex (path: string) : string =
     Convert.ToHexString(Security.Cryptography.SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
 
-/// A task assembly's identity, independent of the host: its simple name and
-/// version, its informational version (which names the build), and its module
-/// MVID (deterministic compilation makes it a function of the IL's inputs, so it
-/// survives the per-platform ReadyToRun compilation that changes the file's
-/// bytes).
+/// A task assembly's identity, independent of the host: its simple name, its
+/// version, and its informational version, which names the commit the SDK was
+/// built from. Neither the file's bytes nor its module MVID would do: each
+/// platform's SDK compiles the IL separately and precompiles it natively, so
+/// both differ between the macOS and Linux builds of one SDK.
 let private assemblyIdentity (path: string) =
     let name = Reflection.AssemblyName.GetAssemblyName path
-    let info = Diagnostics.FileVersionInfo.GetVersionInfo path
-    use stream = File.OpenRead path
-    use pe = new Reflection.PortableExecutable.PEReader(stream)
-    let metadata = Reflection.Metadata.PEReaderExtensions.GetMetadataReader pe
-    let mvid = metadata.GetGuid(metadata.GetModuleDefinition().Mvid)
 
     {| name = name.Name
        version = string name.Version
-       informationalVersion = info.ProductVersion
-       mvid = string mvid |}
+       informationalVersion = Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductVersion |}
 
 /// Run `GenerateRestoreGraphFile` on `project` under `globals`, in-process, with
 /// a [`ConeLogger`] attached: the targets and tasks it executed, the content
@@ -601,19 +624,8 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
        errors = logger.Errors
        msbuildDirectory = Path.GetDirectoryName(typeof<Project>.Assembly.Location)
        sdkVersion = property "NETCoreSdkVersion"
-       targets =
-        targets
-        |> List.map (fun t ->
-            {| name = t.Name
-               file = t.File
-               project = t.Project |})
-       tasks =
-        tasks
-        |> List.map (fun t ->
-            {| name = t.Name
-               target = t.Target
-               file = t.File
-               assembly = t.Assembly |})
+       targets = targetsJson targets
+       tasks = tasksJson tasks
        files = files
        assemblies = assemblies
        loadedDuringBuilds =
