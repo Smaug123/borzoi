@@ -292,8 +292,8 @@ pub struct PackageNuspec {
     /// Every child element of `<metadata>`, in nuspec order: the vocabulary a
     /// consumer that must not misread a package can hold the nuspec to.
     pub metadata_elements: Vec<MetadataElement>,
-    /// The name of every attribute on `<metadata>`, as [`attribute_name`]
-    /// spells it.
+    /// The name of every attribute on `<metadata>`: its local name, or
+    /// `{namespace}name` for one in a namespace.
     pub metadata_attributes: Vec<String>,
     /// Whether `<metadata>` is the element NuGet's reader takes it to be, and
     /// is read where that reader reads it: the only child of `<package>` named
@@ -318,7 +318,8 @@ fn attribute_name(attribute: &roxmltree::Attribute<'_, '_>) -> String {
 }
 
 /// An element as written: its name (as [`MetadataElement::name`] spells it)
-/// and its attributes' names (as [`attribute_name`] spells them) and values.
+/// and its attributes' names (local, or `{namespace}name` for one in a
+/// namespace) and values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawElement {
     pub name: String,
