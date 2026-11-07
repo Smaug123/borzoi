@@ -54,7 +54,38 @@ pub(super) struct ExportRecord {
     /// ([`ProjectItems::latest_accessible_value`] et al.). `false` for a value or a
     /// value-live union/exception case.
     pattern_only: bool,
+    /// The export's [`fold_rank`].
+    rank: u8,
 }
+
+/// Where a member sits in the order an `open` adds a module's contents to the
+/// environment. **Not source order**: FCS adds a module's exception
+/// definitions, then its tycons with their union cases, then its values
+/// (`AddModuleOrNamespaceContentsToNameEnv`), so of several members sharing a
+/// name the later *kind* wins, and position decides only within a kind.
+///
+/// fcs-dump-graded over every ordered pair of same-named members a module can
+/// declare (`auto_open_member_sweep`):
+///
+/// | pair | winner |
+/// | --- | --- |
+/// | value (a `let`, a literal, an `extern`, an active-pattern case) vs case, exception or type | the value, either order |
+/// | union case vs exception | the case, either order |
+/// | union case vs constructible type | the later of the two |
+///
+/// Two values, or two exceptions, of one name in one module do not compile
+/// (`FS0037`), so no order within those ranks is claimed beyond source order.
+pub(super) fn fold_rank(case: Option<CaseKind>) -> u8 {
+    match case {
+        Some(CaseKind::Exception) => 0,
+        Some(CaseKind::Union { .. } | CaseKind::Enum) => 1,
+        None => 2,
+    }
+}
+
+/// The [`fold_rank`] of an active-pattern case: a value, whose result the
+/// pattern table holds.
+const ACTIVE_PATTERN_RANK: u8 = 2;
 
 /// One module root a signature file constrains: the module's qualified path
 /// and whether the *signature* marks it `[<AutoOpen>]` (conclusion 6 of the
@@ -277,9 +308,10 @@ pub struct ProjectItems {
     /// the old latest-wins `by_qualified_path` (value namespace) and `constructors`
     /// (case namespace) maps *and* the `private_value_ids` / `public_value_paths`
     /// collapse-defer stopgaps. A single per-path history, queried by
-    /// [`Self::latest_accessible_value`] / [`Self::latest_accessible_case`],
-    /// subsumes all four: because no export is lost to a same-path shadow, a public
-    /// export sitting under a later *inaccessible* `private` redeclaration is still
+    /// [`Self::latest_accessible_value`] and, for an `open`, by
+    /// [`Self::opened_member`], subsumes all four: because no export is lost to a
+    /// same-path shadow, a public export sitting under a later *inaccessible*
+    /// `private` redeclaration is still
     /// selectable (the collapse the latest-wins maps could only defer), and the
     /// value/constructor namespaces read the same history through different
     /// predicates.
@@ -415,8 +447,10 @@ pub struct ProjectItems {
     /// The qualified paths (container + name) of earlier files' possible union
     /// cases the walk does not intern (`type T = X`,
     /// [`ExportDeclKind::OpaqueCase`]): an `open` of the container declines the
-    /// name, in both namespaces.
-    pub(super) opaque_cases: HashSet<Vec<String>>,
+    /// name in pattern position, and in expression position too unless the
+    /// value is `true`: a value of the name outranks the case there
+    /// ([`superseded_by_a_value`]).
+    pub(super) opaque_cases: HashMap<Vec<String>, bool>,
     /// Each earlier-file **non-`private`** `[<AutoOpen>]` module *fragment*,
     /// paired with the Compile-order file that declared it, in Compile order —
     /// `private` ones are excluded, since F# does not bring a `private` module
@@ -465,7 +499,7 @@ pub struct ProjectItems {
     pub(super) core_attribute_alias_declared: bool,
     /// Per project module, what earlier files' declarations add to an `open`
     /// of it beyond its folded values ([`FileContributions::module_opens`]).
-    pub(super) module_open_contributions: HashMap<Vec<String>, Contribution>,
+    pub(super) module_open_contributions: HashMap<Vec<String>, super::contributors::ModuleOpens>,
     /// Per namespace, what earlier files' declarations add to an `open` of it
     /// that the namespace fold does not model
     /// ([`FileContributions::namespace_opens`]).
@@ -819,13 +853,33 @@ impl ProjectItems {
             .map(|r| r.id)
     }
 
-    /// The latest export at `path` accessible from `site` that was declared in
-    /// Compile-order `file` and satisfies `keep` — the per-**fragment** analogue
-    /// of [`Self::latest_accessible`] (Stage 5). Unlike the file-blind query, a
-    /// later plain augmentation in another file neither shadows nor supplies a
-    /// fragment's own member: the auto-open fold folds each `[<AutoOpen>]`
-    /// fragment's members at *its* file, so it must read the export declared
-    /// *there*, not the collapsed latest.
+    /// The export at `path` an `open` of its container binds, among those
+    /// accessible from `site` that satisfy `keep` (and, given `file`, were
+    /// declared in that Compile-order file): the one FCS adds **last**. An
+    /// `open` adds an earlier file's fragments file by file and, within a
+    /// file, by [`fold_rank`] — the file's blocks are merged by then
+    /// (`open_member_order`) — and by position within a rank, which is the
+    /// history's own order.
+    fn opened_member(
+        &self,
+        path: &[String],
+        site: &[String],
+        file: Option<usize>,
+        keep: impl Fn(&ExportRecord) -> bool,
+    ) -> Option<ItemId> {
+        let history = self.value_exports.get(path)?;
+        history
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                keep(r)
+                    && file.is_none_or(|f| self.file_of(r.id) == f)
+                    && accessible_from(r.access_root_len, path, site)
+            })
+            .max_by_key(|(at, r)| (self.file_of(r.id), r.rank, *at))
+            .map(|(_, r)| r.id)
+    }
+
     /// Whether **any** preceding project file exports a value named `name` in a
     /// container that is bare-visible here: the enclosing `namespace` (whose
     /// direct union/exception cases F# makes bare without an `open`) or the root.
@@ -879,25 +933,6 @@ impl ProjectItems {
             .is_some_and(|history| !history.is_empty())
     }
 
-    fn latest_accessible_in_file(
-        &self,
-        path: &[String],
-        site: &[String],
-        file: usize,
-        keep: impl Fn(&ExportRecord) -> bool,
-    ) -> Option<ItemId> {
-        let history = self.value_exports.get(path)?;
-        history
-            .iter()
-            .rev()
-            .find(|r| {
-                keep(r)
-                    && self.file_of(r.id) == file
-                    && accessible_from(r.access_root_len, path, site)
-            })
-            .map(|r| r.id)
-    }
-
     /// The `(name, id)` of every **value** exported directly under `module_path`
     /// in Compile-order `file`, accessible from `site` — the members a single
     /// `[<AutoOpen>]` fragment at `file` contributes to the fold (Stage 5). Like
@@ -916,7 +951,7 @@ impl ProjectItems {
             .filter_map(|q| {
                 // Value-namespace: exclude pattern-only active-pattern cases (Stage
                 // 3a) — a value-live union/exception case still counts.
-                self.latest_accessible_in_file(q, site, file, |r| !r.pattern_only)
+                self.opened_member(q, site, Some(file), |r| !r.pattern_only)
                     .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
             })
             .collect()
@@ -935,7 +970,7 @@ impl ProjectItems {
             .keys()
             .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
             .filter_map(|q| {
-                self.latest_accessible_in_file(q, site, file, |r| r.is_case)
+                self.opened_member(q, site, Some(file), |r| r.is_case)
                     .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
             })
             .collect()
@@ -955,27 +990,15 @@ impl ProjectItems {
         self.latest_accessible(path, site, |r| !r.pattern_only)
     }
 
-    /// The latest **case** export at `path` accessible from `site` — restricted
-    /// to constructor cases, so a case shadowed at the same path by a later
-    /// ordinary `let` value is still found (the constructor namespace, live in
-    /// pattern position). Replaces the old case-only `constructors` map.
-    pub(super) fn latest_accessible_case(
-        &self,
-        path: &[String],
-        site: &[String],
-    ) -> Option<ItemId> {
-        self.latest_accessible(path, site, |r| r.is_case)
-    }
-
     /// The `(name, id)` of every earlier-file **value** exported *directly* under
     /// `module_path` that is accessible from `site` — its qualified path is exactly
     /// `[module_path…, name]`, one segment beyond it. The values an `open
     /// <module_path>` brings into unqualified scope from preceding Compile-order
     /// files (substep 3); a value nested deeper (in a submodule) has a longer path
-    /// and is excluded. Each name resolves to its [`Self::latest_accessible_value`],
-    /// so a name whose only exports are inaccessible `private` ones is omitted (it
-    /// stays invisible to the `open`), and a public export shadowed by a later
-    /// inaccessible `private` is recovered.
+    /// and is excluded. Each name resolves to the export the `open` binds
+    /// ([`Self::opened_member`]), so a name whose only exports are inaccessible
+    /// `private` ones is omitted (it stays invisible to the `open`), and a public
+    /// export shadowed by a later inaccessible `private` is recovered.
     pub(super) fn direct_value_children(
         &self,
         module_path: &[String],
@@ -985,7 +1008,7 @@ impl ProjectItems {
             .keys()
             .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
             .filter_map(|q| {
-                self.latest_accessible_value(q, site)
+                self.opened_member(q, site, None, |r| !r.pattern_only)
                     .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
             })
             .collect()
@@ -1367,7 +1390,10 @@ impl ProjectItems {
                 .or_default()
                 .insert(name);
         }
-        self.opaque_cases.extend(idx.opaque_cases);
+        for (path, superseded) in idx.opaque_cases {
+            // Superseded only where every declaration of the path is.
+            *self.opaque_cases.entry(path).or_insert(true) &= superseded;
+        }
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
         }
@@ -1429,10 +1455,10 @@ impl ProjectItems {
     /// The `(name, id)` of every earlier-file **constructor case** exported
     /// directly under `module_path` that is accessible from `site` — the
     /// constructor pass of [`Resolver::open_module_values`](super::state::Resolver::open_module_values).
-    /// Mirrors [`Self::direct_value_children`], but each name resolves to its
-    /// [`Self::latest_accessible_case`] so a case shadowed at its path by a later
-    /// ordinary `let` value is still enumerated (the constructor namespace, live
-    /// in pattern position).
+    /// Mirrors [`Self::direct_value_children`], but each name resolves to the
+    /// case an `open` binds ([`Self::opened_member`]), so a case shadowed at
+    /// its path by an ordinary `let` value is still enumerated (the constructor
+    /// namespace, live in pattern position).
     pub(super) fn direct_constructor_children(
         &self,
         module_path: &[String],
@@ -1442,7 +1468,7 @@ impl ProjectItems {
             .keys()
             .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
             .filter_map(|q| {
-                self.latest_accessible_case(q, site)
+                self.opened_member(q, site, None, |r| r.is_case)
                     .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
             })
             .collect()
@@ -1540,7 +1566,7 @@ struct FileExportIndices {
     namespace_paths: Vec<Vec<String>>,
     modules_with_hidden_values: Vec<Vec<String>>,
     opaque_hidden_value_modules: Vec<Vec<String>>,
-    opaque_cases: Vec<Vec<String>>,
+    opaque_cases: Vec<(Vec<String>, bool)>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
@@ -1564,14 +1590,45 @@ enum HiddenNames {
     Borrowed,
 }
 
-/// Whether a possible union case ([`ExportDeclKind::OpaqueCase`]) is shadowed,
-/// for every `open` of its container, by a value of its name the same
-/// container declares after it: latest wins, so the value is what a bare use
-/// after the `open` finds.
-pub(super) fn superseded_by_a_later_value(decls: &[ExportDecl], case: &ExportDecl) -> bool {
+/// Whether a possible union case ([`ExportDeclKind::OpaqueCase`]) is shadowed
+/// in **expression** position, for every `open` of its container, by a value
+/// of its name the same container declares: an `open` adds a module's values
+/// after its tycons ([`fold_rank`]), so the value is what a bare use after the
+/// `open` finds, whichever comes first in the source. Only a public value
+/// counts, since a `private` one may be out of reach of the `open`; a case
+/// does not, since a union case is a tycon's and ranks with this one. Pattern
+/// position is untouched: an ordinary value is not in the pattern table, so
+/// the case still takes the name there from any other union's.
+pub(super) fn superseded_by_a_value(
+    decls: &[ExportDecl],
+    items: &[ExportedItem],
+    case: &ExportDecl,
+) -> bool {
     decls.iter().any(|d| {
-        matches!(d.kind, ExportDeclKind::Item { .. }) && d.path == case.path && d.pos > case.pos
+        d.path == case.path
+            && matches!(d.kind, ExportDeclKind::Item { item: Some(i), .. }
+                if items[i].case.is_none() && items[i].access_root_len.is_none())
     })
+}
+
+/// Each position's top-level block ordinal within a file: the number of
+/// top-level headers at or before it. An `open` of a path this file's blocks
+/// declare adds them block by block (`open_member_order`). Every top-level
+/// header pushes a header decl in source order ([`ExportDeclKind::Namespace`],
+/// or a [`ExportDeclKind::Module`] with `header`), so the count is monotone in
+/// the position, which is all an ordering needs.
+pub(super) fn top_level_block_ordinals(decls: &[ExportDecl]) -> impl Fn(TextSize) -> usize + use<> {
+    let starts: Vec<TextSize> = decls
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                ExportDeclKind::Namespace | ExportDeclKind::Module { header: true, .. }
+            )
+        })
+        .map(|d| d.pos)
+        .collect();
+    move |pos| starts.partition_point(|s| *s <= pos)
 }
 
 /// Record `path` as a hidden-value module, filed by marker provenance.
@@ -1683,6 +1740,7 @@ impl FileExportIndices {
                                     // value-live union/exception case) is never
                                     // pattern-only — that is the AP-case branch below.
                                     pattern_only: false,
+                                    rank: fold_rank(it.case),
                                 },
                             ));
                         }
@@ -1809,9 +1867,9 @@ impl FileExportIndices {
                     }
                 }
                 ExportDeclKind::OpaqueCase => {
-                    if !superseded_by_a_later_value(&file.export_decls, decl) {
-                        fi.opaque_cases.push(decl.path.clone());
-                    }
+                    let superseded =
+                        superseded_by_a_value(&file.export_decls, &file.exports.items, decl);
+                    fi.opaque_cases.push((decl.path.clone(), superseded));
                 }
                 ExportDeclKind::Extern { name } => {
                     if !anon && !name.is_empty() {
@@ -1861,6 +1919,7 @@ impl FileExportIndices {
                                 access_root_len: it.access_root_len,
                                 is_case: true,
                                 pattern_only: true,
+                                rank: ACTIVE_PATTERN_RANK,
                             },
                         ));
                         fi.case_item_ids.push(it.id);
@@ -2085,8 +2144,9 @@ pub(super) enum ExportDeclKind {
     /// (`TyconCoreAbbrevThatIsReallyAUnion`), which the walk does not intern,
     /// when `T` does not require qualified access. `path` = container + `X`.
     /// Unlike an `extern`'s, it hides no other name: an `open` of the container
-    /// declines exactly `X` ([`ProjectItems::opaque_cases`]), unless a value
-    /// of the name the container declares later shadows it.
+    /// declines exactly `X` ([`ProjectItems::opaque_cases`]), in pattern
+    /// position always and in expression position unless a value of the name
+    /// outranks it ([`superseded_by_a_value`]).
     OpaqueCase,
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,

@@ -75,6 +75,24 @@ impl Contribution {
     }
 }
 
+/// What an `open` of one project module adds beyond the values the walk
+/// folds for it ([`Resolver::open_module_values`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct ModuleOpens {
+    /// For an explicit `open` of the module, which folds nothing else.
+    pub(super) all: Contribution,
+    /// For a namespace fold reaching the module as an `[<AutoOpen>]`
+    /// fragment, which folds its children spelled `[<AutoOpen>]` itself.
+    pub(super) unfolded: Contribution,
+}
+
+impl ModuleOpens {
+    pub(super) fn merge(&mut self, other: &ModuleOpens) {
+        self.all.merge(&other.all);
+        self.unfolded.merge(&other.unfolded);
+    }
+}
+
 /// The active `rec` block's contributions ([`Resolver::rec_contribution`]):
 /// everything it declares, and the part its nested modules declare.
 #[derive(Debug, Clone, Default)]
@@ -99,7 +117,7 @@ pub(super) struct FileContributions {
     /// For a project module, what an `open` of it adds beyond the values the
     /// walk folds ([`Resolver::open_module_values`]): its `[<AutoOpen>]`
     /// children, at any depth through `[<AutoOpen>]` ones.
-    pub(super) module_opens: Vec<(Vec<String>, Contribution)>,
+    pub(super) module_opens: Vec<(Vec<String>, ModuleOpens)>,
     /// For a namespace, what an `open` of it adds that the namespace fold does
     /// not model: the `[<AutoOpen>]` children whose attribute is not spelled
     /// `AutoOpen`, and the `[<AutoOpen>]` types.
@@ -573,25 +591,45 @@ impl Resolver<'_> {
     }
 
     /// Record `contribution` as what an `open` of the current container adds
-    /// beyond what the walk folds for it. A module's `open` folds only its own
-    /// values, so every `[<AutoOpen>]` child is recorded; a namespace's fold
-    /// models the children spelled `[<AutoOpen>]` (`spelled`), so only the
-    /// rest are. The root namespace's are this file's root contribution,
-    /// recorded once for the whole block.
-    fn record_open_contribution(&mut self, contribution: &Contribution, spelled: bool) {
+    /// beyond what the walk folds for it. `namespace_fold_models` says the
+    /// namespace fold models it itself, as it does a child spelled
+    /// `[<AutoOpen>]`. A namespace's `open` is that fold, so only the rest are
+    /// recorded for it. A module's explicit `open` folds only its own values,
+    /// so everything is recorded for that, and the rest for a namespace fold
+    /// reaching the module as an `[<AutoOpen>]` fragment ([`ModuleOpens`]).
+    /// The root namespace's are this file's root contribution, recorded once
+    /// for the whole block.
+    pub(super) fn record_open_contribution(
+        &mut self,
+        contribution: &Contribution,
+        namespace_fold_models: bool,
+    ) {
         if self.anonymous_root || self.container_path.is_empty() || contribution.is_empty() {
             return;
         }
-        let into = if !self.container_is_namespace() {
-            &mut self.contributions.module_opens
-        } else if !spelled {
-            &mut self.contributions.namespace_opens
-        } else {
+        if self.container_is_namespace() {
+            if namespace_fold_models {
+                return;
+            }
+            let into = &mut self.contributions.namespace_opens;
+            match into.iter_mut().find(|(p, _)| *p == self.container_path) {
+                Some((_, c)) => c.merge(contribution),
+                None => into.push((self.container_path.clone(), contribution.clone())),
+            }
             return;
+        }
+        let opens = ModuleOpens {
+            all: contribution.clone(),
+            unfolded: if namespace_fold_models {
+                Contribution::default()
+            } else {
+                contribution.clone()
+            },
         };
+        let into = &mut self.contributions.module_opens;
         match into.iter_mut().find(|(p, _)| *p == self.container_path) {
-            Some((_, c)) => c.merge(contribution),
-            None => into.push((self.container_path.clone(), contribution.clone())),
+            Some((_, c)) => c.merge(&opens),
+            None => into.push((self.container_path.clone(), opens)),
         }
     }
 
@@ -610,7 +648,9 @@ impl Resolver<'_> {
     /// A type-definition group, before its walk: an `[<AutoOpen>]` type's
     /// statics enter the container (`AddLocalTycons`, ahead of the members).
     /// A constructible type's own name takes the unqualified slot too, which
-    /// the walk models by position ([`Resolver::bare_value_evicted`]).
+    /// the walk models by position ([`Resolver::bare_value_evicted`]) — but not
+    /// through an `open` of a module holding it, so it is recorded for that.
+    /// The namespace fold orders its types itself.
     pub(super) fn type_group_contributions(&mut self, types: &TypeDefnsDecl) {
         let pos = u32::from(types.syntax().text_range().start());
         for defn in types.defns() {
@@ -618,6 +658,16 @@ impl Resolver<'_> {
                 .long_id()
                 .and_then(|li| li.idents().last())
                 .map(|t| id_text(&t).to_string());
+            if !is_type_augmentation(&defn)
+                && self.type_slot_class(&defn) != SlotClass::Keeps
+                && let Some(name) = &name
+            {
+                let namespace_fold_models = self.container_is_namespace();
+                self.record_open_contribution(
+                    &Contribution::of_value(name.clone()),
+                    namespace_fold_models,
+                );
+            }
             if self.may_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
                 let contribution = type_contribution(&defn);
                 self.push_contribution(&contribution, pos);
@@ -737,19 +787,35 @@ impl Resolver<'_> {
         }
     }
 
-    /// After an `open` of project module `path`: its `[<AutoOpen>]` children,
-    /// which [`Self::open_module_values`] does not fold.
-    pub(super) fn module_open_contributions(&mut self, path: &[String], pos: u32) {
-        let mut contribution = Contribution::default();
+    /// What an `open` of project module `path` adds beyond the values
+    /// [`Self::open_module_values`] folds, from this file and earlier ones.
+    fn module_opens_of(&self, path: &[String]) -> ModuleOpens {
+        let mut opens = ModuleOpens::default();
         for (p, c) in &self.contributions.module_opens {
             if p == path {
-                contribution.merge(c);
+                opens.merge(c);
             }
         }
         if let Some(c) = self.preceding.module_open_contributions.get(path) {
-            contribution.merge(c);
+            opens.merge(c);
         }
-        self.push_contribution(&contribution, pos);
+        opens
+    }
+
+    /// After an explicit `open` of project module `path`: its `[<AutoOpen>]`
+    /// children, `extern`s and constructible types, which
+    /// [`Self::open_module_values`] does not fold.
+    pub(super) fn module_open_contributions(&mut self, path: &[String], pos: u32) {
+        let opens = self.module_opens_of(path);
+        self.push_contribution(&opens.all, pos);
+    }
+
+    /// After a namespace fold that reached project module `path` as an
+    /// `[<AutoOpen>]` fragment: what the module adds that the fold does not
+    /// model ([`ModuleOpens::unfolded`]).
+    pub(super) fn fragment_open_contributions(&mut self, path: &[String], pos: u32) {
+        let opens = self.module_opens_of(path);
+        self.push_contribution(&opens.unfolded, pos);
     }
 
     /// After an `open` (or the implicit open) of project namespace `path`:
