@@ -284,6 +284,14 @@ const UNIONS: &[Union] = &[
         &[("| {L}KA n -> n | {L}KB -> 0", false)],
     ),
     u(
+        "intersectionConstrained",
+        "type IU<'a & #System.IDisposable> = IA | IB of 'a\n",
+        "{L}IU<System.IO.MemoryStream>",
+        // The parameter's constraint is not checked, so no case is read.
+        &[("{L}IB", false, true), ("{L}IA", false, true)],
+        &[],
+    ),
+    u(
         "caseNamedLikeType",
         "type Wrap = Wrap of int | Empty\n",
         "{L}Wrap",

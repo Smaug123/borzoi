@@ -2017,13 +2017,17 @@ impl<'a> Gen<'a> {
             // A type parameter with a constraint or an attribute (a measure):
             // nothing here checks an argument against either, and F# rejects
             // an application that violates one, recovering the binder.
-            // `TypeDefn::constraints` reads both places a constraint can be
-            // written: inside the parameter list and after the type's name.
+            // `TypeDefn::constraints` reads both places a `when` constraint
+            // can be written: inside the parameter list and after the type's
+            // name; an intersection (`'a & #IDisposable`) sits on the
+            // parameter itself.
             let unchecked_parameters = defn.constraints().next().is_some()
                 || defn.typar_decls().is_some_and(|decls| {
-                    decls
-                        .typars()
-                        .any(|t| t.is_head_type() || t.attributes().next().is_some())
+                    decls.typars().any(|t| {
+                        t.is_head_type()
+                            || t.attributes().next().is_some()
+                            || t.intersection_constraints().next().is_some()
+                    })
                 });
             if !nominal
                 || unchecked_parameters
