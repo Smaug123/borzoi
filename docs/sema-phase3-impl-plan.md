@@ -1184,9 +1184,11 @@ case's item. A file publishes its cases' schemes by item
 (`PrecedingTypes::case`), and a signatured file publishes none. Left out, so
 that a use declines:
 
-- every case of a union whose representation carries an access modifier
-  (`type U = private A | B`: outside its module FCS rejects a use the
-  resolver still reads as the case);
+- a case of a `private` representation (`type U = private A | B`) used
+  outside the union's enclosing module or namespace, where FCS rejects a
+  use the resolver still reads as the case; such a case is never published
+  to a later file (an `internal` representation is the assembly's, so it is
+  read everywhere);
 - every case of a union the parser recovered from (its surviving cases look
   well-formed: `C : | D` reads as two nullary cases), or declaring a type
   parameter twice (FCS binds a use to the first declaration);

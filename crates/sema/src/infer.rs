@@ -909,6 +909,18 @@ enum UnionId {
 pub(crate) struct ProjectCase {
     scheme: UnionCaseScheme,
     key: CaseKey,
+    /// Where a use of the case is accessible, for a union whose
+    /// representation is `private`: the enclosing module's or namespace's
+    /// range in the declaring file. Such a case is never published to a
+    /// later file.
+    scope: Option<TextRange>,
+}
+
+impl ProjectCase {
+    /// Whether a later file may read the case.
+    pub(crate) fn publishable(&self) -> bool {
+        self.scope.is_none()
+    }
 }
 
 /// Where a pattern is read ([`Gen::pattern_shape_in`]).
@@ -2064,8 +2076,9 @@ impl<'a> Gen<'a> {
     ///
     /// A union contributes only when [`Self::project_type_paths`] holds its
     /// path (which already leaves out a constrained or attributed parameter,
-    /// and an attribute that may make F# reject a use), its declaration did
-    /// not recover, and its representation carries no access modifier. A case is left out
+    /// and an attribute that may make F# reject a use) and its declaration
+    /// did not recover. A `private` representation confines its cases to
+    /// the enclosing module or namespace ([`ProjectCase::scope`]). A case is left out
     /// when it carries an attribute (an error-level `[<Obsolete>]` rejects
     /// its use), is written in the `Case : type` signature form, or has a field whose type the annotation bridge declines (a
     /// measure among them); a use of one declines.
@@ -2115,16 +2128,27 @@ impl<'a> Gen<'a> {
             {
                 continue;
             }
-            // `type U = private A | B`: the cases are inaccessible outside
-            // the union's module, where FCS rejects a use the resolver still
-            // reads as the case.
-            if repr
+            // `type U = private A | B`: the cases are accessible only inside
+            // the union's enclosing module or namespace, outside which FCS
+            // rejects a use the resolver still reads as the case. (An
+            // `internal` representation is the whole assembly's.)
+            let private_repr = repr
                 .syntax()
                 .children_with_tokens()
-                .any(|el| el.kind() == SyntaxKind::ACCESS_TOK)
-            {
-                continue;
-            }
+                .any(|el| el.kind() == SyntaxKind::ACCESS_TOK && el.to_string() == "private");
+            let scope = if private_repr {
+                let Some(container) = defn.syntax().ancestors().skip(1).find(|a| {
+                    matches!(
+                        a.kind(),
+                        SyntaxKind::NESTED_MODULE_DECL | SyntaxKind::MODULE_OR_NAMESPACE
+                    )
+                }) else {
+                    continue;
+                };
+                Some(container.text_range())
+            } else {
+                None
+            };
             let Some(name) = defn.long_id().and_then(|li| {
                 let mut idents = li.idents();
                 let first = idents.next()?;
@@ -2206,7 +2230,7 @@ impl<'a> Gen<'a> {
                     fields,
                     union: union.clone(),
                 };
-                out.insert(item, ProjectCase { scheme, key });
+                out.insert(item, ProjectCase { scheme, key, scope });
             }
             self.decl_typars.clear();
         }
@@ -5701,6 +5725,7 @@ impl<'a> Gen<'a> {
             }
             Some(Resolution::Item(id)) => self
                 .project_case(id)
+                .filter(|pc| pc.scope.is_none_or(|scope| scope.contains_range(at)))
                 .map(|pc| (pc.key, pc.scheme.clone()))
                 .ok_or(Incomplete::NotInFileValue),
             _ => Err(Incomplete::NotInFileValue),

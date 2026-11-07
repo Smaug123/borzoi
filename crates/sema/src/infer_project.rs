@@ -156,6 +156,7 @@ impl PrecedingTypes {
                 inferred
                     .project_cases()
                     .iter()
+                    .filter(|(_, case)| case.publishable())
                     .map(|(&id, case)| (id, case.clone())),
             );
         }

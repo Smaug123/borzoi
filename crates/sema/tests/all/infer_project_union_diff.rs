@@ -381,10 +381,21 @@ const UNIONS: &[Union] = &[
         "privateRepr",
         "type PR = private PRA | PRB of int\n",
         "{L}PR",
-        // The cases are inaccessible outside the union's module, and no case
-        // of a union with an access-modified representation is read.
-        &[("{L}PRA", false, false), ("{L}PRB 1", false, false)],
-        &[("| {L}PRA -> 0 | {L}PRB n -> n", false)],
+        // The cases are accessible only in the union's module: from another
+        // file FCS rejects them, and nothing may commit there.
+        &[("{L}PRA", true, false), ("{L}PRB 1", true, false)],
+        &[("| {L}PRA -> 0 | {L}PRB n -> n", true)],
+    ),
+    u(
+        "privateNested",
+        "module Hidden =\n    type HP = private HA | HB of int\n    let inside = HB 1\n",
+        "{L}Hidden.HP",
+        // Outside `Hidden` FCS rejects every use.
+        &[
+            ("{L}Hidden.HA", false, false),
+            ("{L}Hidden.HP.HB 1", false, false),
+        ],
+        &[("| {L}Hidden.HP.HA -> 0 | _ -> 1", false)],
     ),
 ];
 
@@ -511,6 +522,7 @@ fn files(union: &Union, placement: Placement, body: &str) -> Vec<(String, String
                         .decl
                         .replace("member this.Size = 0", "member Size : int")
                         .replace("let X = 5", "val X : int")
+                        .replace("let inside = HB 1", "val inside : HP")
                         .replace(
                             "let (|C|_|) (s: string) = Some s.Length",
                             "val (|C|_|) : string -> int option"
