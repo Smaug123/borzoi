@@ -1195,30 +1195,24 @@ that a use declines:
 - a case with an attribute (an error-level `[<Obsolete>]` rejects its use);
 - a case written in the `Case : type` form, or as an operator;
 - a case whose field the annotation bridge declines (a measure, `Map<_, _>`);
-- a case whose name another export of its file also declares — a case of
-  another union, a value, an exception, an active pattern's case (by name
-  across the file, since an active pattern's case export has no qualified
-  path). FCS orders such a name in ways the
-  resolver's latest-wins history does not. An `open` adds a module's types,
-  and so their cases, before its values (`let X = 5` then `type UV = X | W`:
-  the opened `X` is the value; an active pattern `(|C|_|)` before
-  `type U = C of int` makes the opened `C` the active pattern). A
-  module-qualified name is resolved by
-  values, then exceptions, then the *first* type declaring the case, in an
-  expression, and by that type, then exceptions, active patterns and values,
-  in a pattern (`ResolveExprLongIdentInModuleOrNamespace`,
-  `ResolvePatternLongIdentInModuleOrNamespace`; `type U1 = X | Y` and
-  `type U2 = X | Z`: FCS's `Lib.X` is `U1`'s). A name the module declares
-  once means one thing in every order. The resolver's wrong targets for
-  names declared twice are a follow-up of their own.
-
-**A qualified case is read only through its type.** FCS resolves `U.X` or
-`Lib.U.X` by one lookup in `U`. A case qualified by a module or namespace
-alone (`Lib.X`, `N.X`) it resolves against everything of the name the
-container holds — `[<RequireQualifiedAccess>]` cases and namespace fragments
-in other files included (with `type U1 = X | Y` in one file of namespace
-`N` and an RQA `type U2 = X | Z` in another, FCS's `N.X` is `U2`'s, with a
-warning) — which no per-file check sees, so inference does not read it.
+- a case whose name anything else the project declares so far could mean:
+  an export of its own file or an earlier one (a case of another union, a
+  value, an exception, an active pattern's case), or a type there that can
+  construct (anything but a union, a record or an enum). FCS resolves such a
+  name by orders the resolver's latest-wins history does not follow. An
+  `open` adds a module's types, and so their cases, before its values
+  (`let X = 5` then `type UV = X | W`: the opened `X` is the value; an
+  active pattern `(|C|_|)` before `type U = C of int` makes the opened `C`
+  the active pattern). A later file's class takes the case's constructor
+  name. A qualified name is resolved against everything of the name its
+  module or namespace holds: values, then exceptions, then the *first* type
+  declaring the case, in an expression
+  (`ResolveExprLongIdentInModuleOrNamespace`), `[<RequireQualifiedAccess>]`
+  cases and other files' namespace fragments included (with `type U1 = X |
+  Y` in one fragment of `N` and an RQA `type U2 = X | Z` in another, FCS's
+  `N.X` is `U2`'s). A name declared once means one thing in every order,
+  bare or qualified. The resolver's wrong targets for names declared twice
+  are a follow-up of their own.
 
 Graded by `infer_project_union_diff`: about 25 union declarations (plain,
 generic and postfix-generic, two parameters, recursive, mutually recursive,

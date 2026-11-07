@@ -100,6 +100,9 @@ pub struct PrecedingTypes {
     /// The cases of each earlier file's unions its inference types, by the
     /// case's item — the handle a later file's use of one resolves to.
     cases: HashMap<ItemId, ProjectCase>,
+    /// How many constructor-like declarations of each name the earlier files
+    /// make, signatured ones included ([`InferredFile::constructor_names`]).
+    constructor_names: HashMap<String, usize>,
 }
 
 impl PrecedingTypes {
@@ -129,6 +132,12 @@ impl PrecedingTypes {
         self.cases.get(&id)
     }
 
+    /// How many constructor-like declarations of `name` the earlier files
+    /// make.
+    pub(crate) fn constructor_name_count(&self, name: &str) -> usize {
+        self.constructor_names.get(name).copied().unwrap_or(0)
+    }
+
     /// Publish one file's exports, in Compile order, after the file is
     /// inferred. `file` is its Compile index; `inferred` is `None` for a file
     /// that was not inferred (a signature slot); `screened` says the file has
@@ -145,6 +154,11 @@ impl PrecedingTypes {
         inferred: Option<&InferredFile>,
         screened: bool,
     ) {
+        if let Some(inferred) = inferred {
+            for (name, n) in inferred.constructor_names() {
+                *self.constructor_names.entry(name.clone()).or_default() += n;
+            }
+        }
         if let Some(inferred) = inferred.filter(|_| !screened) {
             for (index, def) in resolved.placed_type_defs().enumerate() {
                 if let Some(ty) = inferred.project_types().get(&def) {

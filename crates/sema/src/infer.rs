@@ -560,6 +560,9 @@ pub struct InferredFile {
     /// — read by [`PrecedingTypes::publish`] so a later file's use of one
     /// types exactly as this file's would.
     project_cases: HashMap<ItemId, ProjectCase>,
+    /// How many constructor-like declarations of each name the file makes —
+    /// read by [`PrecedingTypes::publish`] for later files' case screen.
+    constructor_names: HashMap<String, usize>,
 }
 
 impl InferredFile {
@@ -650,6 +653,12 @@ impl InferredFile {
     /// item. See [`Self::project_cases`](InferredFile).
     pub(crate) fn project_cases(&self) -> &HashMap<ItemId, ProjectCase> {
         &self.project_cases
+    }
+
+    /// How many constructor-like declarations of each name the file makes.
+    /// See [`Self::constructor_names`](InferredFile).
+    pub(crate) fn constructor_names(&self) -> &HashMap<String, usize> {
+        &self.constructor_names
     }
 
     pub fn len(&self) -> usize {
@@ -907,6 +916,8 @@ enum UnionId {
 /// parameters, and its place among the union's cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectCase {
+    /// The case's name, as a use spells it.
+    name: String,
     scheme: UnionCaseScheme,
     key: CaseKey,
     /// Where a use of the case is accessible, for a union whose
@@ -1505,6 +1516,9 @@ struct Gen<'a> {
     /// the case's item ([`Self::project_case_schemes`]). Computed once in
     /// [`infer_file`].
     project_cases: HashMap<ItemId, ProjectCase>,
+    /// How many constructor-like declarations of each name the file makes
+    /// ([`constructor_names`]). Computed once in [`infer_file`].
+    constructor_names: HashMap<String, usize>,
     /// Every case of the file's own unions, typed or not, by its item
     /// ([`Self::own_union_case_at`]). Computed once in [`infer_file`].
     own_union_cases: HashSet<ItemId>,
@@ -1642,6 +1656,7 @@ impl<'a> Gen<'a> {
             project_types: HashMap::new(),
             project_cases: HashMap::new(),
             own_union_cases: HashSet::new(),
+            constructor_names: HashMap::new(),
             decl_typars: HashMap::new(),
             dropped: Vec::new(),
             eq_failures: 0,
@@ -2103,17 +2118,7 @@ impl<'a> Gen<'a> {
             .filter(|e| matches!(e.case_kind(), Some(CaseKind::Union { .. })))
             .map(|e| e.id())
             .collect();
-        // By name across the whole file, which over-approximates "in its
-        // module": an active pattern's case export has no qualified path.
-        let mut name_counts: HashMap<&str, usize> = HashMap::new();
-        for e in exports.iter() {
-            *name_counts.entry(e.name()).or_default() += 1;
-        }
-        let contested: HashSet<ItemId> = exports
-            .iter()
-            .filter(|e| name_counts.get(e.name()).is_some_and(|&n| n > 1))
-            .map(|e| e.id())
-            .collect();
+        self.constructor_names = constructor_names(file, exports);
         let mut out = HashMap::new();
         let recovery = self.resolved.recovery();
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
@@ -2208,7 +2213,7 @@ impl<'a> Gen<'a> {
                     .collect(),
             };
             for (index, (case, item)) in cases.iter().zip(items).enumerate() {
-                let Some(item) = item.filter(|id| !contested.contains(id)) else {
+                let Some(item) = item else {
                     continue;
                 };
                 if case.attributes().next().is_some() || case.full_type().is_some() {
@@ -2230,7 +2235,18 @@ impl<'a> Gen<'a> {
                     fields,
                     union: union.clone(),
                 };
-                out.insert(item, ProjectCase { scheme, key, scope });
+                let Some(name) = case.ident().map(|t| ident_text(&t)) else {
+                    continue;
+                };
+                out.insert(
+                    item,
+                    ProjectCase {
+                        name,
+                        scheme,
+                        key,
+                        scope,
+                    },
+                );
             }
             self.decl_typars.clear();
         }
@@ -4241,14 +4257,12 @@ impl<'a> Gen<'a> {
         let (head, rest) = idents.split_first()?;
         let last = rest.last()?;
         let whole = TextRange::new(head.text_range().start(), last.text_range().end());
-        // A case of a project union qualified by its type (`U.A`,
-        // `Lib.U.B`), whose head may be the type itself; qualified only by a
-        // module or namespace (`Lib.A`), it declines
-        // ([`Self::type_qualified_case`]).
+        // A qualified case of a project union (`U.A`, `Lib.A`, `Lib.U.B`),
+        // whose head may be the union's own type.
         if let Some(Resolution::Item(id)) = self.resolved.resolution_at(whole)
             && (self.own_union_cases.contains(&id) || self.preceding.case(id).is_some())
         {
-            return self.type_qualified_case(&idents, whole).then_some(whole);
+            return Some(whole);
         }
         if self.def_at(head.text_range()).is_some() {
             return None;
@@ -5544,11 +5558,6 @@ impl<'a> Gen<'a> {
                     .filter(|_| li.typar_decls().is_none() && li.active_pat_name().is_none())
                     .ok_or(Incomplete::PatternShape(pat.syntax().kind()))?;
                 // A qualified case (`U.A`) is resolved over the whole head.
-                // The resolver resolves no case pattern qualified by a module
-                // alone across files, so the expression's type-qualified
-                // rule ([`Self::type_qualified_case`]) has nothing to decline
-                // here; `infer_project_union_diff`'s namespace-fragment rows
-                // hold it to FCS once it does.
                 let idents: Vec<SyntaxToken> = head.idents().collect();
                 let (Some(first), Some(last)) = (idents.first(), idents.last()) else {
                     return Err(Incomplete::Recovery);
@@ -5733,10 +5742,30 @@ impl<'a> Gen<'a> {
             Some(Resolution::Item(id)) => self
                 .project_case(id)
                 .filter(|pc| pc.scope.is_none_or(|scope| scope.contains_range(at)))
+                .filter(|pc| self.uncontested_case_name(&pc.name))
                 .map(|pc| (pc.key, pc.scheme.clone()))
                 .ok_or(Incomplete::NotInFileValue),
             _ => Err(Incomplete::NotInFileValue),
         }
+    }
+
+    /// Whether the project declares nothing else a use of the case name
+    /// `name` could mean, in this file or an earlier one: only the case itself
+    /// is a constructor-like declaration of the name ([`constructor_names`],
+    /// [`PrecedingTypes::constructor_name_count`]).
+    ///
+    /// FCS resolves such a name by orders the resolver's latest-wins export
+    /// history does not follow. An `open` adds a module's types, and so their
+    /// cases, before its values (`let X = 5` then `type UV = X | W`: the
+    /// opened `X` is the value; an active pattern `(|C|_|)` before
+    /// `type U = C of int` makes the opened `C` the active pattern), a later
+    /// file's class takes the case's constructor name, and a qualified name
+    /// is resolved against everything of the name its module or namespace
+    /// holds, `[<RequireQualifiedAccess>]` cases and other files' fragments
+    /// included. A name declared once means one thing in every order.
+    fn uncontested_case_name(&self, name: &str) -> bool {
+        let own = self.constructor_names.get(name).copied().unwrap_or(0);
+        own + self.preceding.constructor_name_count(name) == 1
     }
 
     /// The case of a project union that the item `id` is, as inference types
@@ -5758,39 +5787,6 @@ impl<'a> Gen<'a> {
             self.resolved.resolution_at(at),
             Some(Resolution::Item(id)) if self.own_union_cases.contains(&id)
         )
-    }
-
-    /// Whether the qualified path `idents`, spanning `at`, names a case of a
-    /// project union through the union's own type (`U.A`, `Lib.U.A`): the
-    /// segment before the case is the type's name.
-    ///
-    /// FCS resolves a type-qualified case by one lookup in that type. A case
-    /// qualified by a module or namespace alone (`Lib.A`, `N.X`) it resolves
-    /// against everything of the name the container holds — values, then
-    /// exceptions, then the first type declaring the case, in an expression
-    /// (`ResolveExprLongIdentInModuleOrNamespace`); `[<RequireQualifiedAccess>]`
-    /// cases and namespace fragments in other files included — which the
-    /// resolver's latest-wins history does not follow, so it is not read.
-    fn type_qualified_case(&self, idents: &[SyntaxToken], at: TextRange) -> bool {
-        let [.., qualifier, _] = idents else {
-            return false;
-        };
-        let Some(Resolution::Item(id)) = self.resolved.resolution_at(at) else {
-            return false;
-        };
-        let Some(ProjectCase {
-            scheme:
-                UnionCaseScheme {
-                    union: Ty::Project { path, .. },
-                    ..
-                },
-            ..
-        }) = self.project_case(id)
-        else {
-            return false;
-        };
-        path.last()
-            .is_some_and(|name| *name == ident_text(qualifier))
     }
 
     /// Whether the resolver reads a case at `at` whose fields FCS eta-expands
@@ -7130,6 +7126,7 @@ impl<'a> Gen<'a> {
             module_values,
             project_types: std::mem::take(&mut self.project_types),
             project_cases: std::mem::take(&mut self.project_cases),
+            constructor_names: std::mem::take(&mut self.constructor_names),
         }
     }
 }
@@ -9592,4 +9589,35 @@ mod tests {
             .expect("fresh vars generalise");
         assert_eq!(regen, scheme, "generalise ∘ instantiate is the identity");
     }
+}
+
+/// How many declarations in `file` could be what a use of each name means
+/// where a union case of that name is expected: every top-level export (a
+/// value, a union or `exception` case, an active pattern's case) and every
+/// type definition that can construct (anything but a union, a record or an
+/// enum, whose own name is no constructor), at any depth.
+fn constructor_names(
+    file: &ImplFile,
+    exports: &crate::resolve::ExportedItems,
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for e in exports.iter() {
+        *counts.entry(e.name().to_string()).or_default() += 1;
+    }
+    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        if matches!(
+            defn.repr(),
+            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_) | TypeDefnRepr::Enum(_))
+        ) {
+            continue;
+        }
+        for name in defn
+            .long_id()
+            .into_iter()
+            .flat_map(|li| li.idents().collect::<Vec<_>>())
+        {
+            *counts.entry(ident_text(&name)).or_default() += 1;
+        }
+    }
+    counts
 }

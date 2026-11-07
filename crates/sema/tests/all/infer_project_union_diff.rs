@@ -293,17 +293,14 @@ const UNIONS: &[Union] = &[
     u(
         "laterShadow",
         "type U1 = X | Y of int\ntype U2 = X | Z\n",
-        "{L}U2",
+        "{L}U1",
         // `X` is declared twice in its module, which inference declines.
         &[
             ("{L}X", false, false),
             ("{L}Y 1", true, false),
             ("{L}U1.X", false, false),
         ],
-        &[
-            ("| {L}X -> 0 | {L}Z -> 1", false),
-            ("| {L}Y n -> n | _ -> 0", true),
-        ],
+        &[("| {L}Y n -> n | _ -> 0", true)],
     ),
     u(
         "withMembers",
@@ -346,8 +343,7 @@ const UNIONS: &[Union] = &[
         &[
             ("{L}Inner.I.IA", true, false),
             ("{L}Inner.I.IB 1", true, false),
-            // Qualified by a module alone, which inference does not read.
-            ("{L}Inner.IA", false, false),
+            ("{L}Inner.IA", true, false),
         ],
         &[
             ("| {L}Inner.I.IA -> 0 | {L}Inner.I.IB n -> n", true),
@@ -480,9 +476,9 @@ impl Placement {
     }
 }
 
-/// Whether `text` holds a case qualified by the earlier file's module alone
-/// (`Lib.A`, not `Lib.U.A`), which inference does not read: FCS resolves it
-/// against everything of the name the module holds.
+/// Whether `text` holds a case pattern qualified by the earlier file's
+/// module alone (`| Lib.A ->`, not `| Lib.U.A ->`), which the resolver does
+/// not resolve across files.
 fn module_qualified(text: &str) -> bool {
     let clauses = text;
     clauses.match_indices("Lib.").any(|(i, _)| {
@@ -576,7 +572,6 @@ fn program(union: &Union, placement: Placement) -> (Vec<(String, String)>, Vec<C
             let obligated = *modelled
                 && *ctx_modelled
                 && placement.obligates(union, template, &e)
-                && !module_qualified(&e)
                 && !(*generic && matches!(*cid, "value" | "branch"));
             cells.push((
                 line,
@@ -736,16 +731,19 @@ fn check_with(sources: &[(String, String)], cells: &[Cell], tally: &mut Tally, a
         for (def, ty) in inferred.def_types() {
             let d = rf.def(*def);
             let key = (usize::from(d.range.start()), usize::from(d.range.end()));
+            let ours = ty.render();
+            // A commit counts toward its cell even where FCS's dumps grade
+            // nothing (an error-recovered declaration), so the erroring
+            // count sees it.
+            if idx == last {
+                ours_by_name.insert((d.name.to_string(), line_of(key.0)), ours.clone());
+            }
             if dumps.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render();
             match dumps.binders.get(&key) {
                 Some(theirs) if *theirs == ours && !dumps.hides_constraint(key, &ours) => {
                     tally.binders += 1;
-                    if idx == last {
-                        ours_by_name.insert((d.name.to_string(), line_of(key.0)), ours);
-                    }
                 }
                 theirs => tally.wrong.push(format!(
                     "{name} binder `{}` (line {}): ours `{ours}`, FCS {theirs:?}\n{}",
@@ -807,7 +805,7 @@ fn project_union_cases_agree_with_fcs_by_declaration_and_placement() {
         tally.committed_erroring, 0,
         "cells committed on lines FCS rejects: {tally:?}"
     );
-    assert_clean(&tally, 500);
+    assert_clean(&tally, 700);
 }
 
 /// `(union id, using-file body)`: cases where FCS rejects them — a payload
@@ -903,6 +901,11 @@ fn a_case_name_two_namespace_fragments_declare_agrees_with_fcs() {
             qualified_only,
             "let v0 = N.X\nlet f1 () = N.X\nlet f2 u = match u with N.X -> 0 | _ -> 1\n",
         ),
+        // A later fragment's class takes the case's constructor name.
+        (
+            "type X(s: string) =\n    member _.S = s\n",
+            "open N\nlet make = X\nlet v = Y\n",
+        ),
     ] {
         let sources = vec![
             (
@@ -914,6 +917,20 @@ fn a_case_name_two_namespace_fragments_declare_agrees_with_fcs() {
         ];
         check(&sources, &[], &mut tally);
     }
+    // A union named like its namespace, beside a qualified-only case of the
+    // name in another fragment: `N.X` is `U2`'s in FCS, not `N.N`'s.
+    let sources = vec![
+        (
+            "A.fs".to_string(),
+            "namespace N\ntype N = X | Y\n".to_string(),
+        ),
+        ("B.fs".to_string(), format!("namespace N\n{qualified_only}")),
+        (
+            "Use.fs".to_string(),
+            "module M\nlet v = N.X\nlet w = N.N.Y\n".to_string(),
+        ),
+    ];
+    check(&sources, &[], &mut tally);
     assert_clean(&tally, 0);
 }
 
@@ -1029,4 +1046,40 @@ fn edge_union_declarations_agree_with_fcs() {
         check_with(&sources, &[], &mut tally, true);
     }
     assert_clean(&tally, 0);
+}
+
+/// A match over a project union whose patterns belong to another union is
+/// one FCS rejects, so its dumps grade nothing there; what inference commits
+/// is held to FCS's tooltips instead (`fcs-dump tooltips`, read by hand).
+#[test]
+fn an_ill_typed_match_over_a_project_union_keeps_what_fcs_keeps() {
+    let src = "module M\n\
+               type U1 = X | Y of int\n\
+               type U2 = X | Z\n\
+               let f (u: U1) = ignore (match u with | X -> 0 | Z -> 1)\n\
+               let g (u: U1) = match u with | X -> 0 | Z -> 1\n";
+    let parsed = borzoi_cst::parser::parse(src);
+    let recovery = borzoi_sema::SyntaxRecovery::of(&parsed);
+    let file = <borzoi_cst::syntax::ImplFile as borzoi_cst::syntax::AstNode>::cast(parsed.root)
+        .expect("impl file");
+    let env = crate::common::full_bcl_env();
+    let resolved =
+        borzoi_sema::resolve_file(&file, &borzoi_sema::ProjectItems::default(), env, &recovery);
+    let inferred = borzoi_sema::infer_file(
+        &file,
+        &resolved,
+        env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
+    // FCS's tooltips: `val f: u: U1 -> unit`, `val g: u: U1 -> int`.
+    let pinned = [
+        ("f", "M.U1 -> Microsoft.FSharp.Core.Unit"),
+        ("g", "M.U1 -> System.Int32"),
+    ];
+    for (def, ty) in inferred.def_types() {
+        let name = resolved.def(*def).name.as_str();
+        if let Some((_, fcs)) = pinned.iter().find(|(n, _)| *n == name) {
+            assert_eq!(ty.render(), *fcs, "`{name}`");
+        }
+    }
 }
