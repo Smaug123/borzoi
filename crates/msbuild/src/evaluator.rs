@@ -54,7 +54,7 @@
 //! same [`State`] as the project body, so properties they define
 //! become visible to substitutions further down the project file.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -82,10 +82,12 @@ use super::{
 };
 
 mod item_pass;
+mod protection;
 use item_pass::{
     CapturedPackageReference, CurrentFile, DeferredGroupKind, DeferredItemGroup,
     RetainedImportedFile, item_key, replay_deferred_item_groups,
 };
+use protection::{Protection, ProtectionTable};
 
 /// Maximum recursion depth for `<Import>` following. MSBuild itself
 /// caps at ~100; we pick a number well above any sane real-world
@@ -344,6 +346,7 @@ fn walk_once<'r>(
         .walked_files
         .insert(canonicalise_or_normalise(project_path));
     state.implicit_directory_build_props_fallback = implicit_props.map(Path::to_path_buf);
+    state.implicit_directory_build_targets_fallback = implicit_targets.map(Path::to_path_buf);
     let project_dir = project_path.parent().unwrap_or_else(|| Path::new(""));
     state.directory_build_props_splice_pending = true;
     if let Some(Resolution { path, .. }) = resolve_directory_build_path(
@@ -356,7 +359,7 @@ fn walk_once<'r>(
             .lookup
             .get_unescaped("ImportDirectoryBuildProps")
             .as_deref(),
-        state.is_sticky_global("ImportDirectoryBuildProps"),
+        &state.protection.get("ImportDirectoryBuildProps"),
     ) {
         // Sdk.props can contain the standard Directory.Build.props rediscovery
         // import before this walker reaches its explicit splice. Pre-record
@@ -538,17 +541,15 @@ fn walk_once<'r>(
         project_dir,
     );
     // Verdict on the snapshot, applied below only if the fallback splice is the
-    // decision that stands — see `directory_build_splice_is_untrusted`.
-    let snapshot_untrusted = state.directory_build_splice_is_untrusted(
-        DIRECTORY_BUILD_TARGETS_SPLICE,
-        targets_to_import.is_some(),
-    );
+    // decision that stands — see `directory_build_splice_root`.
+    let snapshot_root = state
+        .directory_build_splice_root(DIRECTORY_BUILD_TARGETS_SPLICE, targets_to_import.is_some());
     let targets_gate_open = should_import_default_true(
         state
             .lookup
             .get_unescaped("ImportDirectoryBuildTargets")
             .as_deref(),
-        state.is_sticky_global("ImportDirectoryBuildTargets"),
+        &state.protection.get("ImportDirectoryBuildTargets"),
     );
     if let Some((targets, span)) = sdk_targets_to_splice.as_ref() {
         walk_external_file(targets, span.clone(), &mut state);
@@ -557,7 +558,8 @@ fn walk_once<'r>(
     // point; only a chain that never got there leaves the decision to the
     // pre-`Sdk.targets` snapshot, which is the SDK-less and inert-SDK case the
     // splice exists for.
-    if !state.sdk_reached_directory_build_targets_import && snapshot_untrusted {
+    let splice_root = snapshot_root.filter(|_| !state.sdk_reached_directory_build_targets_import);
+    if splice_root.is_some() {
         // The chain never reached its own import point, so this snapshot is
         // the decision — and it rested on a value we could not pin down.
         // Only when a file actually resolves, though: with nothing to import,
@@ -565,6 +567,7 @@ fn walk_once<'r>(
         // sides skip and the claim stays exact.
         state.note_directory_build_gate_uncertain(DIRECTORY_BUILD_TARGETS_SPLICE.1);
     }
+    let mut walked = None;
     if let Some(Resolution { path, source }) = targets_to_import.as_ref()
         && targets_gate_open
         && !state.sdk_reached_directory_build_targets_import
@@ -575,7 +578,18 @@ fn walk_once<'r>(
         if matches!(source, ResolutionSource::Fallback) {
             seed_directory_build_path(&mut state, "DirectoryBuildTargetsPath", path);
         }
-        walk_directory_build_file(path, 0..0, DirectoryBuildFile::Targets, &mut state);
+        walk_directory_build_file(
+            path,
+            0..0,
+            DirectoryBuildFile::Targets,
+            splice_root.clone(),
+            &mut state,
+        );
+        walked = Some(path.as_path());
+    }
+    if let Some(root) = &splice_root {
+        let resolved = targets_to_import.as_ref().map(|r| r.path.as_path());
+        hide_directory_build_candidates(walked, &[resolved, implicit_targets], root, &mut state);
     }
 
     // The property pass is complete — every import has been followed and
@@ -895,7 +909,7 @@ enum DirectoryBuildFile {
 /// `state.lookup` under `property_name`. Used to mirror MSBuild's
 /// implicit `DirectoryBuild{Props,Targets}Path` assignment that happens
 /// inside the gated import block in `Microsoft.Common.props`. Bypasses
-/// the `protected` set on purpose: callers seed only when their own
+/// [`State::protection`] on purpose: callers seed only when their own
 /// gate check already decided to import, and `DirectoryBuildPropsPath` /
 /// `DirectoryBuildTargetsPath` are not reserved names.
 fn seed_directory_build_path(state: &mut State<'_>, property_name: &str, path: &Path) {
@@ -921,9 +935,11 @@ fn seed_directory_build_path(state: &mut State<'_>, property_name: &str, path: &
 /// path only when the property is unset, and a global cannot be
 /// written through, so the value stays "" and `Exists('')` is false —
 /// the import is skipped with no fallback. An empty value that is
-/// *not* a sticky global (unset, or written by the project body —
+/// *not* a protected global (unset, or written by the project body —
 /// where the default-fill can take effect) keeps falling back to the
-/// discovered file.
+/// discovered file. An undecided protection is decided the way the walk
+/// took it; the splice's trust check ([`State::gate_value_is_exact`])
+/// records that the decision is uncertain.
 ///
 /// Pure: this never mutates `state`. The caller is responsible for
 /// seeding `$(<override_property>)` to the resolved path when the
@@ -969,7 +985,7 @@ fn resolve_directory_build_path(
         // `Exists('')` is false and the import is skipped — no
         // fallback. A non-global empty (unset / body-written) falls
         // through to the discovered file below.
-        if state.is_sticky_global(override_property) {
+        if state.protection.get(override_property).walk_protects() {
             return None;
         }
     }
@@ -1002,18 +1018,19 @@ fn resolve_directory_build_path(
 /// `" true "` is not MSBuild-true — which is exactly
 /// [`condition::parse_msbuild_bool`]'s deliberately untrimmed contract.
 ///
-/// `is_sticky_global` distinguishes a read-only global from an
-/// unset/body-written value. MSBuild's default-fill
+/// `protection` is the gate property's: MSBuild's default-fill
 /// (`<Prop Condition="'$(Prop)' == ''">true</Prop>`) cannot write
-/// through a global, so an *empty global* stays empty — the gate
+/// through a protected global, so an *empty global* stays empty — the gate
 /// `'$(Prop)' == 'true'` is then false and the import is skipped.
 /// Only the empty case differs: a non-empty global ("true", "0", …)
-/// compares identically either way.
-fn should_import_default_true(value: Option<&str>, is_sticky_global: bool) -> bool {
+/// compares identically either way. An undecided protection is decided the
+/// way the walk took it; the splice's trust check
+/// ([`State::gate_value_is_exact`]) records that the decision is uncertain.
+fn should_import_default_true(value: Option<&str>, protection: &Protection) -> bool {
     match value {
         // Read-only global: no default-fill, so the value is taken
         // verbatim and only an MSBuild-true spelling opens the gate.
-        Some(s) if is_sticky_global => is_msbuild_true(s),
+        Some(s) if protection.walk_protects() => is_msbuild_true(s),
         None => true,
         Some(s) if s.trim().is_empty() => true,
         Some(s) => is_msbuild_true(s),
@@ -1144,13 +1161,16 @@ struct State<'r> {
     /// `$(Name)` substitution. Keyed case-insensitively, matching
     /// MSBuild's OrdinalIgnoreCase property-name comparison.
     lookup: PropertyMap,
-    /// Lowercased names whose project-side writes must be discarded —
-    /// `properties::well_known` seeds (always) plus the caller's
-    /// `extra_properties` (unless `TreatAsLocalProperty` opts them out).
-    /// Writes targeting these names — under any casing — are silently
-    /// ignored, matching MSBuild's "global properties override project
-    /// properties" / "reserved properties are read-only" rules.
-    protected: HashSet<String>,
+    /// Which names a project write cannot land on — `properties::well_known`
+    /// seeds (always) plus the caller's `extra_properties` (unless
+    /// `TreatAsLocalProperty` opts them out) — and whether that depends on an
+    /// import gate the walk could not decide. Writes the table protects, under
+    /// any casing, are discarded, matching MSBuild's "global properties
+    /// override project properties" / "reserved properties are read-only"
+    /// rules. The same answer decides whether `Microsoft.Common.props`'s
+    /// default-fill can write a gate such as `ImportDirectoryBuildTargets`
+    /// (see [`should_import_default_true`]).
+    protection: ProtectionTable,
     /// Lowercased names any walked root opted out of global protection with
     /// `TreatAsLocalProperty` — the union across the entry document and every
     /// file the walk imported, whether or not the name was actually a global
@@ -1158,28 +1178,6 @@ struct State<'r> {
     /// name?" independently of what the caller happened to supply). Surfaced on
     /// [`ParsedProject::locally_overridable_properties`].
     locally_overridable: HashSet<String>,
-    /// Lowercased names of MSBuild reserved well-known properties
-    /// (everything seeded by [`properties::well_known`]). Snapshot
-    /// taken at construction time. Used by [`walk_external_file`] to
-    /// distinguish "protected because reserved" from "protected
-    /// because supplied as a global property" when an imported
-    /// `<Project TreatAsLocalProperty="...">` asks to unprotect a
-    /// name: MSBuild's `TreatAsLocalProperty` only applies to
-    /// globals, not reserved names, so we never unprotect anything
-    /// in this set even if an import lists it.
-    reserved: HashSet<String>,
-    /// Lowercased names supplied as *read-only globals*
-    /// (`extra_properties`, minus the entry project's
-    /// `TreatAsLocalProperty` opt-outs). Immutable for the whole walk:
-    /// unlike `protected`, it is never touched by `walk_external_file`'s
-    /// per-file `TreatAsLocalProperty` handling, so it is a stable
-    /// answer to "is this property a sticky global?". A global's value
-    /// cannot be rewritten by MSBuild's `Microsoft.Common.props`
-    /// default-fill assignments, so an *empty* sticky global stays
-    /// empty rather than defaulting to "true" / the discovered path.
-    /// Consulted by the `Directory.Build.*` import gates
-    /// ([`should_import_default_true`], [`resolve_directory_build_path`]).
-    sticky_globals: HashSet<String>,
     /// What the caller's environment said about `MSBuildExtensionsPath`, held
     /// aside rather than promoted: whether that value survives is the one
     /// toolset behaviour that differs across the SDKs we support, so it cannot
@@ -1294,6 +1292,10 @@ struct State<'r> {
     /// (the real `Microsoft.Common.props` import point, or the
     /// after-`Sdk.props` fallback).
     implicit_directory_build_props_fallback: Option<PathBuf>,
+    /// Its `Directory.Build.targets` twin, for the chain's own import point:
+    /// when that decision is untrusted, the file MSBuild may import there
+    /// although the walk's `$(DirectoryBuildTargetsPath)` does not name it.
+    implicit_directory_build_targets_fallback: Option<PathBuf>,
     /// The canonical file successfully walked through an
     /// `<Import Project="$(DirectoryPackagesPropsPath)">`-shaped import —
     /// NuGet's central-package import point (only `NuGet.props` uses that
@@ -1566,6 +1568,20 @@ struct State<'r> {
     /// the item pass runs after the whole property pass, so it correctly
     /// sees the final flag.
     walk_opaque: bool,
+    /// The root cause of the undecided gate an enclosing `<Import>` or
+    /// `<ImportGroup>` was followed under, while its content is walked. The
+    /// real build may skip that content, so every write in it is recorded
+    /// unpinned with this root, exactly as a write under an undecided
+    /// `<PropertyGroup>` gate is (see [`walk_property_child`]).
+    import_gate_unpinned: Option<UnpinnedRoot>,
+    /// Dedup keys ([`import_dedup_key`]) of files content behind an undecided
+    /// import gate consists of, with that gate's root. Whether MSBuild has
+    /// already imported one decides whether a later import of it runs or is
+    /// skipped as a duplicate.
+    maybe_imported: HashMap<String, UnpinnedRoot>,
+    /// Set once content the walk could not even enumerate sat behind an
+    /// undecided gate: any later import may then be a duplicate in MSBuild.
+    any_maybe_imported: Option<UnpinnedRoot>,
 }
 
 #[derive(Debug, Clone)]
@@ -1656,18 +1672,17 @@ impl<'r> State<'r> {
         // `TreatAsLocalProperty` is documented to apply to *global*
         // properties only, so listing a reserved name there must not
         // unprotect it.
-        let mut reserved: HashSet<String> = lookup
-            .canonical_keys()
-            .map(|k| k.to_ascii_lowercase())
-            .collect();
+        let mut protection = ProtectionTable::default();
+        for name in lookup.canonical_keys() {
+            protection.reserve(name);
+        }
         // Reserved from process start: MSBuild derives the ChangeWaves
         // threshold from the `MSBUILDDISABLEFEATURESFROMVERSION`
         // environment variable and rejects every project write to the
         // property name, so a write must never reach
         // `AreFeaturesEnabled`'s guard. Its *value* is seeded from the
         // caller's environment snapshot below — the one trusted source.
-        reserved.insert("msbuilddisablefeaturesfromversion".to_string());
-        let mut protected: HashSet<String> = reserved.clone();
+        protection.reserve("MSBuildDisableFeaturesFromVersion");
         // The `OS` pseudo-environment property. MSBuild *synthesises* it only
         // on non-Windows hosts (dotnet/msbuild
         // `src/Build/Evaluation/Evaluator.cs`: `// Fake OS env variables when
@@ -1745,7 +1760,7 @@ impl<'r> State<'r> {
 
             // Reserved names are filtered out of the environment by MSBuild
             // itself, so the path-derived value we seeded survives.
-            if reserved.contains(&lower) || is_msbuild_reserved_name(&lower) {
+            if protection.is_reserved(&lower) || is_msbuild_reserved_name(&lower) {
                 continue;
             }
 
@@ -1823,7 +1838,6 @@ impl<'r> State<'r> {
             }
             Some(_) => {}
         }
-        let mut sticky_globals: HashSet<String> = HashSet::new();
         for (k, v) in extra_properties {
             // A caller global is *not* already-evaluated text: MSBuild unescapes
             // global property values on the way in (`-p:G=a%20b` makes `$(G)`
@@ -1831,13 +1845,10 @@ impl<'r> State<'r> {
             // escape in one is live, exactly as in project XML. Plain insert.
             lookup.insert(k.clone(), v.clone());
             let lower = k.to_ascii_lowercase();
+            // A global the entry document does not treat as local is read-only
+            // until an imported root opts it out.
             if !local_overrides.contains(&lower) {
-                protected.insert(lower.clone());
-                // A non-treated-as-local global is read-only for the
-                // whole walk: record it so the import gates can tell an
-                // empty global (sticky) from an unset/body-written empty
-                // (default-fillable).
-                sticky_globals.insert(lower);
+                protection.protect_global(&lower);
             }
         }
         let entry_project_dir = project_path
@@ -1846,10 +1857,8 @@ impl<'r> State<'r> {
             .unwrap_or_default();
         Self {
             lookup,
-            protected,
+            protection,
             locally_overridable: local_overrides.clone(),
-            reserved,
-            sticky_globals,
             env_extensions_path,
             written: HashMap::new(),
             compile_first: Vec::new(),
@@ -1878,6 +1887,7 @@ impl<'r> State<'r> {
             imports_seen_fuzzy: HashSet::new(),
             walked_files: HashSet::new(),
             implicit_directory_build_props_fallback: None,
+            implicit_directory_build_targets_fallback: None,
             walked_directory_packages_props_import: None,
             depth: 0,
             entry_project_dir,
@@ -1917,6 +1927,9 @@ impl<'r> State<'r> {
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: false,
+            import_gate_unpinned: None,
+            maybe_imported: HashMap::new(),
+            any_maybe_imported: None,
         }
     }
 
@@ -2015,7 +2028,18 @@ impl<'r> State<'r> {
         // question the splice actually needs answered, and it holds whether or
         // not the name currently has a value — an undecided write that did not
         // happen is recorded the same way as one that did.
+        //
+        // One write of the name is not in any channel: the default-fill MSBuild
+        // performs itself (`Condition="'$(Name)' == ''"` in
+        // `Microsoft.Common.props`/`.targets`, modelled by
+        // [`should_import_default_true`] and [`resolve_directory_build_path`]),
+        // which lands only where the name is writable. When that hangs on an
+        // undecided import's opt-out, so does the decision. Undecided at any
+        // value, not only an empty one: the fill matters only to an empty
+        // value, but an undecided opt-out of these names is rare enough not to
+        // be worth a second notion of "empty".
         self.trust_of(name).is_certain()
+            && !matches!(self.protection.get(name), Protection::Undecided { .. })
     }
 
     /// Record that a `Directory.Build.*` splice decision rested on a value we
@@ -2039,14 +2063,20 @@ impl<'r> State<'r> {
     /// Getting that asymmetry wrong costs in either direction: too eager and
     /// `items_uncertain` stops the LSP folding a project it could have
     /// analysed, too lax and a missing Compile item is published as fact.
+    ///
+    /// Returns the decision's root when it is untrusted: the file the walk
+    /// imports is then walked under it, and the files MSBuild may import
+    /// instead have their writes hidden, as for any import behind an undecided
+    /// gate (see [`walk_directory_build_file`],
+    /// [`hide_directory_build_candidates`]).
     fn note_directory_build_splice_decision(
         &mut self,
         splice: (&str, &str),
         a_file_resolved: bool,
-    ) {
-        if self.directory_build_splice_is_untrusted(splice, a_file_resolved) {
-            self.note_directory_build_gate_uncertain(splice.1);
-        }
+    ) -> Option<UnpinnedRoot> {
+        let root = self.directory_build_splice_root(splice, a_file_resolved)?;
+        self.note_directory_build_gate_uncertain(splice.1);
+        Some(root)
     }
 
     /// [`Self::note_directory_build_splice_decision`]'s verdict without
@@ -2056,13 +2086,28 @@ impl<'r> State<'r> {
     /// it there regardless would decline a project whose SDK cleanly re-pins
     /// the gate before that point — the verdict has to travel to where it is
     /// used, or not at all.
-    fn directory_build_splice_is_untrusted(
+    fn directory_build_splice_root(
         &self,
         (gate_name, path_name): (&str, &str),
         a_file_resolved: bool,
-    ) -> bool {
-        !self.gate_value_is_exact(path_name)
-            || (a_file_resolved && !self.gate_value_is_exact(gate_name))
+    ) -> Option<UnpinnedRoot> {
+        if !self.gate_value_is_exact(path_name) {
+            return Some(self.splice_value_root(path_name, format!("exists('$({path_name})')")));
+        }
+        (a_file_resolved && !self.gate_value_is_exact(gate_name))
+            .then(|| self.splice_value_root(gate_name, format!("'$({gate_name})' == 'true'")))
+    }
+
+    /// Why `name`, which [`Self::gate_value_is_exact`] refused, cannot be
+    /// trusted: the undecided opt-out its default-fill hangs on, else the root
+    /// its own provenance carries, else the MSBuild `condition` that reads it.
+    fn splice_value_root(&self, name: &str, condition: String) -> UnpinnedRoot {
+        match self.protection.get(name) {
+            Protection::Undecided { root, .. } => root,
+            Protection::Protected | Protection::Writable => self
+                .unpinned_root_for_raw(&format!("$({name})"))
+                .unwrap_or(UnpinnedRoot::UnsupportedCondition(condition)),
+        }
     }
 
     fn note_directory_build_gate_uncertain(&mut self, path_name: &str) {
@@ -2206,7 +2251,7 @@ impl<'r> State<'r> {
             // the value they described.
             // (`validate_inputs` rejects these names in `extra_properties`,
             // so no caller-global can reach here.)
-            if self.reserved.contains(&lower) {
+            if self.protection.is_reserved(&lower) {
                 continue;
             }
             // Evaluator-computed (SDK/toolset paths and toolset constants), not
@@ -2227,8 +2272,7 @@ impl<'r> State<'r> {
                     refused: RefusedOutcome::Clear,
                 },
             );
-            self.reserved.insert(lower.clone());
-            self.protected.insert(lower);
+            self.protection.reserve(&lower);
         }
         let overridable = [
             ("MSBuildExtensionsPath32", dir.clone()),
@@ -2311,9 +2355,7 @@ impl<'r> State<'r> {
             .collect();
         let State {
             lookup,
-            protected: _,
-            reserved: _,
-            sticky_globals: _,
+            protection: _,
             env_extensions_path: _,
             written,
             compile_first,
@@ -2344,6 +2386,7 @@ impl<'r> State<'r> {
             imports_seen_fuzzy: _,
             walked_files: _,
             implicit_directory_build_props_fallback: _,
+            implicit_directory_build_targets_fallback: _,
             walked_directory_packages_props_import: _,
             depth: _,
             entry_project_dir: _,
@@ -2384,6 +2427,9 @@ impl<'r> State<'r> {
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
+            import_gate_unpinned: _,
+            maybe_imported: _,
+            any_maybe_imported: _,
         } = self;
         // Central Package Management opt-in: a versionless
         // `<PackageReference Include="X"/>` may receive its effective version
@@ -2529,22 +2575,6 @@ impl<'r> State<'r> {
         } else if name.eq_ignore_ascii_case("DirectoryBuildTargetsPath") {
             self.directory_build_targets_path_written_by_splice = written_by_splice;
         }
-    }
-
-    /// Whether `name` (case-insensitive) is *currently* a read-only
-    /// global property — i.e. one MSBuild's `Microsoft.Common.props`
-    /// default-fill cannot write through. See [`State::sticky_globals`].
-    ///
-    /// A name only counts as sticky while it is *also* still protected:
-    /// an imported root's `TreatAsLocalProperty` unprotects a global for
-    /// that file's scope (removing it from [`State::protected`]), which
-    /// makes it locally writable there — so the default-fill *can* write
-    /// through and the sticky-global short-circuit must stand down. This
-    /// keeps the gate decision in lockstep with the `TreatAsLocalProperty`
-    /// model `walk_external_file` already implements via `protected`.
-    fn is_sticky_global(&self, name: &str) -> bool {
-        let lower = name.to_ascii_lowercase();
-        self.sticky_globals.contains(&lower) && self.protected.contains(&lower)
     }
 
     /// Flag the package/framework-reference set as untrustworthy for a
@@ -3260,12 +3290,13 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             // condition; the group is effectively a no-op whether the
             // condition fires or not. Suppress diagnostics and skip
             // walking in that case — there's nothing the condition
-            // could affect. (Empty groups trivially satisfy this.)
-            let all_protected = node.children().filter(Node::is_element).all(|c| {
-                state
-                    .protected
-                    .contains(&c.tag_name().name().to_ascii_lowercase())
-            });
+            // could affect. (Empty groups trivially satisfy this.) Only a
+            // *certain* protection counts: a write to a name an undecided
+            // import may have opted out may land.
+            let all_protected = node
+                .children()
+                .filter(Node::is_element)
+                .all(|c| state.protection.get(c.tag_name().name()) == Protection::Protected);
             if all_protected {
                 return;
             }
@@ -3390,10 +3421,30 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             }
             // Same rule as `follow_explicit_import`: an undecided group
             // gate may bring in or omit whole files of property writes.
-            if state.diagnostics.len() != diagnostics_before_gate
-                || matches!(gate, CondGate::Unsupported)
-            {
+            let gate_maybe_wrong = state.diagnostics.len() != diagnostics_before_gate
+                || matches!(gate, CondGate::Unsupported);
+            if gate_maybe_wrong {
                 state.walk_opaque = true;
+            }
+            // The same provenance rule as a bare `<Import>`'s gate, applied to
+            // every import the group holds.
+            // Pure mode (`follow_imports=false`) follows no import whatever the
+            // gate says, and must not read the files to enumerate them.
+            let gate_root = (gate_maybe_wrong || state.condition_reads_untrusted_value(node))
+                .then(|| undecided_gate_root(node, diagnostics_before_gate, state))
+                .filter(|_| !state.in_sdk_subtree && state.follow_imports);
+            let saved_import_gate = state.import_gate_unpinned.clone();
+            if let Some(root) = &gate_root {
+                match gate {
+                    CondGate::Run => state.import_gate_unpinned = Some(root.clone()),
+                    CondGate::Skip | CondGate::Unsupported => {
+                        for child in node.children().filter(Node::is_element) {
+                            if child.tag_name().name() == "Import" {
+                                hide_import_writes(child, current_file_dir, root.clone(), state);
+                            }
+                        }
+                    }
+                }
             }
             match gate {
                 CondGate::Run => {
@@ -3426,6 +3477,7 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                     state.package_import_gate_context = prev_pkg_gate;
                 }
             }
+            state.import_gate_unpinned = saved_import_gate;
         }
         "Choose" => handle_choose(node, current_file_dir, state),
         // Item definitions belong to MSBuild's pass 2 — after every property
@@ -3774,7 +3826,9 @@ fn walk_property_child(
 ) {
     let name = node.tag_name().name().to_string();
     let lower = name.to_ascii_lowercase();
-    if state.protected.contains(&lower) {
+    // The root a write to an opted-out global lands under, when the opt-out
+    // itself was behind an undecided import gate.
+    let opt_out_root = match state.protection.get(&lower) {
         // Reserved (well-known) or caller-supplied (extra_properties) name.
         // MSBuild forbids the project from rebinding these — and crucially,
         // it discards the whole assignment *without* evaluating the
@@ -3782,8 +3836,22 @@ fn walk_property_child(
         // either, since the project is using a standard idiom (e.g.
         // `<Configuration Condition="'$(Configuration)' == ''">Debug</…>`)
         // that we'd otherwise misreport as a partial-evaluation failure.
-        return;
-    }
+        Protection::Protected => return,
+        // Hidden content may have made this global writable, in which case the
+        // real build applies the write we are about to discard.
+        Protection::Undecided {
+            walk_protects: true,
+            root,
+        } => {
+            mark_hidden_write(&name, &root, node.range(), state);
+            return;
+        }
+        Protection::Undecided {
+            walk_protects: false,
+            root,
+        } => Some(root),
+        Protection::Writable => None,
+    };
     // A `<DefineConstants>` write feeds the `#if` symbol set, via both its
     // condition (which branch applies) and its value. Scope `define_context` to
     // the whole element (entry/user files only); `push` then flags any
@@ -3792,6 +3860,15 @@ fn walk_property_child(
     // matches MSBuild (see `is_define_self_reference`). Single restore.
     let prev_define = state.define_context;
     state.define_context = prev_define || (lower == "defineconstants" && !state.in_sdk_subtree);
+    // The undecided-import roots below reach a write only as provenance, which
+    // the `#if` symbol set does not consult; it has its own flag.
+    if let Some(root) = state
+        .import_gate_unpinned
+        .clone()
+        .or_else(|| opt_out_root.clone())
+    {
+        flag_undecided_define_write(&lower, &root, node.range(), state);
+    }
     // A CPM flag's own Condition and value are package-affecting for the same
     // reason as its containing group's Condition: if either is only evaluated by
     // treating unknown input as empty, the later inline CPM pass must retain a
@@ -3799,13 +3876,18 @@ fn walk_property_child(
     // reference uncertainty.
     let prev_package = state.package_context;
     state.package_context = prev_package || is_cpm_flag_property_name(&name);
+    // A write inside an import followed under an undecided gate is a write
+    // under that gate, however cleanly its own group and condition evaluate —
+    // and so is a write that lands only because such an import opted the name
+    // out of global protection.
+    let import_gate = state.import_gate_unpinned.clone().or(opt_out_root);
     walk_property_child_inner(
         node,
         name,
         lower,
         inherited_sdk_package_taint,
-        inherited_condition_maybe_wrong,
-        inherited_unpinned_root,
+        inherited_condition_maybe_wrong || import_gate.is_some(),
+        inherited_unpinned_root.or(import_gate.as_ref()),
         state,
     );
     state.package_context = prev_package;
@@ -4699,7 +4781,8 @@ fn property_child_could_write(child: Node<'_, '_>, state: &State<'_>) -> bool {
 ///
 /// Protected names are exempt: MSBuild discards those writes without
 /// consulting the gate at all, so a maybe-skipped write cannot change them —
-/// marking one would falsely degrade a value the caller pinned. Children whose
+/// marking one would falsely degrade a value the caller pinned. A name an
+/// undecided import may have opted out is not exempt. Children whose
 /// own condition is cleanly false are exempt too — they cannot write whichever
 /// way the group gate goes (see [`property_child_could_write`]).
 fn mark_property_group_children_provenance(
@@ -4712,7 +4795,7 @@ fn mark_property_group_children_provenance(
             continue;
         }
         let name = child.tag_name().name();
-        if state.protected.contains(&name.to_ascii_lowercase()) {
+        if state.protection.get(name) == Protection::Protected {
             continue;
         }
         state.apply_property_provenance(
@@ -4729,6 +4812,254 @@ fn mark_property_group_children_provenance(
             },
         );
     }
+}
+
+/// The root cause behind an import gate the walk could not decide: what the
+/// gate's evaluation just surfaced, else the first unpinned property it reads,
+/// else the gate itself.
+///
+/// Every caller records it against the import's possible writes only in a
+/// **user-authored** file. Inside the SDK tree undecided import gates are the
+/// norm (an outer build's `TargetFramework`, the `Custom*Targets` hooks), and
+/// recording them there unpins most of the SDK chain — the same reason Compile
+/// uncertainty is tolerated inside the SDK tree. An SDK import that hides a
+/// write the entry project relies on is therefore still a known gap.
+fn undecided_gate_root(
+    node: Node<'_, '_>,
+    diagnostics_before: usize,
+    state: &State<'_>,
+) -> UnpinnedRoot {
+    let condition = node.attribute("Condition").unwrap_or("");
+    state
+        .unpinned_root_from_recent_diagnostics(diagnostics_before)
+        .or_else(|| state.unpinned_root_for_raw(condition))
+        .unwrap_or_else(|| UnpinnedRoot::UnsupportedCondition(condition.to_string()))
+}
+
+/// A `<DefineConstants>` write in a user-authored file whose landing depends on
+/// an undecided import gate: the `#if` symbol set is uncertain. Raised through
+/// [`State::push`] in define context, the one route that flags it.
+fn flag_undecided_define_write(
+    lower: &str,
+    root: &UnpinnedRoot,
+    span: Range<usize>,
+    state: &mut State<'_>,
+) {
+    if lower != "defineconstants" || state.in_sdk_subtree {
+        return;
+    }
+    let prev = std::mem::replace(&mut state.define_context, true);
+    state.push(root.to_diagnostic(), span);
+    state.define_context = prev;
+}
+
+/// How deep [`possible_import_writes`] follows nested imports before giving up
+/// and answering "unknown".
+const MAX_HIDDEN_IMPORT_DEPTH: usize = 8;
+
+/// How many distinct files [`possible_import_writes`] reads before answering
+/// "unknown" — a bound on the work, which the depth limit alone is not.
+const MAX_HIDDEN_IMPORT_FILES: usize = 64;
+
+/// Every property name the file(s) `import` names could write, if the walk
+/// can know it without evaluating them: the import's `Project` expands
+/// cleanly to literal paths, and each existing file parses and holds no SDK.
+/// Writes are collected regardless of their conditions — the question is what
+/// *could* be written — and nested imports are followed the same way. A file
+/// that does not exist writes nothing: had the real build imported it, the
+/// evaluation would have failed.
+///
+/// `None` means the content cannot be bounded.
+#[derive(Default)]
+struct HiddenWrites {
+    /// Property names the content could write.
+    properties: BTreeSet<String>,
+    /// Lowercased names the content could opt out with `TreatAsLocalProperty`.
+    unprotected: BTreeSet<String>,
+    /// The files the content consists of. Whether MSBuild has imported one of
+    /// them decides whether a *later* import of it runs or is skipped as a
+    /// duplicate, so that is undecided too. Each is scanned once, however often
+    /// the content imports it.
+    files: Vec<PathBuf>,
+    scanned: HashSet<String>,
+}
+
+fn possible_import_writes(
+    import: Node<'_, '_>,
+    current_file_dir: &Path,
+    state: &State<'_>,
+) -> Option<HiddenWrites> {
+    let mut names = HiddenWrites::default();
+    collect_import_writes(import, current_file_dir, state, 0, &mut names)?;
+    Some(names)
+}
+
+fn collect_import_writes(
+    import: Node<'_, '_>,
+    current_file_dir: &Path,
+    state: &State<'_>,
+    depth: usize,
+    names: &mut HiddenWrites,
+) -> Option<()> {
+    if depth > MAX_HIDDEN_IMPORT_DEPTH || import.attribute("Sdk").is_some() {
+        return None;
+    }
+    let raw = import.attribute("Project")?;
+    // A nested import's path may read a property the hidden content itself
+    // writes, so only the entry level is expanded against the current table.
+    if depth > 0 && raw.contains("$(") {
+        return None;
+    }
+    let (value, issues) = properties::substitute_with_fs(raw, &state.lookup);
+    if !issues.is_empty() {
+        return None;
+    }
+    for segment in value.split_list() {
+        if segment.has_live_wildcard() {
+            return None;
+        }
+        let path = current_file_dir.join(segment.unescape().replace('\\', "/"));
+        collect_possible_file_writes(&path, state, depth, names)?;
+    }
+    Some(())
+}
+
+/// [`possible_import_writes`] for one file already resolved to `path`.
+///
+/// A file the walk has already imported under no undecided gate is a
+/// duplicate here in every build — MSBuild skips it whatever this import's
+/// own gate says — so it contributes nothing.
+fn collect_possible_file_writes(
+    path: &Path,
+    state: &State<'_>,
+    depth: usize,
+    names: &mut HiddenWrites,
+) -> Option<()> {
+    let key = import_dedup_key(path);
+    let certainly_imported =
+        state.imports_seen.contains(&key) && !state.maybe_imported.contains_key(&key);
+    if !path.exists() || certainly_imported || !names.scanned.insert(key) {
+        return Some(());
+    }
+    if names.scanned.len() > MAX_HIDDEN_IMPORT_FILES {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let root = doc.root_element();
+    if root.attribute("Sdk").is_some() {
+        return None;
+    }
+    if let Some(local) = root.attribute("TreatAsLocalProperty") {
+        if local.contains("$(") {
+            return None;
+        }
+        names.unprotected.extend(collect_local_overrides(root));
+    }
+    names.files.push(path.to_path_buf());
+    let dir = path.parent()?;
+    collect_possible_writes(root, dir, state, depth, names)
+}
+
+fn collect_possible_writes(
+    container: Node<'_, '_>,
+    file_dir: &Path,
+    state: &State<'_>,
+    depth: usize,
+    names: &mut HiddenWrites,
+) -> Option<()> {
+    for child in container.children().filter(Node::is_element) {
+        match child.tag_name().name() {
+            "PropertyGroup" => {
+                for write in child.children().filter(Node::is_element) {
+                    names.properties.insert(write.tag_name().name().to_string());
+                }
+            }
+            "Choose" | "When" | "Otherwise" | "ImportGroup" => {
+                collect_possible_writes(child, file_dir, state, depth, names)?;
+            }
+            "Import" => collect_import_writes(child, file_dir, state, depth + 1, names)?,
+            "Sdk" => return None,
+            _ => {}
+        }
+    }
+    Some(())
+}
+
+/// An import whose gate the walk could not decide was skipped (or refused):
+/// the real build may bring its content in. Record every property it could
+/// write as unpinned with `root`, as an undecided `<PropertyGroup>` gate does
+/// for its children — or, when the content cannot be bounded, every property
+/// defined so far.
+fn hide_import_writes(
+    import: Node<'_, '_>,
+    current_file_dir: &Path,
+    root: UnpinnedRoot,
+    state: &mut State<'_>,
+) {
+    match possible_import_writes(import, current_file_dir, state) {
+        Some(hidden) => apply_hidden_writes(hidden, &root, import.range(), state),
+        None => hide_writes_of_unknown_content(root, import.range(), state),
+    }
+}
+
+fn apply_hidden_writes(
+    hidden: HiddenWrites,
+    root: &UnpinnedRoot,
+    span: Range<usize>,
+    state: &mut State<'_>,
+) {
+    // Opt-outs first: a global the content may opt out is one its own write
+    // may land on.
+    for name in hidden.unprotected {
+        state.protection.maybe_opt_out(&name, root);
+    }
+    for name in hidden.properties {
+        mark_hidden_write(&name, root, span.clone(), state);
+    }
+    for file in hidden.files {
+        state
+            .maybe_imported
+            .entry(import_dedup_key(&file))
+            .or_insert(root.clone());
+    }
+}
+
+/// Content the walk cannot see may overwrite any property defined so far, so
+/// each is recorded unpinned with `root`. (A name the content would define for
+/// the first time is covered by [`State::walk_opaque`], which every caller
+/// latches: no later undefined read of it is exact.)
+fn hide_writes_of_unknown_content(root: UnpinnedRoot, span: Range<usize>, state: &mut State<'_>) {
+    // It may opt any global out of protection — and then write it, which the
+    // loop below covers, since every global is defined.
+    state.protection.maybe_opt_out_every_global(&root);
+    // Whether or not anything has defined it yet, the content may write it.
+    flag_undecided_define_write("defineconstants", &root, span.clone(), state);
+    let defined: Vec<String> = state.lookup.canonical_keys().map(str::to_string).collect();
+    for name in defined {
+        mark_hidden_write(&name, &root, span.clone(), state);
+    }
+    // …and it may import any file a later `<Import>` names.
+    state.any_maybe_imported.get_or_insert(root);
+}
+
+/// Record `name` unpinned with `root`. A protected name is skipped — MSBuild
+/// discards a write to one without looking at it, so hidden content cannot
+/// move it — unless hidden content may have lifted that protection.
+fn mark_hidden_write(name: &str, root: &UnpinnedRoot, span: Range<usize>, state: &mut State<'_>) {
+    let lower = name.to_ascii_lowercase();
+    if state.protection.get(&lower) == Protection::Protected {
+        return;
+    }
+    flag_undecided_define_write(&lower, root, span.clone(), state);
+    state.apply_property_provenance(
+        name,
+        PropertyProvenance {
+            taint: TaintOutcome::Set(span),
+            unpinned: UnpinnedOutcome::Set(root.clone()),
+            refused: RefusedOutcome::Keep,
+        },
+    );
 }
 
 fn diagnose_item_op(node: Node<'_, '_>, attr: &str, state: &mut State<'_>) -> bool {
@@ -4762,6 +5093,16 @@ fn handle_import(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
 }
 
 fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<'_>) {
+    let saved = state.import_gate_unpinned.clone();
+    follow_explicit_import_inner(node, current_file_dir, state);
+    state.import_gate_unpinned = saved;
+}
+
+fn follow_explicit_import_inner(
+    node: Node<'_, '_>,
+    current_file_dir: &Path,
+    state: &mut State<'_>,
+) {
     // The pre-scan in [`find_explicit_sdk_promotion`] may have already
     // promoted this body `<Import Sdk=X Project="Sdk.{props,targets}"/>`
     // to a root-equivalent splice position. Re-walking it here would
@@ -4782,6 +5123,10 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     if state.import_site_span.is_none() && state.hoisted_sdk_imports.contains(&node.range()) {
         return;
     }
+    // An untrusted decision at the chain's `Directory.Build.targets` import
+    // point, with the file it resolved: the import is then one behind an
+    // undecided gate, whatever its own condition reads.
+    let mut splice_root: Option<(UnpinnedRoot, Option<PathBuf>)> = None;
     // Reaching the chain's own `Directory.Build.targets` import point retires
     // the explicit splice, **whatever the import decides**. The splice exists
     // only for chains that never reach this point at all; once MSBuild's
@@ -4807,10 +5152,12 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             None,
             &state.entry_project_dir.clone(),
         );
-        state.note_directory_build_splice_decision(
-            DIRECTORY_BUILD_TARGETS_SPLICE,
-            resolved.is_some(),
-        );
+        splice_root = state
+            .note_directory_build_splice_decision(
+                DIRECTORY_BUILD_TARGETS_SPLICE,
+                resolved.is_some(),
+            )
+            .map(|root| (root, resolved.map(|r| r.path)));
         state.sdk_reached_directory_build_targets_import = true;
     }
     if is_sdk_directory_build_rediscovery_import(node, current_file_dir, state) {
@@ -4842,6 +5189,17 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // no-op afterwards.
                 fire_entry_directory_build_props_splice(state);
             }
+        }
+        // The chain's targets import is classed as rediscovery when its path
+        // is unset — a skip, which an untrusted decision makes undecided.
+        if let Some((root, resolved)) = &splice_root {
+            let fallback = state.implicit_directory_build_targets_fallback.clone();
+            hide_directory_build_candidates(
+                None,
+                &[resolved.as_deref(), fallback.as_deref()],
+                root,
+                state,
+            );
         }
         return;
     }
@@ -4877,8 +5235,40 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     // Skip may hide writes the real build performs, Run may perform
     // writes the real build skips. Either way no later undefined read
     // can claim exactness.
-    if state.diagnostics.len() != diagnostics_before_gate || matches!(gate, CondGate::Unsupported) {
+    let gate_maybe_wrong =
+        state.diagnostics.len() != diagnostics_before_gate || matches!(gate, CondGate::Unsupported);
+    if gate_maybe_wrong {
         state.walk_opaque = true;
+    }
+    // …and opacity only covers *undefined* reads. A property the walk has
+    // already defined may be overwritten by the content the real build brings
+    // in (Skip), or keep a value the content we walked overwrote (Run), so
+    // its provenance must say so.
+    let gate_root = (gate_maybe_wrong || state.condition_reads_untrusted_value(node))
+        .then(|| undecided_gate_root(node, diagnostics_before_gate, state))
+        .filter(|_| !state.in_sdk_subtree)
+        .or_else(|| splice_root.as_ref().map(|(root, _)| root.clone()));
+    // MSBuild may import the file the walk does not, or one the walk's
+    // `$(DirectoryBuildTargetsPath)` does not name.
+    if let Some((root, resolved)) = &splice_root {
+        let walked = resolved
+            .as_deref()
+            .filter(|_| matches!(gate, CondGate::Run));
+        let fallback = state.implicit_directory_build_targets_fallback.clone();
+        hide_directory_build_candidates(
+            walked,
+            &[resolved.as_deref(), fallback.as_deref()],
+            root,
+            state,
+        );
+    }
+    if let Some(root) = &gate_root {
+        match gate {
+            CondGate::Run => state.import_gate_unpinned = Some(root.clone()),
+            CondGate::Skip | CondGate::Unsupported => {
+                hide_import_writes(node, current_file_dir, root.clone(), state);
+            }
+        }
     }
     match gate {
         CondGate::Run => {}
@@ -5044,6 +5434,14 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     };
     let expansion = state.expand(raw_path, node.range());
     if expansion.had_issue() || expansion.unpinned_root.is_some() {
+        // The file we did not follow could overwrite anything defined so far
+        // (in a user-authored file; see [`undecided_gate_root`] for the SDK).
+        if !state.in_sdk_subtree {
+            let root = expansion.unpinned_root.clone().unwrap_or_else(|| {
+                UnpinnedRoot::UnsupportedCondition(format!("Import Project={raw_path}"))
+            });
+            hide_writes_of_unknown_content(root, node.range(), state);
+        }
         // The expanded path has residual `$(...)`, substituted to "", or
         // leaned on an *unpinned* property (a value the property pass could
         // not pin down — a real build may resolve a different file entirely)
@@ -5314,17 +5712,18 @@ fn fire_entry_directory_build_props_splice(state: &mut State<'_>) {
     // Only once a file has resolved: with nothing to import, MSBuild's own
     // `exists('')` is false whatever the gate says, so both sides skip and the
     // claim stays exact.
-    state.note_directory_build_splice_decision(
+    let root = state.note_directory_build_splice_decision(
         DIRECTORY_BUILD_PROPS_SPLICE,
         props_to_import.is_some(),
     );
+    let mut walked = None;
     if let Some(Resolution { path, source }) = props_to_import.as_ref()
         && should_import_default_true(
             state
                 .lookup
                 .get_unescaped("ImportDirectoryBuildProps")
                 .as_deref(),
-            state.is_sticky_global("ImportDirectoryBuildProps"),
+            &state.protection.get("ImportDirectoryBuildProps"),
         )
     {
         // MSBuild assigns `DirectoryBuildPropsPath` only when the
@@ -5335,7 +5734,12 @@ fn fire_entry_directory_build_props_splice(state: &mut State<'_>) {
         if matches!(source, ResolutionSource::Fallback) {
             seed_directory_build_path(state, "DirectoryBuildPropsPath", path);
         }
-        walk_directory_build_file(path, 0..0, DirectoryBuildFile::Props, state);
+        walk_directory_build_file(path, 0..0, DirectoryBuildFile::Props, root.clone(), state);
+        walked = Some(path.as_path());
+    }
+    if let Some(root) = &root {
+        let resolved = props_to_import.as_ref().map(|r| r.path.as_path());
+        hide_directory_build_candidates(walked, &[resolved, fallback.as_deref()], root, state);
     }
     state.directory_build_props_splice_pending = false;
     state.import_site_span = saved_import_site_span;
@@ -5439,7 +5843,7 @@ fn pending_directory_build_props_splice_matches(resolved_import: &Path, state: &
                 .lookup
                 .get_unescaped("ImportDirectoryBuildProps")
                 .as_deref(),
-            state.is_sticky_global("ImportDirectoryBuildProps"),
+            &state.protection.get("ImportDirectoryBuildProps"),
         )
     {
         return false;
@@ -5609,9 +6013,41 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // so it is silent here: pushing a diagnostic would flip
     // `is_partial` for evaluations MSBuild completes exactly.
     let dedup_key = import_dedup_key(path);
+    // Whether MSBuild performed an earlier import of this file can depend on an
+    // import gate the walk could not decide (see [`undecided_gate_root`]).
+    let undecided_earlier = state
+        .maybe_imported
+        .get(&dedup_key)
+        .or(state.any_maybe_imported.as_ref())
+        .cloned();
     if state.imports_seen.contains(&dedup_key) {
+        // We performed it; MSBuild may not have, and would walk it here.
+        if let Some(root) = undecided_earlier {
+            let mut hidden = HiddenWrites::default();
+            match collect_possible_file_writes(path, state, 0, &mut hidden) {
+                Some(()) => apply_hidden_writes(hidden, &root, span, state),
+                None => hide_writes_of_unknown_content(root, span, state),
+            }
+        }
         return;
     }
+    // We did not perform it; MSBuild may have, and would skip this one.
+    if let Some(root) = undecided_earlier {
+        let saved = state.import_gate_unpinned.replace(root);
+        walk_external_file_once(path, dedup_key, span, state);
+        state.import_gate_unpinned = saved;
+        return;
+    }
+    walk_external_file_once(path, dedup_key, span, state);
+}
+
+/// [`walk_external_file`] past the duplicate-import check.
+fn walk_external_file_once(
+    path: &Path,
+    dedup_key: String,
+    span: Range<usize>,
+    state: &mut State<'_>,
+) {
     // A near-duplicate under the wider Unicode fold: the pair differs in
     // non-ASCII casing, where .NET's ordinal table (probed: `ı`≠`I` yet
     // `σ`==`Σ`) is not reproducible from Rust's folds. MSBuild might skip
@@ -5729,6 +6165,12 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
             retained: None,
         },
     );
+    if let Some(root) = state.import_gate_unpinned.clone() {
+        state
+            .maybe_imported
+            .entry(dedup_key.clone())
+            .or_insert(root);
+    }
     state.imports_seen.insert(dedup_key);
     state.imports_seen_fuzzy.insert(fuzzy_key);
     state.walked_files.insert(canon.clone());
@@ -5795,13 +6237,13 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // `/elsewhere/local.props`. `canon` is still used (above) for
     // `walked_files` — the one place resolved identity matters.
     let file_dir: PathBuf = path.parent().map(Path::to_path_buf).unwrap_or_default();
-    // `TreatAsLocalProperty` on an imported root unprotects names
-    // for the scope of that file. MSBuild specifies it only applies
-    // to *global* properties — not reserved well-known names — so
-    // we exclude names in `state.reserved` from the unprotection.
-    // Track exactly what we removed so the corresponding restore
-    // doesn't re-add names that the entry project itself had marked
-    // local (and which therefore were never in `state.protected`).
+    // `TreatAsLocalProperty` on an imported root unprotects names for the
+    // **rest of the evaluation**, not just this file: MSBuild adds them to one
+    // per-evaluation set (`Evaluator.PerformDepthFirstPass` →
+    // `GlobalPropertiesToTreatAsLocal`) that is never cleared, so a write after
+    // the import — in this file, a later import, or the entry document — beats
+    // the global. It applies only to *global* properties, not reserved
+    // well-known names, which the protection table keeps protected.
     let imported_overrides = collect_local_overrides(doc.root_element());
     // Record the opt-out regardless of whether this walk had a matching global
     // to unprotect: the question a consumer asks is "could the document have
@@ -5810,10 +6252,12 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     state
         .locally_overridable
         .extend(imported_overrides.iter().cloned());
-    let unprotected: Vec<String> = imported_overrides
-        .into_iter()
-        .filter(|name| !state.reserved.contains(name) && state.protected.remove(name))
-        .collect();
+    // Walked under an undecided import gate, the opt-out may not happen in the
+    // real build.
+    let gate = state.import_gate_unpinned.clone();
+    for name in imported_overrides {
+        state.protection.opt_out(&name, gate.as_ref());
+    }
     // Nested SDK roots are spliced through the same machinery the
     // entry project uses: `resolve_project_sdk` returns paths on a
     // happy resolve and pushes the appropriate diagnostic for every
@@ -5866,17 +6310,19 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
                     fallback.as_deref(),
                     &project_dir,
                 );
-                state.note_directory_build_splice_decision(
+                let root = state.note_directory_build_splice_decision(
                     DIRECTORY_BUILD_PROPS_SPLICE,
                     resolved.is_some(),
                 );
+                let resolved_path = resolved.as_ref().map(|r| r.path.clone());
+                let mut walked = None;
                 if let Some(Resolution { path, source }) = resolved
                     && should_import_default_true(
                         state
                             .lookup
                             .get_unescaped("ImportDirectoryBuildProps")
                             .as_deref(),
-                        state.is_sticky_global("ImportDirectoryBuildProps"),
+                        &state.protection.get("ImportDirectoryBuildProps"),
                     )
                 {
                     // Null `import_site_span` across the splice so it is
@@ -5888,8 +6334,23 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
                     if matches!(source, ResolutionSource::Fallback) {
                         seed_directory_build_path(state, "DirectoryBuildPropsPath", &path);
                     }
-                    walk_directory_build_file(&path, 0..0, DirectoryBuildFile::Props, state);
+                    walk_directory_build_file(
+                        &path,
+                        0..0,
+                        DirectoryBuildFile::Props,
+                        root.clone(),
+                        state,
+                    );
                     state.import_site_span = saved;
+                    walked = Some(path);
+                }
+                if let Some(root) = &root {
+                    hide_directory_build_candidates(
+                        walked.as_deref(),
+                        &[resolved_path.as_deref(), fallback.as_deref()],
+                        root,
+                        state,
+                    );
                 }
                 state.directory_build_props_splice_pending = false;
             }
@@ -5899,9 +6360,6 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     if let Some(paths) = nested_sdk.as_ref() {
         walk_external_file(&paths.targets, doc.root_element().range(), state);
     }
-    for name in unprotected {
-        state.protected.insert(name);
-    }
     state.import_site_span = saved_import_site_span;
     state.in_sdk_subtree = saved_in_sdk_subtree;
     state.depth -= 1;
@@ -5909,12 +6367,22 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     state.exit_this_file(frame);
 }
 
+/// Walk one spliced `Directory.Build.*` file. `root` is the splice decision's,
+/// when that rested on a value the walk could not pin down
+/// ([`State::note_directory_build_splice_decision`]): the real build may not
+/// import the file, so its content is walked as behind an undecided import
+/// gate.
 fn walk_directory_build_file(
     path: &Path,
     span: Range<usize>,
     kind: DirectoryBuildFile,
+    root: Option<UnpinnedRoot>,
     state: &mut State<'_>,
 ) {
+    let saved_gate = state.import_gate_unpinned.clone();
+    if root.is_some() {
+        state.import_gate_unpinned = root;
+    }
     match kind {
         DirectoryBuildFile::Props => {
             state.directory_build_props_splice_path = Some(canonicalise_or_normalise(path));
@@ -5928,6 +6396,37 @@ fn walk_directory_build_file(
     state.active_directory_build_splice = Some(kind);
     walk_external_file(path, span, state);
     state.active_directory_build_splice = saved;
+    state.import_gate_unpinned = saved_gate;
+}
+
+/// A `Directory.Build.*` splice decided on a value the walk could not pin down
+/// (`root`): the real build may import any of `candidates` — the file the path
+/// resolved to, the one discovered up-tree — where the walk imported `walked`
+/// or nothing. Each other candidate's possible writes are hidden, as for an
+/// import an undecided gate skipped ([`hide_import_writes`]).
+fn hide_directory_build_candidates(
+    walked: Option<&Path>,
+    candidates: &[Option<&Path>],
+    root: &UnpinnedRoot,
+    state: &mut State<'_>,
+) {
+    // The candidates are user-authored whatever position the decision is taken
+    // from — the chain's own import point is inside `Microsoft.Common.targets`.
+    let saved_in_sdk_subtree = std::mem::replace(&mut state.in_sdk_subtree, false);
+    let mut hidden = HiddenWrites::default();
+    if let Some(walked) = walked {
+        hidden.scanned.insert(import_dedup_key(walked));
+    }
+    let bounded = candidates
+        .iter()
+        .flatten()
+        .all(|candidate| collect_possible_file_writes(candidate, state, 0, &mut hidden).is_some());
+    if bounded {
+        apply_hidden_writes(hidden, root, 0..0, state);
+    } else {
+        hide_writes_of_unknown_content(root.clone(), 0..0, state);
+    }
+    state.in_sdk_subtree = saved_in_sdk_subtree;
 }
 
 fn contains_glob(s: &str) -> bool {
