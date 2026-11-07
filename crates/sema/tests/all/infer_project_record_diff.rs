@@ -168,6 +168,26 @@ const RECORDS: &[Record] = &[
         &[(".A", false), (".Other", true)],
     ),
     r(
+        "generatedMemberName",
+        // A record's generated `Equals` and `ToString` methods win over a
+        // field of their name.
+        "type GM = { Equals: int; ToString: string; Ok: bool }\n",
+        "GM",
+        &[(".Equals", false), (".ToString", false), (".Ok", true)],
+    ),
+    r(
+        "fieldAndMethod",
+        "type FM =\n    { Get: int; Keep: bool }\n    member this.Get(i: int) = i\n",
+        "FM",
+        &[(".Get", false), (".Keep", true)],
+    ),
+    r(
+        "interfaceImpl",
+        "type IR =\n    { N: int }\n    interface System.IComparable with\n        member this.CompareTo _ = 0\n",
+        "IR",
+        &[(".N", true)],
+    ),
+    r(
         "classProperty",
         "type C() =\n    member _.Prop = 1\n",
         "C",
@@ -228,6 +248,11 @@ fn signature(record: &Record) -> String {
         record
             .decl
             .replace("member this.Twice = this.Z * 2", "member Twice : int")
+            .replace("member this.Get(i: int) = i", "member Get : i: int -> int")
+            .replace(
+                "    interface System.IComparable with\n        member this.CompareTo _ = 0\n",
+                "    interface System.IComparable\n"
+            )
             .replace(
                 "type C() =\n    member _.Prop = 1\n",
                 "type C =\n    new : unit -> C\n    member Prop : int\n"
@@ -418,6 +443,18 @@ fn a_type_declared_twice_types_nothing_of_either() {
         let sources = vec![("Use.fs".to_string(), format!("module M\n{src}"))];
         check(&sources, &[], &mut tally);
     }
+    // Two blocks of one namespace in a file are one container.
+    let blocks = "namespace N\n\
+                  type R = { A: int }\n\
+                  module First =\n    \
+                      let f (r: R) = r.A\n\
+                  namespace N\n\
+                  type R = { A: string }\n";
+    check(
+        &[("Use.fs".to_string(), blocks.to_string())],
+        &[],
+        &mut tally,
+    );
     // Across files, the later file redeclaring the earlier one's type.
     let sources = vec![
         (
