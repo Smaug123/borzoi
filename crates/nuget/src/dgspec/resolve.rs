@@ -759,7 +759,7 @@ fn metadata_is_admitted(
 
 /// Whether a `<contentFiles>` child is a rule restore reads without throwing,
 /// in the subset B₁ admits: a `<files>` element with a non-empty `include`,
-/// an optional `exclude`, a `buildAction` among `None`, `Compile`, `Content`
+/// an optional `exclude`, both in the glob subset [`glob_is_admitted`] admits, a `buildAction` among `None`, `Compile`, `Content`
 /// and `EmbeddedResource` (compared ignoring case, as restore does), and
 /// `copyToOutput` and `flatten`, if present, `true` or `false` ignoring case.
 /// Restore throws on a rule without an `include`, on a `buildAction` it does
@@ -776,13 +776,29 @@ fn content_files_rule_is_admitted(rule: &RawElement) -> bool {
             .attributes
             .iter()
             .all(|(name, value)| match name.as_str() {
-                "include" | "exclude" => true,
+                "include" | "exclude" => glob_is_admitted(value),
                 "buildAction" => ["None", "Compile", "Content", "EmbeddedResource"]
                     .iter()
                     .any(|action| action.eq_ignore_ascii_case(value)),
                 "copyToOutput" | "flatten" => boolean(value),
                 _ => false,
             })
+}
+
+/// Whether a content-file glob is in the subset B₁ admits: `/`-separated
+/// segments, each non-empty and drawn from ASCII letters, digits, `.`, `_`,
+/// `-` and `*`, none of them `.` or `..`. Restore throws on a `..` anywhere but
+/// the start of a pattern, and reads `\` as a separator; neither is admitted.
+fn glob_is_admitted(pattern: &str) -> bool {
+    !pattern.is_empty()
+        && pattern.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '*'))
+        })
 }
 
 /// The `<metadata>` elements restore never reads: what a package says about

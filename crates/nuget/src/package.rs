@@ -292,7 +292,8 @@ pub struct PackageNuspec {
     /// Every child element of `<metadata>`, in nuspec order: the vocabulary a
     /// consumer that must not misread a package can hold the nuspec to.
     pub metadata_elements: Vec<MetadataElement>,
-    /// The local name of every attribute on `<metadata>`.
+    /// The name of every attribute on `<metadata>`, as [`attribute_name`]
+    /// spells it.
     pub metadata_attributes: Vec<String>,
     /// Whether `<metadata>` is the element NuGet's reader takes it to be, and
     /// is read where that reader reads it: the only child of `<package>` named
@@ -306,8 +307,18 @@ pub struct PackageNuspec {
     pub content_files: Vec<RawElement>,
 }
 
+/// An attribute's name: its local name, or `{namespace}name` for one in a
+/// namespace, which NuGet's reader (looking attributes up by local name in no
+/// namespace) does not see.
+fn attribute_name(attribute: &roxmltree::Attribute<'_, '_>) -> String {
+    match attribute.namespace() {
+        None => attribute.name().to_owned(),
+        Some(namespace) => format!("{{{namespace}}}{}", attribute.name()),
+    }
+}
+
 /// An element as written: its name (as [`MetadataElement::name`] spells it)
-/// and its attributes' local names and values.
+/// and its attributes' names (as [`attribute_name`] spells them) and values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawElement {
     pub name: String,
@@ -849,7 +860,7 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
             name: element_name(rule),
             attributes: rule
                 .attributes()
-                .map(|attribute| (attribute.name().to_owned(), attribute.value().to_owned()))
+                .map(|attribute| (attribute_name(&attribute), attribute.value().to_owned()))
                 .collect(),
         })
         .collect();
@@ -884,7 +895,7 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         .collect();
     let metadata_attributes = metadata
         .attributes()
-        .map(|attribute| attribute.name().to_owned())
+        .map(|attribute| attribute_name(&attribute))
         .collect();
     let min_client_version = metadata.attribute("minClientVersion").map(str::to_owned);
     let package_types = metadata

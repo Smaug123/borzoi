@@ -2539,6 +2539,10 @@ fn content_files_rules_are_held_to_what_restore_reads() {
         (r#"<files buildAction="Content" />"#, false),
         (r#"<files include="" />"#, false),
         (r#"<files include="**/*" other="x" />"#, false),
+        (r#"<files include="any/net8.0/../x.xml" />"#, false),
+        (r#"<files include="**/*" exclude="any/../x.xml" />"#, false),
+        (r#"<files include="any\net8.0\x.xml" />"#, false),
+        (r#"<files xmlns:x="urn:test" x:include="**/*" />"#, false),
     ];
     for (rule, commits) in rules {
         let mut package = Pkg::new("A", "1.0.0", vec![])
