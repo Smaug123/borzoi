@@ -1184,16 +1184,21 @@ case's item. A file publishes its cases' schemes by item
 (`PrecedingTypes::case`), and a signatured file publishes none. Left out, so
 that a use declines:
 
-- every case of a union declaring a type parameter twice (FCS binds a use
-  to the first declaration);
+- every case of a union the parser recovered from (its surviving cases look
+  well-formed: `C : | D` reads as two nullary cases), or declaring a type
+  parameter twice (FCS binds a use to the first declaration);
 - a case with an attribute (an error-level `[<Obsolete>]` rejects its use);
 - a case written in the `Case : type` form, or as an operator;
 - a case whose field the annotation bridge declines (a measure, `Map<_, _>`);
-- a case whose name another export of its module also declares — a case of
-  another union, a value, an exception. FCS orders such a name in ways the
+- a case whose name another export of its file also declares — a case of
+  another union, a value, an exception, an active pattern's case (by name
+  across the file, since an active pattern's case export has no qualified
+  path). FCS orders such a name in ways the
   resolver's latest-wins history does not. An `open` adds a module's types,
   and so their cases, before its values (`let X = 5` then `type UV = X | W`:
-  the opened `X` is the value). A module-qualified name is resolved by
+  the opened `X` is the value; an active pattern `(|C|_|)` before
+  `type U = C of int` makes the opened `C` the active pattern). A
+  module-qualified name is resolved by
   values, then exceptions, then the *first* type declaring the case, in an
   expression, and by that type, then exceptions, active patterns and values,
   in a pattern (`ResolveExprLongIdentInModuleOrNamespace`,

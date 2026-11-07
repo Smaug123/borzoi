@@ -307,7 +307,7 @@ const UNIONS: &[Union] = &[
     ),
     u(
         "withMembers",
-        "type WM =\n    | WA of int\n    | WB\n    member this.Tag = 0\n",
+        "type WM =\n    | WA of int\n    | WB\n    member this.Size = 0\n",
         "{L}WM",
         &[("{L}WA 1", true, false), ("{L}WB", true, false)],
         &[("| {L}WA n -> n | {L}WB -> 0", true)],
@@ -325,6 +325,18 @@ const UNIONS: &[Union] = &[
         &[
             ("| {L}X -> 0 | {L}W -> 1", false),
             ("| {L}W -> 0 | _ -> 1", true),
+        ],
+    ),
+    u(
+        "activePatternThenCase",
+        "let (|C|_|) (s: string) = Some s.Length\ntype UC = C of int | D\n",
+        "{L}UC",
+        // `C` is also an active pattern of its module, which inference
+        // declines.
+        &[("{L}C 1", false, false), ("{L}D", true, false)],
+        &[
+            ("| {L}C x -> x | _ -> 0", false),
+            ("| {L}D -> 0 | _ -> 1", true),
         ],
     ),
     u(
@@ -495,8 +507,12 @@ fn files(union: &Union, placement: Placement, body: &str) -> Vec<(String, String
                     "module Lib\n{}",
                     union
                         .decl
-                        .replace("member this.Tag = 0", "member Tag : int")
+                        .replace("member this.Size = 0", "member Size : int")
                         .replace("let X = 5", "val X : int")
+                        .replace(
+                            "let (|C|_|) (s: string) = Some s.Length",
+                            "val (|C|_|) : string -> int option"
+                        )
                 ),
             ),
             ("Lib.fs".into(), format!("module Lib\n{}", union.decl)),
@@ -580,7 +596,7 @@ struct Folded {
     inferred: InferredProject,
 }
 
-fn fold(dir: &Path, sources: &[(String, String)], env: &AssemblyEnv) -> Folded {
+fn fold(dir: &Path, sources: &[(String, String)], env: &AssemblyEnv, allow_errors: bool) -> Folded {
     let parsed: Vec<(SourceFile, SyntaxRecovery)> = sources
         .iter()
         .map(|(name, src)| {
@@ -594,7 +610,11 @@ fn fold(dir: &Path, sources: &[(String, String)], env: &AssemblyEnv) -> Folded {
                 )
             } else {
                 let p = parse(src);
-                assert!(p.errors.is_empty(), "{name}: {:?}\n{src}", p.errors);
+                assert!(
+                    allow_errors || p.errors.is_empty(),
+                    "{name}: {:?}\n{src}",
+                    p.errors
+                );
                 let recovery = SyntaxRecovery::of(&p);
                 (
                     SourceFile::Impl(ImplFile::cast(p.root).expect("impl file")),
@@ -638,6 +658,11 @@ fn dump(files: &[(String, String)]) -> String {
 /// Grade one program: every node and binder inference types in any file
 /// against FCS's, then each cell's obligation in the using file (the last).
 fn check(sources: &[(String, String)], cells: &[Cell], tally: &mut Tally) {
+    check_with(sources, cells, tally, false);
+}
+
+/// [`check`], permitting parse errors in the sources.
+fn check_with(sources: &[(String, String)], cells: &[Cell], tally: &mut Tally, allow_errors: bool) {
     let named: Vec<(&str, &str)> = sources
         .iter()
         .map(|(n, s)| (n.as_str(), s.as_str()))
@@ -645,13 +670,17 @@ fn check(sources: &[(String, String)], cells: &[Cell], tally: &mut Tally) {
     let (root, written) = temp_fs_tree("project_union", &named);
     let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
     let types = invoke_fcs_dump_types_project(&paths);
-    let folded = fold(&root, sources, full_bcl_env());
+    let folded = fold(&root, sources, full_bcl_env(), allow_errors);
     let _ = std::fs::remove_dir_all(&root);
     let last = sources.len() - 1;
     let mut ours_by_name = std::collections::HashMap::new();
     let mut using_errors = Vec::new();
     for (idx, (name, src)) in sources.iter().enumerate() {
-        if name.ends_with(".fsi") {
+        // FCS's `types-project` reports no node or binder for an
+        // implementation file a signature pairs with, so such a file is not
+        // graded here.
+        let signatured = sources.iter().any(|(n, _)| *n == format!("{name}i"));
+        if name.ends_with(".fsi") || signatured {
             continue;
         }
         let Some(inferred) = folded.inferred.file(idx) else {
@@ -847,6 +876,34 @@ fn a_case_name_two_namespace_fragments_declare_agrees_with_fcs() {
             ("Use.fs".to_string(), format!("module M\n{use_body}")),
         ];
         check(&sources, &[], &mut tally);
+    }
+    assert_clean(&tally, 0);
+}
+
+/// A union declaration the parser recovered from: its surviving cases look
+/// well-formed, but FCS rejects them, so none is typed — in its own file or
+/// a later one.
+#[test]
+fn a_recovered_union_declaration_types_no_case() {
+    let mut tally = Tally::default();
+    for decl in [
+        "type U = C : | D\n",
+        "type U = C of | D\n",
+        "type U = C of int * | D\n",
+    ] {
+        let uses = "let f0 () = A.C\nlet f1 () = A.D\nlet f2 u = match u with A.D -> 0 | _ -> 1\n";
+        let earlier = vec![
+            ("A.fs".to_string(), format!("module A\n{decl}")),
+            ("Use.fs".to_string(), format!("module M\n{uses}")),
+        ];
+        check_with(&earlier, &[], &mut tally, true);
+        let in_file = vec![(
+            "Use.fs".to_string(),
+            format!(
+                "module A\n{decl}let f0 () = C\nlet f1 () = D\nlet f2 u = match u with D -> 0 | _ -> 1\n"
+            ),
+        )];
+        check_with(&in_file, &[], &mut tally, true);
     }
     assert_clean(&tally, 0);
 }

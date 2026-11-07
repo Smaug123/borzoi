@@ -2069,8 +2069,9 @@ impl<'a> Gen<'a> {
     /// its use), is written in the `Case : type` signature form, or has a field whose type the annotation bridge declines (a
     /// measure among them); a use of one declines.
     ///
-    /// So is a case whose name another export of its module also declares (a
-    /// case of another union, a value, an exception): FCS resolves such a
+    /// So is a case whose name another export of the file also declares (a
+    /// case of another union, a value, an exception, an active pattern's
+    /// case): FCS resolves such a
     /// name by orders the resolver's latest-wins export history does not
     /// follow. An `open` adds a module's types, and so their cases, before
     /// its values (`let X = 5` then `type UV = X | W`: the opened `X` is the
@@ -2088,23 +2089,31 @@ impl<'a> Gen<'a> {
             .filter(|e| matches!(e.case_kind(), Some(CaseKind::Union { .. })))
             .map(|e| e.id())
             .collect();
-        let mut path_counts: HashMap<&[String], usize> = HashMap::new();
-        for path in exports.iter().filter_map(|e| e.qualified_path()) {
-            *path_counts.entry(path).or_default() += 1;
+        // By name across the whole file, which over-approximates "in its
+        // module": an active pattern's case export has no qualified path.
+        let mut name_counts: HashMap<&str, usize> = HashMap::new();
+        for e in exports.iter() {
+            *name_counts.entry(e.name()).or_default() += 1;
         }
         let contested: HashSet<ItemId> = exports
             .iter()
-            .filter(|e| {
-                e.qualified_path()
-                    .is_some_and(|p| path_counts.get(p).is_some_and(|&n| n > 1))
-            })
+            .filter(|e| name_counts.get(e.name()).is_some_and(|&n| n > 1))
             .map(|e| e.id())
             .collect();
         let mut out = HashMap::new();
+        let recovery = self.resolved.recovery();
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
             let Some(TypeDefnRepr::Union(repr)) = defn.repr() else {
                 continue;
             };
+            // Recovery drops what it cannot parse, so a recovered union's
+            // surviving cases look well-formed (`C : | D` reads as two
+            // nullary cases) where FCS rejects them.
+            if !recovery.declaration_is_intact(defn.syntax())
+                || !recovery.clean_through(defn.syntax())
+            {
+                continue;
+            }
             let Some(name) = defn.long_id().and_then(|li| {
                 let mut idents = li.idents();
                 let first = idents.next()?;
