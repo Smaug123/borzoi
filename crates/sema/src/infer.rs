@@ -8095,6 +8095,37 @@ fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
     }
 }
 
+/// How many declarations in `file` could be what a use of each name means
+/// where a union case of that name is expected: every top-level export (a
+/// value, a union or `exception` case, an active pattern's case) and every
+/// type definition that can construct (anything but a union, a record or an
+/// enum, whose own name is no constructor), at any depth.
+fn constructor_names(
+    file: &ImplFile,
+    exports: &crate::resolve::ExportedItems,
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for e in exports.iter() {
+        *counts.entry(e.name().to_string()).or_default() += 1;
+    }
+    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        if matches!(
+            defn.repr(),
+            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_) | TypeDefnRepr::Enum(_))
+        ) {
+            continue;
+        }
+        for name in defn
+            .long_id()
+            .into_iter()
+            .flat_map(|li| li.idents().collect::<Vec<_>>())
+        {
+            *counts.entry(ident_text(&name)).or_default() += 1;
+        }
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     //! Behaviour tests for 3.2c-2b function-type emission and condition typing,
@@ -9593,35 +9624,4 @@ mod tests {
             .expect("fresh vars generalise");
         assert_eq!(regen, scheme, "generalise ∘ instantiate is the identity");
     }
-}
-
-/// How many declarations in `file` could be what a use of each name means
-/// where a union case of that name is expected: every top-level export (a
-/// value, a union or `exception` case, an active pattern's case) and every
-/// type definition that can construct (anything but a union, a record or an
-/// enum, whose own name is no constructor), at any depth.
-fn constructor_names(
-    file: &ImplFile,
-    exports: &crate::resolve::ExportedItems,
-) -> HashMap<String, usize> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for e in exports.iter() {
-        *counts.entry(e.name().to_string()).or_default() += 1;
-    }
-    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
-        if matches!(
-            defn.repr(),
-            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_) | TypeDefnRepr::Enum(_))
-        ) {
-            continue;
-        }
-        for name in defn
-            .long_id()
-            .into_iter()
-            .flat_map(|li| li.idents().collect::<Vec<_>>())
-        {
-            *counts.entry(ident_text(&name)).or_default() += 1;
-        }
-    }
-    counts
 }
