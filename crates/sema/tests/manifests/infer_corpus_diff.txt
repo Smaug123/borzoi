@@ -259,7 +259,6 @@ src/Compiler/Utilities/sformat.fs:570:24-570:29 expr	agree
 src/Compiler/Utilities/sformat.fs:631:18-631:21 expr	agree
 src/Compiler/Utilities/sformat.fs:631:9-631:15 binder	agree
 src/Compiler/Utilities/sformat.fs:758:22-758:23 expr	agree
-src/Compiler/Utilities/sformat.fs:917:31-917:37 expr	agree
 src/Compiler/Utilities/sformat.fs:975:9-977:66 expr	agree
 src/FSharp.Build/SubstituteText.fs	compared
 src/FSharp.Core/Linq.fs	compared
