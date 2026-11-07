@@ -56,7 +56,8 @@ pub use package::{
     InstalledPackage, MetadataElement, PackageCacheEntry, PackageCacheError, PackageDependency,
     PackageDependencyGroup, PackageId, PackageIdParseError, PackageIdentity, PackageNuspec,
     PackageNuspecParseError, PackagePaths, PackageReadError, PackageReferenceGroup,
-    PackageTypeDeclaration, list_committed_package_versions, parse_nuspec, read_installed_package,
+    PackageTypeDeclaration, RawElement, list_committed_package_versions, parse_nuspec,
+    read_installed_package,
 };
 pub use range::{FloatBehavior, RangeParseError, VersionRange};
 pub use resolver::{
