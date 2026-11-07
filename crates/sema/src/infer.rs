@@ -495,10 +495,10 @@ use borzoi_assembly::{
 };
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
-    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, MatchExpr, ModuleOrNamespace,
-    ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat, RecordRepr, SequentialExpr,
-    SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr, UnionRepr,
-    VarType,
+    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, MatchExpr, MemberDefn,
+    ModuleOrNamespace, ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat,
+    RecordRepr, SequentialExpr, SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn,
+    TypeDefnRepr, UnionRepr, VarType,
 };
 use rowan::{TextRange, TextSize};
 
@@ -2176,6 +2176,13 @@ impl<'a> Gen<'a> {
                     .or_default() += 1;
             }
         }
+        // Two blocks of one namespace are one container: a path and arity
+        // computed twice is a type declared twice.
+        let mut paths: HashMap<(Vec<String>, usize), usize> = HashMap::new();
+        for key in out.values() {
+            *paths.entry(key.clone()).or_default() += 1;
+        }
+        out.retain(|_, key| paths.get(key).is_some_and(|&n| n == 1));
         out.retain(|def, (_, arity)| {
             let d = self.resolved.def(*def);
             let Some(container) = file
@@ -2325,7 +2332,7 @@ impl<'a> Gen<'a> {
                     self.union_case_schemes(&repr, declared, scope, &mut out);
                 }
                 DeclaredFields::Record(repr) => {
-                    let fields = self.record_field_schemes(&repr);
+                    let fields = self.record_field_schemes(&repr, &defn, file);
                     records.insert(
                         (path, arity),
                         ProjectRecord {
@@ -2414,7 +2421,22 @@ impl<'a> Gen<'a> {
     /// declared twice, or a type the annotation bridge declines is left out:
     /// an access to it declines, and the record's other fields do not depend
     /// on it.
-    fn record_field_schemes(&self, repr: &RecordRepr) -> HashMap<String, Ty> {
+    ///
+    /// A field is read only when no intrinsic member of the record shares its
+    /// name: FCS's lookup prefers the member (`{ Equals: int }`'s `r.Equals`
+    /// is the generated method). Those are the members a record generates
+    /// ([`RECORD_GENERATED_MEMBERS`]) and the ones its definition, or a
+    /// same-file augmentation of its name, declares; a member whose name is
+    /// not read off its head leaves no field read.
+    fn record_field_schemes(
+        &self,
+        repr: &RecordRepr,
+        defn: &TypeDefn,
+        file: &ImplFile,
+    ) -> HashMap<String, Ty> {
+        let Some(members) = intrinsic_member_names(defn, file) else {
+            return HashMap::new();
+        };
         // A label declared twice is an error FCS recovers from by keeping
         // the first, where a map keeps the last: neither is read.
         let mut labels: HashMap<String, usize> = HashMap::new();
@@ -2426,8 +2448,12 @@ impl<'a> Gen<'a> {
         repr.fields()
             .filter(|f| f.attributes().next().is_none())
             .filter(|f| {
-                f.ident()
-                    .is_some_and(|tok| labels.get(&ident_text(&tok)) == Some(&1))
+                f.ident().is_some_and(|tok| {
+                    let name = ident_text(&tok);
+                    labels.get(&name) == Some(&1)
+                        && !members.contains(&name)
+                        && !RECORD_GENERATED_MEMBERS.contains(&name.as_str())
+                })
             })
             .filter_map(|f| {
                 let name = ident_text(&f.ident()?);
@@ -8352,6 +8378,57 @@ fn constructor_names(
     counts
 }
 
+/// The instance members F# gives every record (from `System.Object`, and
+/// the equality and comparison it generates), which a field of the same
+/// name does not shadow.
+const RECORD_GENERATED_MEMBERS: &[&str] = &[
+    "Equals",
+    "GetHashCode",
+    "GetType",
+    "ToString",
+    "CompareTo",
+    "MemberwiseClone",
+    "Finalize",
+];
+
+/// The names of the instance-accessible members the type `defn` declares,
+/// in its definition or a same-file augmentation of its name (`type R with
+/// member …`), or `None` when one is a member whose name is not read off its
+/// head. An interface implementation is reached only through the interface,
+/// so it names nothing here.
+fn intrinsic_member_names(defn: &TypeDefn, file: &ImplFile) -> Option<HashSet<String>> {
+    let last_name = |d: &TypeDefn| {
+        d.long_id()
+            .and_then(|li| li.idents().last())
+            .map(|t| ident_text(&t))
+    };
+    let name = last_name(defn)?;
+    let mut out = HashSet::new();
+    for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        if last_name(&d).as_deref() != Some(name.as_str()) {
+            continue;
+        }
+        let mut members: Vec<MemberDefn> = d.members().collect();
+        if let Some(TypeDefnRepr::ObjectModel(om)) = d.repr() {
+            members.extend(om.members());
+        }
+        for m in members {
+            match m {
+                MemberDefn::Interface(_) => {}
+                MemberDefn::Member(mm) => {
+                    let Some(Pat::LongIdent(l)) = mm.binding().and_then(|b| b.pat()) else {
+                        return None;
+                    };
+                    let tok = l.head().and_then(|h| h.idents().last())?;
+                    out.insert(ident_text(&tok));
+                }
+                _ => return None,
+            }
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     //! Behaviour tests for 3.2c-2b function-type emission and condition typing,
@@ -9283,7 +9360,8 @@ mod tests {
     #[test]
     fn a_member_of_a_project_type_is_a_census_reason() {
         use super::Incomplete;
-        let src = "module M\ntype T = { X : int }\nlet f (x : T) = x\nlet g (x : T) = x.X\n";
+        // A property: a record's fields are read, its other members are not.
+        let src = "module M\ntype T =\n    { X : int }\n    member t.Y = 1\nlet f (x : T) = x\nlet g (x : T) = x.Y\n";
         let parsed = parse(src);
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
