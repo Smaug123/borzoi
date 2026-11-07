@@ -36,9 +36,10 @@ filter_prefixes() {
     msbuild)   echo "crates/msbuild tools/msbuild-condition-oracle" ;;
     assembly)  echo "crates/assembly" ;;
     # The inheritdoc oracle exists solely for crates/lsp's differential
-    # tests, so both live under one filter (mirrors nuget). The nuget oracle
-    # grades crates/lsp's restore-graph fixtures too, so it is in both.
-    lsp)       echo "crates/lsp tools/inheritdoc-oracle tools/nuget-oracle" ;;
+    # tests, so both live under one filter (mirrors nuget). crates/lsp's
+    # restore-graph fixtures grade crates/nuget's dgspec resolver against the
+    # nuget oracle, so both of those are in this filter as well as nuget's.
+    lsp)       echo "crates/lsp tools/inheritdoc-oracle crates/nuget tools/nuget-oracle" ;;
     sema)      echo "crates/sema" ;;
     # The oracle tool exists solely for crates/nuget's differential tests,
     # so both live under one filter.

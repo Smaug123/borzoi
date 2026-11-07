@@ -27,7 +27,9 @@
 //! - [`assets`] — NuGet's content model, restricted to compile assets: which
 //!   assemblies of a resolved package a project actually compiles against.
 //! - [`dgspec`] — the dependency-graph spec MSBuild hands to restore, read as
-//!   NuGet's own reader reads it, or declined.
+//!   NuGet's own reader reads it, or declined; and resolved
+//!   ([`dgspec::resolve_dgspec`]) where the resolver models every field that
+//!   bears on the closure.
 //!
 //! This crate never reads `$NUGET_PACKAGES`, `$HOME`, or NuGet.config by
 //! itself. Callers own environment/config discovery and pass concrete roots
@@ -59,6 +61,6 @@ pub use package::{
 pub use range::{FloatBehavior, RangeParseError, VersionRange};
 pub use resolver::{
     DirectPackageRequirement, ResolveDecline, ResolvedPackage, ResolvedPackageClosure,
-    resolve_offline,
+    resolve_offline, resolve_offline_with_fallback,
 };
 pub use version::{NuGetVersion, VersionParseError};

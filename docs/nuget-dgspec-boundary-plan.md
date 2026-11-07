@@ -1,7 +1,9 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–3 and 8 have landed. Stage 8 chose **A₁** (see its
-> section for the numbers and the conditions). Supersedes slice 8 of
+> **Status:** stages 1–4 and 8 have landed. Stage 8 chose **A₁** (see its
+> section for the numbers and the conditions). Stage 4's census orders stages
+> 5–7: the warning policy (7c) blocks every corpus project, and targeting-pack
+> downloads (7b) a third of them. Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -80,9 +82,11 @@ download dependencies or the warning policy. The `restore` op in
 `tools/nuget-oracle` builds a synthetic dgspec that omits framework
 references, fallback imports and pruning, on the grounds that "none of them
 names a package in the synthetic universe". Real dgspecs break that premise
-(see `System.Text.Json` above), so the resolver has never been graded on a real
-input. The resolver is not wired into the LSP, so no wrong answer is live
-today.
+(see `System.Text.Json` above). Stage 4 put the resolver behind a real spec,
+where it declines every field it does not model, and graded it against B₀ on
+real-shaped specs; doing so found a closure it committed that restore fails
+(see stage 4). The resolver is not wired into the LSP, so no wrong answer is
+live today.
 
 ## Design
 
@@ -348,45 +352,113 @@ What this does not cover:
 - **No corpus project has a project reference or prunes** (they target
   `net5.0`, `net8.0` and `netstandard2.0`). Only the fixtures cover those.
 
-### Stage 4: B₁ consumes the typed dgspec
+### Stage 4: B₁ consumes the typed dgspec — landed
 
-**Dependencies:** stages 1, 3.
-**Implements:** the B₁ row.
-- Add `resolve_dgspec(nuget, spec, project, tfm)`. It is plumbing over
-  `resolve_offline`. `nuget` is the restoring NuGet's identity (see *Per-SDK
-  drift*), checked against the verified list. There is a typed decline for an
-  unverified identity, and one for each field the resolver does not model
-  (pruning, project references, transitive pinning, download dependencies,
-  non-default warning policy).
+`borzoi_nuget::dgspec::resolve_dgspec(nuget, spec, project)` resolves every
+target framework of a project in a parsed spec, or declines. It differs from
+the signature first planned in one way: it takes no framework. Restore
+succeeds or fails per project, and the LSP reads no assets file from a failed
+restore, so committing one framework while another fails would commit where B₀
+fails. It resolves them all and commits only when every one commits.
 
-**Correctness oracle:**
-- Certain-implies-exact against B₀ running that same identity, on generated
-  dgspecs and on every corpus dgspec.
-- Absolute property: for any spec, an identity not on the verified list
-  declines.
-- The verified list is exactly the set of identities a B₀ run in CI has graded.
-  A test derives it from the oracle runs, so nothing can be added by hand.
-- A pinned census of B₁'s outcome per corpus project, giving decline counts by
-  field. Expect pruning to decline nearly every `net10.0` project; the census
-  is how stages 5–7 get ordered.
+`nuget` is the restoring NuGet's identity (`NuGetIdentity`, the informational
+version of `NuGet.Commands.dll`). Only an identity on the verified list,
+`crates/nuget/src/dgspec/verified_nuget.txt`, commits. The list is an exact
+manifest of the identity the differential's oracle runs:
+`dgspec_resolve_diff::the_verified_list_is_the_graded_nuget` fails if the
+two differ, so an identity reaches the list only by being graded, and a
+devshell SDK bump fails until the list is regenerated.
+
+Every field of the spec model has a verdict. The function that classifies them
+destructures each struct in full, so a field added to the model does not
+compile until it has one. The verdicts are:
+- **Modelled:** direct dependencies, the packages folder, and the
+  asset-target fallback list.
+- **Inert, with the reason at the point of discard:** paths and outputs; the
+  config files (the settings that bear on resolution are in the spec already,
+  except package source mapping, which filters sources and never the packages
+  folder); `noWarn`; include and suppress-parent flags; `autoReferenced`;
+  `SdkAnalysisLevel`; framework references.
+- **Declined when present, all reported at once so the census can count
+  them:** pruning, project references, central package management (all of
+  it, not only transitive pinning), download dependencies, a warning policy
+  other than `warnAsError` ⊆ {`NU1605`}, fallback folders, a source that is
+  not a local absolute path, audit not explicitly off, a lock file that is or
+  might be in use, a dependency target other than `Package`, the legacy
+  `PackageTargetFallback`, and an absent project name or packages path.
+
+`tests/all/dgspec_resolve_diff.rs` holds it to certain-implies-exact against
+B₀ (`restoreDgSpec`) over specs it generates. B₀ restores straight from the
+packages folder the resolver reads, with only empty or missing folders as
+sources, as `restore.rs`'s offline restore does, and B₁ is handed the identity
+B₀ reports. The generator varies each inert field, and the sweep fails unless
+each variation, and each assets-file version, was graded on a committed spec.
+Hand cases pin the rest:
+- each unmodelled field declines by name when it is the only change to a
+  committing spec;
+- an unverified identity declines on every generated spec;
+- a promoted `NU1608` fails a restore whose closure the resolver computes,
+  which is what makes the warning-policy decline load-bearing.
+
+`restore_graph.rs` grades B₁ against the real restore as well: on a
+`netstandard2.0` fixture it commits, implicit references included, and on
+every corpus project in `pinned_projects` it must decline or agree.
+
+The differential turned up four things:
+- **Asset-target fallback picks dependency groups.** A package with no
+  dependency group for `net8.0` contributes its `net461` group's dependencies
+  to a project with the SDK's fallback list. The resolver read no group, so
+  it now takes the list (`resolve_offline_with_fallback`). A group for the
+  project's own framework shadows the list even when it is empty.
+- **`resolve_offline` committed where restore fails.** A dependency group that
+  names one package twice, with different lower bounds, is a downgrade
+  (`NU1605`) to both restore engines, and the resolver committed the higher
+  one. `resolver_diff`'s generators never repeated an id within a group. The
+  resolver now declines on a repeated id in any group it reads, and
+  `resolver_diff` pins the case.
+- **The assets file's target names depend on its version.** Version 4 names a
+  target by its alias, and version 3 by `NuGetFramework.ToString()`
+  (`.NETStandard,Version=v2.0`). Restore writes version 3 when the spec has no
+  `SdkAnalysisLevel`. The closures are the same, so both differentials compare
+  by framework.
+- **The packages folder needs no sources.** A source folder that does not
+  exist is never read, and package source mapping that maps no package to any
+  source changes nothing, when every version restore needs is in the packages
+  folder.
+
+The census, pinned in `restore_graph_projects.txt`, is the input to stages 5–7:
+
+| unmodelled field | corpus projects it blocks (of 6) |
+|---|---|
+| warning policy (`TreatWarningsAsErrors`) | 6 |
+| download dependencies (`net5.0`, `net8.0` targeting packs) | 2 |
+| pruning | 0 (no corpus project targets `net10.0`) |
+
+The four `netstandard2.0` projects are blocked by the warning policy alone.
 
 ### Stages 5–7: close the declines, ordered by stage 4's census
 
 **Dependencies:** stage 4. They are mutually independent and can run in
 parallel. Stage 8 chose A₁, under which B₁ is the half-B consumer, so they are
-not gated on it.
+not gated on it. By stage 4's census the order is **7c, 7b, then 5, 6, 7a**;
+the corpus has nothing that 5, 6 or 7a would unblock, so the order among those
+comes from stage 1's local sweep and the stage-8 fixtures, not from the census.
 
+- **7c — the warning policy.** Decline under
+  `allWarningsAsErrors`/`warnAsError` unless the resolver proves restore emits
+  no warning, which needs a per-row warning verdict from B₀ (the assets file's
+  `logs`). Every corpus project sets `TreatWarningsAsErrors`.
+- **7b — download dependencies.** A presence check in the packages folder; a
+  miss declines.
 - **5 — pruning.** Oracle: the generator emits prune lists over the synthetic
   universe, including prune ranges that cover a *direct* reference.
   Certain-implies-exact against both engines. The census moves.
 - **6 — project nodes.** Package flow through `projectReferences`, with
   `PrivateAssets`/`suppressParent`. Oracle: the generator emits multi-project
   dgspecs, graded the same way.
-- **7a — CPM transitive pinning; 7b — download dependencies** (presence check
-  only; a miss declines); **7c — the warning policy.** For 7c, decline under
-  `allWarningsAsErrors`/`warnAsError` unless the resolver proves restore emits
-  no warning, which needs a per-row warning verdict from B₀. The oracle for
-  each is generator-extended, graded the same way.
+- **7a — central package management**, transitive pinning included.
+
+The oracle for each is generator-extended, graded the same way.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 
