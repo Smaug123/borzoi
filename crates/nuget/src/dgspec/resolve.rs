@@ -114,7 +114,8 @@ pub enum UnmodelledField {
     /// names the graph's root, which a package of the same name collides with.
     ProjectName,
     /// `restore.packagesPath` is absent, so NuGet would find the packages
-    /// folder from the environment and config files.
+    /// folder from the environment and config files, or holds a control
+    /// character.
     PackagesPath,
     /// A source that is not a local absolute path. A local folder can only
     /// add versions, and every version the resolver relies on is the lowest
@@ -157,8 +158,8 @@ pub enum UnmodelledField {
     /// Metadata NuGet requires is absent or inconsistent, so restore throws:
     /// the project's path or output path, or `originalTargetFrameworks`
     /// naming exactly the aliases of the frameworks and of the restore
-    /// metadata's frameworks, each alias once and each naming a different
-    /// framework.
+    /// metadata's frameworks, each alias once ignoring case, in the characters
+    /// the SDK writes, and each naming a different framework.
     RequiredMetadata,
     /// A config file NuGet loads its settings from is outside the vocabulary
     /// B₁ admits (see `config_is_admitted`).
@@ -537,7 +538,7 @@ fn metadata_is_admitted(
             "id" => text.is_some_and(|id| id.eq_ignore_ascii_case(identity.id.as_str())),
             "version" => text
                 .and_then(|version| NuGetVersion::parse(version).ok())
-                .is_some_and(|version| version == identity.version),
+                .is_some_and(|version| version.eq_strict(&identity.version)),
             "dependencies" | "references" | "packageTypes" => true,
             name => DESCRIPTIVE_ELEMENTS.contains(&name),
         }
@@ -660,44 +661,62 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     } = restore;
 
     let present = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.is_empty());
+    // A path restore can use: present, and without control characters (NuGet
+    // throws on a NUL).
+    let path_admitted = |value: &Option<String>| {
+        present(value)
+            && value
+                .as_deref()
+                .is_some_and(|v| !v.chars().any(char::is_control))
+    };
     if !present(project_name) {
         decline(UnmodelledField::ProjectName);
     }
-    let aliases_unique = |aliases: Vec<&str>| {
-        let count = aliases.len();
-        aliases.into_iter().collect::<BTreeSet<_>>().len() == count
+    // An alias in the vocabulary the SDK writes (NuGet refuses path separators
+    // and non-ASCII characters, `NU1019`), once per list ignoring case, as
+    // NuGet compares them.
+    let aliases_admitted = |aliases: &[&str]| {
+        let distinct: BTreeSet<String> = aliases
+            .iter()
+            .map(|alias| alias.to_ascii_lowercase())
+            .collect();
+        distinct.len() == aliases.len()
+            && aliases.iter().all(|alias| {
+                !alias.is_empty()
+                    && alias
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+            })
     };
-    let original: BTreeSet<&str> = original_target_frameworks
+    let original: Vec<&str> = original_target_frameworks
         .iter()
         .map(String::as_str)
         .collect();
-    let aliases: BTreeSet<&str> = frameworks.iter().map(|f| f.target_alias.as_str()).collect();
-    let restore_aliases: BTreeSet<&str> = restore_frameworks
+    let aliases: Vec<&str> = frameworks.iter().map(|f| f.target_alias.as_str()).collect();
+    let restore_aliases: Vec<&str> = restore_frameworks
         .iter()
         .map(|f| f.target_alias.as_str())
         .collect();
-    if !present(project_path)
-        || !present(output_path)
-        || original.len() != original_target_frameworks.len()
-        || original != aliases
-        || restore_aliases != aliases
-        || !aliases_unique(frameworks.iter().map(|f| f.target_alias.as_str()).collect())
+    fn as_set<'a>(aliases: &[&'a str]) -> BTreeSet<&'a str> {
+        aliases.iter().copied().collect()
+    }
+    if !path_admitted(project_path)
+        || !path_admitted(output_path)
+        || !aliases_admitted(&original)
+        || !aliases_admitted(&aliases)
+        || !aliases_admitted(&restore_aliases)
+        || as_set(&original) != as_set(&aliases)
+        || as_set(&restore_aliases) != as_set(&aliases)
         || frameworks
             .iter()
             .map(|f| f.framework.short_folder_name())
             .collect::<BTreeSet<_>>()
             .len()
             != frameworks.len()
-        || !aliases_unique(
-            restore_frameworks
-                .iter()
-                .map(|f| f.target_alias.as_str())
-                .collect(),
-        )
     {
         decline(UnmodelledField::RequiredMetadata);
     }
-    if packages_path.is_none() {
+    if !path_admitted(packages_path) {
         decline(UnmodelledField::PackagesPath);
     }
     if !sources.iter().all(|source| is_local_absolute_path(source)) {

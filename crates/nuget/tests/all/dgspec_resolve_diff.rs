@@ -1016,6 +1016,98 @@ fn a_symlinked_asset_folder_is_followed() {
     }
 }
 
+/// Restore refuses aliases that differ only by case, aliases outside the
+/// characters the SDK writes (`NU1019`), and a path holding a NUL; and it
+/// compares a nuspec's version with the folder's by NuGet identity, under
+/// which `1.0.0--0` is not `1.0.0-0`. The reader or B₁ declines each. No single-string
+/// substitution reaches the alias cases, since an alias must change
+/// consistently in three places, so they are graded here.
+#[test]
+fn restore_rejects_what_the_sdk_never_writes() {
+    let mut oracle = Oracle::spawn();
+    let packages = [Pkg::new("A", "1.0.0", vec![])];
+    let shape = Shape::new(vec![
+        Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]),
+        Framework::new("net9.0", vec![Dep::new("A", "[1.0.0, )")]),
+    ]);
+    let renamed = |from: &str, to: &str, text: &str| -> String {
+        let mut spec: Value = serde_json::from_str(text).unwrap();
+        let project = the_project(&mut spec);
+        let mut framework = project["frameworks"]
+            .as_object_mut()
+            .unwrap()
+            .remove(from)
+            .unwrap();
+        framework["targetAlias"] = json!(to);
+        framework["framework"] = json!(from);
+        project["frameworks"][to] = framework;
+        project["restore"]["frameworks"]
+            .as_object_mut()
+            .unwrap()
+            .remove(from);
+        project["restore"]["frameworks"][to] = json!({"targetAlias": to, "projectReferences": {}});
+        let original = project["restore"]["originalTargetFrameworks"]
+            .as_array_mut()
+            .unwrap();
+        for alias in original.iter_mut() {
+            if alias == from {
+                *alias = json!(to);
+            }
+        }
+        spec.to_string()
+    };
+    let nul_output = |text: &str| -> String {
+        let mut spec: Value = serde_json::from_str(text).unwrap();
+        let output = the_project(&mut spec)["restore"]["outputPath"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        the_project(&mut spec)["restore"]["outputPath"] = json!(format!("{output}\u{0}x/"));
+        spec.to_string()
+    };
+    type Mutation<'a> = Box<dyn Fn(&str) -> String + 'a>;
+    let mutations: Vec<(&str, Mutation)> = vec![
+        (
+            "aliases differing by case",
+            Box::new(|text| renamed("net9.0", "NET8.0", text)),
+        ),
+        (
+            "an alias with a separator",
+            Box::new(|text| renamed("net9.0", "net9.0/x", text)),
+        ),
+        ("a NUL in the output path", Box::new(nul_output)),
+    ];
+    for (label, mutate) in &mutations {
+        let dir = tempfile::tempdir().expect("temp dir");
+        install(&dir.path().join("gp"), &packages);
+        let text = mutate(&shape.render(dir.path()));
+        // The reader may decline first (it refuses names equal ignoring case),
+        // which is as sound as B₁ declining.
+        let Ok(spec) = parse_dgspec(&text) else {
+            continue;
+        };
+        let graded = grade_spec(&mut oracle, &text, &spec, label);
+        assert!(!graded.theirs.success, "{label}: {:?}", graded.theirs);
+        assert!(graded.ours.is_err(), "{label}: {:?}", graded.ours);
+    }
+
+    let mut package = Pkg::new("A", "1.0.0-0", vec![]);
+    package.version_text = Some("1.0.0--0");
+    let single = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0-0, )")],
+    )]);
+    let graded = grade(&mut oracle, &[package], &single);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PackageMetadata { .. })
+        ),
+        "{:?}",
+        graded.ours
+    );
+}
+
 /// Restore validates every version it reads, not only the winners: a losing
 /// version's minimum client version fails the restore even though another
 /// version of the package wins.
@@ -1850,7 +1942,7 @@ fn every_single_deletion_from_a_committing_spec_is_graded() {
 }
 
 /// Every string of a committing spec replaced by each other string the spec
-/// holds, one substitution at a time, graded against B₀ where the reader
+/// holds, and by adversarial transforms of them, one substitution at a time, graded against B₀ where the reader
 /// accepts the result. Deletions cannot reach a cross-field consistency rule
 /// (two frameworks sharing an alias, a reference naming another project);
 /// substituting the spec's own values for one another can.
@@ -1871,12 +1963,18 @@ fn every_substitution_of_a_committing_specs_strings_is_graded() {
     install(&dir.path().join("gp"), &packages);
     let base: Value = serde_json::from_str(&shape.render(dir.path())).expect("JSON");
 
+    // The spec's own strings, and adversarial transforms of each: the case
+    // flipped (NuGet compares names ignoring case), a path separator appended,
+    // and a control character embedded.
     let mut pool = BTreeSet::new();
     let mut leaves = Vec::new();
     for path in json_paths(&base) {
         let mut copy = base.clone();
         if let Value::String(text) = at_mut(&mut copy, &path) {
             pool.insert(text.clone());
+            pool.insert(text.to_ascii_uppercase());
+            pool.insert(format!("{text}/x"));
+            pool.insert(format!("{text}\u{0}"));
             leaves.push(path);
         }
     }

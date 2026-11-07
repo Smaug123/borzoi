@@ -476,7 +476,16 @@ The differential, the probes behind it, and review turned up seven things:
   Deletion cannot reach a cross-field rule (two frameworks sharing an alias),
   so `every_substitution_of_a_committing_specs_strings_is_graded` also
   replaces each string of a committing spec by each other string the spec
-  holds (412 variants, 64 committed). The nuspec and config vocabularies get
+  holds, and by adversarial transforms of them (case flipped, a path separator
+  appended, a NUL embedded): 1,408 variants, 213 committed. A single
+  substitution cannot reach a rule that needs several fields to change
+  together (an alias renamed consistently in its three places), so those
+  cases, which review found, are graded by hand: aliases differing only by
+  case (the reader refuses them), an alias with a separator (`NU1019`), a NUL
+  in a path, and a nuspec version equal to the folder's in order but not in
+  NuGet's identity (`1.0.0--0` against `1.0.0-0`). B₁ admits only aliases in
+  the characters the SDK writes, unique ignoring case, and paths without
+  control characters. The nuspec and config vocabularies get
   the same treatment at the level of their text:
   `every_perturbation_of_nuspec_and_config_text_is_graded` empties, blanks,
   pads, and puts a comment beside or in place of each attribute and text value
