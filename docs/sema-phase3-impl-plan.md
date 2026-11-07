@@ -85,6 +85,10 @@ isolation.
   clauses in FCS's order over case, constant, tuple and name patterns; and
   FSharp.Core's renamed generics (`Result`, `Choice`) read in annotations;
   details below.
+- **The project's own union cases** — a case of a union the project declares,
+  in the same file or an earlier one, as a value and in a `match` pattern,
+  bare or qualified by its type; its scheme read off the declaration's field
+  annotations in the union's own type-parameter scope; details below.
 - **Project-type annotations** — `Ty::Project` names a type the project
   declares by FCS's path for it (namespace, enclosing modules' compiled names,
   its own) and arity, unique per assembly by FS0249; an in-file type's
@@ -1143,8 +1147,7 @@ as one variable with the parameter, so the pattern probe replays each
 slot-binder pair too: `let f x = if x then (match x with 1 -> x | _ -> x)
 else false` declines, where FCS rejects the pattern and keeps `bool -> bool`.
 
-Still declining: the project's own unions, in a pattern or as a value (the
-next lever, above); `function` (lambdas are unmodelled); `try … with`;
+Still declining: `function` (lambdas are unmodelled); `try … with`;
 active, record, list, array, `:?`, `null` and OR patterns; an annotated name
 in a match pattern (FCS relates it by equality and rejects a mismatch, where
 the annotation would already have typed the name); a case or constant in a
@@ -1152,6 +1155,95 @@ the annotation would already have typed the name); a case or constant in a
 what a case's structure could bind); a later arm checked
 against an open first arm's type, as for an `if`; and a value binding of a
 generic case (`let v = None`, which FCS generalises).
+
+### The project's own union cases
+
+**Measured first.** With every use of a project case stubbed as modelled (an
+unsound upper bound), the whole-project gate goes from 67 to 81 complete
+bindings and stride-13 from 1,014 to 1,016. Of the 14 gate bindings, 9 hinge
+on a case pattern qualified by its type (WoofWare.PawPrint's own
+`[<RequireQualifiedAccess>]` unions: `EvalStackValue.Int32 …`), 4 on an
+earlier file's case as a value, and 1 on an earlier file's case in a pattern.
+
+**The resolver already resolves them.** A bare use of a project case, in its
+own file or a later one, resolves to the case's export (`Resolution::Item`),
+whose def is the case's declaration. A qualified one (`U.A`, `Lib.U.A`)
+resolves the same way over the *whole* head, with nothing at the last
+segment. So this stage is inference's alone: read the head's span, and give
+each case a scheme.
+
+**A case's scheme is its declaration.** For each union whose path
+`project_type_paths` holds (so not a constrained — by `when` or by an
+intersection, `'a & #IDisposable` — or attributed parameter, nor an attribute
+that may reject a use, nor a type declared twice: FCS rejects a second
+definition of a container's name and arity, FS0037, or of an earlier file's
+path, FS0249, and keeps one, so neither is read), each case's fields are read through the
+annotation bridge in the union's own type-parameter scope (`decl_typars`: a
+declared `'a` is the scheme's `Ty::Param`), and the union is the
+`Ty::Project` applied to its parameters. The scheme is the
+`UnionCaseScheme` an assembly case has, so values, patterns and reachability
+treat both alike; a project union's identity for reachability is its first
+case's item. A file publishes its cases' schemes by item
+(`PrecedingTypes::case`), and a signatured file publishes none. Left out, so
+that a use declines:
+
+- a case of a `private` representation (`type U = private A | B`) used
+  outside the union's enclosing module or namespace, where FCS rejects a
+  use the resolver still reads as the case; such a case is never published
+  to a later file (an `internal` representation is the assembly's, so it is
+  read everywhere);
+- every case of a union the parser recovered from (its surviving cases look
+  well-formed: `C : | D` reads as two nullary cases), or declaring a type
+  parameter twice (FCS binds a use to the first declaration);
+- a case with an attribute (an error-level `[<Obsolete>]` rejects its use);
+- a case written in the `Case : type` form, or as an operator;
+- a case whose field the annotation bridge declines (a measure, `Map<_, _>`);
+- a case whose name anything else the project declares so far could mean:
+  an export of its own file or an earlier one (a case of another union, a
+  value, an exception, an active pattern's case), or a type there that can
+  construct (anything but an unattributed union or record: an enum and a
+  struct have a default constructor, and a struct union named like its own
+  case is rejected outright when qualified). FCS resolves such a
+  name by orders the resolver's latest-wins history does not follow. An
+  `open` adds a module's types, and so their cases, before its values
+  (`let X = 5` then `type UV = X | W`: the opened `X` is the value; an
+  active pattern `(|C|_|)` before `type U = C of int` makes the opened `C`
+  the active pattern). A later file's class takes the case's constructor
+  name. A qualified name is resolved against everything of the name its
+  module or namespace holds: values, then exceptions, then the *first* type
+  declaring the case, in an expression
+  (`ResolveExprLongIdentInModuleOrNamespace`), `[<RequireQualifiedAccess>]`
+  cases and other files' namespace fragments included (with `type U1 = X |
+  Y` in one fragment of `N` and an RQA `type U2 = X | Z` in another, FCS's
+  `N.X` is `U2`'s). A name declared once means one thing in every order,
+  bare or qualified. The resolver's wrong targets for names declared twice
+  are a follow-up of their own.
+
+Graded by `infer_project_union_diff`: about 25 union declarations (plain,
+generic and postfix-generic, two parameters, recursive, mutually recursive,
+named fields, `[<RequireQualifiedAccess>]`, struct, a field of tuple, unit,
+function, `obj`, assembly and project types, an obsolete case and union, a
+measured field, a constrained parameter, a case named like its type, a case
+name declared twice, a value then a case of one name, members, a private
+representation, a nested module, the signature form), each in the using
+file, in an earlier file reached by an `open`, by module-qualified paths, and
+behind a signature, by value and match contexts, FCS-graded as one project,
+with must-commit obligations on every cell this stage models and no commit
+on a line FCS rejects (its dumps grade no such declaration); plus an
+ill-typed family and namespace fragments declaring one case name twice.
+`infer_cross_file_diff` now expects an earlier file's case to be typed, and
+holds every cell using one to what its in-file twin commits. The
+generated clause sets of `infer_match_diff` include the file's own unions,
+bare, type-qualified and `[<RequireQualifiedAccess>]`, so reachability is
+exercised over project cases (4,800 functions at 20 times the default
+volume, every committed one FCS's).
+
+Still declining: a type-qualified case through an `open` of a project module
+(`open Lib` then `U.A`, `Q.QA`), and a case pattern qualified by a module
+alone (`| Lib.A ->`, `| Inner.IA ->`), which the resolver leaves unresolved; an
+annotation under such an `open`, or through a qualified path to a project
+type (as before); a match over an unannotated parameter of a generic union,
+which commits no binder, FSharp.Core's included.
 
 ### Remaining 3.x hard piles (census-priority order)
 

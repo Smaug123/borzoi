@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
-use crate::infer::{InferredFile, infer_file};
+use crate::infer::{InferredFile, ProjectCase, infer_file};
 use crate::resolve::{ItemId, ProjectFile, ResolvedFile, ResolvedProject, signature_partners};
 use crate::ty::Ty;
 
@@ -97,6 +97,12 @@ pub struct PrecedingTypes {
     /// [`Resolution::EarlierFileType`](crate::Resolution::EarlierFileType)
     /// carries — with the path and arity of the [`Ty::Project`] it denotes.
     types: HashMap<(usize, u32), (Vec<String>, usize)>,
+    /// The cases of each earlier file's unions its inference types, by the
+    /// case's item — the handle a later file's use of one resolves to.
+    cases: HashMap<ItemId, ProjectCase>,
+    /// How many constructor-like declarations of each name the earlier files
+    /// make, signatured ones included ([`InferredFile::constructor_names`]).
+    constructor_names: HashMap<String, usize>,
 }
 
 impl PrecedingTypes {
@@ -119,6 +125,27 @@ impl PrecedingTypes {
         self.types.get(&(file, index))
     }
 
+    /// Whether an earlier file published a type at `path` with `arity`
+    /// parameters.
+    pub(crate) fn declares_type(&self, path: &[String], arity: usize) -> bool {
+        self.types
+            .values()
+            .any(|(p, a)| *a == arity && p.as_slice() == path)
+    }
+
+    /// The case of an earlier file's union that the item `id` is, as that
+    /// file's inference typed it; `None` for anything else, and for a case
+    /// that file would not type either.
+    pub(crate) fn case(&self, id: ItemId) -> Option<&ProjectCase> {
+        self.cases.get(&id)
+    }
+
+    /// How many constructor-like declarations of `name` the earlier files
+    /// make.
+    pub(crate) fn constructor_name_count(&self, name: &str) -> usize {
+        self.constructor_names.get(name).copied().unwrap_or(0)
+    }
+
     /// Publish one file's exports, in Compile order, after the file is
     /// inferred. `file` is its Compile index; `inferred` is `None` for a file
     /// that was not inferred (a signature slot); `screened` says the file has
@@ -135,6 +162,11 @@ impl PrecedingTypes {
         inferred: Option<&InferredFile>,
         screened: bool,
     ) {
+        if let Some(inferred) = inferred {
+            for (name, n) in inferred.constructor_names() {
+                *self.constructor_names.entry(name.clone()).or_default() += n;
+            }
+        }
         if let Some(inferred) = inferred.filter(|_| !screened) {
             for (index, def) in resolved.placed_type_defs().enumerate() {
                 if let Some(ty) = inferred.project_types().get(&def) {
@@ -142,6 +174,13 @@ impl PrecedingTypes {
                     self.types.insert((file, index), ty.clone());
                 }
             }
+            self.cases.extend(
+                inferred
+                    .project_cases()
+                    .iter()
+                    .filter(|(_, case)| case.publishable())
+                    .map(|(&id, case)| (id, case.clone())),
+            );
         }
         for export in resolved.exports().iter() {
             let verdict = match (export.case_kind(), export.def()) {

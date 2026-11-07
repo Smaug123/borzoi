@@ -511,7 +511,7 @@ use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
-use crate::resolve::{Resolution, ResolvedFile};
+use crate::resolve::{CaseKind, ItemId, Resolution, ResolvedFile};
 use crate::ty::{Ty, TyVid};
 use crate::unify::InferTable;
 
@@ -556,6 +556,13 @@ pub struct InferredFile {
     /// [`PrecedingTypes::publish`] so a later file's annotation naming one
     /// ([`Resolution::EarlierFileType`]) bridges exactly as this file's would.
     project_types: HashMap<DefId, (Vec<String>, usize)>,
+    /// The cases of this file's unions inference types, by the case's item
+    /// — read by [`PrecedingTypes::publish`] so a later file's use of one
+    /// types exactly as this file's would.
+    project_cases: HashMap<ItemId, ProjectCase>,
+    /// How many constructor-like declarations of each name the file makes —
+    /// read by [`PrecedingTypes::publish`] for later files' case screen.
+    constructor_names: HashMap<String, usize>,
 }
 
 impl InferredFile {
@@ -640,6 +647,18 @@ impl InferredFile {
     /// path and arity. See [`Self::project_types`](InferredFile).
     pub(crate) fn project_types(&self) -> &HashMap<DefId, (Vec<String>, usize)> {
         &self.project_types
+    }
+
+    /// Every case of this file's unions that inference types, by the case's
+    /// item. See [`Self::project_cases`](InferredFile).
+    pub(crate) fn project_cases(&self) -> &HashMap<ItemId, ProjectCase> {
+        &self.project_cases
+    }
+
+    /// How many constructor-like declarations of each name the file makes.
+    /// See [`Self::constructor_names`](InferredFile).
+    pub(crate) fn constructor_names(&self) -> &HashMap<String, usize> {
+        &self.constructor_names
     }
 
     pub fn len(&self) -> usize {
@@ -866,7 +885,7 @@ enum PatShape {
     Tuple(Vec<PatShape>),
     /// A constant (`1`, `"s"`, `'c'`, `true`), of its literal's type, and
     /// the value it spells as reachability compares them ([`literal_ctor`]).
-    Const(Ty, Ctor<EntityHandle>),
+    Const(Ty, Ctor<UnionId>),
     /// A referenced assembly's union case (`None`, `Some x`, `Ok _`): which
     /// case, its scheme, and the pattern over its fields — `None` for a
     /// nullary case, and for `Case _`, which matches every field at once.
@@ -875,11 +894,44 @@ enum PatShape {
 
 /// Which case of which union a [`PatShape::Case`] names: its position in the
 /// union's case list, of `siblings` cases.
-#[derive(Debug, Clone, Copy)]
-struct CaseKey {
-    union: EntityHandle,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CaseKey {
+    union: UnionId,
     index: usize,
     siblings: usize,
+}
+
+/// A union, as reachability tells two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnionId {
+    /// A referenced assembly's union.
+    Assembly(EntityHandle),
+    /// A union the project declares, named by its first case's item, which
+    /// no other union shares.
+    Project(ItemId),
+}
+
+/// A case of a union the project declares, as inference types its uses
+/// ([`Gen::project_case_schemes`]): its scheme, over the union's type
+/// parameters, and its place among the union's cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectCase {
+    /// The case's name, as a use spells it.
+    name: String,
+    scheme: UnionCaseScheme,
+    key: CaseKey,
+    /// Where a use of the case is accessible, for a union whose
+    /// representation is `private`: the enclosing module's or namespace's
+    /// range in the declaring file. Such a case is never published to a
+    /// later file.
+    scope: Option<TextRange>,
+}
+
+impl ProjectCase {
+    /// Whether a later file may read the case.
+    pub(crate) fn publishable(&self) -> bool {
+        self.scope.is_none()
+    }
 }
 
 /// Where a pattern is read ([`Gen::pattern_shape_in`]).
@@ -908,7 +960,7 @@ impl PatShape {
     }
 
     /// The pattern as reachability sees it ([`crate::match_reach`]).
-    fn clause_pat(&self) -> ClausePat<EntityHandle> {
+    fn clause_pat(&self) -> ClausePat<UnionId> {
         match self {
             PatShape::Name(_) | PatShape::Annotated(..) | PatShape::Wildcard => ClausePat::Any,
             PatShape::Unit => ClausePat::Ctor(Ctor::Unit, Vec::new()),
@@ -1105,6 +1157,7 @@ pub fn infer_file(
     let mut cx = Gen::new(resolved, env, ext_scope, preceding);
     cx.rejected_defs = cx.rejected_use_defs(file);
     cx.project_types = cx.project_type_paths(file);
+    cx.project_cases = cx.project_case_schemes(file);
     cx.walk(file);
     cx.solve();
     cx.finish()
@@ -1459,6 +1512,20 @@ struct Gen<'a> {
     /// ([`Self::project_type_paths`]); a type absent here is not bridged.
     /// Computed once in [`infer_file`].
     project_types: HashMap<DefId, (Vec<String>, usize)>,
+    /// The cases of the file's own unions whose fields are all bridged, by
+    /// the case's item ([`Self::project_case_schemes`]). Computed once in
+    /// [`infer_file`].
+    project_cases: HashMap<ItemId, ProjectCase>,
+    /// How many constructor-like declarations of each name the file makes
+    /// ([`constructor_names`]). Computed once in [`infer_file`].
+    constructor_names: HashMap<String, usize>,
+    /// Every case of the file's own unions, typed or not, by its item
+    /// ([`Self::own_union_case_at`]). Computed once in [`infer_file`].
+    own_union_cases: HashSet<ItemId>,
+    /// The declared type parameters of the type definition whose case fields
+    /// [`Self::project_case_schemes`] is reading, by name, each the
+    /// [`Ty::Param`] of its position. Empty everywhere else.
+    decl_typars: HashMap<String, u32>,
     /// The defining ranges of the in-file binders a use of which F# may reject
     /// for their attributes ([`Self::rejected_use_defs`]); computed once in
     /// [`infer_file`].
@@ -1587,6 +1654,10 @@ impl<'a> Gen<'a> {
             binding_params: Vec::new(),
             rejected_defs: HashSet::new(),
             project_types: HashMap::new(),
+            project_cases: HashMap::new(),
+            own_union_cases: HashSet::new(),
+            constructor_names: HashMap::new(),
+            decl_typars: HashMap::new(),
             dropped: Vec::new(),
             eq_failures: 0,
             bounded_flex: Vec::new(),
@@ -1905,7 +1976,10 @@ impl<'a> Gen<'a> {
     ///   resolver's verdict on each attribute ([`Self::attribute_may_be`]);
     /// - an enclosing module shares its name with any type the file declares;
     /// - the file has no `module` or `namespace` header, or is
-    ///   `namespace global`.
+    ///   `namespace global`;
+    /// - the type is declared twice: another definition in its container has
+    ///   its name and arity (FS0037), or an earlier file published its path
+    ///   (FS0249). FCS rejects the second and keeps one, so neither is read.
     fn project_type_paths(&self, file: &ImplFile) -> HashMap<DefId, (Vec<String>, usize)> {
         let env = self.env;
         let type_names: HashSet<String> = file
@@ -1946,13 +2020,17 @@ impl<'a> Gen<'a> {
             // A type parameter with a constraint or an attribute (a measure):
             // nothing here checks an argument against either, and F# rejects
             // an application that violates one, recovering the binder.
-            // `TypeDefn::constraints` reads both places a constraint can be
-            // written: inside the parameter list and after the type's name.
+            // `TypeDefn::constraints` reads both places a `when` constraint
+            // can be written: inside the parameter list and after the type's
+            // name; an intersection (`'a & #IDisposable`) sits on the
+            // parameter itself.
             let unchecked_parameters = defn.constraints().next().is_some()
                 || defn.typar_decls().is_some_and(|decls| {
-                    decls
-                        .typars()
-                        .any(|t| t.is_head_type() || t.attributes().next().is_some())
+                    decls.typars().any(|t| {
+                        t.is_head_type()
+                            || t.attributes().next().is_some()
+                            || t.intersection_constraints().next().is_some()
+                    })
                 });
             if !nominal
                 || unchecked_parameters
@@ -2007,7 +2085,225 @@ impl<'a> Gen<'a> {
                 continue;
             }
             let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+            if self.preceding.declares_type(&path, arity) {
+                continue;
+            }
             out.insert(def, (path, arity));
+        }
+        // Every definition of a container's name and arity, augmentations
+        // aside (they extend, not redeclare).
+        let mut declared: HashMap<(TextRange, String, usize), usize> = HashMap::new();
+        for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+            if matches!(defn.repr(), Some(TypeDefnRepr::ObjectModel(om)) if om.is_augmentation()) {
+                continue;
+            }
+            let Some(container) = defn.syntax().ancestors().skip(1).find(|a| {
+                matches!(
+                    a.kind(),
+                    SyntaxKind::NESTED_MODULE_DECL | SyntaxKind::MODULE_OR_NAMESPACE
+                )
+            }) else {
+                continue;
+            };
+            let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+            for name in defn
+                .long_id()
+                .into_iter()
+                .flat_map(|li| li.idents().collect::<Vec<_>>())
+            {
+                *declared
+                    .entry((container.text_range(), ident_text(&name), arity))
+                    .or_default() += 1;
+            }
+        }
+        out.retain(|def, (_, arity)| {
+            let d = self.resolved.def(*def);
+            let Some(container) = file
+                .syntax()
+                .covering_element(d.range)
+                .ancestors()
+                .find(|a| {
+                    matches!(
+                        a.kind(),
+                        SyntaxKind::NESTED_MODULE_DECL | SyntaxKind::MODULE_OR_NAMESPACE
+                    )
+                })
+            else {
+                return false;
+            };
+            declared
+                .get(&(container.text_range(), d.name.to_string(), *arity))
+                .is_none_or(|&n| n == 1)
+        });
+        out
+    }
+
+    /// The scheme of each case of the file's own unions whose type is read
+    /// exactly, by the case's item: its fields' written types, read in the
+    /// union's own type-parameter scope ([`Self::decl_typars`]), and the
+    /// union ([`Ty::Project`]) applied to its parameters. Records every case
+    /// of the file's unions in [`Self::own_union_cases`] as it goes.
+    ///
+    /// A union contributes only when [`Self::project_type_paths`] holds its
+    /// path (which already leaves out a constrained or attributed parameter,
+    /// and an attribute that may make F# reject a use) and its declaration
+    /// did not recover. A `private` representation confines its cases to
+    /// the enclosing module or namespace ([`ProjectCase::scope`]). A case is left out
+    /// when it carries an attribute (an error-level `[<Obsolete>]` rejects
+    /// its use), is written in the `Case : type` signature form, or has a field whose type the annotation bridge declines (a
+    /// measure among them); a use of one declines.
+    ///
+    /// So is a case whose name another export of the file also declares (a
+    /// case of another union, a value, an exception, an active pattern's
+    /// case): FCS resolves such a
+    /// name by orders the resolver's latest-wins export history does not
+    /// follow. An `open` adds a module's types, and so their cases, before
+    /// its values (`let X = 5` then `type UV = X | W`: the opened `X` is the
+    /// value), and a module-qualified name has its own: values, then
+    /// exceptions, then the first type declaring the case, in an expression;
+    /// that type, then exceptions, active patterns and values, in a pattern
+    /// (`ResolveExprLongIdentInModuleOrNamespace`,
+    /// `ResolvePatternLongIdentInModuleOrNamespace`; `type U1 = X | Y` and
+    /// `type U2 = X | Z`: FCS's `Lib.X` is `U1`'s). A name the module
+    /// declares once means one thing in every order.
+    fn project_case_schemes(&mut self, file: &ImplFile) -> HashMap<ItemId, ProjectCase> {
+        let exports = self.resolved.exports();
+        self.own_union_cases = exports
+            .iter()
+            .filter(|e| matches!(e.case_kind(), Some(CaseKind::Union { .. })))
+            .map(|e| e.id())
+            .collect();
+        self.constructor_names = constructor_names(file, exports);
+        let mut out = HashMap::new();
+        let recovery = self.resolved.recovery();
+        for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+            let Some(TypeDefnRepr::Union(repr)) = defn.repr() else {
+                continue;
+            };
+            // Recovery drops what it cannot parse, so a recovered union's
+            // surviving cases look well-formed (`C : | D` reads as two
+            // nullary cases) where FCS rejects them.
+            if !recovery.declaration_is_intact(defn.syntax())
+                || !recovery.clean_through(defn.syntax())
+            {
+                continue;
+            }
+            // `type U = private A | B`: the cases are accessible only inside
+            // the union's enclosing module or namespace, outside which FCS
+            // rejects a use the resolver still reads as the case. (An
+            // `internal` representation is the whole assembly's.)
+            let private_repr = repr
+                .syntax()
+                .children_with_tokens()
+                .any(|el| el.kind() == SyntaxKind::ACCESS_TOK && el.to_string() == "private");
+            let scope = if private_repr {
+                let Some(container) = defn.syntax().ancestors().skip(1).find(|a| {
+                    matches!(
+                        a.kind(),
+                        SyntaxKind::NESTED_MODULE_DECL | SyntaxKind::MODULE_OR_NAMESPACE
+                    )
+                }) else {
+                    continue;
+                };
+                Some(container.text_range())
+            } else {
+                None
+            };
+            let Some(name) = defn.long_id().and_then(|li| {
+                let mut idents = li.idents();
+                let first = idents.next()?;
+                idents.next().is_none().then_some(first)
+            }) else {
+                continue;
+            };
+            let Some((path, arity)) = self
+                .def_at(name.text_range())
+                .and_then(|def| self.project_types.get(&def))
+                .cloned()
+            else {
+                continue;
+            };
+            // `arity` counts these same declarations.
+            let names: Option<Vec<String>> = defn.typar_decls().map_or(Some(Vec::new()), |d| {
+                d.typars()
+                    .map(|t| t.ident().map(|tok| ident_text(&tok)))
+                    .collect()
+            });
+            // A name declared twice is an error FCS recovers from by binding
+            // its uses to the first declaration, where a map keeps the last.
+            let Some(names) = names.filter(|n| n.iter().collect::<HashSet<_>>().len() == n.len())
+            else {
+                continue;
+            };
+            let cases: Vec<_> = repr.cases().collect();
+            let items: Vec<Option<ItemId>> = cases
+                .iter()
+                .map(|c| {
+                    let tok = c.ident()?;
+                    match self.resolved.resolution_at(tok.text_range())? {
+                        Resolution::Item(id) if self.own_union_cases.contains(&id) => Some(id),
+                        _ => None,
+                    }
+                })
+                .collect();
+            // The union's identity is its first case's item: without one,
+            // two of its patterns could not be told to be one union's.
+            let Some(Some(first)) = items.first().copied() else {
+                continue;
+            };
+            self.decl_typars = names
+                .into_iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    (
+                        n,
+                        u32::try_from(i).expect("a type of under u32::MAX parameters"),
+                    )
+                })
+                .collect();
+            let union = Ty::Project {
+                path,
+                args: (0..arity)
+                    .map(|i| Ty::Param(u32::try_from(i).expect("checked above")))
+                    .collect(),
+            };
+            for (index, (case, item)) in cases.iter().zip(items).enumerate() {
+                let Some(item) = item else {
+                    continue;
+                };
+                if case.attributes().next().is_some() || case.full_type().is_some() {
+                    continue;
+                }
+                let fields: Option<Vec<Ty>> = case
+                    .fields()
+                    .map(|f| f.ty().and_then(|t| self.annotation_ty(&t)))
+                    .collect();
+                let Some(fields) = fields else {
+                    continue;
+                };
+                let key = CaseKey {
+                    union: UnionId::Project(first),
+                    index,
+                    siblings: cases.len(),
+                };
+                let scheme = UnionCaseScheme {
+                    fields,
+                    union: union.clone(),
+                };
+                let Some(name) = case.ident().map(|t| ident_text(&t)) else {
+                    continue;
+                };
+                out.insert(
+                    item,
+                    ProjectCase {
+                        name,
+                        scheme,
+                        key,
+                        scope,
+                    },
+                );
+            }
+            self.decl_typars.clear();
         }
         out
     }
@@ -2541,6 +2837,14 @@ impl<'a> Gen<'a> {
         match ty {
             // A type variable, only in the current binding's head, where it is
             // one of the binding's implicitly scoped variables.
+            // A declared type parameter of the type definition whose case
+            // fields are being read, as the scheme's parameter.
+            Type::Var(v) if !self.decl_typars.is_empty() => {
+                let tok = v.ident()?;
+                self.decl_typars
+                    .get(&ident_text(&tok))
+                    .map(|&i| Ty::Param(i))
+            }
             Type::Var(v) if self.reading_head => {
                 let tok = v.ident()?;
                 self.head_typars
@@ -2976,23 +3280,15 @@ impl<'a> Gen<'a> {
                     self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
-                let Some(def) = self.def_at(tok.text_range()) else {
-                    // A referenced assembly's value, read off its signature;
-                    // anything else that is not an in-file binder (a
-                    // preceding file's, a deferred name) is unmodelled.
+                let def = self
+                    .def_at(tok.text_range())
+                    .filter(|_| !self.own_union_case_at(tok.text_range()));
+                let Some(def) = def else {
+                    // A referenced assembly's value, read off its signature, or
+                    // a union case; anything else that is not an in-file binder
+                    // (a preceding file's, a deferred name) is unmodelled.
                     let uv = self.nonlocal_value_or_incomplete(tok.text_range())?;
-                    // FCS eta-expands a case of fields used unapplied
-                    // (`List.map Some`), and its node at the case's range is
-                    // the case built inside the expansion: the union, never
-                    // the function. So nothing is emitted for such a use.
-                    let unapplied_case = match self.resolved.resolution_at(tok.text_range()) {
-                        Some(Resolution::UnionCase { union, case }) => {
-                            union_case_scheme(self.env, union, case)
-                                .is_ok_and(|scheme| !scheme.fields.is_empty())
-                        }
-                        _ => false,
-                    };
-                    if !unapplied_case {
+                    if !self.case_of_fields_at(tok.text_range()) {
                         self.emit(tok.text_range(), uv, expected);
                     }
                     return Some(uv);
@@ -3922,6 +4218,11 @@ impl<'a> Gen<'a> {
     fn nonlocal_value_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
         let (parent, idx) = match self.resolved.resolution_at(at) {
             Some(Resolution::Member { parent, idx }) => (parent, idx),
+            Some(Resolution::Item(id))
+                if self.own_union_cases.contains(&id) || self.preceding.case(id).is_some() =>
+            {
+                return self.case_use(at);
+            }
             Some(Resolution::Item(id)) if !self.resolved.owns_item(id) => {
                 let ty = self
                     .preceding
@@ -3930,9 +4231,7 @@ impl<'a> Gen<'a> {
                     .clone();
                 return Ok(self.scheme_use(&ty));
             }
-            Some(Resolution::UnionCase { union, case }) => {
-                return self.assembly_case_use(union, case);
-            }
+            Some(Resolution::UnionCase { .. }) => return self.case_use(at),
             _ => return Err(Incomplete::NotInFileValue),
         };
         let scheme = match self.env.member_at(parent, idx) {
@@ -3943,8 +4242,8 @@ impl<'a> Gen<'a> {
         Ok(self.constrained_scheme_use(&scheme))
     }
 
-    /// The type variable of a use of case `case` of the referenced union
-    /// `union`, as a value: the union for a nullary case (`None`), else the
+    /// The type variable of a use of the case the resolver reads at `at`
+    /// ([`Self::case_at`]), as a value: the union for a nullary case (`None`), else the
     /// function from its field, or the tuple of its fields, to the union
     /// (`Some`, `UPair`), each of the union's type parameters instantiated
     /// fresh. Unlike a value's use, a case's is not loosened
@@ -3954,12 +4253,8 @@ impl<'a> Gen<'a> {
     /// coercion (`TcExprsWithFlexes`), which an application's argument check
     /// reproduces — as `infer_union_case_diff`'s unsealed and many-field rows
     /// hold it to.
-    fn assembly_case_use(
-        &mut self,
-        union: EntityHandle,
-        case: crate::assembly_env::UnionCaseIndex,
-    ) -> Result<TyVid, Incomplete> {
-        let scheme = union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
+    fn case_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
+        let (_, scheme) = self.case_at(at)?;
         let ty = self.instantiate(&scheme.value_ty());
         let uv = self.table.fresh();
         self.eq(Ty::Var(uv), ty);
@@ -4016,10 +4311,17 @@ impl<'a> Gen<'a> {
         let idents: Vec<SyntaxToken> = long_ident.idents().collect();
         let (head, rest) = idents.split_first()?;
         let last = rest.last()?;
+        let whole = TextRange::new(head.text_range().start(), last.text_range().end());
+        // A qualified case of a project union (`U.A`, `Lib.A`, `Lib.U.B`),
+        // whose head may be the union's own type.
+        if let Some(Resolution::Item(id)) = self.resolved.resolution_at(whole)
+            && (self.own_union_cases.contains(&id) || self.preceding.case(id).is_some())
+        {
+            return Some(whole);
+        }
         if self.def_at(head.text_range()).is_some() {
             return None;
         }
-        let whole = TextRange::new(head.text_range().start(), last.text_range().end());
         match self.resolved.resolution_at(whole)? {
             Resolution::Member { parent, .. } if self.env.is_module(parent) => Some(whole),
             Resolution::Item(id) if !self.resolved.owns_item(id) => Some(whole),
@@ -4109,7 +4411,10 @@ impl<'a> Gen<'a> {
                     self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
-                let Some(def) = self.def_at(tok.text_range()) else {
+                let def = self
+                    .def_at(tok.text_range())
+                    .filter(|_| !self.own_union_case_at(tok.text_range()));
+                let Some(def) = def else {
                     return self.nonlocal_value_or_incomplete(tok.text_range());
                 };
                 if self.declines_use(def) {
@@ -4629,7 +4934,9 @@ impl<'a> Gen<'a> {
         // the whole path.
         if let Some(whole) = self.module_value_path(li) {
             let uv = self.nonlocal_value_or_incomplete(whole)?;
-            self.emit(whole, uv, expected);
+            if !self.case_of_fields_at(whole) {
+                self.emit(whole, uv, expected);
+            }
             return Some(uv);
         }
         // An active-pattern name segment cannot be projected as a plain member
@@ -5305,11 +5612,13 @@ impl<'a> Gen<'a> {
                     .head()
                     .filter(|_| li.typar_decls().is_none() && li.active_pat_name().is_none())
                     .ok_or(Incomplete::PatternShape(pat.syntax().kind()))?;
-                let mut idents = head.idents();
-                let (Some(tok), None) = (idents.next(), idents.next()) else {
-                    return Err(Incomplete::PatternShape(pat.syntax().kind()));
+                // A qualified case (`U.A`) is resolved over the whole head.
+                let idents: Vec<SyntaxToken> = head.idents().collect();
+                let (Some(first), Some(last)) = (idents.first(), idents.last()) else {
+                    return Err(Incomplete::Recovery);
                 };
-                self.case_pattern(tok.text_range(), arg.as_ref())
+                let at = TextRange::new(first.text_range().start(), last.text_range().end());
+                self.case_pattern(at, arg.as_ref())
             }
             Pat::Const(c) if site == PatSite::Match && !c.syntax().text().is_empty() => {
                 let kind = c.literal().map(|l| l.kind());
@@ -5372,7 +5681,7 @@ impl<'a> Gen<'a> {
     fn every_clause_provably_reachable(&self, m: &MatchExpr) -> bool {
         // The patterns of the clauses so far that have no guard (a guarded
         // clause may fail, so it covers nothing).
-        let mut covering: Vec<ClausePat<EntityHandle>> = Vec::new();
+        let mut covering: Vec<ClausePat<UnionId>> = Vec::new();
         for clause in m.clauses() {
             let shape = clause
                 .pat()
@@ -5462,18 +5771,96 @@ impl<'a> Gen<'a> {
         contradicts
     }
 
-    /// The pattern of the case the resolver reads at `at`, over `arg`: `None`
-    /// for a case written alone. A nullary case takes no argument; a case of
-    /// one field takes a pattern of it; a case of several takes a tuple
-    /// pattern of exactly that many; and any case of fields takes `_` for
-    /// all of them. Anything else — a case of fields written alone, a
-    /// mismatched arity, a case the maker cannot vouch for, a name that is
-    /// not a referenced assembly's case — declines.
+    /// The case the resolver reads at `at` — a referenced assembly's, or a
+    /// case of a union the project declares — with its scheme and its place
+    /// among its union's cases. Anything else declines, and so does a case
+    /// whose type inference cannot read: one the maker cannot vouch for, or
+    /// a project case [`Self::project_case_schemes`] left out.
+    fn case_at(&self, at: TextRange) -> Result<(CaseKey, UnionCaseScheme), Incomplete> {
+        match self.resolved.resolution_at(at) {
+            Some(Resolution::UnionCase { union, case }) => {
+                let scheme =
+                    union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
+                let siblings = match &self.env.entity(union).union_cases {
+                    borzoi_assembly::UnionCases::Known(cases) => cases.len(),
+                    borzoi_assembly::UnionCases::Unknowable => {
+                        unreachable!("a scheme read off a union whose cases are unknown")
+                    }
+                };
+                let key = CaseKey {
+                    union: UnionId::Assembly(union),
+                    index: case.index(),
+                    siblings,
+                };
+                Ok((key, scheme))
+            }
+            Some(Resolution::Item(id)) => self
+                .project_case(id)
+                .filter(|pc| pc.scope.is_none_or(|scope| scope.contains_range(at)))
+                .filter(|pc| self.uncontested_case_name(&pc.name))
+                .map(|pc| (pc.key, pc.scheme.clone()))
+                .ok_or(Incomplete::NotInFileValue),
+            _ => Err(Incomplete::NotInFileValue),
+        }
+    }
+
+    /// Whether the project declares nothing else a use of the case name
+    /// `name` could mean, in this file or an earlier one: only the case itself
+    /// is a constructor-like declaration of the name ([`constructor_names`],
+    /// [`PrecedingTypes::constructor_name_count`]).
+    ///
+    /// FCS resolves such a name by orders the resolver's latest-wins export
+    /// history does not follow. An `open` adds a module's types, and so their
+    /// cases, before its values (`let X = 5` then `type UV = X | W`: the
+    /// opened `X` is the value; an active pattern `(|C|_|)` before
+    /// `type U = C of int` makes the opened `C` the active pattern), a later
+    /// file's class takes the case's constructor name, and a qualified name
+    /// is resolved against everything of the name its module or namespace
+    /// holds, `[<RequireQualifiedAccess>]` cases and other files' fragments
+    /// included. A name declared once means one thing in every order.
+    fn uncontested_case_name(&self, name: &str) -> bool {
+        let own = self.constructor_names.get(name).copied().unwrap_or(0);
+        own + self.preceding.constructor_name_count(name) == 1
+    }
+
+    /// The case of a project union that the item `id` is, as inference types
+    /// it: this file's own ([`Self::project_case_schemes`]), or what the
+    /// earlier file declaring it published ([`PrecedingTypes::case`]).
+    fn project_case(&self, id: ItemId) -> Option<&ProjectCase> {
+        if self.resolved.owns_item(id) {
+            self.project_cases.get(&id)
+        } else {
+            self.preceding.case(id)
+        }
+    }
+
+    /// Whether the resolver reads a case of one of this file's own unions at
+    /// `at`. Such a use resolves to the case's item, whose def is the case's
+    /// declaration: it is a case, never a value binder's use.
+    fn own_union_case_at(&self, at: TextRange) -> bool {
+        matches!(
+            self.resolved.resolution_at(at),
+            Some(Resolution::Item(id)) if self.own_union_cases.contains(&id)
+        )
+    }
+
+    /// Whether the resolver reads a case at `at` whose fields FCS eta-expands
+    /// when it is used unapplied (`List.map Some`): FCS's node at the case's
+    /// range is then the case built inside the expansion, the union, never
+    /// the function, so nothing is emitted for such a use.
+    fn case_of_fields_at(&self, at: TextRange) -> bool {
+        self.case_at(at)
+            .is_ok_and(|(_, scheme)| !scheme.fields.is_empty())
+    }
+
+    /// The pattern of the case the resolver reads at `at` ([`Self::case_at`]),
+    /// over `arg`: `None` for a case written alone. A nullary case takes no
+    /// argument; a case of one field takes a pattern of it; a case of several
+    /// takes a tuple pattern of exactly that many; and any case of fields
+    /// takes `_` for all of them. Anything else — a case of fields written
+    /// alone, a mismatched arity, a case whose type is not read — declines.
     fn case_pattern(&self, at: TextRange, arg: Option<&Pat>) -> Result<PatShape, Incomplete> {
-        let Some(Resolution::UnionCase { union, case }) = self.resolved.resolution_at(at) else {
-            return Err(Incomplete::NotInFileValue);
-        };
-        let scheme = union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
+        let (key, scheme) = self.case_at(at)?;
         let unparen = |p: &Pat| -> Option<Pat> {
             let mut p = p.clone();
             while let Pat::Paren(inner) = &p {
@@ -5497,17 +5884,6 @@ impl<'a> Gen<'a> {
                     _ => return Err(Incomplete::PatternShape(SyntaxKind::LONG_IDENT_PAT)),
                 }
             }
-        };
-        let siblings = match &self.env.entity(union).union_cases {
-            borzoi_assembly::UnionCases::Known(cases) => cases.len(),
-            borzoi_assembly::UnionCases::Unknowable => {
-                unreachable!("a scheme read off a union whose cases are unknown")
-            }
-        };
-        let key = CaseKey {
-            union,
-            index: case.index(),
-            siblings,
         };
         Ok(PatShape::Case(key, scheme, arg))
     }
@@ -6804,6 +7180,8 @@ impl<'a> Gen<'a> {
             receiver_types,
             module_values,
             project_types: std::mem::take(&mut self.project_types),
+            project_cases: std::mem::take(&mut self.project_cases),
+            constructor_names: std::mem::take(&mut self.constructor_names),
         }
     }
 }
@@ -7687,7 +8065,7 @@ fn literal_ty(c: &ConstExpr) -> Option<Ty> {
 /// value — a decimal `int` without leading zeros or separators, a string or
 /// character with no escape — so two such spellings differ exactly when the
 /// values do; else no value, which may equal any other (`1` and `0x1`).
-fn literal_ctor(kind: SyntaxKind, text: &str) -> Ctor<EntityHandle> {
+fn literal_ctor(kind: SyntaxKind, text: &str) -> Ctor<UnionId> {
     let canonical = |ok: bool| ok.then(|| Box::<str>::from(text));
     match kind {
         SyntaxKind::BOOL_LIT => Ctor::Bool(text == "true"),
@@ -7766,6 +8144,41 @@ fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
         // (`__LINE__` is int, `__SOURCE_FILE__` is string) has no single type.
         _ => None,
     }
+}
+
+/// How many declarations in `file` could be what a use of each name means
+/// where a union case of that name is expected: every top-level export (a
+/// value, a union or `exception` case, an active pattern's case) and every
+/// type definition that can construct — anything but an unattributed union
+/// or record, whose own name is no constructor (an enum and a struct have a
+/// default one) — at any depth.
+fn constructor_names(
+    file: &ImplFile,
+    exports: &crate::resolve::ExportedItems,
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for e in exports.iter() {
+        *counts.entry(e.name().to_string()).or_default() += 1;
+    }
+    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        // A union's or record's own name constructs nothing, unless it is a
+        // struct (a default constructor), which an attribute may make it.
+        if matches!(
+            defn.repr(),
+            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_))
+        ) && defn.attributes().next().is_none()
+        {
+            continue;
+        }
+        for name in defn
+            .long_id()
+            .into_iter()
+            .flat_map(|li| li.idents().collect::<Vec<_>>())
+        {
+            *counts.entry(ident_text(&name)).or_default() += 1;
+        }
+    }
+    counts
 }
 
 #[cfg(test)]
