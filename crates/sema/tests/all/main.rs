@@ -49,6 +49,7 @@ mod infer_operators_diff;
 mod infer_parameter_types_diff;
 mod infer_preceding_type_diff;
 mod infer_project_type_annotation_diff;
+mod infer_project_union_diff;
 mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
 mod infer_union_case_diff;
