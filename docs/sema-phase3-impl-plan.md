@@ -89,6 +89,9 @@ isolation.
   in the same file or an earlier one, as a value and in a `match` pattern,
   bare or qualified by its type; its scheme read off the declaration's field
   annotations in the union's own type-parameter scope; details below.
+- **The project's own record fields** — a field access (`r.A`, `r.I.X`) on a
+  receiver inference knows to be a record the project declares, its type the
+  declaration's, instantiated at the receiver's arguments; details below.
 - **Project-type annotations** — `Ty::Project` names a type the project
   declares by FCS's path for it (namespace, enclosing modules' compiled names,
   its own) and arity, unique per assembly by FS0249; an in-file type's
@@ -1244,6 +1247,53 @@ alone (`| Lib.A ->`, `| Inner.IA ->`), which the resolver leaves unresolved; an
 annotation under such an `open`, or through a qualified path to a project
 type (as before); a match over an unannotated parameter of a generic union,
 which commits no binder, FSharp.Core's included.
+
+### The project's own record fields
+
+**Measured first.** Of the whole-project gate's bindings whose only reason
+was `ProjectTypeMember`, the census attribution of 2026-11-06 counted at most
+22 as accesses to a record field (WoofWare.Incremental 19, PawPrint 3); the
+rest are abstract slots, properties and methods.
+
+**A field is its declaration.** The walk that reads a union's cases reads a
+record's fields too (`project_type_schemes`): each field's written type
+through the annotation bridge in the record's type-parameter scope, keyed by
+name, beside the record applied to its own parameters (`ProjectRecord`). A
+file publishes its records by the `Ty::Project` path and arity
+(`PrecedingTypes::record`), which name one type per assembly (FS0249); a
+signatured file publishes none. A field with an attribute (an error-level
+`[<Obsolete>]` rejects its use) or a type the bridge declines is left out,
+and so is every field of a recovered declaration; a `private`
+representation's fields are read only inside the record's enclosing module
+or namespace, and never published.
+
+**Only through a known receiver.** A data-member access wakes on a
+`Ty::Project` receiver as one on an assembly type does: the record and the
+field are instantiated together, the record related to the receiver and the
+field to the access's result, with the same late-discharge check. FCS looks
+a field up by the receiver's type when it knows that type at the access;
+when it does not, it resolves the label through the record-label
+environment and fixes the receiver to that record, so a receiver inference
+learns only later names that record too, or FCS rejects the program. A
+method-call access (`r.Fn 1`) and any member that is not a field still
+decline as `ProjectTypeMember`.
+
+Graded by `infer_project_record_diff`: about 20 record declarations (plain,
+generic, two parameters, nested, recursive, mutually recursive, mutable,
+struct, function-typed, two records sharing a field name declared either way
+round, `obj` and array fields, assembly fields, a measured and an obsolete
+field, a private representation, members, escaped names, a class property)
+by the four placements of the union grid, by three receivers (an annotated
+parameter, an earlier annotated value, a case's payload), with must-commit
+obligations and no commit on a line FCS rejects; an ill-typed family (a
+missing field, a receiver known only after the access, a private field from
+outside); and a private representation in a nested module, read inside and
+rejected outside.
+
+Still declining: record construction (`{ A = 1 }`) and copy-and-update,
+whose labels the resolver does not resolve; a field reached through a module
+value in one path (`Lib.r0.A`); a field through a receiver annotated under
+an `open` of a project module (as for every annotation there).
 
 ### Remaining 3.x hard piles (census-priority order)
 

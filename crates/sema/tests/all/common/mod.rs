@@ -21,6 +21,7 @@ pub mod measure_fn_corpus;
 pub mod member_hiding_corpus;
 pub mod module_value_corpus;
 pub mod overload_corpus;
+pub mod project_grade;
 pub mod scope_gen;
 pub mod tier_corpus;
 
