@@ -681,16 +681,21 @@ A framework's `packagesToPrune` no longer declines; the resolver applies it
 a spec settled the rule, which is not the one the field's shape suggests:
 
 - Restore drops a dependency a package declares on a pruned id when the
-  dependency's lower bound is at or below the prune range's **upper bound**.
-  The prune range's lower bound and the inclusivity of its upper bound play
-  no part: `[2.0.0]` and `(, 1.0.0)` both prune an edge at `1.0.0`.
+  dependency's range accepts the prune range's **upper bound**. The prune
+  range's lower bound and the inclusivity of its upper bound play no part:
+  `[2.0.0]` and `(, 1.0.0)` both prune an edge `[1.0.0, )`, and nothing
+  prunes an edge `[1.0.0]` against `(, 2.0.0]`. (B₁ first tested the edge's
+  lower bound against the upper bound; review found the exact edge.)
 - The edge goes before the walk, so its subtree goes with it, and another
   path can still bring the package in at a version above the bound.
-- A project's direct references are never pruned. On `net10.0` (and no
-  earlier framework, whatever `SdkAnalysisLevel` says) restore warns
-  `NU1510` about each direct reference the list covers, which B₁ now
-  predicts; for a `.NETCoreApp` above 10, not yet graded, it predicts
-  nothing exact.
+- A project's direct references are never pruned. Restore may warn
+  `NU1510` about one the list covers, deciding across the project's
+  frameworks once any is `net10.0` or later. B₁ predicts it exactly for a
+  single-framework project (`net10.0` with a covered reference warns; no
+  earlier framework does, whatever `SdkAnalysisLevel` says) and predicts
+  nothing exact otherwise: several frameworks with one `net10.0` and a
+  covered reference (restore warned there for a reference only `net9.0`
+  had), or a `.NETCoreApp` after 10.
 
 An entry without an upper bound, or a floating one, still declines. A spec
 cannot select the legacy restore engine, so this is graded against the

@@ -2582,7 +2582,7 @@ fn content_files_rules_are_held_to_what_restore_reads() {
 }
 
 /// Restore prunes a transitive dependency on a listed id when the dependency's
-/// lower bound is at or below the prune range's upper bound, before walking,
+/// range accepts the prune range's upper bound, before walking,
 /// so its subtree goes with it and another path can still bring the package
 /// in; the prune range's lower bound and the inclusivity of its upper bound
 /// play no part, and a direct reference is never pruned. Each case commits
@@ -2592,7 +2592,7 @@ fn content_files_rules_are_held_to_what_restore_reads() {
 fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
     let mut oracle = Oracle::spawn();
     // A -> B [1.0.0, ), C -> B [3.0.0, ), each B -> D, E -> B [1.0.0, 1.5.0),
-    // F -> B [1.0.0, 2.0.0].
+    // F -> B [1.0.0, 2.0.0], G -> B [1.0.0].
     let packages = vec![
         Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])]),
         Pkg::new("C", "1.0.0", vec![group(None, &[("B", "[3.0.0, )")])]),
@@ -2602,6 +2602,7 @@ fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
         Pkg::new("D", "1.0.0", vec![]),
         Pkg::new("E", "1.0.0", vec![group(None, &[("B", "[1.0.0, 1.5.0)")])]),
         Pkg::new("F", "1.0.0", vec![group(None, &[("B", "[1.0.0, 2.0.0]")])]),
+        Pkg::new("G", "1.0.0", vec![group(None, &[("B", "[1.0.0]")])]),
     ];
     type Case = (
         &'static str,
@@ -2665,6 +2666,12 @@ fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
             "(, 1.5.0]",
             &["F"],
         ),
+        (
+            "an exact edge below the bound",
+            &[("G", "[1.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "D", "G"],
+        ),
     ];
     for (label, direct, prune, expected) in cases {
         let deps: Vec<Dep> = direct
@@ -2710,4 +2717,24 @@ fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
         }) => assert_eq!(code.as_str(), "NU1510"),
         other => panic!("B₁ must decline on the promoted NU1510, not {other:?}"),
     }
+
+    // With several frameworks, one of them `net10.0`, restore decides NU1510
+    // across them: here it warns for a reference only `net9.0` has. B₁ does not
+    // predict that exactly, so a promoting policy declines.
+    let mut net9 = Framework::new("net9.0", vec![Dep::new("B", "[1.0.0, )")]);
+    net9.prune = vec![("B", "(, 2.0.0]")];
+    let mut shape = Shape::new(vec![Framework::new("net10.0", vec![]), net9]);
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert_eq!(graded.theirs.codes, ["NU1510"]);
+    shape.all_warnings_as_errors = true;
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PromotedWarning { code: None, .. })
+        ),
+        "{:?}",
+        graded.ours
+    );
 }
