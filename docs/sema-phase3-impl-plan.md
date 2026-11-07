@@ -238,8 +238,8 @@ object expressions), and that project is 451 of the gate's 797 bindings;
 on the stride-13 sample, the only candidate gaining on both and across
 projects. So the next stage was referenced union cases and `match`
 (*Referenced union cases and `match`*, below), which takes complete bindings
-from 63 to 68 of 797 and hovers agreeing with FCS from 622 to 653, and the
-stride-13 sample from 1 013 to 1 015. Most of the bound it left is the
+from 63 to 67 of 797 and hovers agreeing with FCS from 622 to 653, and the
+stride-13 sample from 1 013 to 1 014. Most of the bound it left is the
 project's own unions: an in-file or earlier file's case in a pattern is now
 the only reason of 51 bindings (`PatternShape(LONG_IDENT_PAT)`), the next
 lever, ahead of `ProjectTypeMember` (54), `OBJ_EXPR` (47) and
@@ -1123,6 +1123,14 @@ and removed, and so were a constraint check the bridge already makes and an
 emission filter the identifier arm made unnecessary. fcs-dump's binder oracle
 now reads a decision tree's target variables, through which FCS binds a nested
 pattern's names (`Some (Some v)`): it reported none of them.
+
+Open, from the last review round, and declining nothing yet: a condition on a
+parameter fixes its private slot, which the pattern probe does not replay, so
+`let f x = if x then (match x with 1 -> x | _ -> x) else false` publishes
+`bool -> int` (FCS rejects the pattern and keeps `bool -> bool`); and a clause
+FCS's decision compiler drops as unreachable (after an irrefutable clause, or
+repeating a case) keeps no nodes or binders in FCS's dump, while inference
+emits them, so the grids cannot grade such a match.
 
 Still declining: the project's own unions, in a pattern or as a value (the
 next lever, above); `function` (lambdas are unmodelled); `try … with`;
