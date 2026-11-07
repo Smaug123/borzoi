@@ -129,6 +129,12 @@ pub enum AssetSelectionDecline {
     NonUtf8PackageFile {
         path: PathBuf,
     },
+    /// A symlinked folder in the package leads back to a folder it is inside,
+    /// so the package has no finite file list (restore's enumeration does not
+    /// stop either).
+    SymlinkCycle {
+        path: PathBuf,
+    },
     Io {
         path: PathBuf,
         source: io::Error,
@@ -161,6 +167,13 @@ impl fmt::Display for AssetSelectionDecline {
             AssetSelectionDecline::NonUtf8PackageFile { path } => {
                 write!(f, "package file name is not UTF-8: {}", path.display())
             }
+            AssetSelectionDecline::SymlinkCycle { path } => {
+                write!(
+                    f,
+                    "package folder {} links back to a folder it is in",
+                    path.display()
+                )
+            }
             AssetSelectionDecline::Io { path, source } => {
                 write!(f, "failed to read {}: {source}", path.display())
             }
@@ -176,7 +189,8 @@ impl Error for AssetSelectionDecline {
             | AssetSelectionDecline::AmbiguousAssetGroup { .. }
             | AssetSelectionDecline::LibContract { .. }
             | AssetSelectionDecline::UndecidableReferenceName { .. }
-            | AssetSelectionDecline::NonUtf8PackageFile { .. } => None,
+            | AssetSelectionDecline::NonUtf8PackageFile { .. }
+            | AssetSelectionDecline::SymlinkCycle { .. } => None,
         }
     }
 }
@@ -194,12 +208,26 @@ pub fn select_installed_compile_assets(
 ///
 /// This is the view `LocalPackageInfo.Files` gives restore: the package's own
 /// files, root-level bookkeeping (`.nuspec`, `.nupkg.metadata`, …) included —
-/// the content model discards root-level paths itself.
+/// the content model discards root-level paths itself. A symlinked folder is
+/// followed, as restore's enumeration follows it; one that leads back to a
+/// folder it is inside declines.
 pub fn list_package_files(package_dir: &Path) -> Result<Vec<String>, AssetSelectionDecline> {
+    let canonical = |path: &Path| {
+        std::fs::canonicalize(path).map_err(|source| AssetSelectionDecline::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    };
     let mut files = Vec::new();
-    let mut stack = vec![(package_dir.to_path_buf(), String::new())];
+    // Each folder still to read, with the canonical paths of the folders it is
+    // inside (itself included), which a link back into would never end.
+    let mut stack = vec![(
+        package_dir.to_path_buf(),
+        String::new(),
+        vec![canonical(package_dir)?],
+    )];
 
-    while let Some((dir, prefix)) = stack.pop() {
+    while let Some((dir, prefix, ancestors)) = stack.pop() {
         let entries = std::fs::read_dir(&dir).map_err(|source| AssetSelectionDecline::Io {
             path: dir.clone(),
             source,
@@ -225,8 +253,24 @@ pub fn list_package_files(package_dir: &Path) -> Result<Vec<String>, AssetSelect
                 format!("{prefix}/{name}")
             };
 
-            if file_type.is_dir() {
-                stack.push((path, relative));
+            let is_dir = if file_type.is_symlink() {
+                std::fs::metadata(&path)
+                    .map_err(|source| AssetSelectionDecline::Io {
+                        path: path.clone(),
+                        source,
+                    })?
+                    .is_dir()
+            } else {
+                file_type.is_dir()
+            };
+            if is_dir {
+                let target = canonical(&path)?;
+                if ancestors.contains(&target) {
+                    return Err(AssetSelectionDecline::SymlinkCycle { path });
+                }
+                let mut inside = ancestors.clone();
+                inside.push(target);
+                stack.push((path, relative, inside));
             } else {
                 files.push(relative);
             }

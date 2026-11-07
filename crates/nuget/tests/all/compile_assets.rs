@@ -430,3 +430,28 @@ fn tempdir(name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
+
+/// A symlinked folder in a package is followed, as restore's enumeration
+/// follows it, and one that leads back into a folder it is inside declines.
+#[cfg(unix)]
+#[test]
+fn package_file_listing_follows_symlinked_folders_and_refuses_cycles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let package = temp.path().join("package");
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join("net8.0")).unwrap();
+    std::fs::write(elsewhere.join("net8.0").join("A.dll"), b"").unwrap();
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("a.nuspec"), b"").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, package.join("lib")).unwrap();
+    assert_eq!(
+        borzoi_nuget::list_package_files(&package).unwrap(),
+        ["a.nuspec", "lib/net8.0/A.dll"]
+    );
+
+    std::os::unix::fs::symlink(&package, elsewhere.join("loop")).unwrap();
+    assert!(matches!(
+        borzoi_nuget::list_package_files(&package),
+        Err(AssetSelectionDecline::SymlinkCycle { .. })
+    ));
+}

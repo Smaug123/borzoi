@@ -553,6 +553,7 @@ fn decline_kind(decline: &AssetSelectionDecline) -> &'static str {
         AssetSelectionDecline::LibContract { .. } => "lib-contract",
         AssetSelectionDecline::UndecidableReferenceName { .. } => "undecidable-reference",
         AssetSelectionDecline::NonUtf8PackageFile { .. } => "non-utf8",
+        AssetSelectionDecline::SymlinkCycle { .. } => "symlink-cycle",
         AssetSelectionDecline::Io { .. } => "io",
     }
 }

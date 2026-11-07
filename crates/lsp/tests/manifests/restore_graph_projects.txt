@@ -2,21 +2,27 @@
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh restore-graph
 TypeEquality/TypeEquality/TypeEquality.fsproj assets netstandard2.0: libraries=4 packages=4 compile=3
+TypeEquality/TypeEquality/TypeEquality.fsproj b1: declined warning-policy
 TypeEquality/TypeEquality/TypeEquality.fsproj restore: succeeded logs=0
 TypeEquality/TypeEquality/TypeEquality.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj assets netstandard2.0: libraries=19 packages=19 compile=18
+WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj b1: declined warning-policy
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj restore: succeeded logs=0
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj spec: committed projects=1 frameworks=1 dependencies=6 pruned=0
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj assets net5.0: libraries=6 packages=6 compile=5
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj b1: declined warning-policy+download-dependencies
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj restore: succeeded logs=0
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj spec: committed projects=1 frameworks=1 dependencies=6 pruned=0
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj assets netstandard2.0: libraries=4 packages=4 compile=3
+WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj b1: declined warning-policy
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj restore: succeeded logs=0
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj assets net8.0: libraries=5 packages=5 compile=4
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj b1: declined warning-policy+download-dependencies
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj restore: succeeded logs=0
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj assets netstandard2.0: libraries=4 packages=4 compile=3
+WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj b1: declined warning-policy
 WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj restore: succeeded logs=0
 WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 graded by NuGet.Commands 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab

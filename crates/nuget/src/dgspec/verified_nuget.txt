@@ -1,0 +1,4 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-nuget --test all dgspec_resolve_diff::the_verified_list_is_the_graded_nuget
+7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab

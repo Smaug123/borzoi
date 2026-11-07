@@ -281,6 +281,45 @@ pub struct PackageNuspec {
     /// selection ([`crate::assets`]); empty for the overwhelming majority of
     /// packages, which reference everything in the selected `lib/` folder.
     pub reference_groups: Vec<PackageReferenceGroup>,
+    /// The `<metadata>` element's `minClientVersion` attribute, unparsed:
+    /// restore refuses a package whose minimum exceeds its own version, even
+    /// from a warm cache.
+    pub min_client_version: Option<String>,
+    /// Each `<packageTypes><packageType>`, unparsed and in nuspec order:
+    /// restore refuses some types in a `PackageReference` project
+    /// (`DotnetTool`, with `NU1212`), and a malformed version.
+    pub package_types: Vec<PackageTypeDeclaration>,
+    /// Every child element of `<metadata>`, in nuspec order: the vocabulary a
+    /// consumer that must not misread a package can hold the nuspec to.
+    pub metadata_elements: Vec<MetadataElement>,
+    /// The local name of every attribute on `<metadata>`.
+    pub metadata_attributes: Vec<String>,
+    /// Whether `<metadata>` is the element NuGet's reader takes it to be, and
+    /// is read where that reader reads it: the only child of `<package>` named
+    /// `metadata` in any namespace (the reader takes the first by name), with
+    /// `<package>` and `<metadata>` each in the default namespace in scope
+    /// (the reader looks for `<metadata>`'s children there, so a nuspec with a
+    /// prefix on every element and no default namespace has no identity).
+    pub metadata_is_canonical: bool,
+}
+
+/// One child element of a nuspec's `<metadata>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetadataElement {
+    /// The local name, or `{namespace}name` for an element outside the
+    /// nuspec's own namespace or outside the default namespace in scope.
+    pub name: String,
+    /// The element's text, as written (its text nodes, without comments),
+    /// when it has no child elements; `None` when it has some.
+    pub text: Option<String>,
+}
+
+/// One `<packageType>` element's attributes, as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageTypeDeclaration {
+    /// The `name` attribute; empty when absent.
+    pub name: String,
+    pub version: Option<String>,
 }
 
 impl PackageNuspec {
@@ -428,6 +467,11 @@ impl Error for PackageReadError {
 pub enum PackageNuspecParseError {
     Xml(roxmltree::Error),
     MissingDependencyId,
+    /// A dependency id with surrounding whitespace, which NuGet keeps (and
+    /// then finds no package for) where [`PackageId::parse`] would trim it.
+    UntrimmedDependencyId {
+        raw: String,
+    },
     InvalidDependencyId {
         raw: String,
         source: PackageIdParseError,
@@ -449,6 +493,9 @@ impl fmt::Display for PackageNuspecParseError {
             PackageNuspecParseError::Xml(e) => write!(f, "invalid XML: {e}"),
             PackageNuspecParseError::MissingDependencyId => {
                 f.write_str("nuspec dependency is missing an id")
+            }
+            PackageNuspecParseError::UntrimmedDependencyId { raw } => {
+                write!(f, "dependency id {raw:?} has surrounding whitespace")
             }
             PackageNuspecParseError::InvalidDependencyId { raw, source } => {
                 write!(f, "invalid dependency id {raw:?}: {source}")
@@ -476,7 +523,8 @@ impl Error for PackageNuspecParseError {
             PackageNuspecParseError::InvalidDependencyId { source, .. } => Some(source),
             PackageNuspecParseError::InvalidDependencyVersionRange { source, .. } => Some(source),
             PackageNuspecParseError::InvalidTargetFramework { source, .. } => Some(source),
-            PackageNuspecParseError::MissingDependencyId => None,
+            PackageNuspecParseError::MissingDependencyId
+            | PackageNuspecParseError::UntrimmedDependencyId { .. } => None,
         }
     }
 }
@@ -484,8 +532,9 @@ impl Error for PackageNuspecParseError {
 /// List committed versions for one package id in a global packages root.
 ///
 /// Only canonical NuGet global-packages entries are returned:
-/// `{id-lower}/{normalised-version-lower}/.nupkg.metadata`. Invalid,
-/// non-canonical, uncommitted, or non-directory children are ignored. IO
+/// `{id-lower}/{normalised-version-lower}/.nupkg.metadata`, a version folder
+/// reached through a symlink included. Invalid, non-canonical, uncommitted, or
+/// non-directory children are ignored. IO
 /// failures reading the package-id directory or its entries are returned so a
 /// caller can conservatively decline resolution.
 pub fn list_committed_package_versions(
@@ -511,11 +560,13 @@ pub fn list_committed_package_versions(
             source,
         })?;
         let path = entry.path();
-        let file_type = entry.file_type().map_err(|source| PackageCacheError::Io {
+        // Following symlinks, as restore does: a cache assembled from links
+        // (Nix builds one) holds its versions as symlinked folders.
+        let metadata = std::fs::metadata(&path).map_err(|source| PackageCacheError::Io {
             path: path.clone(),
             source,
         })?;
-        if !file_type.is_dir() {
+        if !metadata.is_dir() {
             continue;
         }
 
@@ -730,7 +781,8 @@ fn decode_utf16(bytes: &[u8], endian: Utf16Endian) -> io::Result<String> {
     String::from_utf16(&units).map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
 }
 
-/// Parse just the dependency groups from a nuspec document.
+/// Parse the parts of a nuspec document restore reads: the dependency and
+/// reference groups, and the metadata restore validates a package by.
 pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let doc = roxmltree::Document::parse(text).map_err(PackageNuspecParseError::Xml)?;
@@ -746,8 +798,60 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         return Ok(PackageNuspec {
             dependency_groups,
             reference_groups: Vec::new(),
+            min_client_version: None,
+            package_types: Vec::new(),
+            metadata_elements: Vec::new(),
+            metadata_attributes: Vec::new(),
+            metadata_is_canonical: false,
         });
     };
+    let metadata_is_canonical = root.tag_name().namespace() == root.default_namespace()
+        && metadata.tag_name().namespace() == metadata.default_namespace()
+        && root
+            .children()
+            .filter(|child| child.is_element() && child.tag_name().name() == "metadata")
+            .count()
+            == 1;
+    let metadata_elements = metadata
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .map(|element| {
+            let tag = element.tag_name();
+            let name = if tag.namespace() == nuspec_namespace
+                && tag.namespace() == element.default_namespace()
+            {
+                tag.name().to_owned()
+            } else {
+                format!("{{{}}}{}", tag.namespace().unwrap_or_default(), tag.name())
+            };
+            let text = (!element.children().any(|child| child.is_element())).then(|| {
+                element
+                    .children()
+                    .filter(|child| child.is_text())
+                    .filter_map(|child| child.text())
+                    .collect::<String>()
+            });
+            MetadataElement { name, text }
+        })
+        .collect();
+    let metadata_attributes = metadata
+        .attributes()
+        .map(|attribute| attribute.name().to_owned())
+        .collect();
+    let min_client_version = metadata.attribute("minClientVersion").map(str::to_owned);
+    let package_types = metadata
+        .children()
+        .filter(|n| element_named(*n, nuspec_namespace, "packageTypes"))
+        .flat_map(|types| types.children())
+        .filter(|n| element_named(*n, nuspec_namespace, "packageType"))
+        .map(|package_type| PackageTypeDeclaration {
+            name: package_type
+                .attribute("name")
+                .unwrap_or_default()
+                .to_owned(),
+            version: package_type.attribute("version").map(str::to_owned),
+        })
+        .collect();
     let reference_groups = parse_reference_groups(metadata, nuspec_namespace, &any_framework)?;
     let dependency_sections = metadata
         .children()
@@ -790,6 +894,11 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
     Ok(PackageNuspec {
         dependency_groups,
         reference_groups,
+        min_client_version,
+        package_types,
+        metadata_elements,
+        metadata_attributes,
+        metadata_is_canonical,
     })
 }
 
@@ -885,6 +994,11 @@ fn parse_dependency(
     let raw_id = node
         .attribute("id")
         .ok_or(PackageNuspecParseError::MissingDependencyId)?;
+    if raw_id.trim() != raw_id {
+        return Err(PackageNuspecParseError::UntrimmedDependencyId {
+            raw: raw_id.to_owned(),
+        });
+    }
     let id = PackageId::parse(raw_id).map_err(|source| {
         PackageNuspecParseError::InvalidDependencyId {
             raw: raw_id.to_owned(),

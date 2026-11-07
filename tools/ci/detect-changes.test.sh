@@ -45,7 +45,7 @@ assert_eq "astgen tool"              "$(expect astgen)"        "$(classify 'tool
 assert_eq "fcs-dump tool"            "$(expect fcs)"           "$(classify 'tools/fcs-dump/Program.fs')"
 assert_eq "sidecar prod"             "$(expect sidecar)"       "$(classify 'tools/csharp-sidecar/Foo.cs')"
 assert_eq "sidecar tests"            "$(expect sidecar)"       "$(classify 'tools/csharp-sidecar.tests/Bar.cs')"
-assert_eq "nuget crate"              "$(expect nuget)"         "$(classify 'crates/nuget/src/version.rs')"
+assert_eq "nuget crate"              "$(expect lsp nuget)"     "$(classify 'crates/nuget/src/version.rs')"
 assert_eq "nuget oracle tool"        "$(expect lsp nuget)"     "$(classify 'tools/nuget-oracle/Program.fs')"
 assert_eq "inheritdoc oracle tool"    "$(expect lsp)"           "$(classify 'tools/inheritdoc-oracle/Program.cs')"
 # The generated facade lives under crates/cst, so a hand-edit there is a `cst`
