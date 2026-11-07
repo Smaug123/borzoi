@@ -90,8 +90,11 @@
               rel = lib.removePrefix "${sourceRoot}/" (toString path);
               cargoSource = craneLib.filterCargoSources path type;
               statsSite = rel == "tools/stats/src/site/index.html";
+              # `include_str!`ed by `borzoi_nuget::dgspec`: the NuGet identities
+              # its resolver commits for.
+              nugetVerified = rel == "crates/nuget/src/dgspec/verified_nuget.txt";
             in
-            (cargoSource || statsSite) && (repoFilter path type);
+            (cargoSource || statsSite || nugetVerified) && (repoFilter path type);
         };
 
       # `doCheck = false`: the crate build does not run `cargo test`. The
