@@ -2463,6 +2463,13 @@ fn downloads_are_a_presence_check() {
         ),
         ("missing", vec![], "[1.0.0, 1.0.0]", false, false),
         ("an open range", vec![base()], "[1.0.0, )", true, false),
+        (
+            "a floating range",
+            vec![base()],
+            "[1.0.*, 1.0.0]",
+            false,
+            false,
+        ),
     ];
     for (label, mut packages, range, restores, commits) in cases {
         packages.push(Pkg::new("A", "1.0.0", vec![]));

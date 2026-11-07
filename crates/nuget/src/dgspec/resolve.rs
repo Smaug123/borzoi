@@ -619,9 +619,13 @@ fn check_downloads(
             id: id.clone(),
             range: Box::new(range.clone()),
         };
+        // A floating range consults the sources whatever its bounds.
         let exact = match (range.min_version(), range.max_version()) {
             (Some(min), Some(max))
-                if range.is_min_inclusive() && range.is_max_inclusive() && min.eq_strict(max) =>
+                if !range.is_floating()
+                    && range.is_min_inclusive()
+                    && range.is_max_inclusive()
+                    && min.eq_strict(max) =>
             {
                 min.clone()
             }
