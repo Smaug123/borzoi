@@ -381,8 +381,10 @@ const UNIONS: &[Union] = &[
         "privateRepr",
         "type PR = private PRA | PRB of int\n",
         "{L}PR",
-        &[("{L}PRA", true, false), ("{L}PRB 1", true, false)],
-        &[("| {L}PRA -> 0 | {L}PRB n -> n", true)],
+        // The cases are inaccessible outside the union's module, and no case
+        // of a union with an access-modified representation is read.
+        &[("{L}PRA", false, false), ("{L}PRB 1", false, false)],
+        &[("| {L}PRA -> 0 | {L}PRB n -> n", false)],
     ),
 ];
 
@@ -545,6 +547,10 @@ fn program(union: &Union, placement: Placement) -> (Vec<(String, String)>, Vec<C
     let ty = fill(union.ty, placement);
     for (expr, modelled, generic) in union.values {
         for (cid, template, ctx_modelled) in VALUE_CONTEXTS {
+            // `{x}` is a parameter only the contexts declaring it have.
+            if expr.contains("{x}") && !template.contains("(x: int)") {
+                continue;
+            }
             let line = first + body.matches('\n').count() as u32;
             let e = fill(expr, placement);
             body.push_str(&template.replace("{e}", &e).replace("{i}", &i.to_string()));
@@ -769,6 +775,10 @@ fn assert_clean(tally: &Tally, floor: usize) {
     assert!(tally.committed >= floor, "too little committed: {tally:?}");
 }
 
+/// Every program of the grid. Nothing commits on a line FCS rejects: its
+/// dumps grade no such declaration, so a commit there would be unverified,
+/// and the grid's ill-typed cells (an inaccessible case, an obsolete one)
+/// are exactly those inference must decline.
 #[test]
 fn project_union_cases_agree_with_fcs_by_declaration_and_placement() {
     let mut tally = Tally::default();
@@ -778,6 +788,10 @@ fn project_union_cases_agree_with_fcs_by_declaration_and_placement() {
             check(&sources, &cells, &mut tally);
         }
     }
+    assert_eq!(
+        tally.committed_erroring, 0,
+        "cells committed on lines FCS rejects: {tally:?}"
+    );
     assert_clean(&tally, 700);
 }
 

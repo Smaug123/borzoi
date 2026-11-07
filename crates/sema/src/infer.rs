@@ -2064,7 +2064,8 @@ impl<'a> Gen<'a> {
     ///
     /// A union contributes only when [`Self::project_type_paths`] holds its
     /// path (which already leaves out a constrained or attributed parameter,
-    /// and an attribute that may make F# reject a use). A case is left out
+    /// and an attribute that may make F# reject a use), its declaration did
+    /// not recover, and its representation carries no access modifier. A case is left out
     /// when it carries an attribute (an error-level `[<Obsolete>]` rejects
     /// its use), is written in the `Case : type` signature form, or has a field whose type the annotation bridge declines (a
     /// measure among them); a use of one declines.
@@ -2111,6 +2112,16 @@ impl<'a> Gen<'a> {
             // nullary cases) where FCS rejects them.
             if !recovery.declaration_is_intact(defn.syntax())
                 || !recovery.clean_through(defn.syntax())
+            {
+                continue;
+            }
+            // `type U = private A | B`: the cases are inaccessible outside
+            // the union's module, where FCS rejects a use the resolver still
+            // reads as the case.
+            if repr
+                .syntax()
+                .children_with_tokens()
+                .any(|el| el.kind() == SyntaxKind::ACCESS_TOK)
             {
                 continue;
             }

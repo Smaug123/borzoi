@@ -1184,6 +1184,9 @@ case's item. A file publishes its cases' schemes by item
 (`PrecedingTypes::case`), and a signatured file publishes none. Left out, so
 that a use declines:
 
+- every case of a union whose representation carries an access modifier
+  (`type U = private A | B`: outside its module FCS rejects a use the
+  resolver still reads as the case);
 - every case of a union the parser recovered from (its surviving cases look
   well-formed: `C : | D` reads as two nullary cases), or declaring a type
   parameter twice (FCS binds a use to the first declaration);
@@ -1216,7 +1219,8 @@ name declared twice, a value then a case of one name, members, a private
 representation, a nested module, the signature form), each in the using
 file, in an earlier file reached by an `open`, by module-qualified paths, and
 behind a signature, by value and match contexts, FCS-graded as one project,
-with must-commit obligations on every cell this stage models; plus an
+with must-commit obligations on every cell this stage models and no commit
+on a line FCS rejects (its dumps grade no such declaration); plus an
 ill-typed family and namespace fragments declaring one case name twice.
 `infer_cross_file_diff` now expects an earlier file's case to be typed, and
 holds every cell using one to what its in-file twin commits. The
