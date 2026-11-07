@@ -157,7 +157,8 @@ pub enum UnmodelledField {
     /// Metadata NuGet requires is absent or inconsistent, so restore throws:
     /// the project's path or output path, or `originalTargetFrameworks`
     /// naming exactly the aliases of the frameworks and of the restore
-    /// metadata's frameworks, each alias once.
+    /// metadata's frameworks, each alias once and each naming a different
+    /// framework.
     RequiredMetadata,
     /// A config file NuGet loads its settings from is outside the vocabulary
     /// B₁ admits (see `config_is_admitted`).
@@ -482,6 +483,30 @@ fn check_metadata(
                 source: Box::new(source),
             }
         };
+        // A version folder that is a symlink is one restore follows and the
+        // version listing does not, so its metadata would go unchecked.
+        let id_folder = packages.join(resolved.identity.id.folder_name());
+        let symlinked = std::fs::read_dir(&id_folder)
+            .map_err(|source| {
+                unreadable(
+                    &resolved.identity,
+                    PackageReadError::Io {
+                        path: id_folder.clone(),
+                        source,
+                    },
+                )
+            })?
+            .any(|entry| {
+                entry
+                    .and_then(|entry| entry.file_type())
+                    .map_or(true, |kind| kind.is_symlink())
+            });
+        if symlinked {
+            return Err(DgSpecResolveDecline::PackageMetadata {
+                target_alias: target_alias.to_owned(),
+                package: Box::new(resolved.identity.clone()),
+            });
+        }
         let versions =
             list_committed_package_versions(packages, &resolved.identity.id).map_err(|source| {
                 let crate::PackageCacheError::Io { path, source } = source;
@@ -693,6 +718,12 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         || original != aliases
         || restore_aliases != aliases
         || !aliases_unique(frameworks.iter().map(|f| f.target_alias.as_str()).collect())
+        || frameworks
+            .iter()
+            .map(|f| f.framework.short_folder_name())
+            .collect::<BTreeSet<_>>()
+            .len()
+            != frameworks.len()
         || !aliases_unique(
             restore_frameworks
                 .iter()
@@ -844,9 +875,12 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
 /// settings validation: a well-formed XML document whose root is
 /// `configuration`, with only `packageSources` and `disabledPackageSources`
 /// sections, each holding only `clear` elements and `add` elements with a
-/// non-empty `key` and `value` (and, in `packageSources`, a
-/// `protocolVersion`), without text.
+/// `key` and `value` that are non-empty and without surrounding whitespace
+/// (and, in `packageSources`, a `protocolVersion`), without text.
 fn config_is_admitted(path: &Path) -> bool {
+    fn trimmed_and_present(value: &str) -> bool {
+        !value.is_empty() && value.trim() == value
+    }
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
@@ -884,10 +918,8 @@ fn config_is_admitted(path: &Path) -> bool {
                 let mut allowed = vec!["key", "value"];
                 allowed.extend_from_slice(extra);
                 attributes_are(entry, &allowed)
-                    && entry.attribute("key").is_some_and(|key| !key.is_empty())
-                    && entry
-                        .attribute("value")
-                        .is_some_and(|value| !value.is_empty())
+                    && entry.attribute("key").is_some_and(trimmed_and_present)
+                    && entry.attribute("value").is_some_and(trimmed_and_present)
             }
             _ => false,
         }

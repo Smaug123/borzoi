@@ -302,8 +302,8 @@ pub struct MetadataElement {
     /// The local name, or `{namespace}name` for an element outside the
     /// nuspec's own namespace.
     pub name: String,
-    /// The element's text, trimmed, when it has no child elements; `None`
-    /// when it has some.
+    /// The element's text, as written (its text nodes, without comments),
+    /// when it has no child elements; `None` when it has some.
     pub text: Option<String>,
 }
 
@@ -460,6 +460,11 @@ impl Error for PackageReadError {
 pub enum PackageNuspecParseError {
     Xml(roxmltree::Error),
     MissingDependencyId,
+    /// A dependency id with surrounding whitespace, which NuGet keeps (and
+    /// then finds no package for) where [`PackageId::parse`] would trim it.
+    UntrimmedDependencyId {
+        raw: String,
+    },
     InvalidDependencyId {
         raw: String,
         source: PackageIdParseError,
@@ -481,6 +486,9 @@ impl fmt::Display for PackageNuspecParseError {
             PackageNuspecParseError::Xml(e) => write!(f, "invalid XML: {e}"),
             PackageNuspecParseError::MissingDependencyId => {
                 f.write_str("nuspec dependency is missing an id")
+            }
+            PackageNuspecParseError::UntrimmedDependencyId { raw } => {
+                write!(f, "dependency id {raw:?} has surrounding whitespace")
             }
             PackageNuspecParseError::InvalidDependencyId { raw, source } => {
                 write!(f, "invalid dependency id {raw:?}: {source}")
@@ -508,7 +516,8 @@ impl Error for PackageNuspecParseError {
             PackageNuspecParseError::InvalidDependencyId { source, .. } => Some(source),
             PackageNuspecParseError::InvalidDependencyVersionRange { source, .. } => Some(source),
             PackageNuspecParseError::InvalidTargetFramework { source, .. } => Some(source),
-            PackageNuspecParseError::MissingDependencyId => None,
+            PackageNuspecParseError::MissingDependencyId
+            | PackageNuspecParseError::UntrimmedDependencyId { .. } => None,
         }
     }
 }
@@ -798,10 +807,9 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
             let text = (!element.children().any(|child| child.is_element())).then(|| {
                 element
                     .children()
+                    .filter(|child| child.is_text())
                     .filter_map(|child| child.text())
                     .collect::<String>()
-                    .trim()
-                    .to_owned()
             });
             MetadataElement { name, text }
         })
@@ -965,6 +973,11 @@ fn parse_dependency(
     let raw_id = node
         .attribute("id")
         .ok_or(PackageNuspecParseError::MissingDependencyId)?;
+    if raw_id.trim() != raw_id {
+        return Err(PackageNuspecParseError::UntrimmedDependencyId {
+            raw: raw_id.to_owned(),
+        });
+    }
     let id = PackageId::parse(raw_id).map_err(|source| {
         PackageNuspecParseError::InvalidDependencyId {
             raw: raw_id.to_owned(),

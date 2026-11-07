@@ -947,6 +947,41 @@ fn a_nuspec_must_state_its_identity() {
     }
 }
 
+/// A version folder that is a symlink is one restore follows, so its metadata
+/// counts; B₁ declines it rather than miss it.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_version_folder_declines() {
+    let mut oracle = Oracle::spawn();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+    package.min_client_version = Some("99.0.0");
+    install(&dir.path().join("elsewhere"), &[package]);
+    let id_folder = dir.path().join("gp").join("a");
+    fs::create_dir_all(&id_folder).unwrap();
+    std::os::unix::fs::symlink(
+        dir.path().join("elsewhere").join("a").join("1.0.0"),
+        id_folder.join("1.0.0"),
+    )
+    .unwrap();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let text = shape.render(dir.path());
+    let spec = parse_dgspec(&text).unwrap();
+    let graded = grade_spec(&mut oracle, &text, &spec, "a symlinked version folder");
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PackageMetadata { .. })
+        ),
+        "{:?}",
+        graded.ours
+    );
+}
+
 /// Restore validates every version it reads, not only the winners: a losing
 /// version's minimum client version fails the restore even though another
 /// version of the package wins.
@@ -1198,6 +1233,16 @@ fn every_unmodelled_field_declines_by_name() {
             let project = the_project(spec);
             let framework = project["frameworks"]["net8.0"].clone();
             project["frameworks"]["net9.0"] = framework;
+        }),
+        (UnmodelledField::RequiredMetadata, |spec, _| {
+            let project = the_project(spec);
+            let mut framework = project["frameworks"]["net8.0"].clone();
+            framework["targetAlias"] = json!("net9.0");
+            framework["framework"] = json!("net8.0");
+            project["frameworks"]["net9.0"] = framework;
+            project["restore"]["frameworks"]["net9.0"] =
+                json!({"targetAlias": "net9.0", "projectReferences": {}});
+            project["restore"]["originalTargetFrameworks"] = json!(["net8.0", "net9.0"]);
         }),
         (UnmodelledField::Config, |spec, dir| {
             let config = dir.join("NuGet.Config");
@@ -1833,4 +1878,140 @@ fn every_substitution_of_a_committing_specs_strings_is_graded() {
         graded_variants >= 100 && committed_variants >= 10,
         "graded {graded_variants} substitutions, {committed_variants} committed"
     );
+}
+
+/// What an XML perturbation does to one slot of a template.
+const XML_PERTURBATIONS: &[&str] = &[
+    "",
+    " ",
+    "<!--c-->",
+    "<!--c-->{}",
+    "{}<!--c-->",
+    " {} ",
+    "{}\n",
+];
+
+/// Render `template`, whose slots are `{0}`, `{1}`, …, with `values`.
+fn fill(template: &str, values: &[String]) -> String {
+    values
+        .iter()
+        .enumerate()
+        .fold(template.to_owned(), |text, (index, value)| {
+            text.replace(&format!("{{{index}}}"), value)
+        })
+}
+
+/// Every attribute and text slot of a committing nuspec and config file
+/// perturbed in turn (emptied, blanked, padded, or with a comment beside or in
+/// place of the value), each graded against B₀. The vocabularies decide what a
+/// value is; this is how the decisions about whitespace and comments within
+/// them are checked against restore's.
+#[test]
+fn every_perturbation_of_nuspec_and_config_text_is_graded() {
+    const NUSPEC: &str = r#"<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata minClientVersion="{0}">
+    <id>{1}</id>
+    <version>{2}</version>
+    <authors>{3}</authors>
+    <description>{4}</description>
+    <packageTypes><packageType name="{5}" /></packageTypes>
+    <serviceable>{6}</serviceable>
+    <dependencies><group targetFramework="{7}"><dependency id="{8}" version="{9}" /></group></dependencies>
+  </metadata>
+</package>"#;
+    const NUSPEC_VALUES: &[&str] = &[
+        "2.12",
+        "A",
+        "1.0.0",
+        "a",
+        "d",
+        "Dependency",
+        "true",
+        "net8.0",
+        "B",
+        "[1.0.0, )",
+    ];
+    const CONFIG: &str = r#"<configuration>
+  <packageSources><add key="{0}" value="{1}" protocolVersion="{2}" /></packageSources>
+  <disabledPackageSources><add key="{3}" value="{4}" /></disabledPackageSources>
+</configuration>"#;
+    const CONFIG_VALUES: &[&str] = &[
+        "nuget.org",
+        "https://api.nuget.org/v3/index.json",
+        "3",
+        "nuget.org",
+        "true",
+    ];
+
+    let perturbed = |values: &[&str]| -> Vec<(usize, Vec<String>)> {
+        let mut variants = vec![(usize::MAX, values.iter().map(|v| v.to_string()).collect())];
+        for slot in 0..values.len() {
+            for perturbation in XML_PERTURBATIONS {
+                let mut filled: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+                filled[slot] = perturbation.replace("{}", values[slot]);
+                variants.push((slot, filled));
+            }
+        }
+        variants
+    };
+
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let mut graded_variants = 0;
+    let mut committed_variants = 0;
+    let mut grade_one = |nuspec: String, config: Option<String>, label: String| {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut a = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        a.raw_nuspec = Some(Box::leak(nuspec.into_boxed_str()));
+        install(&dir.path().join("gp"), &[a, Pkg::new("B", "1.0.0", vec![])]);
+        let mut shape = shape.clone();
+        shape.config = config.map(|config| &*Box::leak(config.into_boxed_str()));
+        let text = shape.render(dir.path());
+        let spec = parse_dgspec(&text).expect("the spec parses");
+        let graded = grade_spec(&mut oracle, &text, &spec, &label);
+        graded_variants += 1;
+        committed_variants += usize::from(graded.ours.is_ok());
+        graded
+    };
+    for (slot, values) in perturbed(NUSPEC_VALUES) {
+        let graded = grade_one(
+            fill(NUSPEC, &values),
+            None,
+            format!("nuspec slot {slot}: {values:?}"),
+        );
+        if slot == usize::MAX {
+            assert!(
+                graded.ours.is_ok(),
+                "the base nuspec commits: {:?}",
+                graded.ours
+            );
+        }
+    }
+    for (slot, values) in perturbed(CONFIG_VALUES) {
+        let nuspec = fill(
+            NUSPEC,
+            &NUSPEC_VALUES
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>(),
+        );
+        let graded = grade_one(
+            nuspec,
+            Some(fill(CONFIG, &values)),
+            format!("config slot {slot}: {values:?}"),
+        );
+        if slot == usize::MAX {
+            assert!(
+                graded.ours.is_ok(),
+                "the base config commits: {:?}",
+                graded.ours
+            );
+        }
+    }
+    eprintln!("graded {graded_variants} perturbations, {committed_variants} committed");
+    assert!(committed_variants >= 10, "{committed_variants} committed");
 }

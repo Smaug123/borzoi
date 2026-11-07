@@ -473,7 +473,16 @@ The differential, the probes behind it, and review turned up seven things:
   Deletion cannot reach a cross-field rule (two frameworks sharing an alias),
   so `every_substitution_of_a_committing_specs_strings_is_graded` also
   replaces each string of a committing spec by each other string the spec
-  holds (412 variants, 64 committed).
+  holds (412 variants, 64 committed). The nuspec and config vocabularies get
+  the same treatment at the level of their text:
+  `every_perturbation_of_nuspec_and_config_text_is_graded` empties, blanks,
+  pads, and puts a comment beside or in place of each attribute and text value
+  of a committing nuspec and config file (107 variants, 41 committed). On its
+  first run it found that the nuspec reader trimmed a dependency id NuGet
+  keeps padded, and so finds no package for; the reader now refuses one.
+  Review found the rest of this class (an XML comment read as an element's
+  text, a whitespace-only config key, a symlinked version folder the version
+  listing skipped, two aliases naming one framework), each now declined.
   Review also found that a relative `nuGetLockFilePath` is resolved against
   the project; B₁ declines one.
 - **The packages folder needs no sources.** A source folder that does not
