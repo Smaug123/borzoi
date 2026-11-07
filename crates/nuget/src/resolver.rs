@@ -426,9 +426,9 @@ pub struct TargetContext {
     pub asset_target_fallback: Vec<NuGetFramework>,
     /// The packages to prune (the spec's `packagesToPrune`), each as its id and
     /// the upper bound of its range. Restore drops a dependency a package
-    /// declares on a pruned id when the dependency's lower bound is at or below
-    /// that upper bound, before it walks the graph; the prune range's lower bound
-    /// and the inclusivity of its upper bound play no part. A project's direct
+    /// declares on a pruned id when the dependency's range accepts that upper
+    /// bound, before it walks the graph; the prune range's lower bound and the
+    /// inclusivity of its upper bound play no part. A project's direct
     /// references are never pruned. This is graded against the default restore
     /// engine only (`dgspec_resolve_diff.rs`), the one a dependency-graph spec
     /// can select.
@@ -456,8 +456,7 @@ impl TargetContext {
             .unwrap_or_default()
     }
 
-    /// Whether restore prunes `dependency`. One without a lower bound is never
-    /// pruned here, so the resolver's own decline on it stands.
+    /// Whether restore prunes `dependency`.
     fn prunes(&self, dependency: &crate::PackageDependency) -> bool {
         dependency
             .version_range
@@ -466,16 +465,16 @@ impl TargetContext {
     }
 
     /// Whether the prune list covers a dependency on `id` with `range`: an
-    /// entry for `id` whose upper bound is at or above the range's lower bound.
-    /// Restore prunes a transitive dependency it covers, and warns (`NU1510`,
-    /// on `net10.0`) about a direct one, which it keeps.
+    /// entry for `id` whose upper bound the range accepts. Restore prunes a
+    /// transitive dependency it covers, and may warn (`NU1510`) about a direct
+    /// one, which it keeps. A floating range is never covered here, so the
+    /// resolver's own decline on it stands.
     pub fn covers(&self, id: &PackageId, range: &VersionRange) -> bool {
-        let Some(minimum) = range.min_version() else {
-            return false;
-        };
-        self.prune
-            .iter()
-            .any(|(pruned, maximum)| pruned == id && minimum <= maximum)
+        !range.is_floating()
+            && self
+                .prune
+                .iter()
+                .any(|(pruned, maximum)| pruned == id && range.satisfies(maximum))
     }
 }
 

@@ -431,6 +431,7 @@ pub fn resolve_dgspec(
         unreachable!("an absent packages path or project name is an unmodelled field")
     };
 
+    let not_pruned = not_pruned_warning(&package_spec.frameworks);
     package_spec
         .frameworks
         .iter()
@@ -442,20 +443,7 @@ pub fn resolve_dgspec(
                     DirectPackageRequirement::new(dependency.id.clone(), dependency.range.clone())
                 })
                 .collect();
-            let context = TargetContext {
-                asset_target_fallback: if framework.asset_target_fallback {
-                    framework.imports.clone()
-                } else {
-                    Vec::new()
-                },
-                prune: framework
-                    .packages_to_prune
-                    .iter()
-                    .filter_map(|entry| {
-                        Some((entry.id.clone(), entry.range.max_version()?.clone()))
-                    })
-                    .collect(),
-            };
+            let context = target_context(framework);
             let closure = resolve_offline_in(
                 Path::new(packages_path),
                 &framework.framework,
@@ -496,6 +484,7 @@ pub fn resolve_dgspec(
                 Path::new(packages_path),
                 framework,
                 &context,
+                not_pruned,
                 &package_spec.restore.warning_properties,
                 &closure,
             )?;
@@ -1117,6 +1106,7 @@ fn predicted_warnings(
     packages: &Path,
     framework: &TargetFrameworkInformation,
     context: &TargetContext,
+    not_pruned: NotPrunedWarning,
     policy: &WarningProperties,
     closure: &ResolvedPackageClosure,
 ) -> Result<Option<BTreeSet<NuGetLogCode>>, DgSpecResolveDecline> {
@@ -1165,35 +1155,88 @@ fn predicted_warnings(
             }
         }
     }
-    // On `net10.0`, restore warns about each direct reference the prune list
-    // covers (which it keeps). No earlier framework does; a later one is not
-    // graded, so it predicts nothing exact.
-    let core_major = (framework.framework.framework() == ".NETCoreApp")
-        .then(|| {
-            framework
-                .framework
-                .version_string()
-                .split('.')
-                .next()
-                .and_then(|major| major.parse::<u32>().ok())
-        })
-        .flatten();
-    match core_major {
-        Some(major) if major > 10 => return Ok(None),
-        Some(10) => {
-            let not_pruned = NuGetLogCode::parse("NU1510").expect("NU1510 is a NuGet log code");
-            if framework
-                .dependencies
-                .iter()
-                .any(|dependency| context.covers(&dependency.id, &dependency.range))
-            {
-                codes.insert(not_pruned);
-            }
+    match not_pruned {
+        NotPrunedWarning::Never => {}
+        NotPrunedWarning::Logged => {
+            codes.insert(NuGetLogCode::parse("NU1510").expect("NU1510 is a NuGet log code"));
         }
-        _ => {}
+        NotPrunedWarning::Unknown => return Ok(None),
     }
     codes.retain(|code| !policy.no_warn.contains(code));
     Ok(Some(codes))
+}
+
+/// Whether restore warns `NU1510` (a direct reference the prune list covers,
+/// which it keeps) for a project's frameworks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotPrunedWarning {
+    /// For none of them.
+    Never,
+    /// For the project's one framework.
+    Logged,
+    /// Not predicted exactly.
+    Unknown,
+}
+
+/// When restore warns `NU1510`, as far as it is graded. Restore enables the
+/// warning when any target framework is `net10.0` or later, and decides it
+/// across the project's frameworks together. Only a single-framework project
+/// is graded: `net10.0` with a covered direct reference warns, no earlier
+/// framework does whatever `SdkAnalysisLevel` says, and anything else that
+/// could warn (several frameworks, one of them `net10.0`, with a covered
+/// reference; a `.NETCoreApp` after 10) is not predicted exactly.
+fn not_pruned_warning(frameworks: &[TargetFrameworkInformation]) -> NotPrunedWarning {
+    let core_major = |framework: &NuGetFramework| {
+        (framework.framework() == ".NETCoreApp")
+            .then(|| {
+                framework
+                    .version_string()
+                    .split('.')
+                    .next()
+                    .and_then(|major| major.parse::<u32>().ok())
+            })
+            .flatten()
+    };
+    let majors: Vec<Option<u32>> = frameworks
+        .iter()
+        .map(|framework| core_major(&framework.framework))
+        .collect();
+    if majors
+        .iter()
+        .any(|major| major.is_some_and(|major| major > 10))
+    {
+        return NotPrunedWarning::Unknown;
+    }
+    let covered = frameworks.iter().any(|framework| {
+        let context = target_context(framework);
+        framework
+            .dependencies
+            .iter()
+            .any(|dependency| context.covers(&dependency.id, &dependency.range))
+    });
+    match (majors.contains(&Some(10)), covered, frameworks.len()) {
+        (true, true, 1) => NotPrunedWarning::Logged,
+        (true, true, _) => NotPrunedWarning::Unknown,
+        _ => NotPrunedWarning::Never,
+    }
+}
+
+/// What a framework of the spec says about which dependencies each package
+/// contributes: its asset-target fallback list, and its prune list as each
+/// entry's upper bound (an entry without one declines before here).
+fn target_context(framework: &TargetFrameworkInformation) -> TargetContext {
+    TargetContext {
+        asset_target_fallback: if framework.asset_target_fallback {
+            framework.imports.clone()
+        } else {
+            Vec::new()
+        },
+        prune: framework
+            .packages_to_prune
+            .iter()
+            .filter_map(|entry| Some((entry.id.clone(), entry.range.max_version()?.clone())))
+            .collect(),
+    }
 }
 
 /// Whether restore, logging `code` as a warning, fails under `policy`: the
