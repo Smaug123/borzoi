@@ -372,9 +372,6 @@ impl OurOutcome {
                 OurOutcome::Declined("unsatisfied-lower")
             }
             ResolveDecline::PackageRead { .. } => OurOutcome::Declined("package-read"),
-            ResolveDecline::DependencyAssetFilterUnsupported { .. } => {
-                OurOutcome::Declined("asset-filter")
-            }
             ResolveDecline::DependencyWithoutRange { .. } => OurOutcome::Declined("no-range"),
             ResolveDecline::DuplicateDependency { .. } => {
                 OurOutcome::Declined("duplicate-dependency")
@@ -834,7 +831,7 @@ fn multi_tfm_group_selection_resolves_identically() {
 }
 
 #[test]
-fn dependency_asset_filter_we_decline_restore_resolves() {
+fn a_dependency_asset_filter_leaves_the_closure_alone() {
     let a = Pkg {
         id: "A".to_owned(),
         version: "1.0.0".to_owned(),
@@ -856,10 +853,9 @@ fn dependency_asset_filter_we_decline_restore_resolves() {
         &[a, Pkg::simple("Beta", "2.0.0", vec![])],
         &[("A", "[1.0.0, )")],
     );
-    assert!(!rust, "asset filters are unsupported in 6a");
     assert!(
-        oracle_ok,
-        "restore ignores asset filters for the version set"
+        rust && oracle_ok,
+        "an asset filter changes which assets flow, not which packages are in the graph"
     );
 }
 
@@ -976,6 +972,40 @@ fn uncommitted_package_is_invisible_to_both() {
 // filters, uncommitted entries) and asserts soundness on every one.
 // ============================================================================
 
+/// The asset filters a nuspec dependency carries in the wild (`dotnet pack`
+/// writes `exclude="Build,Analyzers"`) and at the extremes (`include="None"`,
+/// `exclude="All"`): `(include, exclude)`.
+const ASSET_FILTERS: &[(Option<&str>, Option<&str>)] = &[
+    (None, Some("Build,Analyzers")),
+    (Some("compile"), None),
+    (Some("None"), None),
+    (None, Some("All")),
+    (Some("Runtime,Compile"), Some("Compile")),
+    (Some("All"), None),
+];
+
+/// Give `dep` the asset filter `ASSET_FILTERS[index % len]`.
+fn set_filter(dep: &mut Dep, index: usize) {
+    let (include, exclude) = ASSET_FILTERS[index % ASSET_FILTERS.len()];
+    dep.include = include.map(str::to_owned);
+    dep.exclude = exclude.map(str::to_owned);
+}
+
+/// Give every seventh dependency in `packages` an asset filter, cycling through
+/// [`ASSET_FILTERS`]: deterministic in the graph, so it draws nothing from the
+/// generator's random stream.
+fn sprinkle_filters(packages: &mut [Pkg]) {
+    let deps = packages
+        .iter_mut()
+        .flat_map(|pkg| pkg.groups.iter_mut())
+        .flat_map(|group| group.deps.iter_mut());
+    for (index, dep) in deps.enumerate() {
+        if index % 7 == 3 {
+            set_filter(dep, index / 7);
+        }
+    }
+}
+
 /// A generated graph: the package set, the direct roots, and the project TFM.
 struct Generated {
     tfm: String,
@@ -1033,9 +1063,10 @@ fn generate(rng: &mut SplitMix64) -> Generated {
                     &maybe_recase(rng, &format!("P{target}")),
                     &gen_range(rng, target),
                 );
-                // Occasionally attach an asset filter (we must then decline).
+                // Occasionally attach an asset filter, whose value is picked
+                // without drawing from `rng` so the graphs stay as they were.
                 if rng.below(12) == 0 {
-                    dep.include = Some("compile".to_owned());
+                    set_filter(&mut dep, node * 7 + target);
                 }
                 deps.push(dep);
             }
@@ -1636,6 +1667,7 @@ fn generate_wide(rng: &mut SplitMix64) -> Generated {
         ));
     }
 
+    sprinkle_filters(&mut packages);
     Generated {
         tfm: "net8.0".to_owned(),
         packages,
