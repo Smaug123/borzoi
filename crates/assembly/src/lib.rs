@@ -35,6 +35,9 @@ pub mod modifier_metamorphic;
 pub mod op_name;
 pub mod pdb;
 mod reader;
+pub mod shape;
+#[cfg(feature = "test-support")]
+pub mod shape_metamorphic;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod view;
@@ -52,11 +55,11 @@ pub use model::{
     AbbreviationTarget, Access, AccessorSlot, ArgGroup, ArgGroups, AssemblyIdentity,
     AssemblyProjectionSkips, Augmentation, CaseFields, CompilerFeatureRequired, CompilerMessage,
     ConstantValue, CurriedArg, CurriedArgs, CustomAttr, CustomOperation, CustomOperationName,
-    DefaultMember, Entity, EntityKind, EqualityComparison, Event, Experimental, FSharpConstraints,
-    Field, FsharpOverlayKind, FsharpSourceRange, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature, ModuleValue,
-    NamedTypeHead, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive,
-    Property, ReadValFacts, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem,
+    DeclaredSignature, DefaultMember, Entity, EntityKind, EqualityComparison, Event, Experimental,
+    FSharpConstraints, Field, FsharpOverlayKind, FsharpSourceRange, ImplementedMember,
+    IndexParameter, InterfaceMemberImpl, Member, MemberMeasures, MethodLike, MethodSignature,
+    ModuleValue, NamedTypeHead, Nullability, NullableType, Obsolete, ParamDefault, Parameter,
+    Primitive, Property, ReadValFacts, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem,
     SplitParams, TypeForwarder, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCase,
     UnionCaseMaker, UnionCases, ValFacts, ValMeasures, Variance, Version,
 };

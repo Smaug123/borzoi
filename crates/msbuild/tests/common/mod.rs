@@ -136,6 +136,12 @@ fn ensure_oracle_built() -> &'static Path {
         .as_path()
 }
 
+/// The oracle's managed assembly, which also holds the `ConeLogger` that
+/// `dotnet msbuild -logger:` can load.
+pub fn oracle_assembly() -> PathBuf {
+    ensure_oracle_built().with_extension("dll")
+}
+
 /// Hash the inputs whose change should force a rebuild: the tool's sources
 /// and the flake lock (which pins the SDK and thus the MSBuild the oracle
 /// loads via MSBuildLocator).
@@ -197,7 +203,7 @@ fn write_marker_atomically(marker: &Path, contents: &str) {
 /// silently reopens the hole), so clear everything and re-add only the runtime
 /// essentials — none of which a generated condition ever references. Mirrors
 /// `scrub_msbuild_env` in `fsproj_msbuild_diff.rs`, and for the same reason.
-fn scrub_oracle_env(cmd: &mut Command) {
+pub fn scrub_oracle_env(cmd: &mut Command) {
     cmd.env_clear();
     for var in ["PATH", "HOME", "TMPDIR"] {
         if let Ok(value) = std::env::var(var) {
@@ -292,12 +298,36 @@ pub struct Oracle {
 
 impl Oracle {
     pub fn spawn() -> Oracle {
+        Oracle::spawn_with(Vec::new())
+    }
+
+    /// An oracle running the MSBuild of exactly the SDK installed at `sdk_dir`
+    /// (`<dotnet root>/sdk/<version>`), rather than the one `dotnet` resolves
+    /// from the working directory, with `working_dir` as its working directory
+    /// (which MSBuild reports as `MSBuildStartupDirectory`). The oracle refuses
+    /// to start if no SDK is installed there.
+    pub fn spawn_for_sdk(sdk_dir: &Path, working_dir: &Path) -> Oracle {
+        Oracle::spawn_in(
+            vec!["--msbuild-sdk".into(), sdk_dir.as_os_str().to_owned()],
+            Some(working_dir.to_path_buf()),
+        )
+    }
+
+    fn spawn_with(args: Vec<std::ffi::OsString>) -> Oracle {
+        Oracle::spawn_in(args, None)
+    }
+
+    fn spawn_in(args: Vec<std::ffi::OsString>, working_dir: Option<PathBuf>) -> Oracle {
         let bin = ensure_oracle_built().to_path_buf();
         // A factory rather than a bare program+args: the child's environment must
         // be scrubbed (see `scrub_oracle_env`), and every respawn must scrub it
         // the same way or the fresh child would see a different property set.
         let factory = move || {
             let mut cmd = Command::new(&bin);
+            cmd.args(&args);
+            if let Some(dir) = &working_dir {
+                cmd.current_dir(dir);
+            }
             scrub_oracle_env(&mut cmd);
             cmd
         };
@@ -326,6 +356,31 @@ impl Oracle {
             panic!("oracle errored on {line}: {err}");
         }
         value
+    }
+
+    /// Run `GenerateRestoreGraphFile` on `project` in the oracle's MSBuild under
+    /// exactly `globals`, and return the oracle's record of what executed (see
+    /// the `restoreCone` op in `tools/msbuild-condition-oracle/Program.fs`).
+    pub fn restore_cone(
+        &mut self,
+        project: &Path,
+        globals: &[(&str, std::ffi::OsString)],
+    ) -> serde_json::Value {
+        let globals: serde_json::Map<String, serde_json::Value> = globals
+            .iter()
+            .map(|(name, value)| {
+                let value = value.to_str().expect("UTF-8 global property value");
+                (
+                    (*name).to_owned(),
+                    serde_json::Value::String(value.to_owned()),
+                )
+            })
+            .collect();
+        self.request(&serde_json::json!({
+            "op": "restoreCone",
+            "project": project.to_str().expect("UTF-8 project path"),
+            "globals": globals,
+        }))
     }
 
     /// Ask the real MSBuild evaluator for the condition's truth against

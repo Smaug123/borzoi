@@ -116,6 +116,16 @@
 ///   {"op":"nuGetLogCodes"}
 ///     -> {"ok":true,"names":[..],"nugetCommands":identity}
 ///          (`NuGetLogCode`'s names, `Undefined` included)
+///   {"op":"restoreDgSpec","text":s}
+///     NuGet's restore over a dependency-graph spec, as `dotnet restore` runs
+///     it (`BuildTasksUtility.RestoreAsync`), short of committing: `text` is
+///     loaded with `DependencyGraphSpec.Load`, every project its `restore`
+///     list names is restored with `RestoreRunner.RunWithoutCommit`, against
+///     the sources and packages folder the spec itself names.
+///     -> {"ok":true,"results":[{"projectPath":s,"success":bool,"assets":s}, ..],
+///         "nugetCommands":identity}
+///          (`assets` is the assets file restore would write, as
+///          `LockFileFormat` renders it)
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -960,6 +970,66 @@ let private respondNuGetLogCodes (sdkDir: string) : string =
            names = Enum.GetNames(typeof<NuGetLogCode>)
            nugetCommands = nugetCommandsIdentity sdkDir |}
 
+/// NuGet's restore over the dependency-graph spec `text`, set up as the SDK's
+/// restore task sets it up (`BuildTasksUtility.RestoreAsync`): the spec's own
+/// request provider, with no settings of its own, so each project's settings
+/// come from the config files the spec names; the cross-platform machine-wide
+/// settings; a fresh source cache. Two departures, neither of which changes
+/// what a restore computes: the results are not committed, and the no-op check
+/// is off (it could only skip the computation this exists to observe).
+let private respondRestoreDgSpec (sdkDir: string) (root: JsonElement) : string =
+    let text = root.GetProperty("text").GetString()
+
+    let path =
+        Path.Combine(Path.GetTempPath(), "nuget-oracle-restore-dgspec-" + Guid.NewGuid().ToString("N") + ".json")
+
+    try
+        File.WriteAllText(path, text, Text.UTF8Encoding(false))
+        let dgSpec = NuGet.ProjectModel.DependencyGraphSpec.Load path
+
+        use cache = new SourceCacheContext()
+
+        let args =
+            RestoreArgs(
+                CacheContext = cache,
+                Log = NullLogger.Instance,
+                MachineWideSettings = XPlatMachineWideSetting(),
+                AllowNoOp = false,
+                HideWarningsAndErrors = false,
+                RestoreForceEvaluate = false
+            )
+
+        args.PreLoadedRequestProviders.Add(DependencyGraphSpecRequestProvider(RestoreCommandProvidersCache(), dgSpec))
+
+        let requests =
+            RestoreRunner.GetRequests args |> Async.AwaitTask |> Async.RunSynchronously
+
+        let results =
+            RestoreRunner.RunWithoutCommit(requests, args)
+            |> Async.AwaitTask
+            |> Async.RunSynchronously
+
+        let format = NuGet.ProjectModel.LockFileFormat()
+
+        let rendered =
+            results
+            |> Seq.map (fun pair ->
+                {| projectPath = pair.SummaryRequest.Request.Project.FilePath
+                   success = pair.Result.Success
+                   assets = format.Render pair.Result.LockFile |})
+            |> Seq.sortBy (fun r -> r.projectPath)
+            |> Seq.toArray
+
+        JsonSerializer.Serialize
+            {| ok = true
+               results = rendered
+               nugetCommands = nugetCommandsIdentity sdkDir |}
+    finally
+        try
+            File.Delete path
+        with _ ->
+            ()
+
 /// The request loop. Kept out of `main` so that compiling `main` never needs a
 /// NuGet type, which would load NuGet before the `Resolving` handler exists.
 [<MethodImpl(MethodImplOptions.NoInlining)>]
@@ -988,6 +1058,7 @@ let private serve (sdkDir: string) =
                     | "restore" -> respondRestore sdkDir root
                     | "normaliseDgSpec" -> respondNormaliseDgSpec sdkDir root
                     | "nuGetLogCodes" -> respondNuGetLogCodes sdkDir
+                    | "restoreDgSpec" -> respondRestoreDgSpec sdkDir root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}

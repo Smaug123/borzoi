@@ -15,8 +15,8 @@ use crate::fsharp_resource::{
 use crate::model::{
     Access, AccessorSlot, ArgGroups, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
     CompilerFeatureRequired, CompilerMessage, ConstantValue, CustomOperation, CustomOperationName,
-    DefaultMember, Entity, EntityKind, Event, Experimental, FSharpConstraints, Field,
-    FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
+    DeclaredSignature, DefaultMember, Entity, EntityKind, Event, Experimental, FSharpConstraints,
+    Field, FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
     MemberMeasures, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete,
     ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember,
     SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCaseMaker,
@@ -24,11 +24,12 @@ use crate::model::{
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
-    AssemblyRefId, CallConv, Constant, CustomMod, DeclSemantics, DecodedAttribute, EnumWidths,
-    Error as ReaderError, Event as RawEvent, Field as RawField, FixedArg, GenericParam, Image,
-    IntegralParam, IntegralWidth, MemberAccess, Method, MethodSig, ModifiedType, NamedKind, Param,
-    Primitive as SigPrimitive, Property as RawProperty, RawAttribute, RefScope, RetType, SigError,
-    TypeDef, TypeDefId, TypeName, TypeRefId, TypeScope, TypeSig, Variance as RawVariance, parse,
+    AssemblyRefId, CallConv, Constant, CustomMod, DeclSemantics, DecodedAttribute,
+    DecodedMethodSig, EnumWidths, Error as ReaderError, Event as RawEvent, Field as RawField,
+    FixedArg, GenericParam, Image, IntegralParam, IntegralWidth, MemberAccess, Method, MethodSig,
+    ModifiedType, NamedKind, Param, Primitive as SigPrimitive, Property as RawProperty,
+    RawAttribute, RefScope, RetType, SigError, TypeDef, TypeDefId, TypeName, TypeRefId, TypeScope,
+    TypeSig, Variance as RawVariance, parse,
 };
 use crate::view::{EcmaView, FSharpResource};
 use std::collections::HashSet;
@@ -890,6 +891,11 @@ impl Ecma335Assembly {
             is_structural_equality,
             is_structural_comparison,
             is_allow_null_literal: self.detect_allow_null_literal(&td.attributes)?,
+            is_no_pia_local: self.has_attribute(
+                &td.attributes,
+                "System.Runtime.InteropServices",
+                "TypeIdentifierAttribute",
+            )?,
             obsolete: self.detect_obsolete(&td.attributes)?,
             compiler_message: self.detect_compiler_message(&td.attributes)?,
             experimental: self.detect_experimental(&td.attributes)?,
@@ -1600,7 +1606,7 @@ impl Ecma335Assembly {
                 NullableType {
                     ty: TypeRef::Array {
                         element: Box::new(element),
-                        rank: array_rank(*rank)?,
+                        rank: array_rank(*rank, sizes, lower_bounds)?,
                         sizes: sizes.clone(),
                         lower_bounds: lower_bounds.clone(),
                     },
@@ -1862,7 +1868,7 @@ impl Ecma335Assembly {
                 lower_bounds,
             } => TypeRef::Array {
                 element: Box::new(NullableType::oblivious(self.project_type_ref(element)?)),
-                rank: array_rank(*rank)?,
+                rank: array_rank(*rank, sizes, lower_bounds)?,
                 sizes: sizes.clone(),
                 lower_bounds: lower_bounds.clone(),
             },
@@ -2772,6 +2778,7 @@ impl Ecma335Assembly {
                 is_abstract: a.is_abstract,
                 is_final: a.is_final,
                 has_other_method_impl: self.has_other_method_impl(a),
+                implements: self.project_implements(a),
             })
             .collect()
     }
@@ -2827,13 +2834,61 @@ impl Ecma335Assembly {
                     DeclSemantics::OrdinaryMethod => ImplementedMember::Method(ei.member.clone()),
                     DeclSemantics::Unresolved => ImplementedMember::Unresolved(ei.member.clone()),
                 };
+                let declaration = ei
+                    .declaration
+                    .as_ref()
+                    .ok()
+                    .and_then(|sig| self.project_declared_signature(sig));
                 ei.interface
                     .as_ref()
                     .ok()
                     .and_then(|sig| self.project_type_ref(sig).ok())
-                    .map(|interface| InterfaceMemberImpl { interface, member })
+                    .map(|interface| InterfaceMemberImpl {
+                        interface,
+                        member,
+                        declarations: declaration.map(|d| vec![d]),
+                    })
             })
             .collect()
+    }
+
+    /// A `MethodImpl` declaration's signature ([`DeclaredSignature`]); `None`
+    /// for one carrying any custom modifier, a `vararg` or unsupported
+    /// convention, or a type outside the projectable subset.
+    fn project_declared_signature(&self, sig: &DecodedMethodSig) -> Option<DeclaredSignature> {
+        let generic_arity = match sig.calling_convention {
+            CallConv::Default => 0,
+            CallConv::Generic { count } => usize::try_from(count).ok()?,
+            CallConv::VarArg => return None,
+        };
+        let return_type = match &sig.return_type {
+            RetType::Void(mods) if mods.is_empty() => TypeRef::Primitive(Primitive::Void),
+            RetType::Void(_) => return None,
+            RetType::Type(t) if !carries_modifier(t) => self.project_type_ref(t).ok()?,
+            RetType::Type(_) => return None,
+        };
+        let parameters = sig
+            .param_types
+            .iter()
+            .map(|t| {
+                if carries_modifier(t) {
+                    return None;
+                }
+                match &t.ty {
+                    TypeSig::ByRef(inner) => Some(TypeRef::ByRef {
+                        inner: Box::new(self.project_type_ref(inner).ok()?),
+                        readonly: false,
+                    }),
+                    _ => self.project_type_ref(t).ok(),
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(DeclaredSignature {
+            is_static: !sig.has_this,
+            generic_arity,
+            parameters,
+            return_type,
+        })
     }
 
     /// Project one method parameter. A `ref T` parameter is recorded as
@@ -3139,15 +3194,62 @@ impl Ecma335Assembly {
             (None, None) => &[],
         };
         let parameters = index_params_to_index_params(index_params, &p.name)?;
-
-        // No `PropertySig` `HASTHIS` is retained; the accessor's static-ness is
-        // the authoritative (and, for valid metadata, equivalent) signal.
+        // The accessor's static-ness is the authoritative signal; the
+        // `PropertySig`'s `HASTHIS` is only checked against it below.
         let is_static = match (&proj_getter, &proj_setter) {
             (Some(g), _) => g.is_static,
             (None, Some(s)) => s.is_static,
             // Unreachable: the no-accessor case already returned above.
             (None, None) => false,
         };
+        // A metadata consumer compares the property's own signature, which
+        // is the one the accessors give only if each accessor's index
+        // parameters have the same projected types (a modopt and nullability
+        // aside) and byref-ness, the getter returns the property's type, and
+        // the setter takes it by value last and returns nothing. An
+        // unreadable `PropertySig` counts as agreeing, and its modifiers
+        // decline comparisons through `drops_optional_modifier`.
+        let index_agrees = |index_params: &[Parameter]| match &p.index_parameters {
+            Ok(declared) => {
+                // F# compiles some instance properties (`FSharpOption.IsNone`)
+                // with static accessors taking the instance first: an
+                // instance `PropertySig` over a static accessor. The
+                // projection reads the accessor, a metadata consumer the
+                // property, so that disagrees too.
+                let accessor_index = match (p.has_this, is_static) {
+                    (Some(true), false) | (Some(false), true) => Some(index_params),
+                    (Some(true), true) | (Some(false), false) | (None, _) => None,
+                };
+                accessor_index.is_some_and(|index_params| {
+                    declared.len() == index_params.len()
+                        && declared.iter().zip(index_params).all(|(d, a)| {
+                            let (d_byref, d_ty) = match &d.ty {
+                                TypeSig::ByRef(inner) => (true, self.project_type_ref(inner).ok()),
+                                _ => (false, self.project_type_ref(d).ok()),
+                            };
+                            d_byref == a.is_byref
+                                && d_ty.map(|t| nullability_erased(&t))
+                                    == Some(nullability_erased(&a.ty))
+                        })
+                })
+            }
+            Err(_) => true,
+        };
+        let signature_agrees = proj_getter.as_ref().is_none_or(|g| {
+            index_agrees(&g.signature.parameters)
+                // A `ref` property's type is the byref the getter returns.
+                && nullability_erased(&g.signature.return_type) == nullability_erased(&ty)
+        }) && proj_setter.as_ref().is_none_or(|s| {
+            matches!(s.signature.return_type, TypeRef::Primitive(Primitive::Void))
+                && s.signature
+                    .parameters
+                    .split_last()
+                    .is_some_and(|(value, index)| {
+                        !value.is_byref
+                            && nullability_erased(&value.ty) == nullability_erased(&ty)
+                            && index_agrees(index)
+                    })
+        });
 
         // An explicit interface property carries its `MethodImpl` on its
         // accessors (which are excluded from the projected method list), so
@@ -3197,6 +3299,7 @@ impl Ecma335Assembly {
             unclassified_impls,
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            signature_disagrees_with_accessors: !signature_agrees,
             accessor_slots: self.accessor_slots(&unique_accessors),
             // Index parameters that cannot be read may carry one too.
             drops_optional_modifier: p.signature.as_ref().is_ok_and(carries_optional_modifier)
@@ -3257,16 +3360,28 @@ impl Ecma335Assembly {
         };
         self.reject_generic_accessor("event", &e.name, "add", add)?;
         self.reject_generic_accessor("event", &e.name, "remove", remove)?;
-        self.project_method(add, type_context, false)?;
-        self.project_method(remove, type_context, false)?;
-        let fire = match e.raise {
+        // Modifiers aside, which `drops_optional_modifier` records.
+        let delegate = nullability_erased(&walked.ty);
+        let takes_the_delegate = |accessor: &MethodLike| {
+            matches!(
+                accessor.signature.return_type,
+                TypeRef::Primitive(Primitive::Void)
+            ) && matches!(
+                accessor.signature.parameters.as_slice(),
+                [p] if !p.is_byref && nullability_erased(&p.ty) == delegate
+            )
+        };
+        let proj_add = self.project_method(add, type_context, false)?;
+        let proj_remove = self.project_method(remove, type_context, false)?;
+        let signature_agrees = takes_the_delegate(&proj_add) && takes_the_delegate(&proj_remove);
+        let (fire, fire_drops_modifier) = match e.raise {
             Some(raise) => {
                 let fire = &td.methods[raise.0 as usize];
                 self.reject_generic_accessor("event", &e.name, "raise", fire)?;
-                self.project_method(fire, type_context, false)?;
-                Some(fire)
+                let proj_fire = self.project_method(fire, type_context, false)?;
+                (Some(fire), proj_fire.drops_optional_modifier)
             }
-            None => None,
+            None => (None, false),
         };
 
         if add.is_static != remove.is_static {
@@ -3307,6 +3422,11 @@ impl Ecma335Assembly {
             delegate_type: walked.ty,
             is_static: add.is_static,
             has_fire: e.raise.is_some(),
+            signature_disagrees_with_accessors: !signature_agrees,
+            drops_optional_modifier: carries_optional_modifier(sig)
+                || proj_add.drops_optional_modifier
+                || proj_remove.drops_optional_modifier
+                || fire_drops_modifier,
             nullability: walked.nullability,
             custom_attrs: Vec::new(),
             implements,
@@ -4058,13 +4178,36 @@ fn distinct_accessors<const N: usize>(slots: [Option<&Method>; N]) -> Vec<&Metho
     out
 }
 
+/// The accessors' implemented members, one entry per interface member: the
+/// rows of several accessors implementing one member merge, their
+/// declarations collected (none if any is unknown). An unresolved row stays
+/// a row of its own.
 fn union_accessor_impls(
     impls: impl Iterator<Item = InterfaceMemberImpl>,
 ) -> Vec<InterfaceMemberImpl> {
     let mut out: Vec<InterfaceMemberImpl> = Vec::new();
     for ei in impls {
-        if matches!(ei.member, ImplementedMember::Unresolved(_)) || !out.contains(&ei) {
-            out.push(ei);
+        let same = (!matches!(ei.member, ImplementedMember::Unresolved(_)))
+            .then(|| {
+                out.iter_mut()
+                    .find(|o| o.interface == ei.interface && o.member == ei.member)
+            })
+            .flatten();
+        match same {
+            Some(o) => {
+                o.declarations = match (o.declarations.take(), ei.declarations) {
+                    (Some(mut a), Some(b)) => {
+                        for d in b {
+                            if !a.contains(&d) {
+                                a.push(d);
+                            }
+                        }
+                        Some(a)
+                    }
+                    _ => None,
+                };
+            }
+            None => out.push(ei),
         }
     }
     out
@@ -4495,7 +4638,19 @@ fn nested_drop_name(top_namespace: &str, name: &TypeName) -> String {
 /// Narrow a decoded `ELEMENT_TYPE_ARRAY` rank (a compressed `u32`) to the
 /// model's `u8`. A rank beyond 255 is not real metadata; refuse rather than
 /// truncate.
-fn array_rank(rank: u32) -> Result<u8, ImportError> {
+/// The rank of an `ELEMENT_TYPE_ARRAY` shape, for [`TypeRef::Array`]. A
+/// rank-1 shape with no bounds (`T[*]`) is not the vector `T[]` to any
+/// metadata consumer, but `TypeRef::Array` would spell the two alike: it is
+/// refused rather than conflated. Every projection path decodes an array
+/// shape through here.
+fn array_rank(rank: u32, sizes: &[u32], lower_bounds: &[i32]) -> Result<u8, ImportError> {
+    if rank == 1 && sizes.is_empty() && lower_bounds.is_empty() {
+        return Err(ImportError::UnsupportedSignature {
+            detail: "rank-1 array with no bounds (`T[*]`), which the model \
+                     would spell as the vector `T[]`"
+                .into(),
+        });
+    }
     u8::try_from(rank).map_err(|_| ImportError::UnsupportedSignature {
         detail: format!("array rank {rank} exceeds 255"),
     })
@@ -4594,6 +4749,64 @@ fn metadata_arity_suffix(name: &str) -> Option<usize> {
 
 /// Project the reader's raw assembly identity onto the `Entity`-level model,
 /// deriving the `PublicKeyToken` (the model carries the token, not the key).
+/// `ty` with every nested nullability annotation oblivious: the accessor's
+/// parameters are read through the nullable-annotation walk, a
+/// `PropertySig`'s are not, and the comparison between them is of types.
+fn nullability_erased(ty: &TypeRef) -> TypeRef {
+    let erase = |n: &NullableType| NullableType::oblivious(nullability_erased(&n.ty));
+    match ty {
+        TypeRef::Named {
+            assembly,
+            namespace,
+            name,
+            type_args,
+            segment_arities,
+        } => TypeRef::Named {
+            assembly: assembly.clone(),
+            namespace: namespace.clone(),
+            name: name.clone(),
+            type_args: type_args.iter().map(erase).collect(),
+            segment_arities: segment_arities.clone(),
+        },
+        TypeRef::Array {
+            element,
+            rank,
+            sizes,
+            lower_bounds,
+        } => TypeRef::Array {
+            element: Box::new(erase(element)),
+            rank: *rank,
+            sizes: sizes.clone(),
+            lower_bounds: lower_bounds.clone(),
+        },
+        TypeRef::Ptr(inner) => {
+            TypeRef::Ptr(inner.as_ref().map(|i| Box::new(nullability_erased(i))))
+        }
+        TypeRef::ByRef { inner, readonly } => TypeRef::ByRef {
+            inner: Box::new(nullability_erased(inner)),
+            readonly: *readonly,
+        },
+        TypeRef::Primitive(_) | TypeRef::Var { .. } => ty.clone(),
+    }
+}
+
+/// Whether a signature position carries a custom modifier, required or
+/// optional, at any depth.
+fn carries_modifier(t: &ModifiedType) -> bool {
+    !t.mods.is_empty()
+        || match &t.ty {
+            TypeSig::Generic { args, .. } => args.iter().any(carries_modifier),
+            TypeSig::SzArray(e) | TypeSig::ByRef(e) | TypeSig::Ptr(Some(e)) => carries_modifier(e),
+            TypeSig::Array { element, .. } => carries_modifier(element),
+            TypeSig::Primitive(_)
+            | TypeSig::Named { .. }
+            | TypeSig::TypeVar(_)
+            | TypeSig::MethodVar(_)
+            | TypeSig::Ptr(None)
+            | TypeSig::TypedByRef => false,
+        }
+}
+
 /// Whether a signature position carries an optional custom modifier, at any
 /// depth — what the projector drops (II.7.1.1).
 fn carries_optional_modifier(t: &ModifiedType) -> bool {
@@ -5616,6 +5829,7 @@ mod tests {
                 name: "v".to_string(),
                 signature: Ok(ModifiedType::plain(TypeSig::Primitive(RawPrimitive::Int32))),
                 index_parameters: Ok(vec![]),
+                has_this: Some(true),
                 getter: Some(MethodId(0)),
                 setter: Some(MethodId(1)),
                 other_accessors: vec![],

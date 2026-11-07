@@ -1,7 +1,7 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1 and 2 have landed, and so has the NuGet-identity half
-> of stage 3 (the oracle runs the SDK's own NuGet). Supersedes slice 8 of
+> **Status:** stages 1–3 and 8 have landed. Stage 8 chose **A₁** (see its
+> section for the numbers and the conditions). Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -9,8 +9,7 @@
 > moves more of restore into its own task code. Two replacements are kept open
 > for the half that executes code: a Rust model of the restore targets and
 > tasks, or a deterministic in-house .NET runtime that runs the real task DLLs.
-> Nothing here commits to either one before stage 8 has measured what each
-> would have to cover.
+> Stage 8 measured what each would have to cover and chose A₁.
 
 ## Why the boundary sits here
 
@@ -101,8 +100,8 @@ consumers are functions that take it. There is no producer trait:
 | | producer / consumer | role |
 |---|---|---|
 | A₀ | `dotnet msbuild -t:GenerateRestoreGraphFile` (spawn) | oracle; also what `restore.rs` runs internally |
-| A₁ | `borzoi-msbuild` evaluation + a Rust model of the restore-target cone | candidate, decided at stage 8 |
-| A₂ | an in-house deterministic .NET runtime running real `Microsoft.Build` + task DLLs | candidate, decided at stage 8 |
+| A₁ | `borzoi-msbuild` evaluation + a Rust model of the restore-target cone | chosen at stage 8 |
+| A₂ | an in-house deterministic .NET runtime running real `Microsoft.Build` + task DLLs | not chosen at stage 8; see there for what would revisit it |
 | B₀ | `RestoreRunner.RunWithoutCommit` over the dgspec | oracle |
 | B₁ | `borzoi-nuget` | subject |
 
@@ -143,8 +142,8 @@ must equal A₀'s, and its closure must equal `restore.rs`'s.
 If A₂ arrives, B₁ is no longer needed for exactness. What it keeps is speed and
 declines that say why. So stages 1–3 and 8 pay off under every route, while
 stages 4–7 are what A₂ would make redundant. That is why stage 4 is kept to
-plumbing plus a census, and stages 5–7 wait on stage 8's census rather than
-running ahead.
+plumbing plus a census. Stages 5–7 waited on stage 8, which chose A₁, so B₁
+stays the half-B consumer and they go ahead.
 
 ### Per-SDK drift
 
@@ -153,7 +152,13 @@ SDK target files that can change in any release, and B₁ models NuGet behaviour
 that `NuGet.Commands` can change. Each therefore keys its trust on the identity
 of the code it models:
 
-- **A₁:** the content hash of each SDK file in the restore cone.
+- **A₁:** the content hash of each SDK file defining a target in the restore
+  cone, *and* the identity of each task assembly the cone runs: its
+  informational version, which names the commit the SDK was built from. The
+  assembly's bytes and module MVID differ between the macOS and Linux builds of
+  one SDK, so neither is a portable key. Stage 8 found the spec moving between SDKs in a
+  field that task code writes and no executed target changed to produce, so
+  target files alone are not the code A₁ models.
 - **B₁:** the identity of the NuGet that would perform the restore. That is the
   informational version (or content hash) of `NuGet.Commands.dll` in the SDK
   that `dotnet` resolves for the project, honouring its `global.json`. B₁ takes
@@ -297,24 +302,51 @@ The routes check turned up two findings:
   across the LSP (membership, buffer overlays, the paths in responses) and
   would change which `Directory.Build.props` a symlink-opened project reads.
 
-### Stage 3: the decomposition is lossless
+### Stage 3: the decomposition is lossless — landed
 
-**Dependencies:** stage 2.
-**Implements:** *Why the boundary sits here* (A₀ then B₀ ≡ `restore.rs`).
-- New `tools/nuget-oracle` op `restoreDgSpec`: run `RunWithoutCommit` over a
-  supplied dgspec against the real packages folder, returning per (project, TFM)
-  the package set and compile assets, plus the identity of the `NuGet.Commands`
-  that actually ran.
-- The op runs the NuGet of the SDK being calibrated, loaded from that SDK's
-  directory, as the existing `restore` op already does (see *Per-SDK drift*).
+`tools/nuget-oracle`'s `restoreDgSpec` op runs NuGet's restore over a supplied
+dgspec as `dotnet restore` runs it (`BuildTasksUtility.RestoreAsync`: the
+spec's own request provider, settings from the config files the spec names,
+the cross-platform machine-wide settings), stopping short of the commit
+(`RestoreRunner.RunWithoutCommit`). It returns each restored project's assets
+file as `LockFileFormat` renders it, plus the identity of the
+`NuGet.Commands` that ran. The oracle runs the NuGet of the SDK the muxer
+selects from the project's directory, which is the SDK `restore.rs` restores
+with, and `tests/all/restore_graph.rs` checks that the identity it reports is
+that SDK's file.
 
-**Correctness oracle:**
-- Identity: the op's reported `NuGet.Commands` identity equals the SDK's, for
-  every SDK the corpus runs on.
-- On every corpus project, B₀ applied to A₀'s dgspec matches `restore.rs`'s
-  scratch assets file per TFM, in both package set and compile assets. A
-  mismatch here means the split itself drops information, and nothing later in
-  the plan may proceed until it is explained.
+The gate compares the **whole assets file**, not only the package set and
+compile assets the plan first named: B₀ run over A₀'s spec must produce
+exactly the file `restore.rs`'s restore wrote, up to the scratch directories
+each route was written under. It runs on every fixture that commits (a
+`net10.0` project with its SDK pruning list, a project reference, a project
+conditioned on restore's injected global) and on every corpus project in
+`restore_graph::pinned_projects`, which pins each target's library, package
+and compile-asset counts, whether each restore succeeded, and the graded
+`NuGet.Commands` identity. A fixture that drops `FSharp.Core` from the spec
+before handing it to NuGet must fail the comparison, so it cannot pass by
+comparing nothing.
+
+Every corpus project and every fixture decomposes losslessly. The run turned
+up two things:
+- **Log order is not content.** The one difference was the order of the
+  assets file's `logs`. A missing package's message is built per element of
+  the target graph's unresolved set (`UnresolvedMessages.LogAsync`), which
+  iterates in hash order, and .NET randomises string hashes per process. The
+  comparison sorts `logs`.
+- **Stage 2's corpus restores were all failing.** The gate restored corpus
+  projects against the devshell's NuGet store, which holds only what Borzoi's
+  own builds need, so every one failed resolution with `NU1101`. Stage 2's
+  comparison could not see it, because the spec is computed before resolution.
+  The gate now restores against the packages folder the corpus's own restores
+  filled (`BORZOI_PROJECT_PACKAGES`), and all six succeed.
+
+What this does not cover:
+- **One SDK.** Every corpus project resolves SDK 10.0.401, whose
+  `NuGet.Commands` is `7.9.0-rc.42413+e34a38d2…`. The identity half holds for
+  each SDK the corpus runs on, which is one.
+- **No corpus project has a project reference or prunes** (they target
+  `net5.0`, `net8.0` and `netstandard2.0`). Only the fixtures cover those.
 
 ### Stage 4: B₁ consumes the typed dgspec
 
@@ -341,8 +373,8 @@ The routes check turned up two findings:
 ### Stages 5–7: close the declines, ordered by stage 4's census
 
 **Dependencies:** stage 4. They are mutually independent and can run in
-parallel. **Gated on stage 8's decision** unless stage 4's census shows one of
-them is cheap enough to be worth having regardless.
+parallel. Stage 8 chose A₁, under which B₁ is the half-B consumer, so they are
+not gated on it.
 
 - **5 — pruning.** Oracle: the generator emits prune lists over the synthetic
   universe, including prune ranges that cover a *direct* reference.
@@ -356,28 +388,199 @@ them is cheap enough to be worth having regardless.
   no warning, which needs a per-row warning verdict from B₀. The oracle for
   each is generator-extended, graded the same way.
 
-### Stage 8: restore-cone census (measurement; decides A₁ vs A₂)
+### Stage 8: restore-cone census — landed; chose A₁
 
-**Dependencies:** stage 2.
-- New `tools/msbuild-condition-oracle` op `restoreCone`: run
-  `GenerateRestoreGraphFile` in-process with a logger. For each target and task
-  that executes, record its name, the content hash of the file defining it,
-  and the task assembly.
+`tools/msbuild-condition-oracle`'s `restoreCone` op runs
+`GenerateRestoreGraphFile` in-process through `BuildManager` with a logger
+attached. The global properties are `restore.rs`'s own for
+`Verb::GenerateRestoreGraph`, `NuGetInteractive=false` included. The census
+takes them from `borzoi_oracle_harness::restore_globals`.
+`borzoi`'s `restore_cone_globals.rs` reads back the command line that
+`restore_graph` runs, through a stand-in `dotnet`, and holds that list to it
+argument for argument.
 
-**Correctness oracle:** pinned per-project census. It must also show the cone
-per SDK version for the SDKs the corpus runs on. The output is a written
-decision recorded in this document. Either:
-- **A₁:** the cone is the same small, SDK-only set across the corpus, user
-  targets hooking in are rare, and the task leaves are enumerable. Each task
-  then becomes a Rust function differentially tested against the real task, and
-  unknown hashes decline. Or:
-- **A₂:** the leaf set is large, or moves across SDK releases, so modelling it
-  costs more than the runtime.
+For each target and task that starts, the op records:
+- its name;
+- the SHA-256 of the file defining each target;
+- each task assembly's name, version and informational version.
+
+The target files' hashes agree between the macOS and Linux builds of each
+SDK. The task assemblies' bytes and module MVIDs do not: every one of the
+eight checked differs, because each platform's build compiles the IL
+separately and precompiles it natively. The informational version, which names
+the commit the SDK was built from, agrees for all 46 SDK assemblies the
+manifest names. So that is the identity the manifest pins. The op also records every SDK assembly loaded while the builds ran, which is
+the code the tasks reach.
+
+`borzoi-msbuild`'s `restore_cone_census.rs` drives the op. Two checks make it
+a census of A₀ rather than of something nearby:
+
+- **Same computation.** Under the SDK that `dotnet` resolves for the project,
+  `dotnet msbuild -t:GenerateRestoreGraphFile` runs under the same globals with
+  the oracle's logger attached. It must execute exactly the targets and tasks
+  the in-process build does, and write the same spec up to the scratch
+  directory. The cone is compared as well as the spec, because a target that
+  runs on one side only can leave the spec unchanged. One such context
+  difference is the startup directory: MSBuild exposes it to the build as
+  `MSBuildStartupDirectory`, so each oracle runs from its project's directory,
+  as `restore.rs` runs `dotnet`. The hooked fixture's target runs only from
+  there. The spec comparison found the SDK directory's spelling to be part of the
+  computation. The devshell's `DOTNET_ROOT` reaches each SDK through a link,
+  and MSBuild records paths into its own directory (the runtime identifier
+  graph's, the SDK's `library-packs` sources). So the oracle is pinned to the
+  SDK's real path, which is the one the muxer runs it from.
+- **Same SDK.** The oracle is pinned to one installed SDK (`--msbuild-sdk`), and
+  the `NETCoreSdkVersion` its evaluation imported must be that SDK's version.
+
+The census runs under every SDK the devshell installs, and labels each cone
+`resolved` (the SDK `dotnet` picks for the project) or `forced`.
+`restore_cone_projects.txt` pins each corpus project's cone; CI's
+`corpus-diff` job runs it as the `restore-cone` step. `restore_cone_fixtures.txt`
+does the same for generated projects that reach what the corpus does not:
+- a `net10.0` project;
+- a `net10.0;net8.0` project with central package management, transitive
+  pinning, `TreatWarningsAsErrors` and a project reference to a
+  `net8.0;netstandard2.0` library;
+- a project with a user target hooked `BeforeTargets` a restore target.
+
+The fixtures run in the ordinary `cargo test`. The census must see the hooked
+target as a target from the project's own file; that is the positive control
+for "no user targets" meaning something.
+
+The census does not cover the following:
+- **One SDK for the corpus.** No corpus project has a `global.json`, so every
+  one resolves the devshell's 10.0.401. The devshell also installs 10.0.112,
+  and the census runs every project under it, labelled `forced`. That
+  measures how the cone moves across a feature band. It does not measure what
+  any corpus project runs. No 10.0.3xx, 9.x or 8.x SDK was measured.
+- **The environment.** The oracle child runs under the scrubbed environment
+  every oracle here uses, not the LSP's full process environment, so the cone
+  does not move with the host. A target conditioned on an environment variable
+  the scrub removes could run under `restore.rs` and not here.
+- **The corpus is narrow.** It has six F# projects targeting `net8.0` and
+  `netstandard2.0`. None has a `NuGet.Config`, a workload, or a
+  `Directory.Build.targets`.
+
+#### The measured cone (SDK 10.0.401)
+
+| | corpus (6 projects) | fixtures (3) |
+|---|---|---|
+| targets per project | 41–44 | 44–47 |
+| distinct targets | 50 | 51 |
+| files defining them | 9: `NuGet.targets` and 8 `Microsoft.NET.Sdk` targets files | the same 9, plus the hooked project |
+| targets outside the SDK | 0 | 1, the planted hook |
+| tasks per project | 20–24 | 24–27 |
+| distinct tasks | 26 | 27 |
+| task assemblies | 4, all in the SDK | 4, all in the SDK |
+| SDK assemblies loaded during the builds | 19 | 19 |
+
+The 27 tasks, by assembly:
+- **MSBuild (4):** `MSBuild`, `Message`, `RemoveDuplicates`,
+  `ConvertToAbsolutePath`.
+- **`NuGet.Build.Tasks` (16):** `CheckForDuplicateNuGetItemsTask`,
+  `GetCentralPackageVersionsTask` (central package management only),
+  `GetGlobalPropertyValueTask`, `GetProjectTargetFrameworksTask`,
+  `GetRestoreDotnetCliToolsTask`, `GetRestoreFrameworkReferencesTask`,
+  `GetRestoreNuGetAuditSuppressionsTask`, `GetRestorePackageDownloadsTask`,
+  `GetRestorePackageReferencesTask`, `GetRestoreProjectReferencesTask`,
+  `GetRestoreProjectStyleTask`, `GetRestorePrunePackageReferencesTask`,
+  `GetRestoreSettingsTask`, `NuGetMessageTask`, `WarnForInvalidProjectsTask`,
+  `WriteRestoreGraphTask`.
+- **`Microsoft.NET.Build.Tasks` (7):** `ApplyImplicitVersions`,
+  `CheckForDuplicateFrameworkReferences`,
+  `CheckForImplicitPackageReferenceOverrides`,
+  `CheckIfPackageReferenceShouldBeFrameworkReference`, `GetPackagesToPrune`,
+  `ProcessFrameworkReferences`, `ResolveAppHosts`.
+
+The tasks are thin over libraries. The 19 SDK assemblies the builds load
+include nine `NuGet.*` assemblies: `NuGet.Build.Tasks`, `NuGet.Commands`,
+`NuGet.Common`, `NuGet.Configuration`, `NuGet.Frameworks`,
+`NuGet.LibraryModel`, `NuGet.Packaging`, `NuGet.ProjectModel` and
+`NuGet.Versioning`. They also include `Newtonsoft.Json`, the SDK resolvers
+that evaluation runs (`Microsoft.Build.NuGetSdkResolver` and the workload
+resolver and manifest reader), and two copies of
+`Microsoft.Deployment.DotNet.Releases`.
+
+#### Across SDKs (10.0.112 → 10.0.401)
+
+- **Targets.** The target names and defining files are identical: 50 in the
+  corpus and 51 in the fixtures, under both SDKs. Three of the nine files'
+  hashes move: `NuGet.targets`, `Microsoft.NET.Publish.targets` and
+  `Microsoft.NET.RuntimeIdentifierInference.targets`. But only 1 of the 50
+  executed target bodies changed. `_GenerateRestoreProjectSpec` gains
+  `NETCoreSdkVersion` and `RestoreDoNotWriteDependencyGraphSpec` metadata on
+  the item it hands to the tasks.
+- **Tasks.** The task names are identical (26 and 27). All four task
+  assemblies move:
+  - MSBuild 18.0.11 → 18.9.11;
+  - NuGet 7.0.3 → 7.9.0;
+  - `Microsoft.NET.Build.Tasks` 10.0.112 → 10.0.401.
+- **The spec.** For every one of the nine subjects, the spec moves, in four to
+  six schema places. The census pins them as `spec drift` lines:
+  - `frameworks.*.framework` and `restore.frameworks.*.framework` are new,
+    written by NuGet 7.9's task code. No executed target changed to produce
+    them.
+  - `restore.SdkAnalysisLevel` moves from 10.0.100 to 10.0.400.
+  - `runtimeIdentifierGraphPath` and `restore.sources` (the SDK's
+    `library-packs` folders) are paths into the SDK.
+  - The implicit `FSharp.Core` version moves on the four subjects that take
+    it.
+
+#### Decision: A₁
+
+The data meets the three conditions this stage set for A₁:
+
+- **The cone is the same small, SDK-only set across the corpus.** The union is
+  50 targets, all in SDK files, and every project runs a 41–44-target subset
+  of it.
+- **User targets hooking in are rare.** None of the six corpus projects has
+  one. Under `restore.rs`'s configuration a package cannot add one:
+  `MSBuildProjectExtensionsPath` is the empty scratch directory, so no
+  package's `build/` targets are imported. A hook can only come from the
+  project's own tree or from MSBuild's user-extension import directories. The
+  fixture shows the census sees one when it is there.
+- **The task leaves can be enumerated.** There are 27 by name, and 23
+  excluding MSBuild's built-ins. The set is the same under both SDKs.
+
+A₂'s conditions do not hold. The leaf *set* is neither large nor moving.
+What moves across releases is the leaves' *code*, and that sets the terms A₁
+is chosen on:
+
+- **A₁ keys trust on the task assemblies too** (see *Per-SDK drift*). The new
+  `framework` field is output moved by task code alone. A key on target files
+  would have missed that if a release changed only the DLL.
+- **A₁ declines on every new SDK until it is verified.** Each SDK release moved
+  all four task assembly identities, so a model keyed on them declines on each
+  new SDK. It stays declined until the per-task differentials (each Rust task
+  against the real task, the plan's A₁ oracle) have run on that SDK in CI. As
+  for B₁ in stage 4, the verified list is derived from those runs.
+- **Modelling a leaf means modelling the library slice behind it.** That
+  includes `NuGet.Commands`' item-to-`PackageSpec` construction
+  (`WriteRestoreGraphTask`) and `NuGet.Configuration`'s settings resolution
+  (`GetRestoreSettingsTask`). It also includes the SDK's
+  `ProcessFrameworkReferences` and `GetPackagesToPrune`. Part of this overlaps
+  with what `borzoi-nuget` already models.
+- **A₁ also needs target execution.** That means ordering
+  (`DependsOnTargets`, `BeforeTargets`, `AfterTargets`), intrinsic
+  `PropertyGroup` and `ItemGroup` inside targets, and the `MSBuild` task's
+  calls into inner per-framework builds and referenced projects.
+  `borzoi-msbuild` evaluates projects but does not execute targets.
+
+What would revisit this in favour of A₂:
+- **The task set moves.** A census over more SDK releases shows a release
+  adding a task to the cone, or most servicing releases moving a per-task
+  differential's verdict. That needs more SDKs in the devshell; this census
+  runs every one installed.
+- **The cone widens.** A wider corpus shows user targets or tasks outside the
+  27. Projects with a `NuGet.Config`, a workload, a `Directory.Build.targets`
+  hook, or a target framework this corpus lacks are the likely sources.
+- **A₁ costs more than A₂.** The target-execution engine plus the library
+  slices above turn out to cost more than the runtime.
 
 ### Stage 9: spawn-free runtime path
 
-**Dependencies:** stage 4 (and whichever of 5–7 the census needs), plus either
-A₁ landed or A₂ available.
+**Dependencies:** stage 4 (and whichever of 5–7 the census needs), plus A₁
+landed (stage 8's choice).
 **Implements:** *Runtime composition.*
 
 **Correctness oracle:** whole-project gate. For every corpus project where the

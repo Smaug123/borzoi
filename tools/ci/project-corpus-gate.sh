@@ -39,7 +39,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$repo"
 
-steps=(resolution corpus-diff-tests assembly-projection restore-graph xml-doc-source)
+steps=(resolution corpus-diff-tests assembly-projection restore-graph restore-cone xml-doc-source)
 
 # Each step is a single command, so its status is the step's.
 run_step() { # name
@@ -104,13 +104,27 @@ run_step() { # name
         -- --ignored --nocapture
       ;;
     restore-graph)
-      # The half-A oracle of docs/nuget-dgspec-boundary-plan.md over the same
-      # restored projects: the dependency-graph spec generated without
-      # restoring must be exactly the one restore itself reads, and what the
-      # dgspec reader makes of it is pinned in `restore_graph_projects.txt`.
+      # Stages 2 and 3 of docs/nuget-dgspec-boundary-plan.md over the same
+      # projects, restored offline against the packages folder their
+      # materialising restores filled: the dependency-graph spec generated
+      # without restoring must be exactly the one restore itself reads, NuGet
+      # handed that spec must compute exactly the assets file restore wrote,
+      # and the outcome is pinned in `restore_graph_projects.txt`.
       nix develop --command env \
         BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
+        BORZOI_PROJECT_PACKAGES="$RUNNER_TEMP/project-corpus-packages" \
         cargo test -p borzoi --test all restore_graph::pinned_projects \
+        -- --ignored --nocapture
+      ;;
+    restore-cone)
+      # The restore-cone census of docs/nuget-dgspec-boundary-plan.md (stage
+      # 8) over the same projects: every target and task
+      # `GenerateRestoreGraphFile` executes under restore's globals, under
+      # every SDK the devshell installs, pinned in `restore_cone_projects.txt`
+      # with each target file's hash and each task assembly's identity.
+      nix develop --command env \
+        BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
+        cargo test -p borzoi-msbuild --test restore_cone_census pinned_projects \
         -- --ignored --nocapture
       ;;
     xml-doc-source)

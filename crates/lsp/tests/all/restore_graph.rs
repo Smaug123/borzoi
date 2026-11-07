@@ -11,22 +11,35 @@
 //! same spec down both routes. The stage-1 reader
 //! (`borzoi_nuget::dgspec::parse_dgspec`) must commit to the fixtures here.
 //!
+//! Stage 3 then checks that the split loses nothing: NuGet's own restore,
+//! handed the generated spec (B₀ after A₀: `RestoreRunner` in
+//! `tools/nuget-oracle`'s `restoreDgSpec` op, running the `NuGet.Commands` of
+//! the SDK the restore ran under), computes exactly the assets file the restore
+//! wrote. Whatever MSBuild knows that bears on resolution and the spec does not
+//! carry would show up there as a difference.
+//!
 //! [`pinned_projects`] (`#[ignore]`d; CI runs it in the `corpus-diff` job over
-//! the pinned project corpus) does the same for every project in
-//! `BORZOI_PROJECT_LIST`, and pins what the reader makes of each spec in an
-//! exact manifest (`tests/manifests/restore_graph_projects.txt`).
+//! the pinned project corpus) does all of this for every project in
+//! `BORZOI_PROJECT_LIST`, restoring against the packages folder
+//! `BORZOI_PROJECT_PACKAGES` the corpus was restored into, and pins what the reader makes of each spec, each
+//! target of each assets file, and the identity of the `NuGet.Commands` that
+//! graded them in an exact manifest
+//! (`tests/manifests/restore_graph_projects.txt`).
 //!
 //! Requires the .NET SDK + the vendored NuGet cache — the Nix devShell provides
 //! both.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borzoi::restore::{RestoreGraph, RestoreGraphSource, restore_graph};
+use borzoi::restore::{RestoreGraph, RestoreGraphSource, ScratchDir, restore_graph};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi_nuget::dgspec::{DependencyGraphSpec, DgSpecDecline, PathSegment, parse_dgspec};
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
-use serde_json::Value;
+use borzoi_oracle_harness::nuget_oracle::{Oracle, sdk_dir_for};
+use serde_json::{Value, json};
 
 use crate::common::checkout_key;
 
@@ -59,11 +72,12 @@ fn normalised(text: &str, scratch: &Path) -> Value {
     walk(value, scratch)
 }
 
-/// The first place two JSON values differ.
+/// The first place two JSON values differ: `a` is what came down the generated
+/// route, `b` what came down the restored one.
 fn first_difference(a: &Value, b: &Value, path: &str) -> Option<String> {
     match (a, b) {
         (Value::Object(x), Value::Object(y)) => {
-            let keys: std::collections::BTreeSet<_> = x.keys().chain(y.keys()).collect();
+            let keys: BTreeSet<_> = x.keys().chain(y.keys()).collect();
             keys.into_iter().find_map(|k| match (x.get(k), y.get(k)) {
                 (Some(v), Some(w)) => first_difference(v, w, &format!("{path}.{k}")),
                 (v, w) => Some(format!("{path}.{k}: generated {v:?} / restored {w:?}")),
@@ -81,18 +95,25 @@ fn first_difference(a: &Value, b: &Value, path: &str) -> Option<String> {
 
 /// Both routes' outcome for one project.
 enum Graphs {
-    /// Both wrote a spec, and the specs agree; the generated text.
-    Agree(String),
+    /// Both wrote a spec, and the specs agree.
+    Agree {
+        /// The generated spec.
+        text: String,
+        /// The directory the generated spec names, still in place.
+        generated: ScratchDir,
+        /// The directory restore wrote its spec and assets file into.
+        restored: ScratchDir,
+    },
     /// Both declined.
     Declined,
 }
 
-/// Obtain `project`'s spec down both routes and require them to agree.
-fn both_routes(project: &Path) -> Result<Graphs, String> {
-    let env = SdkDiscoveryEnv::from_process_env();
+/// Obtain `project`'s spec down both routes, restoring under `env`, and
+/// require them to agree.
+fn both_routes(project: &Path, env: &SdkDiscoveryEnv) -> Result<Graphs, String> {
     let root = dotnet_root();
-    let generated = restore_graph(project, &root, &env, RestoreGraphSource::Generated);
-    let restored = restore_graph(project, &root, &env, RestoreGraphSource::Restored);
+    let generated = restore_graph(project, &root, env, RestoreGraphSource::Generated);
+    let restored = restore_graph(project, &root, env, RestoreGraphSource::Restored);
     match (generated, restored) {
         (
             RestoreGraph::Written {
@@ -104,10 +125,14 @@ fn both_routes(project: &Path) -> Result<Graphs, String> {
                 scratch: restored_scratch,
             },
         ) => {
-            let a = normalised(&generated, &generated_scratch);
-            let b = normalised(&restored, &restored_scratch);
+            let a = normalised(&generated, generated_scratch.path());
+            let b = normalised(&restored, restored_scratch.path());
             match first_difference(&a, &b, "$") {
-                None => Ok(Graphs::Agree(generated)),
+                None => Ok(Graphs::Agree {
+                    text: generated,
+                    generated: generated_scratch,
+                    restored: restored_scratch,
+                }),
                 Some(difference) => Err(format!(
                     "{}: the generated spec is not the one restore read: {difference}",
                     project.display()
@@ -128,6 +153,130 @@ fn both_routes(project: &Path) -> Result<Graphs, String> {
             project.display()
         )),
     }
+}
+
+/// The resident oracle for each SDK directory, spawned on first use: one per
+/// SDK, since each runs its own SDK's NuGet.
+static ORACLES: Mutex<BTreeMap<PathBuf, Oracle>> = Mutex::new(BTreeMap::new());
+
+/// What the stage-3 check found for one project.
+struct Decomposition {
+    /// The `AssemblyInformationalVersion` of the `NuGet.Commands` that ran.
+    nuget_commands: String,
+    /// Whether the restore succeeded.
+    success: bool,
+    /// The agreed assets file, normalised.
+    assets: Value,
+}
+
+/// Stage 3: NuGet's restore, handed the generated spec, computes exactly the
+/// assets file the restore wrote. NuGet is the `NuGet.Commands` of the SDK the
+/// restore ran under: the one the muxer selects from the project's directory,
+/// as `restore.rs` runs it.
+fn decomposes_losslessly(
+    project: &Path,
+    text: &str,
+    generated: &ScratchDir,
+    restored: &ScratchDir,
+) -> Result<Decomposition, String> {
+    let directory = project.parent().expect("a project is in a directory");
+    let sdk = sdk_dir_for(&dotnet_root().join("dotnet"), directory);
+    let response = {
+        let mut oracles = ORACLES.lock().unwrap_or_else(|poison| poison.into_inner());
+        oracles
+            .entry(sdk.clone())
+            .or_insert_with(|| Oracle::spawn_on(&sdk, &[]))
+            .request(&json!({"op": "restoreDgSpec", "text": text}))
+    };
+    let identity = &response["nugetCommands"];
+    let expected = sdk.join("NuGet.Commands.dll");
+    if identity["path"].as_str() != expected.to_str() {
+        return Err(format!(
+            "{}: the oracle ran {identity}, not {}",
+            project.display(),
+            expected.display()
+        ));
+    }
+    let nuget_commands = identity["informationalVersion"]
+        .as_str()
+        .expect("the identity names a version")
+        .to_owned();
+    let results = response["results"]
+        .as_array()
+        .expect("restoreDgSpec reports its results");
+    let [result] = results.as_slice() else {
+        return Err(format!(
+            "{}: an entry-only spec restores one project, not {}",
+            project.display(),
+            results.len()
+        ));
+    };
+    let ours = comparable_assets(normalised(
+        result["assets"].as_str().expect("each result has assets"),
+        generated.path(),
+    ));
+    let assets_path = restored.path().join("project.assets.json");
+    let theirs = match std::fs::read_to_string(&assets_path) {
+        Ok(text) => comparable_assets(normalised(&text, restored.path())),
+        Err(error) => {
+            return Err(format!(
+                "{}: restore wrote no assets file ({error})",
+                project.display()
+            ));
+        }
+    };
+    match first_difference(&ours, &theirs, "$") {
+        None => Ok(Decomposition {
+            nuget_commands,
+            success: result["success"]
+                .as_bool()
+                .expect("each result says whether it succeeded"),
+            assets: theirs,
+        }),
+        Some(difference) => Err(format!(
+            "{}: NuGet over the generated spec is not the restore: {difference}",
+            project.display()
+        )),
+    }
+}
+
+/// `assets` with its `logs` in a canonical order. Their order is not part of
+/// what restore computed: a missing package's message is built per element of
+/// the target graph's unresolved set (`UnresolvedMessages.LogAsync`), which is
+/// iterated in hash order, and .NET randomises string hashes per process. So two
+/// runs of one restore list the same messages in different orders.
+fn comparable_assets(mut assets: Value) -> Value {
+    if let Some(logs) = assets.get_mut("logs").and_then(Value::as_array_mut) {
+        logs.sort_by_cached_key(|message| message.to_string());
+    }
+    assets
+}
+
+/// One manifest label per target of an assets file: its library count, how
+/// many of those are packages, and how many compile assets they contribute.
+fn target_labels(assets: &Value) -> Vec<String> {
+    let targets = assets["targets"]
+        .as_object()
+        .expect("an assets file has targets");
+    targets
+        .iter()
+        .map(|(name, libraries)| {
+            let libraries = libraries.as_object().expect("a target maps libraries");
+            let packages = libraries
+                .values()
+                .filter(|l| l["type"] == "package")
+                .count();
+            let compile: usize = libraries
+                .values()
+                .filter_map(|l| l["compile"].as_object())
+                .map(|c| c.len())
+                .sum();
+            format!(
+                "assets {name}: libraries={} packages={packages} compile={compile}",
+                libraries.len()
+            )
+        })
+        .collect()
 }
 
 /// A fresh directory holding `files` (relative path, contents).
@@ -179,12 +328,21 @@ const LIB: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
 "#;
 
 /// The agreed spec of `project`, read by the stage-1 reader, which must commit.
+/// The decomposition must be lossless on it too.
 fn committed_spec(project: &Path) -> DependencyGraphSpec {
-    let text = match both_routes(project) {
-        Ok(Graphs::Agree(text)) => text,
-        Ok(Graphs::Declined) => panic!("{}: both routes declined", project.display()),
-        Err(failure) => panic!("{failure}"),
-    };
+    let (text, generated, restored) =
+        match both_routes(project, &SdkDiscoveryEnv::from_process_env()) {
+            Ok(Graphs::Agree {
+                text,
+                generated,
+                restored,
+            }) => (text, generated, restored),
+            Ok(Graphs::Declined) => panic!("{}: both routes declined", project.display()),
+            Err(failure) => panic!("{failure}"),
+        };
+    if let Err(failure) = decomposes_losslessly(project, &text, &generated, &restored) {
+        panic!("{failure}");
+    }
     assert!(
         !project.parent().unwrap().join("obj").exists(),
         "neither route may write the project's obj/"
@@ -241,6 +399,45 @@ fn a_project_reference_brings_its_project_into_the_spec() {
     assert!(!root.join("lib/obj").exists(), "nor its reference's obj/");
 }
 
+/// The stage-3 check can fail: a spec that has lost a dependency on its way to
+/// NuGet does not reproduce the restore. Without this, a comparison that
+/// silently compared nothing would pass every fixture.
+#[test]
+fn a_spec_that_loses_a_dependency_does_not_decompose() {
+    let root = write_tree("lossy", &[("App.fsproj", APP), ("App.fs", "module App\n")]);
+    let project = root.join("App.fsproj");
+    let Ok(Graphs::Agree {
+        text,
+        generated,
+        restored,
+    }) = both_routes(&project, &SdkDiscoveryEnv::from_process_env())
+    else {
+        panic!("{}: both routes must agree", project.display());
+    };
+    decomposes_losslessly(&project, &text, &generated, &restored)
+        .unwrap_or_else(|failure| panic!("{failure}"));
+
+    let mut spec: Value = serde_json::from_str(&text).unwrap();
+    let projects = spec["projects"].as_object_mut().unwrap();
+    let [(_, entry)] = projects.iter_mut().collect::<Vec<_>>().try_into().unwrap();
+    let frameworks = entry["frameworks"].as_object_mut().unwrap();
+    let [(_, framework)] = frameworks
+        .iter_mut()
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let dependencies = framework["dependencies"].as_object_mut().unwrap();
+    assert!(
+        dependencies.remove("FSharp.Core").is_some(),
+        "the fixture depends on FSharp.Core"
+    );
+    let lossy = serde_json::to_string(&spec).unwrap();
+    match decomposes_losslessly(&project, &lossy, &generated, &restored) {
+        Err(failure) => assert!(failure.contains("not the restore"), "{failure}"),
+        Ok(_) => panic!("a spec without FSharp.Core must not reproduce the restore"),
+    }
+}
+
 /// A project whose directory is reached through a symlink declines down both
 /// routes. MSBuild runs a project's targets with the process's working
 /// directory set to the project's directory, which the OS reports by its real
@@ -271,9 +468,12 @@ fn a_project_in_a_symlinked_directory_declines() {
     )
     .unwrap();
 
-    match both_routes(&root.join("link").join("App.fsproj")) {
+    match both_routes(
+        &root.join("link").join("App.fsproj"),
+        &SdkDiscoveryEnv::from_process_env(),
+    ) {
         Ok(Graphs::Declined) => {}
-        Ok(Graphs::Agree(_)) => panic!("a project in a symlinked directory must decline"),
+        Ok(Graphs::Agree { .. }) => panic!("a project in a symlinked directory must decline"),
         Err(failure) => panic!("{failure}"),
     }
     // By its real path, and as a symlinked file beside its own `lib/`, the
@@ -405,9 +605,12 @@ fn a_locked_project_declines_down_both_routes() {
             ),
         ],
     );
-    match both_routes(&root.join("App.fsproj")) {
+    match both_routes(
+        &root.join("App.fsproj"),
+        &SdkDiscoveryEnv::from_process_env(),
+    ) {
         Ok(Graphs::Declined) => {}
-        Ok(Graphs::Agree(_)) => panic!("a locked project must decline"),
+        Ok(Graphs::Agree { .. }) => panic!("a locked project must decline"),
         Err(failure) => panic!("{failure}"),
     }
 }
@@ -473,7 +676,7 @@ fn committed_label(spec: &DependencyGraphSpec) -> String {
 }
 
 #[test]
-#[ignore = "the half-A oracle over restored projects; set BORZOI_PROJECT_LIST and run with --ignored under nix develop"]
+#[ignore = "stages 2 and 3 over the project corpus; run through tools/ci/project-corpus-gate.sh restore-graph"]
 fn pinned_projects() {
     let Some(list) = std::env::var_os("BORZOI_PROJECT_LIST") else {
         eprintln!("BORZOI_PROJECT_LIST unset; skipping. See the module docs.");
@@ -481,31 +684,70 @@ fn pinned_projects() {
     };
     let projects: Vec<PathBuf> = std::env::split_paths(&list).collect();
     assert!(!projects.is_empty(), "BORZOI_PROJECT_LIST is empty");
+    // The corpus was restored into a packages folder of its own, which the
+    // offline restore must read: the devshell's NuGet store holds only what
+    // Borzoi's own builds need, so a corpus project's restore there fails, and
+    // the gate would grade NuGet's failures rather than its resolutions.
+    let packages = std::env::var_os("BORZOI_PROJECT_PACKAGES").expect(
+        "BORZOI_PROJECT_PACKAGES must name the packages folder the corpus was restored into",
+    );
+    let env = SdkDiscoveryEnv {
+        nuget_packages_dir: Some(PathBuf::from(packages)),
+        ..SdkDiscoveryEnv::from_process_env()
+    };
     let mut lines = Vec::new();
+    let mut identities = BTreeSet::new();
     let mut failures = Vec::new();
     for project in &projects {
         let key = checkout_key(project);
-        match both_routes(project) {
-            Ok(Graphs::Agree(text)) => lines.push(match parse_dgspec(&text) {
-                Ok(spec) => format!("{key} {}", committed_label(&spec)),
-                Err(decline) => format!("{key} {}", decline_label(&decline)),
-            }),
+        match both_routes(project, &env) {
+            Ok(Graphs::Agree {
+                text,
+                generated,
+                restored,
+            }) => {
+                lines.push(match parse_dgspec(&text) {
+                    Ok(spec) => format!("{key} spec: {}", committed_label(&spec)),
+                    Err(decline) => format!("{key} spec: {}", decline_label(&decline)),
+                });
+                match decomposes_losslessly(project, &text, &generated, &restored) {
+                    Ok(decomposition) => {
+                        identities.insert(decomposition.nuget_commands);
+                        let logs = decomposition.assets["logs"].as_array().map_or(0, Vec::len);
+                        let outcome = if decomposition.success {
+                            "succeeded"
+                        } else {
+                            "failed"
+                        };
+                        lines.push(format!("{key} restore: {outcome} logs={logs}"));
+                        lines.extend(
+                            target_labels(&decomposition.assets)
+                                .into_iter()
+                                .map(|label| format!("{key} {label}")),
+                        );
+                    }
+                    Err(failure) => failures.push(failure),
+                }
+            }
             Ok(Graphs::Declined) => lines.push(format!("{key} not-restorable")),
             Err(failure) => failures.push(failure),
         }
     }
     assert!(
         failures.is_empty(),
-        "the generated spec must be the one restore reads:\n{}",
+        "the generated spec must be the one restore reads, and NuGet over it must \
+         compute the restore's assets file:\n{}",
         failures.join("\n")
+    );
+    lines.extend(
+        identities
+            .into_iter()
+            .map(|identity| format!("graded by NuGet.Commands {identity}")),
     );
     let manifest = Manifest::from_entries(lines).unwrap_or_else(|e| panic!("manifest: {e}"));
     check(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/manifests/restore_graph_projects.txt"),
         &manifest,
-        &format!(
-            "{UPDATE_ENV}=1 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi --test all \
-             restore_graph::pinned_projects -- --ignored"
-        ),
+        &format!("{UPDATE_ENV}=1 bash tools/ci/project-corpus-gate.sh restore-graph"),
     );
 }

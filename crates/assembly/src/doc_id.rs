@@ -745,7 +745,7 @@ fn is_conversion_operator(name: &str) -> bool {
 
 /// Strip a trailing `` `n `` generic-arity suffix from one name segment.
 /// `List`1` → `List`; a name with no such suffix is returned unchanged.
-fn demangle_segment(seg: &str) -> &str {
+pub fn demangle_segment(seg: &str) -> &str {
     match seg.rfind('`') {
         Some(tick) => {
             let suffix = &seg[tick + 1..];
@@ -854,6 +854,7 @@ mod tests {
             is_structural_equality: false,
             is_structural_comparison: false,
             is_allow_null_literal: false,
+            is_no_pia_local: false,
             obsolete: None,
             compiler_message: None,
             experimental: None,
@@ -1019,6 +1020,7 @@ mod tests {
             unclassified_impls: Vec::new(),
             xml_doc_sig: None,
             setter_xml_doc_sig: None,
+            signature_disagrees_with_accessors: false,
             drops_optional_modifier: false,
             accessor_slots: Vec::new(),
         })
@@ -1031,6 +1033,8 @@ mod tests {
             delegate_type,
             is_static: false,
             has_fire: false,
+            signature_disagrees_with_accessors: false,
+            drops_optional_modifier: false,
             nullability: Nullability::Oblivious,
             custom_attrs: Vec::new(),
             implements: Vec::new(),
