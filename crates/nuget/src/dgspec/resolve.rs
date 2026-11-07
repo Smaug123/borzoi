@@ -24,6 +24,13 @@
 //!   once rather than at the first, so the corpus census can count how many
 //!   projects each one blocks (stages 5–7 are ordered by those counts).
 //!
+//! # Restore's compatibility check
+//!
+//! After resolving, restore fails (`NU1202`) on a package with `lib/` or `ref/`
+//! assets none of which suit the framework. The resolver reads only nuspecs, so
+//! [`resolve_dgspec`] reads each resolved package's files and commits only for
+//! packages with no assets, or with compile assets for the framework.
+//!
 //! # The whole project, or nothing
 //!
 //! Restore succeeds or fails per *project*, not per framework: one framework
@@ -47,8 +54,9 @@ use super::{
     TargetFrameworkInformation, WarningProperties,
 };
 use crate::{
-    DirectPackageRequirement, NuGetFramework, PackageId, ResolveDecline, ResolvedPackageClosure,
-    resolve_offline_with_fallback,
+    AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
+    PackageReadError, ResolveDecline, ResolvedPackageClosure, list_package_files,
+    read_installed_package, resolve_offline_with_fallback, select_compile_assets,
 };
 
 use std::collections::BTreeSet;
@@ -188,6 +196,22 @@ pub enum DgSpecResolveDecline {
     /// A package in a framework's closure has the project's own name, which
     /// NuGet's graph has as its root.
     PackageNamedLikeProject { target_alias: String, id: PackageId },
+    /// A package in a framework's closure carries assets, but none the
+    /// framework is shown to compile against, so restore's compatibility
+    /// check (`NU1202`) may fail it. `decline` says why compile-asset
+    /// selection could not answer, when it could not.
+    CompatibilityUnproven {
+        target_alias: String,
+        package: Box<PackageIdentity>,
+        decline: Option<Box<AssetSelectionDecline>>,
+    },
+    /// A package in a framework's closure could not be read back for the
+    /// compatibility check.
+    PackageRead {
+        target_alias: String,
+        package: Box<PackageIdentity>,
+        source: Box<PackageReadError>,
+    },
 }
 
 impl fmt::Display for DgSpecResolveDecline {
@@ -211,6 +235,31 @@ impl fmt::Display for DgSpecResolveDecline {
                 f,
                 "framework {target_alias:?}: package {id} has the project's own name"
             ),
+            DgSpecResolveDecline::CompatibilityUnproven {
+                target_alias,
+                package,
+                decline,
+            } => {
+                write!(
+                    f,
+                    "framework {target_alias:?}: package {} {} has assets, but none it is shown \
+                     to compile against",
+                    package.id, package.version
+                )?;
+                match decline {
+                    Some(decline) => write!(f, " ({decline})"),
+                    None => Ok(()),
+                }
+            }
+            DgSpecResolveDecline::PackageRead {
+                target_alias,
+                package,
+                source,
+            } => write!(
+                f,
+                "framework {target_alias:?}: package {} {} could not be read: {source}",
+                package.id, package.version
+            ),
         }
     }
 }
@@ -219,6 +268,11 @@ impl Error for DgSpecResolveDecline {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             DgSpecResolveDecline::Resolve { decline, .. } => Some(decline.as_ref()),
+            DgSpecResolveDecline::CompatibilityUnproven {
+                decline: Some(decline),
+                ..
+            } => Some(decline.as_ref()),
+            DgSpecResolveDecline::PackageRead { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }
@@ -308,6 +362,12 @@ pub fn resolve_dgspec(
                     id: clash.identity.id.clone(),
                 });
             }
+            check_compatibility(
+                Path::new(packages_path),
+                &framework.target_alias,
+                &framework.framework,
+                &closure,
+            )?;
             Ok(ResolvedFramework {
                 target_alias: framework.target_alias.clone(),
                 framework: framework.framework.clone(),
@@ -315,6 +375,54 @@ pub fn resolve_dgspec(
             })
         })
         .collect()
+}
+
+/// Restore's compatibility check, in the direction that can only decline:
+/// every package of `closure` either carries no assets at all, or has compile
+/// assets for `framework`.
+///
+/// Restore fails (`NU1202`) on a package with `lib/` or `ref/` assets of which
+/// none suits the framework, and that holds even where the asset-target
+/// fallback list would admit them. Compile assets for the framework are among
+/// the assets that make a package compatible, and a package with no file below
+/// its root has nothing to be incompatible with. Anything else declines,
+/// including a package whose only assets are in other folders (`build/`,
+/// `analyzers/`), which this does not model.
+fn check_compatibility(
+    packages: &Path,
+    target_alias: &str,
+    framework: &NuGetFramework,
+    closure: &ResolvedPackageClosure,
+) -> Result<(), DgSpecResolveDecline> {
+    for resolved in &closure.packages {
+        let unproven =
+            |decline: Option<AssetSelectionDecline>| DgSpecResolveDecline::CompatibilityUnproven {
+                target_alias: target_alias.to_owned(),
+                package: Box::new(resolved.identity.clone()),
+                decline: decline.map(Box::new),
+            };
+        let package =
+            read_installed_package(packages, resolved.identity.clone()).map_err(|source| {
+                DgSpecResolveDecline::PackageRead {
+                    target_alias: target_alias.to_owned(),
+                    package: Box::new(resolved.identity.clone()),
+                    source: Box::new(source),
+                }
+            })?;
+        let files = list_package_files(&package.paths.package_dir)
+            .map_err(|decline| unproven(Some(decline)))?;
+        // Root-level files are the package's bookkeeping (the nuspec, the
+        // commit marker); assets are in folders.
+        if !files.iter().any(|file| file.contains('/')) {
+            continue;
+        }
+        let compile = select_compile_assets(&files, &package.nuspec, framework)
+            .map_err(|decline| unproven(Some(decline)))?;
+        if compile.items.is_empty() {
+            return Err(unproven(None));
+        }
+    }
+    Ok(())
 }
 
 /// Every field of `spec` present with a value the resolver does not model.

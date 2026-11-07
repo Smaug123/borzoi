@@ -294,6 +294,10 @@ impl SpawnFree {
                     DgSpecResolveDecline::PackageNamedLikeProject { .. } => {
                         "named-like-project".to_owned()
                     }
+                    DgSpecResolveDecline::CompatibilityUnproven { .. } => {
+                        "compatibility-unproven".to_owned()
+                    }
+                    DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
                 };
                 format!("b1: declined {class}")
             }

@@ -58,6 +58,8 @@ struct Pkg {
     id: String,
     version: String,
     groups: Vec<Group>,
+    /// Package-relative asset paths, written as empty files.
+    files: Vec<String>,
 }
 
 impl Pkg {
@@ -66,7 +68,13 @@ impl Pkg {
             id: id.to_owned(),
             version: version.to_owned(),
             groups,
+            files: Vec::new(),
         }
+    }
+
+    fn with_files(mut self, files: &[&str]) -> Pkg {
+        self.files = files.iter().map(|file| (*file).to_owned()).collect();
+        self
     }
 
     fn nuspec(&self) -> String {
@@ -115,6 +123,11 @@ fn install(root: &Path, packages: &[Pkg]) {
         let paths = PackagePaths::new(root, &identity);
         fs::create_dir_all(&paths.package_dir).expect("package dir");
         fs::write(&paths.nuspec_path, pkg.nuspec()).expect("nuspec");
+        for file in &pkg.files {
+            let path = paths.package_dir.join(file);
+            fs::create_dir_all(path.parent().expect("an asset is in a folder")).expect("folder");
+            fs::write(&path, b"").expect("asset");
+        }
         fs::write(
             &paths.metadata_path,
             r#"{"version":2,"contentHash":"AAAA","source":null}"#,
@@ -669,6 +682,46 @@ fn a_promoted_warning_fails_a_restore_the_resolver_would_commit() {
     }
 }
 
+/// A package whose only assets are for a framework the project cannot
+/// consume fails restore's compatibility check (`NU1202`), so B₁ declines it.
+/// Through the asset-target fallback list restore instead takes the assets
+/// with a warning (`NU1701`); B₁ does not model which assets the list admits,
+/// and declines that too. The same package with assets the framework compiles
+/// against commits.
+#[test]
+fn a_package_without_assets_for_the_framework_declines() {
+    let mut oracle = Oracle::spawn();
+    let lib_net48 = |groups| Pkg::new("A", "1.0.0", groups).with_files(&["lib/net48/A.dll"]);
+    let cases = [
+        ("netstandard2.0", false, vec![], "NU1202"),
+        ("net472", false, vec![], "NU1202"),
+        ("net8.0", true, vec![], "NU1701"),
+    ];
+    for (alias, fallback, groups, code) in cases {
+        let packages = [lib_net48(groups)];
+        let mut framework = Framework::new(alias, vec![Dep::new("A", "[1.0.0, )")]);
+        framework.asset_target_fallback = fallback;
+        let graded = grade(&mut oracle, &packages, &Shape::new(vec![framework]));
+        assert_eq!(graded.theirs.codes, [code], "{alias}");
+        assert_eq!(graded.theirs.success, code == "NU1701", "{alias}");
+        assert!(
+            matches!(
+                graded.ours,
+                Err(DgSpecResolveDecline::CompatibilityUnproven { .. })
+            ),
+            "{alias}: {:?}",
+            graded.ours
+        );
+    }
+    let packages = [Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/netstandard2.0/A.dll"])];
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0")]));
+}
+
 /// A package with the project's own name declines.
 #[test]
 fn a_package_named_like_the_project_declines() {
@@ -969,7 +1022,16 @@ fn generate(rng: &mut SplitMix64) -> Generated {
                         .collect(),
                 })
                 .collect();
-            packages.push(Pkg::new(id, version, groups));
+            let files: &[&str] = match rng.below(8) {
+                0 => &["lib/netstandard2.0/X.dll"],
+                1 => &["lib/net48/X.dll"],
+                2 => &["lib/net8.0/X.dll", "lib/net461/X.dll"],
+                3 => &["ref/netstandard2.0/X.dll", "lib/net10.0/X.dll"],
+                4 => &["lib/netstandard1.0/_._"],
+                5 => &["build/X.targets"],
+                _ => &[],
+            };
+            packages.push(Pkg::new(id, version, groups).with_files(files));
         }
     }
 
@@ -1064,6 +1126,27 @@ fn features(
             }
         }
     }
+    let committed_ids: BTreeSet<String> = frameworks
+        .iter()
+        .flat_map(|framework| &framework.closure.packages)
+        .map(|package| {
+            format!(
+                "{} {}",
+                package.identity.id,
+                package.identity.version.to_normalized_string()
+            )
+        })
+        .collect();
+    for pkg in &generated.packages {
+        let identity = format!("{} {}", pkg.id, pkg.version);
+        if !pkg.files.is_empty()
+            && committed_ids
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(&identity))
+        {
+            features.push("package-with-assets".to_owned());
+        }
+    }
     // The fallback list mattered: without it, the resolver computes another
     // closure.
     let root = tempfile::tempdir().expect("temp dir");
@@ -1121,6 +1204,7 @@ fn required_features() -> BTreeSet<String> {
         "suppress-parent",
         "auto-referenced",
         "asset-target-fallback-mattered",
+        "package-with-assets",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1145,6 +1229,8 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
             format!("resolve:{variant}")
         }
         DgSpecResolveDecline::PackageNamedLikeProject { .. } => "named-like-project".to_owned(),
+        DgSpecResolveDecline::CompatibilityUnproven { .. } => "compatibility-unproven".to_owned(),
+        DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
     }
 }
 
@@ -1155,7 +1241,7 @@ fn generated_specs_resolve_identically() {
     let cases: usize = std::env::var("BORZOI_DGSPEC_RESOLVE_CASES")
         .ok()
         .map(|cases| cases.parse().expect("a case count"))
-        .unwrap_or(400);
+        .unwrap_or(600);
     let mut oracle = Oracle::spawn();
     let mut rng = SplitMix64(0xd65_bec1);
     let mut seen = BTreeSet::new();

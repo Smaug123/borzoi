@@ -387,6 +387,9 @@ compile until it has one. The verdicts are:
   might be in use, a dependency target other than `Package`, the legacy
   `PackageTargetFallback`, and an absent project name or packages path.
 
+After resolving, B₁ also applies restore's compatibility check in the
+direction that can only decline (see the findings below).
+
 `tests/all/dgspec_resolve_diff.rs` holds it to certain-implies-exact against
 B₀ (`restoreDgSpec`) over specs it generates. B₀ restores straight from the
 packages folder the resolver reads, with only empty or missing folders as
@@ -404,7 +407,7 @@ Hand cases pin the rest:
 `netstandard2.0` fixture it commits, implicit references included, and on
 every corpus project in `pinned_projects` it must decline or agree.
 
-The differential turned up four things:
+The differential and the probes behind it turned up five things:
 - **Asset-target fallback picks dependency groups.** A package with no
   dependency group for `net8.0` contributes its `net461` group's dependencies
   to a project with the SDK's fallback list. The resolver read no group, so
@@ -421,6 +424,14 @@ The differential turned up four things:
   (`.NETStandard,Version=v2.0`). Restore writes version 3 when the spec has no
   `SdkAnalysisLevel`. The closures are the same, so both differentials compare
   by framework.
+- **Restore checks compatibility after resolving.** A package with `lib/` or
+  `ref/` assets of which none suits the framework fails restore (`NU1202`);
+  through the asset-target fallback list restore may instead take them with a
+  warning (`NU1701`). The resolver reads only nuspecs, so B₁ now reads each
+  resolved package's files and commits only for a package with no assets or
+  with compile assets for the framework. The generator's packages carry asset
+  files so that this is graded; it was found by probing, not by the first
+  generator, whose packages had none.
 - **The packages folder needs no sources.** A source folder that does not
   exist is never read, and package source mapping that maps no package to any
   source changes nothing, when every version restore needs is in the packages
