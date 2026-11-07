@@ -9,7 +9,9 @@
 //! every node and binder we type to FCS's, with a must-commit obligation on
 //! each modelled cell FCS checks cleanly.
 
-use crate::common::{GradedDumps, full_bcl_env, temp_fs_file, try_invoke_fcs_dump};
+use crate::common::{
+    GradedDumps, full_bcl_env, module_value_fixture_env, temp_fs_file, try_invoke_fcs_dump,
+};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{ProjectItems, SyntaxRecovery, infer_file, resolve_file};
@@ -672,6 +674,30 @@ fn a_mismatched_pattern_does_not_leave_its_names_to_the_clause() {
             if resolved.def(*def).name.as_str() == "x" {
                 assert_eq!(ty.render(), "System.Int32", "`x` in {body}");
             }
+        }
+    }
+}
+
+/// The same for a union field's pattern, whose equality fails apart from the
+/// union's: `UPair (x, 1)` against `UPair of int * string` keeps `x : int`.
+#[test]
+fn a_mismatched_field_pattern_does_not_leave_its_names_to_the_clause() {
+    let src = "module M\nopen FSharpModuleValues\n\
+               let f (p: UPair) = match p with UPair (x, 1) -> (match x with \"\" -> 1 | _ -> 2) | _ -> 3\n";
+    let parsed = parse(src);
+    let recovery = SyntaxRecovery::of(&parsed);
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    let env = module_value_fixture_env();
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+    let inferred = infer_file(
+        &file,
+        &resolved,
+        env,
+        &borzoi_sema::PrecedingTypes::default(),
+    );
+    for (def, ty) in inferred.def_types() {
+        if resolved.def(*def).name.as_str() == "x" {
+            assert_eq!(ty.render(), "System.Int32", "`x`");
         }
     }
 }

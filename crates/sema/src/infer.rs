@@ -3120,6 +3120,11 @@ impl<'a> Gen<'a> {
                         }
                     };
                     shape.names(&mut self.match_locals);
+                    // Every equality the pattern generates — its fields'
+                    // included — counts toward its fit, so the count is taken
+                    // before it is generated, once what came before settled.
+                    self.settle();
+                    let failures = self.eq_failures;
                     let pt = self.gen_pattern(&shape, BinderSite::Local);
                     // As for a `let` pattern ([`Self::pattern_rhs`]): a
                     // pattern of structure must not give an earlier binding's
@@ -3162,7 +3167,6 @@ impl<'a> Gen<'a> {
                         self.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
                     }
-                    let failures = self.eq_failures;
                     self.eq(Ty::Var(sv), pt);
                     // The pattern's names are typed before the clause's uses
                     // of them are walked, so a use reads a known type
