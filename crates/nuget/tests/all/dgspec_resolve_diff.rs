@@ -228,6 +228,8 @@ struct Framework {
     /// The SDK's asset-target fallback list, `net461` to `net481`.
     asset_target_fallback: bool,
     framework_reference: bool,
+    /// `downloadDependencies`: `(id, range)`.
+    downloads: Vec<(&'static str, &'static str)>,
 }
 
 impl Framework {
@@ -237,6 +239,7 @@ impl Framework {
             deps,
             asset_target_fallback: true,
             framework_reference: false,
+            downloads: Vec::new(),
         }
     }
 }
@@ -381,6 +384,13 @@ impl Shape {
                         "net461", "net462", "net47", "net471", "net472", "net48", "net481"
                     ]);
                     value["assetTargetFallback"] = json!(true);
+                }
+                if !framework.downloads.is_empty() {
+                    value["downloadDependencies"] = framework
+                        .downloads
+                        .iter()
+                        .map(|(id, range)| json!({"name": id, "version": range}))
+                        .collect();
                 }
                 if framework.framework_reference {
                     value["frameworkReferences"] =
@@ -1434,10 +1444,6 @@ fn every_unmodelled_field_declines_by_name() {
             the_project(spec)["frameworks"]["net8.0"]["packagesToPrune"] =
                 json!({"System.Text.Json": "(,10.0.32767]"});
         }),
-        (UnmodelledField::DownloadDependencies, |spec, _| {
-            the_project(spec)["frameworks"]["net8.0"]["downloadDependencies"] =
-                json!([{"name": "Microsoft.NETCore.App.Ref", "version": "[8.0.31, 8.0.31]"}]);
-        }),
         (UnmodelledField::PackageTargetFallback, |spec, _| {
             the_project(spec)["frameworks"]["net8.0"]["assetTargetFallback"] = json!(false);
         }),
@@ -1674,6 +1680,12 @@ fn generate(rng: &mut SplitMix64) -> Generated {
         }
     }
 
+    // A download target: version 1.0.0 is installed, 2.0.0 is not.
+    let mut download = Pkg::new("Download", "1.0.0", vec![]).with_files(&["data/x.txt"]);
+    if rng.below(3) == 0 {
+        download.package_types = vec![r#"name="DotnetPlatform""#];
+    }
+    packages.push(download);
     let mut aliases: Vec<&'static str> = PROJECT_FRAMEWORKS.to_vec();
     let count = 1 + usize::from(rng.below(3) == 0);
     let frameworks = (0..count)
@@ -1701,6 +1713,14 @@ fn generate(rng: &mut SplitMix64) -> Generated {
             let mut framework = Framework::new(alias, deps);
             framework.asset_target_fallback = rng.below(4) != 0;
             framework.framework_reference = alias != "net472" && rng.below(2) == 0;
+            if rng.below(3) == 0 {
+                framework.downloads = vec![*rng.pick(&[
+                    ("Download", "[1.0.0, 1.0.0]"),
+                    ("Download", "[1.0.0, 1.0.0]"),
+                    ("Download", "[2.0.0, 2.0.0]"),
+                    ("Download", "[1.0.0, )"),
+                ])];
+            }
             framework
         })
         .collect();
@@ -1772,6 +1792,9 @@ fn features(
         features.push(format!("framework={}", framework.alias));
         if framework.framework_reference {
             features.push("framework-reference".to_owned());
+        }
+        if !framework.downloads.is_empty() {
+            features.push("download".to_owned());
         }
         for dep in &framework.deps {
             if dep.include.is_some() {
@@ -1873,6 +1896,7 @@ fn required_features() -> BTreeSet<String> {
         "all-warnings-as-errors=true",
         "predicted-warnings=true",
         "dependency-no-warn",
+        "download",
         "no-warn=true",
         "no-warn=false",
         "sdk-analysis-level=None",
@@ -1891,8 +1915,6 @@ fn required_features() -> BTreeSet<String> {
         "auto-referenced",
         "asset-target-fallback-mattered",
         "package-with-assets",
-        "min-client-version=2.12",
-        "min-client-version=5.0.0",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1929,6 +1951,7 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
             }
             PackageMetadataDecline::CommitMarker => "package-metadata:marker".to_owned(),
         },
+        DgSpecResolveDecline::DownloadUnavailable { .. } => "download-unavailable".to_owned(),
     }
 }
 
@@ -3243,5 +3266,80 @@ fn framework_folder_names_are_graded() {
             census.get(class).copied().unwrap_or(0) > 0,
             "{class}: the alphabet no longer reaches this verdict\n{census:#?}"
         );
+    }
+}
+
+/// Restore only checks that a download is in the packages folder: a missing
+/// one fails it (`NU1101`), and nothing else about a present one matters (its
+/// package type, minimum client version, commit marker, metadata). B₁ commits
+/// for any present exact download and declines a missing one, and one whose
+/// range is not exact, which the SDK never writes.
+#[test]
+fn downloads_are_a_presence_check() {
+    let mut oracle = Oracle::spawn();
+    let base = || Pkg::new("D", "1.0.0", vec![]).with_files(&["data/x.txt"]);
+    let mut platform = base();
+    platform.package_types = vec![r#"name="DotnetPlatform""#];
+    let mut client = base();
+    client.min_client_version = Some("99.0");
+    let mut marker = base();
+    marker.marker = Some("{}");
+    let mut metadata = base();
+    metadata.metadata = vec!["<somethingNew>1</somethingNew>"];
+    let cases: Vec<(&str, Vec<Pkg>, &str, bool, bool)> = vec![
+        ("present", vec![base()], "[1.0.0, 1.0.0]", true, true),
+        ("short exact", vec![base()], "[1.0.0]", true, true),
+        (
+            "a platform package",
+            vec![platform],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        (
+            "a high client minimum",
+            vec![client],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        (
+            "an empty marker",
+            vec![marker],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        (
+            "unknown metadata",
+            vec![metadata],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        ("missing", vec![], "[1.0.0, 1.0.0]", false, false),
+        ("an open range", vec![base()], "[1.0.0, )", true, false),
+    ];
+    for (label, mut packages, range, restores, commits) in cases {
+        packages.push(Pkg::new("A", "1.0.0", vec![]));
+        let mut framework = Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]);
+        framework.downloads = vec![("D", range)];
+        let graded = grade(&mut oracle, &packages, &Shape::new(vec![framework]));
+        assert_eq!(
+            graded.theirs.success, restores,
+            "{label}: {:?}",
+            graded.theirs
+        );
+        assert_eq!(graded.ours.is_ok(), commits, "{label}: {:?}", graded.ours);
+        if !commits {
+            assert!(
+                matches!(
+                    graded.ours,
+                    Err(DgSpecResolveDecline::DownloadUnavailable { .. })
+                ),
+                "{label}: {:?}",
+                graded.ours
+            );
+        }
     }
 }
