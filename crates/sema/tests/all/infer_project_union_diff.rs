@@ -909,10 +909,23 @@ fn a_case_name_two_namespace_fragments_declare_agrees_with_fcs() {
             qualified_only,
             "let v0 = N.X\nlet f1 () = N.X\nlet f2 u = match u with N.X -> 0 | _ -> 1\n",
         ),
-        // A later fragment's class takes the case's constructor name.
+        // A later fragment's class takes the case's constructor name, and so
+        // do an enum's and a struct's default constructors.
         (
             "type X(s: string) =\n    member _.S = s\n",
             "open N\nlet make = X\nlet v = Y\n",
+        ),
+        (
+            "type X = E = 0 | F = 1\n",
+            "open N\nlet g () = X\nlet v = Y\n",
+        ),
+        (
+            "[<Struct>]\ntype X = { P: int }\n",
+            "open N\nlet g () = X\nlet v = Y\n",
+        ),
+        (
+            "[<Struct>]\ntype X = XS of int\n",
+            "open N\nlet g () = X\nlet v = Y\n",
         ),
     ] {
         let sources = vec![

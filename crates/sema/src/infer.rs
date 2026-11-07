@@ -8149,8 +8149,9 @@ fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
 /// How many declarations in `file` could be what a use of each name means
 /// where a union case of that name is expected: every top-level export (a
 /// value, a union or `exception` case, an active pattern's case) and every
-/// type definition that can construct (anything but a union, a record or an
-/// enum, whose own name is no constructor), at any depth.
+/// type definition that can construct — anything but an unattributed union
+/// or record, whose own name is no constructor (an enum and a struct have a
+/// default one) — at any depth.
 fn constructor_names(
     file: &ImplFile,
     exports: &crate::resolve::ExportedItems,
@@ -8160,10 +8161,13 @@ fn constructor_names(
         *counts.entry(e.name().to_string()).or_default() += 1;
     }
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        // A union's or record's own name constructs nothing, unless it is a
+        // struct (a default constructor), which an attribute may make it.
         if matches!(
             defn.repr(),
-            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_) | TypeDefnRepr::Enum(_))
-        ) {
+            Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_))
+        ) && defn.attributes().next().is_none()
+        {
             continue;
         }
         for name in defn
