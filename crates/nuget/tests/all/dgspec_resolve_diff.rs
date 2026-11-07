@@ -4137,8 +4137,12 @@ fn b1_declines_environments_it_cannot_grade() {
     let spec = base_spec(dir.path());
     let spec = parse_dgspec(&spec.to_string()).unwrap_or_else(|decline| panic!("{decline}"));
     let project = project_of(&spec);
+    // A home of the test's own, so no home the caller set decides a case.
+    let home = tempfile::tempdir().expect("temp dir");
     let under = |change: &dyn Fn(&mut BTreeMap<OsString, OsString>)| {
         let mut environment = DEFAULT_ENVIRONMENT.clone();
+        environment.remove(OsStr::new("DOTNET_CLI_HOME"));
+        environment.insert("HOME".into(), home.path().into());
         change(&mut environment);
         resolve_dgspec(&verified(), &spec, &project, &environment)
     };
