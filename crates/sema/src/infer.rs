@@ -739,7 +739,7 @@ pub enum Incomplete {
     /// A `match` pattern that does not fit its scrutinee's type.
     PatternMismatch,
     /// A `match` clause no value may reach, which FCS's decision compiler
-    /// keeps no node of ([`crate::match_reach`]).
+    /// keeps no node of (decided by the private `match_reach` module).
     UnreachableClause,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
@@ -907,7 +907,7 @@ impl PatShape {
         }
     }
 
-    /// The pattern as reachability sees it ([`match_reach`]).
+    /// The pattern as reachability sees it ([`crate::match_reach`]).
     fn clause_pat(&self) -> ClausePat<EntityHandle> {
         match self {
             PatShape::Name(_) | PatShape::Annotated(..) | PatShape::Wildcard => ClausePat::Any,

@@ -1029,8 +1029,11 @@ fn generated_clause_sets_agree_with_fcs() {
         irrefutable_first >= programs * 5,
         "too few clause sets put a catch-all before another clause: {irrefutable_first}"
     );
+    // A program commits about 15 of its 60 functions (the rest decline:
+    // unreachable clauses, unmodelled patterns), so a floor at half that
+    // rate holds at any volume while still failing a modelled arm gone dead.
     assert!(
-        tally.committed >= programs * 15,
+        tally.committed >= programs * 8,
         "the generated matches commit too little to be evidence: {tally:?}"
     );
 }
