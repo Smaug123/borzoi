@@ -135,6 +135,14 @@ pub struct ResolvedPackage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPackageClosure {
     pub packages: Vec<ResolvedPackage>,
+    /// Every installed version restore may read while resolving this closure,
+    /// sorted: each version the walk read, and the lower bound of every
+    /// dependency they declare and of every direct requirement, where that
+    /// version is installed. Restore reads the version an edge's lower bound
+    /// names (it looks in the packages folder for that exact version first),
+    /// including for edges that lose or that the walk eclipses, so a caller
+    /// that must know restore accepts every package it reads checks these.
+    pub examined: Vec<PackageIdentity>,
 }
 
 /// Why the offline resolver declined to produce a closure.
@@ -600,7 +608,8 @@ fn finish(
         }
     }
 
-    Ok(ResolvedPackageClosure { packages })
+    let examined = cache.examined(direct)?;
+    Ok(ResolvedPackageClosure { packages, examined })
 }
 
 /// The envelope in which NuGet's two dependency resolvers — the legacy
@@ -1459,6 +1468,60 @@ impl<'a> PackageCache<'a> {
             self.packages.insert(key.clone(), entry);
         }
         self.packages.get_mut(&key).expect("just inserted")
+    }
+
+    /// See [`ResolvedPackageClosure::examined`].
+    fn examined(
+        &mut self,
+        direct: &[DirectPackageRequirement],
+    ) -> Result<Vec<PackageIdentity>, ResolveDecline> {
+        let key =
+            |identity: &PackageIdentity| (identity.id.clone(), identity.version_folder_name());
+        let mut examined: BTreeMap<(PackageId, String), PackageIdentity> = self
+            .packages
+            .values()
+            .flatten()
+            .map(|cached| {
+                (
+                    key(&cached.package.identity),
+                    cached.package.identity.clone(),
+                )
+            })
+            .collect();
+        let named: Vec<PackageIdentity> = self
+            .packages
+            .values()
+            .flatten()
+            .flat_map(|cached| &cached.dependencies)
+            .filter_map(|dependency| Some((&dependency.id, dependency.version_range.as_ref()?)))
+            .chain(
+                direct
+                    .iter()
+                    .map(|requirement| (&requirement.id, &requirement.range)),
+            )
+            .filter_map(|(id, range)| {
+                Some(PackageIdentity::new(
+                    id.clone(),
+                    range.min_version()?.clone(),
+                ))
+            })
+            .collect();
+        for identity in named {
+            let paths = PackagePaths::new(self.root, &identity);
+            let committed = paths
+                .is_committed()
+                .map_err(|source| ResolveDecline::PackageRead {
+                    identity: identity.clone(),
+                    source: Box::new(PackageReadError::Io {
+                        path: paths.metadata_path.clone(),
+                        source,
+                    }),
+                })?;
+            if committed {
+                examined.insert(key(&identity), identity);
+            }
+        }
+        Ok(examined.into_values().collect())
     }
 
     /// The first package read whose selected dependency group names one

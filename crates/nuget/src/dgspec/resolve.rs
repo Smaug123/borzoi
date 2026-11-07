@@ -56,8 +56,8 @@ use super::{
 use crate::{
     AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId,
     PackageIdentity, PackageNuspec, PackageReadError, ResolveDecline, ResolvedPackageClosure,
-    list_committed_package_versions, list_package_files, read_installed_package,
-    resolve_offline_with_fallback, select_compile_assets,
+    list_package_files, read_installed_package, resolve_offline_with_fallback,
+    select_compile_assets,
 };
 
 use std::collections::BTreeSet;
@@ -460,69 +460,33 @@ fn check_compatibility(
     Ok(())
 }
 
-/// Every installed version of every package in `closure` has metadata in the
-/// domain B₁ admits ([`metadata_is_admitted`]).
+/// Every version restore may read for `closure` ([`ResolvedPackageClosure::examined`])
+/// has metadata and a commit marker in the domain B₁ admits.
 ///
 /// Restore validates each version it reads, not only the ones it settles on: a
 /// losing version's minimum client version fails the restore as surely as the
-/// winner's. The versions restore reads are versions of the closure's packages
-/// (a losing edge names a package that won elsewhere), so checking every
-/// installed version of each is an over-approximation, and the only part of it
-/// that can be wrong is a decline.
+/// winner's.
 fn check_metadata(
     nuget: &NuGetIdentity,
     packages: &Path,
     target_alias: &str,
     closure: &ResolvedPackageClosure,
 ) -> Result<(), DgSpecResolveDecline> {
-    for resolved in &closure.packages {
-        let unreadable = |identity: &PackageIdentity, source: PackageReadError| {
+    for identity in &closure.examined {
+        let package = read_installed_package(packages, identity.clone()).map_err(|source| {
             DgSpecResolveDecline::PackageRead {
                 target_alias: target_alias.to_owned(),
                 package: Box::new(identity.clone()),
                 source: Box::new(source),
             }
-        };
-        // A version folder that is a symlink is one restore follows and the
-        // version listing does not, so its metadata would go unchecked.
-        let id_folder = packages.join(resolved.identity.id.folder_name());
-        let symlinked = std::fs::read_dir(&id_folder)
-            .map_err(|source| {
-                unreadable(
-                    &resolved.identity,
-                    PackageReadError::Io {
-                        path: id_folder.clone(),
-                        source,
-                    },
-                )
-            })?
-            .any(|entry| {
-                entry
-                    .and_then(|entry| entry.file_type())
-                    .map_or(true, |kind| kind.is_symlink())
-            });
-        if symlinked {
+        })?;
+        if !metadata_is_admitted(&package.nuspec, identity, nuget)
+            || !commit_marker_is_admitted(&package.paths.metadata_path)
+        {
             return Err(DgSpecResolveDecline::PackageMetadata {
                 target_alias: target_alias.to_owned(),
-                package: Box::new(resolved.identity.clone()),
+                package: Box::new(identity.clone()),
             });
-        }
-        let versions =
-            list_committed_package_versions(packages, &resolved.identity.id).map_err(|source| {
-                let crate::PackageCacheError::Io { path, source } = source;
-                unreadable(&resolved.identity, PackageReadError::Io { path, source })
-            })?;
-        for entry in versions {
-            let package = read_installed_package(packages, entry.identity.clone())
-                .map_err(|source| unreadable(&entry.identity, source))?;
-            if !metadata_is_admitted(&package.nuspec, &entry.identity, nuget)
-                || !commit_marker_is_admitted(&entry.paths.metadata_path)
-            {
-                return Err(DgSpecResolveDecline::PackageMetadata {
-                    target_alias: target_alias.to_owned(),
-                    package: Box::new(entry.identity),
-                });
-            }
         }
     }
     Ok(())
@@ -624,10 +588,11 @@ const DESCRIPTIVE_ELEMENTS: &[&str] = &[
 ];
 
 /// Whether a package's `.nupkg.metadata` commit marker is one restore reads
-/// without complaint: a JSON object whose `version` is 1 or 2, whose
-/// `contentHash` is a non-empty string, and whose only other key is `source`,
-/// a string or null. Restore throws on a marker without a content hash, which
-/// the package readers, checking only that the marker exists, cannot see.
+/// without complaint: a JSON object whose `contentHash` is a string (empty is
+/// accepted: Nix-built caches write `{ "contentHash": "" }`), and whose only
+/// other keys are `version`, 1 or 2, and `source`, a string or null. Restore
+/// throws on a marker without a content hash, or with a null one, which the
+/// package readers, checking only that the marker exists, cannot see.
 fn commit_marker_is_admitted(marker: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(marker) else {
         return false;
@@ -637,11 +602,10 @@ fn commit_marker_is_admitted(marker: &Path) -> bool {
     };
     members.iter().all(|(key, value)| match key.as_str() {
         "version" => matches!(value.as_u64(), Some(1 | 2)),
-        "contentHash" => value.as_str().is_some_and(|hash| !hash.is_empty()),
+        "contentHash" => value.is_string(),
         "source" => value.is_string() || value.is_null(),
         _ => false,
-    }) && members.contains_key("version")
-        && members.contains_key("contentHash")
+    }) && members.contains_key("contentHash")
 }
 
 /// Every field of `spec` present with a value the resolver does not model.

@@ -271,6 +271,7 @@ fn comparable_assets(mut assets: Value) -> Value {
 }
 
 /// What B₁ made of a spec whose restore it was checked against.
+#[derive(Debug)]
 enum SpawnFree {
     Committed(Vec<ResolvedFramework>),
     Declined(DgSpecResolveDecline),
@@ -542,7 +543,7 @@ fn b1_declines_a_net10_project_on_its_pruning_list() {
             fields.contains(&borzoi_nuget::dgspec::UnmodelledField::PackagesToPrune),
             "{fields:?}"
         ),
-        other => panic!("expected a pruning decline, got {}", other.label()),
+        other => panic!("expected a pruning decline, got {other:?}"),
     }
 }
 
@@ -575,7 +576,7 @@ fn b1_resolves_a_netstandard_project_as_restore_does() {
             assert!(ids.contains("fsharp.core"), "{ids:?}");
             assert!(ids.contains("netstandard.library"), "{ids:?}");
         }
-        other => panic!("B₁ must commit, got {}", other.label()),
+        SpawnFree::Declined(decline) => panic!("B₁ must commit, but declined: {decline}"),
     }
 }
 

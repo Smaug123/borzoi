@@ -864,8 +864,9 @@ fn restore_validated_metadata_declines_outside_the_admitted_domain() {
 }
 
 /// Each descriptive `<metadata>` element, malformed ones included, is one
-/// restore never reads: alone on a package, it commits, and B₀ agrees. So does
-/// a commit marker naming the source the package came from. (The generator
+/// restore never reads: alone on a package, it commits, and B₀ agrees. So do a
+/// commit marker naming the source the package came from, and the one a
+/// Nix-built cache writes, with no version and an empty hash. (The generator
 /// writes all of these too, in combination; this grades each one for certain.)
 #[test]
 fn descriptive_metadata_is_inert() {
@@ -880,12 +881,15 @@ fn descriptive_metadata_is_inert() {
         let graded = grade(&mut oracle, &[package], &shape);
         assert!(graded.ours.is_ok(), "{metadata}: {:?}", graded.ours);
     }
-    let mut sourced = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
-    sourced.marker = Some(
+    for marker in [
         r#"{"version":2,"contentHash":"AAAA","source":"https://api.nuget.org/v3/index.json"}"#,
-    );
-    let graded = grade(&mut oracle, &[sourced], &shape);
-    assert!(graded.ours.is_ok(), "{:?}", graded.ours);
+        r#"{ "contentHash": "" }"#,
+    ] {
+        let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        package.marker = Some(marker);
+        let graded = grade(&mut oracle, &[package], &shape);
+        assert!(graded.ours.is_ok(), "{marker}: {:?}", graded.ours);
+    }
 }
 
 /// Restore throws on a commit marker without a content hash, and on content-file
@@ -948,10 +952,10 @@ fn a_nuspec_must_state_its_identity() {
 }
 
 /// A version folder that is a symlink is one restore follows, so its metadata
-/// counts; B₁ declines it rather than miss it.
+/// counts, and B₁ follows it too.
 #[cfg(unix)]
 #[test]
-fn a_symlinked_version_folder_declines() {
+fn a_symlinked_version_folders_metadata_is_validated() {
     let mut oracle = Oracle::spawn();
     let dir = tempfile::tempdir().expect("temp dir");
     let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);

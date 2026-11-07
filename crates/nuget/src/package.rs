@@ -525,8 +525,9 @@ impl Error for PackageNuspecParseError {
 /// List committed versions for one package id in a global packages root.
 ///
 /// Only canonical NuGet global-packages entries are returned:
-/// `{id-lower}/{normalised-version-lower}/.nupkg.metadata`. Invalid,
-/// non-canonical, uncommitted, or non-directory children are ignored. IO
+/// `{id-lower}/{normalised-version-lower}/.nupkg.metadata`, a version folder
+/// reached through a symlink included. Invalid, non-canonical, uncommitted, or
+/// non-directory children are ignored. IO
 /// failures reading the package-id directory or its entries are returned so a
 /// caller can conservatively decline resolution.
 pub fn list_committed_package_versions(
@@ -552,11 +553,13 @@ pub fn list_committed_package_versions(
             source,
         })?;
         let path = entry.path();
-        let file_type = entry.file_type().map_err(|source| PackageCacheError::Io {
+        // Following symlinks, as restore does: a cache assembled from links
+        // (Nix builds one) holds its versions as symlinked folders.
+        let metadata = std::fs::metadata(&path).map_err(|source| PackageCacheError::Io {
             path: path.clone(),
             source,
         })?;
-        if !file_type.is_dir() {
+        if !metadata.is_dir() {
             continue;
         }
 

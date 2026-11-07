@@ -445,9 +445,12 @@ The differential, the probes behind it, and review turned up seven things:
   modelled (dependencies, references, an `id` and `version` each stated once
   and naming the package's folder, `packageTypes` naming only `Dependency` without a
   version, a `minClientVersion` below the restoring NuGet's version), or a
-  decline; and the commit marker must be one restore reads. It checks every
-  installed version of every package in the closure, which covers every
-  version restore reads. The generator writes descriptive elements (malformed
+  decline; and the commit marker must be one restore reads (a Nix-built
+  cache's `{ "contentHash": "" }` is). It checks every version restore may
+  read: each version the walk read, and the installed lower bound of every
+  declared dependency and direct requirement, which the closure now reports.
+  Checking every installed version instead declined every F# project on a
+  cache holding an old FSharp.Core with `contentFiles`. The generator writes descriptive elements (malformed
   ones included), declined ones and broken markers, and a hand case grades
   each descriptive element alone. The vocabulary declines `frameworkAssemblies`
   (on the corpus's `System.*` packages), `contentFiles`,
@@ -482,7 +485,8 @@ The differential, the probes behind it, and review turned up seven things:
   keeps padded, and so finds no package for; the reader now refuses one.
   Review found the rest of this class (an XML comment read as an element's
   text, a whitespace-only config key, a symlinked version folder the version
-  listing skipped, two aliases naming one framework), each now declined.
+  listing skipped, two aliases naming one framework). Each is now declined,
+  except the symlinked folder, which the listing now follows, as restore does.
   Review also found that a relative `nuGetLockFilePath` is resolved against
   the project; B₁ declines one.
 - **The packages folder needs no sources.** A source folder that does not
