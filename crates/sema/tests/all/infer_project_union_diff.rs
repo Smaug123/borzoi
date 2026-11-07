@@ -907,3 +907,89 @@ fn a_recovered_union_declaration_types_no_case() {
     }
     assert_clean(&tally, 0);
 }
+
+/// Declarations at the edges of what a case's scheme reads: a field over an
+/// assembly generic or the union itself at another instance, an undeclared,
+/// statically resolved or wildcard-named type parameter, lowercase and
+/// escaped case names, a case colliding with a class or a module of its name
+/// or with a static member, repeated field names, a struct union. Graded for
+/// agreement only: whatever inference commits must be FCS's.
+#[test]
+fn edge_union_declarations_agree_with_fcs() {
+    let mut tally = Tally::default();
+    for (decl, body) in [
+        (
+            "type G<'a> = GA of Set<'a> | GB of 'a | GN\n",
+            "let make x = GB x\nlet v = GB 1\nlet f () = GN\nlet bad = GB id\n",
+        ),
+        (
+            "type G<'a> = GA of System.Nullable<'a> | GB of 'a | GN\n",
+            "let make x = GB x\nlet v = GB 1\nlet f () = GN\nlet bad = GB \"x\"\n",
+        ),
+        (
+            "type G<'a> = GA of 'a | GN\n",
+            "let make x = GA x\nlet f u = match u with GA x -> x | GN -> failwith \"x\"\n",
+        ),
+        (
+            "type U = A of 'a | B\n",
+            "let f () = B\nlet g u = match u with B -> 1 | _ -> 2\n",
+        ),
+        (
+            "type U = A of int\ntype A(x: string) = class end\n",
+            "let v = A \"x\"\nlet w = A 1\nlet f () = U.A 1\n",
+        ),
+        (
+            "type A(x: string) = class end\ntype U = A of int\n",
+            "let v = A \"x\"\nlet w = A 1\nlet f () = U.A 1\n",
+        ),
+        (
+            "type U = A | B\nmodule A =\n    let X = 1\n",
+            "let f () = A\nlet g u = match u with A -> 0 | B -> 1\n",
+        ),
+        (
+            "type G<'a> = GA of ^a | GN\n",
+            "let make x = GA x\nlet f () = GN\n",
+        ),
+        (
+            "type G<'_a> = GA of '_a | GN\n",
+            "let make x = GA x\nlet f () = GN\n",
+        ),
+        (
+            "type U = a | b of int\n",
+            "let f () = a\nlet g u = match u with a -> 0 | b n -> n\n",
+        ),
+        (
+            "type U = ``a`` | ``b`` of int\n",
+            "let f () = ``a``\nlet g u = match u with ``a`` -> 0 | ``b`` n -> n\n",
+        ),
+        (
+            "[<RequireQualifiedAccess>]\ntype U = a | b of int\n",
+            "let f () = U.a\nlet g u = match u with U.a -> 0 | U.b n -> n\n",
+        ),
+        (
+            "type U = A of int * int\n",
+            "let f () = A (1, 2)\nlet g u = match u with A (a, b) -> a\n",
+        ),
+        (
+            "type U = A of a: int * a: string | B\n",
+            "let f () = A (1, \"s\")\nlet g () = B\n",
+        ),
+        (
+            "[<Struct>]\ntype U = A of int | B of string\n",
+            "let f () = A 1\nlet g u = match u with A a -> a | B _ -> 0\n",
+        ),
+        (
+            "type U =\n | A of int\n | B\n static member A (s: string) = B\n",
+            "let f () = U.A \"s\"\nlet g () = U.A 1\n",
+        ),
+        ("type U = A of U<int>\n", "let f x = A x\n"),
+        (
+            "type G<'a> = GA of G<int> | GB of 'a | GN\n",
+            "let f x = GB x\nlet g () = GA GN\n",
+        ),
+    ] {
+        let sources = vec![("Use.fs".to_string(), format!("module M\n{decl}{body}"))];
+        check_with(&sources, &[], &mut tally, true);
+    }
+    assert_clean(&tally, 0);
+}
