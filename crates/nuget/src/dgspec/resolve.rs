@@ -134,7 +134,10 @@ pub enum UnmodelledField {
     Audit,
     /// `usingMicrosoftNETSdk` is false.
     NotMicrosoftNetSdk,
-    /// Central package management (stage 7a).
+    /// Central package management in a shape B₁ does not admit: transitive
+    /// pinning; under it, a dependency not centrally managed, an implicit one,
+    /// or a floating central version or override (restore fails on each); without it, a
+    /// centrally managed dependency, an override or a central entry.
     CentralPackageManagement,
     /// A framework's project references (stage 6).
     ProjectReferences,
@@ -984,7 +987,15 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     if !lock_file_is_off(restore_lock_properties) {
         decline(UnmodelledField::LockFile);
     }
-    if *central_package_versions_enabled || *central_package_transitive_pinning_enabled {
+    // Central package management without transitive pinning moves no closure:
+    // the SDK writes each centrally managed dependency's range into the spec,
+    // and restore resolves that range, whatever the central entry or a
+    // `versionOverride` says. It does fail the restore on a dependency not
+    // centrally managed (`NU1008`), on an implicit reference, managed or not
+    // (`NU1009`), and on a floating central version (`NU1011`). Transitive pinning raises
+    // transitive packages to their central versions, which changes the
+    // closure, and is not modelled.
+    if *central_package_transitive_pinning_enabled {
         decline(UnmodelledField::CentralPackageManagement);
     }
     if !audit_is_off(restore_audit_properties.as_ref()) {
@@ -1054,8 +1065,10 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
                 suppress_parent: _,
                 // Silences warnings, so can only turn a failure into success.
                 no_warn: _,
-                // Graded by the differential, whose generator varies it.
-                auto_referenced: _,
+                // Inert outside central package management (graded by the
+                // differential, whose generator varies it); under it, restore
+                // fails on an implicit reference (`NU1009`).
+                auto_referenced,
                 version_centrally_managed,
                 // Outputs of restore for the build, not inputs to resolution.
                 generate_path_property: _,
@@ -1065,7 +1078,16 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
             if *target != LibraryDependencyTarget::PACKAGE {
                 decline(UnmodelledField::DependencyTarget);
             }
-            if *version_centrally_managed || version_override.is_some() {
+            let managed_as_restore_requires = if *central_package_versions_enabled {
+                *version_centrally_managed
+                    && !*auto_referenced
+                    && version_override
+                        .as_ref()
+                        .is_none_or(|range| !range.is_floating())
+            } else {
+                !*version_centrally_managed && version_override.is_none()
+            };
+            if !managed_as_restore_requires {
                 decline(UnmodelledField::CentralPackageManagement);
             }
         }
@@ -1073,8 +1095,10 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
             decline(UnmodelledField::PackageTargetFallback);
         }
         for entry in central_package_versions {
-            let PackageRangeEntry { id: _, range: _ } = entry;
-            decline(UnmodelledField::CentralPackageManagement);
+            let PackageRangeEntry { id: _, range } = entry;
+            if !*central_package_versions_enabled || range.is_floating() {
+                decline(UnmodelledField::CentralPackageManagement);
+            }
         }
         for reference in framework_references {
             let FrameworkReference {
