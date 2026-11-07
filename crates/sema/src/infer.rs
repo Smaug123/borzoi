@@ -2410,12 +2410,25 @@ impl<'a> Gen<'a> {
 
     /// The type of each field of the record `repr` that is read, by name,
     /// over the record's parameters ([`Self::decl_typars`]). A field with an
-    /// attribute (an error-level `[<Obsolete>]` rejects its use), or whose
-    /// type the annotation bridge declines, is left out: an access to it
-    /// declines, and the record's other fields do not depend on it.
+    /// attribute (an error-level `[<Obsolete>]` rejects its use), a label
+    /// declared twice, or a type the annotation bridge declines is left out:
+    /// an access to it declines, and the record's other fields do not depend
+    /// on it.
     fn record_field_schemes(&self, repr: &RecordRepr) -> HashMap<String, Ty> {
+        // A label declared twice is an error FCS recovers from by keeping
+        // the first, where a map keeps the last: neither is read.
+        let mut labels: HashMap<String, usize> = HashMap::new();
+        for f in repr.fields() {
+            if let Some(tok) = f.ident() {
+                *labels.entry(ident_text(&tok)).or_default() += 1;
+            }
+        }
         repr.fields()
             .filter(|f| f.attributes().next().is_none())
+            .filter(|f| {
+                f.ident()
+                    .is_some_and(|tok| labels.get(&ident_text(&tok)) == Some(&1))
+            })
             .filter_map(|f| {
                 let name = ident_text(&f.ident()?);
                 let ty = self.annotation_ty(&f.ty()?)?;
