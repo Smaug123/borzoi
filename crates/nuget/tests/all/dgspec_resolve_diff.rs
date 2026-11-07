@@ -3132,7 +3132,7 @@ fn malformed_declarations_decline_without_panicking() {
 /// over-decline census — out-of-domain variants B₀ accepted — is printed.
 #[test]
 fn every_nuspec_layer_is_held_to_its_domain() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
