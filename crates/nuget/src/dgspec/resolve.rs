@@ -54,9 +54,10 @@ use super::{
     TargetFrameworkInformation, WarningProperties,
 };
 use crate::{
-    AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
-    PackageReadError, ResolveDecline, ResolvedPackageClosure, list_package_files,
-    read_installed_package, resolve_offline_with_fallback, select_compile_assets,
+    AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId,
+    PackageIdentity, PackageNuspec, PackageReadError, ResolveDecline, ResolvedPackageClosure,
+    list_package_files, read_installed_package, resolve_offline_with_fallback,
+    select_compile_assets,
 };
 
 use std::collections::BTreeSet;
@@ -205,6 +206,14 @@ pub enum DgSpecResolveDecline {
         package: Box<PackageIdentity>,
         decline: Option<Box<AssetSelectionDecline>>,
     },
+    /// A package in a framework's closure carries metadata restore validates a
+    /// package by, outside the domain B₁ admits: a package type other than
+    /// `Dependency`, or a minimum client version not shown to be below the
+    /// restoring NuGet's.
+    PackageMetadata {
+        target_alias: String,
+        package: Box<PackageIdentity>,
+    },
     /// A package in a framework's closure could not be read back for the
     /// compatibility check.
     PackageRead {
@@ -251,6 +260,15 @@ impl fmt::Display for DgSpecResolveDecline {
                     None => Ok(()),
                 }
             }
+            DgSpecResolveDecline::PackageMetadata {
+                target_alias,
+                package,
+            } => write!(
+                f,
+                "framework {target_alias:?}: package {} {} has a package type or minimum client \
+                 version restore may refuse",
+                package.id, package.version
+            ),
             DgSpecResolveDecline::PackageRead {
                 target_alias,
                 package,
@@ -363,6 +381,7 @@ pub fn resolve_dgspec(
                 });
             }
             check_compatibility(
+                nuget,
                 Path::new(packages_path),
                 &framework.target_alias,
                 &framework.framework,
@@ -389,6 +408,7 @@ pub fn resolve_dgspec(
 /// including a package whose only assets are in other folders (`build/`,
 /// `analyzers/`), which this does not model.
 fn check_compatibility(
+    nuget: &NuGetIdentity,
     packages: &Path,
     target_alias: &str,
     framework: &NuGetFramework,
@@ -409,6 +429,12 @@ fn check_compatibility(
                     source: Box::new(source),
                 }
             })?;
+        if !metadata_is_admitted(&package.nuspec, nuget) {
+            return Err(DgSpecResolveDecline::PackageMetadata {
+                target_alias: target_alias.to_owned(),
+                package: Box::new(resolved.identity.clone()),
+            });
+        }
         let files = list_package_files(&package.paths.package_dir)
             .map_err(|decline| unproven(Some(decline)))?;
         // Root-level files are the package's bookkeeping (the nuspec, the
@@ -423,6 +449,35 @@ fn check_compatibility(
         }
     }
     Ok(())
+}
+
+/// Whether the nuspec metadata restore validates a package by is in the
+/// domain B₁ admits: no package type but `Dependency` (restore refuses others,
+/// `DotnetTool` with `NU1212`, in a `PackageReference` project), and a minimum
+/// client version, if any, that parses without a release label and is below
+/// the restoring NuGet's own version. The comparison is strict because the
+/// verified NuGets are release candidates, which sort below the release of the
+/// same number.
+fn metadata_is_admitted(nuspec: &PackageNuspec, nuget: &NuGetIdentity) -> bool {
+    let types_admitted = nuspec
+        .package_types
+        .iter()
+        .all(|package_type| package_type == "Dependency");
+    let client_admitted = match &nuspec.min_client_version {
+        None => true,
+        Some(minimum) => {
+            let release = nuget
+                .as_str()
+                .split(['-', '+'])
+                .next()
+                .and_then(|release| NuGetVersion::parse(release).ok());
+            match (NuGetVersion::parse(minimum), release) {
+                (Ok(minimum), Some(release)) => !minimum.is_prerelease() && minimum < release,
+                _ => false,
+            }
+        }
+    };
+    types_admitted && client_admitted
 }
 
 /// Every field of `spec` present with a value the resolver does not model.
@@ -627,8 +682,9 @@ fn warning_policy_is_inert(policy: &WarningProperties) -> bool {
 }
 
 /// Whether restore certainly ignores lock files: none is requested, locked mode
-/// is off, and nothing exists at the lock file's stated path. (Without a stated
-/// path, NuGet looks beside the project, under a name that depends on it.)
+/// is off, and nothing exists at the lock file's stated path, which must be
+/// absolute. (Without a stated path, NuGet looks beside the project, under a
+/// name that depends on it.)
 fn lock_file_is_off(lock: &RestoreLockProperties) -> bool {
     let RestoreLockProperties {
         restore_packages_with_lock_file,
@@ -638,9 +694,12 @@ fn lock_file_is_off(lock: &RestoreLockProperties) -> bool {
     let not_requested = restore_packages_with_lock_file
         .as_deref()
         .is_none_or(|value| value.eq_ignore_ascii_case("false"));
-    let absent = nuget_lock_file_path
-        .as_deref()
-        .is_some_and(|path| matches!(Path::new(path).try_exists(), Ok(false)));
+    // A relative path is NuGet's to resolve against the project, so only an
+    // absolute one is checked.
+    let absent = nuget_lock_file_path.as_deref().is_some_and(|path| {
+        let path = Path::new(path);
+        path.is_absolute() && matches!(path.try_exists(), Ok(false))
+    });
     not_requested && !*restore_locked_mode && absent
 }
 

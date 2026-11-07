@@ -281,6 +281,14 @@ pub struct PackageNuspec {
     /// selection ([`crate::assets`]); empty for the overwhelming majority of
     /// packages, which reference everything in the selected `lib/` folder.
     pub reference_groups: Vec<PackageReferenceGroup>,
+    /// The `<metadata>` element's `minClientVersion` attribute, unparsed:
+    /// restore refuses a package whose minimum exceeds its own version, even
+    /// from a warm cache.
+    pub min_client_version: Option<String>,
+    /// Each `<packageTypes><packageType>`'s `name`, unparsed and in nuspec
+    /// order: restore refuses some types in a `PackageReference` project
+    /// (`DotnetTool`, with `NU1212`).
+    pub package_types: Vec<String>,
 }
 
 impl PackageNuspec {
@@ -730,7 +738,8 @@ fn decode_utf16(bytes: &[u8], endian: Utf16Endian) -> io::Result<String> {
     String::from_utf16(&units).map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
 }
 
-/// Parse just the dependency groups from a nuspec document.
+/// Parse the parts of a nuspec document restore reads: the dependency and
+/// reference groups, and the metadata restore validates a package by.
 pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let doc = roxmltree::Document::parse(text).map_err(PackageNuspecParseError::Xml)?;
@@ -746,8 +755,23 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         return Ok(PackageNuspec {
             dependency_groups,
             reference_groups: Vec::new(),
+            min_client_version: None,
+            package_types: Vec::new(),
         });
     };
+    let min_client_version = metadata.attribute("minClientVersion").map(str::to_owned);
+    let package_types = metadata
+        .children()
+        .filter(|n| element_named(*n, nuspec_namespace, "packageTypes"))
+        .flat_map(|types| types.children())
+        .filter(|n| element_named(*n, nuspec_namespace, "packageType"))
+        .map(|package_type| {
+            package_type
+                .attribute("name")
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
     let reference_groups = parse_reference_groups(metadata, nuspec_namespace, &any_framework)?;
     let dependency_sections = metadata
         .children()
@@ -790,6 +814,8 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
     Ok(PackageNuspec {
         dependency_groups,
         reference_groups,
+        min_client_version,
+        package_types,
     })
 }
 

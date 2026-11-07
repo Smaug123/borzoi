@@ -60,6 +60,10 @@ struct Pkg {
     groups: Vec<Group>,
     /// Package-relative asset paths, written as empty files.
     files: Vec<String>,
+    /// The `<metadata>` element's `minClientVersion`.
+    min_client_version: Option<&'static str>,
+    /// `<packageType>` names.
+    package_types: Vec<&'static str>,
 }
 
 impl Pkg {
@@ -69,6 +73,8 @@ impl Pkg {
             version: version.to_owned(),
             groups,
             files: Vec::new(),
+            min_client_version: None,
+            package_types: Vec::new(),
         }
     }
 
@@ -94,14 +100,29 @@ impl Pkg {
                 format!("<group{tfm}>{deps}</group>")
             })
             .collect();
+        let min_client_version = self
+            .min_client_version
+            .map(|version| format!(r#" minClientVersion="{version}""#))
+            .unwrap_or_default();
+        let package_types = if self.package_types.is_empty() {
+            String::new()
+        } else {
+            let types: String = self
+                .package_types
+                .iter()
+                .map(|name| format!(r#"<packageType name="{name}" />"#))
+                .collect();
+            format!("<packageTypes>{types}</packageTypes>")
+        };
         format!(
             r#"<?xml version="1.0"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
-  <metadata>
+  <metadata{min_client_version}>
     <id>{}</id>
     <version>{}</version>
     <authors>a</authors>
     <description>d</description>
+    {package_types}
     <dependencies>{groups}</dependencies>
   </metadata>
 </package>
@@ -410,6 +431,20 @@ fn restore(oracle: &mut Oracle, text: &str) -> Restored {
             .as_str()
             .expect("the oracle names its NuGet"),
     );
+    if response["ok"] == false {
+        return Restored {
+            identity,
+            success: false,
+            version: 0,
+            targets: BTreeMap::new(),
+            codes: vec![format!(
+                "threw {}",
+                response["exceptionType"]
+                    .as_str()
+                    .expect("an exception type")
+            )],
+        };
+    }
     let results = response["results"].as_array().expect("results");
     let [result] = results.as_slice() else {
         panic!("one project restores, not {}", results.len());
@@ -722,6 +757,46 @@ fn a_package_without_assets_for_the_framework_declines() {
     assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0")]));
 }
 
+/// Restore validates a package by its nuspec metadata even from a warm cache:
+/// it refuses a `DotnetTool` package in a `PackageReference` project, and a
+/// package whose minimum client version is above its own. B₁ declines both,
+/// and admits a `Dependency` type and a minimum below the restoring NuGet.
+#[test]
+fn restore_validated_metadata_declines_outside_the_admitted_domain() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let with = |min_client_version, package_types: &[&'static str]| {
+        let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        package.min_client_version = min_client_version;
+        package.package_types = package_types.to_vec();
+        [package]
+    };
+    for (packages, refused) in [
+        (with(None, &["DotnetTool"]), true),
+        (with(Some("99.0.0"), &[]), true),
+        (with(None, &["Dependency"]), false),
+        (with(Some("2.12"), &[]), false),
+    ] {
+        let graded = grade(&mut oracle, &packages, &shape);
+        assert_eq!(!graded.theirs.success, refused, "{packages:?}");
+        if refused {
+            assert!(
+                matches!(
+                    graded.ours,
+                    Err(DgSpecResolveDecline::PackageMetadata { .. })
+                ),
+                "{:?}",
+                graded.ours
+            );
+        } else {
+            assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0")]));
+        }
+    }
+}
+
 /// A package with the project's own name declines.
 #[test]
 fn a_package_named_like_the_project_declines() {
@@ -855,6 +930,10 @@ fn every_unmodelled_field_declines_by_name() {
                 .as_object_mut()
                 .unwrap()
                 .remove("nuGetLockFilePath");
+        }),
+        (UnmodelledField::LockFile, |spec, _| {
+            the_project(spec)["restore"]["restoreLockProperties"]["nuGetLockFilePath"] =
+                json!("packages.lock.json");
         }),
         (UnmodelledField::LockFile, |_, dir| {
             let lock = dir.join("obj/packages.lock.json");
@@ -1010,7 +1089,7 @@ fn generate(rng: &mut SplitMix64) -> Generated {
     let mut packages = Vec::new();
     for id in IDS {
         for version in VERSIONS {
-            if rng.below(10) < 3 {
+            if rng.below(10) == 0 {
                 continue;
             }
             let groups = (0..rng.below(3))
@@ -1031,7 +1110,13 @@ fn generate(rng: &mut SplitMix64) -> Generated {
                 5 => &["build/X.targets"],
                 _ => &[],
             };
-            packages.push(Pkg::new(id, version, groups).with_files(files));
+            let mut package = Pkg::new(id, version, groups).with_files(files);
+            match rng.below(10) {
+                0 => package.min_client_version = Some(*rng.pick(&["2.12", "5.0.0", "99.0"])),
+                1 => package.package_types = vec![*rng.pick(&["Dependency", "DotnetTool"])],
+                _ => {}
+            }
+            packages.push(package);
         }
     }
 
@@ -1081,7 +1166,14 @@ fn generate(rng: &mut SplitMix64) -> Generated {
     }
     shape.sdk_analysis_level =
         *rng.pick(&[None, Some("9.0.100"), Some("10.0.100"), Some("10.0.400")]);
-    shape.enable_audit = *rng.pick(&[Some("false"), Some("false"), Some("FALSE"), None]);
+    shape.enable_audit = *rng.pick(&[
+        Some("false"),
+        Some("false"),
+        Some("false"),
+        Some("FALSE"),
+        Some("FALSE"),
+        None,
+    ]);
     shape.lock_file = *rng.pick(&[Some("false"), None]);
     shape.source_mapping = rng.below(4) == 0;
     if rng.below(10) == 0 {
@@ -1139,12 +1231,19 @@ fn features(
         .collect();
     for pkg in &generated.packages {
         let identity = format!("{} {}", pkg.id, pkg.version);
-        if !pkg.files.is_empty()
-            && committed_ids
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case(&identity))
+        if committed_ids
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(&identity))
         {
-            features.push("package-with-assets".to_owned());
+            if !pkg.files.is_empty() {
+                features.push("package-with-assets".to_owned());
+            }
+            if let Some(minimum) = pkg.min_client_version {
+                features.push(format!("min-client-version={minimum}"));
+            }
+            for package_type in &pkg.package_types {
+                features.push(format!("package-type={package_type}"));
+            }
         }
     }
     // The fallback list mattered: without it, the resolver computes another
@@ -1167,7 +1266,14 @@ fn features(
             &NuGetFramework::parse(framework.alias).unwrap(),
             &direct,
         );
-        if without.as_ref().ok() != Some(&resolved.closure) {
+        let identities = |closure: &borzoi_nuget::ResolvedPackageClosure| {
+            closure
+                .packages
+                .iter()
+                .map(|package| package.identity.clone())
+                .collect::<Vec<_>>()
+        };
+        if without.as_ref().ok().map(identities) != Some(identities(&resolved.closure)) {
             features.push("asset-target-fallback-mattered".to_owned());
         }
     }
@@ -1205,6 +1311,9 @@ fn required_features() -> BTreeSet<String> {
         "auto-referenced",
         "asset-target-fallback-mattered",
         "package-with-assets",
+        "min-client-version=2.12",
+        "min-client-version=5.0.0",
+        "package-type=Dependency",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1231,6 +1340,7 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
         DgSpecResolveDecline::PackageNamedLikeProject { .. } => "named-like-project".to_owned(),
         DgSpecResolveDecline::CompatibilityUnproven { .. } => "compatibility-unproven".to_owned(),
         DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
+        DgSpecResolveDecline::PackageMetadata { .. } => "package-metadata".to_owned(),
     }
 }
 

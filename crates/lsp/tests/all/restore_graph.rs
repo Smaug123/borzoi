@@ -199,6 +199,13 @@ fn decomposes_losslessly(
             .or_insert_with(|| Oracle::spawn_on(&sdk, &[]))
             .request(&json!({"op": "restoreDgSpec", "text": text}))
     };
+    if response["ok"] == false {
+        return Err(format!(
+            "{}: NuGet threw restoring the generated spec: {}",
+            project.display(),
+            response["message"]
+        ));
+    }
     let identity = &response["nugetCommands"];
     let expected = sdk.join("NuGet.Commands.dll");
     if identity["path"].as_str() != expected.to_str() {
@@ -298,6 +305,7 @@ impl SpawnFree {
                         "compatibility-unproven".to_owned()
                     }
                     DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
+                    DgSpecResolveDecline::PackageMetadata { .. } => "package-metadata".to_owned(),
                 };
                 format!("b1: declined {class}")
             }

@@ -407,7 +407,7 @@ Hand cases pin the rest:
 `netstandard2.0` fixture it commits, implicit references included, and on
 every corpus project in `pinned_projects` it must decline or agree.
 
-The differential and the probes behind it turned up five things:
+The differential, the probes behind it, and review turned up six things:
 - **Asset-target fallback picks dependency groups.** A package with no
   dependency group for `net8.0` contributes its `net461` group's dependencies
   to a project with the SDK's fallback list. The resolver read no group, so
@@ -432,6 +432,15 @@ The differential and the probes behind it turned up five things:
   with compile assets for the framework. The generator's packages carry asset
   files so that this is graded; it was found by probing, not by the first
   generator, whose packages had none.
+- **Restore validates package metadata even from a warm cache.** It refuses a
+  `DotnetTool` package in a `PackageReference` project (`NU1212`), and throws
+  on a package whose `minClientVersion` is above its own version (the oracle's
+  `restoreDgSpec` reports a thrown restore as a failure, as `dotnet restore`
+  fails). The nuspec reader now keeps both, and B₁ admits only packages typed
+  `Dependency` or untyped whose minimum, if any, is below the restoring
+  NuGet's version; the generator varies both. Codex found these, with a
+  relative `nuGetLockFilePath`, which NuGet resolves against the project and
+  which B₁ now declines.
 - **The packages folder needs no sources.** A source folder that does not
   exist is never read, and package source mapping that maps no package to any
   source changes nothing, when every version restore needs is in the packages
