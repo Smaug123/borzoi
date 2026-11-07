@@ -892,7 +892,9 @@ fn descriptive_metadata_is_inert() {
     }
 }
 
-/// Restore throws on a commit marker without a content hash, and on content-file
+/// Restore throws on a commit marker without a content hash or with a bad
+/// value under a repeated key (which a last-wins reader would drop), and on
+/// content-file
 /// rules it rejects; B₁ declines both, the second because it admits no
 /// `contentFiles` at all.
 #[test]
@@ -905,9 +907,11 @@ fn malformed_markers_and_unmodelled_metadata_decline() {
     let base = || Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
     let mut no_hash = base();
     no_hash.marker = Some("{}");
+    let mut repeated = base();
+    repeated.marker = Some(r#"{"version":"bad","version":2,"contentHash":"AAAA"}"#);
     let mut content = base().with_files(&["lib/net8.0/A.dll", "contentFiles/cs/net8.0/A.cs"]);
     content.metadata = vec![DECLINED_METADATA[0]];
-    for package in [no_hash, content] {
+    for package in [no_hash, repeated, content] {
         let graded = grade(&mut oracle, std::slice::from_ref(&package), &shape);
         assert!(!graded.theirs.success, "{package:?}: {:?}", graded.theirs);
         assert!(
@@ -923,8 +927,10 @@ fn malformed_markers_and_unmodelled_metadata_decline() {
 
 /// Restore throws on a nuspec without an `<id>` or a `<version>`, or without
 /// `<metadata>` at all, or with every element prefixed and no default
-/// namespace (it looks for the identity in the default namespace); B₁ requires
-/// each exactly once, in the default namespace.
+/// namespace (it looks for the identity in the default namespace), or behind
+/// another element named `metadata` (it reads the first by name); B₁ requires
+/// the identity exactly once, in the one `<metadata>`, in the default
+/// namespace.
 #[test]
 fn a_nuspec_must_state_its_identity() {
     let mut oracle = Oracle::spawn();
@@ -937,6 +943,7 @@ fn a_nuspec_must_state_its_identity() {
         r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>A</id><authors>a</authors><description>d</description></metadata></package>"#,
         r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"></package>"#,
         r#"<p:package xmlns:p="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><p:metadata><p:id>A</p:id><p:version>1.0.0</p:version><p:authors>a</p:authors><p:description>d</p:description></p:metadata></p:package>"#,
+        r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata xmlns="urn:other" /><metadata><id>A</id><version>1.0.0</version><authors>a</authors><description>d</description></metadata></package>"#,
     ];
     for nuspec in nuspecs {
         let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);

@@ -294,11 +294,13 @@ pub struct PackageNuspec {
     pub metadata_elements: Vec<MetadataElement>,
     /// The local name of every attribute on `<metadata>`.
     pub metadata_attributes: Vec<String>,
-    /// Whether `<package>` and `<metadata>` are each in the default namespace
-    /// in scope where they appear, as NuGet's reader assumes when it looks
-    /// for `<metadata>`'s children (a nuspec written with a prefix on every
-    /// element and no default namespace is not).
-    pub metadata_in_default_namespace: bool,
+    /// Whether `<metadata>` is the element NuGet's reader takes it to be, and
+    /// is read where that reader reads it: the only child of `<package>` named
+    /// `metadata` in any namespace (the reader takes the first by name), with
+    /// `<package>` and `<metadata>` each in the default namespace in scope
+    /// (the reader looks for `<metadata>`'s children there, so a nuspec with a
+    /// prefix on every element and no default namespace has no identity).
+    pub metadata_is_canonical: bool,
 }
 
 /// One child element of a nuspec's `<metadata>`.
@@ -800,11 +802,16 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
             package_types: Vec::new(),
             metadata_elements: Vec::new(),
             metadata_attributes: Vec::new(),
-            metadata_in_default_namespace: false,
+            metadata_is_canonical: false,
         });
     };
-    let metadata_in_default_namespace = root.tag_name().namespace() == root.default_namespace()
-        && metadata.tag_name().namespace() == metadata.default_namespace();
+    let metadata_is_canonical = root.tag_name().namespace() == root.default_namespace()
+        && metadata.tag_name().namespace() == metadata.default_namespace()
+        && root
+            .children()
+            .filter(|child| child.is_element() && child.tag_name().name() == "metadata")
+            .count()
+            == 1;
     let metadata_elements = metadata
         .children()
         .filter(roxmltree::Node::is_element)
@@ -891,7 +898,7 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         package_types,
         metadata_elements,
         metadata_attributes,
-        metadata_in_default_namespace,
+        metadata_is_canonical,
     })
 }
 

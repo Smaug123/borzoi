@@ -512,9 +512,8 @@ fn check_metadata(
 ///   restoring NuGet's own version. The comparison is strict because the
 ///   verified NuGets are release candidates, which sort below the release of
 ///   the same number.
-/// - **Declined** otherwise, and whenever `<package>` or `<metadata>` is not in
-///   the default namespace in scope (NuGet looks for `<metadata>`'s children
-///   there, so a nuspec prefixed throughout has no identity to it), `contentFiles`, `frameworkAssemblies`,
+/// - **Declined** otherwise, and whenever `<metadata>` is not canonical (see
+///   [`PackageNuspec::metadata_is_canonical`]), `contentFiles`, `frameworkAssemblies`,
 ///   `frameworkReferences` and `developmentDependency` among them: restore
 ///   reads each, and B₁ does not model how.
 fn metadata_is_admitted(
@@ -563,7 +562,7 @@ fn metadata_is_admitted(
             }
         }
     };
-    nuspec.metadata_in_default_namespace
+    nuspec.metadata_is_canonical
         && attributes_admitted
         && identity_stated
         && elements_admitted
@@ -598,22 +597,31 @@ const DESCRIPTIVE_ELEMENTS: &[&str] = &[
 /// Whether a package's `.nupkg.metadata` commit marker is one restore reads
 /// without complaint: a JSON object whose `contentHash` is a string (empty is
 /// accepted: Nix-built caches write `{ "contentHash": "" }`), and whose only
-/// other keys are `version`, 1 or 2, and `source`, a string or null. Restore
+/// other keys are `version`, 1 or 2, and `source`, a string or null, none
+/// repeated. Restore
 /// throws on a marker without a content hash, or with a null one, which the
 /// package readers, checking only that the marker exists, cannot see.
 fn commit_marker_is_admitted(marker: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(marker) else {
         return false;
     };
-    let Ok(serde_json::Value::Object(members)) = serde_json::from_str(&text) else {
+    // The dgspec's reader, which keeps a repeated key: restore reads every
+    // occurrence and throws on a bad one that a last-wins reader would drop.
+    let Ok(super::json::Json::Object(members)) = super::json::parse(&text) else {
         return false;
     };
-    members.iter().all(|(key, value)| match key.as_str() {
-        "version" => matches!(value.as_u64(), Some(1 | 2)),
-        "contentHash" => value.is_string(),
-        "source" => value.is_string() || value.is_null(),
-        _ => false,
-    }) && members.contains_key("contentHash")
+    let keys: BTreeSet<&str> = members.iter().map(|(key, _)| key.as_str()).collect();
+    keys.len() == members.len()
+        && keys.contains("contentHash")
+        && members.iter().all(|(key, value)| {
+            use super::json::Json;
+            match (key.as_str(), value) {
+                ("version", Json::Number(number)) => matches!(number.as_u64(), Some(1 | 2)),
+                ("contentHash", Json::String(_)) => true,
+                ("source", Json::String(_) | Json::Null) => true,
+                _ => false,
+            }
+        })
 }
 
 /// Every field of `spec` present with a value the resolver does not model.
