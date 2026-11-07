@@ -162,6 +162,16 @@ pub fn sdk_dir_for(dotnet: &Path, directory: &Path) -> PathBuf {
     }
 }
 
+/// One change an oracle child makes to the environment it inherits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentChange<'a> {
+    /// Set the variable to the value.
+    Set(&'a str, &'a str),
+    /// Remove the variable. Not the same as setting it empty: NuGet reads an
+    /// empty `DOTNET_CLI_HOME` as the working folder.
+    Unset(&'a str),
+}
+
 /// A long-lived `nuget-oracle` child driven in lock-step: write one JSON
 /// request line, read exactly the one JSON response line it produces.
 ///
@@ -189,15 +199,31 @@ impl Oracle {
     /// `<dotnet-root>/sdk/<version>` directory), with each `(name, value)` set
     /// in its environment before NuGet loads.
     pub fn spawn_on(sdk: &Path, environment: &[(&str, &str)]) -> Oracle {
-        let sdk = sdk.to_str().expect("SDK directory is UTF-8");
-        let assignments: Vec<String> = environment
+        let changes: Vec<EnvironmentChange<'_>> = environment
             .iter()
-            .map(|(name, value)| format!("{name}={value}"))
+            .map(|(name, value)| EnvironmentChange::Set(name, value))
             .collect();
-        let mut args = vec!["--nuget-from", sdk];
-        for assignment in &assignments {
-            args.extend(["--env", assignment.as_str()]);
-        }
+        Oracle::spawn_on_with_changes(sdk, &changes)
+    }
+
+    /// Spawn the oracle on the NuGet of [`sdk_dir`], with `changes` made to
+    /// the environment it inherits, in order, before NuGet loads.
+    pub fn spawn_with_changes(changes: &[EnvironmentChange<'_>]) -> Oracle {
+        Oracle::spawn_on_with_changes(sdk_dir(), changes)
+    }
+
+    fn spawn_on_with_changes(sdk: &Path, changes: &[EnvironmentChange<'_>]) -> Oracle {
+        let sdk = sdk.to_str().expect("SDK directory is UTF-8");
+        let args: Vec<String> = ["--nuget-from".to_owned(), sdk.to_owned()]
+            .into_iter()
+            .chain(changes.iter().flat_map(|change| match change {
+                EnvironmentChange::Set(name, value) => {
+                    ["--env".to_owned(), format!("{name}={value}")]
+                }
+                EnvironmentChange::Unset(name) => ["--unset".to_owned(), (*name).to_owned()],
+            }))
+            .collect();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         Oracle {
             child: BatchChild::spawn(ensure_oracle_built(), &args),
         }

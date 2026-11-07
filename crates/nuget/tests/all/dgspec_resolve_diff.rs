@@ -44,7 +44,7 @@ use borzoi_nuget::{
 use borzoi_oracle_harness::manifest::{Manifest, check};
 use serde_json::{Map, Value, json};
 
-use crate::common::{Oracle, SplitMix64, sdk_dir};
+use crate::common::{EnvironmentChange, Oracle, SplitMix64, sdk_dir};
 
 // ============================================================================
 // The universe: packages in a packages folder
@@ -594,11 +594,18 @@ fn grade_spec(
 }
 
 /// The environment an oracle child restores under: this process's, which it
-/// inherits, with `overrides` set as its `--env` assignments set them.
-fn oracle_environment(overrides: &[(&str, &str)]) -> BTreeMap<OsString, OsString> {
+/// inherits, with `changes` made as the child makes them.
+fn oracle_environment(changes: &[EnvironmentChange<'_>]) -> BTreeMap<OsString, OsString> {
     let mut environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
-    for (name, value) in overrides {
-        environment.insert(OsString::from(name), OsString::from(value));
+    for change in changes {
+        match change {
+            EnvironmentChange::Set(name, value) => {
+                environment.insert(OsString::from(name), OsString::from(value));
+            }
+            EnvironmentChange::Unset(name) => {
+                environment.remove(OsStr::new(name));
+            }
+        }
     }
     environment
 }
@@ -3936,6 +3943,10 @@ enum EnvironmentExpectation {
 /// reads and B₁ does not model is graded too, so the sweep is seen to move
 /// restore: `NUGET_USE_LEGACY_ASSET_TARGET_FALLBACK_DEPENDENCY_RESOLUTION`
 /// drops a fallback group's dependencies.
+///
+/// Every case starts from a home of its own, with `DOTNET_CLI_HOME` unset and
+/// `HOME` at a folder holding the default user config, so that no home the
+/// test's caller set decides which user config a case reads.
 #[test]
 fn restore_is_graded_under_every_environment_b1_admits() {
     let fixtures = tempfile::tempdir().expect("temp dir");
@@ -4063,12 +4074,20 @@ fn restore_is_graded_under_every_environment_b1_admits() {
     }
 
     for (overrides, expectation) in &cases {
-        let pairs: Vec<(&str, &str)> = overrides
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect();
-        let environment = oracle_environment(&pairs);
-        let mut oracle = Oracle::spawn_with_environment(&pairs);
+        let default_home = at("homes/default");
+        let changes: Vec<EnvironmentChange<'_>> = [
+            EnvironmentChange::Unset("DOTNET_CLI_HOME"),
+            EnvironmentChange::Set("HOME", &default_home),
+        ]
+        .into_iter()
+        .chain(
+            overrides
+                .iter()
+                .map(|(name, value)| EnvironmentChange::Set(name, value)),
+        )
+        .collect();
+        let environment = oracle_environment(&changes);
+        let mut oracle = Oracle::spawn_with_changes(&changes);
         let mut committed = 0;
         let mut declines = BTreeSet::new();
         for (index, (text, spec)) in specs.iter().enumerate() {

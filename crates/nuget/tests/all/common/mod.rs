@@ -4,7 +4,7 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
-pub use borzoi_oracle_harness::nuget_oracle::{Oracle, sdk_dir};
+pub use borzoi_oracle_harness::nuget_oracle::{EnvironmentChange, Oracle, sdk_dir};
 
 // ============================================================================
 // Deterministic input generation (shared by the differential tests)

@@ -682,10 +682,26 @@ pub fn restore_environment(env: &SdkDiscoveryEnv) -> BTreeMap<OsString, OsString
     ];
     for (name, value) in discovered {
         if let Some(value) = value {
-            environment.insert(OsString::from(name), value.to_owned());
+            override_variable(&mut environment, name, value, cfg!(windows));
         }
     }
     environment
+}
+
+/// Set `name` to `value` in `environment`, first removing every key that names
+/// the same variable: on Windows (`case_insensitive`) that is every spelling of
+/// `name` in any case, since a child's environment keeps one of `Path` and
+/// `PATH`, and not necessarily the last one inserted.
+fn override_variable(
+    environment: &mut BTreeMap<OsString, OsString>,
+    name: &str,
+    value: &std::ffi::OsStr,
+    case_insensitive: bool,
+) {
+    if case_insensitive {
+        environment.retain(|key, _| !key.eq_ignore_ascii_case(name));
+    }
+    environment.insert(OsString::from(name), value.to_owned());
 }
 
 /// Set the subprocess environment to exactly [`restore_environment`].
@@ -696,7 +712,43 @@ fn apply_env(cmd: &mut Command, env: &SdkDiscoveryEnv) {
 
 #[cfg(test)]
 mod tests {
-    use super::without_verbatim_prefix;
+    use super::{override_variable, without_verbatim_prefix};
+    use std::collections::BTreeMap;
+    use std::ffi::{OsStr, OsString};
+
+    #[test]
+    fn an_override_replaces_every_spelling_only_where_case_is_ignored() {
+        let inherited: BTreeMap<OsString, OsString> = [("Path", "inherited"), ("PATHEXT", "x")]
+            .into_iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+            .collect();
+        let overridden = |case_insensitive: bool| {
+            let mut environment = inherited.clone();
+            override_variable(
+                &mut environment,
+                "PATH",
+                OsStr::new("discovered"),
+                case_insensitive,
+            );
+            environment
+                .into_iter()
+                .map(|(name, value)| (name.into_string().unwrap(), value.into_string().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |name: &str, value: &str| (name.to_owned(), value.to_owned());
+        assert_eq!(
+            overridden(true),
+            vec![pair("PATH", "discovered"), pair("PATHEXT", "x")]
+        );
+        assert_eq!(
+            overridden(false),
+            vec![
+                pair("PATH", "discovered"),
+                pair("PATHEXT", "x"),
+                pair("Path", "inherited"),
+            ]
+        );
+    }
 
     #[test]
     fn a_verbatim_prefix_is_removed_and_nothing_else_is() {
