@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
-use crate::infer::{InferredFile, ProjectCase, infer_file};
+use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_file};
 use crate::resolve::{ItemId, ProjectFile, ResolvedFile, ResolvedProject, signature_partners};
 use crate::ty::Ty;
 
@@ -103,6 +103,9 @@ pub struct PrecedingTypes {
     /// How many constructor-like declarations of each name the earlier files
     /// make, signatured ones included ([`InferredFile::constructor_names`]).
     constructor_names: HashMap<String, usize>,
+    /// The records each earlier file declares whose fields its inference
+    /// reads, by the path and arity of their `Ty::Project`.
+    records: ProjectRecords,
 }
 
 impl PrecedingTypes {
@@ -146,6 +149,13 @@ impl PrecedingTypes {
         self.constructor_names.get(name).copied().unwrap_or(0)
     }
 
+    /// The record an earlier file declares at `path` with `arity` type
+    /// parameters, as that file's inference reads its fields; `None` for
+    /// anything else.
+    pub(crate) fn record(&self, path: &[String], arity: usize) -> Option<&ProjectRecord> {
+        self.records.get(&(path.to_vec(), arity))
+    }
+
     /// Publish one file's exports, in Compile order, after the file is
     /// inferred. `file` is its Compile index; `inferred` is `None` for a file
     /// that was not inferred (a signature slot); `screened` says the file has
@@ -180,6 +190,13 @@ impl PrecedingTypes {
                     .iter()
                     .filter(|(_, case)| case.publishable())
                     .map(|(&id, case)| (id, case.clone())),
+            );
+            self.records.extend(
+                inferred
+                    .project_records()
+                    .iter()
+                    .filter(|(_, record)| record.publishable())
+                    .map(|(key, record)| (key.clone(), record.clone())),
             );
         }
         for export in resolved.exports().iter() {

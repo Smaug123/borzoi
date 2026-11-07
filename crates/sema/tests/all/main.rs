@@ -48,6 +48,7 @@ mod infer_member_access_diff;
 mod infer_operators_diff;
 mod infer_parameter_types_diff;
 mod infer_preceding_type_diff;
+mod infer_project_record_diff;
 mod infer_project_type_annotation_diff;
 mod infer_project_union_diff;
 mod infer_recovered_annotation_diff;
