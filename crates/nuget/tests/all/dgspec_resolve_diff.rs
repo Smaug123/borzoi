@@ -610,9 +610,48 @@ fn oracle_environment(changes: &[EnvironmentChange<'_>]) -> BTreeMap<OsString, O
     environment
 }
 
-/// The environment of an oracle spawned without overrides.
+/// The home every oracle here restores under unless a case sets another: a
+/// folder of the suite's own, with no user config (restore writes its default
+/// there).
+static SUITE_HOME: LazyLock<tempfile::TempDir> =
+    LazyLock::new(|| tempfile::tempdir().expect("temp dir"));
+
+/// The suite's controlled environment, as changes to the one this process
+/// inherited: every variable B₁ has a verdict on removed, and `HOME` at
+/// [`SUITE_HOME`]. Without it, the caller's own home and NuGet variables
+/// decide what every case here grades: a user config outside the admitted
+/// vocabulary declines them all.
+static CONTROLLED: LazyLock<Vec<(String, Option<String>)>> = LazyLock::new(|| {
+    let mut changes: Vec<(String, Option<String>)> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| environment_variable(OsStr::new(name)) != EnvironmentVariable::Unread)
+        .map(|name| (name, None))
+        .collect();
+    let home = SUITE_HOME.path().to_str().expect("UTF-8").to_owned();
+    changes.push(("HOME".to_owned(), Some(home)));
+    changes
+});
+
+/// [`CONTROLLED`], then `extra`.
+fn controlled<'a>(extra: &[EnvironmentChange<'a>]) -> Vec<EnvironmentChange<'a>> {
+    CONTROLLED
+        .iter()
+        .map(|(name, value)| match value {
+            Some(value) => EnvironmentChange::Set(name, value),
+            None => EnvironmentChange::Unset(name),
+        })
+        .chain(extra.iter().copied())
+        .collect()
+}
+
+/// An oracle restoring under the suite's controlled environment.
+fn spawn_oracle() -> Oracle {
+    Oracle::spawn_with_changes(&controlled(&[]))
+}
+
+/// The environment of an oracle from [`spawn_oracle`].
 static DEFAULT_ENVIRONMENT: LazyLock<BTreeMap<OsString, OsString>> =
-    LazyLock::new(|| oracle_environment(&[]));
+    LazyLock::new(|| oracle_environment(&controlled(&[])));
 
 /// [`grade_spec`] against an oracle restoring under `environment`, which B₁
 /// is handed too.
@@ -707,7 +746,7 @@ fn group(tfm: Option<&'static str>, deps: &[(&str, &str)]) -> Group {
 /// and none without it.
 #[test]
 fn the_asset_target_fallback_list_selects_dependency_groups() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [
         Pkg::new("A", "1.0.0", vec![group(Some("net461"), &[("B", "2.0.0")])]),
         Pkg::new("B", "2.0.0", vec![]),
@@ -732,7 +771,7 @@ fn the_asset_target_fallback_list_selects_dependency_groups() {
 /// fallback list is consulted only when no group suits the framework.
 #[test]
 fn an_empty_group_for_the_framework_shadows_the_fallback() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [
         Pkg::new(
             "A",
@@ -782,7 +821,7 @@ const MAPPING_CONFIG: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 /// pattern) as it does on a file that is not XML.
 #[test]
 fn config_files_are_held_to_a_closed_vocabulary() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [Pkg::new("A", "1.0.0", vec![])];
     let mut shape = Shape::new(vec![Framework::new(
         "net8.0",
@@ -817,7 +856,7 @@ fn config_files_are_held_to_a_closed_vocabulary() {
 /// the packages folder: an SDK's `library-packs` source can be one.
 #[test]
 fn a_missing_source_folder_is_never_read() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [Pkg::new("A", "1.0.0", vec![])];
     let mut shape = Shape::new(vec![Framework::new(
         "net8.0",
@@ -832,7 +871,7 @@ fn a_missing_source_folder_is_never_read() {
 /// project even though the other framework resolves.
 #[test]
 fn one_failing_framework_fails_the_project() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [
         Pkg::new("A", "1.0.0", vec![group(None, &[("C", "[1.0.0]")])]),
         Pkg::new("B", "1.0.0", vec![group(None, &[("C", "[2.0.0]")])]),
@@ -862,7 +901,7 @@ fn one_failing_framework_fails_the_project() {
 /// that demotes or suppresses it commits again.
 #[test]
 fn a_promoted_warning_fails_a_restore_the_resolver_would_commit() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [
         Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, 2.0.0)")])]),
         Pkg::new("B", "1.0.0", vec![]),
@@ -910,7 +949,7 @@ fn a_promoted_warning_fails_a_restore_the_resolver_would_commit() {
 /// on, logs nothing: `NU1608` is about the upper bound only.
 #[test]
 fn a_version_below_a_dependencys_lower_bound_logs_nothing() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [
         Pkg::new("A", "1.0.0", vec![group(None, &[("B", "(1.0.0, )")])]),
         Pkg::new("B", "1.0.0", vec![]),
@@ -937,7 +976,7 @@ fn a_version_below_a_dependencys_lower_bound_logs_nothing() {
 /// against commits.
 #[test]
 fn a_package_without_assets_for_the_framework_declines() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let lib_net48 = |groups| Pkg::new("A", "1.0.0", groups).with_files(&["lib/net48/A.dll"]);
     let cases = [
         ("netstandard2.0", false, vec![], "NU1202"),
@@ -976,7 +1015,7 @@ fn a_package_without_assets_for_the_framework_declines() {
 /// type and a minimum below the restoring NuGet.
 #[test]
 fn restore_validated_metadata_declines_outside_the_admitted_domain() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -1018,7 +1057,7 @@ fn restore_validated_metadata_declines_outside_the_admitted_domain() {
 /// writes all of these too, in combination; this grades each one for certain.)
 #[test]
 fn descriptive_metadata_is_inert() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -1047,7 +1086,7 @@ fn descriptive_metadata_is_inert() {
 /// `contentFiles` at all.
 #[test]
 fn malformed_markers_and_unmodelled_metadata_decline() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -1081,7 +1120,7 @@ fn malformed_markers_and_unmodelled_metadata_decline() {
 /// namespace.
 #[test]
 fn a_nuspec_must_state_its_identity() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -1114,7 +1153,7 @@ fn a_nuspec_must_state_its_identity() {
 #[cfg(unix)]
 #[test]
 fn a_symlinked_version_folders_metadata_is_validated() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let dir = tempfile::tempdir().expect("temp dir");
     let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
     package.min_client_version = Some("99.0.0");
@@ -1150,7 +1189,7 @@ fn a_symlinked_version_folders_metadata_is_validated() {
 #[cfg(unix)]
 #[test]
 fn a_symlinked_asset_folder_is_followed() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -1177,7 +1216,7 @@ fn a_symlinked_asset_folder_is_followed() {
 /// Restore throws on an empty project unique name; B₁ declines it.
 #[test]
 fn an_empty_project_unique_name_declines() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -1207,7 +1246,7 @@ fn an_empty_project_unique_name_declines() {
 /// consistently in three places, so they are graded here.
 #[test]
 fn restore_rejects_what_the_sdk_never_writes() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [Pkg::new("A", "1.0.0", vec![])];
     let shape = Shape::new(vec![
         Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]),
@@ -1296,7 +1335,7 @@ fn restore_rejects_what_the_sdk_never_writes() {
 /// version of the package wins.
 #[test]
 fn a_losing_versions_metadata_is_validated_too() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let mut loser = Pkg::new("C", "1.0.0", vec![]);
     loser.min_client_version = Some("99.0");
     let packages = [
@@ -1322,7 +1361,7 @@ fn a_losing_versions_metadata_is_validated_too() {
 /// A package with the project's own name declines.
 #[test]
 fn a_package_named_like_the_project_declines() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [Pkg::new("A", "1.0.0", vec![])];
     let mut shape = Shape::new(vec![Framework::new(
         "net8.0",
@@ -1349,7 +1388,7 @@ fn a_package_named_like_the_project_declines() {
 /// stops being graded only by leaving it.
 #[test]
 fn the_verified_list_is_the_graded_nuget() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let response = oracle.request(&json!({"op": "nuGetLogCodes"}));
     let graded = response["nugetCommands"]["informationalVersion"]
         .as_str()
@@ -2053,7 +2092,7 @@ fn generated_specs_resolve_identically() {
         .ok()
         .map(|cases| cases.parse().expect("a case count"))
         .unwrap_or(600);
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let mut rng = SplitMix64(0xd65_bec1);
     let mut seen = BTreeSet::new();
     let mut census: BTreeMap<String, usize> = BTreeMap::new();
@@ -2136,7 +2175,7 @@ fn at_mut<'a>(value: &'a mut Value, path: &[PathStep]) -> &'a mut Value {
 /// validation rules: deleting it must make B₁ decline or B₀ agree.
 #[test]
 fn every_single_deletion_from_a_committing_spec_is_graded() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [
         Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])])
             .with_files(&["lib/netstandard2.0/A.dll"]),
@@ -2220,7 +2259,7 @@ fn every_single_deletion_from_a_committing_spec_is_graded() {
 /// substituting the spec's own values for one another can.
 #[test]
 fn every_substitution_of_a_committing_specs_strings_is_graded() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = [
         Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])])
             .with_files(&["lib/netstandard2.0/A.dll"]),
@@ -2367,7 +2406,7 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
         variants
     };
 
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -2470,7 +2509,7 @@ fn nuspec_namespace_forms_are_graded() {
         false,
     ));
 
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -3180,7 +3219,7 @@ fn every_nuspec_layer_is_held_to_its_domain() {
 /// decline is a decline of a known outcome, not of one nobody looked at.
 #[test]
 fn asset_folder_shapes_are_graded() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -3373,7 +3412,7 @@ fn framework_folder_names_are_graded() {
 /// range is not exact, which the SDK never writes.
 #[test]
 fn downloads_are_a_presence_check() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let base = || Pkg::new("D", "1.0.0", vec![]).with_files(&["data/x.txt"]);
     let mut platform = base();
     platform.package_types = vec![r#"name="DotnetPlatform""#];
@@ -3455,7 +3494,7 @@ fn downloads_are_a_presence_check() {
 /// and declines the rest, some of which restore accepts.
 #[test]
 fn content_files_rules_are_held_to_what_restore_reads() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
@@ -3509,7 +3548,7 @@ fn content_files_rules_are_held_to_what_restore_reads() {
 /// rule itself.
 #[test]
 fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     // A -> B [1.0.0, ), C -> B [3.0.0, ), each B -> D, E -> B [1.0.0, 1.5.0),
     // F -> B [1.0.0, 2.0.0], G -> B [1.0.0].
     let packages = vec![
@@ -3667,7 +3706,7 @@ fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
 /// transitive package to its central version; B₁ declines all three.
 #[test]
 fn central_package_management_without_pinning_commits() {
-    let mut oracle = Oracle::spawn();
+    let mut oracle = spawn_oracle();
     let packages = vec![
         Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])]),
         Pkg::new("A", "2.0.0", vec![]),
@@ -3944,9 +3983,8 @@ enum EnvironmentExpectation {
 /// restore: `NUGET_USE_LEGACY_ASSET_TARGET_FALLBACK_DEPENDENCY_RESOLUTION`
 /// drops a fallback group's dependencies.
 ///
-/// Every case starts from a home of its own, with `DOTNET_CLI_HOME` unset and
-/// `HOME` at a folder holding the default user config, so that no home the
-/// test's caller set decides which user config a case reads.
+/// Every case starts from the suite's controlled environment, with `HOME` at
+/// a folder holding the default user config.
 #[test]
 fn restore_is_graded_under_every_environment_b1_admits() {
     let fixtures = tempfile::tempdir().expect("temp dir");
@@ -4075,17 +4113,15 @@ fn restore_is_graded_under_every_environment_b1_admits() {
 
     for (overrides, expectation) in &cases {
         let default_home = at("homes/default");
-        let changes: Vec<EnvironmentChange<'_>> = [
-            EnvironmentChange::Unset("DOTNET_CLI_HOME"),
-            EnvironmentChange::Set("HOME", &default_home),
-        ]
-        .into_iter()
-        .chain(
-            overrides
-                .iter()
-                .map(|(name, value)| EnvironmentChange::Set(name, value)),
-        )
-        .collect();
+        let extra: Vec<EnvironmentChange<'_>> =
+            std::iter::once(EnvironmentChange::Set("HOME", &default_home))
+                .chain(
+                    overrides
+                        .iter()
+                        .map(|(name, value)| EnvironmentChange::Set(name, value)),
+                )
+                .collect();
+        let changes = controlled(&extra);
         let environment = oracle_environment(&changes);
         let mut oracle = Oracle::spawn_with_changes(&changes);
         let mut committed = 0;
@@ -4137,12 +4173,8 @@ fn b1_declines_environments_it_cannot_grade() {
     let spec = base_spec(dir.path());
     let spec = parse_dgspec(&spec.to_string()).unwrap_or_else(|decline| panic!("{decline}"));
     let project = project_of(&spec);
-    // A home of the test's own, so no home the caller set decides a case.
-    let home = tempfile::tempdir().expect("temp dir");
     let under = |change: &dyn Fn(&mut BTreeMap<OsString, OsString>)| {
         let mut environment = DEFAULT_ENVIRONMENT.clone();
-        environment.remove(OsStr::new("DOTNET_CLI_HOME"));
-        environment.insert("HOME".into(), home.path().into());
         change(&mut environment);
         resolve_dgspec(&verified(), &spec, &project, &environment)
     };
