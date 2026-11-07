@@ -1026,6 +1026,31 @@ fn a_symlinked_asset_folder_is_followed() {
     }
 }
 
+/// Restore throws on an empty project unique name; B₁ declines it.
+#[test]
+fn an_empty_project_unique_name_declines() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let dir = tempfile::tempdir().expect("temp dir");
+    install(&dir.path().join("gp"), &[Pkg::new("A", "1.0.0", vec![])]);
+    let mut spec: Value = serde_json::from_str(&shape.render(dir.path())).unwrap();
+    let project = the_project(&mut spec).clone();
+    let mut project = project;
+    project["restore"]["projectUniqueName"] = json!("");
+    spec["projects"] = json!({"": project});
+    spec["restore"] = json!({"": {}});
+    let text = spec.to_string();
+    let Ok(parsed) = parse_dgspec(&text) else {
+        return;
+    };
+    let graded = grade_spec(&mut oracle, &text, &parsed, "an empty unique name");
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(graded.ours.is_err(), "{:?}", graded.ours);
+}
+
 /// Restore refuses aliases that differ only by case, aliases outside the
 /// characters the SDK writes (`NU1019`), and a path holding a NUL; and it
 /// compares a nuspec's version with the folder's by NuGet identity, under
@@ -1234,7 +1259,14 @@ fn resolve_text(
     spec: &Value,
 ) -> Result<Vec<ResolvedFramework>, DgSpecResolveDecline> {
     let spec = parse_dgspec(&spec.to_string()).unwrap_or_else(|decline| panic!("{decline}"));
-    resolve_dgspec(identity, &spec, &project_of(&spec))
+    // The base spec's project, by name: a mutation may add another.
+    let project = spec
+        .projects
+        .iter()
+        .map(|project| project.restore.project_unique_name.clone())
+        .find(|name| name.ends_with("App.fsproj"))
+        .expect("the base spec's project is in the spec");
+    resolve_dgspec(identity, &spec, &project)
 }
 
 /// Each field the resolver does not model declines, naming it, when it is the
@@ -1388,6 +1420,21 @@ fn every_unmodelled_field_declines_by_name() {
             )
             .unwrap();
             the_project(spec)["restore"]["configFilePaths"] = json!([config.to_str().unwrap()]);
+        }),
+        (UnmodelledField::OtherProjects, |spec, dir| {
+            let mut other = the_project(spec).clone();
+            let path = dir.join("Other.fsproj");
+            let path = path.to_str().unwrap();
+            other["restore"]["projectUniqueName"] = json!(path);
+            other["restore"]["projectPath"] = json!(path);
+            other["restore"]
+                .as_object_mut()
+                .unwrap()
+                .remove("projectName");
+            spec["projects"][path] = other;
+        }),
+        (UnmodelledField::OtherProjects, |spec, dir| {
+            spec["restore"][dir.join("Missing.fsproj").to_str().unwrap()] = json!({});
         }),
         (UnmodelledField::NoFrameworks, |spec, _| {
             let project = the_project(spec);

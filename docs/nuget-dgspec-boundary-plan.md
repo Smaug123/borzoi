@@ -374,18 +374,30 @@ destructures each struct in full, so a field added to the model does not
 compile until it has one. The verdicts are:
 - **Modelled:** direct dependencies, the packages folder, and the
   asset-target fallback list.
-- **Inert, with the reason at the point of discard:** paths and outputs; the
-  config files (the settings that bear on resolution are in the spec already,
-  except package source mapping, which filters sources and never the packages
-  folder); `noWarn`; include and suppress-parent flags; `autoReferenced`;
-  `SdkAnalysisLevel`; framework references.
+- **Inert, with the reason at the point of discard:** paths and outputs
+  (beyond being present and free of control characters); `noWarn`; include
+  and suppress-parent flags; `autoReferenced`; `SdkAnalysisLevel`; framework
+  references.
 - **Declined when present, all reported at once so the census can count
   them:** pruning, project references, central package management (all of
   it, not only transitive pinning), download dependencies, a warning policy
   other than `warnAsError` ⊆ {`NU1605`}, fallback folders, a source that is
   not a local absolute path, audit not explicitly off, a lock file that is or
   might be in use, a dependency target other than `Package`, the legacy
-  `PackageTargetFallback`, and an absent project name or packages path.
+  `PackageTargetFallback`, a config file outside its closed vocabulary, any
+  project or restore entry besides this one, and required metadata that is
+  absent or outside the vocabulary the SDK writes.
+
+The input domain B₁ claims is therefore narrow by design: an entry-only spec,
+in the shape `restore.rs`'s `GenerateRestoreGraphFile` writes, over a packages
+folder whose every package that restore may read is in a closed vocabulary
+(nuspec metadata, commit marker, files), with config files that only list
+sources. Each layer of text (the spec's strings and structure, nuspec and
+config XML, the commit marker's JSON) is held to a positive domain rather than
+to a list of known refusals, and each has a sweep that grades perturbations of
+a committing input against B₀. Review kept finding malformed inputs no SDK
+writes for ten rounds; the later rounds' findings were all in this text layer,
+and each was closed by narrowing a domain rather than by patching a case.
 
 After resolving, B₁ also applies restore's compatibility check in the
 direction that can only decline (see the findings below).
@@ -445,10 +457,12 @@ The differential, the probes behind it, and review turned up seven things:
   modelled (dependencies, references, an `id` and `version` each stated once
   and naming the package's folder, `packageTypes` naming only `Dependency` without a
   version, a `minClientVersion` below the restoring NuGet's version), or a
-  decline, all in the default namespace in scope (NuGet looks for the
-  identity there, so a nuspec prefixed throughout has none; a hand case grades
-  each namespace form); and the commit marker must be one restore reads (a Nix-built
-  cache's `{ "contentHash": "" }` is). It checks every version restore may
+  decline, all in the one `<metadata>`, in the default namespace in scope
+  (NuGet reads the first element named `metadata` and looks for the identity
+  in the default namespace, so a nuspec prefixed throughout has none; a hand
+  case grades each namespace form); and the commit marker must be one restore
+  reads, with no key repeated (a Nix-built cache's `{ "contentHash": "" }` is
+  one). It checks every version restore may
   read: each version the walk read, and the installed lower bound of every
   declared dependency and direct requirement, which the closure now reports.
   Checking every installed version instead declined every F# project on a

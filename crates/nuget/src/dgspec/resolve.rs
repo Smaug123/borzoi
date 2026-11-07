@@ -156,7 +156,7 @@ pub enum UnmodelledField {
     /// The project has no target framework.
     NoFrameworks,
     /// Metadata NuGet requires is absent or inconsistent, so restore throws:
-    /// the project's path or output path, or `originalTargetFrameworks`
+    /// the project's unique name, path or output path, or `originalTargetFrameworks`
     /// naming exactly the aliases of the frameworks and of the restore
     /// metadata's frameworks, each alias once ignoring case, in the characters
     /// the SDK writes, and each naming a different framework.
@@ -164,6 +164,9 @@ pub enum UnmodelledField {
     /// A config file NuGet loads its settings from is outside the vocabulary
     /// B₁ admits (see `config_is_admitted`).
     Config,
+    /// The spec holds a project besides this one, or restores more than this
+    /// one: NuGet validates the whole graph first (stage 6).
+    OtherProjects,
 }
 
 impl UnmodelledField {
@@ -187,6 +190,7 @@ impl UnmodelledField {
             UnmodelledField::NoFrameworks => "no-frameworks",
             UnmodelledField::RequiredMetadata => "required-metadata",
             UnmodelledField::Config => "config",
+            UnmodelledField::OtherProjects => "other-projects",
         }
     }
 }
@@ -343,7 +347,13 @@ pub fn resolve_dgspec(
             project: project.to_owned(),
         })?;
 
-    let fields = unmodelled_fields(package_spec);
+    let mut fields = unmodelled_fields(package_spec);
+    // NuGet validates the whole graph before restoring any of it, so another
+    // project, or another entry in the restore list, can fail this one's
+    // restore. The spec `restore.rs` generates is entry-only.
+    if spec.projects.len() != 1 || spec.restore.len() != 1 {
+        fields.insert(UnmodelledField::OtherProjects);
+    }
     if !fields.is_empty() {
         return Err(DgSpecResolveDecline::Unmodelled { fields });
     }
@@ -645,8 +655,9 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     } = spec;
 
     let ProjectRestoreMetadata {
-        // How the spec names the project; `resolve_dgspec` looks it up by it.
-        project_unique_name: _,
+        // How the spec names the project; `resolve_dgspec` looks it up by it,
+        // and restore requires it.
+        project_unique_name,
         project_name,
         // Where the project and its outputs are, not what it resolves; but
         // restore requires them.
@@ -715,7 +726,8 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     fn as_set<'a>(aliases: &[&'a str]) -> BTreeSet<&'a str> {
         aliases.iter().copied().collect()
     }
-    if !path_admitted(project_path)
+    if project_unique_name.is_empty()
+        || !path_admitted(project_path)
         || !path_admitted(output_path)
         || !aliases_admitted(&original)
         || !aliases_admitted(&aliases)
