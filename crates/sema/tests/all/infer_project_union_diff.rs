@@ -292,6 +292,15 @@ const UNIONS: &[Union] = &[
         &[],
     ),
     u(
+        "structNamedLikeType",
+        "[<Struct>]\ntype SW = SW of int\n",
+        "{L}SW",
+        // A struct's name is a constructor too, so its same-named case is
+        // contested; FCS rejects the type-qualified `SW.SW 2` outright.
+        &[("{L}SW 1", false, false), ("{L}SW.SW 2", false, false)],
+        &[("| {L}SW 0 -> 0 | {L}SW n -> n", false)],
+    ),
+    u(
         "caseNamedLikeType",
         "type Wrap = Wrap of int | Empty\n",
         "{L}Wrap",
