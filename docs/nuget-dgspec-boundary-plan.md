@@ -1,9 +1,9 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–4, 7c and 8 have landed. Stage 8 chose **A₁** (see
-> its section for the numbers and the conditions). B₁ now commits on half the
-> corpus, exactly as the restore does; targeting-pack downloads (7b) block
-> two of the rest, and dependency asset filters one. Supersedes slice 8 of
+> **Status:** stages 1–4, 7b, 7c and 8 have landed. Stage 8 chose **A₁**
+> (see its section for the numbers and the conditions). B₁ now commits on half
+> the corpus, exactly as the restore does; the resolver's dependency asset
+> filters block the other half. Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -540,8 +540,7 @@ the corpus has nothing that 5, 6 or 7a would unblock, so the order among those
 comes from stage 1's local sweep and the stage-8 fixtures, not from the census.
 
 - **7c — the warning policy.** Landed; see below.
-- **7b — download dependencies.** A presence check in the packages folder; a
-  miss declines.
+- **7b — download dependencies.** Landed; see below.
 - **5 — pruning.** Oracle: the generator emits prune lists over the synthetic
   universe, including prune ranges that cover a *direct* reference.
   Certain-implies-exact against both engines. The census moves.
@@ -600,8 +599,33 @@ Lifting the policy decline moved the census onto what it had hidden:
 | WoofWare.Incremental (`net5.0`), WoofWare.PawPrint.Domain (`net8.0`) | declines: download dependencies (7b) |
 | WoofWare.Expect | declines: a nuspec dependency with an asset filter, which the resolver does not model |
 
-So the next order is **7b**, then the resolver's dependency asset filters,
+So the next order was **7b**, then the resolver's dependency asset filters,
 then 5, 6 and 7a.
+
+### Stage 7b: download dependencies — landed
+
+A framework's `downloadDependencies` no longer decline. Restore only checks
+that a download is present: it fails on a missing one (`NU1101`) and, unlike
+a dependency, validates nothing else about it. A download's package type
+(the targeting packs are `DotnetPlatform`), minimum client version, commit
+marker contents and metadata are all ignored, which a hand case grades
+against B₀. So B₁ commits when each download names one exact version that is
+committed in the packages folder with its nuspec, and declines as
+`DownloadUnavailable` otherwise. The SDK writes each download as an exact
+range; restore's handling of any other range is not modelled, so one
+declines (restore accepted an open range satisfied only by a higher version).
+The generator writes present, missing and open-ranged downloads.
+
+The census: the two projects downloads blocked (`net5.0` and `net8.0`
+targeting packs) now pass the check, and decline on what stood behind it.
+
+| corpus project (6) | B₁ |
+|---|---|
+| TypeEquality, WoofWare.LiangHyphenation, WoofWare.WeakHashTable | commits |
+| WoofWare.Expect, WoofWare.Incremental, WoofWare.PawPrint.Domain | declines: a nuspec dependency with an asset filter (`include`/`exclude`), which the resolver does not model |
+
+So the next stage is the resolver's dependency asset filters, which the
+corpus now names as the one blocker, then 5, 6 and 7a.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 
