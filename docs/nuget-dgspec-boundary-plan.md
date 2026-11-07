@@ -407,7 +407,7 @@ Hand cases pin the rest:
 `netstandard2.0` fixture it commits, implicit references included, and on
 every corpus project in `pinned_projects` it must decline or agree.
 
-The differential, the probes behind it, and review turned up six things:
+The differential, the probes behind it, and review turned up seven things:
 - **Asset-target fallback picks dependency groups.** A package with no
   dependency group for `net8.0` contributes its `net461` group's dependencies
   to a project with the SDK's fallback list. The resolver read no group, so
@@ -432,15 +432,26 @@ The differential, the probes behind it, and review turned up six things:
   with compile assets for the framework. The generator's packages carry asset
   files so that this is graded; it was found by probing, not by the first
   generator, whose packages had none.
-- **Restore validates package metadata even from a warm cache.** It refuses a
-  `DotnetTool` package in a `PackageReference` project (`NU1212`), and throws
-  on a package whose `minClientVersion` is above its own version (the oracle's
-  `restoreDgSpec` reports a thrown restore as a failure, as `dotnet restore`
-  fails). The nuspec reader now keeps both, and B₁ admits only packages typed
-  `Dependency` or untyped whose minimum, if any, is below the restoring
-  NuGet's version; the generator varies both. Codex found these, with a
-  relative `nuGetLockFilePath`, which NuGet resolves against the project and
-  which B₁ now declines.
+- **Restore validates package metadata even from a warm cache, on every
+  version it reads.** It refuses a `DotnetTool` package in a
+  `PackageReference` project (`NU1212`), and throws on a package type with a
+  malformed version or a `minClientVersion` above its own version, losing
+  versions included (the oracle's `restoreDgSpec` reports a thrown restore as
+  a failure, as `dotnet restore` fails). The nuspec reader now keeps both, and
+  B₁ admits only untyped packages or ones typed `Dependency` without a
+  version, whose minimum, if any, is below the restoring NuGet's version. It
+  checks every installed version of every package in the closure, which
+  covers every version restore reads. The generator varies both fields.
+- **Restore requires some metadata the resolver does not read.** An absent or
+  empty project name, project path or output path, or
+  `originalTargetFrameworks` not naming exactly the frameworks, makes restore
+  throw. After two review rounds found these and the metadata above one at a
+  time, `every_single_deletion_from_a_committing_spec_is_graded` replaced the
+  hunt: it deletes or empties each key, element and string of a committing
+  spec in turn and grades every variant the reader accepts against B₀ (102
+  variants, 52 committed). It found the empty project name on its first run.
+  Review also found that a relative `nuGetLockFilePath` is resolved against
+  the project; B₁ declines one.
 - **The packages folder needs no sources.** A source folder that does not
   exist is never read, and package source mapping that maps no package to any
   source changes nothing, when every version restore needs is in the packages

@@ -56,8 +56,8 @@ use super::{
 use crate::{
     AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId,
     PackageIdentity, PackageNuspec, PackageReadError, ResolveDecline, ResolvedPackageClosure,
-    list_package_files, read_installed_package, resolve_offline_with_fallback,
-    select_compile_assets,
+    list_committed_package_versions, list_package_files, read_installed_package,
+    resolve_offline_with_fallback, select_compile_assets,
 };
 
 use std::collections::BTreeSet;
@@ -110,8 +110,8 @@ pub fn verified_nuget_identities() -> impl Iterator<Item = &'static str> {
 /// makes [`resolve_dgspec`] decline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnmodelledField {
-    /// `restore.projectName` is absent, so the name of the graph's root, which
-    /// a package of the same name would collide with, is unknown.
+    /// `restore.projectName` is absent or empty: restore requires it, and it
+    /// names the graph's root, which a package of the same name collides with.
     ProjectName,
     /// `restore.packagesPath` is absent, so NuGet would find the packages
     /// folder from the environment and config files.
@@ -154,6 +154,11 @@ pub enum UnmodelledField {
     DependencyTarget,
     /// The project has no target framework.
     NoFrameworks,
+    /// Metadata NuGet requires is absent or inconsistent, so restore throws:
+    /// the project's path or output path, or `originalTargetFrameworks`
+    /// naming exactly the aliases of the frameworks and of the restore
+    /// metadata's frameworks.
+    RequiredMetadata,
 }
 
 impl UnmodelledField {
@@ -175,6 +180,7 @@ impl UnmodelledField {
             UnmodelledField::PackageTargetFallback => "package-target-fallback",
             UnmodelledField::DependencyTarget => "dependency-target",
             UnmodelledField::NoFrameworks => "no-frameworks",
+            UnmodelledField::RequiredMetadata => "required-metadata",
         }
     }
 }
@@ -380,8 +386,13 @@ pub fn resolve_dgspec(
                     id: clash.identity.id.clone(),
                 });
             }
-            check_compatibility(
+            check_metadata(
                 nuget,
+                Path::new(packages_path),
+                &framework.target_alias,
+                &closure,
+            )?;
+            check_compatibility(
                 Path::new(packages_path),
                 &framework.target_alias,
                 &framework.framework,
@@ -408,7 +419,6 @@ pub fn resolve_dgspec(
 /// including a package whose only assets are in other folders (`build/`,
 /// `analyzers/`), which this does not model.
 fn check_compatibility(
-    nuget: &NuGetIdentity,
     packages: &Path,
     target_alias: &str,
     framework: &NuGetFramework,
@@ -429,12 +439,6 @@ fn check_compatibility(
                     source: Box::new(source),
                 }
             })?;
-        if !metadata_is_admitted(&package.nuspec, nuget) {
-            return Err(DgSpecResolveDecline::PackageMetadata {
-                target_alias: target_alias.to_owned(),
-                package: Box::new(resolved.identity.clone()),
-            });
-        }
         let files = list_package_files(&package.paths.package_dir)
             .map_err(|decline| unproven(Some(decline)))?;
         // Root-level files are the package's bookkeeping (the nuspec, the
@@ -451,9 +455,52 @@ fn check_compatibility(
     Ok(())
 }
 
+/// Every installed version of every package in `closure` has metadata in the
+/// domain B₁ admits ([`metadata_is_admitted`]).
+///
+/// Restore validates each version it reads, not only the ones it settles on: a
+/// losing version's minimum client version fails the restore as surely as the
+/// winner's. The versions restore reads are versions of the closure's packages
+/// (a losing edge names a package that won elsewhere), so checking every
+/// installed version of each is an over-approximation, and the only part of it
+/// that can be wrong is a decline.
+fn check_metadata(
+    nuget: &NuGetIdentity,
+    packages: &Path,
+    target_alias: &str,
+    closure: &ResolvedPackageClosure,
+) -> Result<(), DgSpecResolveDecline> {
+    for resolved in &closure.packages {
+        let unreadable = |identity: &PackageIdentity, source: PackageReadError| {
+            DgSpecResolveDecline::PackageRead {
+                target_alias: target_alias.to_owned(),
+                package: Box::new(identity.clone()),
+                source: Box::new(source),
+            }
+        };
+        let versions =
+            list_committed_package_versions(packages, &resolved.identity.id).map_err(|source| {
+                let crate::PackageCacheError::Io { path, source } = source;
+                unreadable(&resolved.identity, PackageReadError::Io { path, source })
+            })?;
+        for entry in versions {
+            let package = read_installed_package(packages, entry.identity.clone())
+                .map_err(|source| unreadable(&entry.identity, source))?;
+            if !metadata_is_admitted(&package.nuspec, nuget) {
+                return Err(DgSpecResolveDecline::PackageMetadata {
+                    target_alias: target_alias.to_owned(),
+                    package: Box::new(entry.identity),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether the nuspec metadata restore validates a package by is in the
-/// domain B₁ admits: no package type but `Dependency` (restore refuses others,
-/// `DotnetTool` with `NU1212`, in a `PackageReference` project), and a minimum
+/// domain B₁ admits: no package type but `Dependency`, without a version
+/// (restore refuses other types, `DotnetTool` with `NU1212`, in a
+/// `PackageReference` project, and throws on a malformed version), and a minimum
 /// client version, if any, that parses without a release label and is below
 /// the restoring NuGet's own version. The comparison is strict because the
 /// verified NuGets are release candidates, which sort below the release of the
@@ -462,7 +509,7 @@ fn metadata_is_admitted(nuspec: &PackageNuspec, nuget: &NuGetIdentity) -> bool {
     let types_admitted = nuspec
         .package_types
         .iter()
-        .all(|package_type| package_type == "Dependency");
+        .all(|package_type| package_type.name == "Dependency" && package_type.version.is_none());
     let client_admitted = match &nuspec.min_client_version {
         None => true,
         Some(minimum) => {
@@ -504,9 +551,10 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         // How the spec names the project; `resolve_dgspec` looks it up by it.
         project_unique_name: _,
         project_name,
-        // Where the project and its outputs are, not what it resolves.
-        project_path: _,
-        output_path: _,
+        // Where the project and its outputs are, not what it resolves; but
+        // restore requires them.
+        project_path,
+        output_path,
         packages_path,
         sources,
         fallback_folders,
@@ -519,8 +567,9 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         // the differential pins the source mapping half.
         config_file_paths: _,
         frameworks: restore_frameworks,
-        // Names, and whether there is more than one framework.
-        original_target_frameworks: _,
+        // Names, and whether there is more than one framework; restore
+        // requires them to match the frameworks.
+        original_target_frameworks,
         cross_targeting: _,
         // Whether content files are written into the project's output.
         skip_content_file_write: _,
@@ -534,8 +583,26 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         using_microsoft_net_sdk,
     } = restore;
 
-    if project_name.is_none() {
+    let present = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.is_empty());
+    if !present(project_name) {
         decline(UnmodelledField::ProjectName);
+    }
+    let original: BTreeSet<&str> = original_target_frameworks
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let aliases: BTreeSet<&str> = frameworks.iter().map(|f| f.target_alias.as_str()).collect();
+    let restore_aliases: BTreeSet<&str> = restore_frameworks
+        .iter()
+        .map(|f| f.target_alias.as_str())
+        .collect();
+    if !present(project_path)
+        || !present(output_path)
+        || original.len() != original_target_frameworks.len()
+        || original != aliases
+        || restore_aliases != aliases
+    {
+        decline(UnmodelledField::RequiredMetadata);
     }
     if packages_path.is_none() {
         decline(UnmodelledField::PackagesPath);

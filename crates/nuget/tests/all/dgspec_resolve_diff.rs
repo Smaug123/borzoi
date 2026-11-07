@@ -62,7 +62,7 @@ struct Pkg {
     files: Vec<String>,
     /// The `<metadata>` element's `minClientVersion`.
     min_client_version: Option<&'static str>,
-    /// `<packageType>` names.
+    /// Each `<packageType>`'s attributes, as written.
     package_types: Vec<&'static str>,
 }
 
@@ -110,7 +110,7 @@ impl Pkg {
             let types: String = self
                 .package_types
                 .iter()
-                .map(|name| format!(r#"<packageType name="{name}" />"#))
+                .map(|attributes| format!("<packageType {attributes} />"))
                 .collect();
             format!("<packageTypes>{types}</packageTypes>")
         };
@@ -509,10 +509,21 @@ fn grade(oracle: &mut Oracle, packages: &[Pkg], shape: &Shape) -> Graded {
     let text = shape.render(dir.path());
     let spec = parse_dgspec(&text)
         .unwrap_or_else(|decline| panic!("the generator left the reader's vocabulary: {decline}"));
-    let theirs = restore(oracle, &text);
-    let ours = resolve_dgspec(&theirs.identity, &spec, &project_of(&spec));
+    grade_spec(oracle, &text, &spec, &format!("{shape:#?}\n{packages:#?}"))
+}
+
+/// [`grade`] for a spec already rendered (into a directory that holds its
+/// packages folder) and parsed. `description` goes into a failure message.
+fn grade_spec(
+    oracle: &mut Oracle,
+    text: &str,
+    spec: &DependencyGraphSpec,
+    description: &str,
+) -> Graded {
+    let theirs = restore(oracle, text);
+    let ours = resolve_dgspec(&theirs.identity, spec, &project_of(spec));
     if let Ok(frameworks) = &ours {
-        let context = || format!("{shape:#?}\n{packages:#?}\nB₀: {theirs:#?}");
+        let context = || format!("{description}\nB₀: {theirs:#?}");
         assert!(theirs.success, "B₁ committed, but B₀ fails:\n{}", context());
         assert_eq!(
             by_framework(frameworks),
@@ -758,9 +769,10 @@ fn a_package_without_assets_for_the_framework_declines() {
 }
 
 /// Restore validates a package by its nuspec metadata even from a warm cache:
-/// it refuses a `DotnetTool` package in a `PackageReference` project, and a
-/// package whose minimum client version is above its own. B₁ declines both,
-/// and admits a `Dependency` type and a minimum below the restoring NuGet.
+/// it refuses a `DotnetTool` package in a `PackageReference` project, a
+/// package type whose version is malformed, and a package whose minimum client
+/// version is above its own. B₁ declines all three, and admits a `Dependency`
+/// type and a minimum below the restoring NuGet.
 #[test]
 fn restore_validated_metadata_declines_outside_the_admitted_domain() {
     let mut oracle = Oracle::spawn();
@@ -775,9 +787,10 @@ fn restore_validated_metadata_declines_outside_the_admitted_domain() {
         [package]
     };
     for (packages, refused) in [
-        (with(None, &["DotnetTool"]), true),
+        (with(None, &[r#"name="DotnetTool""#]), true),
+        (with(None, &[r#"name="Dependency" version="1""#]), true),
         (with(Some("99.0.0"), &[]), true),
-        (with(None, &["Dependency"]), false),
+        (with(None, &[r#"name="Dependency""#]), false),
         (with(Some("2.12"), &[]), false),
     ] {
         let graded = grade(&mut oracle, &packages, &shape);
@@ -794,6 +807,34 @@ fn restore_validated_metadata_declines_outside_the_admitted_domain() {
         } else {
             assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0")]));
         }
+    }
+}
+
+/// Restore validates every version it reads, not only the winners: a losing
+/// version's minimum client version fails the restore even though another
+/// version of the package wins.
+#[test]
+fn a_losing_versions_metadata_is_validated_too() {
+    let mut oracle = Oracle::spawn();
+    let mut loser = Pkg::new("C", "1.0.0", vec![]);
+    loser.min_client_version = Some("99.0");
+    let packages = [
+        Pkg::new("A", "1.0.0", vec![group(None, &[("C", "[1.0.0, )")])]),
+        Pkg::new("B", "1.0.0", vec![group(None, &[("C", "[2.0.0, )")])]),
+        loser,
+        Pkg::new("C", "2.0.0", vec![]),
+    ];
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )"), Dep::new("B", "[1.0.0, )")],
+    )]);
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    match graded.ours {
+        Err(DgSpecResolveDecline::PackageMetadata { package, .. }) => {
+            assert_eq!(package.version.to_normalized_string(), "1.0.0")
+        }
+        other => panic!("B₁ must decline on C 1.0.0's metadata, not {other:?}"),
     }
 }
 
@@ -998,6 +1039,24 @@ fn every_unmodelled_field_declines_by_name() {
             the_project(spec)["frameworks"]["net8.0"]["dependencies"]["A"]["target"] =
                 json!("Project");
         }),
+        (UnmodelledField::RequiredMetadata, |spec, _| {
+            the_project(spec)["restore"]
+                .as_object_mut()
+                .unwrap()
+                .remove("projectPath");
+        }),
+        (UnmodelledField::RequiredMetadata, |spec, _| {
+            the_project(spec)["restore"]
+                .as_object_mut()
+                .unwrap()
+                .remove("outputPath");
+        }),
+        (UnmodelledField::RequiredMetadata, |spec, _| {
+            the_project(spec)["restore"]["originalTargetFrameworks"] = json!(["net8.0", "net9.0"]);
+        }),
+        (UnmodelledField::RequiredMetadata, |spec, _| {
+            the_project(spec)["restore"]["originalTargetFrameworks"] = json!([]);
+        }),
         (UnmodelledField::NoFrameworks, |spec, _| {
             let project = the_project(spec);
             project["frameworks"] = json!({});
@@ -1113,7 +1172,13 @@ fn generate(rng: &mut SplitMix64) -> Generated {
             let mut package = Pkg::new(id, version, groups).with_files(files);
             match rng.below(10) {
                 0 => package.min_client_version = Some(*rng.pick(&["2.12", "5.0.0", "99.0"])),
-                1 => package.package_types = vec![*rng.pick(&["Dependency", "DotnetTool"])],
+                1 => {
+                    package.package_types = vec![*rng.pick(&[
+                        r#"name="Dependency""#,
+                        r#"name="DotnetTool""#,
+                        r#"name="Dependency" version="1""#,
+                    ])]
+                }
                 _ => {}
             }
             packages.push(package);
@@ -1313,7 +1378,7 @@ fn required_features() -> BTreeSet<String> {
         "package-with-assets",
         "min-client-version=2.12",
         "min-client-version=5.0.0",
-        "package-type=Dependency",
+        "package-type=name=\"Dependency\"",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1383,5 +1448,131 @@ fn generated_specs_resolve_identically() {
     assert!(
         missing.is_empty(),
         "no committed spec graded {missing:?}; the census:\n{report}"
+    );
+}
+
+/// Every path into a JSON value, each as the sequence of keys and indices that
+/// reaches it, parents before children.
+fn json_paths(value: &Value) -> Vec<Vec<PathStep>> {
+    let mut paths = Vec::new();
+    let mut stack = vec![(Vec::new(), value)];
+    while let Some((path, value)) = stack.pop() {
+        match value {
+            Value::Object(members) => {
+                for (key, child) in members {
+                    let mut child_path = path.clone();
+                    child_path.push(PathStep::Key(key.clone()));
+                    stack.push((child_path, child));
+                }
+            }
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    let mut child_path = path.clone();
+                    child_path.push(PathStep::Index(index));
+                    stack.push((child_path, child));
+                }
+            }
+            _ => {}
+        }
+        paths.push(path);
+    }
+    paths
+}
+
+#[derive(Debug, Clone)]
+enum PathStep {
+    Key(String),
+    Index(usize),
+}
+
+fn at_mut<'a>(value: &'a mut Value, path: &[PathStep]) -> &'a mut Value {
+    path.iter().fold(value, |value, step| match step {
+        PathStep::Key(key) => &mut value[key.as_str()],
+        PathStep::Index(index) => &mut value[*index],
+    })
+}
+
+/// Every single-step deletion from a committing spec: each key or element
+/// removed, and each non-empty object, array or string emptied. A variant the
+/// reader declines is skipped; every other one is graded against B₀.
+///
+/// This is how a field restore requires is found without knowing restore's
+/// validation rules: deleting it must make B₁ decline or B₀ agree.
+#[test]
+fn every_single_deletion_from_a_committing_spec_is_graded() {
+    let mut oracle = Oracle::spawn();
+    let packages = [
+        Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])])
+            .with_files(&["lib/netstandard2.0/A.dll"]),
+        Pkg::new("B", "1.0.0", vec![]),
+    ];
+    let mut multi = Framework::new("netstandard2.0", vec![Dep::new("A", "[1.0.0, )")]);
+    multi.deps[0].include = Some("Runtime, Compile");
+    let mut shape = Shape::new(vec![
+        Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]),
+        multi,
+    ]);
+    shape.frameworks[0].framework_reference = true;
+    shape.no_warn = vec!["NU1701"];
+    shape.warn_as_error = vec!["NU1605"];
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    install(&dir.path().join("gp"), &packages);
+    let base: Value = serde_json::from_str(&shape.render(dir.path())).expect("JSON");
+    let base_spec = parse_dgspec(&base.to_string()).expect("the base spec parses");
+    let graded = grade_spec(&mut oracle, &base.to_string(), &base_spec, "the base spec");
+    assert!(
+        graded.ours.is_ok(),
+        "the base spec must commit: {:?}",
+        graded.ours
+    );
+
+    let mut graded_variants = 0;
+    let mut committed_variants = 0;
+    for path in json_paths(&base) {
+        let Some((last, parent)) = path.split_last() else {
+            continue;
+        };
+        let mut variants = Vec::new();
+        let mut deleted = base.clone();
+        match (at_mut(&mut deleted, parent), last) {
+            (Value::Object(members), PathStep::Key(key)) => {
+                members.remove(key);
+            }
+            (Value::Array(items), PathStep::Index(index)) => {
+                items.remove(*index);
+            }
+            _ => unreachable!("a path's parent is a container"),
+        }
+        variants.push(("delete", deleted));
+        let mut emptied = base.clone();
+        let target = at_mut(&mut emptied, &path);
+        let empty = match target {
+            Value::Object(members) if !members.is_empty() => Some(json!({})),
+            Value::Array(items) if !items.is_empty() => Some(json!([])),
+            Value::String(text) if !text.is_empty() => Some(json!("")),
+            _ => None,
+        };
+        if let Some(empty) = empty {
+            *target = empty;
+            variants.push(("empty", emptied));
+        }
+        for (kind, variant) in variants {
+            let text = variant.to_string();
+            let Ok(spec) = parse_dgspec(&text) else {
+                continue;
+            };
+            if spec.projects.len() != 1 {
+                continue;
+            }
+            let graded = grade_spec(&mut oracle, &text, &spec, &format!("{kind} {path:?}"));
+            graded_variants += 1;
+            committed_variants += usize::from(graded.ours.is_ok());
+        }
+    }
+    eprintln!("graded {graded_variants} deletions, {committed_variants} committed");
+    assert!(
+        graded_variants >= 40 && committed_variants >= 10,
+        "graded {graded_variants} deletions, {committed_variants} committed"
     );
 }

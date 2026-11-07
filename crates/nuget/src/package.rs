@@ -285,10 +285,18 @@ pub struct PackageNuspec {
     /// restore refuses a package whose minimum exceeds its own version, even
     /// from a warm cache.
     pub min_client_version: Option<String>,
-    /// Each `<packageTypes><packageType>`'s `name`, unparsed and in nuspec
-    /// order: restore refuses some types in a `PackageReference` project
-    /// (`DotnetTool`, with `NU1212`).
-    pub package_types: Vec<String>,
+    /// Each `<packageTypes><packageType>`, unparsed and in nuspec order:
+    /// restore refuses some types in a `PackageReference` project
+    /// (`DotnetTool`, with `NU1212`), and a malformed version.
+    pub package_types: Vec<PackageTypeDeclaration>,
+}
+
+/// One `<packageType>` element's attributes, as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageTypeDeclaration {
+    /// The `name` attribute; empty when absent.
+    pub name: String,
+    pub version: Option<String>,
 }
 
 impl PackageNuspec {
@@ -765,11 +773,12 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         .filter(|n| element_named(*n, nuspec_namespace, "packageTypes"))
         .flat_map(|types| types.children())
         .filter(|n| element_named(*n, nuspec_namespace, "packageType"))
-        .map(|package_type| {
-            package_type
+        .map(|package_type| PackageTypeDeclaration {
+            name: package_type
                 .attribute("name")
                 .unwrap_or_default()
-                .to_owned()
+                .to_owned(),
+            version: package_type.attribute("version").map(str::to_owned),
         })
         .collect();
     let reference_groups = parse_reference_groups(metadata, nuspec_namespace, &any_framework)?;
