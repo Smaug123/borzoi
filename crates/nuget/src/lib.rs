@@ -62,6 +62,6 @@ pub use package::{
 pub use range::{FloatBehavior, RangeParseError, VersionRange};
 pub use resolver::{
     DirectPackageRequirement, ResolveDecline, ResolvedPackage, ResolvedPackageClosure,
-    resolve_offline, resolve_offline_with_fallback,
+    TargetContext, resolve_offline, resolve_offline_in,
 };
 pub use version::{NuGetVersion, VersionParseError};
