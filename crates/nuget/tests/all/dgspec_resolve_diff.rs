@@ -2191,9 +2191,11 @@ const XML_PERTURBATIONS: &[&str] = &[
 
 /// Render `template`, whose slots are `{0}`, `{1}`, …, with `values`.
 fn fill(template: &str, values: &[String]) -> String {
+    // Highest slot first, so `{1}` is not replaced inside `{10}`.
     values
         .iter()
         .enumerate()
+        .rev()
         .fold(template.to_owned(), |text, (index, value)| {
             text.replace(&format!("{{{index}}}"), value)
         })
@@ -2216,6 +2218,7 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
     <packageTypes><packageType name="{5}" /></packageTypes>
     <serviceable>{6}</serviceable>
     <dependencies><group targetFramework="{7}"><dependency id="{8}" version="{9}" /></group></dependencies>
+    <contentFiles><files include="{10}" buildAction="{11}" copyToOutput="{12}" flatten="{13}" /></contentFiles>
   </metadata>
 </package>"#;
     const NUSPEC_VALUES: &[&str] = &[
@@ -2229,6 +2232,10 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
         "net8.0",
         "B",
         "[1.0.0, )",
+        "any/net8.0/x.xml",
+        "Content",
+        "true",
+        "false",
     ];
     const CONFIG: &str = r#"<configuration>
   <packageSources><add key="{0}" value="{1}" protocolVersion="{2}" /></packageSources>
@@ -2492,5 +2499,53 @@ fn downloads_are_a_presence_check() {
                 graded.ours
             );
         }
+    }
+}
+
+/// Restore reads a package's `<contentFiles>` rules and throws on one it
+/// rejects: no `include`, an unknown `buildAction`, a `copyToOutput` or
+/// `flatten` that is not a boolean. B₁ admits a positive subset (a known
+/// action, booleans ignoring case, a non-empty `include`, no other attribute),
+/// and declines the rest, some of which restore accepts.
+#[test]
+fn content_files_rules_are_held_to_what_restore_reads() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let rules: &[(&str, bool)] = &[
+        (
+            r#"<files include="any/net8.0/x.xml" buildAction="Content" />"#,
+            true,
+        ),
+        (r#"<files include="any/net8.0/x.xml" />"#, true),
+        (
+            r#"<files include="**/*" buildAction="None" copyToOutput="true" flatten="false" />"#,
+            true,
+        ),
+        (r#"<files include="**/*" buildAction="content" />"#, true),
+        (
+            r#"<files include="**/*" buildAction="EmbeddedResource" />"#,
+            true,
+        ),
+        (r#"<files include="**/*" copyToOutput="TRUE" />"#, true),
+        (r#"<files include="**/*" exclude="**/*.cs" />"#, true),
+        ("", true),
+        (r#"<files include="**/*" buildAction="Page" />"#, false),
+        (r#"<files include="**/*" buildAction="Bad" />"#, false),
+        (r#"<files include="**/*" copyToOutput="yes" />"#, false),
+        (r#"<files include="**/*" flatten="1" />"#, false),
+        (r#"<files buildAction="Content" />"#, false),
+        (r#"<files include="" />"#, false),
+        (r#"<files include="**/*" other="x" />"#, false),
+    ];
+    for (rule, commits) in rules {
+        let mut package = Pkg::new("A", "1.0.0", vec![])
+            .with_files(&["lib/net8.0/A.dll", "contentFiles/any/net8.0/x.xml"]);
+        let element = format!("<contentFiles>{rule}</contentFiles>");
+        package.metadata = vec![Box::leak(element.into_boxed_str())];
+        let graded = grade(&mut oracle, &[package], &shape);
+        assert_eq!(graded.ours.is_ok(), *commits, "{rule}: {:?}", graded.ours);
     }
 }

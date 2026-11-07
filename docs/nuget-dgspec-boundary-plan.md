@@ -1,9 +1,10 @@
 # Restore at the dgspec boundary — plan
 
 > **Status:** stages 1–4, 7b, 7c and 8 have landed, and so has the
-> resolver's handling of dependency asset filters. Stage 8 chose **A₁** (see
-> its section for the numbers and the conditions). B₁ now commits on four of
-> the six corpus projects, exactly as the restore does. Supersedes slice 8 of
+> resolver's handling of dependency asset filters and B₁'s of `<contentFiles>`.
+> Stage 8 chose **A₁** (see its section for the numbers and the conditions).
+> B₁ now commits on five of the six corpus projects, exactly as the restore
+> does. Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -651,6 +652,29 @@ consumer will have to apply.
 The two declines are the next targets: modelling `<contentFiles>` (restore
 validates its `buildAction`, `copyToOutput` and `flatten`), and the losing
 versions the engine-agreement envelope turns away.
+
+### `<contentFiles>` — landed
+
+Restore reads a package's `<contentFiles>` rules and throws on one it
+rejects: a rule without an `include`, a `buildAction` it does not know, or a
+`copyToOutput` or `flatten` that is not a boolean. The nuspec reader now keeps
+each rule's attributes, and B₁ admits one `<contentFiles>` holding only
+`<files>` rules in a positive subset: a non-empty `include`, an optional
+`exclude`, a `buildAction` among `None`, `Compile`, `Content` and
+`EmbeddedResource` (compared ignoring case, as restore does), and boolean
+`copyToOutput` and `flatten` (ignoring case). Rules restore accepts outside
+that subset (`Page`, an empty `include`, an unknown attribute) decline. A hand
+case grades each rule shape against B₀, and the text perturbation sweep's
+nuspec carries a rule whose four values it perturbs.
+
+| corpus project (6) | B₁ |
+|---|---|
+| TypeEquality, WoofWare.Incremental, WoofWare.LiangHyphenation, WoofWare.PawPrint.Domain, WoofWare.WeakHashTable | commits |
+| WoofWare.Expect | declines: a losing version that is not a leaf of the legacy engine's tree |
+
+The one remaining corpus decline is the resolver's own engine-agreement
+envelope (`engines_agree` in `resolver.rs`), where the legacy and default
+engines can treat a loser's subtree differently.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 

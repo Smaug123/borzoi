@@ -301,6 +301,17 @@ pub struct PackageNuspec {
     /// (the reader looks for `<metadata>`'s children there, so a nuspec with a
     /// prefix on every element and no default namespace has no identity).
     pub metadata_is_canonical: bool,
+    /// The child elements of `<metadata>`'s `<contentFiles>` elements, in
+    /// nuspec order, each with its attributes as written.
+    pub content_files: Vec<RawElement>,
+}
+
+/// An element as written: its name (as [`MetadataElement::name`] spells it)
+/// and its attributes' local names and values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawElement {
+    pub name: String,
+    pub attributes: Vec<(String, String)>,
 }
 
 /// One child element of a nuspec's `<metadata>`.
@@ -819,8 +830,29 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
             metadata_elements: Vec::new(),
             metadata_attributes: Vec::new(),
             metadata_is_canonical: false,
+            content_files: Vec::new(),
         });
     };
+    let element_name = |element: roxmltree::Node<'_, '_>| {
+        let tag = element.tag_name();
+        if tag.namespace() == nuspec_namespace && tag.namespace() == element.default_namespace() {
+            tag.name().to_owned()
+        } else {
+            format!("{{{}}}{}", tag.namespace().unwrap_or_default(), tag.name())
+        }
+    };
+    let content_files = metadata
+        .children()
+        .filter(|child| child.is_element() && element_name(*child) == "contentFiles")
+        .flat_map(|content| content.children().filter(roxmltree::Node::is_element))
+        .map(|rule| RawElement {
+            name: element_name(rule),
+            attributes: rule
+                .attributes()
+                .map(|attribute| (attribute.name().to_owned(), attribute.value().to_owned()))
+                .collect(),
+        })
+        .collect();
     let metadata_is_canonical = root.tag_name().namespace() == root.default_namespace()
         && metadata.tag_name().namespace() == metadata.default_namespace()
         && root
@@ -915,6 +947,7 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         metadata_elements,
         metadata_attributes,
         metadata_is_canonical,
+        content_files,
     })
 }
 

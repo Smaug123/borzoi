@@ -55,7 +55,7 @@ use super::{
 };
 use crate::{
     AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId,
-    PackageIdentity, PackageNuspec, PackagePaths, PackageReadError, ResolveDecline,
+    PackageIdentity, PackageNuspec, PackagePaths, PackageReadError, RawElement, ResolveDecline,
     ResolvedPackageClosure, VersionRange, list_package_files, read_installed_package,
     resolve_offline_with_fallback, select_compile_assets,
 };
@@ -682,7 +682,9 @@ fn check_metadata(
 /// and anything without one declines:
 ///
 /// - **Descriptive**, never read by restore: [`DESCRIPTIVE_ELEMENTS`].
-/// - **Modelled**: `dependencies` and `references`, which the nuspec reader
+/// - **Modelled**: `contentFiles`, once, holding only rules restore reads (see
+///   [`content_files_rule_is_admitted`]); `dependencies` and `references`,
+///   which the nuspec reader
 ///   parses (a nuspec it cannot parse never reaches here); `id` and `version`,
 ///   each present exactly once and naming the package's own folder; `packageTypes`, which must
 ///   declare nothing but `Dependency`, without a version (restore refuses
@@ -693,9 +695,9 @@ fn check_metadata(
 ///   verified NuGets are release candidates, which sort below the release of
 ///   the same number.
 /// - **Declined** otherwise, and whenever `<metadata>` is not canonical (see
-///   [`PackageNuspec::metadata_is_canonical`]); `contentFiles`,
-///   `frameworkAssemblies` and `frameworkReferences` among them: restore
-///   reads each, and B₁ does not model how.
+///   [`PackageNuspec::metadata_is_canonical`]); `frameworkAssemblies` and
+///   `frameworkReferences` among them: restore reads each, and B₁ does not
+///   model how.
 fn metadata_is_admitted(
     nuspec: &PackageNuspec,
     identity: &PackageIdentity,
@@ -721,6 +723,7 @@ fn metadata_is_admitted(
                 .and_then(|version| NuGetVersion::parse(version).ok())
                 .is_some_and(|version| version.eq_strict(&identity.version)),
             "dependencies" | "references" | "packageTypes" => true,
+            "contentFiles" => count("contentFiles") == 1,
             name => DESCRIPTIVE_ELEMENTS.contains(&name),
         }
     });
@@ -743,11 +746,43 @@ fn metadata_is_admitted(
         }
     };
     nuspec.metadata_is_canonical
+        && nuspec
+            .content_files
+            .iter()
+            .all(content_files_rule_is_admitted)
         && attributes_admitted
         && identity_stated
         && elements_admitted
         && types_admitted
         && client_admitted
+}
+
+/// Whether a `<contentFiles>` child is a rule restore reads without throwing,
+/// in the subset B₁ admits: a `<files>` element with a non-empty `include`,
+/// an optional `exclude`, a `buildAction` among `None`, `Compile`, `Content`
+/// and `EmbeddedResource` (compared ignoring case, as restore does), and
+/// `copyToOutput` and `flatten`, if present, `true` or `false` ignoring case.
+/// Restore throws on a rule without an `include`, on a `buildAction` it does
+/// not know, and on a `copyToOutput` or `flatten` that is not a boolean.
+fn content_files_rule_is_admitted(rule: &RawElement) -> bool {
+    let boolean =
+        |value: &str| value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false");
+    rule.name == "files"
+        && rule
+            .attributes
+            .iter()
+            .any(|(name, value)| name == "include" && !value.is_empty())
+        && rule
+            .attributes
+            .iter()
+            .all(|(name, value)| match name.as_str() {
+                "include" | "exclude" => true,
+                "buildAction" => ["None", "Compile", "Content", "EmbeddedResource"]
+                    .iter()
+                    .any(|action| action.eq_ignore_ascii_case(value)),
+                "copyToOutput" | "flatten" => boolean(value),
+                _ => false,
+            })
 }
 
 /// The `<metadata>` elements restore never reads: what a package says about
