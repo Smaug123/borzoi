@@ -1450,14 +1450,12 @@ impl<'a> PackageCache<'a> {
         let key = (identity.id.clone(), identity.version_folder_name());
         if !self.packages.contains_key(&key) {
             let entry = read_installed_package(self.root, identity.clone()).map(|package| {
-                let nuspec = &package.nuspec;
-                let dependencies = nuspec
-                    .select_dependency_group(self.framework)
-                    .or_else(|| {
-                        self.asset_target_fallback
-                            .iter()
-                            .find_map(|fallback| nuspec.select_dependency_group(fallback))
-                    })
+                let dependencies = package
+                    .nuspec
+                    .select_dependency_group_with_fallback(
+                        self.framework,
+                        self.asset_target_fallback,
+                    )
                     .map(|group| group.dependencies.clone())
                     .unwrap_or_default();
                 CachedPackage {

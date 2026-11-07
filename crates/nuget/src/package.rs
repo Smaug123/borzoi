@@ -336,6 +336,22 @@ impl PackageNuspec {
             .map(|index| &self.dependency_groups[index])
     }
 
+    /// Return the dependency group NuGet would use for `project` with the
+    /// asset-target fallback list `fallback`: the group for `project` itself
+    /// if there is one (even an empty one), else the nearest group for the
+    /// first fallback framework that has one.
+    pub fn select_dependency_group_with_fallback(
+        &self,
+        project: &NuGetFramework,
+        fallback: &[NuGetFramework],
+    ) -> Option<&PackageDependencyGroup> {
+        self.select_dependency_group(project).or_else(|| {
+            fallback
+                .iter()
+                .find_map(|framework| self.select_dependency_group(framework))
+        })
+    }
+
     /// Return the index of the dependency group NuGet would use for `project`.
     ///
     /// The index form is useful because nuspecs may contain duplicate or
