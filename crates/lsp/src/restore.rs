@@ -80,6 +80,8 @@
 //! background worker pool (keeping the single-threaded LSP dispatch loop
 //! responsive) with only the shell around it changing.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -630,17 +632,19 @@ fn property_arg(name: &str, value: &std::ffi::OsStr) -> std::ffi::OsString {
     arg
 }
 
-/// Set the subprocess environment to *exactly* the project's build environment,
-/// so restore evaluates the same graph the LSP did and no host variable leaks
-/// in:
+/// The environment restore's `dotnet` runs under, *exactly*: the project's
+/// build environment, so restore evaluates the same graph the LSP did and no
+/// host variable leaks in. The spawn-free restore
+/// (`borzoi_nuget::dgspec::resolve_dgspec`) is handed this same map, since
+/// NuGet reads some of these variables while restoring.
 ///
-/// - **Clear** the inherited environment first. Without this a hermetic
-///   (`Workspace::with_env`) caller's curated env would be polluted by every host
-///   variable, and a project conditioned on e.g. `$(HOME)` could evaluate one way
-///   and restore another. For the process-derived environment (the real server)
-///   [`SdkDiscoveryEnv::build_environment`] *is* the full process env, so clearing
-///   then re-installing it is a no-op in content.
-/// - Install [`SdkDiscoveryEnv::build_environment`] — the MSBuild-visible
+/// - It is built from nothing, not from the inherited environment. Otherwise a
+///   hermetic (`Workspace::with_env`) caller's curated env would be polluted by
+///   every host variable, and a project conditioned on e.g. `$(HOME)` could
+///   evaluate one way and restore another. For the process-derived environment
+///   (the real server) [`SdkDiscoveryEnv::build_environment`] *is* the full
+///   process env, so this changes nothing in content.
+/// - It holds [`SdkDiscoveryEnv::build_environment`] — the MSBuild-visible
 ///   variables the evaluator used — **except** `MSBuildUserExtensionsPath`: that
 ///   is a *synthetic* property our static evaluator seeds because it doesn't run
 ///   real MSBuild, and overlaying our value was observed to suppress the SDK's
@@ -651,30 +655,43 @@ fn property_arg(name: &str, value: &std::ffi::OsStr) -> std::ffi::OsString {
 ///   redirection affecting the package graph is essentially unheard of).
 /// - Then the SDK-locating vars from discovery, which win over anything above and
 ///   cover an env whose `build_environment` omits them.
-fn apply_env(cmd: &mut Command, env: &SdkDiscoveryEnv) {
+pub fn restore_environment(env: &SdkDiscoveryEnv) -> BTreeMap<OsString, OsString> {
     // The synthetic property the evaluator seeds; the real dotnet must compute it.
     const SYNTHETIC: &str = "MSBuildUserExtensionsPath";
-    cmd.env_clear();
-    for (name, value) in &env.build_environment {
-        if !name.eq_ignore_ascii_case(SYNTHETIC) {
-            cmd.env(name, value);
+    let mut environment: BTreeMap<OsString, OsString> = env
+        .build_environment
+        .iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case(SYNTHETIC))
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect();
+    let discovered = [
+        (
+            "DOTNET_ROOT",
+            env.dotnet_root.as_ref().map(|path| path.as_os_str()),
+        ),
+        ("PATH", env.search_path.as_deref()),
+        (
+            "NUGET_PACKAGES",
+            env.nuget_packages_dir.as_ref().map(|path| path.as_os_str()),
+        ),
+        ("HOME", env.home_dir.as_ref().map(|path| path.as_os_str())),
+        (
+            "DOTNET_CLI_HOME",
+            env.dotnet_cli_home.as_ref().map(|path| path.as_os_str()),
+        ),
+    ];
+    for (name, value) in discovered {
+        if let Some(value) = value {
+            environment.insert(OsString::from(name), value.to_owned());
         }
     }
-    if let Some(dotnet_root) = &env.dotnet_root {
-        cmd.env("DOTNET_ROOT", dotnet_root);
-    }
-    if let Some(path) = &env.search_path {
-        cmd.env("PATH", path);
-    }
-    if let Some(nuget) = &env.nuget_packages_dir {
-        cmd.env("NUGET_PACKAGES", nuget);
-    }
-    if let Some(home) = &env.home_dir {
-        cmd.env("HOME", home);
-    }
-    if let Some(cli_home) = &env.dotnet_cli_home {
-        cmd.env("DOTNET_CLI_HOME", cli_home);
-    }
+    environment
+}
+
+/// Set the subprocess environment to exactly [`restore_environment`].
+fn apply_env(cmd: &mut Command, env: &SdkDiscoveryEnv) {
+    cmd.env_clear();
+    cmd.envs(restore_environment(env));
 }
 
 #[cfg(test)]

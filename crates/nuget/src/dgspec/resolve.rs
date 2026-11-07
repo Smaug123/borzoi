@@ -58,6 +58,7 @@
 //! `dgspec_resolve_diff.rs` derives it from the oracle and fails when the two
 //! differ, so nothing reaches it by hand.
 
+use super::environment::{EnvironmentDecline, check_environment};
 use super::nuspec::{NuspecDecline, nuspec_is_admitted};
 use super::{
     DependencyGraphSpec, DownloadDependency, FrameworkReference, LibraryDependency,
@@ -73,8 +74,9 @@ use crate::{
     select_compile_assets,
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 
@@ -262,6 +264,8 @@ pub enum DgSpecResolveDecline {
         package: Box<PackageIdentity>,
         source: Box<PackageReadError>,
     },
+    /// The environment restore would run under is outside what B₁ admits.
+    Environment { decline: EnvironmentDecline },
 }
 
 impl fmt::Display for DgSpecResolveDecline {
@@ -340,6 +344,7 @@ impl fmt::Display for DgSpecResolveDecline {
                 "framework {target_alias:?}: package {} {} could not be read: {source}",
                 package.id, package.version
             ),
+            DgSpecResolveDecline::Environment { decline } => write!(f, "{decline}"),
         }
     }
 }
@@ -395,19 +400,26 @@ pub struct ResolvedFramework {
 /// NuGet `nuget` would restore `spec`, or decline. The frameworks are in the
 /// spec's order.
 ///
-/// The packages folder is the spec's own `packagesPath`; it is the only part
-/// of the file system read, besides a check that no lock file exists at the
-/// spec's `nuGetLockFilePath`.
+/// `environment` is the one the restore would run under, every variable in
+/// it (see [`super::environment_variable`]).
+///
+/// The packages folder is the spec's own `packagesPath`; the file system is
+/// read there, at the config files the spec names, at the user config folder
+/// the environment locates, and at the spec's `nuGetLockFilePath`, which must
+/// hold no lock file.
 pub fn resolve_dgspec(
     nuget: &NuGetIdentity,
     spec: &DependencyGraphSpec,
     project: &str,
+    environment: &BTreeMap<OsString, OsString>,
 ) -> Result<Vec<ResolvedFramework>, DgSpecResolveDecline> {
     if !nuget.is_verified() {
         return Err(DgSpecResolveDecline::UnverifiedNuGet {
             identity: nuget.clone(),
         });
     }
+    check_environment(environment)
+        .map_err(|decline| DgSpecResolveDecline::Environment { decline })?;
     let package_spec = spec
         .projects
         .iter()
@@ -1037,7 +1049,7 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
 /// sections, each holding only `clear` elements and `add` elements with a
 /// `key` and `value` that are non-empty and without surrounding whitespace
 /// (and, in `packageSources`, a `protocolVersion`), without text.
-fn config_is_admitted(path: &Path) -> bool {
+pub(super) fn config_is_admitted(path: &Path) -> bool {
     fn trimmed_and_present(value: &str) -> bool {
         !value.is_empty() && value.trim() == value
     }

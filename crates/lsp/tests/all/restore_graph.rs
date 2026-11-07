@@ -41,7 +41,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borzoi::restore::{RestoreGraph, RestoreGraphSource, ScratchDir, restore_graph};
+use borzoi::restore::{
+    RestoreGraph, RestoreGraphSource, ScratchDir, restore_environment, restore_graph,
+};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi_nuget::NuGetFramework;
 use borzoi_nuget::dgspec::{
@@ -316,6 +318,11 @@ impl SpawnFree {
                     DgSpecResolveDecline::PackageMetadata { package, .. } => {
                         format!("package-metadata:{}", package_label(package))
                     }
+                    // Host-dependent, so a manifest line with it would differ
+                    // between machines: the census expects none.
+                    DgSpecResolveDecline::Environment { decline } => {
+                        format!("environment ({decline})")
+                    }
                 };
                 format!("b1: declined {class}")
             }
@@ -332,9 +339,10 @@ fn package_label(package: &borzoi_nuget::PackageIdentity) -> String {
     )
 }
 
-/// Stage 4: B₁, handed the spec and the identity of the NuGet that restored
-/// it, declines, or commits only where the restore succeeded and to exactly
-/// the package closure each framework's target lists.
+/// Stage 4: B₁, handed the spec, the identity of the NuGet that restored it
+/// and the environment it restored under (`restore.rs`'s, from `env`),
+/// declines, or commits only where the restore succeeded and to exactly the
+/// package closure each framework's target lists.
 ///
 /// Targets are matched by framework, not by name: an assets file of version 4
 /// names a target by its alias, one of version 3 by `NuGetFramework.ToString()`
@@ -344,6 +352,7 @@ fn spawn_free(
     project: &Path,
     spec: &DependencyGraphSpec,
     decomposition: &Decomposition,
+    env: &SdkDiscoveryEnv,
 ) -> Result<SpawnFree, String> {
     let [entry] = spec.restore.as_slice() else {
         return Err(format!(
@@ -353,7 +362,7 @@ fn spawn_free(
         ));
     };
     let identity = NuGetIdentity::new(&decomposition.nuget_commands);
-    let frameworks = match resolve_dgspec(&identity, spec, entry) {
+    let frameworks = match resolve_dgspec(&identity, spec, entry, &restore_environment(env)) {
         Ok(frameworks) => frameworks,
         Err(decline) => return Ok(SpawnFree::Declined(decline)),
     };
@@ -523,16 +532,16 @@ fn committed_spec(project: &Path) -> DependencyGraphSpec {
 /// [`committed_spec`], with B₁'s verdict on it, which must agree with the
 /// restore.
 fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
-    let (text, generated, restored) =
-        match both_routes(project, &SdkDiscoveryEnv::from_process_env()) {
-            Ok(Graphs::Agree {
-                text,
-                generated,
-                restored,
-            }) => (text, generated, restored),
-            Ok(Graphs::Declined) => panic!("{}: both routes declined", project.display()),
-            Err(failure) => panic!("{failure}"),
-        };
+    let env = SdkDiscoveryEnv::from_process_env();
+    let (text, generated, restored) = match both_routes(project, &env) {
+        Ok(Graphs::Agree {
+            text,
+            generated,
+            restored,
+        }) => (text, generated, restored),
+        Ok(Graphs::Declined) => panic!("{}: both routes declined", project.display()),
+        Err(failure) => panic!("{failure}"),
+    };
     let decomposition = decomposes_losslessly(project, &text, &generated, &restored)
         .unwrap_or_else(|failure| panic!("{failure}"));
     assert!(
@@ -541,8 +550,8 @@ fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
     );
     let spec =
         parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declined: {decline}"));
-    let b1 =
-        spawn_free(project, &spec, &decomposition).unwrap_or_else(|failure| panic!("{failure}"));
+    let b1 = spawn_free(project, &spec, &decomposition, &env)
+        .unwrap_or_else(|failure| panic!("{failure}"));
     (spec, b1)
 }
 
@@ -962,7 +971,7 @@ fn pinned_projects() {
                 match decomposes_losslessly(project, &text, &generated, &restored) {
                     Ok(decomposition) => {
                         if let Ok(spec) = &spec {
-                            match spawn_free(project, spec, &decomposition) {
+                            match spawn_free(project, spec, &decomposition, &env) {
                                 Ok(b1) => lines.push(format!("{key} {}", b1.label())),
                                 Err(failure) => failures.push(failure),
                             }

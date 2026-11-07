@@ -32,11 +32,15 @@
 //! - Comments and trailing commas, which NuGet accepts, are a syntax decline.
 //!   A leading byte-order mark, which NuGet also accepts, is skipped.
 
+mod environment;
 mod json;
 mod log_code;
 mod nuspec;
 mod resolve;
 
+pub use environment::{
+    EnvironmentDecline, EnvironmentVariable, INERT_ENVIRONMENT_VARIABLES, environment_variable,
+};
 pub use json::JsonKind;
 pub use log_code::NuGetLogCode;
 pub use nuspec::{DESCRIPTIVE_ELEMENTS, NuspecDecline, nuspec_is_admitted};

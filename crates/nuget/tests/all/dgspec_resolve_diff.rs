@@ -26,12 +26,15 @@
 //! graded on a committed spec at least once.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use borzoi_nuget::dgspec::{
-    DependencyGraphSpec, DgSpecResolveDecline, NuGetIdentity, NuspecDecline,
-    PackageMetadataDecline, ResolvedFramework, UnmodelledField, nuspec_is_admitted, parse_dgspec,
+    DependencyGraphSpec, DgSpecResolveDecline, EnvironmentDecline, EnvironmentVariable,
+    INERT_ENVIRONMENT_VARIABLES, NuGetIdentity, NuspecDecline, PackageMetadataDecline,
+    ResolvedFramework, UnmodelledField, environment_variable, nuspec_is_admitted, parse_dgspec,
     resolve_dgspec, verified_nuget_identities,
 };
 use borzoi_nuget::{
@@ -41,7 +44,7 @@ use borzoi_nuget::{
 use borzoi_oracle_harness::manifest::{Manifest, check};
 use serde_json::{Map, Value, json};
 
-use crate::common::{Oracle, SplitMix64};
+use crate::common::{Oracle, SplitMix64, sdk_dir};
 
 // ============================================================================
 // The universe: packages in a packages folder
@@ -587,8 +590,34 @@ fn grade_spec(
     spec: &DependencyGraphSpec,
     description: &str,
 ) -> Graded {
+    grade_spec_in(oracle, &DEFAULT_ENVIRONMENT, text, spec, description)
+}
+
+/// The environment an oracle child restores under: this process's, which it
+/// inherits, with `overrides` set as its `--env` assignments set them.
+fn oracle_environment(overrides: &[(&str, &str)]) -> BTreeMap<OsString, OsString> {
+    let mut environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    for (name, value) in overrides {
+        environment.insert(OsString::from(name), OsString::from(value));
+    }
+    environment
+}
+
+/// The environment of an oracle spawned without overrides.
+static DEFAULT_ENVIRONMENT: LazyLock<BTreeMap<OsString, OsString>> =
+    LazyLock::new(|| oracle_environment(&[]));
+
+/// [`grade_spec`] against an oracle restoring under `environment`, which B₁
+/// is handed too.
+fn grade_spec_in(
+    oracle: &mut Oracle,
+    environment: &BTreeMap<OsString, OsString>,
+    text: &str,
+    spec: &DependencyGraphSpec,
+    description: &str,
+) -> Graded {
     let theirs = restore(oracle, text);
-    let ours = resolve_dgspec(&theirs.identity, spec, &project_of(spec));
+    let ours = resolve_dgspec(&theirs.identity, spec, &project_of(spec), environment);
     if let Ok(frameworks) = &ours {
         let context = || format!("{description}\nB₀: {theirs:#?}");
         assert!(theirs.success, "B₁ committed, but B₀ fails:\n{}", context());
@@ -1378,7 +1407,7 @@ fn resolve_text(
         .map(|project| project.restore.project_unique_name.clone())
         .find(|name| name.ends_with("App.fsproj"))
         .expect("the base spec's project is in the spec");
-    resolve_dgspec(identity, &spec, &project)
+    resolve_dgspec(identity, &spec, &project, &DEFAULT_ENVIRONMENT)
 }
 
 /// Each field the resolver does not model declines, naming it, when it is the
@@ -2000,6 +2029,12 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
             PackageMetadataDecline::CommitMarker => "package-metadata:marker".to_owned(),
         },
         DgSpecResolveDecline::DownloadUnavailable { .. } => "download-unavailable".to_owned(),
+        DgSpecResolveDecline::Environment { decline } => match decline {
+            EnvironmentDecline::Variable { name } => format!("environment:{name}"),
+            EnvironmentDecline::HomeUnknown => "environment:home-unknown".to_owned(),
+            EnvironmentDecline::UserConfig { .. } => "environment:user-config".to_owned(),
+            EnvironmentDecline::WindowsHost => "environment:windows-host".to_owned(),
+        },
     }
 }
 
@@ -3782,5 +3817,369 @@ fn central_package_management_without_pinning_commits() {
         let parsed = parse_dgspec(&text).expect("the reader accepts the spec");
         let graded = grade_spec(&mut oracle, &text, &parsed, label);
         assert_eq!(graded.ours.is_ok(), *commits, "{label}: {:?}", graded.ours);
+    }
+}
+
+// ============================================================================
+// The environment
+// ============================================================================
+
+/// The strings in `bytes`, read as UTF-16LE, that spell a variable name with
+/// a `NUGET_` or `DOTNET_` prefix: upper-case letters, digits and underscores.
+/// A .NET assembly keeps its string literals as UTF-16LE in its `#US` heap, at
+/// any byte offset, so both alignments are read.
+fn variable_like_strings(bytes: &[u8]) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for start in 0..2 {
+        let mut run = String::new();
+        let mut flush = |run: &mut String| {
+            if run.starts_with("NUGET_") || run.starts_with("DOTNET_") {
+                found.insert(run.clone());
+            }
+            run.clear();
+        };
+        for [unit, high] in bytes[start..].as_chunks::<2>().0 {
+            let unit = *unit;
+            if *high == 0 && (unit.is_ascii_uppercase() || unit.is_ascii_digit() || unit == b'_') {
+                run.push(char::from(unit));
+            } else {
+                flush(&mut run);
+            }
+        }
+        flush(&mut run);
+    }
+    found
+}
+
+/// Every environment variable the verified NuGet's assemblies name has a
+/// verdict in B₁, so B₁ ignores only variables NuGet does not read.
+///
+/// The scan reads the string literals of every `NuGet.*.dll` of the SDK the
+/// oracle runs, which [`the_verified_list_is_the_graded_nuget`] ties to the
+/// verified list. It cannot see a name NuGet builds at run time
+/// (`NUGET_RETRY_HTTP_` is a prefix); that is why B₁ declines every `NUGET_`
+/// variable it does not admit, named here or not. For `DOTNET_` variables,
+/// which the runtime and the CLI read by the dozen, the scan is the whole
+/// classification. Every admitted variable must be named too, or its entry is
+/// dead.
+#[test]
+fn every_variable_the_verified_nuget_names_has_a_verdict() {
+    let mut named = BTreeSet::new();
+    for entry in fs::read_dir(sdk_dir()).expect("the SDK directory") {
+        let path = entry.expect("an SDK directory entry").path();
+        let file = path.file_name().and_then(OsStr::to_str).unwrap_or("");
+        if file.starts_with("NuGet.") && file.ends_with(".dll") {
+            named.extend(variable_like_strings(
+                &fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}")),
+            ));
+        }
+    }
+    for known in [
+        "NUGET_PACKAGES",
+        "NUGET_USE_LEGACY_ASSET_TARGET_FALLBACK_DEPENDENCY_RESOLUTION",
+        "DOTNET_CLI_HOME",
+    ] {
+        assert!(
+            named.contains(known),
+            "the scan missed {known}, which the probes found NuGet reading: {named:?}"
+        );
+    }
+    let unread: Vec<&String> = named
+        .iter()
+        .filter(|name| environment_variable(OsStr::new(name)) == EnvironmentVariable::Unread)
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "NuGet names variables B₁ ignores: {unread:?}"
+    );
+    let dead: Vec<&&str> = INERT_ENVIRONMENT_VARIABLES
+        .iter()
+        .filter(|name| !named.contains(**name))
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "B₁ admits variables NuGet never names: {dead:?}"
+    );
+}
+
+/// A config file restore refuses to load.
+const MALFORMED_CONFIG: &str = r#"<configuration><packageSources><add key="" value=""/>"#;
+
+/// The user config NuGet writes where there is none.
+const DEFAULT_USER_CONFIG: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+  </packageSources>
+</configuration>
+"#;
+
+/// What an environment case must show beyond certain-implies-exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvironmentExpectation {
+    /// B₁ commits at least one spec, so the case grades something.
+    Commits,
+    /// B₁ declines every spec on the environment.
+    DeclinesOnTheEnvironment,
+}
+
+/// Certain-implies-exact under each environment B₁ admits and each it
+/// models, against an oracle restoring under the same environment.
+///
+/// Each inert variable is set to a value that would move a restore that read
+/// it (a packages folder with nothing in it, a fallback folder with every
+/// package, a cache or plugin folder that does not exist), and B₁ must commit
+/// at least one spec under it. The user config is graded through each home
+/// variable: restore loads `NuGet.Config` and each file of `config/` in
+/// `{home}/.nuget/NuGet`, where home is a non-empty `DOTNET_CLI_HOME`, else
+/// `HOME`, and writes a default one where there is none. One variable restore
+/// reads and B₁ does not model is graded too, so the sweep is seen to move
+/// restore: `NUGET_USE_LEGACY_ASSET_TARGET_FALLBACK_DEPENDENCY_RESOLUTION`
+/// drops a fallback group's dependencies.
+#[test]
+fn restore_is_graded_under_every_environment_b1_admits() {
+    let fixtures = tempfile::tempdir().expect("temp dir");
+    let at = |relative: &str| {
+        fixtures
+            .path()
+            .join(relative)
+            .to_str()
+            .expect("UTF-8")
+            .to_owned()
+    };
+    let write = |relative: &str, text: &str| {
+        let path = fixtures.path().join(relative);
+        fs::create_dir_all(path.parent().expect("a parent")).expect("folder");
+        fs::write(path, text).expect("fixture");
+    };
+    let universe: Vec<Pkg> = IDS
+        .iter()
+        .chain(&["A", "B"])
+        .flat_map(|id| VERSIONS.iter().map(|version| Pkg::new(id, version, vec![])))
+        .collect();
+    install(&fixtures.path().join("universe"), &universe);
+    fs::create_dir_all(fixtures.path().join("empty")).expect("empty folder");
+    fs::create_dir_all(fixtures.path().join("homes/none")).expect("home");
+    write(
+        "homes/default/.nuget/NuGet/NuGet.Config",
+        DEFAULT_USER_CONFIG,
+    );
+    write(
+        "homes/malformed/.nuget/NuGet/NuGet.Config",
+        MALFORMED_CONFIG,
+    );
+    write(
+        "homes/malformed-extra/.nuget/NuGet/NuGet.Config",
+        DEFAULT_USER_CONFIG,
+    );
+    write(
+        "homes/malformed-extra/.nuget/NuGet/config/extra.config",
+        MALFORMED_CONFIG,
+    );
+    write(
+        "homes/fallback/.nuget/NuGet/NuGet.Config",
+        &format!(
+            r#"<?xml version="1.0"?><configuration><fallbackPackageFolders><add key="u" value="{}" /></fallbackPackageFolders></configuration>"#,
+            at("universe")
+        ),
+    );
+
+    let exposing = |name: &str| -> String {
+        match name {
+            "NUGET_PACKAGES" => at("empty"),
+            "NUGET_FALLBACK_PACKAGES" => at("universe"),
+            "NUGET_HTTP_CACHE_PATH"
+            | "NUGET_PLUGINS_CACHE_PATH"
+            | "NUGET_PLUGIN_PATHS"
+            | "NUGET_NETCORE_PLUGIN_PATHS"
+            | "NUGET_NETFX_PLUGIN_PATHS"
+            | "DOTNET_HOST_PATH" => at("missing"),
+            "NUGET_CONCURRENCY_LIMIT" => "1".to_owned(),
+            "NUGET_XMLDOC_MODE" => "skip".to_owned(),
+            "DOTNET_CLI_UI_LANGUAGE" => "de-DE".to_owned(),
+            "NUGET_CERT_REVOCATION_MODE" => "offline".to_owned(),
+            "DOTNET_NUGET_SIGNATURE_VERIFICATION" | "NUGET_SHOW_STACK" => "true".to_owned(),
+            other => panic!("no value that would expose a restore reading {other}"),
+        }
+    };
+    use EnvironmentExpectation::{Commits, DeclinesOnTheEnvironment};
+    let legacy = "NUGET_USE_LEGACY_ASSET_TARGET_FALLBACK_DEPENDENCY_RESOLUTION";
+    let mut cases: Vec<(Vec<(String, String)>, EnvironmentExpectation)> =
+        INERT_ENVIRONMENT_VARIABLES
+            .iter()
+            .map(|name| (vec![((*name).to_owned(), exposing(name))], Commits))
+            .collect();
+    let home = |name: &str| ("HOME".to_owned(), at(&format!("homes/{name}")));
+    let cli_home = |name: &str| ("DOTNET_CLI_HOME".to_owned(), at(&format!("homes/{name}")));
+    cases.extend([
+        (
+            vec![(legacy.to_owned(), "true".to_owned())],
+            DeclinesOnTheEnvironment,
+        ),
+        (vec![home("default")], Commits),
+        (vec![home("none")], Commits),
+        (vec![home("malformed")], DeclinesOnTheEnvironment),
+        (vec![home("malformed-extra")], DeclinesOnTheEnvironment),
+        (vec![home("fallback")], DeclinesOnTheEnvironment),
+        (vec![home("malformed"), cli_home("default")], Commits),
+        (
+            vec![home("default"), cli_home("malformed")],
+            DeclinesOnTheEnvironment,
+        ),
+    ]);
+
+    // The specs: the fallback-group case, which the legacy variable moves, a
+    // plain one, and generated ones.
+    let specs_dir = tempfile::tempdir().expect("temp dir");
+    let mut specs: Vec<(String, DependencyGraphSpec)> = Vec::new();
+    let mut add = |packages: &[Pkg], shape: &Shape| {
+        let dir = specs_dir.path().join(specs.len().to_string());
+        install(&dir.join("gp"), packages);
+        let text = shape.render(&dir);
+        let spec = parse_dgspec(&text).unwrap_or_else(|decline| panic!("{decline}"));
+        specs.push((text, spec));
+    };
+    add(
+        &[
+            Pkg::new("A", "1.0.0", vec![group(Some("net461"), &[("B", "2.0.0")])]),
+            Pkg::new("B", "2.0.0", vec![]),
+        ],
+        &Shape::new(vec![Framework::new(
+            "net8.0",
+            vec![Dep::new("A", "[1.0.0, )")],
+        )]),
+    );
+    add(
+        &[Pkg::new("A", "1.0.0", vec![])],
+        &Shape::new(vec![Framework::new(
+            "netstandard2.0",
+            vec![Dep::new("A", "[1.0.0, )")],
+        )]),
+    );
+    let mut rng = SplitMix64(0xe17_0001);
+    for _ in 0..30 {
+        let generated = generate(&mut rng);
+        add(&generated.packages, &generated.shape);
+    }
+
+    for (overrides, expectation) in &cases {
+        let pairs: Vec<(&str, &str)> = overrides
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let environment = oracle_environment(&pairs);
+        let mut oracle = Oracle::spawn_with_environment(&pairs);
+        let mut committed = 0;
+        let mut declines = BTreeSet::new();
+        for (index, (text, spec)) in specs.iter().enumerate() {
+            let graded = grade_spec_in(
+                &mut oracle,
+                &environment,
+                text,
+                spec,
+                &format!("spec {index} under {overrides:?}"),
+            );
+            if index == 0 && overrides[0].0 == legacy {
+                assert_eq!(
+                    graded.theirs.targets["net8.0"],
+                    set(&[("A", "1.0.0")]),
+                    "the legacy variable no longer moves the fallback-group case"
+                );
+            }
+            match &graded.ours {
+                Ok(_) => committed += 1,
+                Err(decline) => {
+                    declines.insert(decline_class(decline));
+                }
+            }
+        }
+        match expectation {
+            Commits => assert!(
+                committed > 0,
+                "B₁ committed no spec under {overrides:?}: {declines:?}"
+            ),
+            DeclinesOnTheEnvironment => assert!(
+                committed == 0
+                    && declines
+                        .iter()
+                        .all(|class| class.starts_with("environment")),
+                "under {overrides:?}, B₁ committed {committed} specs and declined {declines:?}"
+            ),
+        }
+    }
+}
+
+/// The environments B₁ declines without the oracle's help: ones the oracle
+/// cannot set (an absent `HOME`) or that wedge restore rather than fail it (a
+/// missing `NUGET_SCRATCH`).
+#[test]
+fn b1_declines_environments_it_cannot_grade() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let spec = base_spec(dir.path());
+    let spec = parse_dgspec(&spec.to_string()).unwrap_or_else(|decline| panic!("{decline}"));
+    let project = project_of(&spec);
+    let under = |change: &dyn Fn(&mut BTreeMap<OsString, OsString>)| {
+        let mut environment = DEFAULT_ENVIRONMENT.clone();
+        change(&mut environment);
+        resolve_dgspec(&verified(), &spec, &project, &environment)
+    };
+    assert!(
+        under(&|_| {}).is_ok(),
+        "the base spec commits under the default environment"
+    );
+    let set_var = |name: &'static str, value: &'static str| {
+        move |environment: &mut BTreeMap<OsString, OsString>| {
+            environment.insert(name.into(), value.into());
+        }
+    };
+    type Change = Box<dyn Fn(&mut BTreeMap<OsString, OsString>)>;
+    let cases: Vec<(&str, Change, EnvironmentDecline)> = vec![
+        (
+            "a scratch folder",
+            Box::new(set_var("NUGET_SCRATCH", "/nonexistent")),
+            EnvironmentDecline::Variable {
+                name: "NUGET_SCRATCH".to_owned(),
+            },
+        ),
+        (
+            "a variable NuGet builds the name of",
+            Box::new(set_var("NUGET_RETRY_HTTP_X", "1")),
+            EnvironmentDecline::Variable {
+                name: "NUGET_RETRY_HTTP_X".to_owned(),
+            },
+        ),
+        (
+            "a home variable in another case",
+            Box::new(set_var("Dotnet_Cli_Home", "/x")),
+            EnvironmentDecline::Variable {
+                name: "Dotnet_Cli_Home".to_owned(),
+            },
+        ),
+        (
+            "an empty DOTNET_CLI_HOME, which NuGet reads as the working folder",
+            Box::new(set_var("DOTNET_CLI_HOME", "")),
+            EnvironmentDecline::HomeUnknown,
+        ),
+        (
+            "a relative HOME",
+            Box::new(set_var("HOME", "relative")),
+            EnvironmentDecline::HomeUnknown,
+        ),
+        (
+            "no HOME",
+            Box::new(|environment: &mut BTreeMap<OsString, OsString>| {
+                environment.remove(OsStr::new("HOME"));
+                environment.remove(OsStr::new("DOTNET_CLI_HOME"));
+            }),
+            EnvironmentDecline::HomeUnknown,
+        ),
+    ];
+    for (label, change, expected) in cases {
+        match under(&*change) {
+            Err(DgSpecResolveDecline::Environment { decline }) => {
+                assert_eq!(decline, expected, "{label}")
+            }
+            other => panic!("{label}: expected an environment decline, got {other:?}"),
+        }
     }
 }
