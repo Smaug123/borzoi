@@ -922,7 +922,9 @@ fn malformed_markers_and_unmodelled_metadata_decline() {
 }
 
 /// Restore throws on a nuspec without an `<id>` or a `<version>`, or without
-/// `<metadata>` at all; B₁ requires each exactly once.
+/// `<metadata>` at all, or with every element prefixed and no default
+/// namespace (it looks for the identity in the default namespace); B₁ requires
+/// each exactly once, in the default namespace.
 #[test]
 fn a_nuspec_must_state_its_identity() {
     let mut oracle = Oracle::spawn();
@@ -934,6 +936,7 @@ fn a_nuspec_must_state_its_identity() {
         r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><version>1.0.0</version><authors>a</authors><description>d</description></metadata></package>"#,
         r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>A</id><authors>a</authors><description>d</description></metadata></package>"#,
         r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"></package>"#,
+        r#"<p:package xmlns:p="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><p:metadata><p:id>A</p:id><p:version>1.0.0</p:version><p:authors>a</p:authors><p:description>d</p:description></p:metadata></p:package>"#,
     ];
     for nuspec in nuspecs {
         let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
@@ -2146,4 +2149,62 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
     }
     eprintln!("graded {graded_variants} perturbations, {committed_variants} committed");
     assert!(committed_variants >= 10, "{committed_variants} committed");
+}
+
+/// The ways a nuspec can spell its namespace, each graded against B₀: none,
+/// each schema version NuGet has published, an unknown one, a prefix on every
+/// element with no default, and a default on `<package>` with `<metadata>`'s
+/// children prefixed. Certain-implies-exact on each, and the published
+/// default-namespace forms commit.
+#[test]
+fn nuspec_namespace_forms_are_graded() {
+    const BODY: &str =
+        "<id>A</id><version>1.0.0</version><authors>a</authors><description>d</description>";
+    let schema = |year: &str| format!("http://schemas.microsoft.com/packaging/{year}/nuspec.xsd");
+    let mut forms: Vec<(String, bool)> = vec![(
+        format!("<package><metadata>{BODY}</metadata></package>"),
+        true,
+    )];
+    for year in ["2010/07", "2011/08", "2012/06", "2013/01", "2013/05"] {
+        forms.push((
+            format!(
+                r#"<package xmlns="{}"><metadata>{BODY}</metadata></package>"#,
+                schema(year)
+            ),
+            true,
+        ));
+    }
+    forms.push((
+        format!(r#"<package xmlns="urn:not-nuget"><metadata>{BODY}</metadata></package>"#),
+        false,
+    ));
+    let prefixed = BODY.replace('<', "<p:").replace("<p:/", "</p:");
+    forms.push((
+        format!(
+            r#"<p:package xmlns:p="{}"><p:metadata>{prefixed}</p:metadata></p:package>"#,
+            schema("2013/05")
+        ),
+        false,
+    ));
+    forms.push((
+        format!(
+            r#"<package xmlns="{0}" xmlns:p="{0}"><metadata>{prefixed}</metadata></package>"#,
+            schema("2013/05")
+        ),
+        false,
+    ));
+
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    for (nuspec, must_commit) in forms {
+        let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        package.raw_nuspec = Some(Box::leak(nuspec.clone().into_boxed_str()));
+        let graded = grade(&mut oracle, &[package], &shape);
+        if must_commit {
+            assert!(graded.ours.is_ok(), "{nuspec}: {:?}", graded.ours);
+        }
+    }
 }

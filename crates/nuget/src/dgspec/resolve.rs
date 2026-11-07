@@ -512,7 +512,9 @@ fn check_metadata(
 ///   restoring NuGet's own version. The comparison is strict because the
 ///   verified NuGets are release candidates, which sort below the release of
 ///   the same number.
-/// - **Declined** otherwise, `contentFiles`, `frameworkAssemblies`,
+/// - **Declined** otherwise, and whenever `<package>` or `<metadata>` is not in
+///   the default namespace in scope (NuGet looks for `<metadata>`'s children
+///   there, so a nuspec prefixed throughout has no identity to it), `contentFiles`, `frameworkAssemblies`,
 ///   `frameworkReferences` and `developmentDependency` among them: restore
 ///   reads each, and B₁ does not model how.
 fn metadata_is_admitted(
@@ -561,7 +563,12 @@ fn metadata_is_admitted(
             }
         }
     };
-    attributes_admitted && identity_stated && elements_admitted && types_admitted && client_admitted
+    nuspec.metadata_in_default_namespace
+        && attributes_admitted
+        && identity_stated
+        && elements_admitted
+        && types_admitted
+        && client_admitted
 }
 
 /// The `<metadata>` elements restore never reads: what a package says about

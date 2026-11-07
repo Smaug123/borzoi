@@ -294,13 +294,18 @@ pub struct PackageNuspec {
     pub metadata_elements: Vec<MetadataElement>,
     /// The local name of every attribute on `<metadata>`.
     pub metadata_attributes: Vec<String>,
+    /// Whether `<package>` and `<metadata>` are each in the default namespace
+    /// in scope where they appear, as NuGet's reader assumes when it looks
+    /// for `<metadata>`'s children (a nuspec written with a prefix on every
+    /// element and no default namespace is not).
+    pub metadata_in_default_namespace: bool,
 }
 
 /// One child element of a nuspec's `<metadata>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataElement {
     /// The local name, or `{namespace}name` for an element outside the
-    /// nuspec's own namespace.
+    /// nuspec's own namespace or outside the default namespace in scope.
     pub name: String,
     /// The element's text, as written (its text nodes, without comments),
     /// when it has no child elements; `None` when it has some.
@@ -795,14 +800,19 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
             package_types: Vec::new(),
             metadata_elements: Vec::new(),
             metadata_attributes: Vec::new(),
+            metadata_in_default_namespace: false,
         });
     };
+    let metadata_in_default_namespace = root.tag_name().namespace() == root.default_namespace()
+        && metadata.tag_name().namespace() == metadata.default_namespace();
     let metadata_elements = metadata
         .children()
         .filter(roxmltree::Node::is_element)
         .map(|element| {
             let tag = element.tag_name();
-            let name = if tag.namespace() == nuspec_namespace {
+            let name = if tag.namespace() == nuspec_namespace
+                && tag.namespace() == element.default_namespace()
+            {
                 tag.name().to_owned()
             } else {
                 format!("{{{}}}{}", tag.namespace().unwrap_or_default(), tag.name())
@@ -881,6 +891,7 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         package_types,
         metadata_elements,
         metadata_attributes,
+        metadata_in_default_namespace,
     })
 }
 

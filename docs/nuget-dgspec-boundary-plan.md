@@ -445,7 +445,9 @@ The differential, the probes behind it, and review turned up seven things:
   modelled (dependencies, references, an `id` and `version` each stated once
   and naming the package's folder, `packageTypes` naming only `Dependency` without a
   version, a `minClientVersion` below the restoring NuGet's version), or a
-  decline; and the commit marker must be one restore reads (a Nix-built
+  decline, all in the default namespace in scope (NuGet looks for the
+  identity there, so a nuspec prefixed throughout has none; a hand case grades
+  each namespace form); and the commit marker must be one restore reads (a Nix-built
   cache's `{ "contentHash": "" }` is). It checks every version restore may
   read: each version the walk read, and the installed lower bound of every
   declared dependency and direct requirement, which the closure now reports.
