@@ -157,8 +157,11 @@ pub enum UnmodelledField {
     /// Metadata NuGet requires is absent or inconsistent, so restore throws:
     /// the project's path or output path, or `originalTargetFrameworks`
     /// naming exactly the aliases of the frameworks and of the restore
-    /// metadata's frameworks.
+    /// metadata's frameworks, each alias once.
     RequiredMetadata,
+    /// A config file NuGet loads its settings from is outside the vocabulary
+    /// B₁ admits (see `config_is_admitted`).
+    Config,
 }
 
 impl UnmodelledField {
@@ -181,6 +184,7 @@ impl UnmodelledField {
             UnmodelledField::DependencyTarget => "dependency-target",
             UnmodelledField::NoFrameworks => "no-frameworks",
             UnmodelledField::RequiredMetadata => "required-metadata",
+            UnmodelledField::Config => "config",
         }
     }
 }
@@ -510,7 +514,7 @@ fn check_metadata(
 /// - **Descriptive**, never read by restore: [`DESCRIPTIVE_ELEMENTS`].
 /// - **Modelled**: `dependencies` and `references`, which the nuspec reader
 ///   parses (a nuspec it cannot parse never reaches here); `id` and `version`,
-///   which must name the package's own folder; `packageTypes`, which must
+///   each present exactly once and naming the package's own folder; `packageTypes`, which must
 ///   declare nothing but `Dependency`, without a version (restore refuses
 ///   other types in a `PackageReference` project, `DotnetTool` with `NU1212`,
 ///   and throws on a malformed version); and the `minClientVersion`
@@ -530,6 +534,14 @@ fn metadata_is_admitted(
         .metadata_attributes
         .iter()
         .all(|attribute| attribute == "minClientVersion");
+    let count = |name: &str| {
+        nuspec
+            .metadata_elements
+            .iter()
+            .filter(|element| element.name == name)
+            .count()
+    };
+    let identity_stated = count("id") == 1 && count("version") == 1;
     let elements_admitted = nuspec.metadata_elements.iter().all(|element| {
         let text = element.text.as_deref();
         match element.name.as_str() {
@@ -559,7 +571,7 @@ fn metadata_is_admitted(
             }
         }
     };
-    attributes_admitted && elements_admitted && types_admitted && client_admitted
+    attributes_admitted && identity_stated && elements_admitted && types_admitted && client_admitted
 }
 
 /// The `<metadata>` elements restore never reads: what a package says about
@@ -638,14 +650,9 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         packages_path,
         sources,
         fallback_folders,
-        // NuGet reads its settings from these files. The settings that bear on
-        // resolution are already in the spec (sources, fallback folders, the
-        // packages folder), except package source mapping, which filters the
-        // sources and never the packages folder. The rest govern how packages
-        // are fetched and extracted (credentials, proxies, signature
-        // validation), and a committed closure fetches nothing. A hand case in
-        // the differential pins the source mapping half.
-        config_file_paths: _,
+        // NuGet loads its settings from these files, and a file it cannot load
+        // fails the restore. See `config_is_admitted`.
+        config_file_paths,
         frameworks: restore_frameworks,
         // Names, and whether there is more than one framework; restore
         // requires them to match the frameworks.
@@ -667,6 +674,10 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     if !present(project_name) {
         decline(UnmodelledField::ProjectName);
     }
+    let aliases_unique = |aliases: Vec<&str>| {
+        let count = aliases.len();
+        aliases.into_iter().collect::<BTreeSet<_>>().len() == count
+    };
     let original: BTreeSet<&str> = original_target_frameworks
         .iter()
         .map(String::as_str)
@@ -681,6 +692,13 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         || original.len() != original_target_frameworks.len()
         || original != aliases
         || restore_aliases != aliases
+        || !aliases_unique(frameworks.iter().map(|f| f.target_alias.as_str()).collect())
+        || !aliases_unique(
+            restore_frameworks
+                .iter()
+                .map(|f| f.target_alias.as_str())
+                .collect(),
+        )
     {
         decline(UnmodelledField::RequiredMetadata);
     }
@@ -692,6 +710,12 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     }
     if !fallback_folders.is_empty() {
         decline(UnmodelledField::FallbackFolders);
+    }
+    if !config_file_paths
+        .iter()
+        .all(|path| config_is_admitted(Path::new(path)))
+    {
+        decline(UnmodelledField::Config);
     }
     if !warning_policy_is_inert(warning_properties) {
         decline(UnmodelledField::WarningPolicy);
@@ -805,6 +829,86 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     }
 
     fields
+}
+
+/// Whether a config file NuGet loads its settings from is in the closed
+/// vocabulary B₁ admits.
+///
+/// Restore loads every config file the spec names, and fails on one it cannot
+/// load (malformed XML, an empty package source mapping pattern) even when
+/// every package is in the packages folder. What it loads that bears on
+/// resolution is already in the spec: `RestoreSources` overrides the
+/// configured sources, and the packages folder and fallback folders are
+/// resolved into it. So B₁ admits a file holding only source lists, which it
+/// can show load, and declines anything else rather than model NuGet's
+/// settings validation: a well-formed XML document whose root is
+/// `configuration`, with only `packageSources` and `disabledPackageSources`
+/// sections, each holding only `clear` elements and `add` elements with a
+/// non-empty `key` and `value` (and, in `packageSources`, a
+/// `protocolVersion`), without text.
+fn config_is_admitted(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let Ok(document) = roxmltree::Document::parse(text) else {
+        return false;
+    };
+    let root = document.root_element();
+    /// The element children of `node`, or `None` if it holds text.
+    fn elements<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+    ) -> Option<Vec<roxmltree::Node<'a, 'input>>> {
+        let mut elements = Vec::new();
+        for child in node.children().filter(|child| !child.is_comment()) {
+            if child.is_element() {
+                elements.push(child);
+            } else if child.text().is_some_and(|text| !text.trim().is_empty()) {
+                return None;
+            }
+        }
+        Some(elements)
+    }
+    let plain = |node: roxmltree::Node<'_, '_>| node.tag_name().namespace().is_none();
+    let attributes_are = |node: roxmltree::Node<'_, '_>, allowed: &[&str]| {
+        node.attributes()
+            .all(|attribute| attribute.namespace().is_none() && allowed.contains(&attribute.name()))
+    };
+    let entry_admitted = |entry: roxmltree::Node<'_, '_>, extra: &[&str]| {
+        if !plain(entry) || !elements(entry).is_some_and(|children| children.is_empty()) {
+            return false;
+        }
+        match entry.tag_name().name() {
+            "clear" => entry.attributes().next().is_none(),
+            "add" => {
+                let mut allowed = vec!["key", "value"];
+                allowed.extend_from_slice(extra);
+                attributes_are(entry, &allowed)
+                    && entry.attribute("key").is_some_and(|key| !key.is_empty())
+                    && entry
+                        .attribute("value")
+                        .is_some_and(|value| !value.is_empty())
+            }
+            _ => false,
+        }
+    };
+    plain(root)
+        && root.tag_name().name() == "configuration"
+        && root.attributes().next().is_none()
+        && elements(root).is_some_and(|sections| {
+            sections.into_iter().all(|section| {
+                let extra: &[&str] = match section.tag_name().name() {
+                    "packageSources" => &["protocolVersion"],
+                    "disabledPackageSources" => &[],
+                    _ => return false,
+                };
+                plain(section)
+                    && section.attributes().next().is_none()
+                    && elements(section).is_some_and(|entries| {
+                        entries.into_iter().all(|e| entry_admitted(e, extra))
+                    })
+            })
+        })
 }
 
 /// A source the resolver admits: a local folder named by an absolute path.

@@ -70,6 +70,8 @@ struct Pkg {
     version_text: Option<&'static str>,
     /// The `.nupkg.metadata` commit marker, when it is not a valid one.
     marker: Option<&'static str>,
+    /// The whole nuspec, in place of the one [`Pkg::nuspec`] renders.
+    raw_nuspec: Option<&'static str>,
 }
 
 impl Pkg {
@@ -84,6 +86,7 @@ impl Pkg {
             metadata: Vec::new(),
             version_text: None,
             marker: None,
+            raw_nuspec: None,
         }
     }
 
@@ -155,7 +158,8 @@ fn install(root: &Path, packages: &[Pkg]) {
         );
         let paths = PackagePaths::new(root, &identity);
         fs::create_dir_all(&paths.package_dir).expect("package dir");
-        fs::write(&paths.nuspec_path, pkg.nuspec()).expect("nuspec");
+        let nuspec = pkg.raw_nuspec.map_or_else(|| pkg.nuspec(), str::to_owned);
+        fs::write(&paths.nuspec_path, nuspec).expect("nuspec");
         for file in &pkg.files {
             let path = paths.package_dir.join(file);
             fs::create_dir_all(path.parent().expect("an asset is in a folder")).expect("folder");
@@ -238,9 +242,9 @@ struct Shape {
     enable_audit: Option<&'static str>,
     /// `restorePackagesWithLockFile`.
     lock_file: Option<&'static str>,
-    /// Name a config file whose package source mapping maps no package to
-    /// any source.
-    source_mapping: bool,
+    /// The contents of one config file the spec names, `{empty}` standing
+    /// for the empty source folder; `None` names none.
+    config: Option<&'static str>,
 }
 
 impl Shape {
@@ -255,7 +259,7 @@ impl Shape {
             sdk_analysis_level: Some("10.0.400"),
             enable_audit: Some("false"),
             lock_file: Some("false"),
-            source_mapping: false,
+            config: None,
         }
     }
 
@@ -275,26 +279,17 @@ impl Shape {
             };
             sources.insert(folder, json!({}));
         }
-        let config_file_paths: Vec<String> = if self.source_mapping {
-            let config = dir.join("NuGet.Config");
-            fs::write(
-                &config,
-                format!(
-                    r#"<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources><clear /><add key="empty" value="{}" /></packageSources>
-  <packageSourceMapping>
-    <packageSource key="empty"><package pattern="NoSuchPackage.*" /></packageSource>
-  </packageSourceMapping>
-</configuration>
-"#,
-                    path("empty")
-                ),
-            )
-            .expect("config");
-            vec![path("NuGet.Config")]
-        } else {
-            Vec::new()
+        let config_file_paths: Vec<String> = match self.config {
+            Some(config) => {
+                fs::create_dir_all(dir.join("empty")).expect("empty source");
+                fs::write(
+                    dir.join("NuGet.Config"),
+                    config.replace("{empty}", &path("empty")),
+                )
+                .expect("config");
+                vec![path("NuGet.Config")]
+            }
+            None => Vec::new(),
         };
 
         let aliases: Vec<&str> = self.frameworks.iter().map(|f| f.alias).collect();
@@ -641,20 +636,65 @@ fn an_empty_group_for_the_framework_shadows_the_fallback() {
     assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0")]));
 }
 
-/// Package source mapping that maps no package to any source does not touch a
-/// restore whose packages are all in the packages folder, which is why the
-/// config files the spec names are inert for a committed closure.
+/// A config file that only lists sources, like a user's default
+/// `NuGet.Config`.
+const SOURCES_CONFIG: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <!-- the user's feeds -->
+  <packageSources>
+    <clear />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+    <add key="empty" value="{empty}" />
+  </packageSources>
+  <disabledPackageSources><add key="nuget.org" value="true" /></disabledPackageSources>
+</configuration>
+"#;
+
+/// Package source mapping that maps no package to any source.
+const MAPPING_CONFIG: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources><clear /><add key="empty" value="{empty}" /></packageSources>
+  <packageSourceMapping>
+    <packageSource key="empty"><package pattern="NoSuchPackage.*" /></packageSource>
+  </packageSourceMapping>
+</configuration>
+"#;
+
+/// Restore loads every config file the spec names. One that only lists sources
+/// commits. Package source mapping does not filter the packages folder, but
+/// B₁ admits no mapping, since restore fails on a malformed one (an empty
+/// pattern) as it does on a file that is not XML.
 #[test]
-fn package_source_mapping_does_not_filter_the_packages_folder() {
+fn config_files_are_held_to_a_closed_vocabulary() {
     let mut oracle = Oracle::spawn();
     let packages = [Pkg::new("A", "1.0.0", vec![])];
     let mut shape = Shape::new(vec![Framework::new(
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
     )]);
-    shape.source_mapping = true;
+    shape.config = Some(SOURCES_CONFIG);
     let graded = grade(&mut oracle, &packages, &shape);
     assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0")]));
+
+    let empty_pattern = r#"<configuration>
+  <packageSources><clear /><add key="empty" value="{empty}" /></packageSources>
+  <packageSourceMapping><packageSource key="empty"><package pattern="" /></packageSource></packageSourceMapping>
+</configuration>"#;
+    for (config, restores) in [
+        (MAPPING_CONFIG, true),
+        (empty_pattern, false),
+        ("<configuration>", false),
+    ] {
+        shape.config = Some(config);
+        let graded = grade(&mut oracle, &packages, &shape);
+        assert_eq!(graded.theirs.success, restores, "{config}");
+        match graded.ours {
+            Err(DgSpecResolveDecline::Unmodelled { fields }) => {
+                assert_eq!(fields, BTreeSet::from([UnmodelledField::Config]))
+            }
+            other => panic!("{config}: B₁ must decline on the config, not {other:?}"),
+        }
+    }
 }
 
 /// A source folder that does not exist is never read when every package is in
@@ -872,6 +912,36 @@ fn malformed_markers_and_unmodelled_metadata_decline() {
                 Err(DgSpecResolveDecline::PackageMetadata { .. })
             ),
             "{:?}",
+            graded.ours
+        );
+    }
+}
+
+/// Restore throws on a nuspec without an `<id>` or a `<version>`, or without
+/// `<metadata>` at all; B₁ requires each exactly once.
+#[test]
+fn a_nuspec_must_state_its_identity() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let nuspecs = [
+        r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><version>1.0.0</version><authors>a</authors><description>d</description></metadata></package>"#,
+        r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>A</id><authors>a</authors><description>d</description></metadata></package>"#,
+        r#"<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"></package>"#,
+    ];
+    for nuspec in nuspecs {
+        let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        package.raw_nuspec = Some(nuspec);
+        let graded = grade(&mut oracle, &[package], &shape);
+        assert!(!graded.theirs.success, "{nuspec}: {:?}", graded.theirs);
+        assert!(
+            matches!(
+                graded.ours,
+                Err(DgSpecResolveDecline::PackageMetadata { .. })
+            ),
+            "{nuspec}: {:?}",
             graded.ours
         );
     }
@@ -1124,6 +1194,20 @@ fn every_unmodelled_field_declines_by_name() {
         (UnmodelledField::RequiredMetadata, |spec, _| {
             the_project(spec)["restore"]["originalTargetFrameworks"] = json!([]);
         }),
+        (UnmodelledField::RequiredMetadata, |spec, _| {
+            let project = the_project(spec);
+            let framework = project["frameworks"]["net8.0"].clone();
+            project["frameworks"]["net9.0"] = framework;
+        }),
+        (UnmodelledField::Config, |spec, dir| {
+            let config = dir.join("NuGet.Config");
+            fs::write(
+                &config,
+                r#"<configuration><config><add key="globalPackagesFolder" value="x" /></config></configuration>"#,
+            )
+            .unwrap();
+            the_project(spec)["restore"]["configFilePaths"] = json!([config.to_str().unwrap()]);
+        }),
         (UnmodelledField::NoFrameworks, |spec, _| {
             let project = the_project(spec);
             project["frameworks"] = json!({});
@@ -1343,7 +1427,7 @@ fn generate(rng: &mut SplitMix64) -> Generated {
         None,
     ]);
     shape.lock_file = *rng.pick(&[Some("false"), None]);
-    shape.source_mapping = rng.below(4) == 0;
+    shape.config = *rng.pick(&[None, None, Some(SOURCES_CONFIG), Some(MAPPING_CONFIG)]);
     if rng.below(10) == 0 {
         shape.project_name = (*rng.pick(IDS)).to_owned();
     }
@@ -1367,7 +1451,7 @@ fn features(
         format!("sdk-analysis-level={:?}", shape.sdk_analysis_level),
         format!("enable-audit={:?}", shape.enable_audit),
         format!("lock-file={:?}", shape.lock_file),
-        format!("source-mapping={}", shape.source_mapping),
+        format!("config={}", shape.config.is_some()),
     ];
     for framework in &shape.frameworks {
         features.push(format!("framework={}", framework.alias));
@@ -1477,8 +1561,8 @@ fn required_features() -> BTreeSet<String> {
         "enable-audit=Some(\"FALSE\")",
         "lock-file=Some(\"false\")",
         "lock-file=None",
-        "source-mapping=true",
-        "source-mapping=false",
+        "config=true",
+        "config=false",
         "framework-reference",
         "include",
         "suppress-parent",
@@ -1683,5 +1767,70 @@ fn every_single_deletion_from_a_committing_spec_is_graded() {
     assert!(
         graded_variants >= 40 && committed_variants >= 10,
         "graded {graded_variants} deletions, {committed_variants} committed"
+    );
+}
+
+/// Every string of a committing spec replaced by each other string the spec
+/// holds, one substitution at a time, graded against B₀ where the reader
+/// accepts the result. Deletions cannot reach a cross-field consistency rule
+/// (two frameworks sharing an alias, a reference naming another project);
+/// substituting the spec's own values for one another can.
+#[test]
+fn every_substitution_of_a_committing_specs_strings_is_graded() {
+    let mut oracle = Oracle::spawn();
+    let packages = [
+        Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])])
+            .with_files(&["lib/netstandard2.0/A.dll"]),
+        Pkg::new("B", "1.0.0", vec![]),
+    ];
+    let mut shape = Shape::new(vec![
+        Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]),
+        Framework::new("netstandard2.0", vec![Dep::new("B", "[1.0.0, )")]),
+    ]);
+    shape.config = Some(SOURCES_CONFIG);
+    let dir = tempfile::tempdir().expect("temp dir");
+    install(&dir.path().join("gp"), &packages);
+    let base: Value = serde_json::from_str(&shape.render(dir.path())).expect("JSON");
+
+    let mut pool = BTreeSet::new();
+    let mut leaves = Vec::new();
+    for path in json_paths(&base) {
+        let mut copy = base.clone();
+        if let Value::String(text) = at_mut(&mut copy, &path) {
+            pool.insert(text.clone());
+            leaves.push(path);
+        }
+    }
+    let mut graded_variants = 0;
+    let mut committed_variants = 0;
+    for path in &leaves {
+        for replacement in &pool {
+            let mut variant = base.clone();
+            let target = at_mut(&mut variant, path);
+            if target.as_str() == Some(replacement) {
+                continue;
+            }
+            *target = Value::String(replacement.clone());
+            let text = variant.to_string();
+            let Ok(spec) = parse_dgspec(&text) else {
+                continue;
+            };
+            if spec.projects.len() != 1 {
+                continue;
+            }
+            let graded = grade_spec(
+                &mut oracle,
+                &text,
+                &spec,
+                &format!("{path:?} := {replacement:?}"),
+            );
+            graded_variants += 1;
+            committed_variants += usize::from(graded.ours.is_ok());
+        }
+    }
+    eprintln!("graded {graded_variants} substitutions, {committed_variants} committed");
+    assert!(
+        graded_variants >= 100 && committed_variants >= 10,
+        "graded {graded_variants} substitutions, {committed_variants} committed"
     );
 }

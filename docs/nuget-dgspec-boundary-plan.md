@@ -442,8 +442,8 @@ The differential, the probes behind it, and review turned up seven things:
   rounds each found another such refusal, so B₁ now holds every package to a
   closed vocabulary rather than to a list of known refusals: every
   `<metadata>` element and attribute is descriptive (never read by restore),
-  modelled (dependencies, references, an `id` and `version` naming the
-  package's folder, `packageTypes` naming only `Dependency` without a
+  modelled (dependencies, references, an `id` and `version` each stated once
+  and naming the package's folder, `packageTypes` naming only `Dependency` without a
   version, a `minClientVersion` below the restoring NuGet's version), or a
   decline; and the commit marker must be one restore reads. It checks every
   installed version of every package in the closure, which covers every
@@ -454,14 +454,26 @@ The differential, the probes behind it, and review turned up seven things:
   `frameworkReferences` and `developmentDependency` (Nerdbank.GitVersioning);
   modelling them is coverage work for whichever stage the census next points
   at.
+- **Restore loads the config files the spec names.** One it cannot load
+  (malformed XML, an empty package source mapping pattern) fails the restore
+  with every package in the packages folder. A valid package source mapping
+  does not filter the packages folder, but B₁ holds config files to a closed
+  vocabulary too: well-formed XML with only source lists
+  (`packageSources`, `disabledPackageSources`), which is what a default user
+  `NuGet.Config` holds. Everything those lists could change is overridden in
+  the spec.
 - **Restore requires some metadata the resolver does not read.** An absent or
   empty project name, project path or output path, or
-  `originalTargetFrameworks` not naming exactly the frameworks, makes restore
-  throw. After two review rounds found these and the metadata above one at a
+  `originalTargetFrameworks` not naming exactly the frameworks, each alias
+  once, makes restore throw. After two review rounds found these and the metadata above one at a
   time, `every_single_deletion_from_a_committing_spec_is_graded` replaced the
   hunt: it deletes or empties each key, element and string of a committing
   spec in turn and grades every variant the reader accepts against B₀ (102
   variants, 52 committed). It found the empty project name on its first run.
+  Deletion cannot reach a cross-field rule (two frameworks sharing an alias),
+  so `every_substitution_of_a_committing_specs_strings_is_graded` also
+  replaces each string of a committing spec by each other string the spec
+  holds (412 variants, 64 committed).
   Review also found that a relative `nuGetLockFilePath` is resolved against
   the project; B₁ declines one.
 - **The packages folder needs no sources.** A source folder that does not
