@@ -735,6 +735,8 @@ pub enum Incomplete {
     /// a dropped check-mode relation, a suspended member lookup), or that
     /// would refine an open scrutinee after an unmodelled construct.
     PatternAfterCheck,
+    /// A `match` pattern that does not fit its scrutinee's type.
+    PatternMismatch,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -3160,11 +3162,21 @@ impl<'a> Gen<'a> {
                         self.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
                     }
+                    let failures = self.eq_failures;
                     self.eq(Ty::Var(sv), pt);
                     // The pattern's names are typed before the clause's uses
                     // of them are walked, so a use reads a known type
                     // ([`Self::value_use`]).
                     self.settle();
+                    // A pattern that does not fit the scrutinee fails whole
+                    // (atomically), leaving its names untyped where FCS typed
+                    // the part that fit before rejecting the rest (`(x, 1)`
+                    // against `int * string` keeps `x : int`): the clause
+                    // declines rather than let its body type them.
+                    if self.eq_failures > failures {
+                        self.mark_incomplete(Incomplete::PatternMismatch);
+                        return None;
+                    }
                     if clause.guard().is_some() {
                         self.constrain_bool(clause.guard());
                     }

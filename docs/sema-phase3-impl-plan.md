@@ -1086,7 +1086,14 @@ incomplete binding a pattern of structure relates only a ground scrutinee
 suspended member lookup whose receiver the pattern could make known declines
 it, since FCS looked the member up before the pattern, on a receiver it did
 not yet know (FS0072). The probe decides every kind of pending constraint in
-one exhaustive `match`, so a new kind of suspension must be decided there.
+one exhaustive `match`, so a new kind of suspension must be decided there,
+and declines too when the replayed relations already conflict (FCS resolved
+those by an order the replay does not follow). Together with a pattern that
+fails to fit declining its clause (unification rolls back whole, where FCS
+types the part that fits first: `(x, 1)` against `int * string` keeps
+`x : int`), that partitions every earlier relation a pattern could get ahead
+of: applied (a contradiction fails the pattern's equality), pending or
+dropped (the probe), or unmodelled (the incomplete-binding rule).
 FCS's
 dumps cannot grade these — they decline to convert a declaration FCS
 error-recovered — so their tests pin FCS's answer directly. Three things FCS's dump cannot

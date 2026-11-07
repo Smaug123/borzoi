@@ -644,3 +644,34 @@ fn a_pattern_does_not_wake_an_earlier_member_lookup() {
         }
     }
 }
+
+/// A pattern that does not fit fails whole in inference, but FCS types the
+/// part that fits before rejecting the rest: `(x, 1)` against
+/// `int * string` keeps `x : int`, which a later use in the clause must not
+/// retype. Pinned, as FCS's dumps cannot grade the error-recovered
+/// declaration.
+#[test]
+fn a_mismatched_pattern_does_not_leave_its_names_to_the_clause() {
+    for body in [
+        "match t with (x, 1) -> (match x with \"\" -> 0 | _ -> 1) | _ -> 2",
+        "match t with (x, 1) -> String.length x | _ -> 2",
+    ] {
+        let src = format!("module M\nlet f (t: int * string) = {body}\n");
+        let parsed = parse(&src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = full_bcl_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
+        for (def, ty) in inferred.def_types() {
+            if resolved.def(*def).name.as_str() == "x" {
+                assert_eq!(ty.render(), "System.Int32", "`x` in {body}");
+            }
+        }
+    }
+}
