@@ -64,6 +64,12 @@ struct Pkg {
     min_client_version: Option<&'static str>,
     /// Each `<packageType>`'s attributes, as written.
     package_types: Vec<&'static str>,
+    /// More `<metadata>` children, as written.
+    metadata: Vec<&'static str>,
+    /// The `<version>` element's text, when it is not [`Self::version`].
+    version_text: Option<&'static str>,
+    /// The `.nupkg.metadata` commit marker, when it is not a valid one.
+    marker: Option<&'static str>,
 }
 
 impl Pkg {
@@ -75,6 +81,9 @@ impl Pkg {
             files: Vec::new(),
             min_client_version: None,
             package_types: Vec::new(),
+            metadata: Vec::new(),
+            version_text: None,
+            marker: None,
         }
     }
 
@@ -123,11 +132,14 @@ impl Pkg {
     <authors>a</authors>
     <description>d</description>
     {package_types}
+    {}
     <dependencies>{groups}</dependencies>
   </metadata>
 </package>
 "#,
-            self.id, self.version
+            self.id,
+            self.version_text.unwrap_or(&self.version),
+            self.metadata.concat(),
         )
     }
 }
@@ -151,7 +163,8 @@ fn install(root: &Path, packages: &[Pkg]) {
         }
         fs::write(
             &paths.metadata_path,
-            r#"{"version":2,"contentHash":"AAAA","source":null}"#,
+            pkg.marker
+                .unwrap_or(r#"{"version":2,"contentHash":"AAAA","source":null}"#),
         )
         .expect("commit marker");
     }
@@ -810,6 +823,60 @@ fn restore_validated_metadata_declines_outside_the_admitted_domain() {
     }
 }
 
+/// Each descriptive `<metadata>` element, malformed ones included, is one
+/// restore never reads: alone on a package, it commits, and B₀ agrees. So does
+/// a commit marker naming the source the package came from. (The generator
+/// writes all of these too, in combination; this grades each one for certain.)
+#[test]
+fn descriptive_metadata_is_inert() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    for metadata in DESCRIPTIVE_METADATA {
+        let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        package.metadata = vec![metadata];
+        let graded = grade(&mut oracle, &[package], &shape);
+        assert!(graded.ours.is_ok(), "{metadata}: {:?}", graded.ours);
+    }
+    let mut sourced = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+    sourced.marker = Some(
+        r#"{"version":2,"contentHash":"AAAA","source":"https://api.nuget.org/v3/index.json"}"#,
+    );
+    let graded = grade(&mut oracle, &[sourced], &shape);
+    assert!(graded.ours.is_ok(), "{:?}", graded.ours);
+}
+
+/// Restore throws on a commit marker without a content hash, and on content-file
+/// rules it rejects; B₁ declines both, the second because it admits no
+/// `contentFiles` at all.
+#[test]
+fn malformed_markers_and_unmodelled_metadata_decline() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let base = || Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+    let mut no_hash = base();
+    no_hash.marker = Some("{}");
+    let mut content = base().with_files(&["lib/net8.0/A.dll", "contentFiles/cs/net8.0/A.cs"]);
+    content.metadata = vec![DECLINED_METADATA[0]];
+    for package in [no_hash, content] {
+        let graded = grade(&mut oracle, std::slice::from_ref(&package), &shape);
+        assert!(!graded.theirs.success, "{package:?}: {:?}", graded.theirs);
+        assert!(
+            matches!(
+                graded.ours,
+                Err(DgSpecResolveDecline::PackageMetadata { .. })
+            ),
+            "{:?}",
+            graded.ours
+        );
+    }
+}
+
 /// Restore validates every version it reads, not only the winners: a losing
 /// version's minimum client version fails the restore even though another
 /// version of the package wins.
@@ -1135,6 +1202,30 @@ const GROUP_TFMS: &[Option<&str>] = &[
     Some("net8.0"),
 ];
 const PROJECT_FRAMEWORKS: &[&str] = &["net8.0", "netstandard2.0", "net472", "net10.0"];
+/// `<metadata>` children B₁ admits as never read by restore, malformed ones
+/// among them: each must be graded on a committed spec.
+const DESCRIPTIVE_METADATA: &[&str] = &[
+    "<tags>a b</tags>",
+    r#"<license type="expression">MIT</license>"#,
+    r#"<license type="expression">(((</license>"#,
+    r#"<repository type="git" url="https://example.invalid/r" />"#,
+    "<serviceable>true</serviceable>",
+    "<serviceable>bogus</serviceable>",
+    "<requireLicenseAcceptance>maybe</requireLicenseAcceptance>",
+    "<icon>missing.png</icon>",
+    "<readme>missing.md</readme>",
+    "<releaseNotes>notes</releaseNotes>",
+    "<owners>o</owners><title>t</title><summary>s</summary><copyright>c</copyright>",
+    "<language>xx-INVALID</language><projectUrl>not a url</projectUrl>",
+    "<licenseUrl>not a url</licenseUrl><iconUrl>not a url</iconUrl>",
+];
+/// `<metadata>` children restore reads and B₁ does not model.
+const DECLINED_METADATA: &[&str] = &[
+    r#"<contentFiles><files include="**/*" buildAction="Bad" /></contentFiles>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Xml" targetFramework="net48" /></frameworkAssemblies>"#,
+    "<developmentDependency>true</developmentDependency>",
+    "<somethingNew>1</somethingNew>",
+];
 
 fn gen_range(rng: &mut SplitMix64) -> String {
     let version = rng.pick(VERSIONS);
@@ -1170,7 +1261,19 @@ fn generate(rng: &mut SplitMix64) -> Generated {
                 _ => &[],
             };
             let mut package = Pkg::new(id, version, groups).with_files(files);
-            match rng.below(10) {
+            if rng.below(3) == 0 {
+                package.metadata = vec![*rng.pick(DESCRIPTIVE_METADATA)];
+            }
+            match rng.below(40) {
+                10 => package.metadata.push(*rng.pick(DECLINED_METADATA)),
+                11 => package.version_text = Some(*rng.pick(&["9.9.9"])),
+                12 => {
+                    package.marker = Some(*rng.pick(&[
+                        r#"{}"#,
+                        r#"{"version":2,"contentHash":null}"#,
+                        r#"{"version":2,"contentHash":"AAAA","source":"https://api.nuget.org/v3/index.json"}"#,
+                    ]))
+                }
                 0 => package.min_client_version = Some(*rng.pick(&["2.12", "5.0.0", "99.0"])),
                 1 => {
                     package.package_types = vec![*rng.pick(&[
@@ -1308,6 +1411,12 @@ fn features(
             }
             for package_type in &pkg.package_types {
                 features.push(format!("package-type={package_type}"));
+            }
+            for metadata in &pkg.metadata {
+                features.push(format!("metadata={metadata}"));
+            }
+            if let Some(marker) = pkg.marker {
+                features.push(format!("marker={marker}"));
             }
         }
     }

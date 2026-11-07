@@ -486,7 +486,9 @@ fn check_metadata(
         for entry in versions {
             let package = read_installed_package(packages, entry.identity.clone())
                 .map_err(|source| unreadable(&entry.identity, source))?;
-            if !metadata_is_admitted(&package.nuspec, nuget) {
+            if !metadata_is_admitted(&package.nuspec, &entry.identity, nuget)
+                || !commit_marker_is_admitted(&entry.paths.metadata_path)
+            {
                 return Err(DgSpecResolveDecline::PackageMetadata {
                     target_alias: target_alias.to_owned(),
                     package: Box::new(entry.identity),
@@ -497,15 +499,48 @@ fn check_metadata(
     Ok(())
 }
 
-/// Whether the nuspec metadata restore validates a package by is in the
-/// domain B₁ admits: no package type but `Dependency`, without a version
-/// (restore refuses other types, `DotnetTool` with `NU1212`, in a
-/// `PackageReference` project, and throws on a malformed version), and a minimum
-/// client version, if any, that parses without a release label and is below
-/// the restoring NuGet's own version. The comparison is strict because the
-/// verified NuGets are release candidates, which sort below the release of the
-/// same number.
-fn metadata_is_admitted(nuspec: &PackageNuspec, nuget: &NuGetIdentity) -> bool {
+/// Whether a package's nuspec metadata is in the closed vocabulary B₁ admits.
+///
+/// Restore validates parts of a package's nuspec even from a warm cache, and
+/// throws or fails on what it rejects; which parts, and how, is not something
+/// a list of known refusals can bound (review found a new one in each of three
+/// rounds). So every element and attribute of `<metadata>` has a verdict here,
+/// and anything without one declines:
+///
+/// - **Descriptive**, never read by restore: [`DESCRIPTIVE_ELEMENTS`].
+/// - **Modelled**: `dependencies` and `references`, which the nuspec reader
+///   parses (a nuspec it cannot parse never reaches here); `id` and `version`,
+///   which must name the package's own folder; `packageTypes`, which must
+///   declare nothing but `Dependency`, without a version (restore refuses
+///   other types in a `PackageReference` project, `DotnetTool` with `NU1212`,
+///   and throws on a malformed version); and the `minClientVersion`
+///   attribute, which must parse without a release label and be below the
+///   restoring NuGet's own version. The comparison is strict because the
+///   verified NuGets are release candidates, which sort below the release of
+///   the same number.
+/// - **Declined** otherwise, `contentFiles`, `frameworkAssemblies`,
+///   `frameworkReferences` and `developmentDependency` among them: restore
+///   reads each, and B₁ does not model how.
+fn metadata_is_admitted(
+    nuspec: &PackageNuspec,
+    identity: &PackageIdentity,
+    nuget: &NuGetIdentity,
+) -> bool {
+    let attributes_admitted = nuspec
+        .metadata_attributes
+        .iter()
+        .all(|attribute| attribute == "minClientVersion");
+    let elements_admitted = nuspec.metadata_elements.iter().all(|element| {
+        let text = element.text.as_deref();
+        match element.name.as_str() {
+            "id" => text.is_some_and(|id| id.eq_ignore_ascii_case(identity.id.as_str())),
+            "version" => text
+                .and_then(|version| NuGetVersion::parse(version).ok())
+                .is_some_and(|version| version == identity.version),
+            "dependencies" | "references" | "packageTypes" => true,
+            name => DESCRIPTIVE_ELEMENTS.contains(&name),
+        }
+    });
     let types_admitted = nuspec
         .package_types
         .iter()
@@ -524,7 +559,52 @@ fn metadata_is_admitted(nuspec: &PackageNuspec, nuget: &NuGetIdentity) -> bool {
             }
         }
     };
-    types_admitted && client_admitted
+    attributes_admitted && elements_admitted && types_admitted && client_admitted
+}
+
+/// The `<metadata>` elements restore never reads: what a package says about
+/// itself for people and galleries. The differential's generator writes them,
+/// malformed ones included, so the claim is graded.
+const DESCRIPTIVE_ELEMENTS: &[&str] = &[
+    "authors",
+    "owners",
+    "title",
+    "description",
+    "summary",
+    "releaseNotes",
+    "copyright",
+    "language",
+    "tags",
+    "projectUrl",
+    "iconUrl",
+    "icon",
+    "licenseUrl",
+    "license",
+    "readme",
+    "repository",
+    "requireLicenseAcceptance",
+    "serviceable",
+];
+
+/// Whether a package's `.nupkg.metadata` commit marker is one restore reads
+/// without complaint: a JSON object whose `version` is 1 or 2, whose
+/// `contentHash` is a non-empty string, and whose only other key is `source`,
+/// a string or null. Restore throws on a marker without a content hash, which
+/// the package readers, checking only that the marker exists, cannot see.
+fn commit_marker_is_admitted(marker: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(marker) else {
+        return false;
+    };
+    let Ok(serde_json::Value::Object(members)) = serde_json::from_str(&text) else {
+        return false;
+    };
+    members.iter().all(|(key, value)| match key.as_str() {
+        "version" => matches!(value.as_u64(), Some(1 | 2)),
+        "contentHash" => value.as_str().is_some_and(|hash| !hash.is_empty()),
+        "source" => value.is_string() || value.is_null(),
+        _ => false,
+    }) && members.contains_key("version")
+        && members.contains_key("contentHash")
 }
 
 /// Every field of `spec` present with a value the resolver does not model.

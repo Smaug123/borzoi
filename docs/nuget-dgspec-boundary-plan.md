@@ -437,11 +437,23 @@ The differential, the probes behind it, and review turned up seven things:
   `PackageReference` project (`NU1212`), and throws on a package type with a
   malformed version or a `minClientVersion` above its own version, losing
   versions included (the oracle's `restoreDgSpec` reports a thrown restore as
-  a failure, as `dotnet restore` fails). The nuspec reader now keeps both, and
-  B₁ admits only untyped packages or ones typed `Dependency` without a
-  version, whose minimum, if any, is below the restoring NuGet's version. It
-  checks every installed version of every package in the closure, which
-  covers every version restore reads. The generator varies both fields.
+  a failure, as `dotnet restore` fails). It throws, too, on content-file rules
+  it rejects and on a commit marker without a content hash. Three review
+  rounds each found another such refusal, so B₁ now holds every package to a
+  closed vocabulary rather than to a list of known refusals: every
+  `<metadata>` element and attribute is descriptive (never read by restore),
+  modelled (dependencies, references, an `id` and `version` naming the
+  package's folder, `packageTypes` naming only `Dependency` without a
+  version, a `minClientVersion` below the restoring NuGet's version), or a
+  decline; and the commit marker must be one restore reads. It checks every
+  installed version of every package in the closure, which covers every
+  version restore reads. The generator writes descriptive elements (malformed
+  ones included), declined ones and broken markers, and a hand case grades
+  each descriptive element alone. The vocabulary declines `frameworkAssemblies`
+  (on the corpus's `System.*` packages), `contentFiles`,
+  `frameworkReferences` and `developmentDependency` (Nerdbank.GitVersioning);
+  modelling them is coverage work for whichever stage the census next points
+  at.
 - **Restore requires some metadata the resolver does not read.** An absent or
   empty project name, project path or output path, or
   `originalTargetFrameworks` not naming exactly the frameworks, makes restore

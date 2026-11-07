@@ -289,6 +289,22 @@ pub struct PackageNuspec {
     /// restore refuses some types in a `PackageReference` project
     /// (`DotnetTool`, with `NU1212`), and a malformed version.
     pub package_types: Vec<PackageTypeDeclaration>,
+    /// Every child element of `<metadata>`, in nuspec order: the vocabulary a
+    /// consumer that must not misread a package can hold the nuspec to.
+    pub metadata_elements: Vec<MetadataElement>,
+    /// The local name of every attribute on `<metadata>`.
+    pub metadata_attributes: Vec<String>,
+}
+
+/// One child element of a nuspec's `<metadata>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetadataElement {
+    /// The local name, or `{namespace}name` for an element outside the
+    /// nuspec's own namespace.
+    pub name: String,
+    /// The element's text, trimmed, when it has no child elements; `None`
+    /// when it has some.
+    pub text: Option<String>,
 }
 
 /// One `<packageType>` element's attributes, as written.
@@ -765,8 +781,35 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
             reference_groups: Vec::new(),
             min_client_version: None,
             package_types: Vec::new(),
+            metadata_elements: Vec::new(),
+            metadata_attributes: Vec::new(),
         });
     };
+    let metadata_elements = metadata
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .map(|element| {
+            let tag = element.tag_name();
+            let name = if tag.namespace() == nuspec_namespace {
+                tag.name().to_owned()
+            } else {
+                format!("{{{}}}{}", tag.namespace().unwrap_or_default(), tag.name())
+            };
+            let text = (!element.children().any(|child| child.is_element())).then(|| {
+                element
+                    .children()
+                    .filter_map(|child| child.text())
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            });
+            MetadataElement { name, text }
+        })
+        .collect();
+    let metadata_attributes = metadata
+        .attributes()
+        .map(|attribute| attribute.name().to_owned())
+        .collect();
     let min_client_version = metadata.attribute("minClientVersion").map(str::to_owned);
     let package_types = metadata
         .children()
@@ -825,6 +868,8 @@ pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError
         reference_groups,
         min_client_version,
         package_types,
+        metadata_elements,
+        metadata_attributes,
     })
 }
 

@@ -53,7 +53,7 @@ pub use assets::{
 };
 pub use framework::{FrameworkParseError, NuGetFramework};
 pub use package::{
-    InstalledPackage, PackageCacheEntry, PackageCacheError, PackageDependency,
+    InstalledPackage, MetadataElement, PackageCacheEntry, PackageCacheError, PackageDependency,
     PackageDependencyGroup, PackageId, PackageIdParseError, PackageIdentity, PackageNuspec,
     PackageNuspecParseError, PackagePaths, PackageReadError, PackageReferenceGroup,
     PackageTypeDeclaration, list_committed_package_versions, parse_nuspec, read_installed_package,
