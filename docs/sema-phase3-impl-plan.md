@@ -1124,13 +1124,24 @@ emission filter the identifier arm made unnecessary. fcs-dump's binder oracle
 now reads a decision tree's target variables, through which FCS binds a nested
 pattern's names (`Some (Some v)`): it reported none of them.
 
-Open, from the last review round, and declining nothing yet: a condition on a
-parameter fixes its private slot, which the pattern probe does not replay, so
-`let f x = if x then (match x with 1 -> x | _ -> x) else false` publishes
-`bool -> int` (FCS rejects the pattern and keeps `bool -> bool`); and a clause
-FCS's decision compiler drops as unreachable (after an irrefutable clause, or
-repeating a case) keeps no nodes or binders in FCS's dump, while inference
-emits them, so the grids cannot grade such a match.
+**Unreachable clauses decline.** FCS's decision compiler keeps no node or
+binder of a clause no value reaches (FS0026: `_ -> 1 | Some x -> x`, or a case
+repeated without a guard), and none in a first clause that matches everything
+either (`() -> 1 | _ -> 2` keeps no node at `1`), so a match with a clause not
+provably reachable declines before any of it is walked. `match_reach` decides
+it: Maranget's usefulness check, under-approximated so that "reachable" is a
+proof. A guarded clause covers nothing; a constant counts as equal to another
+unless both are spelt canonically (`1` and `0x1` may be one value); a column of
+two types proves nothing; and the walk's first unread pattern is asked only
+whether anything gets past the clauses before it. A property test holds it to
+brute-force enumeration over generated types and clause lists (sound always,
+exact when every constant is canonical), and generated clause sets over nine
+scrutinee types hold it to FCS.
+
+A condition on a parameter fixes the parameter's private slot, which FCS has
+as one variable with the parameter, so the pattern probe replays each
+slot-binder pair too: `let f x = if x then (match x with 1 -> x | _ -> x)
+else false` declines, where FCS rejects the pattern and keeps `bool -> bool`.
 
 Still declining: the project's own unions, in a pattern or as a value (the
 next lever, above); `function` (lambdas are unmodelled); `try … with`;

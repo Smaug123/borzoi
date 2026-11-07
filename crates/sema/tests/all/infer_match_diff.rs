@@ -317,6 +317,111 @@ const MATCHES: &[(&str, &str, &str, &str, bool)] = &[
         "| Some v when v -> v | _ -> 0",
         true,
     ),
+    // FCS's decision compiler drops a clause no value can reach, keeping no
+    // node or binder of it, so a match with one declines. A guarded clause
+    // covers nothing, so what follows it is reachable.
+    (
+        "wildFirst",
+        "(o: int option)",
+        "o",
+        "| _ -> 1 | Some v -> v",
+        false,
+    ),
+    ("nameFirst", "(n: int)", "n", "| k -> k | 1 -> 2", false),
+    (
+        "repeatCase",
+        "(o: int option)",
+        "o",
+        "| Some v -> v | Some w -> w | None -> 0",
+        false,
+    ),
+    (
+        "repeatConst",
+        "(n: int)",
+        "n",
+        "| 1 -> 1 | 1 -> 2 | _ -> 3",
+        false,
+    ),
+    (
+        "hexRepeat",
+        "(n: int)",
+        "n",
+        "| 1 -> 1 | 0x1 -> 2 | _ -> 3",
+        false,
+    ),
+    (
+        "repeatStr",
+        "(s: string)",
+        "s",
+        "| \"a\" -> 1 | \"a\" -> 2 | _ -> 3",
+        false,
+    ),
+    (
+        "coveredWild",
+        "(o: int option)",
+        "o",
+        "| Some _ -> 1 | None -> 0 | _ -> 2",
+        false,
+    ),
+    (
+        "boolsWild",
+        "(b: bool)",
+        "b",
+        "| true -> 1 | false -> 0 | _ -> 2",
+        false,
+    ),
+    ("unitWild", "(u: unit)", "u", "| () -> 1 | _ -> 2", false),
+    (
+        "tupleCovered",
+        "(t: int * string)",
+        "t",
+        "| (_, s) -> s | (1, s) -> s",
+        false,
+    ),
+    (
+        "nestedCovered",
+        "(o: int option option)",
+        "o",
+        "| Some _ -> 1 | Some (Some v) -> v | None -> 0",
+        false,
+    ),
+    // A pattern inference does not read (a list) after a catch-all: what
+    // reaches it is still asked, as of a pattern matching everything.
+    (
+        "wildThenList",
+        "(l: int list)",
+        "l",
+        "| _ -> 1 | [] -> 2",
+        false,
+    ),
+    (
+        "guardedRepeat",
+        "(o: int option) (b: bool)",
+        "o",
+        "| Some v when b -> v | Some w -> w | None -> 0",
+        true,
+    ),
+    (
+        "guardedWildFirst",
+        "(o: int option) (b: bool)",
+        "o",
+        "| _ when b -> 1 | Some v -> v | None -> 0",
+        true,
+    ),
+    (
+        "distinctConsts",
+        "(n: int)",
+        "n",
+        "| 1 -> 1 | 2 -> 2 | 3 -> 3 | _ -> 4",
+        true,
+    ),
+    (
+        "nestedDistinct",
+        "(o: int option option)",
+        "o",
+        "| Some None -> 1 | Some _ -> 2 | None -> 3",
+        true,
+    ),
 ];
 
 /// `(id, template, modelled)`: where the match `{m}` sits.
@@ -700,4 +805,232 @@ fn a_mismatched_field_pattern_does_not_leave_its_names_to_the_clause() {
             assert_eq!(ty.render(), "System.Int32", "`x`");
         }
     }
+}
+
+/// A condition fixes an unannotated parameter's function-type slot to `bool`
+/// before a later pattern relates the parameter itself: FCS has one variable
+/// for both, so the pattern is the one it rejects (`if x then (match x with
+/// 1 -> …)` keeps `x : bool`, `f : bool -> bool`). FCS's dumps cannot grade
+/// the error-recovered declaration, so FCS's answers are pinned (read from its
+/// tooltips): whatever we publish for a binder must be FCS's, and every node
+/// at `x` must say `bool`.
+#[test]
+fn a_pattern_does_not_override_a_condition_on_its_parameter() {
+    const B: &str = "System.Boolean";
+    let rows: &[(&str, &[(&str, &str)])] = &[
+        (
+            "let f x = if x then (match x with 1 -> x | _ -> x) else false",
+            &[("x", B), ("f", "System.Boolean -> System.Boolean")],
+        ),
+        (
+            "let f x = if x then (match x with Some v -> 1 | None -> 2) else 3",
+            &[
+                ("x", B),
+                ("v", "System.Object"),
+                ("f", "System.Boolean -> System.Int32"),
+            ],
+        ),
+        (
+            "let f x = if x then (match x with \"a\" -> 1 | _ -> 2) else 3",
+            &[("x", B), ("f", "System.Boolean -> System.Int32")],
+        ),
+        (
+            "let f (o: int option) x = \
+             match o with Some 1 when x -> 1 | _ -> (match x with 1 -> 2 | _ -> 3)",
+            &[
+                ("x", B),
+                ("o", "Microsoft.FSharp.Core.FSharpOption<System.Int32>"),
+                (
+                    "f",
+                    "Microsoft.FSharp.Core.FSharpOption<System.Int32> -> System.Boolean -> System.Int32",
+                ),
+            ],
+        ),
+        (
+            "let f (x, y) = if x then (match x with 1 -> y | _ -> y) else y",
+            &[("x", B), ("y", "'a"), ("f", "System.Boolean * 'a -> 'a")],
+        ),
+        (
+            "let f x = if x then (match Some x with Some 1 -> 1 | _ -> 2) else 3",
+            &[("x", B), ("f", "System.Boolean -> System.Int32")],
+        ),
+    ];
+    for (src, fcs) in rows {
+        let src = format!("module M\n{src}\n");
+        let parsed = parse(&src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = full_bcl_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(
+            &file,
+            &resolved,
+            env,
+            &borzoi_sema::PrecedingTypes::default(),
+        );
+        for (def, ty) in inferred.def_types() {
+            let name = resolved.def(*def).name.to_string();
+            let ty = ty.render();
+            let expected = fcs
+                .iter()
+                .find_map(|&(n, t)| (n == name).then_some(t))
+                .unwrap_or_else(|| panic!("`{name} : {ty}` has no pinned answer in {src}"));
+            assert_eq!(ty, expected, "`{name}` in {src}");
+        }
+        for (range, ty) in inferred.types() {
+            let text = &src[usize::from(range.start())..usize::from(range.end())];
+            if text == "x" {
+                assert_eq!(ty.render(), B, "`x` node in {src}");
+            }
+        }
+    }
+}
+
+/// SplitMix64: a deterministic stream, so a failing seed reproduces exactly.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+    fn chance(&mut self, pct: usize) -> bool {
+        self.below(100) < pct
+    }
+}
+
+/// The scrutinee types the clause generator builds patterns at.
+#[derive(Debug, Clone, Copy)]
+enum PatTy {
+    Int,
+    Str,
+    Bool,
+    Unit,
+    Opt(&'static PatTy),
+    Res,
+    Pair,
+}
+
+impl PatTy {
+    fn spelling(self) -> String {
+        match self {
+            PatTy::Int => "int".into(),
+            PatTy::Str => "string".into(),
+            PatTy::Bool => "bool".into(),
+            PatTy::Unit => "unit".into(),
+            PatTy::Opt(t) => format!("({}) option", t.spelling()),
+            PatTy::Res => "Result<int, string>".into(),
+            PatTy::Pair => "(int * string)".into(),
+        }
+    }
+}
+
+const SCRUTINEE_TYS: &[PatTy] = &[
+    PatTy::Int,
+    PatTy::Str,
+    PatTy::Bool,
+    PatTy::Unit,
+    PatTy::Opt(&PatTy::Int),
+    PatTy::Opt(&PatTy::Opt(&PatTy::Int)),
+    PatTy::Opt(&PatTy::Bool),
+    PatTy::Res,
+    PatTy::Pair,
+];
+
+/// A well-typed pattern at `t`, from a small alphabet that repeats itself
+/// often (so clauses cover and repeat one another), its names fresh.
+fn gen_pat(rng: &mut Rng, t: PatTy, names: &mut usize) -> String {
+    let mut fresh = || {
+        *names += 1;
+        format!("v{names}")
+    };
+    if rng.chance(15) {
+        return if rng.chance(50) { "_".into() } else { fresh() };
+    }
+    match t {
+        PatTy::Int => ["0", "1", "2", "0x1"][rng.below(4)].into(),
+        PatTy::Str => ["\"a\"", "\"b\""][rng.below(2)].into(),
+        PatTy::Bool => ["true", "false"][rng.below(2)].into(),
+        PatTy::Unit => "()".into(),
+        PatTy::Opt(inner) => {
+            if rng.chance(35) {
+                "None".into()
+            } else {
+                format!("Some ({})", gen_pat(rng, *inner, names))
+            }
+        }
+        PatTy::Res => {
+            if rng.chance(50) {
+                format!("Ok ({})", gen_pat(rng, PatTy::Int, names))
+            } else {
+                format!("Error ({})", gen_pat(rng, PatTy::Str, names))
+            }
+        }
+        PatTy::Pair => format!(
+            "({}, {})",
+            gen_pat(rng, PatTy::Int, names),
+            gen_pat(rng, PatTy::Str, names)
+        ),
+    }
+}
+
+/// Generated clause sets — irrefutable clauses before others, repeated and
+/// covered cases and constants, guarded clauses — over every scrutinee type,
+/// graded against FCS. Its decision compiler keeps no node or binder of a
+/// clause no value reaches, so `check` fails on any node we type in one: the
+/// reachability judgement may decline a reachable clause, never commit an
+/// unreachable one.
+#[test]
+fn generated_clause_sets_agree_with_fcs() {
+    let programs: usize = std::env::var("BORZOI_MATCH_CLAUSE_PROGRAMS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+    let mut tally = Tally::default();
+    let mut irrefutable_first = 0;
+    for seed in 0..programs as u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ 0x6a09);
+        let mut src = "module M\n".to_string();
+        let mut cells = Vec::new();
+        for i in 0..60 {
+            let t = SCRUTINEE_TYS[rng.below(SCRUTINEE_TYS.len())];
+            let mut names = 0;
+            let clauses: Vec<String> = (0..2 + rng.below(4))
+                .map(|k| {
+                    let pat = gen_pat(&mut rng, t, &mut names);
+                    let guard = if rng.chance(20) { " when b" } else { "" };
+                    format!("| {pat}{guard} -> {k}")
+                })
+                .collect();
+            if clauses[..clauses.len() - 1]
+                .iter()
+                .any(|c| c.starts_with("| _ ->") || c.starts_with("| v"))
+            {
+                irrefutable_first += 1;
+            }
+            let line = src.matches('\n').count() as u32 + 1;
+            src.push_str(&format!(
+                "let f{i} (s: {}) (b: bool) = match s with {}\n",
+                t.spelling(),
+                clauses.join(" ")
+            ));
+            cells.push((line, format!("f{i}"), false, format!("seed {seed}/f{i}")));
+        }
+        check(&src, &cells, &mut tally);
+    }
+    eprintln!("{tally:?} irrefutable_first={irrefutable_first}");
+    assert!(
+        irrefutable_first >= programs * 5,
+        "too few clause sets put a catch-all before another clause: {irrefutable_first}"
+    );
+    assert!(
+        tally.committed >= programs * 15,
+        "the generated matches commit too little to be evidence: {tally:?}"
+    );
 }

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 98f0d9bb47cca0bdc306a9208071ee52f46dae6d5839f42b4a0d2c02285a23be # shrinks to (t, pats) = (Tuple([Unit, Tuple([Int, Unit])]), [Tuple([Any, Tuple([Int(0, false), Any])]), Tuple([Any, Tuple([Int(0, false), Any])])])
+cc 02c2f535935fdec92f70bc4784346d6d29df65df7578316fad28ef41073bcffd # shrinks to (t, pats) = (Tuple([Unit, Bool]), [Tuple([Any, Bool(false)]), Tuple([Any, Bool(true)]), Any])

@@ -495,7 +495,7 @@ use borzoi_assembly::{
 };
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
-    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, ModuleOrNamespace,
+    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, MatchExpr, ModuleOrNamespace,
     ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat, SequentialExpr, SyntaxKind,
     SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr, VarType,
 };
@@ -508,6 +508,7 @@ use crate::function_ty::{
     module_function_scheme, union_case_scheme,
 };
 use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
+use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -737,6 +738,9 @@ pub enum Incomplete {
     PatternAfterCheck,
     /// A `match` pattern that does not fit its scrutinee's type.
     PatternMismatch,
+    /// A `match` clause no value may reach, which FCS's decision compiler
+    /// keeps no node of ([`crate::match_reach`]).
+    UnreachableClause,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -860,12 +864,22 @@ enum PatShape {
     Unit,
     /// A (reference) tuple of two or more elements.
     Tuple(Vec<PatShape>),
-    /// A constant (`1`, `"s"`, `'c'`, `true`), of its literal's type.
-    Const(Ty),
-    /// A referenced assembly's union case (`None`, `Some x`, `Ok _`): the
-    /// case's scheme, and the pattern over its fields — `None` for a nullary
-    /// case, and for `Case _`, which matches every field at once.
-    Case(UnionCaseScheme, Option<Box<PatShape>>),
+    /// A constant (`1`, `"s"`, `'c'`, `true`), of its literal's type, and
+    /// the value it spells as reachability compares them ([`literal_ctor`]).
+    Const(Ty, Ctor<EntityHandle>),
+    /// A referenced assembly's union case (`None`, `Some x`, `Ok _`): which
+    /// case, its scheme, and the pattern over its fields — `None` for a
+    /// nullary case, and for `Case _`, which matches every field at once.
+    Case(CaseKey, UnionCaseScheme, Option<Box<PatShape>>),
+}
+
+/// Which case of which union a [`PatShape::Case`] names: its position in the
+/// union's case list, of `siblings` cases.
+#[derive(Debug, Clone, Copy)]
+struct CaseKey {
+    union: EntityHandle,
+    index: usize,
+    siblings: usize,
 }
 
 /// Where a pattern is read ([`Gen::pattern_shape_in`]).
@@ -885,8 +899,45 @@ impl PatShape {
                 out.insert(*def);
             }
             PatShape::Tuple(elems) => elems.iter().for_each(|e| e.names(out)),
-            PatShape::Case(_, Some(arg)) => arg.names(out),
-            PatShape::Wildcard | PatShape::Unit | PatShape::Const(_) | PatShape::Case(_, None) => {}
+            PatShape::Case(_, _, Some(arg)) => arg.names(out),
+            PatShape::Wildcard
+            | PatShape::Unit
+            | PatShape::Const(..)
+            | PatShape::Case(_, _, None) => {}
+        }
+    }
+
+    /// The pattern as reachability sees it ([`match_reach`]).
+    fn clause_pat(&self) -> ClausePat<EntityHandle> {
+        match self {
+            PatShape::Name(_) | PatShape::Annotated(..) | PatShape::Wildcard => ClausePat::Any,
+            PatShape::Unit => ClausePat::Ctor(Ctor::Unit, Vec::new()),
+            PatShape::Tuple(elems) => ClausePat::Ctor(
+                Ctor::Tuple(elems.len()),
+                elems.iter().map(PatShape::clause_pat).collect(),
+            ),
+            PatShape::Const(_, ctor) => ClausePat::Ctor(ctor.clone(), Vec::new()),
+            PatShape::Case(key, scheme, arg) => {
+                let fields = match (arg.as_deref(), scheme.fields.len()) {
+                    (None, _) => Vec::new(),
+                    (Some(PatShape::Wildcard), n) => vec![ClausePat::Any; n],
+                    (Some(one), 1) => vec![one.clause_pat()],
+                    (Some(PatShape::Tuple(elems)), _) => {
+                        elems.iter().map(PatShape::clause_pat).collect()
+                    }
+                    (Some(other), n) => {
+                        unreachable!("a case of {n} fields over {other:?} ([`Gen::case_pattern`])")
+                    }
+                };
+                ClausePat::Ctor(
+                    Ctor::Case {
+                        union: key.union,
+                        index: key.index,
+                        siblings: key.siblings,
+                    },
+                    fields,
+                )
+            }
         }
     }
 }
@@ -3088,6 +3139,16 @@ impl<'a> Gen<'a> {
                     self.mark_incomplete(Incomplete::Unmodelled(SyntaxKind::MATCH_EXPR));
                     return None;
                 }
+                // FCS's decision compiler keeps no node or binder of a
+                // clause no value reaches (FS0026: `_ -> 1 | Some x -> x`, or
+                // a case repeated without a guard), and none in a first clause
+                // that matches everything either (`() -> 1 | _ -> 2` keeps no
+                // node at `1`), so a match with an unreachable clause declines
+                // before any of it is walked, as a match of one clause does.
+                if !self.every_clause_provably_reachable(m) {
+                    self.mark_incomplete(Incomplete::UnreachableClause);
+                    return None;
+                }
                 let mark = self.emission_mark();
                 let sv = self.infer_expr(&scrutinee, None)?;
                 // FCS may bind the scrutinee to a temporary at the
@@ -5258,9 +5319,13 @@ impl<'a> Gen<'a> {
                         | SyntaxKind::STRING_LIT
                         | SyntaxKind::CHAR_LIT
                         | SyntaxKind::BOOL_LIT,
-                    ) => Ok(PatShape::Const(
-                        literal_kind_ty(kind.expect("matched")).expect("a typed literal"),
-                    )),
+                    ) => {
+                        let literal = c.literal().expect("a literal kind");
+                        Ok(PatShape::Const(
+                            literal_kind_ty(literal.kind()).expect("a typed literal"),
+                            literal_ctor(literal.kind(), literal.text()),
+                        ))
+                    }
                     _ => Err(Incomplete::PatternShape(pat.syntax().kind())),
                 }
             }
@@ -5300,6 +5365,32 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Whether some value reaches each of `m`'s clauses ([`provably_reachable`]),
+    /// as far as its walk goes: it declines at the first clause whose pattern
+    /// it does not read, so that clause is asked only whether anything at all
+    /// gets past the clauses before it.
+    fn every_clause_provably_reachable(&self, m: &MatchExpr) -> bool {
+        // The patterns of the clauses so far that have no guard (a guarded
+        // clause may fail, so it covers nothing).
+        let mut covering: Vec<ClausePat<EntityHandle>> = Vec::new();
+        for clause in m.clauses() {
+            let shape = clause
+                .pat()
+                .map(|pat| self.pattern_shape_in(&pat, PatSite::Match));
+            let Some(Ok(shape)) = shape else {
+                return provably_reachable(&covering, &ClausePat::Any);
+            };
+            let query = shape.clause_pat();
+            if !provably_reachable(&covering, &query) {
+                return false;
+            }
+            if clause.guard().is_none() {
+                covering.push(query);
+            }
+        }
+        true
+    }
+
     /// Whether relating the pattern type `pt` to the scrutinee `sv` would get
     /// ahead of a relation FCS, which checks in source order, applied before
     /// the pattern and inference has not: every constraint still pending was
@@ -5330,6 +5421,16 @@ impl<'a> Gen<'a> {
                 .iter()
                 .map(|&(a, b, _)| (Ty::Var(a), Ty::Var(b))),
         );
+        // A parameter's private slot and its binder variable are one variable
+        // in FCS ([`Self::slot_binder_reunify`]), so what a condition fixed on
+        // the slot (`if x then (match x with 1 -> …)`) FCS applied before the
+        // pattern too. A binder with no variable yet has had no use the
+        // scrutinee could read.
+        eqs.extend(self.cur_params.iter().filter_map(|&(def, slot)| {
+            self.def_vars
+                .get(&def)
+                .map(|&dv| (Ty::Var(slot), Ty::Var(dv)))
+        }));
         let mut scrutinee_roots: HashSet<TyVid> = HashSet::new();
         collect_var_roots(&self.table.resolve(&Ty::Var(sv)), &mut scrutinee_roots);
         for recv in receivers {
@@ -5397,7 +5498,18 @@ impl<'a> Gen<'a> {
                 }
             }
         };
-        Ok(PatShape::Case(scheme, arg))
+        let siblings = match &self.env.entity(union).union_cases {
+            borzoi_assembly::UnionCases::Known(cases) => cases.len(),
+            borzoi_assembly::UnionCases::Unknowable => {
+                unreachable!("a scheme read off a union whose cases are unknown")
+            }
+        };
+        let key = CaseKey {
+            union,
+            index: case.index(),
+            siblings,
+        };
+        Ok(PatShape::Case(key, scheme, arg))
     }
 
     /// Generate a read pattern's type, registering each name for `site`.
@@ -5438,8 +5550,8 @@ impl<'a> Gen<'a> {
             PatShape::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
             }
-            PatShape::Const(t) => t.clone(),
-            PatShape::Case(scheme, arg) => match self.instantiate(&scheme.value_ty()) {
+            PatShape::Const(t, _) => t.clone(),
+            PatShape::Case(_, scheme, arg) => match self.instantiate(&scheme.value_ty()) {
                 Ty::Fun { arg: fields, ret } => {
                     if let Some(arg) = arg
                         && !matches!(**arg, PatShape::Wildcard)
@@ -7568,6 +7680,48 @@ fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
 
 fn literal_ty(c: &ConstExpr) -> Option<Ty> {
     literal_kind_ty(c.literal()?.kind())
+}
+
+/// The value a constant pattern's literal spells, as reachability compares
+/// them ([`Ctor::Const`]): its text when that is the only spelling of its
+/// value — a decimal `int` without leading zeros or separators, a string or
+/// character with no escape — so two such spellings differ exactly when the
+/// values do; else no value, which may equal any other (`1` and `0x1`).
+fn literal_ctor(kind: SyntaxKind, text: &str) -> Ctor<EntityHandle> {
+    let canonical = |ok: bool| ok.then(|| Box::<str>::from(text));
+    match kind {
+        SyntaxKind::BOOL_LIT => Ctor::Bool(text == "true"),
+        SyntaxKind::INT32_LIT => {
+            let digits = text.strip_prefix('-').unwrap_or(text);
+            let ok = !digits.is_empty()
+                && digits.bytes().all(|b| b.is_ascii_digit())
+                && (digits == "0" || !digits.starts_with('0'))
+                && text != "-0";
+            Ctor::Const {
+                kind: ConstKind::Int,
+                value: canonical(ok),
+            }
+        }
+        SyntaxKind::STRING_LIT => Ctor::Const {
+            kind: ConstKind::Str,
+            value: canonical(
+                text.len() >= 2
+                    && text.starts_with('"')
+                    && text.ends_with('"')
+                    && !text.contains('\\'),
+            ),
+        },
+        SyntaxKind::CHAR_LIT => Ctor::Const {
+            kind: ConstKind::Char,
+            value: canonical(
+                text.len() >= 3
+                    && text.starts_with('\'')
+                    && text.ends_with('\'')
+                    && !text.contains('\\'),
+            ),
+        },
+        _ => unreachable!("a constant pattern of a literal inference does not read: {kind:?}"),
+    }
 }
 
 /// The type of a literal token of `kind`, where it is fixed in isolation
