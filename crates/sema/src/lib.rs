@@ -41,6 +41,7 @@ mod diagnostics;
 mod function_ty;
 mod infer;
 mod infer_project;
+mod match_reach;
 mod member_ty;
 mod overload;
 mod qnof;

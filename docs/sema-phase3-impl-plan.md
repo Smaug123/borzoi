@@ -79,6 +79,12 @@ isolation.
   annotations is one inference variable per name (FCS's implicitly scoped
   type variable), and a declared one (`let f<'a> …`) is that and rigid;
   details below.
+- **Referenced union cases and `match`** — a referenced assembly's union case
+  types off the static maker fsc compiles it to (joined to the pickle's case
+  by declaration position), as a value and as a pattern; `match` checks its
+  clauses in FCS's order over case, constant, tuple and name patterns; and
+  FSharp.Core's renamed generics (`Result`, `Choice`) read in annotations;
+  details below.
 - **Project-type annotations** — `Ty::Project` names a type the project
   declares by FCS's path for it (namespace, enclosing modules' compiled names,
   its own) and arity, unique per assembly by FS0249; an in-file type's
@@ -219,6 +225,25 @@ of 102, present in 160; at most 20 completable alone), `ProjectTypeMember`
 mostly project types: a generic application whose argument the bridge declines
 (16, `Teq<Result<'ok, 'e>, …>`), `ShadowableType` (9), a value binding's type
 variable (9), in-file and earlier generic types (11).
+
+The stage after type variables was ranked by a stub experiment rather than by
+the census row (2026-11-06): each candidate replaced by a fresh variable that
+records no reason, its contents still walked, and the census re-counted — an
+unsound upper bound on what modelling it alone completes. Member access on a
+project type bounded at 114 (+51) and object expressions at 110 (+47), but
+about nine in ten of both came from one project's crate encoding
+(`NodeCrate.Apply<'TEval, 'ret when 'TEval :> NodeEval<'ret>>` applied to
+object expressions), and that project is 451 of the gate's 797 bindings;
+`match` with union-case values bounded at 82 (+19) on the gate and 1 043 (+31)
+on the stride-13 sample, the only candidate gaining on both and across
+projects. So the next stage was referenced union cases and `match`
+(*Referenced union cases and `match`*, below), which takes complete bindings
+from 63 to 67 of 797 and hovers agreeing with FCS from 622 to 653, and the
+stride-13 sample from 1 013 to 1 014. Most of the bound it left is the
+project's own unions: an in-file or earlier file's case in a pattern is now
+the only reason of 51 bindings (`PatternShape(LONG_IDENT_PAT)`), the next
+lever, ahead of `ProjectTypeMember` (54), `OBJ_EXPR` (47) and
+`BindingAnnotation` (44, from 59 now that `Result<…>` reads).
 
 A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
 not walked at all (FCS fixes such a binding's type to `string[] -> int` before
@@ -1006,6 +1031,127 @@ parameter published) before review. Each guard's deletion fails a test except
 the body-mention decline and the head-only reading, each the other's backstop
 (deleting both fails), and the probe applying every relation, a backstop to
 the incomplete-binding rule.
+
+### Referenced union cases and `match`
+
+**The case's type comes from its maker.** fsc compiles every union case to a
+static method on the union: `NewOk(T)`, FSharp.Core's specially named
+`Some(T)` and `Cons(T, FSharpList<T>)`, and for a nullary case a getter
+(`get_None()`). Each carries `[CompilationMapping(SourceConstructFlags.UnionCase,
+n)]`, where `n` is the case's position among all the union's cases in
+declaration order — the order the signature pickle lists them in. So the
+projector keeps the makers by `n` (`Entity::union_case_makers`), the pickle
+overlay records each accessible case's position and what its pickled fields
+say (`UnionCase::declaration_index`, `CaseFields`: how many, whether a unit of
+measure appears in them, whether the case is attributed), and
+`function_ty::union_case_scheme` joins the two and reads the maker's
+parameters through the module-function bridge, extended to a union's own
+type parameters. IL erases what the pickle keeps, so a measured field
+(directly or behind an abbreviation), an attributed case (an error-level
+`[<Obsolete>]` rejects the use) and a constrained union decline. One type
+bridge serves module functions and cases alike; converting pickled types
+would have been a second.
+
+**A case use is not loosened.** `MakeApplicableExprWithFlex` is `TcVal`'s: a
+case applied checks each argument against an unsealed field by coercion
+(`TcExprsWithFlexes`), which an application's argument check already models,
+and a case unapplied is eta-expanded at exactly its field types
+(`UObj : obj -> UObj`). FCS's node at an unapplied case's range is the case
+built *inside* that expansion — the union, not the function — so nothing is
+emitted there.
+
+**`match` in FCS's order.** The scrutinee, then each clause in source order:
+its pattern against the scrutinee's type by equality, its guard as a condition
+(`bool`, with the first-occurrence rules an `if` condition has), its result.
+The arms agree as an `if`'s branches do. Patterns: name, wildcard, constant
+(`int`, `string`, `char`, `bool`), tuple, a referenced case with a pattern
+over its field, the tuple of its fields, or `_` for all of them. A match's
+pattern variables are never generalised, so a use of one is the binding's own
+variable, as a parameter's is — not another binding's opaque one, which kept
+`match f x with Some v -> v` open until it was — and is typed by its pattern
+before its clause is walked, so a use of one whose type is known then is
+loosened as FCS loosens it (`Some g -> g` with `g : obj -> int` is `'a -> int`
+at the use). A pattern of structure is related to the scrutinee only where
+that cannot bind an earlier binding's open variable or one an opaque local's
+resolution mentions, the variables an argument check refuses to bind too, and
+a pattern binding a name twice declines (FS0038), as for a `let` pattern.
+FCS checks in source order, so an argument check still pending at a pattern
+was applied before it: a pattern that contradicts one, once every pending
+check is applied as an equality under a rolled-back snapshot, declines
+(`(fs x, match x with 1 -> …)` keeps `x : string`), and so does one that
+contradicts a check-mode relation dropped before it (an arm checked against
+the first); an unmodelled construct leaves no relation to probe, so on an
+incomplete binding a pattern of structure relates only a ground scrutinee
+(`Some x -> (if x then …) | Some "" -> …` makes `x` `bool` in FCS); and a
+suspended member lookup whose receiver the pattern could make known declines
+it, since FCS looked the member up before the pattern, on a receiver it did
+not yet know (FS0072). The probe decides every kind of pending constraint in
+one exhaustive `match`, so a new kind of suspension must be decided there,
+and declines too when the replayed relations already conflict (FCS resolved
+those by an order the replay does not follow). Together with a pattern that
+fails to fit declining its clause (unification rolls back whole, where FCS
+types the part that fits first: `(x, 1)` against `int * string` keeps
+`x : int`), that partitions every earlier relation a pattern could get ahead
+of: applied (a contradiction fails the pattern's equality), pending or
+dropped (the probe), or unmodelled (the incomplete-binding rule).
+FCS's
+dumps cannot grade these — they decline to convert a declaration FCS
+error-recovered — so their tests pin FCS's answer directly. Three things FCS's dump cannot
+grade decline or go unemitted: a one-clause match (FCS elaborates it to a
+`let`, keeping no node at its result), the match's own range, and the
+scrutinee's own node (FCS may bind it to a temporary whose `let` sits there,
+typed as the whole match).
+
+**FSharp.Core's renamed generics in annotations.** The annotation bridge
+declined every source-renamed type; it now reads FSharp.Core's own renamed
+generics (`Result` is `FSharpResult`) by the signature bridge's rule, so the two
+bridges name a type one way.
+
+Graded by `projector_union_case_makers` (FSharp.Core's Option, ValueOption,
+Result, Choice and List pinned by position, and every listed case of
+FSharp.Core having one maker of its field count), `modifier_metamorphic` (a
+maker is held to the `modopt` rule like a member), `infer_union_case_diff`
+(FSharp.Core's cases by ten positions, and a fixture library's unions with an
+unsealed field, several fields, a measure direct and behind an abbreviation,
+an error-obsolete case and a constrained parameter), `infer_match_diff`
+(forty-odd matches, ill-typed ones among them, by five positions), and the
+generated families, whose atoms now include options and matches over them
+(171, 28 and 88 match payloads committed at ten times the default volume, every
+one FCS's). Every guard was deleted in turn and a grid failed; two that
+survived (a case of several fields, an unsealed field) were found redundant
+and removed, and so were a constraint check the bridge already makes and an
+emission filter the identifier arm made unnecessary. fcs-dump's binder oracle
+now reads a decision tree's target variables, through which FCS binds a nested
+pattern's names (`Some (Some v)`): it reported none of them.
+
+**Unreachable clauses decline.** FCS's decision compiler keeps no node or
+binder of a clause no value reaches (FS0026: `_ -> 1 | Some x -> x`, or a case
+repeated without a guard), and none in a first clause that matches everything
+either (`() -> 1 | _ -> 2` keeps no node at `1`), so a match with a clause not
+provably reachable declines before any of it is walked. `match_reach` decides
+it: Maranget's usefulness check, under-approximated so that "reachable" is a
+proof. A guarded clause covers nothing; a constant counts as equal to another
+unless both are spelt canonically (`1` and `0x1` may be one value); a column of
+two types proves nothing; and the walk's first unread pattern is asked only
+whether anything gets past the clauses before it. A property test holds it to
+brute-force enumeration over generated types and clause lists (sound always,
+exact when every constant is canonical), and generated clause sets over nine
+scrutinee types hold it to FCS.
+
+A condition on a parameter fixes the parameter's private slot, which FCS has
+as one variable with the parameter, so the pattern probe replays each
+slot-binder pair too: `let f x = if x then (match x with 1 -> x | _ -> x)
+else false` declines, where FCS rejects the pattern and keeps `bool -> bool`.
+
+Still declining: the project's own unions, in a pattern or as a value (the
+next lever, above); `function` (lambdas are unmodelled); `try … with`;
+active, record, list, array, `:?`, `null` and OR patterns; an annotated name
+in a match pattern (FCS relates it by equality and rejects a mismatch, where
+the annotation would already have typed the name); a case or constant in a
+`let` or parameter pattern (rare, and that relation's guard does not cover
+what a case's structure could bind); a later arm checked
+against an open first arm's type, as for an `if`; and a value binding of a
+generic case (`let v = None`, which FCS generalises).
 
 ### Remaining 3.x hard piles (census-priority order)
 

@@ -539,6 +539,7 @@ mod synthetic {
             interfaces: vec![],
             extension_member_names: vec![],
             union_cases: UnionCases::Unknowable,
+            union_case_makers: Vec::new(),
             static_extension_member_names: Vec::new(),
             // The `System.String` template may carry undecodable members the
             // reader dropped; a synthetic entity must not inherit them (they

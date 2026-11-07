@@ -1085,6 +1085,27 @@ type GU<'T> =
     | GA of 'T
     | GB
 
+// Union cases whose F# type the IL maker cannot vouch for alone
+// (`infer_union_case_diff`): an unsealed field, several fields, a measure
+// (direct and behind an abbreviation), an error-level obsolete case, a
+// constrained type parameter; and two the maker reads exactly.
+type UStr = UStr of string
+type UGen<'T> =
+    | UGen of 'T
+    | UNone
+type UObj = UObj of obj
+type UPair = UPair of int * string
+type UMeasure = UMeasure of float<m>
+type UDist = UDist of Dist
+type UOld =
+    | [<System.Obsolete(\"gone\", true)>] UOld of int
+    | UNew of int
+type UCon<'T when 'T : comparison> = UCon of 'T
+[<System.Obsolete(\"no\", true)>]
+type UBad = UBad of int
+[<CompilerMessage(\"no\", 9999, IsError = true)>]
+type UMsg = UMsg of int
+
 type CBox<'T when 'T : comparison> = { C: 'T }
 
 type MBox<[<Measure>] 'u> = { V: float<'u> }

@@ -63,6 +63,8 @@ struct Committed {
     tupled_functions: usize,
     /// Of `exprs`, how many sit at a whole `e1; e2` sequence.
     sequentials: usize,
+    /// Of `binders`, how many are a generated match's payload (`Some w…`).
+    match_payloads: usize,
     /// Errors FCS reported on the file — nonzero only where the caller allowed it.
     fcs_errors: usize,
 }
@@ -74,6 +76,7 @@ impl std::ops::AddAssign for Committed {
         self.local_binders += o.local_binders;
         self.pattern_locals += o.pattern_locals;
         self.tupled_functions += o.tupled_functions;
+        self.match_payloads += o.match_payloads;
         self.sequentials += o.sequentials;
         self.fcs_errors += o.fcs_errors;
     }
@@ -262,6 +265,9 @@ fn check_parsed(
         }
         if def.name.starts_with("tf") {
             c.tupled_functions += 1;
+        }
+        if def.name.starts_with('w') && def.name[1..].chars().all(|ch| ch.is_ascii_digit()) {
+            c.match_payloads += 1;
         }
     }
     Some(c)
@@ -999,9 +1005,11 @@ enum T {
     /// `int * string`.
     Pair,
     Unit,
+    /// `int option`: built from FSharp.Core's union cases.
+    Opt,
 }
 
-const TYPES: [T; 5] = [T::Int, T::Str, T::Bool, T::Pair, T::Unit];
+const TYPES: [T; 6] = [T::Int, T::Str, T::Bool, T::Pair, T::Unit, T::Opt];
 
 /// What an in-scope name can be used as.
 #[derive(Debug, Clone, PartialEq)]
@@ -1069,6 +1077,7 @@ impl Gen<'_> {
             T::Bool => ["true", "false"][self.rng.below(2)].to_string(),
             T::Pair => ["pr", "uu", "(7, \"p\")"][self.rng.below(3)].to_string(),
             T::Unit => "()".to_string(),
+            T::Opt => ["None", "(Some 3)", "(Some hp)"][self.rng.below(3)].to_string(),
         }
     }
 
@@ -1160,6 +1169,43 @@ impl Gen<'_> {
                 let a = self.expr(T::Int, depth - 1);
                 let b = self.expr(T::Str, depth - 1);
                 format!("({a}, {b})")
+            }
+            8 if t == T::Opt => {
+                let a = self.expr(T::Int, depth - 1);
+                format!("(Some {a})")
+            }
+            // A match over an option, its payload bound in the `Some` arm.
+            8 => {
+                // A bare option variable half the time: the header's `hn` is
+                // an earlier binding whose type stays open, which a pattern
+                // over it must not retype.
+                let opts = self.vars_of(&Kind::Mono(T::Opt));
+                let scrutinee = if !opts.is_empty() && self.rng.chance(50) {
+                    opts[self.rng.below(opts.len())].clone()
+                } else {
+                    self.expr(T::Opt, depth - 1)
+                };
+                let w = self.fresh("w");
+                self.env.push(Var {
+                    name: w.clone(),
+                    kind: Kind::Mono(T::Int),
+                });
+                let some = self.expr(t, depth - 1);
+                self.env.pop();
+                let none = self.expr(t, depth - 1);
+                // A constant payload pattern grounds the scrutinee's payload
+                // type where a fresh name leaves it open; the `Some` arm then
+                // needs a catch-all after it.
+                if self.rng.chance(30) {
+                    let k = self.literal(T::Int);
+                    let some = some.replace(&w, &k);
+                    return format!("(match {scrutinee} with Some {k} -> {some} | _ -> {none})");
+                }
+                if self.rng.chance(50) {
+                    format!("(match {scrutinee} with Some {w} -> {some} | None -> {none})")
+                } else {
+                    format!("(match {scrutinee} with None -> {none} | Some {w} -> {some})")
+                }
             }
             // FSharp.Core's pipes and composition, which inference types as
             // applications of their signatures.
@@ -1433,7 +1479,8 @@ impl Gen<'_> {
 /// variable is open in every later binding), and a module-level tuple
 /// pattern binding `hp` and `hq`.
 const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet mo (o: obj) = 3\n\
-                      let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n";
+                      let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n\
+                      let ho = Some 5\nlet hn = None\n";
 
 /// The names every generated function body may use besides its parameters.
 fn header_vars() -> Vec<Var> {
@@ -1445,6 +1492,16 @@ fn header_vars() -> Vec<Var> {
         Var {
             name: "hq".into(),
             kind: Kind::Mono(T::Str),
+        },
+        Var {
+            name: "ho".into(),
+            kind: Kind::Mono(T::Opt),
+        },
+        // An earlier binding whose type stays open (`'a option`): every use
+        // at `int option` is one FCS instantiates and must not retype it.
+        Var {
+            name: "hn".into(),
+            kind: Kind::Mono(T::Opt),
         },
     ]
 }
@@ -1575,6 +1632,10 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
         total.tupled_functions >= 20,
         "the sweep committed too few functions with a tupled parameter to be evidence: {total:?}"
     );
+    assert!(
+        total.match_payloads >= 5,
+        "the sweep committed too few match payloads to be evidence: {total:?}"
+    );
 }
 
 /// The ill-typed family. Each function is a generated block, wrapped in one of
@@ -1596,6 +1657,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40) * 2;
     let mut total = Committed::default();
     let mut wrapped_lets = 0usize;
+    let mut uncheckable = 0usize;
     for seed in 0..files.max(1) as u64 {
         let mut rng = Rng(seed ^ 0x5eed_ba77);
         let mut src = format!("{HEADER}let k0 = 1\n");
@@ -1647,9 +1709,28 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
             };
             src.push_str(&format!("let {stem}{i} {params} ={sep}{body}\n"));
         }
+        // FCS aborts the whole file on some of these (no implementation
+        // file); such a file grades nothing, and is counted.
+        let path = temp_fs_file("infer_local_let_ill_typed_probe", &src);
+        let checkable = try_invoke_fcs_dump("types", &path);
+        let _ = std::fs::remove_file(&path);
+        if let Err(e) = checkable {
+            if std::env::var_os("BORZOI_SHOW_UNCHECKABLE").is_some() {
+                eprintln!("uncheckable: {e}\n{src}");
+            }
+            uncheckable += 1;
+            continue;
+        }
         total += check(&src, false);
     }
-    eprintln!("ill-typed family: {total:?}, lets inside rejected constructs: {wrapped_lets}");
+    eprintln!(
+        "ill-typed family: {total:?}, lets inside rejected constructs: {wrapped_lets}, \
+         uncheckable files: {uncheckable}"
+    );
+    assert!(
+        uncheckable * 4 <= files,
+        "FCS could not check {uncheckable} of {files} files"
+    );
     assert!(
         total.fcs_errors >= 50,
         "the family stopped producing ill-typed programs: {total:?}"
@@ -1661,6 +1742,10 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     assert!(
         total.exprs + total.binders >= 120,
         "the family committed too little to be evidence: {total:?}"
+    );
+    assert!(
+        total.match_payloads >= 2,
+        "the family committed too few match payloads to be evidence: {total:?}"
     );
 }
 
@@ -1764,6 +1849,10 @@ fn generated_ill_typed_programs_with_a_shared_type_variable_commit_only_what_fcs
     assert!(
         total.binders >= 120,
         "the family committed too few binders to be evidence: {total:?}"
+    );
+    assert!(
+        total.match_payloads >= 2,
+        "the family committed too few match payloads to be evidence: {total:?}"
     );
 }
 

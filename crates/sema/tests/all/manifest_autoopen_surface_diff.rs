@@ -380,8 +380,8 @@ fn bare_constructor_fallback_is_sound_over_every_bare_value_surface() {
             names.insert(source_name(e).to_string());
         }
         if let UnionCases::Known(cases) = &e.union_cases {
-            for case in cases.iter().filter(|c| plain_ident(c)) {
-                names.insert(case.clone());
+            for case in cases.iter().filter(|c| plain_ident(&c.name)) {
+                names.insert(case.name.clone());
             }
         }
         if e.kind == EntityKind::Module {

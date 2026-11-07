@@ -12,7 +12,7 @@
 use crate::common::ensure_assembly_fixture_built;
 use borzoi_assembly::{
     AbbreviationTarget, Access, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind,
-    Member, ModuleValue, SkippedMember, UnionCases,
+    Member, ModuleValue, SkippedMember, UnionCase, UnionCases,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -2213,7 +2213,7 @@ fn env_shadow_color(kind: EntityKind, is_struct: bool, arity: usize) -> Assembly
     // channel, not the case fold, so give the union knowable cases that cannot
     // collide with the `Color` value under test.
     if kind == EntityKind::Union {
-        e.union_cases = UnionCases::Known(vec!["Hue".to_string()]);
+        e.union_cases = UnionCases::Known(vec![UnionCase::unread("Hue", 0)]);
     }
     AssemblyEnv::from_entities(vec![e])
 }
@@ -4551,7 +4551,10 @@ fn an_enumerable_union_does_not_stale_an_earlier_opens_values() {
     union.kind = EntityKind::Union;
     union.members = vec![];
     union.nested_types = vec![];
-    union.union_cases = UnionCases::Known(vec!["Red".to_string(), "Green".to_string()]);
+    union.union_cases = UnionCases::Known(vec![
+        UnionCase::unread("Red", 0),
+        UnionCase::unread("Green", 1),
+    ]);
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -4590,7 +4593,7 @@ fn an_enumerable_union_case_shadows_an_earlier_opens_value() {
     union.kind = EntityKind::Union;
     union.members = vec![];
     union.nested_types = vec![];
-    union.union_cases = UnionCases::Known(vec!["Red".to_string()]);
+    union.union_cases = UnionCases::Known(vec![UnionCase::unread("Red", 0)]);
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -4636,7 +4639,7 @@ fn an_rqa_unions_cases_do_not_shadow_an_earlier_opens_value() {
     union.members = vec![];
     union.nested_types = vec![];
     union.is_require_qualified_access = true;
-    union.union_cases = UnionCases::Known(vec!["Red".to_string()]);
+    union.union_cases = UnionCases::Known(vec![UnionCase::unread("Red", 0)]);
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -6192,7 +6195,7 @@ fn a_contested_union_case_tail_does_not_commit_a_rival_dlls_member() {
         e.kind = EntityKind::Union;
         e.members = vec![];
         e.nested_types = vec![];
-        e.union_cases = UnionCases::Known(vec!["Red".to_string()]);
+        e.union_cases = UnionCases::Known(vec![UnionCase::unread("Red", 0)]);
         e
     };
     // The middle candidate is a class whose STATIC is named `Red` — the member

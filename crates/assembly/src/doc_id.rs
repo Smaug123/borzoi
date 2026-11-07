@@ -301,8 +301,8 @@ pub fn walk_doc_ids(entity: &Entity, enclosing: Option<&TypeDocName>, f: &mut im
             // fsc's class-per-case representation nests a class named after a
             // case that carries fields, and that class's type key *is* the
             // case's key — so it is walked below, as the nested type.
-            if !entity.nested_types.iter().any(|n| n.name == *case) {
-                f(union_case_doc_id(&decl, case));
+            if !entity.nested_types.iter().any(|n| n.name == case.name) {
+                f(union_case_doc_id(&decl, &case.name));
             }
         }
     }
@@ -827,6 +827,7 @@ mod tests {
         Entity {
             extension_member_names: Vec::new(),
             union_cases: UnionCases::Unknowable,
+            union_case_makers: Vec::new(),
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             assembly: ai(),
@@ -1678,7 +1679,10 @@ mod tests {
         // carrier is a nested type is keyed once, by that type.
         let mut union = ent(&["N"], "Shape", 0);
         union.kind = EntityKind::Union;
-        union.union_cases = UnionCases::Known(vec!["Circle".into(), "Empty".into()]);
+        union.union_cases = UnionCases::Known(vec![
+            crate::UnionCase::unread("Circle", 0),
+            crate::UnionCase::unread("Empty", 1),
+        ]);
         union.nested_types.push(ent(&[], "Circle", 0));
         let mut ids = Vec::new();
         walk_doc_ids(&union, None, &mut |id| ids.push(id));

@@ -19,8 +19,8 @@ use crate::model::{
     Field, FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
     MemberMeasures, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete,
     ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember,
-    SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, ValFacts,
-    Variance, Version,
+    SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCaseMaker,
+    UnionCases, ValFacts, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -836,6 +836,12 @@ impl Ecma335Assembly {
             None
         };
 
+        let union_case_makers = if kind == EntityKind::Union {
+            self.union_case_makers(td, type_context)
+        } else {
+            Vec::new()
+        };
+
         Ok(Entity {
             assembly: self.identity.clone(),
             namespace: split_namespace(&td.name.namespace),
@@ -901,6 +907,7 @@ impl Ecma335Assembly {
             // the ECMA projection alone cannot see the `IsExtensionMember` bit.
             extension_member_names: Vec::new(),
             union_cases: UnionCases::Unknowable,
+            union_case_makers,
             static_extension_member_names: Vec::new(),
             // FCS's `IsTyconRefUsedForCSharpStyleExtensionMembers`: the container
             // marker on a C# `static class` of extension methods (or an F#
@@ -989,6 +996,56 @@ impl Ecma335Assembly {
                 detail: format!("CompilationMappingAttribute first arg not int32: {other:?}"),
             }),
         }
+    }
+
+    /// A union's case makers ([`Entity::union_case_makers`]): each static
+    /// method of `td` carrying
+    /// `[CompilationMapping(SourceConstructFlags.UnionCase, n)]` — fsc's
+    /// `NewCase` makers and nullary-case getters alike — projected, by `n`.
+    /// A method whose attribute or signature does not decode is left out:
+    /// its case then has no maker, which a consumer reads as unknown.
+    fn union_case_makers(
+        &self,
+        td: &TypeDef,
+        type_context: Option<Nullability>,
+    ) -> Vec<UnionCaseMaker> {
+        /// `SourceConstructFlags.UnionCase`, in the low-5-bit `KindMask`.
+        const UNION_CASE: i32 = 8;
+        let widths = source_construct_flags_widths();
+        let int32 = |arg: &FixedArg| match arg {
+            FixedArg::Enum {
+                underlying: IntegralParam::Int32(v),
+                ..
+            }
+            | FixedArg::Integral(IntegralParam::Int32(v)) => Some(*v),
+            _ => None,
+        };
+        td.methods
+            .iter()
+            .filter(|m| m.is_static)
+            .filter_map(|m| {
+                let raw = self.find_attribute(
+                    &m.attributes,
+                    "Microsoft.FSharp.Core",
+                    "CompilationMappingAttribute",
+                )?;
+                let decoded = self
+                    .decode_found_attribute(raw, &widths, "CompilationMappingAttribute")
+                    .ok()?;
+                let [flags, sequence] = decoded.fixed_args.as_slice() else {
+                    return None;
+                };
+                if int32(flags)? & 0x1f != UNION_CASE {
+                    return None;
+                }
+                let declaration_index = u32::try_from(int32(sequence)?).ok()?;
+                let method = self.project_method(m, type_context, false).ok()?;
+                Some(UnionCaseMaker {
+                    declaration_index,
+                    method,
+                })
+            })
+            .collect()
     }
 
     /// The F# source name from `[Microsoft.FSharp.Core.CompilationSourceNameAttribute(string)]`,

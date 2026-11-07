@@ -910,6 +910,7 @@ fn sort_tiebreaks_on_generic_arity() {
     let host_a = Entity {
         extension_member_names: Vec::new(),
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         assembly: my_lib(),
@@ -973,6 +974,7 @@ fn entity_sort_tiebreaks_on_generic_arity() {
     let bare = Entity {
         extension_member_names: Vec::new(),
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         assembly: my_lib(),
@@ -1014,6 +1016,7 @@ fn entity_sort_tiebreaks_on_generic_arity() {
     let generic = Entity {
         extension_member_names: Vec::new(),
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         name: "Foo".into(),
@@ -1133,6 +1136,7 @@ fn fixture_system_object() -> Vec<Entity> {
     vec![Entity {
         extension_member_names: Vec::new(),
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         assembly: mscorlib(),
@@ -1367,6 +1371,7 @@ fn fixture_my_lib() -> Vec<Entity> {
     vec![Entity {
         extension_member_names: Vec::new(),
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         assembly: my_lib(),

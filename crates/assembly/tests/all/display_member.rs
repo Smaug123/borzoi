@@ -50,6 +50,7 @@ fn entity(name: &str, kind: EntityKind, typars: &[&str]) -> Entity {
     Entity {
         extension_member_names: Vec::new(),
         union_cases: UnionCases::Unknowable,
+        union_case_makers: Vec::new(),
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         assembly: assembly_id(),

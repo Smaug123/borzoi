@@ -338,18 +338,20 @@ impl<'a> Resolver<'a> {
             return;
         }
         let cases: Option<Vec<(String, Resolution)>> = match &entity.union_cases {
-            UnionCases::Known(names) => names
+            UnionCases::Known(cases) => cases
                 .iter()
-                .map(|name| {
-                    self.assemblies.union_case_index(handle, name).map(|case| {
-                        (
-                            name.clone(),
-                            Resolution::UnionCase {
-                                union: handle,
-                                case,
-                            },
-                        )
-                    })
+                .map(|c| {
+                    self.assemblies
+                        .union_case_index(handle, &c.name)
+                        .map(|case| {
+                            (
+                                c.name.clone(),
+                                Resolution::UnionCase {
+                                    union: handle,
+                                    case,
+                                },
+                            )
+                        })
                 })
                 .collect(),
             UnionCases::Unknowable => None,

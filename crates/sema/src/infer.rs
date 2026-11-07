@@ -495,7 +495,7 @@ use borzoi_assembly::{
 };
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
-    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, ModuleOrNamespace,
+    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, MatchExpr, ModuleOrNamespace,
     ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat, SequentialExpr, SyntaxKind,
     SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr, VarType,
 };
@@ -504,9 +504,11 @@ use rowan::{TextRange, TextSize};
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{DefId, DefKind};
 use crate::function_ty::{
-    Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, builtin_operator, module_function_scheme,
+    Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, UnionCaseScheme, builtin_operator,
+    module_function_scheme, union_case_scheme,
 };
 use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
+use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -726,6 +728,19 @@ pub enum Incomplete {
     /// typed through that loosening: `let f (g: obj -> 'a) = g` is
     /// `(obj -> 'a) -> 'b -> 'a` in FCS. Its variables are poisoned.
     LoosenedUse,
+    /// A use of a referenced assembly's union case whose F# type is not read
+    /// off its maker, and why (`function_ty::union_case_scheme`).
+    AssemblyCase(FunctionTyGap),
+    /// A `match` pattern that would get ahead of a relation FCS applied before
+    /// it in source order which inference has not (a pending argument check,
+    /// a dropped check-mode relation, a suspended member lookup), or that
+    /// would refine an open scrutinee after an unmodelled construct.
+    PatternAfterCheck,
+    /// A `match` pattern that does not fit its scrutinee's type.
+    PatternMismatch,
+    /// A `match` clause no value may reach, which FCS's decision compiler
+    /// keeps no node of (decided by the private `match_reach` module).
+    UnreachableClause,
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
@@ -849,6 +864,82 @@ enum PatShape {
     Unit,
     /// A (reference) tuple of two or more elements.
     Tuple(Vec<PatShape>),
+    /// A constant (`1`, `"s"`, `'c'`, `true`), of its literal's type, and
+    /// the value it spells as reachability compares them ([`literal_ctor`]).
+    Const(Ty, Ctor<EntityHandle>),
+    /// A referenced assembly's union case (`None`, `Some x`, `Ok _`): which
+    /// case, its scheme, and the pattern over its fields — `None` for a
+    /// nullary case, and for `Case _`, which matches every field at once.
+    Case(CaseKey, UnionCaseScheme, Option<Box<PatShape>>),
+}
+
+/// Which case of which union a [`PatShape::Case`] names: its position in the
+/// union's case list, of `siblings` cases.
+#[derive(Debug, Clone, Copy)]
+struct CaseKey {
+    union: EntityHandle,
+    index: usize,
+    siblings: usize,
+}
+
+/// Where a pattern is read ([`Gen::pattern_shape_in`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatSite {
+    /// A `let` or parameter pattern.
+    Binding,
+    /// A `match` clause's pattern.
+    Match,
+}
+
+impl PatShape {
+    /// Add every name the pattern binds to `out`.
+    fn names(&self, out: &mut HashSet<DefId>) {
+        match self {
+            PatShape::Name(def) | PatShape::Annotated(def, _) => {
+                out.insert(*def);
+            }
+            PatShape::Tuple(elems) => elems.iter().for_each(|e| e.names(out)),
+            PatShape::Case(_, _, Some(arg)) => arg.names(out),
+            PatShape::Wildcard
+            | PatShape::Unit
+            | PatShape::Const(..)
+            | PatShape::Case(_, _, None) => {}
+        }
+    }
+
+    /// The pattern as reachability sees it ([`crate::match_reach`]).
+    fn clause_pat(&self) -> ClausePat<EntityHandle> {
+        match self {
+            PatShape::Name(_) | PatShape::Annotated(..) | PatShape::Wildcard => ClausePat::Any,
+            PatShape::Unit => ClausePat::Ctor(Ctor::Unit, Vec::new()),
+            PatShape::Tuple(elems) => ClausePat::Ctor(
+                Ctor::Tuple(elems.len()),
+                elems.iter().map(PatShape::clause_pat).collect(),
+            ),
+            PatShape::Const(_, ctor) => ClausePat::Ctor(ctor.clone(), Vec::new()),
+            PatShape::Case(key, scheme, arg) => {
+                let fields = match (arg.as_deref(), scheme.fields.len()) {
+                    (None, _) => Vec::new(),
+                    (Some(PatShape::Wildcard), n) => vec![ClausePat::Any; n],
+                    (Some(one), 1) => vec![one.clause_pat()],
+                    (Some(PatShape::Tuple(elems)), _) => {
+                        elems.iter().map(PatShape::clause_pat).collect()
+                    }
+                    (Some(other), n) => {
+                        unreachable!("a case of {n} fields over {other:?} ([`Gen::case_pattern`])")
+                    }
+                };
+                ClausePat::Ctor(
+                    Ctor::Case {
+                        union: key.union,
+                        index: key.index,
+                        siblings: key.siblings,
+                    },
+                    fields,
+                )
+            }
+        }
+    }
 }
 
 /// A type constraint produced by generation and discharged by the solver.
@@ -1225,6 +1316,16 @@ struct Gen<'a> {
     /// Each begun binding's incompleteness reasons, for
     /// [`InferredFile::incompleteness`].
     incompleteness: Vec<Vec<Incomplete>>,
+    /// Ranges whose emission [`Self::finish`] drops: a `match` scrutinee's own
+    /// node, which FCS may cover with a temporary's `let` typed as the whole
+    /// match. Filtered at read-off rather than cut from [`Self::exprs`], whose
+    /// positions emission marks record.
+    ungraded_ranges: HashSet<TextRange>,
+    /// The names the current binding's `match` patterns bind. FCS never
+    /// generalises a pattern variable, so each is this binding's own
+    /// monomorphic variable, used as a parameter is ([`Self::value_use`]):
+    /// not another binding's opaque one.
+    match_locals: HashSet<DefId>,
     /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
     guards: Vec<Guard>,
     /// The guards enclosing the current walk position, innermost last; an
@@ -1458,6 +1559,8 @@ impl<'a> Gen<'a> {
             local_emits: Vec::new(),
             dot_get_receivers: Vec::new(),
             incompleteness: Vec::new(),
+            ungraded_ranges: HashSet::new(),
+            match_locals: HashSet::new(),
             guards: Vec::new(),
             guard_stack: Vec::new(),
             guard_on_member: HashMap::new(),
@@ -1552,6 +1655,7 @@ impl<'a> Gen<'a> {
         self.cur_body = None;
         self.poison.clear();
         self.cur_params.clear();
+        self.match_locals.clear();
         self.dropped.clear();
         self.eq_failures = 0;
         self.bounded_flex.clear();
@@ -2715,14 +2819,16 @@ impl<'a> Gen<'a> {
         // and a renamed entity needs two — FCS's canonical currency is the
         // COMPILED name (`Microsoft.FSharp.Core.FSharpResult`) while
         // [`Ty::render_fsharp`] must show the source name a user can write
-        // (`Result`). Its table of FSharp.Core's renamed generics
-        // (`FSHARP_CORE_RENAMED`) is what the signature bridge checks a renamed
-        // type against; this bridge does not, so it declines every renamed one
-        // rather than show a compiled name that does not resolve in F# source.
+        // (`Result`). The exception is FSharp.Core's own renamed generics
+        // (`FSHARP_CORE_RENAMED`), which [`Ty::render_fsharp`] shows by their
+        // F# name: a renamed head is read through the signature bridge's rule
+        // for them ([`crate::function_ty::applied_type_path`]), so the two
+        // bridges name one type one way.
         let mut path: Vec<String> = entity.namespace.clone();
         path.push(entity.name.clone());
         if self.env.entity_full_name(handle) != path.join(".") {
-            return None;
+            let path = crate::function_ty::applied_type_path(self.env, handle)?;
+            return Some(Ty::Named { path, args });
         }
         if matches!(
             path.iter()
@@ -2875,7 +2981,20 @@ impl<'a> Gen<'a> {
                     // anything else that is not an in-file binder (a
                     // preceding file's, a deferred name) is unmodelled.
                     let uv = self.nonlocal_value_or_incomplete(tok.text_range())?;
-                    self.emit(tok.text_range(), uv, expected);
+                    // FCS eta-expands a case of fields used unapplied
+                    // (`List.map Some`), and its node at the case's range is
+                    // the case built inside the expansion: the union, never
+                    // the function. So nothing is emitted for such a use.
+                    let unapplied_case = match self.resolved.resolution_at(tok.text_range()) {
+                        Some(Resolution::UnionCase { union, case }) => {
+                            union_case_scheme(self.env, union, case)
+                                .is_ok_and(|scheme| !scheme.fields.is_empty())
+                        }
+                        _ => false,
+                    };
+                    if !unapplied_case {
+                        self.emit(tok.text_range(), uv, expected);
+                    }
                     return Some(uv);
                 };
                 if self.declines_use(def) {
@@ -2998,6 +3117,151 @@ impl<'a> Gen<'a> {
                         Some(exp)
                     }
                 }
+            }
+            // `match e with p1 when g1 -> r1 | …`, in FCS's checking order
+            // (`TcMatchClauses`): the scrutinee first, then each clause in
+            // source order — its pattern against the scrutinee's type, by
+            // equality; its guard as a condition, `bool` by equality; its
+            // result. The arms agree as an `if`'s branches do: with no
+            // expected type the first synthesises the match's type and the
+            // rest are checked against it, else each is checked against the
+            // expected type.
+            Expr::Match(m) => {
+                let Some(scrutinee) = m.scrutinee() else {
+                    self.mark_incomplete(Incomplete::Recovery);
+                    return None;
+                };
+                // FCS elaborates a match of one clause to other nodes than
+                // its source's (`match o with _ -> "s"` keeps no node at
+                // `"s"`), so its dump cannot grade one; such a match is the
+                // rare spelling of a `let`, and declines.
+                if m.clauses().nth(1).is_none() {
+                    self.mark_incomplete(Incomplete::Unmodelled(SyntaxKind::MATCH_EXPR));
+                    return None;
+                }
+                // FCS's decision compiler keeps no node or binder of a
+                // clause no value reaches (FS0026: `_ -> 1 | Some x -> x`, or
+                // a case repeated without a guard), and none in a first clause
+                // that matches everything either (`() -> 1 | _ -> 2` keeps no
+                // node at `1`), so a match with an unreachable clause declines
+                // before any of it is walked, as a match of one clause does.
+                if !self.every_clause_provably_reachable(m) {
+                    self.mark_incomplete(Incomplete::UnreachableClause);
+                    return None;
+                }
+                let mark = self.emission_mark();
+                let sv = self.infer_expr(&scrutinee, None)?;
+                // FCS may bind the scrutinee to a temporary at the
+                // scrutinee's own range — a `let` node typed as the whole
+                // match (`match c with 'a' -> true | _ -> false` reports
+                // `bool` at `c`) — so the scrutinee's own node, the last its
+                // walk emitted, is not one FCS's dump can grade. What it
+                // contains is.
+                if let Some(&(range, _, _)) = self.exprs[mark.0..].last() {
+                    self.ungraded_ranges.insert(range);
+                }
+                let mut result = expected;
+                let mut any = false;
+                for clause in m.clauses() {
+                    let (Some(pat), Some(body)) = (clause.pat(), clause.result()) else {
+                        self.mark_incomplete(Incomplete::Recovery);
+                        return None;
+                    };
+                    // A name bound twice is FS0038 (FCS keeps the second),
+                    // as for a `let` pattern.
+                    if binds_a_name_twice(std::slice::from_ref(&pat)) {
+                        self.mark_incomplete(Incomplete::DuplicateBinder);
+                        return None;
+                    }
+                    let shape = match self.pattern_shape_in(&pat, PatSite::Match) {
+                        Ok(shape) => shape,
+                        Err(why) => {
+                            self.mark_incomplete(why);
+                            return None;
+                        }
+                    };
+                    shape.names(&mut self.match_locals);
+                    // Every equality the pattern generates — its fields'
+                    // included — counts toward its fit, so the count is taken
+                    // before it is generated, once what came before settled.
+                    self.settle();
+                    let failures = self.eq_failures;
+                    let pt = self.gen_pattern(&shape, BinderSite::Local);
+                    // As for a `let` pattern ([`Self::pattern_rhs`]): a
+                    // pattern of structure must not give an earlier binding's
+                    // open variable a shape of this binding's variables
+                    // (`let a = None` then `match a with Some 1 -> …` would
+                    // retype `a`, which FCS keeps `'a option`).
+                    // Nor one whose resolution FCS decides by something
+                    // inference does not see — a local FCS may generalise
+                    // (`let g = idf in match g ho with Some 1 -> …` keeps
+                    // `idf : 'a -> 'a`) — the variables an argument check
+                    // refuses to bind too ([`Self::touches_opaque`]).
+                    self.settle();
+                    if !matches!(pt, Ty::Var(_))
+                        && (self.mentions_inherited_open(sv)
+                            || self.touches_opaque(sv, sv, node_span(m.syntax())))
+                    {
+                        self.mark_incomplete(Incomplete::InheritedOpen);
+                        return None;
+                    }
+                    // FCS checks in source order, so an argument check still
+                    // pending here was applied before this pattern: a pattern
+                    // that contradicts one (`(fs x, match x with 1 -> …)` with
+                    // `fs : string -> _`) is the one FCS rejects, and relating
+                    // it now would fix the scrutinee in the check's place.
+                    if !matches!(pt, Ty::Var(_)) && self.pattern_preempts_earlier_relation(sv, &pt)
+                    {
+                        self.mark_incomplete(Incomplete::PatternAfterCheck);
+                        return None;
+                    }
+                    // An unmodelled construct before the pattern may have
+                    // fixed what the scrutinee's open variables are in FCS
+                    // (`Some x -> (if x then …) | Some "" -> …` makes `x`
+                    // `bool`, then rejects the pattern), and it left no
+                    // relation to probe; so on an incomplete binding a
+                    // pattern of structure relates only a ground scrutinee.
+                    if !self.complete
+                        && !matches!(pt, Ty::Var(_))
+                        && !self.table.resolve(&Ty::Var(sv)).is_ground()
+                    {
+                        self.mark_incomplete(Incomplete::PatternAfterCheck);
+                        return None;
+                    }
+                    self.eq(Ty::Var(sv), pt);
+                    // The pattern's names are typed before the clause's uses
+                    // of them are walked, so a use reads a known type
+                    // ([`Self::value_use`]).
+                    self.settle();
+                    // A pattern that does not fit the scrutinee fails whole
+                    // (atomically), leaving its names untyped where FCS typed
+                    // the part that fit before rejecting the rest (`(x, 1)`
+                    // against `int * string` keeps `x : int`): the clause
+                    // declines rather than let its body type them.
+                    if self.eq_failures > failures {
+                        self.mark_incomplete(Incomplete::PatternMismatch);
+                        return None;
+                    }
+                    if clause.guard().is_some() {
+                        self.constrain_bool(clause.guard());
+                    }
+                    match result {
+                        None => result = Some(self.infer_expr(&body, None)?),
+                        Some(exp) => {
+                            self.infer_expr(&body, Some(exp));
+                        }
+                    }
+                    any = true;
+                }
+                if !any {
+                    self.mark_incomplete(Incomplete::Recovery);
+                    return None;
+                }
+                // Nothing is emitted at the match itself: FCS elaborates
+                // some matches to other nodes (a single irrefutable clause,
+                // `match o with x -> x`, is a `let`), so whether its dump has
+                // a node there is its decision compiler's to say.
+                result
             }
             // A lambda `fun x … -> body`. Walk the body so its sub-expressions get
             // typed, carrying the lambda's **mode**: coercion-free (synth) only when
@@ -3666,6 +3930,9 @@ impl<'a> Gen<'a> {
                     .clone();
                 return Ok(self.scheme_use(&ty));
             }
+            Some(Resolution::UnionCase { union, case }) => {
+                return self.assembly_case_use(union, case);
+            }
             _ => return Err(Incomplete::NotInFileValue),
         };
         let scheme = match self.env.member_at(parent, idx) {
@@ -3674,6 +3941,29 @@ impl<'a> Gen<'a> {
         }
         .map_err(Incomplete::AssemblyValue)?;
         Ok(self.constrained_scheme_use(&scheme))
+    }
+
+    /// The type variable of a use of case `case` of the referenced union
+    /// `union`, as a value: the union for a nullary case (`None`), else the
+    /// function from its field, or the tuple of its fields, to the union
+    /// (`Some`, `UPair`), each of the union's type parameters instantiated
+    /// fresh. Unlike a value's use, a case's is not loosened
+    /// (`MakeApplicableExprWithFlex` is `TcVal`'s): unapplied, FCS
+    /// eta-expands it at exactly its field types (`UObj` is `obj -> UObj`),
+    /// and applied, it checks each argument against an unsealed field by
+    /// coercion (`TcExprsWithFlexes`), which an application's argument check
+    /// reproduces — as `infer_union_case_diff`'s unsealed and many-field rows
+    /// hold it to.
+    fn assembly_case_use(
+        &mut self,
+        union: EntityHandle,
+        case: crate::assembly_env::UnionCaseIndex,
+    ) -> Result<TyVid, Incomplete> {
+        let scheme = union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
+        let ty = self.instantiate(&scheme.value_ty());
+        let uv = self.table.fresh();
+        self.eq(Ty::Var(uv), ty);
+        Ok(uv)
     }
 
     /// [`Self::scheme_use`] over a module function's reading: each type
@@ -3884,13 +4174,19 @@ impl<'a> Gen<'a> {
             return self.scheme_use(&scheme);
         }
         let dv = self.def_var(def);
-        let current_param = self.is_current_param(def);
+        let match_local = self.match_locals.contains(&def);
+        let current_param = self.is_current_param(def) || match_local;
         if !current_param {
             self.poison.push(dv);
             self.opaque.push((dv, None));
         }
         let known = match self.param_annotations.get(&def) {
             Some(ann) => Some(ann.clone()),
+            // A match's pattern variable is typed by its pattern before its
+            // clause is walked: a use of one whose type is known then is
+            // loosened as FCS loosens it (`Some g -> g` with
+            // `g : obj -> int` is `'a -> int` at the use).
+            None if match_local => Some(self.table.resolve(&Ty::Var(dv))).filter(Ty::is_ground),
             None if current_param => None,
             None => Some(self.table.resolve(&Ty::Var(dv))).filter(Ty::is_ground),
         };
@@ -4955,6 +5251,15 @@ impl<'a> Gen<'a> {
     /// is an annotation around anything but a name, or outside the modelled set
     /// ([`Self::annotation_ty`]).
     fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
+        self.pattern_shape_in(pat, PatSite::Binding)
+    }
+
+    /// [`Self::pattern_shape`] at `site`: a `match` clause's pattern reads
+    /// union cases and constants, and declines an annotated name; a `let` or
+    /// parameter pattern reads neither (an incomplete pattern there is rare,
+    /// and its relation to the RHS is [`Self::pattern_rhs`]'s, which does not
+    /// guard what a case's structure could bind).
+    fn pattern_shape_in(&self, pat: &Pat, site: PatSite) -> Result<PatShape, Incomplete> {
         // Recovery drops what it cannot parse, so a recovered pattern's
         // surviving children look well-formed: `(a,b,)` reads as a pair, where
         // FCS keeps a third, recovery element. And it can spill past the
@@ -4972,7 +5277,62 @@ impl<'a> Gen<'a> {
                 .ok_or(Incomplete::Recovery)
         };
         match pat {
+            // A name the resolver reads as a referenced assembly's union case
+            // (`None`) is that case, applied to nothing.
+            Pat::Named(named)
+                if site == PatSite::Match
+                    && named
+                        .ident()
+                        .is_some_and(|tok| self.def_at(tok.text_range()).is_none()) =>
+            {
+                let tok = named.ident().ok_or(Incomplete::Recovery)?;
+                self.case_pattern(tok.text_range(), None)
+            }
             Pat::Named(named) => Ok(PatShape::Name(named_def(named)?)),
+            Pat::LongIdent(li) if site == PatSite::Match => {
+                // `Case` or `Case p`: at most one argument, no named fields,
+                // no type arguments, no active pattern, and a head of one
+                // name the resolver reads as a case.
+                let mut args = li.args();
+                let arg = match (args.next(), args.next()) {
+                    (arg, None) => arg,
+                    _ => return Err(Incomplete::PatternShape(pat.syntax().kind())),
+                };
+                if li.name_pat_pairs().is_some() {
+                    return Err(Incomplete::PatternShape(pat.syntax().kind()));
+                }
+                let head = li
+                    .head()
+                    .filter(|_| li.typar_decls().is_none() && li.active_pat_name().is_none())
+                    .ok_or(Incomplete::PatternShape(pat.syntax().kind()))?;
+                let mut idents = head.idents();
+                let (Some(tok), None) = (idents.next(), idents.next()) else {
+                    return Err(Incomplete::PatternShape(pat.syntax().kind()));
+                };
+                self.case_pattern(tok.text_range(), arg.as_ref())
+            }
+            Pat::Const(c) if site == PatSite::Match && !c.syntax().text().is_empty() => {
+                let kind = c.literal().map(|l| l.kind());
+                match kind {
+                    Some(
+                        SyntaxKind::INT32_LIT
+                        | SyntaxKind::STRING_LIT
+                        | SyntaxKind::CHAR_LIT
+                        | SyntaxKind::BOOL_LIT,
+                    ) => {
+                        let literal = c.literal().expect("a literal kind");
+                        Ok(PatShape::Const(
+                            literal_kind_ty(literal.kind()).expect("a typed literal"),
+                            literal_ctor(literal.kind(), literal.text()),
+                        ))
+                    }
+                    _ => Err(Incomplete::PatternShape(pat.syntax().kind())),
+                }
+            }
+            // FCS relates a `match` pattern's annotation to the scrutinee by
+            // equality and rejects a mismatch, keeping no binder; the
+            // annotation would already have typed the name.
+            Pat::Typed(_) if site == PatSite::Match => Err(Incomplete::CoercedPattern),
             Pat::Typed(typed) => {
                 let Some(t) = typed.ty().and_then(|ty| self.annotation_ty(&ty)) else {
                     return Err(Incomplete::PatternAnnotation);
@@ -4987,7 +5347,7 @@ impl<'a> Gen<'a> {
             Pat::Tuple(tuple) => {
                 let elems = tuple
                     .elements()
-                    .map(|el| self.pattern_shape(&el))
+                    .map(|el| self.pattern_shape_in(&el, site))
                     .collect::<Result<Vec<_>, _>>()?;
                 if elems.len() < 2 {
                     return Err(Incomplete::Recovery);
@@ -4995,7 +5355,7 @@ impl<'a> Gen<'a> {
                 Ok(PatShape::Tuple(elems))
             }
             Pat::Paren(p) => match p.inner() {
-                Some(inner) => self.pattern_shape(&inner),
+                Some(inner) => self.pattern_shape_in(&inner, site),
                 None => Err(Incomplete::Recovery),
             },
             // `()` is a constant pattern whose node is zero-width: the
@@ -5003,6 +5363,153 @@ impl<'a> Gen<'a> {
             Pat::Const(c) if c.syntax().text().is_empty() => Ok(PatShape::Unit),
             other => Err(Incomplete::PatternShape(other.syntax().kind())),
         }
+    }
+
+    /// Whether some value reaches each of `m`'s clauses ([`provably_reachable`]),
+    /// as far as its walk goes: it declines at the first clause whose pattern
+    /// it does not read, so that clause is asked only whether anything at all
+    /// gets past the clauses before it.
+    fn every_clause_provably_reachable(&self, m: &MatchExpr) -> bool {
+        // The patterns of the clauses so far that have no guard (a guarded
+        // clause may fail, so it covers nothing).
+        let mut covering: Vec<ClausePat<EntityHandle>> = Vec::new();
+        for clause in m.clauses() {
+            let shape = clause
+                .pat()
+                .map(|pat| self.pattern_shape_in(&pat, PatSite::Match));
+            let Some(Ok(shape)) = shape else {
+                return provably_reachable(&covering, &ClausePat::Any);
+            };
+            let query = shape.clause_pat();
+            if !provably_reachable(&covering, &query) {
+                return false;
+            }
+            if clause.guard().is_none() {
+                covering.push(query);
+            }
+        }
+        true
+    }
+
+    /// Whether relating the pattern type `pt` to the scrutinee `sv` would get
+    /// ahead of a relation FCS, which checks in source order, applied before
+    /// the pattern and inference has not: every constraint still pending was
+    /// walked before the pattern. Each kind is decided here, so a new kind of
+    /// suspended constraint must be:
+    ///
+    /// - a pending equality, argument check or dropped check-mode relation
+    ///   ([`Self::dropped`]) is applied as an equality under a snapshot, rolled
+    ///   back after, and the pattern contradicts them if any of them, or
+    ///   relating `pt` after them, fails (a check FCS meets by coercion fails
+    ///   here where FCS succeeds, which only declines);
+    /// - a suspended member lookup whose receiver the pattern could make
+    ///   known is one FCS made on a receiver it did not yet know, an error
+    ///   (FS0072), so the pattern must not wake it
+    ///   (`(o.Length, match o with "a" -> …)`).
+    fn pattern_preempts_earlier_relation(&mut self, sv: TyVid, pt: &Ty) -> bool {
+        let mut eqs: Vec<(Ty, Ty)> = Vec::new();
+        let mut receivers: Vec<TyVid> = Vec::new();
+        for c in &self.constraints {
+            match c {
+                Constraint::Eq(a, b) => eqs.push((a.clone(), b.clone())),
+                Constraint::ArgCheck(ac) => eqs.push((Ty::Var(ac.arg), Ty::Var(ac.dom))),
+                Constraint::HasMember { recv, .. } => receivers.push(*recv),
+            }
+        }
+        eqs.extend(
+            self.dropped
+                .iter()
+                .map(|&(a, b, _)| (Ty::Var(a), Ty::Var(b))),
+        );
+        // A parameter's private slot and its binder variable are one variable
+        // in FCS ([`Self::slot_binder_reunify`]), so what a condition fixed on
+        // the slot (`if x then (match x with 1 -> …)`) FCS applied before the
+        // pattern too. A binder with no variable yet has had no use the
+        // scrutinee could read.
+        eqs.extend(self.cur_params.iter().filter_map(|&(def, slot)| {
+            self.def_vars
+                .get(&def)
+                .map(|&dv| (Ty::Var(slot), Ty::Var(dv)))
+        }));
+        let mut scrutinee_roots: HashSet<TyVid> = HashSet::new();
+        collect_var_roots(&self.table.resolve(&Ty::Var(sv)), &mut scrutinee_roots);
+        for recv in receivers {
+            let mut recv_roots: HashSet<TyVid> = HashSet::new();
+            collect_var_roots(&self.table.resolve(&Ty::Var(recv)), &mut recv_roots);
+            if recv_roots
+                .iter()
+                .any(|&r| scrutinee_roots.iter().any(|&v| self.table.unioned(r, v)))
+            {
+                return true;
+            }
+        }
+        if eqs.is_empty() {
+            return false;
+        }
+        // Earlier relations that already conflict among themselves are ones
+        // FCS resolved by their order, which this replay does not follow, so
+        // what the pattern meets is unknown: that declines too.
+        let snapshot = self.table.snapshot();
+        let mut contradicts = false;
+        for (a, b) in eqs {
+            if self.table.unify_atomic(&a, &b).is_err() {
+                contradicts = true;
+                break;
+            }
+        }
+        contradicts = contradicts || self.table.unify_atomic(&Ty::Var(sv), pt).is_err();
+        self.table.rollback_to(snapshot);
+        contradicts
+    }
+
+    /// The pattern of the case the resolver reads at `at`, over `arg`: `None`
+    /// for a case written alone. A nullary case takes no argument; a case of
+    /// one field takes a pattern of it; a case of several takes a tuple
+    /// pattern of exactly that many; and any case of fields takes `_` for
+    /// all of them. Anything else — a case of fields written alone, a
+    /// mismatched arity, a case the maker cannot vouch for, a name that is
+    /// not a referenced assembly's case — declines.
+    fn case_pattern(&self, at: TextRange, arg: Option<&Pat>) -> Result<PatShape, Incomplete> {
+        let Some(Resolution::UnionCase { union, case }) = self.resolved.resolution_at(at) else {
+            return Err(Incomplete::NotInFileValue);
+        };
+        let scheme = union_case_scheme(self.env, union, case).map_err(Incomplete::AssemblyCase)?;
+        let unparen = |p: &Pat| -> Option<Pat> {
+            let mut p = p.clone();
+            while let Pat::Paren(inner) = &p {
+                p = inner.inner()?;
+            }
+            Some(p)
+        };
+        let arg = match (arg, scheme.fields.len()) {
+            (None, 0) => None,
+            (None, _) | (Some(_), 0) => {
+                return Err(Incomplete::PatternShape(SyntaxKind::LONG_IDENT_PAT));
+            }
+            (Some(arg), n) => {
+                let inner = unparen(arg).ok_or(Incomplete::Recovery)?;
+                match (&inner, n) {
+                    (Pat::Wildcard(_), _) => Some(Box::new(PatShape::Wildcard)),
+                    (_, 1) => Some(Box::new(self.pattern_shape_in(arg, PatSite::Match)?)),
+                    (Pat::Tuple(t), n) if !t.is_struct() && t.elements().count() == n => {
+                        Some(Box::new(self.pattern_shape_in(&inner, PatSite::Match)?))
+                    }
+                    _ => return Err(Incomplete::PatternShape(SyntaxKind::LONG_IDENT_PAT)),
+                }
+            }
+        };
+        let siblings = match &self.env.entity(union).union_cases {
+            borzoi_assembly::UnionCases::Known(cases) => cases.len(),
+            borzoi_assembly::UnionCases::Unknowable => {
+                unreachable!("a scheme read off a union whose cases are unknown")
+            }
+        };
+        let key = CaseKey {
+            union,
+            index: case.index(),
+            siblings,
+        };
+        Ok(PatShape::Case(key, scheme, arg))
     }
 
     /// Generate a read pattern's type, registering each name for `site`.
@@ -5043,6 +5550,19 @@ impl<'a> Gen<'a> {
             PatShape::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
             }
+            PatShape::Const(t, _) => t.clone(),
+            PatShape::Case(_, scheme, arg) => match self.instantiate(&scheme.value_ty()) {
+                Ty::Fun { arg: fields, ret } => {
+                    if let Some(arg) = arg
+                        && !matches!(**arg, PatShape::Wildcard)
+                    {
+                        let at = self.gen_pattern(arg, site);
+                        self.eq(at, *fields);
+                    }
+                    *ret
+                }
+                union => union,
+            },
         }
     }
 
@@ -6153,7 +6673,7 @@ impl<'a> Gen<'a> {
             .collect();
         let mut types = HashMap::new();
         for (range, var, guard) in exprs {
-            if !self.guard_holds(guard) {
+            if !self.guard_holds(guard) || self.ungraded_ranges.contains(&range) {
                 continue;
             }
             let ty = self.table.resolve(&Ty::Var(var));
@@ -7159,7 +7679,54 @@ fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
 }
 
 fn literal_ty(c: &ConstExpr) -> Option<Ty> {
-    let kind = c.literal()?.kind();
+    literal_kind_ty(c.literal()?.kind())
+}
+
+/// The value a constant pattern's literal spells, as reachability compares
+/// them ([`Ctor::Const`]): its text when that is the only spelling of its
+/// value — a decimal `int` without leading zeros or separators, a string or
+/// character with no escape — so two such spellings differ exactly when the
+/// values do; else no value, which may equal any other (`1` and `0x1`).
+fn literal_ctor(kind: SyntaxKind, text: &str) -> Ctor<EntityHandle> {
+    let canonical = |ok: bool| ok.then(|| Box::<str>::from(text));
+    match kind {
+        SyntaxKind::BOOL_LIT => Ctor::Bool(text == "true"),
+        SyntaxKind::INT32_LIT => {
+            let digits = text.strip_prefix('-').unwrap_or(text);
+            let ok = !digits.is_empty()
+                && digits.bytes().all(|b| b.is_ascii_digit())
+                && (digits == "0" || !digits.starts_with('0'))
+                && text != "-0";
+            Ctor::Const {
+                kind: ConstKind::Int,
+                value: canonical(ok),
+            }
+        }
+        SyntaxKind::STRING_LIT => Ctor::Const {
+            kind: ConstKind::Str,
+            value: canonical(
+                text.len() >= 2
+                    && text.starts_with('"')
+                    && text.ends_with('"')
+                    && !text.contains('\\'),
+            ),
+        },
+        SyntaxKind::CHAR_LIT => Ctor::Const {
+            kind: ConstKind::Char,
+            value: canonical(
+                text.len() >= 3
+                    && text.starts_with('\'')
+                    && text.ends_with('\'')
+                    && !text.contains('\\'),
+            ),
+        },
+        _ => unreachable!("a constant pattern of a literal inference does not read: {kind:?}"),
+    }
+}
+
+/// The type of a literal token of `kind`, where it is fixed in isolation
+/// ([`literal_ty`]).
+fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
     let prim = |path: &str| Some(Ty::named(path));
     match kind {
         // Integers (default and every explicit suffix).
@@ -7377,6 +7944,7 @@ mod tests {
             source_name: None,
             extension_member_names: vec![],
             union_cases: UnionCases::Unknowable,
+            union_case_makers: Vec::new(),
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],
@@ -7938,9 +8506,9 @@ mod tests {
             "module M\nlet a : int option = None\nlet h x = (x, a)\n",
             // `let rec` group skipped whole.
             "module M\nlet rec a = 1\nlet h x = (x, a)\n",
-            // A pattern binding with a constant element, which `pattern_ty`
+            // A pattern binding with a list element, which `pattern_ty`
             // rejects after `a` has its variable.
-            "module M\nlet (a, 1) = (1, 1)\nlet h x = (x, a)\n",
+            "module M\nlet (a, [_]) = (1, [1])\nlet h x = (x, a)\n",
         ] {
             let types = def_types(src);
             assert_eq!(
