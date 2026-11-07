@@ -1173,8 +1173,11 @@ segment. So this stage is inference's alone: read the head's span, and give
 each case a scheme.
 
 **A case's scheme is its declaration.** For each union whose path
-`project_type_paths` holds (so not a constrained or attributed parameter, nor
-an attribute that may reject a use), each case's fields are read through the
+`project_type_paths` holds (so not a constrained — by `when` or by an
+intersection, `'a & #IDisposable` — or attributed parameter, nor an attribute
+that may reject a use, nor a type declared twice: FCS rejects a second
+definition of a container's name and arity, FS0037, or of an earlier file's
+path, FS0249, and keeps one, so neither is read), each case's fields are read through the
 annotation bridge in the union's own type-parameter scope (`decl_typars`: a
 declared `'a` is the scheme's `Ty::Param`), and the union is the
 `Ty::Project` applied to its parameters. The scheme is the
@@ -1198,7 +1201,9 @@ that a use declines:
 - a case whose name anything else the project declares so far could mean:
   an export of its own file or an earlier one (a case of another union, a
   value, an exception, an active pattern's case), or a type there that can
-  construct (anything but a union, a record or an enum). FCS resolves such a
+  construct (anything but an unattributed union or record: an enum and a
+  struct have a default constructor, and a struct union named like its own
+  case is rejected outright when qualified). FCS resolves such a
   name by orders the resolver's latest-wins history does not follow. An
   `open` adds a module's types, and so their cases, before its values
   (`let X = 5` then `type UV = X | W`: the opened `X` is the value; an

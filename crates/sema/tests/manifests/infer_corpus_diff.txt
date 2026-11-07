@@ -2069,27 +2069,11 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntCompar
 tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs:8:14-8:50 expr	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs:8:5-8:11 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs	compared
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:13:5-13:7 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:13:9-13:10 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:15:11-15:12 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:15:17-15:18 expr	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:16:11-16:12 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:16:9-16:10 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:15-18:16 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:5-18:7 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:9-18:10 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:19:11-19:12 expr	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:19:13-19:14 expr	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:20:11-20:12 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:20:19-20:20 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:20:25-20:30 expr	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:11-21:12 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:17-21:18 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:19-21:20 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:9-21:10 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:33:11-33:12 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:38:11-38:12 binder	agree
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:38:19-38:20 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/MethodImplAttribute/MethodImplAttribute.NoInlining_InlineKeyword.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/EqualsOnUnions01.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/NonEscapingArguments02.fs	compared
