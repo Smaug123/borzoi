@@ -805,7 +805,12 @@ oracle restoring under the same environment, and requires each admitted
 variable to be graded on a committed spec. The legacy variable is in it too,
 so the sweep is seen to move restore. Removing any one part of the check
 (variables, the user config, the extra configs, the home precedence) fails it.
-The census does not move: the corpus machines' user configs are the default.
+Every other case in `dgspec_resolve_diff.rs`, and every restore in
+`restore_graph.rs`, runs under one controlled environment shared by the real
+restore, the oracle and B₁: each variable B₁ has a verdict on removed, and a
+home of the suite's own. Review found the caller's environment deciding what a
+case graded three times, one test at a time, before that replaced the
+per-test fixes. The census does not move.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 
