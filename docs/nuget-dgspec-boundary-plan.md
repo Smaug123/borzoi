@@ -1,6 +1,6 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–4, 7b, 7c and 8 have landed, and so has the
+> **Status:** stages 1–5, 7b, 7c and 8 have landed, and so has the
 > resolver's handling of dependency asset filters and B₁'s of `<contentFiles>`.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions).
 > B₁ now commits on five of the six corpus projects, exactly as the restore
@@ -542,9 +542,7 @@ comes from stage 1's local sweep and the stage-8 fixtures, not from the census.
 
 - **7c — the warning policy.** Landed; see below.
 - **7b — download dependencies.** Landed; see below.
-- **5 — pruning.** Oracle: the generator emits prune lists over the synthetic
-  universe, including prune ranges that cover a *direct* reference.
-  Certain-implies-exact against both engines. The census moves.
+- **5 — pruning.** Landed; see below.
 - **6 — project nodes.** Package flow through `projectReferences`, with
   `PrivateAssets`/`suppressParent`. Oracle: the generator emits multi-project
   dgspecs, graded the same way.
@@ -675,6 +673,37 @@ nuspec carries a rule whose four values it perturbs.
 The one remaining corpus decline is the resolver's own engine-agreement
 envelope (`engines_agree` in `resolver.rs`), where the legacy and default
 engines can treat a loser's subtree differently.
+
+### Stage 5: pruning — landed
+
+A framework's `packagesToPrune` no longer declines; the resolver applies it
+(`TargetContext::prune`, through `resolve_offline_in`). Probing restore over
+a spec settled the rule, which is not the one the field's shape suggests:
+
+- Restore drops a dependency a package declares on a pruned id when the
+  dependency's range accepts the prune range's **upper bound**. The prune
+  range's lower bound and the inclusivity of its upper bound play no part:
+  `[2.0.0]` and `(, 1.0.0)` both prune an edge `[1.0.0, )`, and nothing
+  prunes an edge `[1.0.0]` against `(, 2.0.0]`. (B₁ first tested the edge's
+  lower bound against the upper bound; review found the exact edge.)
+- The edge goes before the walk, so its subtree goes with it, and another
+  path can still bring the package in at a version above the bound.
+- A project's direct references are never pruned. Restore may warn
+  `NU1510` about one the list covers, deciding across the project's
+  frameworks once any is `net10.0` or later. B₁ predicts it exactly for a
+  single-framework project (`net10.0` with a covered reference warns; no
+  earlier framework does, whatever `SdkAnalysisLevel` says) and predicts
+  nothing exact otherwise: several frameworks with one `net10.0` and a
+  covered reference (restore warned there for a reference only `net9.0`
+  had), or a `.NETCoreApp` after 10.
+
+An entry without an upper bound, or a floating one, still declines. A spec
+cannot select the legacy restore engine, so this is graded against the
+default engine only: a hand case pins each part of the rule against B₀,
+the generator writes prune lists, and the `net10.0` fixture in
+`restore_graph.rs`, whose spec carries the SDK's few hundred entries, now
+commits with exactly the restore's closure. No corpus project targets
+`net10.0`, so the census does not move.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 
