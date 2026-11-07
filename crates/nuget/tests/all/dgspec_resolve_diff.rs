@@ -30,8 +30,9 @@ use std::fs;
 use std::path::Path;
 
 use borzoi_nuget::dgspec::{
-    DependencyGraphSpec, DgSpecResolveDecline, NuGetIdentity, ResolvedFramework, UnmodelledField,
-    parse_dgspec, resolve_dgspec, verified_nuget_identities,
+    DependencyGraphSpec, DgSpecResolveDecline, NuGetIdentity, NuspecDecline,
+    PackageMetadataDecline, ResolvedFramework, UnmodelledField, nuspec_is_admitted, parse_dgspec,
+    resolve_dgspec, verified_nuget_identities,
 };
 use borzoi_nuget::{
     DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId, PackageIdentity,
@@ -72,6 +73,9 @@ struct Pkg {
     marker: Option<&'static str>,
     /// The whole nuspec, in place of the one [`Pkg::nuspec`] renders.
     raw_nuspec: Option<&'static str>,
+    /// The whole nuspec as bytes, outranking [`Pkg::raw_nuspec`]: for a byte
+    /// order mark or an encoding a `&str` cannot spell.
+    raw_nuspec_bytes: Option<Vec<u8>>,
 }
 
 impl Pkg {
@@ -87,6 +91,7 @@ impl Pkg {
             version_text: None,
             marker: None,
             raw_nuspec: None,
+            raw_nuspec_bytes: None,
         }
     }
 
@@ -158,7 +163,13 @@ fn install(root: &Path, packages: &[Pkg]) {
         );
         let paths = PackagePaths::new(root, &identity);
         fs::create_dir_all(&paths.package_dir).expect("package dir");
-        let nuspec = pkg.raw_nuspec.map_or_else(|| pkg.nuspec(), str::to_owned);
+        let nuspec = match &pkg.raw_nuspec_bytes {
+            Some(bytes) => bytes.clone(),
+            None => pkg
+                .raw_nuspec
+                .map_or_else(|| pkg.nuspec(), str::to_owned)
+                .into_bytes(),
+        };
         fs::write(&paths.nuspec_path, nuspec).expect("nuspec");
         for file in &pkg.files {
             let path = paths.package_dir.join(file);
@@ -1826,7 +1837,12 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
         DgSpecResolveDecline::PackageNamedLikeProject { .. } => "named-like-project".to_owned(),
         DgSpecResolveDecline::CompatibilityUnproven { .. } => "compatibility-unproven".to_owned(),
         DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
-        DgSpecResolveDecline::PackageMetadata { .. } => "package-metadata".to_owned(),
+        DgSpecResolveDecline::PackageMetadata { decline, .. } => match decline {
+            PackageMetadataDecline::Nuspec(decline) => {
+                format!("package-metadata:nuspec:{}", decline.layer())
+            }
+            PackageMetadataDecline::CommitMarker => "package-metadata:marker".to_owned(),
+        },
     }
 }
 
@@ -2261,4 +2277,691 @@ fn nuspec_namespace_forms_are_graded() {
             assert!(graded.ours.is_ok(), "{nuspec}: {:?}", graded.ours);
         }
     }
+}
+
+// ============================================================================
+// The nuspec's layers
+// ============================================================================
+//
+// B₁ reads a nuspec through several layers — bytes, the XML declaration, the
+// document, the element vocabulary — and states a positive domain for each.
+// A sweep at one layer says nothing about the next: single-slot text
+// perturbation cannot re-encode the file or duplicate an element. So each
+// layer here is swept in its own terms, and every variant is classed by the
+// stated domain, independently of the code: `MustCommit` variants are inside
+// it (and B₀ grades the commit), `MustDecline` ones are outside it (declined
+// without asking B₀, whose verdict is only recorded as an over-decline
+// census), and `Either` ones change the closure (graded, nothing asserted).
+
+/// One element of a nuspec, as the sweep renders it.
+#[derive(Debug, Clone)]
+struct XElem {
+    name: &'static str,
+    form: Form,
+    attrs: Vec<(String, String)>,
+    children: Vec<XNode>,
+}
+
+/// How an element is spelt: in the default namespace, with the `p:` prefix
+/// (bound to the same namespace URI on the root), or carrying its own
+/// `xmlns="urn:other"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    Default,
+    Prefixed,
+    OtherNamespace,
+}
+
+#[derive(Debug, Clone)]
+enum XNode {
+    Elem(XElem),
+    Text(String),
+    CData(String),
+    Comment,
+    Pi,
+}
+
+fn elem(name: &'static str, attrs: &[(&str, &str)], children: Vec<XNode>) -> XNode {
+    XNode::Elem(XElem {
+        name,
+        form: Form::Default,
+        attrs: attrs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
+        children,
+    })
+}
+
+fn text_elem(name: &'static str, text: &str) -> XNode {
+    elem(name, &[], vec![XNode::Text(text.to_owned())])
+}
+
+/// A nuspec B₁ commits, with every vocabulary element present at least
+/// once: identity, descriptive elements with and without attributes, package
+/// types, grouped dependencies and flat references.
+fn committing_nuspec() -> XElem {
+    let XNode::Elem(root) = elem(
+        "package",
+        &[],
+        vec![elem(
+            "metadata",
+            &[("minClientVersion", "2.12")],
+            vec![
+                text_elem("id", "A"),
+                text_elem("version", "1.0.0"),
+                text_elem("authors", "a"),
+                text_elem("description", "d"),
+                elem(
+                    "license",
+                    &[("type", "expression")],
+                    vec![XNode::Text("MIT".to_owned())],
+                ),
+                elem(
+                    "packageTypes",
+                    &[],
+                    vec![elem("packageType", &[("name", "Dependency")], vec![])],
+                ),
+                elem(
+                    "dependencies",
+                    &[],
+                    vec![elem(
+                        "group",
+                        &[("targetFramework", "net8.0")],
+                        vec![elem(
+                            "dependency",
+                            &[("id", "B"), ("version", "[1.0.0, )")],
+                            vec![],
+                        )],
+                    )],
+                ),
+                elem(
+                    "references",
+                    &[],
+                    vec![elem("reference", &[("file", "A.dll")], vec![])],
+                ),
+            ],
+        )],
+    ) else {
+        unreachable!()
+    };
+    root
+}
+
+const NUSPEC_2013: &str = "http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd";
+
+fn render_node(node: &XNode, out: &mut String) {
+    use std::fmt::Write as _;
+    match node {
+        XNode::Elem(e) => {
+            let tag = match e.form {
+                Form::Default | Form::OtherNamespace => e.name.to_owned(),
+                Form::Prefixed => format!("p:{}", e.name),
+            };
+            out.push('<');
+            out.push_str(&tag);
+            if e.form == Form::OtherNamespace {
+                out.push_str(r#" xmlns="urn:other""#);
+            }
+            for (k, v) in &e.attrs {
+                write!(out, r#" {k}="{v}""#).unwrap();
+            }
+            if e.children.is_empty() {
+                out.push_str(" />");
+            } else {
+                out.push('>');
+                for child in &e.children {
+                    render_node(child, out);
+                }
+                write!(out, "</{tag}>").unwrap();
+            }
+        }
+        XNode::Text(t) => out.push_str(t),
+        XNode::CData(t) => {
+            out.push_str("<![CDATA[");
+            out.push_str(t);
+            out.push_str("]]>");
+        }
+        XNode::Comment => out.push_str("<!--c-->"),
+        XNode::Pi => out.push_str("<?pi x?>"),
+    }
+}
+
+/// Render `root` under `namespace` (`None` declares no default namespace),
+/// after `declaration`. The root always binds `p:` to the same namespace and
+/// `o:` to another, so prefixed forms and namespaced attributes can be spelt.
+fn render_nuspec(declaration: &str, namespace: Option<&str>, root: &XElem) -> String {
+    let mut root = root.clone();
+    let mut decls = vec![(
+        "xmlns:p".to_owned(),
+        namespace.unwrap_or("urn:p").to_owned(),
+    )];
+    decls.push(("xmlns:o".to_owned(), "urn:other".to_owned()));
+    if let Some(ns) = namespace {
+        decls.insert(0, ("xmlns".to_owned(), ns.to_owned()));
+    }
+    decls.extend(root.attrs);
+    root.attrs = decls;
+    let mut out = declaration.to_owned();
+    if !declaration.is_empty() {
+        out.push('\n');
+    }
+    render_node(&XNode::Elem(root), &mut out);
+    out
+}
+
+/// The verdict the stated domain gives a variant, before any code runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    /// Inside the domain: B₁ must commit, and B₀ grades the commit.
+    MustCommit,
+    /// Outside the domain: B₁ must decline whatever B₀ does.
+    MustDecline,
+    /// Changes the graph: graded, nothing asserted beyond certain-implies-exact.
+    Either,
+}
+
+/// The element roles the vocabulary distinguishes.
+fn is_descriptive(name: &str) -> bool {
+    matches!(name, "authors" | "description" | "license")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Mutation {
+    Duplicate,
+    ForeignAttribute,
+    NamespacedAttribute,
+    ForeignChild,
+    Text,
+    Comment,
+    Pi,
+    CData,
+    Prefix,
+    OtherNamespace,
+    Remove,
+}
+
+const MUTATIONS: &[Mutation] = &[
+    Mutation::Duplicate,
+    Mutation::ForeignAttribute,
+    Mutation::NamespacedAttribute,
+    Mutation::ForeignChild,
+    Mutation::Text,
+    Mutation::Comment,
+    Mutation::Pi,
+    Mutation::CData,
+    Mutation::Prefix,
+    Mutation::OtherNamespace,
+    Mutation::Remove,
+];
+
+/// What the domain says about `mutation` applied to the element named `name`.
+///
+/// A descriptive element's subtree is inert whatever it holds, since restore
+/// never reads it; the element itself must still be a child of `<metadata>`
+/// in the nuspec namespace, which the default namespace must be bound to.
+/// Every other element admits only its own attributes and children,
+/// whitespace between them, and comments and processing instructions, which
+/// no XML reader surfaces as content.
+fn classify(mutation: Mutation, name: &str) -> Option<Class> {
+    let descriptive = is_descriptive(name);
+    let graph = matches!(
+        name,
+        "dependencies" | "group" | "dependency" | "references" | "reference"
+    );
+    Some(match mutation {
+        Mutation::Comment | Mutation::Pi | Mutation::CData => Class::MustCommit,
+        // `p:` is bound to the default namespace's URI on the root, so a
+        // prefixed element is the same element to any XML reader.
+        Mutation::Prefix => Class::MustCommit,
+        Mutation::OtherNamespace => Class::MustDecline,
+        Mutation::ForeignAttribute
+        | Mutation::NamespacedAttribute
+        | Mutation::ForeignChild
+        | Mutation::Text => {
+            if descriptive {
+                Class::MustCommit
+            } else {
+                Class::MustDecline
+            }
+        }
+        Mutation::Duplicate => match name {
+            "package" => return None,
+            _ if descriptive => Class::MustCommit,
+            // The first group for a framework wins on both sides, and a
+            // second `Dependency` package type is one more admitted type.
+            "group" | "packageType" => Class::MustCommit,
+            "dependency" | "reference" => Class::Either,
+            _ => Class::MustDecline,
+        },
+        Mutation::Remove => match name {
+            "package" => return None,
+            _ if descriptive => Class::MustCommit,
+            "packageTypes" | "packageType" => Class::MustCommit,
+            _ if graph => Class::Either,
+            _ => Class::MustDecline,
+        },
+    })
+}
+
+/// Every element's position, as the path of child indices from the root
+/// (the root itself is the empty path).
+fn element_paths(root: &XElem) -> Vec<Vec<usize>> {
+    fn walk(e: &XElem, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        out.push(path.clone());
+        for (i, child) in e.children.iter().enumerate() {
+            if let XNode::Elem(child) = child {
+                path.push(i);
+                walk(child, path, out);
+                path.pop();
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, &mut Vec::new(), &mut out);
+    out
+}
+
+fn element_at<'a>(root: &'a mut XElem, path: &[usize]) -> &'a mut XElem {
+    let mut e = root;
+    for &i in path {
+        let XNode::Elem(child) = &mut e.children[i] else {
+            panic!("path leads through a non-element");
+        };
+        e = child;
+    }
+    e
+}
+
+/// `mutation` applied at `path`, or `None` when it does not apply there (a
+/// CDATA wrap of an element without text).
+fn mutate(root: &XElem, path: &[usize], mutation: Mutation) -> Option<XElem> {
+    let mut root = root.clone();
+    match mutation {
+        Mutation::Duplicate | Mutation::Remove => {
+            let (parent_path, index) = path.split_last_checked()?;
+            let parent = element_at(&mut root, parent_path);
+            if matches!(mutation, Mutation::Duplicate) {
+                let copy = parent.children[*index].clone();
+                parent.children.insert(*index + 1, copy);
+            } else {
+                parent.children.remove(*index);
+            }
+        }
+        Mutation::ForeignAttribute => element_at(&mut root, path)
+            .attrs
+            .push(("zzz".to_owned(), "1".to_owned())),
+        Mutation::NamespacedAttribute => element_at(&mut root, path)
+            .attrs
+            .push(("o:zzz".to_owned(), "1".to_owned())),
+        Mutation::ForeignChild => {
+            element_at(&mut root, path)
+                .children
+                .push(elem("zzz", &[], vec![]))
+        }
+        Mutation::Text => element_at(&mut root, path)
+            .children
+            .push(XNode::Text("t".to_owned())),
+        Mutation::Comment => element_at(&mut root, path)
+            .children
+            .insert(0, XNode::Comment),
+        Mutation::Pi => element_at(&mut root, path).children.insert(0, XNode::Pi),
+        Mutation::CData => {
+            let e = element_at(&mut root, path);
+            match e.children.as_slice() {
+                [XNode::Text(t)] => {
+                    let t = t.clone();
+                    e.children = vec![XNode::CData(t)];
+                }
+                _ => return None,
+            }
+        }
+        Mutation::Prefix => element_at(&mut root, path).form = Form::Prefixed,
+        Mutation::OtherNamespace => element_at(&mut root, path).form = Form::OtherNamespace,
+    }
+    Some(root)
+}
+
+trait SplitLastChecked<T> {
+    fn split_last_checked(&self) -> Option<(&[T], &T)>;
+}
+impl<T> SplitLastChecked<T> for [T] {
+    fn split_last_checked(&self) -> Option<(&[T], &T)> {
+        self.split_last().map(|(last, rest)| (rest, last))
+    }
+}
+
+/// One rendered variant and its class.
+struct NuspecVariant {
+    label: String,
+    bytes: Vec<u8>,
+    class: Class,
+    /// Whether B₀ is known to fail on it, so the test asserts that too (a
+    /// decline that B₀ also fails on is load-bearing; one it succeeds on is an
+    /// over-decline the census counts).
+    b0_fails: bool,
+}
+
+/// The declaration layer: each declaration with the base document.
+fn declaration_variants(root: &XElem) -> Vec<NuspecVariant> {
+    let utf8 = |declaration: &str, bom: bool, class: Class, b0_fails: bool| {
+        let mut bytes = Vec::new();
+        if bom {
+            bytes.extend_from_slice(b"\xef\xbb\xbf");
+        }
+        bytes.extend_from_slice(render_nuspec(declaration, Some(NUSPEC_2013), root).as_bytes());
+        NuspecVariant {
+            label: format!(
+                "declaration {declaration:?}{}",
+                if bom { " with BOM" } else { "" }
+            ),
+            bytes,
+            class,
+            b0_fails,
+        }
+    };
+    let mut variants = vec![
+        utf8("", false, Class::MustCommit, false),
+        utf8("", true, Class::MustCommit, false),
+        utf8(r#"<?xml version="1.0"?>"#, false, Class::MustCommit, false),
+        utf8(r#"<?xml version="1.0"?>"#, true, Class::MustCommit, false),
+        utf8(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            false,
+            Class::MustCommit,
+            false,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            true,
+            Class::MustCommit,
+            false,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            false,
+            Class::MustCommit,
+            false,
+        ),
+        utf8(
+            r#"<?xml version='1.0' encoding='utf-8'?>"#,
+            false,
+            Class::MustCommit,
+            false,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>"#,
+            false,
+            Class::MustCommit,
+            false,
+        ),
+        utf8(
+            r#"<?xml version="1.0" standalone="no"?>"#,
+            false,
+            Class::MustCommit,
+            false,
+        ),
+        // Processing instructions before the root, which `<?xml` also begins.
+        utf8(
+            r#"<?xml-stylesheet type="text/xsl" href="s.xsl"?>"#,
+            false,
+            Class::MustCommit,
+            false,
+        ),
+        utf8(
+            "<?xml version=\"1.0\"?>\n<?xml-stylesheet type=\"text/xsl\" href=\"s.xsl\"?>",
+            false,
+            Class::MustCommit,
+            false,
+        ),
+        utf8(r#"<?xml version="1.1"?>"#, false, Class::MustDecline, true),
+        utf8(
+            r#"<?xml version="1.0" encoding="utf-16"?>"#,
+            false,
+            Class::MustDecline,
+            true,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="nonsense-9"?>"#,
+            false,
+            Class::MustDecline,
+            true,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="utf8"?>"#,
+            false,
+            Class::MustDecline,
+            false,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="us-ascii"?>"#,
+            false,
+            Class::MustDecline,
+            false,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="iso-8859-1"?>"#,
+            false,
+            Class::MustDecline,
+            false,
+        ),
+        utf8(
+            r#"<?xml version="1.0" encoding="utf-8" standalone="maybe"?>"#,
+            false,
+            Class::MustDecline,
+            false,
+        ),
+    ];
+    // The bytes layer: UTF-16 with a byte order mark, as .NET would write it.
+    for (label, declaration) in [
+        ("utf-16le", r#"<?xml version="1.0" encoding="utf-16"?>"#),
+        ("utf-16le, no declaration", ""),
+    ] {
+        let text = render_nuspec(declaration, Some(NUSPEC_2013), root);
+        let mut bytes = vec![0xff, 0xfe];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        variants.push(NuspecVariant {
+            label: format!("bytes {label}"),
+            bytes,
+            class: Class::MustDecline,
+            b0_fails: false,
+        });
+    }
+    variants
+}
+
+/// The namespace layer: each published schema, none, and an unknown one.
+fn namespace_variants(root: &XElem) -> Vec<NuspecVariant> {
+    let mut variants = Vec::new();
+    for year in [
+        "2010/07", "2011/08", "2011/10", "2012/06", "2013/01", "2013/05",
+    ] {
+        let ns = format!("http://schemas.microsoft.com/packaging/{year}/nuspec.xsd");
+        variants.push(NuspecVariant {
+            label: format!("namespace {ns}"),
+            bytes: render_nuspec("", Some(&ns), root).into_bytes(),
+            class: Class::MustCommit,
+            b0_fails: false,
+        });
+    }
+    variants.push(NuspecVariant {
+        label: "no namespace".to_owned(),
+        bytes: render_nuspec("", None, root).into_bytes(),
+        class: Class::MustCommit,
+        b0_fails: false,
+    });
+    variants.push(NuspecVariant {
+        label: "namespace urn:not-nuget".to_owned(),
+        bytes: render_nuspec("", Some("urn:not-nuget"), root).into_bytes(),
+        class: Class::MustDecline,
+        b0_fails: false,
+    });
+    // Prefixed throughout. With the default namespace bound to the same URI
+    // it is the same document; without one, NuGet's reader looks for
+    // `<metadata>`'s children in the (empty) default namespace and finds no
+    // identity, so restore throws.
+    fn prefixed(root: &XElem) -> XElem {
+        let mut root = root.clone();
+        fn prefix(e: &mut XElem) {
+            e.form = Form::Prefixed;
+            for child in &mut e.children {
+                if let XNode::Elem(child) = child {
+                    prefix(child);
+                }
+            }
+        }
+        prefix(&mut root);
+        root
+    }
+    variants.push(NuspecVariant {
+        label: "prefixed throughout, default namespace bound".to_owned(),
+        bytes: render_nuspec("", Some(NUSPEC_2013), &prefixed(root)).into_bytes(),
+        class: Class::MustCommit,
+        b0_fails: false,
+    });
+    let no_default = render_nuspec("", None, &prefixed(root))
+        .replace(r#"xmlns:p="urn:p""#, &format!(r#"xmlns:p="{NUSPEC_2013}""#));
+    variants.push(NuspecVariant {
+        label: "prefixed throughout, no default namespace".to_owned(),
+        bytes: no_default.into_bytes(),
+        class: Class::MustDecline,
+        b0_fails: true,
+    });
+    variants
+}
+
+/// The tree layer: every mutation at every element.
+fn structural_variants(root: &XElem) -> Vec<NuspecVariant> {
+    let mut variants = Vec::new();
+    for path in element_paths(root) {
+        let name = element_at(&mut root.clone(), &path).name;
+        for &mutation in MUTATIONS {
+            let Some(class) = classify(mutation, name) else {
+                continue;
+            };
+            let Some(mutated) = mutate(root, &path, mutation) else {
+                continue;
+            };
+            variants.push(NuspecVariant {
+                label: format!("{mutation:?} at <{name}> {path:?}"),
+                bytes: render_nuspec(r#"<?xml version="1.0"?>"#, Some(NUSPEC_2013), &mutated)
+                    .into_bytes(),
+                class,
+                b0_fails: false,
+            });
+        }
+    }
+    variants
+}
+
+/// Malformed text at the declaration layer declines; it never panics, however
+/// the declaration is cut (an unterminated one holding multi-byte characters
+/// is truncated for the message).
+#[test]
+fn malformed_declarations_decline_without_panicking() {
+    let identity = PackageIdentity::new(
+        PackageId::parse("A").unwrap(),
+        NuGetVersion::parse("1.0.0").unwrap(),
+    );
+    for text in [
+        format!("<?xml {}", "中".repeat(40)),
+        "<?xml version=\"1.0\"".to_owned(),
+        "<?xml version=\"1.0\" encoding=?>".to_owned(),
+        "<?xml version=\"1.0\" version=\"1.0\"?>".to_owned(),
+        "<?xml encoding=\"utf-8\"?>".to_owned(),
+        "<?xml\tversion=\"1.0\"?>".to_owned(),
+    ] {
+        let verdict = nuspec_is_admitted(text.as_bytes(), &identity, &verified());
+        assert!(
+            matches!(verdict, Err(NuspecDecline::Declaration(_))) || text.starts_with("<?xml\t"),
+            "{text:?}: {verdict:?}"
+        );
+        assert!(verdict.is_err(), "{text:?}");
+    }
+}
+
+/// Every layer of a nuspec swept against its stated domain: in-domain
+/// variants commit (B₀ agreeing), out-of-domain ones decline, and the
+/// over-decline census — out-of-domain variants B₀ accepted — is printed.
+#[test]
+fn every_nuspec_layer_is_held_to_its_domain() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let root = committing_nuspec();
+    let mut variants = vec![NuspecVariant {
+        label: "the base".to_owned(),
+        bytes: render_nuspec(r#"<?xml version="1.0"?>"#, Some(NUSPEC_2013), &root).into_bytes(),
+        class: Class::MustCommit,
+        b0_fails: false,
+    }];
+    variants.extend(declaration_variants(&root));
+    variants.extend(namespace_variants(&root));
+    variants.extend(structural_variants(&root));
+
+    let mut failures = Vec::new();
+    let mut over_declines = Vec::new();
+    let mut counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for variant in &variants {
+        let mut a = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        a.raw_nuspec_bytes = Some(variant.bytes.clone());
+        let dir = tempfile::tempdir().expect("temp dir");
+        install(
+            &dir.path().join("gp"),
+            &[
+                a,
+                Pkg::new("B", "1.0.0", vec![]).with_files(&["lib/net8.0/B.dll"]),
+            ],
+        );
+        let text = shape.render(dir.path());
+        let spec = parse_dgspec(&text).expect("the spec parses");
+        let rendered = String::from_utf8_lossy(&variant.bytes).into_owned();
+        let graded = grade_spec(
+            &mut oracle,
+            &text,
+            &spec,
+            &format!("{}\n{rendered}", variant.label),
+        );
+        let entry = counts
+            .entry(match variant.class {
+                Class::MustCommit => "must-commit",
+                Class::MustDecline => "must-decline",
+                Class::Either => "either",
+            })
+            .or_default();
+        entry.0 += 1;
+        entry.1 += usize::from(graded.ours.is_ok());
+        match variant.class {
+            Class::MustCommit if graded.ours.is_err() => failures.push(format!(
+                "{}: in the domain, but B₁ declined: {}\n{rendered}",
+                variant.label,
+                graded.ours.unwrap_err()
+            )),
+            Class::MustDecline if graded.ours.is_ok() => failures.push(format!(
+                "{}: outside the domain, but B₁ committed\n{rendered}",
+                variant.label
+            )),
+            Class::MustDecline if graded.theirs.success => {
+                over_declines.push(variant.label.clone());
+            }
+            _ => {}
+        }
+        if variant.b0_fails && graded.theirs.success {
+            failures.push(format!(
+                "{}: B₀ was expected to fail, but succeeded\n{rendered}",
+                variant.label
+            ));
+        }
+    }
+    eprintln!("nuspec layers: {counts:?} (variants, committed)");
+    eprintln!(
+        "over-declines ({}): {}",
+        over_declines.len(),
+        over_declines.join("; ")
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }

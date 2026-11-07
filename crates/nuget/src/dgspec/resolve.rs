@@ -31,6 +31,17 @@
 //! [`resolve_dgspec`] reads each resolved package's files and commits only for
 //! packages with no assets, or with compile assets for the framework.
 //!
+//! # What a package must be
+//!
+//! Restore reads every version it considers, winners and losers, and throws
+//! or fails on a nuspec or commit marker it rejects. Which inputs it rejects
+//! is not something a list can bound, so B₁ states what it *admits* instead:
+//! [`super::nuspec`] walks every byte, declaration pseudo-attribute, element,
+//! attribute and text node of a nuspec and declines anything outside its
+//! domain, layer by layer, and [`commit_marker_is_admitted`] does the same for
+//! the marker's JSON. [`check_metadata`] holds every version restore may read
+//! ([`ResolvedPackageClosure::examined`]) to both.
+//!
 //! # The whole project, or nothing
 //!
 //! Restore succeeds or fails per *project*, not per framework: one framework
@@ -47,6 +58,7 @@
 //! `dgspec_resolve_diff.rs` derives it from the oracle and fails when the two
 //! differ, so nothing reaches it by hand.
 
+use super::nuspec::{NuspecDecline, nuspec_is_admitted};
 use super::{
     DependencyGraphSpec, DownloadDependency, FrameworkReference, LibraryDependency,
     LibraryDependencyTarget, NuGetLogCode, PackageRangeEntry, PackageSpec, ProjectRestoreMetadata,
@@ -54,10 +66,9 @@ use super::{
     TargetFrameworkInformation, WarningProperties,
 };
 use crate::{
-    AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId,
-    PackageIdentity, PackageNuspec, PackageReadError, ResolveDecline, ResolvedPackageClosure,
-    list_package_files, read_installed_package, resolve_offline_with_fallback,
-    select_compile_assets,
+    AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
+    PackageReadError, ResolveDecline, ResolvedPackageClosure, list_package_files,
+    read_installed_package, resolve_offline_with_fallback, select_compile_assets,
 };
 
 use std::collections::BTreeSet;
@@ -222,13 +233,13 @@ pub enum DgSpecResolveDecline {
         package: Box<PackageIdentity>,
         decline: Option<Box<AssetSelectionDecline>>,
     },
-    /// A package in a framework's closure carries metadata restore validates a
-    /// package by, outside the domain B₁ admits: a package type other than
-    /// `Dependency`, or a minimum client version not shown to be below the
-    /// restoring NuGet's.
+    /// A package restore would read (a winner or a losing version) has a
+    /// nuspec or a commit marker outside the domain B₁ admits (the nuspec's is
+    /// stated in `dgspec::nuspec`; the marker's in `commit_marker_is_admitted`).
     PackageMetadata {
         target_alias: String,
         package: Box<PackageIdentity>,
+        decline: PackageMetadataDecline,
     },
     /// A package in a framework's closure could not be read back for the
     /// compatibility check.
@@ -279,10 +290,10 @@ impl fmt::Display for DgSpecResolveDecline {
             DgSpecResolveDecline::PackageMetadata {
                 target_alias,
                 package,
+                decline,
             } => write!(
                 f,
-                "framework {target_alias:?}: package {} {} has a package type or minimum client \
-                 version restore may refuse",
+                "framework {target_alias:?}: package {} {}: {decline}",
                 package.id, package.version
             ),
             DgSpecResolveDecline::PackageRead {
@@ -308,6 +319,26 @@ impl Error for DgSpecResolveDecline {
             } => Some(decline.as_ref()),
             DgSpecResolveDecline::PackageRead { source, .. } => Some(source.as_ref()),
             _ => None,
+        }
+    }
+}
+
+/// Which of a package's files is outside the domain B₁ admits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageMetadataDecline {
+    Nuspec(NuspecDecline),
+    /// The `.nupkg.metadata` commit marker is outside the vocabulary of
+    /// `commit_marker_is_admitted`.
+    CommitMarker,
+}
+
+impl fmt::Display for PackageMetadataDecline {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PackageMetadataDecline::Nuspec(decline) => decline.fmt(f),
+            PackageMetadataDecline::CommitMarker => {
+                f.write_str("the commit marker is outside the admitted vocabulary")
+            }
         }
     }
 }
@@ -472,7 +503,8 @@ fn check_compatibility(
 }
 
 /// Every version restore may read for `closure` ([`ResolvedPackageClosure::examined`])
-/// has metadata and a commit marker in the domain B₁ admits.
+/// has a nuspec in the domain of [`super::nuspec`] and a commit marker in the
+/// vocabulary of [`commit_marker_is_admitted`].
 ///
 /// Restore validates each version it reads, not only the ones it settles on: a
 /// losing version's minimum client version fails the restore as surely as the
@@ -491,118 +523,29 @@ fn check_metadata(
                 source: Box::new(source),
             }
         })?;
-        if !metadata_is_admitted(&package.nuspec, identity, nuget)
-            || !commit_marker_is_admitted(&package.paths.metadata_path)
-        {
-            return Err(DgSpecResolveDecline::PackageMetadata {
+        let declined = |decline: PackageMetadataDecline| DgSpecResolveDecline::PackageMetadata {
+            target_alias: target_alias.to_owned(),
+            package: Box::new(identity.clone()),
+            decline,
+        };
+        let bytes = std::fs::read(&package.paths.nuspec_path).map_err(|source| {
+            DgSpecResolveDecline::PackageRead {
                 target_alias: target_alias.to_owned(),
                 package: Box::new(identity.clone()),
-            });
+                source: Box::new(PackageReadError::Io {
+                    path: package.paths.nuspec_path.clone(),
+                    source,
+                }),
+            }
+        })?;
+        nuspec_is_admitted(&bytes, identity, nuget)
+            .map_err(|decline| declined(PackageMetadataDecline::Nuspec(decline)))?;
+        if !commit_marker_is_admitted(&package.paths.metadata_path) {
+            return Err(declined(PackageMetadataDecline::CommitMarker));
         }
     }
     Ok(())
 }
-
-/// Whether a package's nuspec metadata is in the closed vocabulary B₁ admits.
-///
-/// Restore validates parts of a package's nuspec even from a warm cache, and
-/// throws or fails on what it rejects; which parts, and how, is not something
-/// a list of known refusals can bound (review found a new one in each of three
-/// rounds). So every element and attribute of `<metadata>` has a verdict here,
-/// and anything without one declines:
-///
-/// - **Descriptive**, never read by restore: [`DESCRIPTIVE_ELEMENTS`].
-/// - **Modelled**: `dependencies` and `references`, which the nuspec reader
-///   parses (a nuspec it cannot parse never reaches here); `id` and `version`,
-///   each present exactly once and naming the package's own folder; `packageTypes`, which must
-///   declare nothing but `Dependency`, without a version (restore refuses
-///   other types in a `PackageReference` project, `DotnetTool` with `NU1212`,
-///   and throws on a malformed version); and the `minClientVersion`
-///   attribute, which must parse without a release label and be below the
-///   restoring NuGet's own version. The comparison is strict because the
-///   verified NuGets are release candidates, which sort below the release of
-///   the same number.
-/// - **Declined** otherwise, and whenever `<metadata>` is not canonical (see
-///   [`PackageNuspec::metadata_is_canonical`]), `contentFiles`, `frameworkAssemblies`,
-///   `frameworkReferences` and `developmentDependency` among them: restore
-///   reads each, and B₁ does not model how.
-fn metadata_is_admitted(
-    nuspec: &PackageNuspec,
-    identity: &PackageIdentity,
-    nuget: &NuGetIdentity,
-) -> bool {
-    let attributes_admitted = nuspec
-        .metadata_attributes
-        .iter()
-        .all(|attribute| attribute == "minClientVersion");
-    let count = |name: &str| {
-        nuspec
-            .metadata_elements
-            .iter()
-            .filter(|element| element.name == name)
-            .count()
-    };
-    let identity_stated = count("id") == 1 && count("version") == 1;
-    let elements_admitted = nuspec.metadata_elements.iter().all(|element| {
-        let text = element.text.as_deref();
-        match element.name.as_str() {
-            "id" => text.is_some_and(|id| id.eq_ignore_ascii_case(identity.id.as_str())),
-            "version" => text
-                .and_then(|version| NuGetVersion::parse(version).ok())
-                .is_some_and(|version| version.eq_strict(&identity.version)),
-            "dependencies" | "references" | "packageTypes" => true,
-            name => DESCRIPTIVE_ELEMENTS.contains(&name),
-        }
-    });
-    let types_admitted = nuspec
-        .package_types
-        .iter()
-        .all(|package_type| package_type.name == "Dependency" && package_type.version.is_none());
-    let client_admitted = match &nuspec.min_client_version {
-        None => true,
-        Some(minimum) => {
-            let release = nuget
-                .as_str()
-                .split(['-', '+'])
-                .next()
-                .and_then(|release| NuGetVersion::parse(release).ok());
-            match (NuGetVersion::parse(minimum), release) {
-                (Ok(minimum), Some(release)) => !minimum.is_prerelease() && minimum < release,
-                _ => false,
-            }
-        }
-    };
-    nuspec.metadata_is_canonical
-        && attributes_admitted
-        && identity_stated
-        && elements_admitted
-        && types_admitted
-        && client_admitted
-}
-
-/// The `<metadata>` elements restore never reads: what a package says about
-/// itself for people and galleries. The differential's generator writes them,
-/// malformed ones included, so the claim is graded.
-const DESCRIPTIVE_ELEMENTS: &[&str] = &[
-    "authors",
-    "owners",
-    "title",
-    "description",
-    "summary",
-    "releaseNotes",
-    "copyright",
-    "language",
-    "tags",
-    "projectUrl",
-    "iconUrl",
-    "icon",
-    "licenseUrl",
-    "license",
-    "readme",
-    "repository",
-    "requireLicenseAcceptance",
-    "serviceable",
-];
 
 /// Whether a package's `.nupkg.metadata` commit marker is one restore reads
 /// without complaint: a JSON object whose `contentHash` is a string (empty is

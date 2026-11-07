@@ -390,14 +390,31 @@ compile until it has one. The verdicts are:
 
 The input domain B₁ claims is therefore narrow by design: an entry-only spec,
 in the shape `restore.rs`'s `GenerateRestoreGraphFile` writes, over a packages
-folder whose every package that restore may read is in a closed vocabulary
-(nuspec metadata, commit marker, files), with config files that only list
-sources. Each layer of text (the spec's strings and structure, nuspec and
-config XML, the commit marker's JSON) is held to a positive domain rather than
-to a list of known refusals, and each has a sweep that grades perturbations of
-a committing input against B₀. Review kept finding malformed inputs no SDK
-writes for ten rounds; the later rounds' findings were all in this text layer,
-and each was closed by narrowing a domain rather than by patching a case.
+folder whose every package that restore may read is in a stated domain
+(`crates/nuget/src/dgspec/nuspec.rs` for the nuspec, `commit_marker_is_admitted`
+for the marker), with config files that only list sources. Each input is held
+to a positive domain rather than to a list of known refusals, and each has a
+sweep that grades perturbations of a committing input against B₀.
+
+Review kept finding malformed inputs no SDK writes for ten rounds. What that
+non-convergence turned out to mean: a positive domain is a closure argument
+only for the *layer* it is stated at, and a nuspec has several — bytes, the
+XML declaration, the document, the element vocabulary, the identity it states.
+The vocabulary had a domain and a single-slot text sweep; the declaration had
+neither, and twenty hand shapes at that layer found three more inputs B₁
+committed and restore threw on (`version="1.1"`, `encoding="utf-16"` over UTF-8
+bytes, an encoding `System.Xml` does not know) in ninety seconds. So the nuspec
+domain is now stated per layer, in one total walk that declines every node it
+does not name, and `every_nuspec_layer_is_held_to_its_domain` sweeps each
+layer in its own terms: every declaration and encoding form, every published
+namespace and the prefixed spellings, and eleven structural mutations
+(duplicate, foreign or namespaced attribute, foreign child, text, comment,
+processing instruction, CDATA, prefix, foreign namespace, removal) at every
+element of a committing nuspec. Each variant is classed by the stated domain
+before any code runs — in-domain variants must commit and B₀ grades the
+commit; out-of-domain ones must decline whatever B₀ does, and the ones B₀
+accepts are printed as the over-decline census; graph-changing ones are graded
+only — so a walker that forgets a node class fails the sweep, not a review.
 
 After resolving, B₁ also applies restore's compatibility check in the
 direction that can only decline (see the findings below).
@@ -451,18 +468,24 @@ The differential, the probes behind it, and review turned up seven things:
   versions included (the oracle's `restoreDgSpec` reports a thrown restore as
   a failure, as `dotnet restore` fails). It throws, too, on content-file rules
   it rejects and on a commit marker without a content hash. Three review
-  rounds each found another such refusal, so B₁ now holds every package to a
-  closed vocabulary rather than to a list of known refusals: every
-  `<metadata>` element and attribute is descriptive (never read by restore),
-  modelled (dependencies, references, an `id` and `version` each stated once
-  and naming the package's folder, `packageTypes` naming only `Dependency` without a
-  version, a `minClientVersion` below the restoring NuGet's version), or a
-  decline, all in the one `<metadata>`, in the default namespace in scope
-  (NuGet reads the first element named `metadata` and looks for the identity
-  in the default namespace, so a nuspec prefixed throughout has none; a hand
-  case grades each namespace form); and the commit marker must be one restore
-  reads, with no key repeated (a Nix-built cache's `{ "contentHash": "" }` is
-  one). It checks every version restore may
+  rounds each found another such refusal, so B₁ holds every package to a
+  stated domain rather than to a list of known refusals. The nuspec's is in
+  `dgspec/nuspec.rs`, layer by layer: UTF-8 bytes; a declaration that is absent
+  or `version="1.0"` with an encoding absent or `utf-8`; a document
+  `roxmltree` parses without a DTD; a `<package>` in a published namespace or
+  none holding one `<metadata>`, both in the default namespace (NuGet's reader
+  looks for `<metadata>`'s children there, so a nuspec prefixed throughout
+  with no default namespace has no identity to it); `<metadata>` children
+  that are each descriptive (never read by restore, so their subtrees may
+  hold anything) or modelled with exactly the attributes and children `pack`
+  writes (an `id` and `version` each stated once and naming the package's
+  folder, `dependencies`, `references`, `packageTypes` naming only
+  `Dependency` without a version), or declined by name; and a
+  `minClientVersion` below the restoring NuGet's version. The commit marker
+  must be one restore reads, with no key repeated (a Nix-built cache's
+  `{ "contentHash": "" }` is one). The vocabulary was measured over the 3,910
+  nuspecs of a package cache before it was written: every one fits it except
+  for the elements it declines by name. It checks every version restore may
   read: each version the walk read, and the installed lower bound of every
   declared dependency and direct requirement, which the closure now reports.
   Checking every installed version instead declined every F# project on a
