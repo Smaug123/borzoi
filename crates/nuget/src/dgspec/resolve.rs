@@ -538,6 +538,15 @@ fn check_compatibility(
             })?;
         let files = list_package_files(&package.paths.package_dir)
             .map_err(|decline| unproven(Some(decline)))?;
+        // Restore parses every folder in a framework position of its content
+        // model and throws on one it cannot parse, whatever else the package
+        // holds.
+        if files.iter().any(|file| {
+            framework_folder(file)
+                .is_some_and(|folder| NuGetFramework::parse_folder(folder).is_err())
+        }) {
+            return Err(unproven(None));
+        }
         // Root-level files are the package's bookkeeping (the nuspec, the
         // commit marker); assets are in folders.
         if !files.iter().any(|file| file.contains('/')) {
@@ -569,6 +578,43 @@ fn check_compatibility(
         }
     }
     Ok(())
+}
+
+/// The segment of a package file's path that restore's content model reads as
+/// a framework, if the file is in a folder that has one: `lib`, `ref`,
+/// `build`, `buildTransitive`, `tools`, `embed` and `analyzers` then
+/// `{framework}`; `contentFiles/{language}/{framework}`; and
+/// `runtimes/{rid}/lib` or `runtimes/{rid}/nativeassets` then `{framework}`;
+/// each followed by at least one more segment. Folder names compare ignoring
+/// case.
+fn framework_folder(file: &str) -> Option<&str> {
+    let segments: Vec<&str> = file.split('/').collect();
+    let named = |index: usize, names: &[&str]| {
+        segments
+            .get(index)
+            .is_some_and(|segment| names.iter().any(|name| segment.eq_ignore_ascii_case(name)))
+    };
+    let at = |index: usize| (segments.len() > index + 1).then(|| segments[index]);
+    if named(
+        0,
+        &[
+            "lib",
+            "ref",
+            "build",
+            "buildTransitive",
+            "tools",
+            "embed",
+            "analyzers",
+        ],
+    ) {
+        at(1)
+    } else if named(0, &["contentFiles"]) {
+        at(2)
+    } else if named(0, &["runtimes"]) && named(2, &["lib", "nativeassets"]) {
+        at(3)
+    } else {
+        None
+    }
 }
 
 /// Every version restore may read for `closure` ([`ResolvedPackageClosure::examined`])
@@ -978,10 +1024,11 @@ fn is_local_absolute_path(source: &str) -> bool {
 /// on everything else the resolver models (a downgrade, a conflict, a missing
 /// package), and the inputs that would make it warn otherwise (a missing lower
 /// bound, a fallback-selected asset, pruning, audit) decline before here. What
-/// is left is `NU1608`: a package in the closure depends on a range that
-/// excludes the version the graph settled on for that dependency, which
-/// happens when a nearer edge (a direct reference, typically) eclipses the
-/// dependency with a version above its range.
+/// is left is `NU1608`: a package in the closure depends on a range whose
+/// upper bound the version the graph settled on for that dependency exceeds,
+/// which happens when a nearer edge (a direct reference, typically) eclipses
+/// the dependency with a higher version. A settled version below a range's
+/// lower bound logs nothing.
 ///
 /// A dependency's own `noWarn` suppresses warnings attributed to it, and B₁
 /// does not model which warnings those are, so a framework with one predicts
@@ -1031,7 +1078,16 @@ fn predicted_warnings(
             else {
                 continue;
             };
-            if !range.satisfies(version) {
+            // Above the upper bound only: a version below the lower bound,
+            // which a nearer edge can also settle on, logs nothing.
+            let above = range.max_version().is_some_and(|max| {
+                if range.is_max_inclusive() {
+                    version > max
+                } else {
+                    version >= max
+                }
+            });
+            if above {
                 codes.insert(outside_constraint);
             }
         }
