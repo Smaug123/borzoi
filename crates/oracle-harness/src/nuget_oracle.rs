@@ -212,7 +212,9 @@ impl Oracle {
         Oracle::spawn_on_with_changes(sdk_dir(), changes)
     }
 
-    fn spawn_on_with_changes(sdk: &Path, changes: &[EnvironmentChange<'_>]) -> Oracle {
+    /// Spawn the oracle on the NuGet of the SDK in `sdk`, with `changes` made
+    /// to the environment it inherits, in order, before NuGet loads.
+    pub fn spawn_on_with_changes(sdk: &Path, changes: &[EnvironmentChange<'_>]) -> Oracle {
         let sdk = sdk.to_str().expect("SDK directory is UTF-8");
         let args: Vec<String> = ["--nuget-from".to_owned(), sdk.to_owned()]
             .into_iter()
