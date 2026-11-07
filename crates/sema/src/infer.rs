@@ -1976,7 +1976,10 @@ impl<'a> Gen<'a> {
     ///   resolver's verdict on each attribute ([`Self::attribute_may_be`]);
     /// - an enclosing module shares its name with any type the file declares;
     /// - the file has no `module` or `namespace` header, or is
-    ///   `namespace global`.
+    ///   `namespace global`;
+    /// - the type is declared twice: another definition in its container has
+    ///   its name and arity (FS0037), or an earlier file published its path
+    ///   (FS0249). FCS rejects the second and keeps one, so neither is read.
     fn project_type_paths(&self, file: &ImplFile) -> HashMap<DefId, (Vec<String>, usize)> {
         let env = self.env;
         let type_names: HashSet<String> = file
@@ -2082,8 +2085,56 @@ impl<'a> Gen<'a> {
                 continue;
             }
             let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+            if self.preceding.declares_type(&path, arity) {
+                continue;
+            }
             out.insert(def, (path, arity));
         }
+        // Every definition of a container's name and arity, augmentations
+        // aside (they extend, not redeclare).
+        let mut declared: HashMap<(TextRange, String, usize), usize> = HashMap::new();
+        for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+            if matches!(defn.repr(), Some(TypeDefnRepr::ObjectModel(om)) if om.is_augmentation()) {
+                continue;
+            }
+            let Some(container) = defn.syntax().ancestors().skip(1).find(|a| {
+                matches!(
+                    a.kind(),
+                    SyntaxKind::NESTED_MODULE_DECL | SyntaxKind::MODULE_OR_NAMESPACE
+                )
+            }) else {
+                continue;
+            };
+            let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+            for name in defn
+                .long_id()
+                .into_iter()
+                .flat_map(|li| li.idents().collect::<Vec<_>>())
+            {
+                *declared
+                    .entry((container.text_range(), ident_text(&name), arity))
+                    .or_default() += 1;
+            }
+        }
+        out.retain(|def, (_, arity)| {
+            let d = self.resolved.def(*def);
+            let Some(container) = file
+                .syntax()
+                .covering_element(d.range)
+                .ancestors()
+                .find(|a| {
+                    matches!(
+                        a.kind(),
+                        SyntaxKind::NESTED_MODULE_DECL | SyntaxKind::MODULE_OR_NAMESPACE
+                    )
+                })
+            else {
+                return false;
+            };
+            declared
+                .get(&(container.text_range(), d.name.to_string(), *arity))
+                .is_none_or(|&n| n == 1)
+        });
         out
     }
 

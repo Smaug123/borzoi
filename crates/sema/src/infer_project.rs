@@ -125,6 +125,14 @@ impl PrecedingTypes {
         self.types.get(&(file, index))
     }
 
+    /// Whether an earlier file published a type at `path` with `arity`
+    /// parameters.
+    pub(crate) fn declares_type(&self, path: &[String], arity: usize) -> bool {
+        self.types
+            .values()
+            .any(|(p, a)| *a == arity && p.as_slice() == path)
+    }
+
     /// The case of an earlier file's union that the item `id` is, as that
     /// file's inference typed it; `None` for anything else, and for a case
     /// that file would not type either.

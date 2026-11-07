@@ -1091,3 +1091,34 @@ fn an_ill_typed_match_over_a_project_union_keeps_what_fcs_keeps() {
         }
     }
 }
+
+/// A union FCS rejects as a duplicate (FS0037 in one module, FS0249 across
+/// files) and recovers by keeping one declaration: no case of either is
+/// read, before the second declaration or after it.
+#[test]
+fn a_union_declared_twice_types_no_case_of_either() {
+    let mut tally = Tally::default();
+    let in_file = "module M\n\
+                   type U = UA of int | UB\n\
+                   let f () = UA 1\n\
+                   type U = UC of string\n\
+                   let g () = UC \"s\"\n\
+                   let h u = match u with UA n -> n | _ -> 0\n";
+    check(
+        &[("Use.fs".to_string(), in_file.to_string())],
+        &[],
+        &mut tally,
+    );
+    let across = vec![
+        (
+            "A.fs".to_string(),
+            "module M\ntype U = UA of int | UB\n".to_string(),
+        ),
+        (
+            "B.fs".to_string(),
+            "module M\ntype U = UC of string\nlet g () = UC \"s\"\nlet f () = UA 1\n".to_string(),
+        ),
+    ];
+    check(&across, &[], &mut tally);
+    assert_clean(&tally, 0);
+}
