@@ -485,8 +485,10 @@ The differential, the probes behind it, and review turned up seven things:
   keeps padded, and so finds no package for; the reader now refuses one.
   Review found the rest of this class (an XML comment read as an element's
   text, a whitespace-only config key, a symlinked version folder the version
-  listing skipped, two aliases naming one framework). Each is now declined,
-  except the symlinked folder, which the listing now follows, as restore does.
+  listing skipped, a symlinked asset folder the file listing did not descend
+  into, two aliases naming one framework). Each is now declined, except the
+  symlinked folders, which the listings now follow, as restore does (a folder
+  that links back into itself declines).
   Review also found that a relative `nuGetLockFilePath` is resolved against
   the project; B₁ declines one.
 - **The packages folder needs no sources.** A source folder that does not

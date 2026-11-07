@@ -986,6 +986,36 @@ fn a_symlinked_version_folders_metadata_is_validated() {
     );
 }
 
+/// A package's symlinked `lib` folder is followed, by restore and by B₁, so
+/// its assets count: `net9.0` assets fail a `net8.0` project (`NU1202`) and B₁
+/// declines; `net8.0` assets commit.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_asset_folder_is_followed() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    for (tfm, restores) in [("net9.0", false), ("net8.0", true)] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        install(&dir.path().join("gp"), &[Pkg::new("A", "1.0.0", vec![])]);
+        let assets = dir.path().join("assets");
+        fs::create_dir_all(assets.join(tfm)).unwrap();
+        fs::write(assets.join(tfm).join("A.dll"), b"").unwrap();
+        std::os::unix::fs::symlink(&assets, dir.path().join("gp/a/1.0.0/lib")).unwrap();
+        let text = shape.render(dir.path());
+        let spec = parse_dgspec(&text).unwrap();
+        let graded = grade_spec(&mut oracle, &text, &spec, tfm);
+        assert_eq!(
+            graded.theirs.success, restores,
+            "{tfm}: {:?}",
+            graded.theirs
+        );
+        assert_eq!(graded.ours.is_ok(), restores, "{tfm}: {:?}", graded.ours);
+    }
+}
+
 /// Restore validates every version it reads, not only the winners: a losing
 /// version's minimum client version fails the restore even though another
 /// version of the package wins.
