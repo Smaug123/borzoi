@@ -230,6 +230,8 @@ struct Framework {
     framework_reference: bool,
     /// `downloadDependencies`: `(id, range)`.
     downloads: Vec<(&'static str, &'static str)>,
+    /// `packagesToPrune`: `(id, range)`.
+    prune: Vec<(&'static str, &'static str)>,
 }
 
 impl Framework {
@@ -240,6 +242,7 @@ impl Framework {
             asset_target_fallback: true,
             framework_reference: false,
             downloads: Vec::new(),
+            prune: Vec::new(),
         }
     }
 }
@@ -384,6 +387,14 @@ impl Shape {
                         "net461", "net462", "net47", "net471", "net472", "net48", "net481"
                     ]);
                     value["assetTargetFallback"] = json!(true);
+                }
+                if !framework.prune.is_empty() {
+                    value["packagesToPrune"] = framework
+                        .prune
+                        .iter()
+                        .map(|(id, range)| (id.to_string(), json!(range)))
+                        .collect::<Map<_, _>>()
+                        .into();
                 }
                 if !framework.downloads.is_empty() {
                     value["downloadDependencies"] = framework
@@ -1442,7 +1453,7 @@ fn every_unmodelled_field_declines_by_name() {
         }),
         (UnmodelledField::PackagesToPrune, |spec, _| {
             the_project(spec)["frameworks"]["net8.0"]["packagesToPrune"] =
-                json!({"System.Text.Json": "(,10.0.32767]"});
+                json!({"System.Text.Json": "[10.0.0, )"});
         }),
         (UnmodelledField::PackageTargetFallback, |spec, _| {
             the_project(spec)["frameworks"]["net8.0"]["assetTargetFallback"] = json!(false);
@@ -1714,6 +1725,18 @@ fn generate(rng: &mut SplitMix64) -> Generated {
             framework.asset_target_fallback = rng.below(4) != 0;
             framework.framework_reference = alias != "net472" && rng.below(2) == 0;
             if rng.below(3) == 0 {
+                framework.prune = vec![(
+                    *rng.pick(IDS),
+                    *rng.pick(&[
+                        "(, 1.0.0]",
+                        "(, 2.0.0]",
+                        "[2.0.0]",
+                        "(, 0.5.0]",
+                        "(, 32767.0.0]",
+                    ]),
+                )];
+            }
+            if rng.below(3) == 0 {
                 framework.downloads = vec![*rng.pick(&[
                     ("Download", "[1.0.0, 1.0.0]"),
                     ("Download", "[1.0.0, 1.0.0]"),
@@ -1795,6 +1818,9 @@ fn features(
         }
         if !framework.downloads.is_empty() {
             features.push("download".to_owned());
+        }
+        if !framework.prune.is_empty() {
+            features.push("prune".to_owned());
         }
         for dep in &framework.deps {
             if dep.include.is_some() {
@@ -1897,6 +1923,7 @@ fn required_features() -> BTreeSet<String> {
         "predicted-warnings=true",
         "dependency-no-warn",
         "download",
+        "prune",
         "no-warn=true",
         "no-warn=false",
         "sdk-analysis-level=None",
@@ -3407,5 +3434,136 @@ fn content_files_rules_are_held_to_what_restore_reads() {
         package.metadata = vec![Box::leak(element.into_boxed_str())];
         let graded = grade(&mut oracle, &[package], &shape);
         assert_eq!(graded.ours.is_ok(), *commits, "{rule}: {:?}", graded.ours);
+    }
+}
+
+/// Restore prunes a transitive dependency on a listed id when the dependency's
+/// lower bound is at or below the prune range's upper bound, before walking,
+/// so its subtree goes with it and another path can still bring the package
+/// in; the prune range's lower bound and the inclusivity of its upper bound
+/// play no part, and a direct reference is never pruned. Each case commits
+/// and agrees with B₀ (which [`grade`] checks); the expected closures pin the
+/// rule itself.
+#[test]
+fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
+    let mut oracle = Oracle::spawn();
+    // A -> B [1.0.0, ), C -> B [3.0.0, ), each B -> D, E -> B [1.0.0, 1.5.0),
+    // F -> B [1.0.0, 2.0.0].
+    let packages = vec![
+        Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])]),
+        Pkg::new("C", "1.0.0", vec![group(None, &[("B", "[3.0.0, )")])]),
+        Pkg::new("B", "1.0.0", vec![group(None, &[("D", "[1.0.0, )")])]),
+        Pkg::new("B", "2.0.0", vec![group(None, &[("D", "[1.0.0, )")])]),
+        Pkg::new("B", "3.0.0", vec![group(None, &[("D", "[1.0.0, )")])]),
+        Pkg::new("D", "1.0.0", vec![]),
+        Pkg::new("E", "1.0.0", vec![group(None, &[("B", "[1.0.0, 1.5.0)")])]),
+        Pkg::new("F", "1.0.0", vec![group(None, &[("B", "[1.0.0, 2.0.0]")])]),
+    ];
+    type Case = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+        &'static [&'static str],
+    );
+    let a = &[("A", "[1.0.0, )")][..];
+    let a_and_c = &[("A", "[1.0.0, )"), ("C", "[1.0.0, )")][..];
+    let cases: &[Case] = &[
+        ("B up to its edge's lower bound", a, "(, 2.0.0]", &["A"]),
+        (
+            "B below its edge's lower bound",
+            a,
+            "(, 0.5.0]",
+            &["A", "B", "D"],
+        ),
+        (
+            "B below another path's bound",
+            &[("C", "[1.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "C", "D"],
+        ),
+        (
+            "B on one path of two",
+            a_and_c,
+            "(, 2.0.0]",
+            &["A", "B", "C", "D"],
+        ),
+        ("B on every path", a_and_c, "(, 32767.0.0]", &["A", "C"]),
+        (
+            "a direct B",
+            &[("B", "[1.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "D"],
+        ),
+        (
+            "a direct B above the bound",
+            &[("B", "[3.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "D"],
+        ),
+        ("an exact range at the edge's bound", a, "[1.0.0]", &["A"]),
+        (
+            "a range whose lower bound is above the edge's",
+            a,
+            "[2.0.0]",
+            &["A"],
+        ),
+        (
+            "an exclusive upper bound at the edge's bound",
+            a,
+            "(, 1.0.0)",
+            &["A"],
+        ),
+        ("an exclusive lower bound", a, "(1.0.0, 2.0.0]", &["A"]),
+        ("a bounded edge", &[("E", "[1.0.0, )")], "(, 1.2.0]", &["E"]),
+        (
+            "an edge bounded above the prune bound",
+            &[("F", "[1.0.0, )")],
+            "(, 1.5.0]",
+            &["F"],
+        ),
+    ];
+    for (label, direct, prune, expected) in cases {
+        let deps: Vec<Dep> = direct
+            .iter()
+            .map(|(id, range)| Dep::new(id, range))
+            .collect();
+        let mut framework = Framework::new("net8.0", deps);
+        framework.prune = vec![("B", prune)];
+        let graded = grade(&mut oracle, &packages, &Shape::new(vec![framework]));
+        let ids: Vec<String> = committed(&graded)["net8.0"]
+            .iter()
+            .map(|(id, _)| id.to_ascii_uppercase())
+            .collect();
+        assert_eq!(ids, *expected, "pruning {label}");
+    }
+
+    // The prune list matches ids ignoring case, and pruning D leaves B.
+    for (id, expected) in [("b", &["A"][..]), ("D", &["A", "B"][..])] {
+        let mut framework = Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]);
+        framework.prune = vec![(id, "(, 2.0.0]")];
+        let graded = grade(&mut oracle, &packages, &Shape::new(vec![framework]));
+        let ids: Vec<String> = committed(&graded)["net8.0"]
+            .iter()
+            .map(|(id, _)| id.to_ascii_uppercase())
+            .collect();
+        assert_eq!(ids, expected, "pruning {id}");
+    }
+
+    // On `net10.0` a direct reference the list covers is kept with a warning
+    // (`NU1510`), which a promoting policy turns into a failed restore.
+    let mut framework = Framework::new("net10.0", vec![Dep::new("B", "[1.0.0, )")]);
+    framework.prune = vec![("B", "(, 2.0.0]")];
+    let mut shape = Shape::new(vec![framework]);
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert_eq!(graded.theirs.codes, ["NU1510"]);
+    assert!(graded.ours.is_ok(), "{:?}", graded.ours);
+    shape.all_warnings_as_errors = true;
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success);
+    match graded.ours {
+        Err(DgSpecResolveDecline::PromotedWarning {
+            code: Some(code), ..
+        }) => assert_eq!(code.as_str(), "NU1510"),
+        other => panic!("B₁ must decline on the promoted NU1510, not {other:?}"),
     }
 }

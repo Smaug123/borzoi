@@ -1,5 +1,5 @@
 //! B₁ of `docs/nuget-dgspec-boundary-plan.md`: the offline resolver
-//! ([`crate::resolve_offline_with_fallback`]) consuming a parsed
+//! ([`crate::resolve_offline_in`]) consuming a parsed
 //! dependency-graph spec.
 //!
 //! [`resolve_dgspec`] commits only where NuGet's restore over the same spec
@@ -15,7 +15,7 @@
 //! field added to the model does not compile until it has been put in one:
 //!
 //! - **Modelled.** Direct dependencies; each framework's asset-target fallback
-//!   list; the packages folder the resolver reads.
+//!   list and packages to prune; the packages folder the resolver reads.
 //! - **Inert.** Fields that cannot move the closure, or turn a success into a
 //!   failure, of a restore the resolver commits to. Each one's reason is
 //!   stated at the point it is discarded. The reasons the differential cannot
@@ -68,8 +68,8 @@ use super::{
 use crate::assets::content_model_framework;
 use crate::{
     AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
-    PackagePaths, PackageReadError, ResolveDecline, ResolvedPackageClosure, VersionRange,
-    list_package_files, read_installed_package, resolve_offline_with_fallback,
+    PackagePaths, PackageReadError, ResolveDecline, ResolvedPackageClosure, TargetContext,
+    VersionRange, list_package_files, read_installed_package, resolve_offline_in,
     select_compile_assets,
 };
 
@@ -151,7 +151,8 @@ pub enum UnmodelledField {
     CentralPackageManagement,
     /// A framework's project references (stage 6).
     ProjectReferences,
-    /// A framework's `packagesToPrune` (stage 5).
+    /// A framework's `packagesToPrune` entry without an upper bound, or a
+    /// floating one, whose pruning is not modelled.
     PackagesToPrune,
     /// An `imports` list that is not an asset-target fallback (the legacy
     /// `PackageTargetFallback`).
@@ -441,15 +442,24 @@ pub fn resolve_dgspec(
                     DirectPackageRequirement::new(dependency.id.clone(), dependency.range.clone())
                 })
                 .collect();
-            let fallback: &[NuGetFramework] = if framework.asset_target_fallback {
-                &framework.imports
-            } else {
-                &[]
+            let context = TargetContext {
+                asset_target_fallback: if framework.asset_target_fallback {
+                    framework.imports.clone()
+                } else {
+                    Vec::new()
+                },
+                prune: framework
+                    .packages_to_prune
+                    .iter()
+                    .filter_map(|entry| {
+                        Some((entry.id.clone(), entry.range.max_version()?.clone()))
+                    })
+                    .collect(),
             };
-            let closure = resolve_offline_with_fallback(
+            let closure = resolve_offline_in(
                 Path::new(packages_path),
                 &framework.framework,
-                fallback,
+                &context,
                 &direct,
             )
             .map_err(|decline| DgSpecResolveDecline::Resolve {
@@ -479,13 +489,13 @@ pub fn resolve_dgspec(
                 Path::new(packages_path),
                 &framework.target_alias,
                 &framework.framework,
-                fallback,
+                &context.asset_target_fallback,
                 &closure,
             )?;
             let warnings = predicted_warnings(
                 Path::new(packages_path),
                 framework,
-                fallback,
+                &context,
                 &package_spec.restore.warning_properties,
                 &closure,
             )?;
@@ -986,9 +996,13 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
                 private_assets: _,
             } = reference;
         }
+        // Restore prunes by each entry's upper bound (see `TargetContext`); an
+        // entry without one, or a floating one, is not modelled.
         for entry in packages_to_prune {
-            let PackageRangeEntry { id: _, range: _ } = entry;
-            decline(UnmodelledField::PackagesToPrune);
+            let PackageRangeEntry { id: _, range } = entry;
+            if range.max_version().is_none() || range.is_floating() {
+                decline(UnmodelledField::PackagesToPrune);
+            }
         }
     }
 
@@ -1092,7 +1106,8 @@ fn is_local_absolute_path(source: &str) -> bool {
 /// upper bound the version the graph settled on for that dependency exceeds,
 /// which happens when a nearer edge (a direct reference, typically) eclipses
 /// the dependency with a higher version. A settled version below a range's
-/// lower bound logs nothing.
+/// lower bound logs nothing. And on `net10.0` there is `NU1510`: a direct
+/// reference the prune list covers, which restore keeps but warns about.
 ///
 /// A dependency's own `noWarn` suppresses warnings attributed to it, and B₁
 /// does not model which warnings those are, so a framework with one predicts
@@ -1101,7 +1116,7 @@ fn is_local_absolute_path(source: &str) -> bool {
 fn predicted_warnings(
     packages: &Path,
     framework: &TargetFrameworkInformation,
-    fallback: &[NuGetFramework],
+    context: &TargetContext,
     policy: &WarningProperties,
     closure: &ResolvedPackageClosure,
 ) -> Result<Option<BTreeSet<NuGetLogCode>>, DgSpecResolveDecline> {
@@ -1130,13 +1145,7 @@ fn predicted_warnings(
                     source: Box::new(source),
                 }
             })?;
-        let Some(group) = package
-            .nuspec
-            .select_dependency_group_with_fallback(&framework.framework, fallback)
-        else {
-            continue;
-        };
-        for dependency in &group.dependencies {
+        for dependency in &context.dependencies(&package.nuspec, &framework.framework) {
             let (Some(range), Some(version)) =
                 (dependency.version_range.as_ref(), selected(&dependency.id))
             else {
@@ -1155,6 +1164,33 @@ fn predicted_warnings(
                 codes.insert(outside_constraint);
             }
         }
+    }
+    // On `net10.0`, restore warns about each direct reference the prune list
+    // covers (which it keeps). No earlier framework does; a later one is not
+    // graded, so it predicts nothing exact.
+    let core_major = (framework.framework.framework() == ".NETCoreApp")
+        .then(|| {
+            framework
+                .framework
+                .version_string()
+                .split('.')
+                .next()
+                .and_then(|major| major.parse::<u32>().ok())
+        })
+        .flatten();
+    match core_major {
+        Some(major) if major > 10 => return Ok(None),
+        Some(10) => {
+            let not_pruned = NuGetLogCode::parse("NU1510").expect("NU1510 is a NuGet log code");
+            if framework
+                .dependencies
+                .iter()
+                .any(|dependency| context.covers(&dependency.id, &dependency.range))
+            {
+                codes.insert(not_pruned);
+            }
+        }
+        _ => {}
     }
     codes.retain(|code| !policy.no_warn.contains(code));
     Ok(Some(codes))

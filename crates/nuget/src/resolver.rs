@@ -404,27 +404,89 @@ pub fn resolve_offline(
     target_framework: &NuGetFramework,
     direct: &[DirectPackageRequirement],
 ) -> Result<ResolvedPackageClosure, ResolveDecline> {
-    resolve_offline_with_fallback(global_packages_root, target_framework, &[], direct)
+    resolve_offline_in(
+        global_packages_root,
+        target_framework,
+        &TargetContext::default(),
+        direct,
+    )
 }
 
-/// [`resolve_offline`] for a project whose target framework carries an
-/// asset-target fallback list (the SDK's `AssetTargetFallback`, `net461` to
-/// `net481` on every modern project).
-///
-/// The list bears on dependency-group selection: a package with no group the
-/// project's own framework can consume contributes the dependencies of the
-/// nearest group for the first fallback framework that has one. That is
-/// NuGet's `NuGetFrameworkUtility.GetNearest` over an
-/// `AssetTargetFallbackFramework`, which restore uses to pick a package's
-/// dependencies. A package with a group for the project's own framework never
-/// looks at the fallbacks, even when that group is empty.
-pub fn resolve_offline_with_fallback(
+/// What a project's target framework carries, beyond its direct requirements,
+/// that decides which dependencies each package contributes.
+#[derive(Debug, Clone, Default)]
+pub struct TargetContext {
+    /// The asset-target fallback list (the SDK's `AssetTargetFallback`,
+    /// `net461` to `net481` on every modern project). A package with no
+    /// dependency group the project's own framework can consume contributes the
+    /// nearest group for the first fallback framework that has one: NuGet's
+    /// `NuGetFrameworkUtility.GetNearest` over an `AssetTargetFallbackFramework`.
+    /// A package with a group for the framework itself never looks at the
+    /// fallbacks, even when that group is empty.
+    pub asset_target_fallback: Vec<NuGetFramework>,
+    /// The packages to prune (the spec's `packagesToPrune`), each as its id and
+    /// the upper bound of its range. Restore drops a dependency a package
+    /// declares on a pruned id when the dependency's lower bound is at or below
+    /// that upper bound, before it walks the graph; the prune range's lower bound
+    /// and the inclusivity of its upper bound play no part. A project's direct
+    /// references are never pruned. This is graded against the default restore
+    /// engine only (`dgspec_resolve_diff.rs`), the one a dependency-graph spec
+    /// can select.
+    pub prune: Vec<(PackageId, NuGetVersion)>,
+}
+
+impl TargetContext {
+    /// The dependencies a package contributes for `framework`: its selected
+    /// dependency group, through the fallback list, less the pruned ones.
+    pub fn dependencies(
+        &self,
+        nuspec: &crate::PackageNuspec,
+        framework: &NuGetFramework,
+    ) -> Vec<crate::PackageDependency> {
+        nuspec
+            .select_dependency_group_with_fallback(framework, &self.asset_target_fallback)
+            .map(|group| {
+                group
+                    .dependencies
+                    .iter()
+                    .filter(|dependency| !self.prunes(dependency))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether restore prunes `dependency`. One without a lower bound is never
+    /// pruned here, so the resolver's own decline on it stands.
+    fn prunes(&self, dependency: &crate::PackageDependency) -> bool {
+        dependency
+            .version_range
+            .as_ref()
+            .is_some_and(|range| self.covers(&dependency.id, range))
+    }
+
+    /// Whether the prune list covers a dependency on `id` with `range`: an
+    /// entry for `id` whose upper bound is at or above the range's lower bound.
+    /// Restore prunes a transitive dependency it covers, and warns (`NU1510`,
+    /// on `net10.0`) about a direct one, which it keeps.
+    pub fn covers(&self, id: &PackageId, range: &VersionRange) -> bool {
+        let Some(minimum) = range.min_version() else {
+            return false;
+        };
+        self.prune
+            .iter()
+            .any(|(pruned, maximum)| pruned == id && minimum <= maximum)
+    }
+}
+
+/// [`resolve_offline`] for a project whose target framework carries `context`.
+pub fn resolve_offline_in(
     global_packages_root: &Path,
     target_framework: &NuGetFramework,
-    asset_target_fallback: &[NuGetFramework],
+    context: &TargetContext,
     direct: &[DirectPackageRequirement],
 ) -> Result<ResolvedPackageClosure, ResolveDecline> {
-    for framework in std::iter::once(target_framework).chain(asset_target_fallback) {
+    for framework in std::iter::once(target_framework).chain(&context.asset_target_fallback) {
         if !framework.is_resolver_project_framework() {
             return Err(ResolveDecline::UnsupportedProjectFramework {
                 framework: framework.clone(),
@@ -432,11 +494,7 @@ pub fn resolve_offline_with_fallback(
         }
     }
 
-    let mut cache = PackageCache::new(
-        global_packages_root,
-        target_framework,
-        asset_target_fallback,
-    );
+    let mut cache = PackageCache::new(global_packages_root, target_framework, context);
     let mut selected: BTreeMap<PackageId, NuGetVersion> = BTreeMap::new();
 
     for _ in 0..MAX_ROUNDS {
@@ -1390,9 +1448,8 @@ struct CachedPackage {
 struct PackageCache<'a> {
     root: &'a Path,
     framework: &'a NuGetFramework,
-    /// Consulted in order, and only when no dependency group suits
-    /// [`Self::framework`]; see [`resolve_offline_with_fallback`].
-    asset_target_fallback: &'a [NuGetFramework],
+    /// Which dependencies each package contributes; see [`TargetContext`].
+    context: &'a TargetContext,
     packages: BTreeMap<(PackageId, String), Result<CachedPackage, PackageReadError>>,
 }
 
@@ -1400,12 +1457,12 @@ impl<'a> PackageCache<'a> {
     fn new(
         root: &'a Path,
         framework: &'a NuGetFramework,
-        asset_target_fallback: &'a [NuGetFramework],
+        context: &'a TargetContext,
     ) -> PackageCache<'a> {
         PackageCache {
             root,
             framework,
-            asset_target_fallback,
+            context,
             packages: BTreeMap::new(),
         }
     }
@@ -1417,14 +1474,7 @@ impl<'a> PackageCache<'a> {
         let key = (identity.id.clone(), identity.version_folder_name());
         if !self.packages.contains_key(&key) {
             let entry = read_installed_package(self.root, identity.clone()).map(|package| {
-                let dependencies = package
-                    .nuspec
-                    .select_dependency_group_with_fallback(
-                        self.framework,
-                        self.asset_target_fallback,
-                    )
-                    .map(|group| group.dependencies.clone())
-                    .unwrap_or_default();
+                let dependencies = self.context.dependencies(&package.nuspec, self.framework);
                 CachedPackage {
                     package,
                     dependencies,
