@@ -161,6 +161,13 @@ const RECORDS: &[Record] = &[
         &[(".``my field``", true), (".``type``", true)],
     ),
     r(
+        "duplicateField",
+        // FCS rejects the second `A` and keeps the first.
+        "type DF = { A: int; A: string; Other: bool }\n",
+        "DF",
+        &[(".A", false), (".Other", true)],
+    ),
+    r(
         "classProperty",
         "type C() =\n    member _.Prop = 1\n",
         "C",
@@ -395,4 +402,33 @@ fn a_private_record_representation_is_read_only_in_its_module() {
         "a field committed where FCS rejects it: {tally:?}"
     );
     assert_clean(&tally, 1);
+}
+
+/// A type FCS rejects as a duplicate (FS0037, or FS0249 across files) and
+/// recovers by keeping one declaration: a use between or after the two
+/// reads neither, a field access or a case alike.
+#[test]
+fn a_type_declared_twice_types_nothing_of_either() {
+    let mut tally = Tally::default();
+    for src in [
+        "type R = { A: int }\nlet f (r: R) = r.A\ntype R = { A: string }\nlet g (r: R) = r.A\n",
+        "type U = UA of int | UB\nlet f () = UA 1\ntype U = UC of string\nlet g () = UC \"s\"\nlet h u = match u with UA n -> n | _ -> 0\n",
+        "type R = { A: int }\ntype U = W of R\nlet f w = match w with W r -> r.A\ntype R = { A: string }\n",
+    ] {
+        let sources = vec![("Use.fs".to_string(), format!("module M\n{src}"))];
+        check(&sources, &[], &mut tally);
+    }
+    // Across files, the later file redeclaring the earlier one's type.
+    let sources = vec![
+        (
+            "A.fs".to_string(),
+            "module M\ntype R = { A: int }\nlet r0 : R = failwith \"r\"\n".to_string(),
+        ),
+        (
+            "B.fs".to_string(),
+            "module M\ntype R = { A: string }\nlet f () = r0.A\n".to_string(),
+        ),
+    ];
+    check(&sources, &[], &mut tally);
+    assert_clean(&tally, 0);
 }
