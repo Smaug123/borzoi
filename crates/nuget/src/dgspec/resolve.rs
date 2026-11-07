@@ -145,10 +145,6 @@ pub enum UnmodelledField {
     Audit,
     /// `usingMicrosoftNETSdk` is false.
     NotMicrosoftNetSdk,
-    /// A warning policy that could turn a warning restore emits on a committed
-    /// closure into an error: `allWarningsAsErrors`, or a `warnAsError` code
-    /// other than `NU1605` (which the resolver declines on as a failure).
-    WarningPolicy,
     /// Central package management (stage 7a).
     CentralPackageManagement,
     /// A framework's project references (stage 6).
@@ -191,7 +187,6 @@ impl UnmodelledField {
             UnmodelledField::LockFile => "lock-file",
             UnmodelledField::Audit => "audit",
             UnmodelledField::NotMicrosoftNetSdk => "not-microsoft-net-sdk",
-            UnmodelledField::WarningPolicy => "warning-policy",
             UnmodelledField::CentralPackageManagement => "central-package-management",
             UnmodelledField::ProjectReferences => "project-references",
             UnmodelledField::PackagesToPrune => "packages-to-prune",
@@ -224,6 +219,14 @@ pub enum DgSpecResolveDecline {
     /// A package in a framework's closure has the project's own name, which
     /// NuGet's graph has as its root.
     PackageNamedLikeProject { target_alias: String, id: PackageId },
+    /// Restore would log a warning for a framework that the project's warning
+    /// policy promotes to an error, so it fails; `code` is `None` when B₁
+    /// cannot predict the framework's warnings exactly and the policy promotes
+    /// any.
+    PromotedWarning {
+        target_alias: String,
+        code: Option<NuGetLogCode>,
+    },
     /// A package in a framework's closure carries assets, but none the
     /// framework is shown to compile against, so restore's compatibility
     /// check (`NU1202`) may fail it. `decline` says why compile-asset
@@ -271,6 +274,18 @@ impl fmt::Display for DgSpecResolveDecline {
                 f,
                 "framework {target_alias:?}: package {id} has the project's own name"
             ),
+            DgSpecResolveDecline::PromotedWarning { target_alias, code } => match code {
+                Some(code) => write!(
+                    f,
+                    "framework {target_alias:?}: restore warns {code}, which the warning policy \
+                     makes an error"
+                ),
+                None => write!(
+                    f,
+                    "framework {target_alias:?}: the warning policy promotes warnings this \
+                     framework's may include"
+                ),
+            },
             DgSpecResolveDecline::CompatibilityUnproven {
                 target_alias,
                 package,
@@ -350,6 +365,10 @@ pub struct ResolvedFramework {
     pub target_alias: String,
     pub framework: NuGetFramework,
     pub closure: ResolvedPackageClosure,
+    /// The warning codes restore logs for this framework's graph, after the
+    /// project's `noWarn`; `None` when B₁ cannot say exactly, which is when a
+    /// dependency carries its own `noWarn`.
+    pub warnings: Option<BTreeSet<NuGetLogCode>>,
 }
 
 /// Resolve every framework of the project whose unique name is `project`, as
@@ -445,26 +464,57 @@ pub fn resolve_dgspec(
                 &framework.framework,
                 &closure,
             )?;
+            let warnings = predicted_warnings(
+                Path::new(packages_path),
+                framework,
+                fallback,
+                &package_spec.restore.warning_properties,
+                &closure,
+            )?;
+            let policy = &package_spec.restore.warning_properties;
+            match &warnings {
+                Some(codes) => {
+                    if let Some(code) = codes.iter().find(|code| fails_restore(policy, code)) {
+                        return Err(DgSpecResolveDecline::PromotedWarning {
+                            target_alias: framework.target_alias.clone(),
+                            code: Some(*code),
+                        });
+                    }
+                }
+                None if promotes_anything(policy) => {
+                    return Err(DgSpecResolveDecline::PromotedWarning {
+                        target_alias: framework.target_alias.clone(),
+                        code: None,
+                    });
+                }
+                None => {}
+            }
             Ok(ResolvedFramework {
                 target_alias: framework.target_alias.clone(),
                 framework: framework.framework.clone(),
                 closure,
+                warnings,
             })
         })
         .collect()
 }
 
 /// Restore's compatibility check, in the direction that can only decline:
-/// every package of `closure` either carries no assets at all, or has compile
-/// assets for `framework`.
+/// every package of `closure` either has compile assets for `framework`, or
+/// has no file restore could select for a framework at all.
 ///
-/// Restore fails (`NU1202`) on a package with `lib/` or `ref/` assets of which
-/// none suits the framework, and that holds even where the asset-target
-/// fallback list would admit them. Compile assets for the framework are among
-/// the assets that make a package compatible, and a package with no file below
-/// its root has nothing to be incompatible with. Anything else declines,
-/// including a package whose only assets are in other folders (`build/`,
-/// `analyzers/`), which this does not model.
+/// Restore fails (`NU1202`) on a package with `lib/` or `ref/` files none of
+/// which is an asset for the framework, and it takes a package's assets
+/// through the asset-target fallback list (warning `NU1701`) when none of its
+/// framework-specific assets, `build/` and `buildTransitive/` ones included,
+/// suits the framework itself. A package with compile assets for the framework
+/// needs neither. One without them is admitted only when it has no file in
+/// `lib/` or `ref/`, and none in a `build/` or `buildTransitive/` folder named
+/// for a framework this crate parses as supported: its other files
+/// (`analyzers/`, `tools/`, `contentFiles/`, `build/` files outside framework
+/// folders such as Nerdbank.GitVersioning's `build/MSBuildCore/`) neither
+/// fail the check nor warn. `asset_folder_shapes_are_graded` holds each shape
+/// to B₀.
 fn check_compatibility(
     packages: &Path,
     target_alias: &str,
@@ -495,7 +545,26 @@ fn check_compatibility(
         }
         let compile = select_compile_assets(&files, &package.nuspec, framework)
             .map_err(|decline| unproven(Some(decline)))?;
-        if compile.items.is_empty() {
+        if !compile.items.is_empty() {
+            continue;
+        }
+        let framework_specific = files.iter().any(|file| {
+            let mut segments = file.split('/');
+            let (Some(folder), Some(next), rest) =
+                (segments.next(), segments.next(), segments.next())
+            else {
+                return false;
+            };
+            let named = |name: &str| folder.eq_ignore_ascii_case(name);
+            if named("lib") || named("ref") {
+                return true;
+            }
+            (named("build") || named("buildTransitive"))
+                && rest.is_some()
+                && NuGetFramework::parse_folder(next)
+                    .is_ok_and(|framework| !framework.is_unsupported())
+        });
+        if framework_specific {
             return Err(unproven(None));
         }
     }
@@ -619,7 +688,8 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         cross_targeting: _,
         // Whether content files are written into the project's output.
         skip_content_file_write: _,
-        warning_properties,
+        // Applied to the warnings B₁ predicts, after resolving.
+        warning_properties: _,
         restore_lock_properties,
         central_package_versions_enabled,
         central_package_transitive_pinning_enabled,
@@ -701,9 +771,7 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     {
         decline(UnmodelledField::Config);
     }
-    if !warning_policy_is_inert(warning_properties) {
-        decline(UnmodelledField::WarningPolicy);
-    }
+
     if !lock_file_is_off(restore_lock_properties) {
         decline(UnmodelledField::LockFile);
     }
@@ -746,8 +814,10 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
             dependencies,
             imports,
             asset_target_fallback,
-            // Whether restore warns (NU1701) when it uses the fallback list: a
-            // warning, and the warning policy admits no code but NU1605.
+            // Whether restore warns (NU1701) when it takes a package's assets
+            // through the fallback list, which B₁ declines before then (its
+            // compatibility check admits only assets for the framework itself);
+            // taking a dependency group through it logs nothing.
             warn: _,
             download_dependencies,
             central_package_versions,
@@ -901,20 +971,96 @@ fn is_local_absolute_path(source: &str) -> bool {
     !source.contains("://") && Path::new(source).is_absolute()
 }
 
-/// Whether the policy could not turn a warning restore emits on a committed
-/// closure into an error. `noWarn` and `warningsNotAsErrors` only ever demote,
-/// so they are inert. `NU1605` is the one code admitted to `warnAsError`: it is
-/// the downgrade the resolver declines on as a failure whatever the policy (and
-/// the code the SDK promotes for C# projects).
-fn warning_policy_is_inert(policy: &WarningProperties) -> bool {
+/// The warning codes restore logs for one framework's graph, after the
+/// project's `noWarn`, or `None` when B₁ cannot say exactly.
+///
+/// Within the envelope the resolver commits in, restore fails rather than warns
+/// on everything else the resolver models (a downgrade, a conflict, a missing
+/// package), and the inputs that would make it warn otherwise (a missing lower
+/// bound, a fallback-selected asset, pruning, audit) decline before here. What
+/// is left is `NU1608`: a package in the closure depends on a range that
+/// excludes the version the graph settled on for that dependency, which
+/// happens when a nearer edge (a direct reference, typically) eclipses the
+/// dependency with a version above its range.
+///
+/// A dependency's own `noWarn` suppresses warnings attributed to it, and B₁
+/// does not model which warnings those are, so a framework with one predicts
+/// `None`. The differential holds every `Some` prediction to equal the codes
+/// B₀ logs.
+fn predicted_warnings(
+    packages: &Path,
+    framework: &TargetFrameworkInformation,
+    fallback: &[NuGetFramework],
+    policy: &WarningProperties,
+    closure: &ResolvedPackageClosure,
+) -> Result<Option<BTreeSet<NuGetLogCode>>, DgSpecResolveDecline> {
+    if framework
+        .dependencies
+        .iter()
+        .any(|dependency| !dependency.no_warn.is_empty())
+    {
+        return Ok(None);
+    }
+    let outside_constraint = NuGetLogCode::parse("NU1608").expect("NU1608 is a NuGet log code");
+    let selected = |id: &PackageId| {
+        closure
+            .packages
+            .iter()
+            .find(|package| package.identity.id == *id)
+            .map(|package| &package.identity.version)
+    };
+    let mut codes = BTreeSet::new();
+    for resolved in &closure.packages {
+        let package =
+            read_installed_package(packages, resolved.identity.clone()).map_err(|source| {
+                DgSpecResolveDecline::PackageRead {
+                    target_alias: framework.target_alias.clone(),
+                    package: Box::new(resolved.identity.clone()),
+                    source: Box::new(source),
+                }
+            })?;
+        let Some(group) = package
+            .nuspec
+            .select_dependency_group_with_fallback(&framework.framework, fallback)
+        else {
+            continue;
+        };
+        for dependency in &group.dependencies {
+            let (Some(range), Some(version)) =
+                (dependency.version_range.as_ref(), selected(&dependency.id))
+            else {
+                continue;
+            };
+            if !range.satisfies(version) {
+                codes.insert(outside_constraint);
+            }
+        }
+    }
+    codes.retain(|code| !policy.no_warn.contains(code));
+    Ok(Some(codes))
+}
+
+/// Whether restore, logging `code` as a warning, fails under `policy`: the
+/// code is promoted by `warnAsError`, or by `allWarningsAsErrors` unless
+/// `warnNotAsError` demotes it. (`noWarn` has already removed the codes it
+/// suppresses.) A code both promoted and demoted by name counts as failing,
+/// since which wins is not modelled.
+fn fails_restore(policy: &WarningProperties, code: &NuGetLogCode) -> bool {
     let WarningProperties {
         all_warnings_as_errors,
         warnings_as_errors,
-        no_warn: _,
-        warnings_not_as_errors: _,
+        no_warn,
+        warnings_not_as_errors,
     } = policy;
-    let downgrade = NuGetLogCode::parse("NU1605").expect("NU1605 is a NuGet log code");
-    !*all_warnings_as_errors && warnings_as_errors.iter().all(|code| *code == downgrade)
+    !no_warn.contains(code)
+        && (warnings_as_errors.contains(code)
+            || (*all_warnings_as_errors && !warnings_not_as_errors.contains(code)))
+}
+
+/// Whether `policy` promotes any warning at all, so that a framework whose
+/// warnings B₁ cannot predict exactly could fail.
+fn promotes_anything(policy: &WarningProperties) -> bool {
+    policy.all_warnings_as_errors || !policy.warnings_as_errors.is_empty()
 }
 
 /// Whether restore certainly ignores lock files: none is requested, locked mode

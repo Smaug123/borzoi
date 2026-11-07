@@ -204,6 +204,8 @@ struct Dep {
     include: Option<&'static str>,
     suppress_parent: Option<&'static str>,
     auto_referenced: bool,
+    /// The dependency's own `noWarn`.
+    no_warn: Vec<&'static str>,
 }
 
 impl Dep {
@@ -214,6 +216,7 @@ impl Dep {
             include: None,
             suppress_parent: None,
             auto_referenced: false,
+            no_warn: Vec::new(),
         }
     }
 }
@@ -247,6 +250,7 @@ struct Shape {
     sources: Vec<Source>,
     all_warnings_as_errors: bool,
     warn_as_error: Vec<&'static str>,
+    warn_not_as_error: Vec<&'static str>,
     no_warn: Vec<&'static str>,
     sdk_analysis_level: Option<&'static str>,
     /// `enableAudit`: `None` leaves `restoreAuditProperties` out.
@@ -266,6 +270,7 @@ impl Shape {
             sources: vec![Source::Empty],
             all_warnings_as_errors: false,
             warn_as_error: Vec::new(),
+            warn_not_as_error: Vec::new(),
             no_warn: Vec::new(),
             sdk_analysis_level: Some("10.0.400"),
             enable_audit: Some("false"),
@@ -327,6 +332,7 @@ impl Shape {
             "warningProperties": {
                 "allWarningsAsErrors": self.all_warnings_as_errors,
                 "warnAsError": self.warn_as_error,
+                "warnNotAsError": self.warn_not_as_error,
                 "noWarn": self.no_warn,
             },
             "restoreLockProperties": {"nuGetLockFilePath": path("obj/packages.lock.json")},
@@ -358,6 +364,9 @@ impl Shape {
                         }
                         if dep.auto_referenced {
                             value["autoReferenced"] = json!(true);
+                        }
+                        if !dep.no_warn.is_empty() {
+                            value["noWarn"] = json!(dep.no_warn);
                         }
                         (dep.id.clone(), value)
                     })
@@ -550,6 +559,27 @@ fn grade_spec(
             "B₁'s closures are not B₀'s:\n{}",
             context()
         );
+        // Each framework's prediction, where B₁ makes one, is exactly what
+        // restore logs (B₀'s log codes are the project's, all frameworks
+        // together).
+        if let Some(predicted) = frameworks
+            .iter()
+            .map(|framework| framework.warnings.clone())
+            .collect::<Option<Vec<_>>>()
+        {
+            let predicted: BTreeSet<String> = predicted
+                .into_iter()
+                .flatten()
+                .map(|code| code.as_str().to_owned())
+                .collect();
+            let logged: BTreeSet<String> = theirs.codes.iter().cloned().collect();
+            assert_eq!(
+                predicted,
+                logged,
+                "B₁'s warnings are not B₀'s:\n{}",
+                context()
+            );
+        }
     }
     Graded { ours, theirs }
 }
@@ -751,9 +781,10 @@ fn one_failing_framework_fails_the_project() {
     }
 }
 
-/// The warning-policy decline is load-bearing: restore warns (`NU1608`) when a
-/// direct reference eclipses a dependency's upper bound, and a policy that
-/// promotes the warning fails the restore whose closure the resolver computes.
+/// Restore warns (`NU1608`) when a direct reference eclipses a dependency's
+/// upper bound. B₁ predicts the warning, and declines where a policy promotes
+/// it, which fails the restore whose closure the resolver computes; a policy
+/// that demotes or suppresses it commits again.
 #[test]
 fn a_promoted_warning_fails_a_restore_the_resolver_would_commit() {
     let mut oracle = Oracle::spawn();
@@ -782,13 +813,21 @@ fn a_promoted_warning_fails_a_restore_the_resolver_would_commit() {
         let graded = grade(&mut oracle, &packages, &shape);
         assert!(!graded.theirs.success, "the promoted warning fails restore");
         match graded.ours {
-            Err(DgSpecResolveDecline::Unmodelled { fields }) => {
-                assert_eq!(fields, BTreeSet::from([UnmodelledField::WarningPolicy]))
-            }
-            other => panic!("B₁ must decline on the warning policy, not {other:?}"),
+            Err(DgSpecResolveDecline::PromotedWarning {
+                code: Some(code), ..
+            }) => assert_eq!(code.as_str(), "NU1608"),
+            other => panic!("B₁ must decline on the promoted NU1608, not {other:?}"),
         }
         shape.warn_as_error.clear();
         shape.all_warnings_as_errors = false;
+    }
+
+    shape.all_warnings_as_errors = true;
+    for (no_warn, not_as_error) in [(vec!["NU1608"], vec![]), (vec![], vec!["NU1608"])] {
+        shape.no_warn = no_warn;
+        shape.warn_not_as_error = not_as_error;
+        let graded = grade(&mut oracle, &packages, &shape);
+        assert!(graded.ours.is_ok(), "{:?}", graded.ours);
     }
 }
 
@@ -1344,13 +1383,6 @@ fn every_unmodelled_field_declines_by_name() {
         (UnmodelledField::NotMicrosoftNetSdk, |spec, _| {
             the_project(spec)["restore"]["UsingMicrosoftNETSdk"] = json!(false);
         }),
-        (UnmodelledField::WarningPolicy, |spec, _| {
-            the_project(spec)["restore"]["warningProperties"]["allWarningsAsErrors"] = json!(true);
-        }),
-        (UnmodelledField::WarningPolicy, |spec, _| {
-            the_project(spec)["restore"]["warningProperties"]["warnAsError"] =
-                json!(["NU1605", "NU1701"]);
-        }),
         (UnmodelledField::CentralPackageManagement, |spec, _| {
             the_project(spec)["restore"]["centralPackageVersionsManagementEnabled"] = json!(true);
         }),
@@ -1541,19 +1573,23 @@ const DESCRIPTIVE_METADATA: &[&str] = &[
     "<owners>o</owners><title>t</title><summary>s</summary><copyright>c</copyright>",
     "<language>xx-INVALID</language><projectUrl>not a url</projectUrl>",
     "<licenseUrl>not a url</licenseUrl><iconUrl>not a url</iconUrl>",
+    "<developmentDependency>true</developmentDependency>",
+    "<developmentDependency>bogus</developmentDependency>",
 ];
 /// `<metadata>` children restore reads and B₁ does not model.
 const DECLINED_METADATA: &[&str] = &[
     r#"<contentFiles><files include="**/*" buildAction="Bad" /></contentFiles>"#,
     r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Xml" targetFramework="net48" /></frameworkAssemblies>"#,
-    "<developmentDependency>true</developmentDependency>",
     "<somethingNew>1</somethingNew>",
 ];
 
 fn gen_range(rng: &mut SplitMix64) -> String {
     let version = rng.pick(VERSIONS);
-    match rng.below(4) {
+    match rng.below(5) {
         0 => format!("[{version}]"),
+        // Bounded above, so a nearer edge to a higher version leaves it
+        // outside its constraint (`NU1608`).
+        1 => "[1.0.0, 2.0.0)".to_owned(),
         _ => format!("[{version}, )"),
     }
 }
@@ -1580,7 +1616,11 @@ fn generate(rng: &mut SplitMix64) -> Generated {
                 2 => &["lib/net8.0/X.dll", "lib/net461/X.dll"],
                 3 => &["ref/netstandard2.0/X.dll", "lib/net10.0/X.dll"],
                 4 => &["lib/netstandard1.0/_._"],
-                5 => &["build/X.targets"],
+                5 => rng.pick(&[
+                    &["build/X.targets"][..],
+                    &["build/net48/X.targets"],
+                    &["build/MSBuildCore/X.dll", "analyzers/dotnet/cs/X.dll"],
+                ]),
                 _ => &[],
             };
             let mut package = Pkg::new(id, version, groups).with_files(files);
@@ -1629,6 +1669,9 @@ fn generate(rng: &mut SplitMix64) -> Generated {
                         dep.suppress_parent = Some(*rng.pick(&["All", "None", "Compile"]));
                     }
                     dep.auto_referenced = rng.below(4) == 0;
+                    if rng.below(8) == 0 {
+                        dep.no_warn = vec!["NU1608"];
+                    }
                     dep
                 })
                 .collect();
@@ -1654,6 +1697,9 @@ fn generate(rng: &mut SplitMix64) -> Generated {
     }
     if rng.below(3) == 0 {
         shape.no_warn = vec!["NU1608", "NU1701"];
+    }
+    if rng.below(4) == 0 {
+        shape.warn_not_as_error = vec!["NU1608"];
     }
     shape.sdk_analysis_level =
         *rng.pick(&[None, Some("9.0.100"), Some("10.0.100"), Some("10.0.400")]);
@@ -1686,6 +1732,13 @@ fn features(
         format!("frameworks={}", shape.frameworks.len()),
         format!("sources={:?}", shape.sources),
         format!("warn-as-error={:?}", shape.warn_as_error),
+        format!("all-warnings-as-errors={}", shape.all_warnings_as_errors),
+        format!(
+            "predicted-warnings={}",
+            frameworks
+                .iter()
+                .any(|framework| framework.warnings.as_ref().is_some_and(|w| !w.is_empty()))
+        ),
         format!("no-warn={}", !shape.no_warn.is_empty()),
         format!("sdk-analysis-level={:?}", shape.sdk_analysis_level),
         format!("enable-audit={:?}", shape.enable_audit),
@@ -1706,6 +1759,9 @@ fn features(
             }
             if dep.auto_referenced {
                 features.push("auto-referenced".to_owned());
+            }
+            if !dep.no_warn.is_empty() {
+                features.push("dependency-no-warn".to_owned());
             }
         }
     }
@@ -1790,6 +1846,10 @@ fn required_features() -> BTreeSet<String> {
         "sources=[Empty]",
         "warn-as-error=[]",
         "warn-as-error=[\"NU1605\"]",
+        "warn-as-error=[\"NU1608\"]",
+        "all-warnings-as-errors=true",
+        "predicted-warnings=true",
+        "dependency-no-warn",
         "no-warn=true",
         "no-warn=false",
         "sdk-analysis-level=None",
@@ -1810,7 +1870,6 @@ fn required_features() -> BTreeSet<String> {
         "package-with-assets",
         "min-client-version=2.12",
         "min-client-version=5.0.0",
-        "package-type=name=\"Dependency\"",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1835,6 +1894,10 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
             format!("resolve:{variant}")
         }
         DgSpecResolveDecline::PackageNamedLikeProject { .. } => "named-like-project".to_owned(),
+        DgSpecResolveDecline::PromotedWarning { code, .. } => match code {
+            Some(code) => format!("promoted-warning:{code}"),
+            None => "promoted-warning:unpredicted".to_owned(),
+        },
         DgSpecResolveDecline::CompatibilityUnproven { .. } => "compatibility-unproven".to_owned(),
         DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
         DgSpecResolveDecline::PackageMetadata { decline, .. } => match decline {
@@ -2964,4 +3027,42 @@ fn every_nuspec_layer_is_held_to_its_domain() {
         over_declines.join("; ")
     );
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Every top-level asset folder, with and without a framework subfolder,
+/// alone in a package of a `net8.0` project with the fallback list: graded
+/// against B₀, with B₁ committing exactly where the compatibility rule says.
+#[test]
+fn asset_folder_shapes_are_graded() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let shapes: &[(&str, bool)] = &[
+        ("build/A.targets", true),
+        ("build/net48/A.targets", false),
+        ("build/MSBuildCore/A.dll", true),
+        ("buildTransitive/net48/A.props", false),
+        ("buildMultiTargeting/A.props", true),
+        ("buildCrossTargeting/A.props", true),
+        ("analyzers/dotnet/cs/A.dll", true),
+        ("tools/net48/A.exe", true),
+        ("content/A.txt", true),
+        ("contentFiles/any/net48/A.cs", true),
+        ("runtimes/win-x64/lib/net48/A.dll", true),
+        ("runtimes/win-x64/native/A.dll", true),
+        ("native/A.dll", true),
+        ("embed/net48/A.dll", true),
+        ("lib/net48/A.dll", false),
+        ("ref/net48/A.dll", false),
+        ("lib/A.txt", false),
+        ("lib/net48/A.xml", false),
+        ("lib/net8.0/A.dll", true),
+    ];
+    for (file, commits) in shapes {
+        let package = Pkg::new("A", "1.0.0", vec![]).with_files(&[file]);
+        let graded = grade(&mut oracle, &[package], &shape);
+        assert_eq!(graded.ours.is_ok(), *commits, "{file}: {:?}", graded.ours);
+    }
 }
