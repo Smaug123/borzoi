@@ -1212,6 +1212,14 @@ that a use declines:
   once means one thing in every order. The resolver's wrong targets for
   names declared twice are a follow-up of their own.
 
+**A qualified case is read only through its type.** FCS resolves `U.X` or
+`Lib.U.X` by one lookup in `U`. A case qualified by a module or namespace
+alone (`Lib.X`, `N.X`) it resolves against everything of the name the
+container holds — `[<RequireQualifiedAccess>]` cases and namespace fragments
+in other files included (with `type U1 = X | Y` in one file of namespace
+`N` and an RQA `type U2 = X | Z` in another, FCS's `N.X` is `U2`'s, with a
+warning) — which no per-file check sees, so inference does not read it.
+
 Graded by `infer_project_union_diff`: about 25 union declarations (plain,
 generic and postfix-generic, two parameters, recursive, mutually recursive,
 named fields, `[<RequireQualifiedAccess>]`, struct, a field of tuple, unit,

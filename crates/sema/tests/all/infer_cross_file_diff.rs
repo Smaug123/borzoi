@@ -64,6 +64,10 @@ enum Expect {
     Typed,
     /// Its type is withheld, and every cell using it records this reason.
     Declined(PrecedingGap),
+    /// [`Self::Typed`] for a bare use; a qualified one is graded for soundness
+    /// only. A union case qualified by its module alone (`A.UA`) is not read:
+    /// FCS resolves it against everything of the name the module holds.
+    TypedBare,
     /// Graded for soundness only: what the resolver makes of the name is its
     /// own business (a private value, an active pattern), or the twin is not
     /// the in-file equivalent (a `rec` module's value relocated outside it).
@@ -358,7 +362,7 @@ const EARLIER: &[Earlier] = &[
         "A",
         "type U = UA of int",
         fun(&["1"], Some("\"s\""), None),
-        Expect::Typed,
+        Expect::TypedBare,
     ),
     e(
         "XA",
@@ -1129,7 +1133,12 @@ fn cross_file_uses_commit_what_their_in_file_twin_commits() {
             );
             continue;
         }
-        match v.expect {
+        let expect = match (v.expect, cell.qualified) {
+            (Expect::TypedBare, true) => Expect::Any,
+            (Expect::TypedBare, false) => Expect::Typed,
+            (expect, _) => expect,
+        };
+        match expect {
             Expect::Typed => {
                 if cg.error_lines[*idx].contains(&line) {
                     failures.push(format!(
@@ -1182,6 +1191,7 @@ fn cross_file_uses_commit_what_their_in_file_twin_commits() {
                 }
             }
             Expect::Any => {}
+            Expect::TypedBare => unreachable!("mapped to `Typed` or `Any` above"),
         }
     }
     eprintln!(

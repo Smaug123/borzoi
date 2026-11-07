@@ -4241,12 +4241,14 @@ impl<'a> Gen<'a> {
         let (head, rest) = idents.split_first()?;
         let last = rest.last()?;
         let whole = TextRange::new(head.text_range().start(), last.text_range().end());
-        // A qualified case of a project union (`U.A`, `Lib.A`, `Lib.U.B`),
-        // whose head may be the union's own type.
+        // A case of a project union qualified by its type (`U.A`,
+        // `Lib.U.B`), whose head may be the type itself; qualified only by a
+        // module or namespace (`Lib.A`), it declines
+        // ([`Self::type_qualified_case`]).
         if let Some(Resolution::Item(id)) = self.resolved.resolution_at(whole)
             && (self.own_union_cases.contains(&id) || self.preceding.case(id).is_some())
         {
-            return Some(whole);
+            return self.type_qualified_case(&idents, whole).then_some(whole);
         }
         if self.def_at(head.text_range()).is_some() {
             return None;
@@ -5542,6 +5544,11 @@ impl<'a> Gen<'a> {
                     .filter(|_| li.typar_decls().is_none() && li.active_pat_name().is_none())
                     .ok_or(Incomplete::PatternShape(pat.syntax().kind()))?;
                 // A qualified case (`U.A`) is resolved over the whole head.
+                // The resolver resolves no case pattern qualified by a module
+                // alone across files, so the expression's type-qualified
+                // rule ([`Self::type_qualified_case`]) has nothing to decline
+                // here; `infer_project_union_diff`'s namespace-fragment rows
+                // hold it to FCS once it does.
                 let idents: Vec<SyntaxToken> = head.idents().collect();
                 let (Some(first), Some(last)) = (idents.first(), idents.last()) else {
                     return Err(Incomplete::Recovery);
@@ -5751,6 +5758,39 @@ impl<'a> Gen<'a> {
             self.resolved.resolution_at(at),
             Some(Resolution::Item(id)) if self.own_union_cases.contains(&id)
         )
+    }
+
+    /// Whether the qualified path `idents`, spanning `at`, names a case of a
+    /// project union through the union's own type (`U.A`, `Lib.U.A`): the
+    /// segment before the case is the type's name.
+    ///
+    /// FCS resolves a type-qualified case by one lookup in that type. A case
+    /// qualified by a module or namespace alone (`Lib.A`, `N.X`) it resolves
+    /// against everything of the name the container holds — values, then
+    /// exceptions, then the first type declaring the case, in an expression
+    /// (`ResolveExprLongIdentInModuleOrNamespace`); `[<RequireQualifiedAccess>]`
+    /// cases and namespace fragments in other files included — which the
+    /// resolver's latest-wins history does not follow, so it is not read.
+    fn type_qualified_case(&self, idents: &[SyntaxToken], at: TextRange) -> bool {
+        let [.., qualifier, _] = idents else {
+            return false;
+        };
+        let Some(Resolution::Item(id)) = self.resolved.resolution_at(at) else {
+            return false;
+        };
+        let Some(ProjectCase {
+            scheme:
+                UnionCaseScheme {
+                    union: Ty::Project { path, .. },
+                    ..
+                },
+            ..
+        }) = self.project_case(id)
+        else {
+            return false;
+        };
+        path.last()
+            .is_some_and(|name| *name == ident_text(qualifier))
     }
 
     /// Whether the resolver reads a case at `at` whose fields FCS eta-expands

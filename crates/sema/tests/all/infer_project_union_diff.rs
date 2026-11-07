@@ -346,7 +346,8 @@ const UNIONS: &[Union] = &[
         &[
             ("{L}Inner.I.IA", true, false),
             ("{L}Inner.I.IB 1", true, false),
-            ("{L}Inner.IA", true, false),
+            // Qualified by a module alone, which inference does not read.
+            ("{L}Inner.IA", false, false),
         ],
         &[
             ("| {L}Inner.I.IA -> 0 | {L}Inner.I.IB n -> n", true),
@@ -479,10 +480,11 @@ impl Placement {
     }
 }
 
-/// Whether `clauses` hold a case pattern qualified by the earlier file's
-/// module alone (`| Lib.A ->`, not `| Lib.U.A ->`), which the resolver does
-/// not resolve across files.
-fn module_qualified_pattern(clauses: &str) -> bool {
+/// Whether `text` holds a case qualified by the earlier file's module alone
+/// (`Lib.A`, not `Lib.U.A`), which inference does not read: FCS resolves it
+/// against everything of the name the module holds.
+fn module_qualified(text: &str) -> bool {
+    let clauses = text;
     clauses.match_indices("Lib.").any(|(i, _)| {
         let rest = &clauses[i + "Lib.".len()..];
         let name_len = rest
@@ -574,6 +576,7 @@ fn program(union: &Union, placement: Placement) -> (Vec<(String, String)>, Vec<C
             let obligated = *modelled
                 && *ctx_modelled
                 && placement.obligates(union, template, &e)
+                && !module_qualified(&e)
                 && !(*generic && matches!(*cid, "value" | "branch"));
             cells.push((
                 line,
@@ -600,7 +603,7 @@ fn program(union: &Union, placement: Placement) -> (Vec<(String, String)>, Vec<C
                 *modelled
                     && *ctx_modelled
                     && placement.obligates(union, template, &m)
-                    && !module_qualified_pattern(&m),
+                    && !module_qualified(&m),
                 format!("{}/{placement:?}/{cid}/{m}", union.id),
             ));
             i += 1;
@@ -804,7 +807,7 @@ fn project_union_cases_agree_with_fcs_by_declaration_and_placement() {
         tally.committed_erroring, 0,
         "cells committed on lines FCS rejects: {tally:?}"
     );
-    assert_clean(&tally, 700);
+    assert_clean(&tally, 500);
 }
 
 /// `(union id, using-file body)`: cases where FCS rejects them — a payload
@@ -880,25 +883,33 @@ fn ill_typed_uses_of_project_union_cases_commit_only_what_fcs_kept() {
 }
 
 /// A namespace declared across two earlier files, each declaring a case
-/// `X`: FCS resolves the namespace-qualified `N.X` by the namespace's own
-/// order, which the resolver's latest-wins history need not follow.
+/// `X`: FCS resolves the namespace-qualified `N.X` against every case of the
+/// name the namespace holds, `[<RequireQualifiedAccess>]` ones included
+/// (it binds `U2`'s below, with a warning), which the resolver's latest-wins
+/// history need not follow.
 #[test]
 fn a_case_name_two_namespace_fragments_declare_agrees_with_fcs() {
     let mut tally = Tally::default();
-    for use_body in [
-        "let v0 = N.X\nlet v1 = N.U1.X\nlet v2 = N.U2.X\n",
-        "open N\nlet v0 = X\nlet v1 = U1.X\nlet f2 u = match u with X -> 0 | Z -> 1\n",
-        "let f0 (u: N.U1) = match u with N.X -> 0 | _ -> 1\n",
+    let plain = "type U2 = X | Z\n";
+    let qualified_only = "[<RequireQualifiedAccess>]\ntype U2 = X | Z\n";
+    for (b_decl, use_body) in [
+        (plain, "let v0 = N.X\nlet v1 = N.U1.X\nlet v2 = N.U2.X\n"),
+        (
+            plain,
+            "open N\nlet v0 = X\nlet v1 = U1.X\nlet f2 u = match u with X -> 0 | Z -> 1\n",
+        ),
+        (plain, "let f0 (u: N.U1) = match u with N.X -> 0 | _ -> 1\n"),
+        (
+            qualified_only,
+            "let v0 = N.X\nlet f1 () = N.X\nlet f2 u = match u with N.X -> 0 | _ -> 1\n",
+        ),
     ] {
         let sources = vec![
             (
                 "A.fs".to_string(),
                 "namespace N\ntype U1 = X | Y\n".to_string(),
             ),
-            (
-                "B.fs".to_string(),
-                "namespace N\ntype U2 = X | Z\n".to_string(),
-            ),
+            ("B.fs".to_string(), format!("namespace N\n{b_decl}")),
             ("Use.fs".to_string(), format!("module M\n{use_body}")),
         ];
         check(&sources, &[], &mut tally);
