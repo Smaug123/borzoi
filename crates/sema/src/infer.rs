@@ -2125,7 +2125,10 @@ impl<'a> Gen<'a> {
                     .map(|t| t.ident().map(|tok| ident_text(&tok)))
                     .collect()
             });
-            let Some(names) = names else {
+            // A name declared twice is an error FCS recovers from by binding
+            // its uses to the first declaration, where a map keeps the last.
+            let Some(names) = names.filter(|n| n.iter().collect::<HashSet<_>>().len() == n.len())
+            else {
                 continue;
             };
             let cases: Vec<_> = repr.cases().collect();

@@ -355,6 +355,17 @@ const UNIONS: &[Union] = &[
         &[("| {L}FA n -> n | {L}FB -> 0", false)],
     ),
     u(
+        "duplicateParameter",
+        "type DU<'a, 'a> = DC of 'a | DN\n",
+        "{L}DU<int, int>",
+        &[
+            ("{L}DC 1", false, false),
+            ("{L}DC {x}", false, false),
+            ("{L}DN", false, false),
+        ],
+        &[("| {L}DC n -> n | {L}DN -> 0", false)],
+    ),
+    u(
         "privateRepr",
         "type PR = private PRA | PRB of int\n",
         "{L}PR",

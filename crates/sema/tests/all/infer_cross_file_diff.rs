@@ -358,7 +358,7 @@ const EARLIER: &[Earlier] = &[
         "A",
         "type U = UA of int",
         fun(&["1"], Some("\"s\""), None),
-        Expect::Declined(PrecedingGap::NotAValue),
+        Expect::Typed,
     ),
     e(
         "XA",
@@ -766,6 +766,24 @@ fn file_later(cells: &[Cell], qualified: bool) -> String {
     s
 }
 
+/// A type the twin renders, as the cross-file program renders it: a type the
+/// twin's module `T` declares is the earlier file's module `A`'s there.
+fn twin_to_cross(ty: &str) -> String {
+    let mut out = String::with_capacity(ty.len());
+    let mut prev: Option<char> = None;
+    let mut chars = ty.chars().peekable();
+    while let Some(c) = chars.next() {
+        let at_word_start = prev.is_none_or(|p| !p.is_alphanumeric() && p != '.' && p != '`');
+        if c == 'T' && at_word_start && chars.peek() == Some(&'.') {
+            out.push('A');
+        } else {
+            out.push(c);
+        }
+        prev = Some(c);
+    }
+    out
+}
+
 /// The twin: every earlier value declared in one file under its twin name,
 /// then every cell against the local copy.
 fn file_twin(cells: &[Cell]) -> String {
@@ -1130,7 +1148,7 @@ fn cross_file_uses_commit_what_their_in_file_twin_commits() {
                 if let Some(ty) = tg.binders[0].get(&binder(k, true)) {
                     obligations += 1;
                     match cg.binders[*idx].get(&name) {
-                        Some(ours) if ours == ty => committed_cells += 1,
+                        Some(ours) if *ours == twin_to_cross(ty) => committed_cells += 1,
                         other => failures.push(format!(
                             "`{}`: the twin commits `{ty}` for the binder, cross-file \
                              {other:?}; census {reasons:?}",
@@ -1144,7 +1162,7 @@ fn cross_file_uses_commit_what_their_in_file_twin_commits() {
                     let ours = cross_nodes.get(&k);
                     for (span, ty) in twin_nodes {
                         obligations += 1;
-                        if ours.and_then(|o| o.get(span)) != Some(ty) {
+                        if ours.and_then(|o| o.get(span)) != Some(&twin_to_cross(ty)) {
                             failures.push(format!(
                                 "`{}`: the twin commits `{ty}` at {span:?} (`{}`), cross-file \
                                  does not; census {reasons:?}",

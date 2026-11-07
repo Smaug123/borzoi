@@ -1184,6 +1184,8 @@ case's item. A file publishes its cases' schemes by item
 (`PrecedingTypes::case`), and a signatured file publishes none. Left out, so
 that a use declines:
 
+- every case of a union declaring a type parameter twice (FCS binds a use
+  to the first declaration);
 - a case with an attribute (an error-level `[<Obsolete>]` rejects its use);
 - a case written in the `Case : type` form, or as an operator;
 - a case whose field the annotation bridge declines (a measure, `Map<_, _>`);
@@ -1210,7 +1212,9 @@ representation, a nested module, the signature form), each in the using
 file, in an earlier file reached by an `open`, by module-qualified paths, and
 behind a signature, by value and match contexts, FCS-graded as one project,
 with must-commit obligations on every cell this stage models; plus an
-ill-typed family and namespace fragments declaring one case name twice. The
+ill-typed family and namespace fragments declaring one case name twice.
+`infer_cross_file_diff` now expects an earlier file's case to be typed, and
+holds every cell using one to what its in-file twin commits. The
 generated clause sets of `infer_match_diff` include the file's own unions,
 bare, type-qualified and `[<RequireQualifiedAccess>]`, so reachability is
 exercised over project cases (4,800 functions at 20 times the default

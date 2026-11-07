@@ -68,6 +68,7 @@ src/Compiler/CodeGen/EraseUnions.Emit.fs:65:5-66:12 unconverted-decl	"mkLdDataAd
 src/Compiler/CodeGen/EraseUnions.Emit.fs:77:5-78:15 unconverted-decl	"mkGetTagFromHelpers"
 src/Compiler/CodeGen/EraseUnions.Emit.fs:90:5-91:16 unconverted-decl	"mkCeqThen"
 src/Compiler/Driver/CreateILModule.fs	compared
+src/Compiler/Driver/CreateILModule.fs:134:5-134:77 expr	agree
 src/Compiler/Driver/CreateILModule.fs:201:9-202:31 unconverted-decl	"createSystemNumericsExportList"
 src/Compiler/Driver/CreateILModule.fs:202:13-202:31 binder	unconverted ours="System.String"
 src/Compiler/Driver/CreateILModule.fs:203:13-206:42 expr	unconverted ours="System.String"
@@ -82,6 +83,12 @@ src/Compiler/Driver/CreateILModule.fs:359:39-359:87 expr	agree
 src/Compiler/Driver/CreateILModule.fs:41:9-42:40 unconverted-decl	"TryFindIntAttribute"
 src/Compiler/Driver/CreateILModule.fs:49:9-50:40 unconverted-decl	"TryFindBoolAttribute"
 src/Compiler/Driver/CreateILModule.fs:58:26-58:39 binder	agree
+src/Compiler/Driver/CreateILModule.fs:72:31-72:40 binder	agree
+src/Compiler/Driver/CreateILModule.fs:72:42-72:52 binder	agree
+src/Compiler/Driver/CreateILModule.fs:72:5-72:29 binder	agree
+src/Compiler/Driver/CreateILModule.fs:72:54-72:60 binder	agree
+src/Compiler/Driver/CreateILModule.fs:72:62-72:71 binder	agree
+src/Compiler/Driver/CreateILModule.fs:73:5-73:68 expr	agree
 src/Compiler/Driver/XmlDocFileWriter.fs	compared
 src/Compiler/Driver/XmlDocFileWriter.fs:15:32-15:47 expr	agree
 src/Compiler/Facilities/prim-lexing.fs	compared
@@ -241,6 +248,15 @@ src/Compiler/Utilities/sformat.fs	compared
 src/Compiler/Utilities/sformat.fs:128:17-128:19 binder	agree
 src/Compiler/Utilities/sformat.fs:129:17-129:19 binder	agree
 src/Compiler/Utilities/sformat.fs:272:15-272:20 binder	agree
+src/Compiler/Utilities/sformat.fs:277:22-277:46 expr	agree
+src/Compiler/Utilities/sformat.fs:279:21-279:43 expr	agree
+src/Compiler/Utilities/sformat.fs:281:23-281:46 expr	agree
+src/Compiler/Utilities/sformat.fs:283:22-283:45 expr	agree
+src/Compiler/Utilities/sformat.fs:285:18-285:57 expr	agree
+src/Compiler/Utilities/sformat.fs:285:9-285:15 binder	agree
+src/Compiler/Utilities/sformat.fs:289:22-289:23 binder	agree
+src/Compiler/Utilities/sformat.fs:308:37-308:61 expr	agree
+src/Compiler/Utilities/sformat.fs:379:19-379:46 expr	agree
 src/Compiler/Utilities/sformat.fs:461:22-461:24 binder	agree
 src/Compiler/Utilities/sformat.fs:461:9-461:20 binder	agree
 src/Compiler/Utilities/sformat.fs:462:9-462:55 expr	agree
@@ -2053,16 +2069,34 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntCompar
 tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs:8:14-8:50 expr	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/GenericComparison/NativeIntComparison.fs:8:5-8:11 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs	compared
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:13:5-13:7 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:13:9-13:10 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:15:11-15:12 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:15:17-15:18 expr	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:16:11-16:12 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:16:9-16:10 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:15-18:16 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:5-18:7 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:18:9-18:10 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:19:11-19:12 expr	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:19:13-19:14 expr	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:20:11-20:12 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:20:19-20:20 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:20:25-20:30 expr	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:11-21:12 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:17-21:18 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:19-21:20 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:21:9-21:10 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:33:11-33:12 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:38:11-38:12 binder	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/StructUnion01.fs:38:19-38:20 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/MethodImplAttribute/MethodImplAttribute.NoInlining_InlineKeyword.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/EqualsOnUnions01.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Misc/NonEscapingArguments02.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ExceptionType.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs	compared
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs:12:22-12:31 expr	agree
+tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs:12:5-12:16 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Nullness/ReferenceDU.fs:14:5-14:21 binder	agree
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Linq101Joins01.fs	compared
 tests/FSharp.Compiler.ComponentTests/EmittedIL/RealInternalSignature/ClassTypeVisibilityNamespaceRoot.fs	compared
@@ -2224,6 +2258,10 @@ tests/FSharp.Compiler.Service.Tests/PostInferenceChecksTests.fs	compared
 tests/FSharp.Compiler.Service.Tests/PostInferenceChecksTests.fs:12:17-12:20 binder	agree
 tests/FSharp.Compiler.Service.Tests/PostInferenceChecksTests.fs:12:9-12:15 binder	agree
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs	compared
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:11:16-11:34 binder	agree
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:11:9-11:15 binder	agree
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:12:36-12:42 expr	agree
+tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:12:9-13:22 expr	agree
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs:15:5-15:10 binder	agree
 tests/FSharp.Core.UnitTests/FSharp.Core/DiscriminatedUnionType.fs	fcs-failed
 tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/ListType.fs	compared
@@ -2250,6 +2288,7 @@ tests/FSharp.Test.Utilities/CompilerAssert.fs:631:13-631:21 binder	agree
 tests/FSharp.Test.Utilities/CompilerAssert.fs:631:24-631:38 expr	agree
 tests/FSharp.Test.Utilities/CompilerAssert.fs:632:13-632:22 binder	agree
 tests/FSharp.Test.Utilities/CompilerAssert.fs:632:25-632:27 expr	agree
+tests/FSharp.Test.Utilities/CompilerAssert.fs:653:9-653:20 expr	agree
 tests/FSharp.Test.Utilities/CompilerAssert.fs:772:19-773:37 unconverted-decl	"Pass"
 tests/FSharp.Test.Utilities/CompilerAssert.fs:783:19-784:27 unconverted-decl	"PassWithOptions"
 tests/FSharp.Test.Utilities/CompilerAssert.fs:797:19-798:31 unconverted-decl	"TypeCheckWithErrorsAndOptionsAgainstBaseLine"
@@ -2327,6 +2366,7 @@ tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Ru
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:438:51-438:52 binder	agree
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:25-451:31 binder	agree
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:451:46-451:53 binder	agree
+tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:454:26-454:34 binder	agree
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:26-465:32 binder	agree
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:47-465:58 binder	agree
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs:465:67-465:75 binder	agree
@@ -2455,6 +2495,8 @@ tests/fsharp/core/versionAttributes/Warn2003_3.fs	compared
 tests/fsharp/regression/5531/test.fs	compared
 tests/fsharp/typeProviders/splitAssemblyTools/provider.fs	compared
 tests/fsharp/typecheck/sigs/neg07.fs	compared
+tests/fsharp/typecheck/sigs/neg07.fs:30:13-30:25 expr	agree
+tests/fsharp/typecheck/sigs/neg07.fs:30:9-30:10 binder	agree
 tests/fsharp/typecheck/sigs/neg07.fs:31:9-31:11 binder	agree
 tests/fsharp/typecheck/sigs/neg07.fs:33:12-33:13 binder	agree
 tests/fsharp/typecheck/sigs/neg07.fs:47:9-47:55 unconverted-decl	"patternInput"
@@ -2666,6 +2708,9 @@ vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:173:13-186:8 e
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:198:13-198:25 binder	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:199:13-222:8 expr	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:29:36-29:37 binder	agree
+vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:33:9-33:84 expr	agree
+vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:36:9-36:55 expr	agree
+vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:38:25-38:48 expr	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:40:20-40:33 expr	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:40:9-40:17 binder	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:42:17-88:53 unconverted-decl	"tooltipElementToExpected"
