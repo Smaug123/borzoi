@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
-use crate::infer::{InferredFile, infer_file};
+use crate::infer::{InferredFile, ProjectCase, infer_file};
 use crate::resolve::{ItemId, ProjectFile, ResolvedFile, ResolvedProject, signature_partners};
 use crate::ty::Ty;
 
@@ -97,6 +97,9 @@ pub struct PrecedingTypes {
     /// [`Resolution::EarlierFileType`](crate::Resolution::EarlierFileType)
     /// carries — with the path and arity of the [`Ty::Project`] it denotes.
     types: HashMap<(usize, u32), (Vec<String>, usize)>,
+    /// The cases of each earlier file's unions its inference types, by the
+    /// case's item — the handle a later file's use of one resolves to.
+    cases: HashMap<ItemId, ProjectCase>,
 }
 
 impl PrecedingTypes {
@@ -117,6 +120,13 @@ impl PrecedingTypes {
     /// a type that file's inference would not bridge either.
     pub(crate) fn earlier_type(&self, file: usize, index: u32) -> Option<&(Vec<String>, usize)> {
         self.types.get(&(file, index))
+    }
+
+    /// The case of an earlier file's union that the item `id` is, as that
+    /// file's inference typed it; `None` for anything else, and for a case
+    /// that file would not type either.
+    pub(crate) fn case(&self, id: ItemId) -> Option<&ProjectCase> {
+        self.cases.get(&id)
     }
 
     /// Publish one file's exports, in Compile order, after the file is
@@ -142,6 +152,12 @@ impl PrecedingTypes {
                     self.types.insert((file, index), ty.clone());
                 }
             }
+            self.cases.extend(
+                inferred
+                    .project_cases()
+                    .iter()
+                    .map(|(&id, case)| (id, case.clone())),
+            );
         }
         for export in resolved.exports().iter() {
             let verdict = match (export.case_kind(), export.def()) {

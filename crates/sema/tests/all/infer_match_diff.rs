@@ -915,7 +915,20 @@ enum PatTy {
     Opt(&'static PatTy),
     Res,
     Pair,
+    /// The file's own union ([`OWN_UNIONS`]'s `PU`).
+    Own,
+    /// The file's own generic union, at `int`.
+    OwnGeneric,
+    /// The file's own `[<RequireQualifiedAccess>]` union.
+    OwnQualified,
 }
+
+/// The unions the generated programs declare, so clause sets cover and
+/// repeat the project's own cases as they do FSharp.Core's.
+const OWN_UNIONS: &str = "type PU = PA | PB of int | PC of string * bool\n\
+                          type PG<'a> = PGa | PGb of 'a | PGc of 'a * 'a\n\
+                          [<RequireQualifiedAccess>]\n\
+                          type PQ = Q1 | Q2 of int\n";
 
 impl PatTy {
     fn spelling(self) -> String {
@@ -927,6 +940,9 @@ impl PatTy {
             PatTy::Opt(t) => format!("({}) option", t.spelling()),
             PatTy::Res => "Result<int, string>".into(),
             PatTy::Pair => "(int * string)".into(),
+            PatTy::Own => "PU".into(),
+            PatTy::OwnGeneric => "PG<int>".into(),
+            PatTy::OwnQualified => "PQ".into(),
         }
     }
 }
@@ -941,6 +957,9 @@ const SCRUTINEE_TYS: &[PatTy] = &[
     PatTy::Opt(&PatTy::Bool),
     PatTy::Res,
     PatTy::Pair,
+    PatTy::Own,
+    PatTy::OwnGeneric,
+    PatTy::OwnQualified,
 ];
 
 /// A well-typed pattern at `t`, from a small alphabet that repeats itself
@@ -977,6 +996,35 @@ fn gen_pat(rng: &mut Rng, t: PatTy, names: &mut usize) -> String {
             gen_pat(rng, PatTy::Int, names),
             gen_pat(rng, PatTy::Str, names)
         ),
+        PatTy::Own => {
+            let q = if rng.chance(30) { "PU." } else { "" };
+            match rng.below(3) {
+                0 => format!("{q}PA"),
+                1 => format!("{q}PB ({})", gen_pat(rng, PatTy::Int, names)),
+                _ if rng.chance(30) => format!("{q}PC _"),
+                _ => format!(
+                    "{q}PC ({}, {})",
+                    gen_pat(rng, PatTy::Str, names),
+                    gen_pat(rng, PatTy::Bool, names)
+                ),
+            }
+        }
+        PatTy::OwnGeneric => match rng.below(3) {
+            0 => "PGa".into(),
+            1 => format!("PGb ({})", gen_pat(rng, PatTy::Int, names)),
+            _ => format!(
+                "PGc ({}, {})",
+                gen_pat(rng, PatTy::Int, names),
+                gen_pat(rng, PatTy::Int, names)
+            ),
+        },
+        PatTy::OwnQualified => {
+            if rng.chance(40) {
+                "PQ.Q1".into()
+            } else {
+                format!("PQ.Q2 ({})", gen_pat(rng, PatTy::Int, names))
+            }
+        }
     }
 }
 
@@ -996,7 +1044,7 @@ fn generated_clause_sets_agree_with_fcs() {
     let mut irrefutable_first = 0;
     for seed in 0..programs as u64 {
         let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ 0x6a09);
-        let mut src = "module M\n".to_string();
+        let mut src = format!("module M\n{OWN_UNIONS}");
         let mut cells = Vec::new();
         for i in 0..60 {
             let t = SCRUTINEE_TYS[rng.below(SCRUTINEE_TYS.len())];
