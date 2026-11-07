@@ -542,8 +542,11 @@ fn a_pattern_does_not_override_an_earlier_argument_check() {
         "(fs x, match x with (a, b) -> 1 | _ -> 2)",
         "(fs x, match Some x with Some 1 -> 1 | _ -> 2)",
         "(fs x, match Some x with Some v -> v | None -> \"n\")",
+        // Earlier relations conflicting among themselves: FCS keeps the first.
+        "((if true then \"\" else x), fi x, (match x with 1 -> x | _ -> x))",
     ] {
-        let src = format!("module M\nlet fs (s: string) = s\nlet f x = {body}\n");
+        let src =
+            format!("module M\nlet fs (s: string) = s\nlet fi (i: int) = i\nlet f x = {body}\n");
         let parsed = parse(&src);
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");

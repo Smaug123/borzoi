@@ -41,7 +41,6 @@ src/Compiler/AbstractIL/ilsign.fs:62:26-62:47 expr	agree
 src/Compiler/AbstractIL/ilsign.fs:62:9-62:23 binder	agree
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs	compared
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:163:13-164:22 unconverted-decl	"|IsSimpleOrBoundExpr|_|"
-src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:165:15-165:19 expr	unconverted ours="System.Boolean"
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:31:5-56:37 unconverted-decl	"GroupUpdatesToNestedFields"
 src/Compiler/Checking/CheckRecordSyntaxHelpers.fs:61:5-61:120 unconverted-decl	"TransformAstForNestedUpdates"
 src/Compiler/Checking/OverloadResolutionCache.fs	compared
@@ -83,8 +82,6 @@ src/Compiler/Driver/CreateILModule.fs:359:39-359:87 expr	agree
 src/Compiler/Driver/CreateILModule.fs:41:9-42:40 unconverted-decl	"TryFindIntAttribute"
 src/Compiler/Driver/CreateILModule.fs:49:9-50:40 unconverted-decl	"TryFindBoolAttribute"
 src/Compiler/Driver/CreateILModule.fs:58:26-58:39 binder	agree
-src/Compiler/Driver/CreateILModule.fs:654:13-654:22 binder	agree
-src/Compiler/Driver/CreateILModule.fs:656:23-656:34 expr	agree
 src/Compiler/Driver/XmlDocFileWriter.fs	compared
 src/Compiler/Driver/XmlDocFileWriter.fs:15:32-15:47 expr	agree
 src/Compiler/Facilities/prim-lexing.fs	compared
@@ -126,9 +123,6 @@ src/Compiler/Service/QuickParse.fs:457:13-457:18 expr	agree
 src/Compiler/Service/QuickParse.fs:58:33-58:42 binder	agree
 src/Compiler/Service/QuickParse.fs:58:53-58:61 binder	agree
 src/Compiler/Service/QuickParse.fs:73:43-73:47 binder	agree
-src/Compiler/Service/QuickParse.fs:76:15-76:42 expr	agree
-src/Compiler/Service/QuickParse.fs:76:44-76:71 expr	agree
-src/Compiler/Service/QuickParse.fs:76:73-76:98 expr	agree
 src/Compiler/Service/QuickParse.fs:81:45-81:52 binder	agree
 src/Compiler/Service/QuickParse.fs:81:63-81:68 binder	agree
 src/Compiler/Service/QuickParse.fs:81:9-81:43 binder	agree

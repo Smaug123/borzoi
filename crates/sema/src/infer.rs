@@ -5292,9 +5292,9 @@ impl<'a> Gen<'a> {
     ///
     /// - a pending equality, argument check or dropped check-mode relation
     ///   ([`Self::dropped`]) is applied as an equality under a snapshot, rolled
-    ///   back after, and the pattern contradicts it if relating `pt` then
-    ///   fails (a check FCS meets by coercion fails here where FCS succeeds,
-    ///   which only declines);
+    ///   back after, and the pattern contradicts them if any of them, or
+    ///   relating `pt` after them, fails (a check FCS meets by coercion fails
+    ///   here where FCS succeeds, which only declines);
     /// - a suspended member lookup whose receiver the pattern could make
     ///   known is one FCS made on a receiver it did not yet know, an error
     ///   (FS0072), so the pattern must not wake it
@@ -5329,11 +5329,18 @@ impl<'a> Gen<'a> {
         if eqs.is_empty() {
             return false;
         }
+        // Earlier relations that already conflict among themselves are ones
+        // FCS resolved by their order, which this replay does not follow, so
+        // what the pattern meets is unknown: that declines too.
         let snapshot = self.table.snapshot();
+        let mut contradicts = false;
         for (a, b) in eqs {
-            let _ = self.table.unify_atomic(&a, &b);
+            if self.table.unify_atomic(&a, &b).is_err() {
+                contradicts = true;
+                break;
+            }
         }
-        let contradicts = self.table.unify_atomic(&Ty::Var(sv), pt).is_err();
+        contradicts = contradicts || self.table.unify_atomic(&Ty::Var(sv), pt).is_err();
         self.table.rollback_to(snapshot);
         contradicts
     }
