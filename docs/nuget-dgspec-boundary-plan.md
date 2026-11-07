@@ -560,9 +560,10 @@ after resolving rather than declined on up front. A predicted code the policy
 promotes (`warnAsError`, or `allWarningsAsErrors` unless `warnNotAsError`
 demotes it) declines as `PromotedWarning`, since restore fails; a policy that
 promotes nothing B₁ predicts commits. Within the envelope B₁ commits in, the
-one warning left is `NU1608`: a package in the closure depends on a range that
-excludes the version the graph settled on, because a nearer edge eclipsed the
-dependency with a higher version. A dependency's own `noWarn` suppresses
+one warning left is `NU1608`: a package in the closure depends on a range
+whose upper bound the version the graph settled on exceeds, because a nearer
+edge eclipsed the dependency with a higher version. (A settled version below
+a range's lower bound logs nothing; review found B₁ predicting it.) A dependency's own `noWarn` suppresses
 warnings attributed to it, which B₁ does not model, so a framework with one
 predicts nothing exact, and declines under any promoting policy.
 
@@ -586,8 +587,12 @@ Lifting the policy decline moved the census onto what it had hidden:
   in `lib/` or `ref/` and none in a `build/` or `buildTransitive/` folder named
   for a supported framework: restore fails on the first (`NU1202`, even for a
   `lib/` file that is not an assembly) and takes the second through the
-  fallback list with `NU1701`. `asset_folder_shapes_are_graded` holds each
-  top-level folder, with and without a framework subfolder, to B₀.
+  fallback list with `NU1701`. Restore throws on any folder in a framework
+  position of its content model that it cannot parse
+  (`build/portable-net45-client/`), whatever else the package holds, so such a
+  package declines. `asset_folder_shapes_are_graded` holds each top-level
+  folder, with and without a framework subfolder and with an unparseable one,
+  to B₀.
 
 | corpus project (6) | B₁ |
 |---|---|

@@ -820,6 +820,29 @@ fn a_promoted_warning_fails_a_restore_the_resolver_would_commit() {
     }
 }
 
+/// A version below a dependency's lower bound, which a nearer edge can settle
+/// on, logs nothing: `NU1608` is about the upper bound only.
+#[test]
+fn a_version_below_a_dependencys_lower_bound_logs_nothing() {
+    let mut oracle = Oracle::spawn();
+    let packages = [
+        Pkg::new("A", "1.0.0", vec![group(None, &[("B", "(1.0.0, )")])]),
+        Pkg::new("B", "1.0.0", vec![]),
+        Pkg::new("B", "2.0.0", vec![]),
+    ];
+    let mut shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )"), Dep::new("B", "[1.0.0, )")],
+    )]);
+    shape.all_warnings_as_errors = true;
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert_eq!(
+        committed(&graded)["net8.0"],
+        set(&[("A", "1.0.0"), ("B", "1.0.0")])
+    );
+    assert!(graded.theirs.codes.is_empty(), "{:?}", graded.theirs.codes);
+}
+
 /// A package whose only assets are for a framework the project cannot
 /// consume fails restore's compatibility check (`NU1202`), so B₁ declines it.
 /// Through the asset-target fallback list restore instead takes the assets
@@ -2326,9 +2349,10 @@ fn nuspec_namespace_forms_are_graded() {
     }
 }
 
-/// Every top-level asset folder, with and without a framework subfolder,
-/// alone in a package of a `net8.0` project with the fallback list: graded
-/// against B₀, with B₁ committing exactly where the compatibility rule says.
+/// Every top-level asset folder, with and without a framework subfolder, and
+/// with a framework folder NuGet cannot parse (it throws), alone in a package
+/// of a `net8.0` project with the fallback list: graded against B₀, with B₁
+/// committing exactly where the compatibility rule says.
 #[test]
 fn asset_folder_shapes_are_graded() {
     let mut oracle = Oracle::spawn();
@@ -2356,6 +2380,8 @@ fn asset_folder_shapes_are_graded() {
         ("lib/A.txt", false),
         ("lib/net48/A.xml", false),
         ("lib/net8.0/A.dll", true),
+        ("build/portable-net45-client/A.targets", false),
+        ("contentFiles/any/portable-net45-client/A.cs", false),
     ];
     for (file, commits) in shapes {
         let package = Pkg::new("A", "1.0.0", vec![]).with_files(&[file]);
