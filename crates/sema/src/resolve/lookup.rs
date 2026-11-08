@@ -2685,29 +2685,27 @@ impl<'a> Resolver<'a> {
 
     /// The expression-position reading of the qualified member `full`
     /// (container + name) when the container declares the name **more than
-    /// once**; `None` when it declares it at most once, where the latest
-    /// accessible export is the only candidate.
+    /// once, not all of them ordinary values**; `None` otherwise, where the
+    /// latest accessible export is FCS's reading (fcs-dump-pinned for a public
+    /// value under a later `private` one, and for one value per signature
+    /// fragment).
     ///
     /// FCS's `ResolveExprLongIdentInModuleOrNamespace` reads a module's values
     /// first, whatever their position among its declarations, then its
     /// exceptions, then the union case of the first type declaring the name;
     /// a namespace split over files is searched fragment by fragment, the
-    /// latest first. Only the first step is modelled: a module (one file —
-    /// a module cannot span files) that declares an ordinary value of the
-    /// name binds it, provided every such value is accessible here (FCS's
-    /// value table holds one value per name, so an inaccessible one may be
-    /// the one it reads, and it would then move on to the cases). Anything
-    /// else — two unions sharing a case name, an exception beside a case, a
-    /// declaration we count but cannot bind (an `extern`, a possible case) —
-    /// declines, explicitly, so that no lower-priority reading of the path
-    /// commits in its place.
+    /// latest first. Only the first step is modelled: when every declaration
+    /// sits in one file and some are ordinary values, the latest value binds,
+    /// provided every such value is accessible here (otherwise FCS may skip
+    /// past an inaccessible one to the cases). Anything else — two unions
+    /// sharing a case name, an exception beside a case, a declaration we count
+    /// but cannot bind (an `extern`, a possible case), declarations spread over
+    /// files — declines, explicitly, so that no lower-priority reading of the
+    /// path commits in its place.
     fn contested_qualified_expression(&self, full: &[String]) -> Option<QualifiedMember> {
         let decls = self.member_declarations(full);
         if decls.count <= 1 {
             return None;
-        }
-        if !decls.one_file {
-            return Some(QualifiedMember::Declined);
         }
         let site = &self.container_path;
         let accessible = |root: Option<usize>| super::model::accessible_from(root, full, site);
@@ -2722,8 +2720,16 @@ impl<'a> Resolver<'a> {
             .map(|(id, root)| (id, accessible(root)));
         // `own` is this file's, which folds after every earlier one.
         let values: Vec<(ItemId, bool)> = earlier.chain(own).collect();
+        if values.len() == decls.count {
+            // Values alone — a public one under a later `private`
+            // redeclaration, or one value per signature fragment: the latest
+            // accessible export is FCS's reading, which the caller takes.
+            return None;
+        }
         Some(match values.last() {
-            Some(&(id, true)) if values.iter().all(|&(_, ok)| ok) => QualifiedMember::Bound(id),
+            Some(&(id, true)) if decls.one_file && values.iter().all(|&(_, ok)| ok) => {
+                QualifiedMember::Bound(id)
+            }
             _ => QualifiedMember::Declined,
         })
     }
