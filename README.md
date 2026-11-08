@@ -22,6 +22,7 @@ The "hover" action will generally tell you why the LSP doesn't understand a give
 
 You should, once, manually `dotnet restore` in the project you're accessing.
 `dotnet restore` executes arbitrary code (whyyyy Microsoft whyyyyy), so by default we don't do that for you.
+C# `<ProjectReference>`s are off by default for the same reason (reading one runs that project's MSBuild targets, analyzers and source generators); a host that trusts the workspace turns them on with the `enableCSharpProjectReferences: true` initialization option.
 Moreover, NuGet is *astonishingly* complex, and becomes ever more so SDK-by-SDK; most recently they've moved a bunch of the SDK's NuGet restore logic out into runtime C# in MSBuild `Target`s, which means we are getting further and further away from being able to do that ourselves.
 Anyway, once NuGet has produced its `obj/project.assets.json` file, we consume it without further restores needed.
 

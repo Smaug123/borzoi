@@ -386,6 +386,10 @@ fn pinned_projects_docs_agree_with_fcs() {
     for project in &projects {
         let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
         let mut sema = SemanticState::new();
+        // A pinned corpus project, resolved as `borzoi-corpus-diff` resolves it:
+        // as a host that trusts the workspace would, C# project references
+        // included.
+        sema.set_csharp_project_references_enabled(true);
         let loaded = load(project, &mut workspace, &mut sema);
         assert!(
             !loaded.refs.is_empty(),

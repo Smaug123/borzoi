@@ -428,8 +428,10 @@ pub struct SemanticState {
     assembly_cache: AssemblyCache,
     /// The single reused C# sidecar process, lazily spawned the first time a
     /// project's assembly env needs a `.csproj` reference's metadata (see
-    /// `build_assembly_env`). Left un-spawned for the common F#-only workspace;
-    /// degrades to under-resolution when the sidecar is unavailable (D5). Not a
+    /// `build_assembly_env`). Never spawned unless
+    /// [`Self::csharp_project_references_enabled`]; left un-spawned for the
+    /// common F#-only workspace even then; degrades to under-resolution when
+    /// the sidecar is unavailable (D5). Not a
     /// cache to invalidate — the sidecar re-derives its own content-addressed
     /// metadata per `buildMetadata`, so it survives text-sync and
     /// `didChangeWatchedFiles`; only dropping `SemanticState` tears it down.
@@ -442,6 +444,19 @@ pub struct SemanticState {
     /// assets-absent project degrades to today's empty env (single-file editing)
     /// exactly as before.
     on_demand_restore_enabled: bool,
+    /// Whether a C# `<ProjectReference>` may be read through the C# sidecar.
+    /// Off by default — the sidecar loads each referenced `.csproj` with a
+    /// design-time build, which executes that project's MSBuild targets (its
+    /// `Directory.Build.targets` included) and loads its analyzers and source
+    /// generators in-process, and it writes its output under
+    /// `obj/borzoi/csharp-sidecar/`. Like on-demand restore, that is a
+    /// *workspace trust* decision the host opts into explicitly (the server
+    /// reads it from the `enableCSharpProjectReferences` initialization
+    /// option), and only a host that trusts the workspace should set it. When
+    /// off, the sidecar is never spawned and every C# edge grades as
+    /// [`ReferenceOutcome::Unread`] with [`CSHARP_REFERENCES_DISABLED`], so the
+    /// env is marked incomplete rather than silently missing the reference.
+    csharp_project_references_enabled: bool,
 }
 
 impl SemanticState {
@@ -487,6 +502,24 @@ impl SemanticState {
     /// restore targets; the assets-absent path then degrades to an empty env.
     pub fn set_on_demand_restore_enabled(&mut self, enabled: bool) {
         self.on_demand_restore_enabled = enabled;
+    }
+
+    /// Opt into reading C# `<ProjectReference>`s through the C# sidecar (the
+    /// `enableCSharpProjectReferences` initialization option). The sidecar
+    /// executes each referenced C# project's MSBuild targets and loads its
+    /// analyzers and source generators, so only a host that trusts the
+    /// workspace should enable it. Off by [`Self::new`], so tests, library
+    /// embeddings, and un-opted hosts never spawn the sidecar; each C# edge
+    /// then grades as unread and leaves the env incomplete.
+    ///
+    /// The assembly envs are not keyed on this flag, so changing it drops them
+    /// (and everything resolved against them): an env cached under one setting
+    /// must not be served under the other.
+    pub fn set_csharp_project_references_enabled(&mut self, enabled: bool) {
+        if self.csharp_project_references_enabled != enabled {
+            self.csharp_project_references_enabled = enabled;
+            self.invalidate_assembly_state();
+        }
     }
 
     /// Drop this project's compile-order parses and its resolved-project
@@ -669,11 +702,15 @@ impl SemanticState {
     ///   skipped (under-resolve). An edge present only in stale assets (the
     ///   `<ProjectReference>` was removed) is **not** folded: that would be
     ///   fabrication, not degradation.
-    /// - **C# graph edges (`.csproj`)** are consulted via the sidecar: it
-    ///   emits a Roslyn metadata DLL per referenced project (and its transitive
-    ///   C# closure), which are folded in. Degrades to under-resolution when the
-    ///   sidecar is unavailable, a build fails (see [`SidecarManager`]), or the
-    ///   edge is too new for any restore to have recorded a producer TFM.
+    /// - **C# graph edges (`.csproj`)** are consulted via the sidecar, only
+    ///   when the host opted in
+    ///   ([`Self::set_csharp_project_references_enabled`]): it emits a Roslyn
+    ///   metadata DLL per referenced project (and its transitive C# closure),
+    ///   which are folded in. When the host has not opted in, the sidecar is
+    ///   never spawned and each C# edge is unread, which marks the env
+    ///   incomplete. Degrades to under-resolution when the sidecar is
+    ///   unavailable, a build fails (see [`SidecarManager`]), or the edge is
+    ///   too new for any restore to have recorded a producer TFM.
     ///
     /// Cached for the server lifetime (no `didChangeWatchedFiles` yet);
     /// returns an [`Arc`] so callers can hold the env beyond the borrow on
@@ -729,6 +766,19 @@ impl SemanticState {
         target_framework: &ServedTfm,
         workspace: &Workspace,
     ) -> Vec<PathBuf> {
+        self.reference_set_for_project(project, dotnet_root, target_framework, workspace)
+            .dlls
+    }
+
+    /// [`Self::reference_dlls_for_project`]'s whole resolution: the DLLs and
+    /// what became of each declared project-reference edge.
+    fn reference_set_for_project(
+        &mut self,
+        project: &Path,
+        dotnet_root: Option<&Path>,
+        target_framework: &ServedTfm,
+        workspace: &Workspace,
+    ) -> ReferenceSet {
         let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref());
         let graph = workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms);
         let ref_targets = graph_ref_targets(&graph, project);
@@ -740,12 +790,11 @@ impl SemanticState {
             project,
             dotnet_root,
             target_framework,
-            &mut self.sidecar,
+            CsharpReferences::gated(self.csharp_project_references_enabled, &mut self.sidecar),
             &ref_targets,
             &recovered_ref_tfms,
             None,
         )
-        .dlls
     }
 
     /// [`Self::assembly_env_for_project`] plus a *retryable* flag: `true` when a
@@ -856,13 +905,13 @@ impl SemanticState {
         let ref_targets = graph_ref_targets(&graph, project);
         // Borrow `assembly_cache` (shared) and `sidecar` (mut) as disjoint
         // fields — the sidecar drives any C# `.csproj` references this project
-        // has, lazily spawning on first need.
+        // has, lazily spawning on first need, when the host opted into them.
         let (env, dlls, retryable) = build_assembly_env(
             project,
             dotnet_root,
             target_framework,
             &self.assembly_cache,
-            &mut self.sidecar,
+            CsharpReferences::gated(self.csharp_project_references_enabled, &mut self.sidecar),
             &ref_targets,
             &recovered_ref_tfms,
             restore_env,
@@ -1652,7 +1701,7 @@ fn build_assembly_env(
     dotnet_root: Option<&Path>,
     target_framework: &ServedTfm,
     cache: &AssemblyCache,
-    sidecar: &mut SidecarManager,
+    sidecar: CsharpReferences<'_>,
     ref_targets: &GraphRefTargets,
     recovered_ref_tfms: &BTreeMap<PathBuf, String>,
     restore_env: Option<&SdkDiscoveryEnv>,
@@ -1942,7 +1991,7 @@ fn resolve_reference_dlls(
     project: &Path,
     dotnet_root: Option<&Path>,
     target_framework: &ServedTfm,
-    sidecar: &mut SidecarManager,
+    sidecar: CsharpReferences<'_>,
     ref_targets: &GraphRefTargets,
     recovered_ref_tfms: &BTreeMap<PathBuf, String>,
     restore_env: Option<&SdkDiscoveryEnv>,
@@ -2069,12 +2118,13 @@ fn resolve_reference_dlls(
             "including F# project-reference output DLLs in the assembly env"
         );
     }
-    // C# `<ProjectReference>` graph targets: the sidecar emits a Roslyn
-    // metadata DLL for each (plus its transitive C# closure); fold those in
-    // too. Degrades to nothing when the sidecar is unavailable or a build
-    // fails (D5); a transport failure additionally marks the env non-cacheable
-    // so the next request retries against a respawned sidecar rather than
-    // serving this incomplete one.
+    // C# `<ProjectReference>` graph targets: when the host opted in, the
+    // sidecar emits a Roslyn metadata DLL for each (plus its transitive C#
+    // closure); fold those in too. Each edge is unread when the host has not
+    // opted in, the sidecar is unavailable, or a build fails (D5); a transport
+    // failure additionally marks the env non-cacheable so the next request
+    // retries against a respawned sidecar rather than serving this incomplete
+    // one.
     let (csharp_edges, retryable) = csharp_project_ref_edges(
         sidecar,
         project,
@@ -2152,6 +2202,35 @@ fn resolve_reference_dlls(
     }
 }
 
+/// Whether the env build may read C# `<ProjectReference>`s, and the sidecar it
+/// reads them with. The sidecar is reachable only through
+/// [`Self::Enabled`], so a build handed [`Self::Disabled`] cannot spawn it.
+enum CsharpReferences<'a> {
+    /// The host has not opted in
+    /// ([`SemanticState::set_csharp_project_references_enabled`]): every C#
+    /// edge is unread with [`CSHARP_REFERENCES_DISABLED`].
+    Disabled,
+    /// The host opted in: C# edges are read through this sidecar.
+    Enabled(&'a mut SidecarManager),
+}
+
+impl<'a> CsharpReferences<'a> {
+    /// The sidecar when `enabled`, otherwise [`Self::Disabled`].
+    fn gated(enabled: bool, sidecar: &'a mut SidecarManager) -> Self {
+        if enabled {
+            CsharpReferences::Enabled(sidecar)
+        } else {
+            CsharpReferences::Disabled
+        }
+    }
+}
+
+/// Why a C# `<ProjectReference>` is unread when the host has not opted into
+/// them: reading one runs its MSBuild targets, analyzers and generators.
+const CSHARP_REFERENCES_DISABLED: &str = "C# project references are off; reading one executes \
+     its MSBuild targets, analyzers and source generators, so a host that trusts the workspace \
+     enables them with the `enableCSharpProjectReferences` initialization option";
+
 /// The C# metadata DLLs for the graph's `.csproj` boundary targets
 /// (`csproj_refs`), via the sidecar. For each we drive one `buildMetadata`
 /// (the sidecar expands that ref's transitive C# closure itself), then dedup
@@ -2179,8 +2258,12 @@ fn resolve_reference_dlls(
 /// *retryable* flag. A C# reference is built on demand by the sidecar, so
 /// [`ReferenceOutcome::NotBuilt`] never arises here — every failure is a
 /// failure to *read*, and grades as [`ReferenceOutcome::Unread`].
+///
+/// With [`CsharpReferences::Disabled`] there is no sidecar to drive, so
+/// nothing is spawned and nothing is written: every edge is unread with
+/// [`CSHARP_REFERENCES_DISABLED`].
 fn csharp_project_ref_edges(
-    sidecar: &mut SidecarManager,
+    sidecar: CsharpReferences<'_>,
     project: &Path,
     dotnet_root: &Path,
     recovered: &BTreeMap<PathBuf, String>,
@@ -2204,6 +2287,10 @@ fn csharp_project_ref_edges(
                 .collect(),
             false,
         )
+    };
+    let sidecar = match sidecar {
+        CsharpReferences::Enabled(sidecar) => sidecar,
+        CsharpReferences::Disabled => return unread(CSHARP_REFERENCES_DISABLED),
     };
     let Some(workspace_root) = project.parent() else {
         // Nowhere to publish the sidecar's output, so *no* C# reference can be
@@ -5718,6 +5805,179 @@ mod tests {
             "a suppressed reference list leaves an unknown number of assemblies \
              missing, so the env must not claim to be complete"
         );
+    }
+
+    /// A restored `App.fsproj` whose one `<ProjectReference>` is the C# project
+    /// `Cs/Cs.csproj` (recorded in the assets file with its producer TFM, so the
+    /// env build reaches the sidecar), and a fake SDK root whose `dotnet` is a
+    /// stub that creates a sentinel file whenever anything runs it. Returns
+    /// `(root, app, dotnet_root, sentinel)`; `root` owns the tree.
+    #[cfg(unix)]
+    fn csharp_ref_fixture_with_stub_dotnet() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        write(&root.join("Cs/Cs.csproj"), "<Project />");
+        let app = root.join("App.fsproj");
+        write(&app, &fsproj_with_refs(&["Cs/Cs.csproj"]));
+        let pkgs = root.join("pkgs");
+        fs::create_dir_all(&pkgs).unwrap();
+        let assets = serde_json::json!({
+            "version": 3,
+            "targets": { "net10.0": {
+                "Cs/1.0.0": { "type": "project", "framework": ".NETCoreApp,Version=v10.0" }
+            } },
+            "libraries": {
+                "Cs/1.0.0": { "type": "project", "path": "Cs/Cs.csproj", "msbuildProject": "Cs/Cs.csproj" }
+            },
+            "packageFolders": { pkgs.to_str().unwrap(): {} },
+            "project": { "frameworks": { "net10.0": {} } }
+        });
+        write(
+            &root.join("obj/project.assets.json"),
+            &serde_json::to_string(&assets).unwrap(),
+        );
+
+        let dotnet_root = root.join("dotnet");
+        let sentinel = root.join("dotnet-was-run");
+        let stub = dotnet_root.join("dotnet");
+        write(
+            &stub,
+            &format!(
+                "#!/bin/sh\ntouch '{}'\nexit 1\n",
+                sentinel.to_str().expect("utf-8 temp path")
+            ),
+        );
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        (tmp, app, dotnet_root, sentinel)
+    }
+
+    /// The C# sidecar runs a design-time build of each referenced `.csproj` —
+    /// its targets, analyzers and generators — so with
+    /// `enableCSharpProjectReferences` off (the default) the env build must
+    /// never start a process for it, nor write under `obj/borzoi/`. The C#
+    /// edge is still a declared reference whose types are unknown, so the env
+    /// is incomplete rather than silently missing it.
+    #[cfg(unix)]
+    #[test]
+    fn csharp_references_off_by_default_spawn_nothing_and_leave_the_env_incomplete() {
+        let (tmp, app, dotnet_root, sentinel) = csharp_ref_fixture_with_stub_dotnet();
+
+        let mut sema = SemanticState::new();
+        let env = sema.assembly_env_for_project(
+            &app,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+
+        assert!(
+            !sentinel.exists(),
+            "the sidecar's `dotnet` ran although C# project references are off"
+        );
+        assert!(
+            !tmp.path().join("obj/borzoi").exists(),
+            "something wrote under obj/borzoi/ although C# project references are off"
+        );
+        assert!(
+            env.identities_incomplete(),
+            "an unread C# reference must mark the env incomplete, not vanish"
+        );
+
+        // The same resolution, edge by edge: the C# edge is unread, naming the
+        // option that would read it.
+        let refs = sema.reference_set_for_project(
+            &app,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+        assert_eq!(
+            refs.edges,
+            [ReferenceEdge {
+                project: fs::canonicalize(tmp.path().join("Cs/Cs.csproj")).unwrap(),
+                outcome: ReferenceOutcome::Unread {
+                    why: CSHARP_REFERENCES_DISABLED,
+                    transient: false,
+                },
+            }]
+        );
+        assert!(CSHARP_REFERENCES_DISABLED.contains("`enableCSharpProjectReferences`"));
+        assert!(!refs.retryable);
+        assert!(!sentinel.exists());
+        assert!(!tmp.path().join("obj/borzoi").exists());
+    }
+
+    /// The control that keeps the test above from passing vacuously: on the
+    /// same fixture with the option on, the env build does run the stub
+    /// `dotnet` as the sidecar host. The stub exits without answering, so the
+    /// edge is unread for that reason instead.
+    #[cfg(unix)]
+    #[test]
+    fn csharp_references_opted_into_drive_the_sidecar() {
+        let (tmp, app, dotnet_root, sentinel) = csharp_ref_fixture_with_stub_dotnet();
+
+        let mut sema = SemanticState::new();
+        sema.set_csharp_project_references_enabled(true);
+        let env = sema.assembly_env_for_project(
+            &app,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+
+        assert!(
+            sentinel.exists(),
+            "with C# project references on, the env build must start the sidecar"
+        );
+        assert!(env.identities_incomplete());
+        let refs = sema.reference_set_for_project(
+            &app,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+        assert_eq!(
+            refs.edges,
+            [ReferenceEdge {
+                project: fs::canonicalize(tmp.path().join("Cs/Cs.csproj")).unwrap(),
+                outcome: ReferenceOutcome::Unread {
+                    why: "the sidecar produced no metadata assembly",
+                    transient: false,
+                },
+            }]
+        );
+    }
+
+    /// The env cache is not keyed on the option, so changing it must drop the
+    /// envs built under the old setting rather than serve them.
+    #[cfg(unix)]
+    #[test]
+    fn changing_the_csharp_references_option_drops_cached_envs() {
+        let (_tmp, app, dotnet_root, sentinel) = csharp_ref_fixture_with_stub_dotnet();
+
+        let mut sema = SemanticState::new();
+        let off = sema.assembly_env_for_project(
+            &app,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+        assert!(!sentinel.exists());
+
+        sema.set_csharp_project_references_enabled(true);
+        let on = sema.assembly_env_for_project(
+            &app,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+        assert!(
+            !Arc::ptr_eq(&off, &on),
+            "the env built with C# references off was served after turning them on"
+        );
+        assert!(sentinel.exists(), "the rebuilt env drives the sidecar");
     }
 
     /// Graph-sourced edges (plan E1/E2): a project reference recorded in a

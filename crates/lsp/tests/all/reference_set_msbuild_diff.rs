@@ -182,7 +182,8 @@ fn build_and_msbuild_reference_names(fsproj: &Path) -> BTreeSet<String> {
 /// assets package/framework DLLs + F# project-ref outputs + C# sidecar
 /// metadata DLLs), each DLL projected to its manifest assembly name. The
 /// wiring (workspace env, `dotnet_root`, entry-TFM selection) mirrors the
-/// server's own request path, so this measures what the LSP actually serves.
+/// server's own request path with C# project references opted into, so this
+/// measures what the LSP serves a host that trusts the workspace.
 fn our_reference_names(fsproj: &Path) -> BTreeSet<String> {
     let mut workspace = match std::env::var_os("DOTNET_ROOT").map(PathBuf::from) {
         Some(root) => Workspace::with_env(SdkDiscoveryEnv {
@@ -199,6 +200,9 @@ fn our_reference_names(fsproj: &Path) -> BTreeSet<String> {
     let target_framework = workspace.served_tfm_for_project(fsproj);
 
     let mut sema = SemanticState::new();
+    // The fixtures are this test's own, so it trusts them: C# references are
+    // read through the sidecar, as a host that opted in would read them.
+    sema.set_csharp_project_references_enabled(true);
     let dlls = sema.reference_dlls_for_project(
         fsproj,
         dotnet_root.as_deref(),

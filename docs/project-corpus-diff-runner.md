@@ -134,7 +134,8 @@ The runner records whether `obj/project.assets.json` was missing or resolved.
 `AssemblyEnv` is built from — `SemanticState::reference_dlls_for_project`: the
 assets file's package and framework DLLs, each F# project reference's *built*
 output DLL (`bin/<config>/<tfm>/<TargetName>.dll`), and the C# sidecar's
-metadata DLLs. An unbuilt project reference is therefore absent from *both*
+metadata DLLs (the runner opts into C# project references, which the LSP reads
+only for a host that sets `enableCSharpProjectReferences`). An unbuilt project reference is therefore absent from *both*
 sides: we under-resolve every use of the referenced project's types, and FCS
 answers FS0039 to each, so the project is skipped rather than compared.
 A `dotnet restore` alone cannot produce those outputs, which is why the CI

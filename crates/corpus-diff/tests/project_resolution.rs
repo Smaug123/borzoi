@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use borzoi::position::position_to_offset;
-use borzoi::semantic::{ProjectParses, SemanticState};
+use borzoi::semantic::ProjectParses;
 use borzoi::workspace::Workspace;
 use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
@@ -476,9 +476,9 @@ fn system_runtime_dll() -> PathBuf {
 /// must resolve against one reference set. The loader takes the refs from the
 /// env's own cache entry (`env_reference_dlls_for_project`), so this compares
 /// that stored list against an *independently* re-resolved one
-/// ([`SemanticState::reference_dlls_for_project`]) — which also pins that the two
-/// accessors agree where nothing has degraded. The containment assertion is there
-/// so the equality cannot pass vacuously on two empty lists.
+/// ([`borzoi::semantic::SemanticState::reference_dlls_for_project`]) — which also
+/// pins that the two accessors agree where nothing has degraded. The containment
+/// assertion is there so the equality cannot pass vacuously on two empty lists.
 #[test]
 fn the_oracle_reference_set_is_the_set_the_env_is_built_from() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -559,7 +559,7 @@ fn the_oracle_reference_set_is_the_set_the_env_is_built_from() {
     );
 
     let mut workspace = Workspace::new();
-    let mut semantic = SemanticState::new();
+    let mut semantic = borzoi_corpus_diff::corpus_semantic_state();
     let dotnet_root = workspace.dotnet_root_for_project(&app);
     let tfm = workspace.served_tfm_for_project(&app);
     let env_refs =

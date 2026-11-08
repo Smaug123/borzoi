@@ -4,8 +4,9 @@
 //! Unlike `csharp_sidecar_bundled_e2e` (which drives the sidecar directly), this
 //! exercises the *real runtime path*: `SemanticState::assembly_env_for_project`
 //! reads the restored `project.assets.json`, discovers the `.csproj` reference,
-//! spawns the sidecar via `SidecarManager`, and folds the emitted metadata DLL
-//! into the env. We then assert the C# type is resolvable through the env.
+//! spawns the sidecar via `SidecarManager` (C# project references opted into,
+//! as a host that trusts the workspace would), and folds the emitted metadata
+//! DLL into the env. We then assert the C# type is resolvable through the env.
 //!
 //! Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 
@@ -55,6 +56,8 @@ fn assembly_env_includes_csharp_project_reference_types() {
 
     let target_framework = workspace.served_tfm_for_project(&fsproj);
     let mut sema = SemanticState::new();
+    // C# project references are read only when the host opts in.
+    sema.set_csharp_project_references_enabled(true);
     let env = sema.assembly_env_for_project(
         &fsproj,
         resolved_root.as_deref(),

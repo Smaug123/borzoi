@@ -40,7 +40,9 @@
 - **3.3b** (#866; bundling/discovery #856/#861) — C# project-reference metadata
   via `semantic::csharp_project_ref_dlls` driving the sidecar (`SidecarManager`)
   for each direct `.csproj` ref in the entry's closure; transport failures mark the
-  env non-cacheable, every other failure degrades to under-resolution.
+  env non-cacheable, every other failure degrades to under-resolution. The sidecar
+  runs only when the host sets the `enableCSharpProjectReferences` initialization
+  option; otherwise each C# ref is unread and marks the env incomplete.
 - **3.3c** (#878/#879) — TFM and `$(Configuration)` selection policy, threaded
   through both the parse/defines side and the assembly env; full design in
   [`fsproj-tfm-selection-plan.md`](fsproj-tfm-selection-plan.md).

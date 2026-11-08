@@ -245,6 +245,18 @@ pub struct LoadOptions {
     pub build_properties: HashMap<String, String>,
 }
 
+/// The semantic state the runner resolves projects with: a host that trusts
+/// the workspace, so C# `<ProjectReference>`s are read through the C# sidecar
+/// rather than left unread. The runner builds every corpus project anyway,
+/// which executes the same targets, so it extends no trust it has not already
+/// extended. [`lsp_client::LspClient`] serves its handlers from this state too,
+/// so the protocol answers and the loaded project resolve against one env.
+pub fn corpus_semantic_state() -> SemanticState {
+    let mut semantic = SemanticState::new();
+    semantic.set_csharp_project_references_enabled(true);
+    semantic
+}
+
 /// The workspace the LSP evaluates projects in, with the corpus runner's
 /// extra MSBuild properties.
 fn workspace_with(build_properties: HashMap<String, String>) -> Workspace {
@@ -285,7 +297,7 @@ pub fn load_lsp_project_with_options(
     options: &LoadOptions,
 ) -> Result<LoadedProject, LoadSkip> {
     let mut workspace = workspace_with(options.build_properties.clone());
-    let mut semantic = SemanticState::new();
+    let mut semantic = corpus_semantic_state();
     let docs: HashMap<Uri, String> = HashMap::new();
 
     let parsed = workspace
