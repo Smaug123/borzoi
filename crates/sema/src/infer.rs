@@ -495,9 +495,10 @@ use borzoi_assembly::{
 };
 use borzoi_cst::syntax::{
     AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
-    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, MatchExpr, ModuleOrNamespace,
-    ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat, SequentialExpr, SyntaxKind,
-    SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr, VarType,
+    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, MatchExpr, MemberDefn,
+    ModuleOrNamespace, ModuleOrNamespaceKind, NamedPat, NestedModuleDecl, ParenPat, Pat,
+    RecordRepr, SequentialExpr, SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn,
+    TypeDefnRepr, UnionRepr, VarType,
 };
 use rowan::{TextRange, TextSize};
 
@@ -563,6 +564,9 @@ pub struct InferredFile {
     /// How many constructor-like declarations of each name the file makes —
     /// read by [`PrecedingTypes::publish`] for later files' case screen.
     constructor_names: HashMap<String, usize>,
+    /// The records this file declares whose fields inference reads — read by
+    /// [`PrecedingTypes::publish`].
+    project_records: ProjectRecords,
 }
 
 impl InferredFile {
@@ -659,6 +663,12 @@ impl InferredFile {
     /// See [`Self::constructor_names`](InferredFile).
     pub(crate) fn constructor_names(&self) -> &HashMap<String, usize> {
         &self.constructor_names
+    }
+
+    /// Every record this file declares whose fields inference reads. See
+    /// [`Self::project_records`](InferredFile).
+    pub(crate) fn project_records(&self) -> &ProjectRecords {
+        &self.project_records
     }
 
     pub fn len(&self) -> usize {
@@ -912,7 +922,7 @@ enum UnionId {
 }
 
 /// A case of a union the project declares, as inference types its uses
-/// ([`Gen::project_case_schemes`]): its scheme, over the union's type
+/// ([`Gen::project_type_schemes`]): its scheme, over the union's type
 /// parameters, and its place among the union's cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectCase {
@@ -925,6 +935,36 @@ pub(crate) struct ProjectCase {
     /// range in the declaring file. Such a case is never published to a
     /// later file.
     scope: Option<TextRange>,
+}
+
+/// The records of the project inference reads field accesses on, by the
+/// path and arity of their [`Ty::Project`] (one type per assembly, FS0249).
+pub(crate) type ProjectRecords = HashMap<(Vec<String>, usize), ProjectRecord>;
+
+/// A record the project declares, as inference reads a field access on it
+/// ([`Gen::project_type_schemes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectRecord {
+    /// The record applied to its own parameters ([`Ty::Param`]s).
+    record: Ty,
+    /// Each field inference reads, by name, over those parameters.
+    fields: HashMap<String, Ty>,
+    /// Where a field is accessible, for a `private` representation (as
+    /// [`ProjectCase::scope`]); such a record is never published.
+    scope: Option<TextRange>,
+}
+
+impl ProjectRecord {
+    /// Whether a later file may read the record's fields.
+    pub(crate) fn publishable(&self) -> bool {
+        self.scope.is_none()
+    }
+}
+
+/// A type definition whose declared fields inference reads.
+enum DeclaredFields {
+    Union(UnionRepr),
+    Record(RecordRepr),
 }
 
 impl ProjectCase {
@@ -1126,6 +1166,22 @@ struct SuspendedMember {
     waited_on_receiver: bool,
 }
 
+impl SuspendedMember {
+    /// Whether the member woke only through a relation FCS applies after it:
+    /// FCS reads the receiver at the access, and a method's arguments once
+    /// they are checked, so a discharge ending later than that
+    /// (`latest_discharge`) is one FCS had not applied
+    /// ([`WorklistOutcome::late_member`]).
+    fn late(&self, latest_discharge: Option<TextSize>) -> bool {
+        let by = if self.waited_on_receiver {
+            self.use_range.start()
+        } else {
+            self.args_by
+        };
+        latest_discharge.is_some_and(|end| end > by)
+    }
+}
+
 /// Infer best-effort types for `file`, given its name resolution `resolved` and
 /// the project's `env` (the flattened referenced-assembly view). Types each
 /// literal in a soundness-safe position (the immediate RHS of an unannotated,
@@ -1157,7 +1213,7 @@ pub fn infer_file(
     let mut cx = Gen::new(resolved, env, ext_scope, preceding);
     cx.rejected_defs = cx.rejected_use_defs(file);
     cx.project_types = cx.project_type_paths(file);
-    cx.project_cases = cx.project_case_schemes(file);
+    (cx.project_cases, cx.project_records) = cx.project_type_schemes(file);
     cx.walk(file);
     cx.solve();
     cx.finish()
@@ -1513,17 +1569,20 @@ struct Gen<'a> {
     /// Computed once in [`infer_file`].
     project_types: HashMap<DefId, (Vec<String>, usize)>,
     /// The cases of the file's own unions whose fields are all bridged, by
-    /// the case's item ([`Self::project_case_schemes`]). Computed once in
+    /// the case's item ([`Self::project_type_schemes`]). Computed once in
     /// [`infer_file`].
     project_cases: HashMap<ItemId, ProjectCase>,
     /// How many constructor-like declarations of each name the file makes
     /// ([`constructor_names`]). Computed once in [`infer_file`].
     constructor_names: HashMap<String, usize>,
+    /// The file's own records whose fields inference reads
+    /// ([`Self::project_type_schemes`]). Computed once in [`infer_file`].
+    project_records: ProjectRecords,
     /// Every case of the file's own unions, typed or not, by its item
     /// ([`Self::own_union_case_at`]). Computed once in [`infer_file`].
     own_union_cases: HashSet<ItemId>,
     /// The declared type parameters of the type definition whose case fields
-    /// [`Self::project_case_schemes`] is reading, by name, each the
+    /// [`Self::project_type_schemes`] is reading, by name, each the
     /// [`Ty::Param`] of its position. Empty everywhere else.
     decl_typars: HashMap<String, u32>,
     /// The defining ranges of the in-file binders a use of which F# may reject
@@ -1657,6 +1716,7 @@ impl<'a> Gen<'a> {
             project_cases: HashMap::new(),
             own_union_cases: HashSet::new(),
             constructor_names: HashMap::new(),
+            project_records: HashMap::new(),
             decl_typars: HashMap::new(),
             dropped: Vec::new(),
             eq_failures: 0,
@@ -2116,6 +2176,13 @@ impl<'a> Gen<'a> {
                     .or_default() += 1;
             }
         }
+        // Two blocks of one namespace are one container: a path and arity
+        // computed twice is a type declared twice.
+        let mut paths: HashMap<(Vec<String>, usize), usize> = HashMap::new();
+        for key in out.values() {
+            *paths.entry(key.clone()).or_default() += 1;
+        }
+        out.retain(|_, key| paths.get(key).is_some_and(|&n| n == 1));
         out.retain(|def, (_, arity)| {
             let d = self.resolved.def(*def);
             let Some(container) = file
@@ -2166,7 +2233,10 @@ impl<'a> Gen<'a> {
     /// `ResolvePatternLongIdentInModuleOrNamespace`; `type U1 = X | Y` and
     /// `type U2 = X | Z`: FCS's `Lib.X` is `U1`'s). A name the module
     /// declares once means one thing in every order.
-    fn project_case_schemes(&mut self, file: &ImplFile) -> HashMap<ItemId, ProjectCase> {
+    fn project_type_schemes(
+        &mut self,
+        file: &ImplFile,
+    ) -> (HashMap<ItemId, ProjectCase>, ProjectRecords) {
         let exports = self.resolved.exports();
         self.own_union_cases = exports
             .iter()
@@ -2175,25 +2245,31 @@ impl<'a> Gen<'a> {
             .collect();
         self.constructor_names = constructor_names(file, exports);
         let mut out = HashMap::new();
+        let mut records: ProjectRecords = HashMap::new();
         let recovery = self.resolved.recovery();
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
-            let Some(TypeDefnRepr::Union(repr)) = defn.repr() else {
-                continue;
+            let repr = match defn.repr() {
+                Some(TypeDefnRepr::Union(repr)) => DeclaredFields::Union(repr),
+                Some(TypeDefnRepr::Record(repr)) => DeclaredFields::Record(repr),
+                _ => continue,
             };
-            // Recovery drops what it cannot parse, so a recovered union's
-            // surviving cases look well-formed (`C : | D` reads as two
-            // nullary cases) where FCS rejects them.
+            let repr_node = match &repr {
+                DeclaredFields::Union(r) => r.syntax().clone(),
+                DeclaredFields::Record(r) => r.syntax().clone(),
+            };
+            // Recovery drops what it cannot parse, so a recovered type's
+            // surviving cases or fields look well-formed (`C : | D` reads as
+            // two nullary cases) where FCS rejects them.
             if !recovery.declaration_is_intact(defn.syntax())
                 || !recovery.clean_through(defn.syntax())
             {
                 continue;
             }
-            // `type U = private A | B`: the cases are accessible only inside
-            // the union's enclosing module or namespace, outside which FCS
-            // rejects a use the resolver still reads as the case. (An
+            // `type U = private A | B`: the cases (or fields) are accessible
+            // only inside the type's enclosing module or namespace, outside
+            // which FCS rejects a use the resolver still reads. (An
             // `internal` representation is the whole assembly's.)
-            let private_repr = repr
-                .syntax()
+            let private_repr = repr_node
                 .children_with_tokens()
                 .any(|el| el.kind() == SyntaxKind::ACCESS_TOK && el.to_string() == "private");
             let scope = if private_repr {
@@ -2235,6 +2311,55 @@ impl<'a> Gen<'a> {
             else {
                 continue;
             };
+            self.decl_typars = names
+                .into_iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    (
+                        n,
+                        u32::try_from(i).expect("a type of under u32::MAX parameters"),
+                    )
+                })
+                .collect();
+            let declared = Ty::Project {
+                path: path.clone(),
+                args: (0..arity)
+                    .map(|i| Ty::Param(u32::try_from(i).expect("checked above")))
+                    .collect(),
+            };
+            match repr {
+                DeclaredFields::Union(repr) => {
+                    self.union_case_schemes(&repr, declared, scope, &mut out);
+                }
+                DeclaredFields::Record(repr) => {
+                    let fields = self.record_field_schemes(&repr, &defn, file);
+                    records.insert(
+                        (path, arity),
+                        ProjectRecord {
+                            record: declared,
+                            fields,
+                            scope,
+                        },
+                    );
+                }
+            }
+            self.decl_typars.clear();
+        }
+        (out, records)
+    }
+
+    /// The scheme of each case of the union `repr`, the in-file union
+    /// `union` over its parameters, whose fields are all read, into `out`
+    /// ([`Self::project_type_schemes`]); the union's type parameters are in
+    /// [`Self::decl_typars`].
+    fn union_case_schemes(
+        &self,
+        repr: &UnionRepr,
+        union: Ty,
+        scope: Option<TextRange>,
+        out: &mut HashMap<ItemId, ProjectCase>,
+    ) {
+        {
             let cases: Vec<_> = repr.cases().collect();
             let items: Vec<Option<ItemId>> = cases
                 .iter()
@@ -2249,23 +2374,7 @@ impl<'a> Gen<'a> {
             // The union's identity is its first case's item: without one,
             // two of its patterns could not be told to be one union's.
             let Some(Some(first)) = items.first().copied() else {
-                continue;
-            };
-            self.decl_typars = names
-                .into_iter()
-                .enumerate()
-                .map(|(i, n)| {
-                    (
-                        n,
-                        u32::try_from(i).expect("a type of under u32::MAX parameters"),
-                    )
-                })
-                .collect();
-            let union = Ty::Project {
-                path,
-                args: (0..arity)
-                    .map(|i| Ty::Param(u32::try_from(i).expect("checked above")))
-                    .collect(),
+                return;
             };
             for (index, (case, item)) in cases.iter().zip(items).enumerate() {
                 let Some(item) = item else {
@@ -2303,9 +2412,55 @@ impl<'a> Gen<'a> {
                     },
                 );
             }
-            self.decl_typars.clear();
         }
-        out
+    }
+
+    /// The type of each field of the record `repr` that is read, by name,
+    /// over the record's parameters ([`Self::decl_typars`]). A field with an
+    /// attribute (an error-level `[<Obsolete>]` rejects its use), a label
+    /// declared twice, or a type the annotation bridge declines is left out:
+    /// an access to it declines, and the record's other fields do not depend
+    /// on it.
+    ///
+    /// A field is read only when no intrinsic member of the record shares its
+    /// name: FCS's lookup prefers the member (`{ Equals: int }`'s `r.Equals`
+    /// is the generated method). Those are the members a record generates
+    /// ([`RECORD_GENERATED_MEMBERS`]) and the ones its definition, or a
+    /// same-file augmentation of its name, declares; a member whose name is
+    /// not read off its head leaves no field read.
+    fn record_field_schemes(
+        &self,
+        repr: &RecordRepr,
+        defn: &TypeDefn,
+        file: &ImplFile,
+    ) -> HashMap<String, Ty> {
+        let Some(members) = intrinsic_member_names(defn, file) else {
+            return HashMap::new();
+        };
+        // A label declared twice is an error FCS recovers from by keeping
+        // the first, where a map keeps the last: neither is read.
+        let mut labels: HashMap<String, usize> = HashMap::new();
+        for f in repr.fields() {
+            if let Some(tok) = f.ident() {
+                *labels.entry(ident_text(&tok)).or_default() += 1;
+            }
+        }
+        repr.fields()
+            .filter(|f| f.attributes().next().is_none())
+            .filter(|f| {
+                f.ident().is_some_and(|tok| {
+                    let name = ident_text(&tok);
+                    labels.get(&name) == Some(&1)
+                        && !members.contains(&name)
+                        && !RECORD_GENERATED_MEMBERS.contains(&name.as_str())
+                })
+            })
+            .filter_map(|f| {
+                let name = ident_text(&f.ident()?);
+                let ty = self.annotation_ty(&f.ty()?)?;
+                Some((name, ty))
+            })
+            .collect()
     }
 
     /// The [`Ty::Project`] an annotation naming the in-file type `def` applied
@@ -5775,7 +5930,7 @@ impl<'a> Gen<'a> {
     /// case of a union the project declares — with its scheme and its place
     /// among its union's cases. Anything else declines, and so does a case
     /// whose type inference cannot read: one the maker cannot vouch for, or
-    /// a project case [`Self::project_case_schemes`] left out.
+    /// a project case [`Self::project_type_schemes`] left out.
     fn case_at(&self, at: TextRange) -> Result<(CaseKey, UnionCaseScheme), Incomplete> {
         match self.resolved.resolution_at(at) {
             Some(Resolution::UnionCase { union, case }) => {
@@ -5824,7 +5979,7 @@ impl<'a> Gen<'a> {
     }
 
     /// The case of a project union that the item `id` is, as inference types
-    /// it: this file's own ([`Self::project_case_schemes`]), or what the
+    /// it: this file's own ([`Self::project_type_schemes`]), or what the
     /// earlier file declaring it published ([`PrecedingTypes::case`]).
     fn project_case(&self, id: ItemId) -> Option<&ProjectCase> {
         if self.resolved.owns_item(id) {
@@ -6412,18 +6567,18 @@ impl<'a> Gen<'a> {
                     Ty::Named { path, .. } => {
                         if self.wake_member(&path, &m.name, m.result, m.use_range, &m.kind) {
                             woke = true;
-                            // FCS reads the receiver at the access, and a
-                            // method's arguments once they are checked.
-                            let by = if m.waited_on_receiver {
-                                m.use_range.start()
-                            } else {
-                                m.args_by
-                            };
-                            if latest_discharge.is_some_and(|end| end > by) {
+                            if m.late(latest_discharge) {
                                 outcome.late_member = true;
                             }
                         } else {
                             still_pending.push(m);
+                        }
+                    }
+                    // A field of a project record, read off its declaration.
+                    ref head @ Ty::Project { .. } if self.wake_record_field(head, &m) => {
+                        woke = true;
+                        if m.late(latest_discharge) {
+                            outcome.late_member = true;
                         }
                     }
                     // Any other concrete head (array / tuple / function / a
@@ -6433,10 +6588,10 @@ impl<'a> Gen<'a> {
                     Ty::Array { .. } | Ty::Tuple(_) | Ty::Fun { .. } | Ty::Param(_) => {
                         woke = true;
                     }
-                    // A project type's members are not modelled: drop the
-                    // constraint, leaving the access's (poisoned) result open,
-                    // and say so in the census, which would otherwise count the
-                    // binding complete with an untyped access in it.
+                    // Any other member of a project type is not modelled: drop
+                    // the constraint, leaving the access's (poisoned) result
+                    // open, and say so in the census, which would otherwise
+                    // count the binding complete with an untyped access in it.
                     Ty::Project { .. } => {
                         woke = true;
                         if let Some(reasons) = self.incompleteness.last_mut() {
@@ -6601,6 +6756,47 @@ impl<'a> Gen<'a> {
                 Constraint::ArgCheck(ac) => suspended_args.push(ac),
             }
         }
+    }
+
+    /// Wake a suspended data-member access `m` on the project type `head`
+    /// when `head` is a record the project declares with a field of that name
+    /// that inference reads, accessible at the access: relate the access's
+    /// result to the field's type, the record's parameters instantiated at
+    /// `head`'s arguments. `false` for anything else (a method call, a
+    /// member that is not a field, a record not read).
+    ///
+    /// FCS looks a field up by the receiver's type when it knows that type
+    /// at the access. When it does not, it resolves the label through the
+    /// record-label environment and fixes the receiver to that record, so a
+    /// receiver inference learns only later is that record too, or FCS
+    /// rejects the program.
+    fn wake_record_field(&mut self, head: &Ty, m: &SuspendedMember) -> bool {
+        let Ty::Project { path, args } = head else {
+            return false;
+        };
+        if !matches!(m.kind, MemberAccessKind::Data) {
+            return false;
+        }
+        let record = self
+            .project_records
+            .get(&(path.clone(), args.len()))
+            .or_else(|| self.preceding.record(path, args.len()));
+        let Some(record) = record.filter(|r| {
+            r.scope
+                .is_none_or(|scope| scope.contains_range(m.use_range))
+        }) else {
+            return false;
+        };
+        let Some(field) = record.fields.get(&m.name).cloned() else {
+            return false;
+        };
+        let declared = record.record.clone();
+        let mut fresh: HashMap<u32, TyVid> = HashMap::new();
+        let receiver = self.instantiate_rec(&declared, &mut fresh);
+        let field = self.instantiate_rec(&field, &mut fresh);
+        self.eq(receiver, head.clone());
+        self.eq(Ty::Var(m.result), field);
+        true
     }
 
     /// Wake a suspended member: look up the member `name` on the receiver type
@@ -7182,6 +7378,7 @@ impl<'a> Gen<'a> {
             project_types: std::mem::take(&mut self.project_types),
             project_cases: std::mem::take(&mut self.project_cases),
             constructor_names: std::mem::take(&mut self.constructor_names),
+            project_records: std::mem::take(&mut self.project_records),
         }
     }
 }
@@ -8181,6 +8378,57 @@ fn constructor_names(
     counts
 }
 
+/// The instance members F# gives every record (from `System.Object`, and
+/// the equality and comparison it generates), which a field of the same
+/// name does not shadow.
+const RECORD_GENERATED_MEMBERS: &[&str] = &[
+    "Equals",
+    "GetHashCode",
+    "GetType",
+    "ToString",
+    "CompareTo",
+    "MemberwiseClone",
+    "Finalize",
+];
+
+/// The names of the instance-accessible members the type `defn` declares,
+/// in its definition or a same-file augmentation of its name (`type R with
+/// member …`), or `None` when one is a member whose name is not read off its
+/// head. An interface implementation is reached only through the interface,
+/// so it names nothing here.
+fn intrinsic_member_names(defn: &TypeDefn, file: &ImplFile) -> Option<HashSet<String>> {
+    let last_name = |d: &TypeDefn| {
+        d.long_id()
+            .and_then(|li| li.idents().last())
+            .map(|t| ident_text(&t))
+    };
+    let name = last_name(defn)?;
+    let mut out = HashSet::new();
+    for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        if last_name(&d).as_deref() != Some(name.as_str()) {
+            continue;
+        }
+        let mut members: Vec<MemberDefn> = d.members().collect();
+        if let Some(TypeDefnRepr::ObjectModel(om)) = d.repr() {
+            members.extend(om.members());
+        }
+        for m in members {
+            match m {
+                MemberDefn::Interface(_) => {}
+                MemberDefn::Member(mm) => {
+                    let Some(Pat::LongIdent(l)) = mm.binding().and_then(|b| b.pat()) else {
+                        return None;
+                    };
+                    let tok = l.head().and_then(|h| h.idents().last())?;
+                    out.insert(ident_text(&tok));
+                }
+                _ => return None,
+            }
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     //! Behaviour tests for 3.2c-2b function-type emission and condition typing,
@@ -9112,7 +9360,8 @@ mod tests {
     #[test]
     fn a_member_of_a_project_type_is_a_census_reason() {
         use super::Incomplete;
-        let src = "module M\ntype T = { X : int }\nlet f (x : T) = x\nlet g (x : T) = x.X\n";
+        // A property: a record's fields are read, its other members are not.
+        let src = "module M\ntype T =\n    { X : int }\n    member t.Y = 1\nlet f (x : T) = x\nlet g (x : T) = x.Y\n";
         let parsed = parse(src);
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
