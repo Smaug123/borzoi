@@ -844,6 +844,7 @@ impl<'a> Resolver<'a> {
                 // value — so an unqualified `externFn 0` resolves the call — is a
                 // later slice; until then such a use falls through to the
                 // conservative (unresolved) path, which is sound.
+                let ext_private = header_is_private(ext.syntax());
                 let ext_name: Vec<String> = ext
                     .name()
                     .map(|name| name.idents().map(|t| id_text(&t).to_string()).collect())
@@ -864,7 +865,8 @@ impl<'a> Resolver<'a> {
                         .map(|tok| tok.text_range()),
                 );
                 if let Some(name) = ext_name.last() {
-                    let contribution = Contribution::of_value(name.clone());
+                    let access = self.declared_access(ext_private);
+                    let contribution = Contribution::of_value(name.clone(), access);
                     let pos = u32::from(ext.syntax().text_range().start());
                     self.push_contribution(&contribution, pos);
                     // An `open` of the module adds it too, with its values.
@@ -879,8 +881,16 @@ impl<'a> Resolver<'a> {
                 // review of the straddle slice). A sound over-defer: `extern` is
                 // rare (P/Invoke), and every other unenumerable value producer
                 // (union cases / exception ctors / active patterns / aliases)
-                // already marks its module hidden.
-                self.note_hidden_value_module(self.container_path.clone());
+                // already marks its module hidden. One of the container's own
+                // `private` is out of reach of everything that reads the mark
+                // from outside the container, so it marks only for the reader
+                // inside ([`Self::modules_with_private_hidden_values`]).
+                if ext_private {
+                    self.modules_with_private_hidden_values
+                        .insert(self.container_path.clone());
+                } else {
+                    self.note_hidden_value_module(self.container_path.clone());
+                }
                 // The export-decl-list twin: `path` = the container (its
                 // hidden-value path, recorded unconditionally as above); `name`
                 // carries the function segments (empty for a nameless recovery
@@ -889,7 +899,10 @@ impl<'a> Resolver<'a> {
                 self.push_export_decl(
                     self.container_path.clone(),
                     ext.syntax().text_range().start(),
-                    ExportDeclKind::Extern { name: ext_name },
+                    ExportDeclKind::Extern {
+                        name: ext_name,
+                        private: ext_private,
+                    },
                 );
             }
             ModuleDecl::Open(open) => {
@@ -2050,10 +2063,12 @@ impl Resolver<'_> {
         if attrs_require_qualified_access(defn.attributes()) {
             return;
         }
-        let contribution = Contribution {
-            names: std::iter::once(id_text(&case).to_string()).collect(),
-            ..Contribution::default()
-        };
+        let type_is_private = header_is_private(defn.syntax());
+        let mut contribution = Contribution::default();
+        contribution.add_name(
+            id_text(&case).to_string(),
+            self.declared_access(type_is_private),
+        );
         let pos = defn.syntax().text_range().start();
         self.push_contribution(&contribution, u32::from(pos));
         let name = id_text(&case).to_string();
@@ -2062,6 +2077,7 @@ impl Resolver<'_> {
         // name ([`Self::open_module_values`]); nothing else it holds is hidden.
         let mut path = self.container_path.clone();
         path.push(name);
-        self.push_export_decl(path, pos, ExportDeclKind::OpaqueCase);
+        let access_root_len = self.export_access_root_len(type_is_private);
+        self.push_export_decl(path, pos, ExportDeclKind::OpaqueCase { access_root_len });
     }
 }

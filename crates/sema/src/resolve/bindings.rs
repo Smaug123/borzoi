@@ -65,8 +65,19 @@ impl<'a> Resolver<'a> {
         // value-namespace member an `open` of this module brings into pattern
         // scope but `open_module_values` does not enumerate, so opening this module
         // may shadow earlier opens (see [`Self::modules_with_hidden_values`]).
-        if prepared.iter().any(|p| !p.eager_entries.is_empty()) {
+        // One of the container's own `private` is out of reach of every
+        // `open` of it ([`Self::modules_with_private_hidden_values`]).
+        let active_pattern_private: Vec<bool> = let_decl
+            .bindings()
+            .zip(&prepared)
+            .filter(|(_, p)| !p.eager_entries.is_empty())
+            .map(|(b, _)| super::decls::header_is_private(b.syntax()))
+            .collect();
+        if active_pattern_private.iter().any(|private| !private) {
             self.note_hidden_value_module(self.container_path.clone());
+        } else if !active_pattern_private.is_empty() {
+            self.modules_with_private_hidden_values
+                .insert(self.container_path.clone());
         }
 
         // Active-pattern cases follow the same `rec` discipline as ordinary value

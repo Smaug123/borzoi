@@ -284,10 +284,7 @@ impl<'a> Resolver<'a> {
                     .unwrap_or(name)
                     .to_string()
             });
-        let dropped = Contribution {
-            values: dropped.collect(),
-            ..Contribution::default()
-        };
+        let dropped = Contribution::of_public_values(dropped);
         self.push_contribution(&dropped, open_pos);
     }
 
@@ -296,19 +293,16 @@ impl<'a> Resolver<'a> {
     /// the extension members in scope for it — the project's own
     /// augmentations and any referenced assembly's, keyed by name alone.
     pub(super) fn open_type_unlisted(&mut self, handle: EntityHandle, open_pos: u32) {
-        let mut beside = Contribution {
-            values: self
-                .assemblies
+        let mut beside = Contribution::of_public_values(
+            self.assemblies
                 .children(handle)
                 .iter()
-                .map(|&c| self.assemblies.entity(c).name.clone())
-                .collect(),
-            ..Contribution::default()
-        };
+                .map(|&c| self.assemblies.entity(c).name.clone()),
+        );
         // Every extension name, of whatever target: nothing proves which
         // type an extension extends but the extension itself.
         let assembly = self.assemblies.augmentation_member_names();
-        beside.values.extend(assembly.names.iter().cloned());
+        beside.add_public_values(assembly.names.iter().cloned());
         // A dropped member, or a dropped type, may be an extension of any
         // name.
         beside.unlisted |= assembly.unlisted || self.assemblies.dropped_any_type();
@@ -316,7 +310,7 @@ impl<'a> Resolver<'a> {
             &self.preceding.extension_statics,
             &self.own_extension_statics,
         ] {
-            beside.values.extend(statics.iter().cloned());
+            beside.add_public_values(statics.iter().cloned());
         }
         self.push_contribution(&beside, open_pos);
     }
@@ -2133,26 +2127,29 @@ impl<'a> Resolver<'a> {
         }
         // A possible union case the walk does not intern (`type T = X`)
         // declines its name, and no other: in pattern position always, and in
-        // expression position unless a value of the name outranks it.
-        let own_cases: Vec<(&Vec<String>, bool)> = self
+        // expression position unless a value of the name outranks it. One the
+        // open's site cannot reach adds nothing, as for the fold's values.
+        let own_cases: Vec<(&Vec<String>, bool, Option<usize>)> = self
             .export_decls
             .iter()
-            .filter(|d| matches!(d.kind, super::model::ExportDeclKind::OpaqueCase))
-            .map(|d| {
-                (
+            .filter_map(|d| match d.kind {
+                super::model::ExportDeclKind::OpaqueCase { access_root_len } => Some((
                     &d.path,
                     super::model::superseded_by_a_value(&self.export_decls, &self.items, d),
-                )
+                    access_root_len,
+                )),
+                _ => None,
             })
             .collect();
         let earlier_cases = self
             .preceding
             .opaque_cases
             .iter()
-            .map(|(path, superseded)| (path, *superseded));
-        for (path, superseded) in own_cases.into_iter().chain(earlier_cases) {
+            .map(|(path, case)| (path, case.superseded, case.access_root_len));
+        for (path, superseded, access_root_len) in own_cases.into_iter().chain(earlier_cases) {
             if let Some((name, container)) = path.split_last()
                 && container == module_path
+                && super::model::accessible_from(access_root_len, path, &self.container_path)
             {
                 let mut entry = ScopeEntry::opened_declined(
                     name.clone(),

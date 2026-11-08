@@ -449,8 +449,9 @@ pub struct ProjectItems {
     /// [`ExportDeclKind::OpaqueCase`]): an `open` of the container declines the
     /// name in pattern position, and in expression position too unless the
     /// value is `true`: a value of the name outranks the case there
-    /// ([`superseded_by_a_value`]).
-    pub(super) opaque_cases: HashMap<Vec<String>, bool>,
+    /// ([`superseded_by_a_value`]). An `open` from a site outside the case's
+    /// access root adds nothing ([`accessible_from`]).
+    pub(super) opaque_cases: HashMap<Vec<String>, OpaqueCaseExport>,
     /// Each earlier-file **non-`private`** `[<AutoOpen>]` module *fragment*,
     /// paired with the Compile-order file that declared it, in Compile order —
     /// `private` ones are excluded, since F# does not bring a `private` module
@@ -1390,9 +1391,15 @@ impl ProjectItems {
                 .or_default()
                 .insert(name);
         }
-        for (path, superseded) in idx.opaque_cases {
-            // Superseded only where every declaration of the path is.
-            *self.opaque_cases.entry(path).or_insert(true) &= superseded;
+        for (path, case) in idx.opaque_cases {
+            match self.opaque_cases.entry(path) {
+                std::collections::hash_map::Entry::Occupied(mut had) => {
+                    had.get_mut().merge(case);
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(case);
+                }
+            }
         }
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
@@ -1566,7 +1573,7 @@ struct FileExportIndices {
     namespace_paths: Vec<Vec<String>>,
     modules_with_hidden_values: Vec<Vec<String>>,
     opaque_hidden_value_modules: Vec<Vec<String>>,
-    opaque_cases: Vec<(Vec<String>, bool)>,
+    opaque_cases: Vec<(Vec<String>, OpaqueCaseExport)>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
@@ -1588,6 +1595,30 @@ enum HiddenNames {
     /// borrower without naming any of them, so no screen bounds this
     /// marker and every consumer must stay conservative.
     Borrowed,
+}
+
+/// What an earlier file's possible union case ([`ExportDeclKind::OpaqueCase`])
+/// tells an `open` of its container ([`ProjectItems::opaque_cases`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OpaqueCaseExport {
+    /// A value of the name outranks the case in expression position
+    /// ([`superseded_by_a_value`]).
+    pub(super) superseded: bool,
+    /// The case's access root ([`ExportedItem::access_root_len`]).
+    pub(super) access_root_len: Option<usize>,
+}
+
+impl OpaqueCaseExport {
+    /// Two declarations of one path: superseded only where both are, and
+    /// reachable wherever either is. Both roots are prefix lengths of the same
+    /// path, so the shorter reaches every site the longer does.
+    fn merge(&mut self, other: OpaqueCaseExport) {
+        self.superseded &= other.superseded;
+        self.access_root_len = match (self.access_root_len, other.access_root_len) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            _ => None,
+        };
+    }
 }
 
 /// Whether a possible union case ([`ExportDeclKind::OpaqueCase`]) is shadowed
@@ -1866,12 +1897,18 @@ impl FileExportIndices {
                         fi.nested_module_paths.push(decl.path.clone());
                     }
                 }
-                ExportDeclKind::OpaqueCase => {
+                ExportDeclKind::OpaqueCase { access_root_len } => {
                     let superseded =
                         superseded_by_a_value(&file.export_decls, &file.exports.items, decl);
-                    fi.opaque_cases.push((decl.path.clone(), superseded));
+                    fi.opaque_cases.push((
+                        decl.path.clone(),
+                        OpaqueCaseExport {
+                            superseded,
+                            access_root_len: *access_root_len,
+                        },
+                    ));
                 }
-                ExportDeclKind::Extern { name } => {
+                ExportDeclKind::Extern { name, private } => {
                     if !anon && !name.is_empty() {
                         let mut shadow = decl.path.clone();
                         shadow.extend(name.iter().cloned());
@@ -1881,8 +1918,12 @@ impl FileExportIndices {
                     // `note_hidden_value_module` call is unguarded), on the
                     // container — which is `decl.path` itself for an `Extern`.
                     // The name is the file's own: a signature must declare it as
-                    // a `val` for the `extern` to be reachable cross-file.
-                    push_hidden(&mut fi, decl.path.clone(), HiddenNames::SigDeclared);
+                    // a `val` for the `extern` to be reachable cross-file. One
+                    // of the container's own `private` is reachable from no
+                    // later file, so it hides nothing there.
+                    if !private {
+                        push_hidden(&mut fi, decl.path.clone(), HiddenNames::SigDeclared);
+                    }
                 }
                 ExportDeclKind::Namespace => {
                     fi.namespace_paths.push(decl.path.clone());
@@ -2135,19 +2176,22 @@ pub(super) enum ExportDeclKind {
     /// The value-namespace constructor is a separate [`Self::Item`] record.
     ExceptionTycon,
     /// An `extern` declaration. `path` = the *container* (its hidden-value path,
-    /// recorded unconditionally). `name` = the function-name segments (empty for a
+    /// recorded unless `private`, its own modifier, puts it out of every later
+    /// file's reach). `name` = the function-name segments (empty for a
     /// nameless recovery node); `path` + `name` is the nested-module shadow path,
     /// recorded only when `name` is non-empty (matching the legacy
     /// [`record_project_name_shadow`](super::Resolver::record_project_name_shadow) guard).
-    Extern { name: Vec<String> },
+    Extern { name: Vec<String>, private: bool },
     /// The union case `type T = X` may declare
     /// (`TyconCoreAbbrevThatIsReallyAUnion`), which the walk does not intern,
     /// when `T` does not require qualified access. `path` = container + `X`.
     /// Unlike an `extern`'s, it hides no other name: an `open` of the container
     /// declines exactly `X` ([`ProjectItems::opaque_cases`]), in pattern
     /// position always and in expression position unless a value of the name
-    /// outranks it ([`superseded_by_a_value`]).
-    OpaqueCase,
+    /// outranks it ([`superseded_by_a_value`]). `access_root_len` is the case's
+    /// [`ExportedItem::access_root_len`]: its type's `private`, or an
+    /// enclosing `module private`'s.
+    OpaqueCase { access_root_len: Option<usize> },
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
     /// A module-level active-pattern case (Stage 3a). `path` = container + case

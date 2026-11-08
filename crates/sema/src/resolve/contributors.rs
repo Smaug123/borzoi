@@ -23,7 +23,7 @@
 //! member — so collecting the declarations cannot miss one, and a name it
 //! declares but does not in fact bring into bare scope costs a decline.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, Expr, MemberDefn, MemberLeading,
@@ -42,31 +42,119 @@ use crate::assembly_env::{AssemblyEnv, CoreAttributeAliases, CustomOperationName
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
 
+/// From where a contributed name can be reached: anywhere, or only from a
+/// site inside one container (F#'s `private`, the declaring module's own or
+/// one inherited from a `module private`). An `open` adds only what is
+/// accessible at the open (`AddModuleOrNamespaceContentsToNameEnv` filters by
+/// the accessor domain there), as the walk's own fold does
+/// ([`super::model::accessible_from`]), so a mark for a name the site cannot
+/// reach would decline a use no contributor contests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Access {
+    Public,
+    /// Reachable from sites whose container path starts with this one.
+    Within(Vec<String>),
+}
+
+impl Access {
+    /// Whether a contributor adds the name at `site`, the container path of
+    /// the position its marks are pushed at.
+    pub(super) fn reaches(&self, site: &[String]) -> bool {
+        match self {
+            Access::Public => true,
+            Access::Within(root) => site.starts_with(root),
+        }
+    }
+
+    /// Reachable wherever either is: the longest common prefix of two roots
+    /// is reached from every site inside either.
+    fn join(&self, other: &Access) -> Access {
+        match (self, other) {
+            (Access::Within(a), Access::Within(b)) => Access::Within(
+                a.iter()
+                    .zip(b)
+                    .take_while(|(x, y)| x == y)
+                    .map(|(x, _)| x.clone())
+                    .collect(),
+            ),
+            _ => Access::Public,
+        }
+    }
+}
+
+/// Add `name` reachable per `access` to one of a [`Contribution`]'s maps,
+/// joining it with any access the name already has.
+fn add_name(map: &mut BTreeMap<String, Access>, name: String, access: Access) {
+    match map.get_mut(&name) {
+        Some(had) => *had = had.join(&access),
+        None => {
+            map.insert(name, access);
+        }
+    }
+}
+
 /// The bare names one contributor may add to the environment: a closed
-/// over-approximation of them, or `unlisted` when they are spelled nowhere in
-/// the source.
+/// over-approximation of them, each with where it can be reached from, or
+/// `unlisted` when they are spelled nowhere in the source.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Contribution {
     /// Cases and values that may be literals: they contest every position.
-    pub(super) names: BTreeSet<String>,
+    pub(super) names: BTreeMap<String, Access>,
     /// Values that cannot be literals: they contest expression position only
     /// ([`MarkReach::Expression`]).
-    pub(super) values: BTreeSet<String>,
+    pub(super) values: BTreeMap<String, Access>,
     pub(super) unlisted: bool,
 }
 
 impl Contribution {
     /// A contribution of the one non-literal value `name`.
-    pub(super) fn of_value(name: String) -> Self {
-        Contribution {
-            values: std::iter::once(name).collect(),
-            ..Contribution::default()
+    pub(super) fn of_value(name: String, access: Access) -> Self {
+        let mut out = Contribution::default();
+        out.add_value(name, access);
+        out
+    }
+
+    /// Public cases and values that may be literals.
+    pub(super) fn of_public_names(names: impl IntoIterator<Item = String>) -> Self {
+        let mut out = Contribution::default();
+        out.add_public_names(names);
+        out
+    }
+
+    /// Public non-literal values.
+    pub(super) fn of_public_values(values: impl IntoIterator<Item = String>) -> Self {
+        let mut out = Contribution::default();
+        out.add_public_values(values);
+        out
+    }
+
+    pub(super) fn add_name(&mut self, name: String, access: Access) {
+        add_name(&mut self.names, name, access);
+    }
+
+    pub(super) fn add_value(&mut self, name: String, access: Access) {
+        add_name(&mut self.values, name, access);
+    }
+
+    pub(super) fn add_public_names(&mut self, names: impl IntoIterator<Item = String>) {
+        for name in names {
+            self.add_name(name, Access::Public);
+        }
+    }
+
+    pub(super) fn add_public_values(&mut self, values: impl IntoIterator<Item = String>) {
+        for name in values {
+            self.add_value(name, Access::Public);
         }
     }
 
     pub(super) fn merge(&mut self, other: &Contribution) {
-        self.names.extend(other.names.iter().cloned());
-        self.values.extend(other.values.iter().cloned());
+        for (name, access) in &other.names {
+            self.add_name(name.clone(), access.clone());
+        }
+        for (name, access) in &other.values {
+            self.add_value(name.clone(), access.clone());
+        }
         self.unlisted |= other.unlisted;
     }
 
@@ -410,11 +498,7 @@ impl Resolver<'_> {
                                 .any(|a| Expr::can_cast(a.kind()))
                     });
                     let mut ap_cases: Vec<String> = Vec::new();
-                    let binders = if attributed {
-                        &mut out.names
-                    } else {
-                        &mut out.values
-                    };
+                    let mut binders: BTreeSet<String> = BTreeSet::new();
                     for binding in let_decl.bindings() {
                         let Some(head) = binding.pat() else {
                             // No head to read the binder from: anything the
@@ -434,7 +518,12 @@ impl Resolver<'_> {
                             ap_cases.extend(ap.case_tokens().map(|t| id_text(&t).to_string()));
                         }
                     }
-                    out.names.extend(ap_cases);
+                    if attributed {
+                        out.add_public_names(binders);
+                    } else {
+                        out.add_public_values(binders);
+                    }
+                    out.add_public_names(ap_cases);
                 }
                 ModuleDecl::Types(types) => {
                     for defn in types.defns() {
@@ -452,22 +541,22 @@ impl Resolver<'_> {
                                     self.may_augment_auto_open(&auto_open_types, &id_text(&name))
                                 })
                         {
-                            out.values.extend(augmentation_member_names(&defn));
+                            out.add_public_values(augmentation_member_names(&defn));
                         }
                     }
                 }
                 ModuleDecl::Exception(exn) => {
                     if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
-                        out.names.insert(id_text(&name).to_string());
+                        out.add_name(id_text(&name).to_string(), Access::Public);
                     }
                     // An exception is a type: `[<AutoOpen>]` folds its statics.
                     if self.may_auto_open(exn.attributes()) {
-                        out.values.extend(declared_identifiers(exn.syntax()));
+                        out.add_public_values(declared_identifiers(exn.syntax()));
                     }
                 }
                 ModuleDecl::Extern(ext) => {
                     if let Some(name) = ext.name().and_then(|n| n.idents().last()) {
-                        out.values.insert(id_text(&name).to_string());
+                        out.add_value(id_text(&name).to_string(), Access::Public);
                     }
                 }
                 ModuleDecl::NestedModule(nm) => {
@@ -494,56 +583,65 @@ impl Resolver<'_> {
         if self.type_slot_class(defn) != SlotClass::Keeps
             && let Some(name) = defn.long_id().and_then(|li| li.idents().last())
         {
-            out.values.insert(id_text(&name).to_string());
+            out.add_value(id_text(&name).to_string(), Access::Public);
         }
         for case in defn.syntax().descendants().filter_map(UnionCase::cast) {
             if let Some(name) = case.ident() {
-                out.names.insert(id_text(&name).to_string());
+                out.add_name(id_text(&name).to_string(), Access::Public);
             }
         }
-        out.names.extend(operator_case_names(defn.syntax()));
+        out.add_public_names(operator_case_names(defn.syntax()));
         // `type T = Nn` is a single-case union when `Nn` names no type in
         // scope (`TyconCoreAbbrevThatIsReallyAUnion`), which the syntax
         // cannot decide.
         if let Some(TypeDefnRepr::Abbrev(abbrev)) = defn.repr()
             && let Some(case) = abbrev.ty().as_ref().and_then(abbrev_target_single_ident)
         {
-            out.names.insert(id_text(&case).to_string());
+            out.add_name(id_text(&case).to_string(), Access::Public);
         }
         out
     }
 
     /// Push `contribution`'s marks into the current frame at `pos`
-    /// (module docs). An unlisted contribution stales every earlier entry
-    /// first; the named marks then follow at the new generation, so each still
-    /// names its own cause.
+    /// (module docs): one for each name the current container can reach
+    /// ([`Access::reaches`]). An unlisted contribution stales every earlier
+    /// entry first; the named marks then follow at the new generation, so each
+    /// still names its own cause.
     pub(super) fn push_contribution(&mut self, contribution: &Contribution, pos: u32) {
         if contribution.unlisted {
             self.open_generation += 1;
         }
         let generation = self.open_generation;
+        let site = &self.container_path;
         let marks: Vec<ScopeEntry> = contribution
             .values
             .iter()
-            .map(|name| (name, MarkReach::Expression))
+            .map(|(name, access)| (name, access, MarkReach::Expression))
             .chain(
                 contribution
                     .names
                     .iter()
-                    .map(|name| (name, MarkReach::Both)),
+                    .map(|(name, access)| (name, access, MarkReach::Both)),
             )
-            .map(|(name, reach)| ScopeEntry::contributor_mark(name.clone(), reach, generation, pos))
+            .filter(|(_, access, _)| access.reaches(site))
+            .map(|(name, _, reach)| {
+                ScopeEntry::contributor_mark(name.clone(), reach, generation, pos)
+            })
             .collect();
         self.module_frame().entries.extend(marks);
     }
 }
 
-/// The cases of the active patterns `decls` declare at their own level.
+/// The cases of the active patterns `decls` declare at their own level that
+/// are in reach outside it: a `let private` one is reachable only inside.
 fn active_pattern_cases(decls: impl Iterator<Item = ModuleDecl>) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for decl in decls {
         if let ModuleDecl::Let(let_decl) = decl {
-            for binding in let_decl.bindings() {
+            for binding in let_decl
+                .bindings()
+                .filter(|b| !super::decls::header_is_private(b.syntax()))
+            {
                 if let Some(head) = binding.pat() {
                     for ap in head.syntax().descendants().filter_map(ActivePatName::cast) {
                         out.extend(ap.case_tokens().map(|t| id_text(&t).to_string()));
@@ -570,10 +668,7 @@ pub(super) fn type_contribution(defn: &TypeDefn) -> Contribution {
         )
     );
     if spelled {
-        Contribution {
-            names: declared_identifiers(defn.syntax()),
-            ..Contribution::default()
-        }
+        Contribution::of_public_names(declared_identifiers(defn.syntax()))
     } else {
         Contribution {
             unlisted: true,
@@ -583,6 +678,16 @@ pub(super) fn type_contribution(defn: &TypeDefn) -> Contribution {
 }
 
 impl Resolver<'_> {
+    /// Where a declaration at the current walk position can be reached from,
+    /// given whether it carries its own `private` modifier: the access root
+    /// its export would have ([`Resolver::export_access_root_len`]).
+    pub(super) fn declared_access(&self, own_private: bool) -> Access {
+        match self.export_access_root_len(own_private) {
+            None => Access::Public,
+            Some(k) => Access::Within(self.container_path[..k].to_vec()),
+        }
+    }
+
     /// Whether the current container is a namespace (rather than a module):
     /// its path holds no module segment.
     fn container_is_namespace(&self) -> bool {
@@ -706,8 +811,9 @@ impl Resolver<'_> {
                 && let Some(name) = &name
             {
                 let namespace_fold_models = self.container_is_namespace();
+                let access = self.declared_access(super::decls::header_is_private(defn.syntax()));
                 self.record_open_contribution(
-                    &Contribution::of_value(name.clone()),
+                    &Contribution::of_value(name.clone(), access),
                     namespace_fold_models,
                 );
             }
@@ -728,10 +834,8 @@ impl Resolver<'_> {
                 let mut path = self.container_path.clone();
                 path.push(name);
                 if self.auto_open_type_paths.contains(&path) {
-                    let contribution = Contribution {
-                        values: declared_identifiers(defn.syntax()),
-                        ..Contribution::default()
-                    };
+                    let contribution =
+                        Contribution::of_public_values(declared_identifiers(defn.syntax()));
                     self.push_contribution(&contribution, pos);
                     self.record_open_contribution(&contribution, false);
                 }
@@ -751,10 +855,7 @@ impl Resolver<'_> {
             path.push(id_text(&name).to_string());
             self.auto_open_type_paths.insert(path);
         }
-        let contribution = Contribution {
-            values: declared_identifiers(exn.syntax()),
-            ..Contribution::default()
-        };
+        let contribution = Contribution::of_public_values(declared_identifiers(exn.syntax()));
         self.push_contribution(&contribution, u32::from(exn.syntax().text_range().start()));
         self.record_open_contribution(&contribution, false);
     }
@@ -769,17 +870,14 @@ impl Resolver<'_> {
         if !self.may_require_qualified_access(defn.attributes()) {
             return;
         }
-        let cases = Contribution {
-            names: defn
-                .syntax()
+        let cases = Contribution::of_public_names(
+            defn.syntax()
                 .descendants()
                 .filter_map(UnionCase::cast)
                 .filter_map(|c| c.ident())
                 .map(|t| id_text(&t).to_string())
-                .chain(operator_case_names(defn.syntax()))
-                .collect(),
-            ..Contribution::default()
-        };
+                .chain(operator_case_names(defn.syntax())),
+        );
         let pos = u32::from(defn.syntax().text_range().end());
         self.push_contribution(&cases, pos);
         self.record_open_contribution(&cases, false);
@@ -984,7 +1082,7 @@ pub(super) fn signature_contributions(
             && may_auto_open(&mut module.attributes());
         if root_module || matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace) {
             let names = declared_identifiers(module.syntax());
-            rf.contributions.root.names.extend(names);
+            rf.contributions.root.add_public_names(names);
         }
     }
 }
