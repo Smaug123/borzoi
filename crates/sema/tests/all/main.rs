@@ -26,6 +26,7 @@ mod explicit_impl_unreachable;
 mod extension_shadow_diff;
 mod extension_visibility_matrix;
 mod fcs_dump_refs_absolute;
+mod fcs_dump_sdk_resolution;
 mod fcs_dump_tolerance;
 mod fsharp_member_diff;
 mod il_type_definition;
