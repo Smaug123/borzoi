@@ -408,6 +408,7 @@ fn signature_ty(
         env,
         declaring: &module.assembly,
         typars: method.generic_parameters.len(),
+        type_typars: 0,
     };
     let ret = match &method.signature.return_type {
         // An F# function returning `unit` compiles to a `void` method.
@@ -423,6 +424,170 @@ fn signature_ty(
         arg: Box::new(arg),
         ret: Box::new(ret),
     }))
+}
+
+/// The F# type of a referenced union's case, read off its maker
+/// ([`UnionCaseMaker`](borzoi_assembly::UnionCaseMaker)): its fields, in
+/// order, and the union type they build, each of the union's type parameters
+/// the [`Ty::Param`] of its index. A use instantiates both together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnionCaseScheme {
+    pub(crate) fields: Vec<Ty>,
+    pub(crate) union: Ty,
+}
+
+impl UnionCaseScheme {
+    /// The type of the case used as a value: the union itself for a nullary
+    /// case, else a function from its fields — one, or the tuple of several,
+    /// as F# writes `Case (a, b)` — to the union.
+    pub(crate) fn value_ty(&self) -> Ty {
+        let arg = match self.fields.as_slice() {
+            [] => return self.union.clone(),
+            [one] => one.clone(),
+            many => Ty::Tuple(many.to_vec()),
+        };
+        Ty::Fun {
+            arg: Box::new(arg),
+            ret: Box::new(self.union.clone()),
+        }
+    }
+}
+
+/// The F# type of case `case` of the referenced union `union`
+/// ([`UnionCaseScheme`]).
+///
+/// fsc compiles each case to a static maker (`NewOk(T)`, FSharp.Core's
+/// `Some(T)`, a nullary case's getter `get_None()`) whose parameters are the
+/// case's fields as IL types, and whose return is the union applied to its own
+/// type parameters. The maker is found by the case's declaration position,
+/// which the pickle and fsc's `CompilationMapping` sequence number share, and
+/// read through the same bridge as a module function's signature. IL erases
+/// what the pickle keeps, so the pickle must vouch for the rest:
+///
+/// - the case's fields were read, number the maker's parameters, and mention
+///   no unit of measure — directly, or behind a named type
+///   ([`AssemblyEnv::head_hides_no_measure`]);
+/// - the case carries no attribute: F# checks a case's attributes at each use
+///   (an `[<Obsolete>]` one can reject it), and only the pickle has them; nor
+///   does the union or a module enclosing it carry a rejecting one;
+/// - the maker's return reads back as the union applied to its parameters in
+///   order — which the bridge declines for a union constraining any of them
+///   ([`Bridge::generic_path`]), since nothing here checks a use's arguments
+///   against a constraint — and the maker is the only one at that position.
+///
+/// Anything else is a [`FunctionTyGap`], and the caller declines.
+pub(crate) fn union_case_scheme(
+    env: &AssemblyEnv,
+    union: EntityHandle,
+    case: crate::assembly_env::UnionCaseIndex,
+) -> Result<UnionCaseScheme, FunctionTyGap> {
+    let entity = env.entity(union);
+    let borzoi_assembly::UnionCases::Known(cases) = &entity.union_cases else {
+        return Err(FunctionTyGap::Unread);
+    };
+    let case = cases.get(case.index()).ok_or(FunctionTyGap::Unread)?;
+    let borzoi_assembly::CaseFields::Read {
+        count,
+        measures,
+        attributed,
+    } = &case.fields
+    else {
+        return Err(FunctionTyGap::Unread);
+    };
+    if *attributed {
+        return Err(FunctionTyGap::Rejected);
+    }
+    // F# checks each entity on the way to the case too — the union and every
+    // module enclosing it — so an error-level `[<Obsolete>]` or
+    // `[<CompilerMessage>]` on any of them rejects the use, as for a module
+    // function ([`use_checks`]).
+    let chain = env
+        .enclosing_chain_from_root(union)
+        .ok_or(FunctionTyGap::Unread)?;
+    if chain.iter().any(|&h| rejected_by_attributes(env.entity(h))) {
+        return Err(FunctionTyGap::Rejected);
+    }
+    match measures {
+        ValMeasures::Measured => return Err(FunctionTyGap::Measures),
+        ValMeasures::NoDirectMeasure { heads } => {
+            if !heads
+                .iter()
+                .all(|head| env.head_hides_no_measure(union, head))
+            {
+                return Err(FunctionTyGap::Measures);
+            }
+        }
+    }
+    let mut makers = entity
+        .union_case_makers
+        .iter()
+        .filter(|m| m.declaration_index == case.declaration_index);
+    let (Some(maker), None) = (makers.next(), makers.next()) else {
+        return Err(FunctionTyGap::Unread);
+    };
+    let method = &maker.method;
+    let params = &method.signature.parameters;
+    if params.len() != *count || !method.generic_parameters.is_empty() {
+        return Err(FunctionTyGap::Groups);
+    }
+    if params
+        .iter()
+        .any(|p| p.is_byref || p.is_out || p.is_param_array || p.default != ParamDefault::None)
+    {
+        return Err(FunctionTyGap::Groups);
+    }
+    if method.signature.return_nullability == Nullability::Annotated
+        || params
+            .iter()
+            .any(|p| p.nullability == Nullability::Annotated)
+    {
+        return Err(FunctionTyGap::Type);
+    }
+    let bridge = Bridge {
+        env,
+        declaring: &entity.assembly,
+        typars: 0,
+        type_typars: entity.generic_parameters.len(),
+    };
+    let union_ty = bridge.ty(&method.signature.return_type)?;
+    let applied_to_own_parameters = match &union_ty {
+        Ty::Named { args, .. } => {
+            args.iter()
+                .enumerate()
+                .all(|(i, a)| *a == Ty::Param(u32::try_from(i).expect("few type parameters")))
+                && args.len() == entity.generic_parameters.len()
+        }
+        _ => false,
+    };
+    if !applied_to_own_parameters {
+        return Err(FunctionTyGap::Type);
+    }
+    let fields = params
+        .iter()
+        .map(|p| bridge.ty(&p.ty))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(UnionCaseScheme {
+        fields,
+        union: union_ty,
+    })
+}
+
+/// The path [`Ty::Named`] carries for the generic type `handle` applied in
+/// an annotation, under the signature bridge's rules ([`Bridge::generic_path`]):
+/// its compiled path when F# names it so, or for one of FSharp.Core's own
+/// renamed generics (`Result` is `FSharpResult`) the compiled path that
+/// [`Ty::render_fsharp`] shows by its F# name. `None` where the bridge
+/// declines.
+pub(crate) fn applied_type_path(env: &AssemblyEnv, handle: EntityHandle) -> Option<Vec<String>> {
+    let entity = env.entity(handle);
+    Bridge {
+        env,
+        declaring: &entity.assembly,
+        typars: 0,
+        type_typars: 0,
+    }
+    .generic_path(handle)
+    .ok()
 }
 
 /// The curried domains of `method`'s F# type, from its bridged IL parameter
@@ -484,6 +649,12 @@ struct Bridge<'a> {
     env: &'a AssemblyEnv,
     declaring: &'a AssemblyIdentity,
     typars: usize,
+    /// How many of the declaring **type's** parameters a type-level
+    /// [`TypeRef::Var`] may index, each read as the [`Ty::Param`] of its
+    /// index: a union's, for its case makers ([`union_case_scheme`]). Zero
+    /// for a module function, whose module has none; a signature may then
+    /// index the method's parameters or the type's, never both.
+    type_typars: usize,
 }
 
 impl Bridge<'_> {
@@ -495,6 +666,12 @@ impl Bridge<'_> {
                 index,
                 is_method: true,
             } if usize::from(*index) < self.typars => Ok(Ty::Param(u32::from(*index))),
+            TypeRef::Var {
+                index,
+                is_method: false,
+            } if self.typars == 0 && usize::from(*index) < self.type_typars => {
+                Ok(Ty::Param(u32::from(*index)))
+            }
             // FSharp.Core's own `FSharpFunc<_, _>` and `Unit`, by their
             // resolution scope: a same-assembly reference from FSharp.Core, or
             // a cross-assembly one to it.
@@ -776,6 +953,7 @@ pub(crate) fn fsharp_core_abbreviation_ty(
         env,
         declaring: &entity.assembly,
         typars: 0,
+        type_typars: 0,
     };
     let path = bridge.generic_path(target).ok()?;
     (env.entity(target).generic_parameters.len() == args.len()).then_some(Ty::Named { path, args })

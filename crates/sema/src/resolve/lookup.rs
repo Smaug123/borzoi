@@ -338,18 +338,20 @@ impl<'a> Resolver<'a> {
             return;
         }
         let cases: Option<Vec<(String, Resolution)>> = match &entity.union_cases {
-            UnionCases::Known(names) => names
+            UnionCases::Known(cases) => cases
                 .iter()
-                .map(|name| {
-                    self.assemblies.union_case_index(handle, name).map(|case| {
-                        (
-                            name.clone(),
-                            Resolution::UnionCase {
-                                union: handle,
-                                case,
-                            },
-                        )
-                    })
+                .map(|c| {
+                    self.assemblies
+                        .union_case_index(handle, &c.name)
+                        .map(|case| {
+                            (
+                                c.name.clone(),
+                                Resolution::UnionCase {
+                                    union: handle,
+                                    case,
+                                },
+                            )
+                        })
                 })
                 .collect(),
             UnionCases::Unknowable => None,
@@ -1989,8 +1991,11 @@ impl<'a> Resolver<'a> {
         // an ordinary entry — it serves both namespaces (a union case is a value
         // too). Record value names in `seen_values`, same-file case names in
         // `seen_ctors`. No same-file dedup: a name exported twice at a path (a case
-        // and a later same-named `let`) keeps both, so latest-wins `lookup` picks
-        // the later one in expression position (mirroring the in-file frame).
+        // and a same-named `let`) keeps both, in the order FCS adds them — block by
+        // block, and by [`fold_rank`] within a block — so latest-wins `lookup`
+        // picks the one FCS binds.
+        let block_of = super::model::top_level_block_ordinals(&self.export_decls);
+        let mut same_file: Vec<((usize, u8), ScopeEntry)> = Vec::new();
         for item in &self.items {
             if let Some(q) = &item.qualified
                 && q.len() == module_path.len() + 1
@@ -2015,9 +2020,21 @@ impl<'a> Resolver<'a> {
                 let mut entry =
                     ScopeEntry::opened(name, Resolution::Item(item.id), generation, open_pos);
                 entry.maybe_constant_pattern = item.attributed;
-                entries.push(entry);
+                let block = match item.def {
+                    super::model::ExportDef::Own(id) => {
+                        block_of(self.defs[id.index()].range.start())
+                    }
+                    // A signature-paired binder lives in the `.fsi`'s arena;
+                    // the walk of an implementation file exports none.
+                    super::model::ExportDef::Sig { .. } => 0,
+                };
+                same_file.push(((block, super::model::fold_rank(item.case)), entry));
             }
         }
+        // Stable, so within one rank of one block the members keep their
+        // source order.
+        same_file.sort_by_key(|(key, _)| *key);
+        entries.extend(same_file.into_iter().map(|(_, entry)| entry));
         // The cross-file member sets. A plain `open M` (`fragment_file == None`)
         // takes the latest **accessible** export per path across every earlier
         // file ([`direct_value_children`] — an inaccessible `private` value
@@ -2093,17 +2110,25 @@ impl<'a> Resolver<'a> {
             }
         }
         // A possible union case the walk does not intern (`type T = X`)
-        // declines its name in both namespaces, and no other.
-        let own_cases: Vec<&Vec<String>> = self
+        // declines its name, and no other: in pattern position always, and in
+        // expression position unless a value of the name outranks it.
+        let own_cases: Vec<(&Vec<String>, bool)> = self
             .export_decls
             .iter()
-            .filter(|d| {
-                matches!(d.kind, super::model::ExportDeclKind::OpaqueCase)
-                    && !super::model::superseded_by_a_later_value(&self.export_decls, d)
+            .filter(|d| matches!(d.kind, super::model::ExportDeclKind::OpaqueCase))
+            .map(|d| {
+                (
+                    &d.path,
+                    super::model::superseded_by_a_value(&self.export_decls, &self.items, d),
+                )
             })
-            .map(|d| &d.path)
             .collect();
-        for path in own_cases.into_iter().chain(&self.preceding.opaque_cases) {
+        let earlier_cases = self
+            .preceding
+            .opaque_cases
+            .iter()
+            .map(|(path, superseded)| (path, *superseded));
+        for (path, superseded) in own_cases.into_iter().chain(earlier_cases) {
             if let Some((name, container)) = path.split_last()
                 && container == module_path
             {
@@ -2114,6 +2139,7 @@ impl<'a> Resolver<'a> {
                     open_pos,
                 );
                 entry.opened_case = true;
+                entry.pattern_only = superseded;
                 entries.push(entry);
             }
         }
@@ -2394,7 +2420,8 @@ impl<'a> Resolver<'a> {
         // per-module-path recursion folded all of a module's members at the
         // module's list position, mis-ordering multi-file/nested fragments.)
         let mut count = self.open_module_values(namespace, open_pos, None);
-        for (frag_path, frag_file) in self.auto_open_fragments_reachable(namespace) {
+        let fragments = self.auto_open_fragments_reachable(namespace);
+        for (frag_path, frag_file) in fragments.iter().cloned() {
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2422,6 +2449,14 @@ impl<'a> Resolver<'a> {
                 self.open_generation += 1;
             }
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
+        }
+        // What each fragment adds that this fold does not model
+        // ([`Self::fragment_open_contributions`]). These are marks, so they go
+        // after every fragment: a sibling a fragment records may stand after
+        // an `[<AutoOpen>]` child folded later, and a decline that lands too
+        // late costs only availability.
+        for (frag_path, _) in &fragments {
+            self.fragment_open_contributions(frag_path, open_pos);
         }
         // The straddle winners, re-pushed last so they out-position the submodule
         // pushes. `value_winners` / `ctor_winners` are non-empty only when

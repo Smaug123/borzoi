@@ -906,6 +906,34 @@ fn diff_entities(
                 b.skipped_members, d.skipped_members
             ));
         }
+        // A union's case makers are methods too, held apart from the
+        // members (FCS hides them): the same rule holds for each.
+        if b.union_case_makers.len() != d.union_case_makers.len() {
+            findings.push(format!(
+                "{here}: union case maker count moved under `modopt` decoration: {} -> {}",
+                b.union_case_makers.len(),
+                d.union_case_makers.len()
+            ));
+        } else {
+            for (bm, dm) in b.union_case_makers.iter().zip(&d.union_case_makers) {
+                if !dm.method.drops_optional_modifier {
+                    findings.push(format!(
+                        "{here}.{}: a decorated case maker does not record its dropped `modopt`",
+                        dm.method.name
+                    ));
+                }
+                let (mut bm, mut dm) = (bm.clone(), dm.clone());
+                bm.method.drops_optional_modifier = false;
+                dm.method.drops_optional_modifier = false;
+                if bm != dm {
+                    findings.push(format!(
+                        "{here}.{}: case maker projection moved under `modopt` decoration:\n  \
+                         baseline:  {bm:?}\n  decorated: {dm:?}",
+                        bm.method.name
+                    ));
+                }
+            }
+        }
         // Everything else about the entity: base type, interfaces, type
         // parameters, attribute-derived facts.
         if entity_shell(b) != entity_shell(d) {
@@ -925,7 +953,7 @@ fn diff_entities(
     }
 }
 
-/// An entity with its members and nested types blanked, so the shell (base
+/// An entity with its members, case makers and nested types blanked, so the shell (base
 /// type, interfaces, type parameters, markers) can be compared without
 /// re-reporting a member divergence already reported above.
 fn entity_shell(e: &Entity) -> Entity {
@@ -933,5 +961,6 @@ fn entity_shell(e: &Entity) -> Entity {
     e.members = Vec::new();
     e.nested_types = Vec::new();
     e.skipped_members = Vec::new();
+    e.union_case_makers = Vec::new();
     e
 }

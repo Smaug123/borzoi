@@ -1359,10 +1359,12 @@ fn a_generic_application_defers_on_input_fsharp_rejects() {
 ///   a different type, and arity alone does not rule it out. FSharp.Core's own
 ///   (`int option`, `int list`, `array<int>`) read through to their target, each
 ///   checked to apply exactly its parameters in order (below);
-/// - a **source-renamed** head (`Result`, compiled `FSharpResult`; `Map`,
-///   compiled `FSharpMap`): [`Ty`] carries one path and this needs two — the
-///   compiled name is FCS's canonical currency, the source name is what hover
-///   must show, and no alias table recovers one from the other;
+/// - a **source-renamed** head other than FSharp.Core's own renamed generics:
+///   [`Ty`] carries one path and this needs two — the compiled name is FCS's
+///   canonical currency, the source name is what hover must show — and only
+///   FSharp.Core's table (`Result` is `FSharpResult`, `Map` is `FSharpMap`)
+///   recovers one from the other, so those are read (above) and the rest
+///   decline;
 /// - a tycon FCS canonicalises **structurally**: `System.Tuple<int, string>`
 ///   renders `System.Int32 * System.String`, `FSharpFunc<a, b>` renders `a -> b`,
 ///   `array<int>` renders `System.Int32[]`, and `System.ValueTuple<…>` renders
@@ -1393,6 +1395,12 @@ fn the_heads_a_generic_application_defers_on() {
             "a",
             "System.Int32[]",
         ),
+        // FSharp.Core's renamed generic, by the signature bridge's rule.
+        (
+            "module M\nlet r : Result<int, string> = Ok 1\n",
+            "r",
+            "Microsoft.FSharp.Core.FSharpResult<System.Int32, System.String>",
+        ),
     ] {
         assert_eq!(
             binder_render(source, name).as_deref(),
@@ -1402,7 +1410,6 @@ fn the_heads_a_generic_application_defers_on() {
         assert!(assert_binder_sound(source) >= 1, "{source:?}");
     }
     for (source, name) in [
-        ("module M\nlet r : Result<int, string> = Ok 1\n", "r"),
         (
             "module M\nlet t : System.Tuple<int, string> = System.Tuple<int, string>(1, \"a\")\n",
             "t",

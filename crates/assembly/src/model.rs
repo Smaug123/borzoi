@@ -815,7 +815,7 @@ pub enum UnionCases {
     /// with a private representation (`type U = private | Hidden`) knowably
     /// contributes no case to a cross-assembly `open`, and FCS resolves an earlier
     /// same-named binding where a hidden entry would wrongly shadow it.
-    Known(Vec<String>),
+    Known(Vec<UnionCase>),
     /// The accessible cases could not be recovered, so nothing may be concluded
     /// from a name's absence — the union's hidden cases can shadow anything, and a
     /// name-resolution consumer folding an `open` must treat this as name-unknown
@@ -828,6 +828,73 @@ pub enum UnionCases {
     /// that key is not injective, so when two union rows share it the pickled list
     /// fits each as readily as the other; or the entity is not a union at all.
     Unknowable,
+}
+
+/// One accessible case of a union whose cases the host signature pickle
+/// listed ([`UnionCases::Known`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UnionCase {
+    /// The case's F# **logical** name, which bare-name resolution matches.
+    pub name: String,
+    /// The case's position among **all** the union's cases, accessible or
+    /// not, in declaration order: the pickle's order, and the sequence number
+    /// fsc writes on the case's maker
+    /// (`[CompilationMapping(SourceConstructFlags.UnionCase, n)]`). The join
+    /// key into [`Entity::union_case_makers`].
+    pub declaration_index: u32,
+    /// What the pickle says of the case's fields. See [`CaseFields`].
+    pub fields: CaseFields,
+}
+
+impl UnionCase {
+    /// A case known by name and position alone, its fields unread: what a
+    /// hand-built fixture needs, and what nothing may read a type from.
+    pub fn unread(name: impl Into<String>, declaration_index: u32) -> Self {
+        Self {
+            name: name.into(),
+            declaration_index,
+            fields: CaseFields::Unknowable,
+        }
+    }
+}
+
+/// What the signature pickle says of a union case's fields, which the IL
+/// maker's parameters carry only up to erasure: one parameter per field, but
+/// with every unit of measure erased.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CaseFields {
+    /// The pickle described the case.
+    Read {
+        /// How many fields the case declares: its maker's parameter count.
+        count: usize,
+        /// Whether a unit of measure appears in the fields' types — the
+        /// same reading a module function's val carries
+        /// ([`ReadValFacts::measures`]), over the fields in order.
+        measures: ValMeasures,
+        /// Whether the case carries any attribute. F# checks a case's
+        /// attributes at each use (an `[<Obsolete>]` one can fail it), and
+        /// they live in the pickle alone.
+        attributed: bool,
+    },
+    /// A field's type was not readable, or the case was not described.
+    Unknowable,
+}
+
+/// A union case's maker: the static method fsc emits to construct the case
+/// (`NewOk(T)`, FSharp.Core's specially named `Some(T)`), or a nullary case's
+/// getter (`get_None()`). Its parameters are the case's fields in order, as
+/// IL types — so with any unit of measure erased, which
+/// [`CaseFields::Read`] answers for.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UnionCaseMaker {
+    /// The `n` of the maker's
+    /// `[CompilationMapping(SourceConstructFlags.UnionCase, n)]`: the case's
+    /// [`UnionCase::declaration_index`].
+    pub declaration_index: u32,
+    pub method: MethodLike,
 }
 
 /// A type, module, or other top-level definition in an assembly.
@@ -1104,6 +1171,12 @@ pub struct Entity {
     /// unknowable reading is the one that costs a consumer which forgot to check
     /// the kind an availability loss rather than a wrong answer.
     pub union_cases: UnionCases,
+    /// This union's case makers, read off the IL: every static method fsc
+    /// tagged `[CompilationMapping(SourceConstructFlags.UnionCase, n)]`, by
+    /// `n`. Empty for every entity that is not an [`EntityKind::Union`]. An IL
+    /// fact, independent of the pickle: a consumer joins a listed case to its
+    /// maker by [`UnionCase::declaration_index`].
+    pub union_case_makers: Vec<UnionCaseMaker>,
     /// The F# source names of this module's **static** extension members — what
     /// `type T with static member M …` declares. The static sibling of
     /// [`Self::extension_member_names`], read from the same pickled

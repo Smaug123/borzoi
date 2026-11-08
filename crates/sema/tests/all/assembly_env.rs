@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{
     Access, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member, Nullability,
-    NullableType, ParamDefault, Parameter, Primitive, TypeRef, UnionCases,
+    NullableType, ParamDefault, Parameter, Primitive, TypeRef, UnionCase, UnionCases,
 };
 use borzoi_sema::{
     AbbreviationVisibility, AssemblyEnv, EntityHandle, ExtensionMembers, SemanticClass,
@@ -1468,7 +1468,7 @@ fn a_nested_type_of_an_unenumerable_union_is_not_classified() {
 fn a_named_case_of_an_enumerable_union_is_still_a_union_case() {
     assert_eq!(
         nested_class(&union_with_one_nested_type(UnionCases::Known(vec![
-            "Circle".to_string()
+            UnionCase::unread("Circle", 0)
         ]))),
         Some(SemanticClass::UnionCase),
         "the pickle names `Circle` as a case, so its carrier is a union case"
@@ -1483,7 +1483,7 @@ fn a_named_case_of_an_enumerable_union_is_still_a_union_case() {
 fn an_unnamed_nested_type_of_an_enumerable_union_is_a_type() {
     assert_eq!(
         nested_class(&union_with_one_nested_type(UnionCases::Known(vec![
-            "Square".to_string()
+            UnionCase::unread("Square", 0)
         ]))),
         Some(SemanticClass::Type),
         "the complete case list does not name `Circle`, so it is not a carrier"

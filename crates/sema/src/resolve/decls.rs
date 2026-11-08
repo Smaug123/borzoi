@@ -867,6 +867,8 @@ impl<'a> Resolver<'a> {
                     let contribution = Contribution::of_value(name.clone());
                     let pos = u32::from(ext.syntax().text_range().start());
                     self.push_contribution(&contribution, pos);
+                    // An `open` of the module adds it too, with its values.
+                    self.record_open_contribution(&contribution, false);
                 }
                 // An `extern` introduces a value-namespace name we do NOT intern
                 // (interning it is a later slice), so it is invisible to the
