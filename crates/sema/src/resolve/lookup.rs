@@ -1863,6 +1863,7 @@ impl<'a> Resolver<'a> {
             self.preceding
                 .type_qualified_case(full, &self.container_path)
                 .filter(|_| !self.value_shadows_case(full))
+                .filter(|_| !self.earlier_case_type_namesake_possible(full))
         };
         if !rooted {
             // Tier 0 — a lexically in-scope **module alias** as the bare head:
@@ -3038,6 +3039,14 @@ impl<'a> Resolver<'a> {
                 _ => head_is_value,
             };
             if !value_takes_qualifier {
+                if self.lower_arity_namesake_possible(head, type_id, None) {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                    );
+                    return;
+                }
                 self.record_type_qualifier(first, case_seg, type_id, case_res);
                 return;
             }
@@ -3064,6 +3073,18 @@ impl<'a> Resolver<'a> {
         {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
+            let type_takes_qualifier = !head_is_value
+                || self
+                    .value_slot_position(head)
+                    .is_some_and(|vr| vr <= self.defs[type_id.index()].range.start());
+            if type_takes_qualifier && self.lower_arity_namesake_possible(head, type_id, None) {
+                self.defer_with_cause(
+                    first.text_range(),
+                    segments,
+                    DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                );
+                return;
+            }
             if head_is_value {
                 match self.value_slot_position(head) {
                     // A later value takes the qualifier: member access on the
@@ -3851,8 +3872,11 @@ impl<'a> Resolver<'a> {
     /// `case_seg`): the head → the enum *type* def and the whole span → the case
     /// def, mirroring FCS. Shared by expression ([`resolve_long_ident`](Self::resolve_long_ident))
     /// and pattern ([`resolve_pat_types`](Self::resolve_pat_types)) position, both
-    /// of which FCS resolves identically. Returns `true` (and records both) iff it
-    /// matched; otherwise records nothing (the path defers, never a wrong member).
+    /// of which FCS resolves identically. Returns `true` iff it matched: it then
+    /// records both, or — when a namesake of lower arity may be the type FCS
+    /// binds ([`Self::lower_arity_namesake_possible`]) — records the path's
+    /// decline. Otherwise it records nothing (the path defers, never a wrong
+    /// member).
     pub(super) fn record_type_case_path(
         &mut self,
         type_seg: &SyntaxToken,
@@ -3861,6 +3885,14 @@ impl<'a> Resolver<'a> {
         let Some((type_id, case_res)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
+        if self.lower_arity_namesake_possible(&id_text(type_seg), type_id, None) {
+            self.defer_with_cause(
+                type_seg.text_range(),
+                &[type_seg.clone(), case_seg.clone()],
+                DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+            );
+            return true;
+        }
         self.record_type_qualifier(type_seg, case_seg, type_id, case_res);
         true
     }
@@ -4370,6 +4402,11 @@ impl<'a> Resolver<'a> {
                     // (`Miss`) rather than emit a case with no type target.
                     return Some(SameFileQualified::Miss);
                 };
+                // FCS tries the module's same-named types fewest generic
+                // parameters first (#323).
+                if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
+                    return Some(SameFileQualified::DeferStop);
+                }
                 return Some(SameFileQualified::Emit { type_id, case_res });
             }
             if !in_pattern && seg.ty {
@@ -4385,6 +4422,9 @@ impl<'a> Resolver<'a> {
                     self.emittable_type_member(&module_path, ty, case, use_pos)
                     && let Some(&type_id) = self.type_defs.get(&module_path).and_then(|m| m.get(ty))
                 {
+                    if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
+                        return Some(SameFileQualified::DeferStop);
+                    }
                     return Some(SameFileQualified::Emit {
                         type_id,
                         case_res: Resolution::Local(member_def),

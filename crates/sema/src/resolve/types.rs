@@ -3056,6 +3056,112 @@ impl<'a> Resolver<'a> {
         })
     }
 
+    /// Whether a type FCS tries before in-file type `type_id` may bear its
+    /// name, when the name qualifies a member or case with no type arguments
+    /// written (`T.M`, `T.Case`, `| T.Case ->`; #323).
+    ///
+    /// FCS looks such a qualifier up among every same-named type the scope
+    /// holds (`LookupTypeNameInEnvNoArity`, or `LookupTypeNameInEntityNoArity`
+    /// in `module`'s own types when a module path qualifies it), sorts them
+    /// by generic arity — a stable sort over a latest-first list
+    /// (`CheckForTypeLegitimacyAndMultipleGenericTypeAmbiguities`) — and binds
+    /// the first that has the member. The in-file walks pick the latest
+    /// declaration of the name in the innermost container declaring it, which
+    /// is FCS's first candidate only when no namesake of lower arity is in
+    /// scope: `type CT` beside a later `type CT<'a>` makes `CT.M` the
+    /// non-generic type's `M`.
+    ///
+    /// So for `type_id` of arity 0 nothing outranks it by arity. For a
+    /// generic one, any namesake of lower arity this cannot rule out answers
+    /// `true`: one declared anywhere in this file (any container, any
+    /// position, so a forward `rec` declaration and an opened module count),
+    /// an `exception` of the name, any earlier file's (or one the earlier file
+    /// could not place), and — for an unqualified head — a referenced
+    /// assembly's under any prefix the walk visits, an `[<AutoOpen>]` surface
+    /// that may declare the name, or a dropped type that may be one.
+    pub(super) fn lower_arity_namesake_possible(
+        &self,
+        name: &str,
+        type_id: DefId,
+        module: Option<&[String]>,
+    ) -> bool {
+        let Some(&arity) = self.type_def_arities.get(&type_id) else {
+            return true;
+        };
+        if arity == 0 {
+            return false;
+        }
+        if let Some(module) = module {
+            return self
+                .type_decl_counts
+                .get(module)
+                .and_then(|m| m.get(name))
+                .is_none_or(|by_arity| by_arity.keys().any(|&a| a < arity));
+        }
+        self.namesake_below_arity_possible(name, arity)
+    }
+
+    /// Whether an earlier file's type-qualified case at `full` (`[container..,
+    /// type, case]`) may not be the case FCS binds there, because the type's
+    /// name may be borne by a type FCS tries first
+    /// ([`Self::lower_arity_namesake_possible`]): the earlier files declare the
+    /// name at more than one arity (the index keeps one case per path, the
+    /// latest), or at one they could not place, or at a generic arity with a
+    /// namesake of lower arity possible anywhere in scope.
+    pub(super) fn earlier_case_type_namesake_possible(&self, full: &[String]) -> bool {
+        let [.., name, _] = full else {
+            return false;
+        };
+        let Some(decls) = self.preceding.earlier_types.get(name) else {
+            return false;
+        };
+        let mut arities = std::collections::BTreeSet::new();
+        for d in decls {
+            match d {
+                Some(t) => {
+                    arities.insert(t.arity);
+                }
+                None => return true,
+            }
+        }
+        match arities.into_iter().collect::<Vec<_>>().as_slice() {
+            [] | [0] => false,
+            [arity] => self.namesake_below_arity_possible(name, *arity),
+            _ => true,
+        }
+    }
+
+    /// Whether a type named `name` with fewer than `arity` generic parameters
+    /// may be in scope anywhere FCS's unqualified type-name lookup reads —
+    /// see [`Self::lower_arity_namesake_possible`] for the channels.
+    fn namesake_below_arity_possible(&self, name: &str, arity: usize) -> bool {
+        let in_file = self
+            .own_type_scoped
+            .keys()
+            .any(|(n, a)| n == name && *a < arity)
+            || self.own_exception_simple_names.contains(name);
+        let earlier = self.preceding.earlier_types.get(name).is_some_and(|decls| {
+            decls
+                .iter()
+                .any(|d| d.as_ref().is_none_or(|t| t.arity < arity))
+        });
+        let names = [name.to_string()];
+        let assemblies = self.assemblies.manifest_auto_open_target_is_uncertain()
+            || self.assemblies.contested_auto_open_is_uncertain()
+            || self
+                .assemblies
+                .manifest_auto_open_surface_declares(name, ManifestSurfacePosition::TypeAnyArity)
+            || self
+                .assemblies
+                .contested_auto_open_surface_declares(name, ManifestSurfacePosition::TypeAnyArity)
+            || self.dropped_type_could_root_this_path(&names)
+            || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
+                self.assemblies
+                    .declares_type_below_arity(prefix, name, arity)
+            });
+        in_file || earlier || assemblies
+    }
+
     /// The in-file `type` def a single-segment type name at `arity` binds, if
     /// the file declares the name in scope at all: `Ok` when that declaration
     /// is pinned, otherwise the cause it is not. FCS looks a type name up by

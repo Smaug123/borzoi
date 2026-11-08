@@ -2585,6 +2585,25 @@ impl AssemblyEnv {
             .copied()
     }
 
+    /// Whether some referenced assembly declares a top-level entity named
+    /// `name` in `namespace` with fewer than `arity` generic parameters —
+    /// public or not, a module or not, so that `false` proves no such entity.
+    ///
+    /// FCS looks a qualifier written without type arguments (`T.M`, `T()`)
+    /// up among every same-named type in scope, fewest generic parameters
+    /// first, and binds the first that has the member. So a generic type is
+    /// only the first candidate when nothing of lower arity bears its name.
+    pub fn declares_type_below_arity(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> bool {
+        self.types_named(namespace, name)
+            .iter()
+            .any(|&handle| self.entity(handle).generic_parameters.len() < arity)
+    }
+
     /// Whether some referenced assembly declares a **public** top-level type
     /// named `name` in `namespace` at *any* generic arity.
     ///

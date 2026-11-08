@@ -2455,6 +2455,11 @@ pub enum DeclineCause {
     /// contest with a type of the same name, so the path may be read as
     /// module/type-qualified rather than as member access.
     HeadSlotUnordered,
+    /// A type qualifying a member or case with no type arguments written
+    /// (`T.M`, `T.Case`), where a namesake of lower generic arity may be in
+    /// scope: FCS tries same-named types fewest-generic-parameters first, so
+    /// the latest declaration of the name need not be the one it binds (#323).
+    QualifierArityNamesake,
     /// A dotted path whose head is a constructor **case**: a nullary case has
     /// no dottable members, so FCS reads it as a qualifier into a same-named
     /// module or type we could not resolve.
@@ -2606,6 +2611,7 @@ impl DeclineCause {
         DeclineCause::AttributeOpaqueLeaf,
         DeclineCause::OpaqueValueHead,
         DeclineCause::HeadSlotUnordered,
+        DeclineCause::QualifierArityNamesake,
         DeclineCause::CaseQualifierHead,
         DeclineCause::GlobalMarkerHead,
         DeclineCause::SignatureScreened,
@@ -2672,6 +2678,7 @@ impl DeclineCause {
             DeclineCause::AttributeOpaqueLeaf => "attribute_opaque_leaf",
             DeclineCause::OpaqueValueHead => "opaque_value_head",
             DeclineCause::HeadSlotUnordered => "head_slot_unordered",
+            DeclineCause::QualifierArityNamesake => "qualifier_arity_namesake",
             DeclineCause::CaseQualifierHead => "case_qualifier_head",
             DeclineCause::GlobalMarkerHead => "global_marker_head",
             DeclineCause::SignatureScreened => "signature_screened",
