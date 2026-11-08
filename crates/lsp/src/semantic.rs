@@ -1020,9 +1020,9 @@ impl SemanticState {
         lookup_span.record("cached_files", cached_files as i64);
 
         // Fast path — **before any `Workspace`/SDK probing**. `dotnet_root_for_project`
-        // can spawn `dotnet --info` under a long deadline (asdf/mise/Nix-style
-        // `dotnet` wrappers with no recorded SDK root), so a repeat request that
-        // already has its answer must not pay that. Size the request against the
+        // evaluates the project and, with no recorded SDK root, re-runs SDK
+        // discovery against the filesystem, so a repeat request that already has
+        // its answer must not pay that. Size the request against the
         // *already-cached* parses and return a cached prefix that covers it — both
         // are plain map lookups. It was folded against the current env (a rebuilt
         // env drops the entry via `invalidate_assembly_state`), so no env re-check

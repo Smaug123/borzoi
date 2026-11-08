@@ -58,7 +58,7 @@ fn dotnet_root_explicit_env_wins_without_path_probe() {
         // Even with PATH set, the explicit env wins.
         e.search_path = Some(OsString::from("/this/should/be/ignored"));
     });
-    let resolved = resolve_dotnet_root(&env, Path::new("."));
+    let resolved = resolve_dotnet_root(&env);
     assert_eq!(
         resolved.as_deref(),
         Some(Path::new("/explicit/path/does/not/exist"))
@@ -79,7 +79,7 @@ fn dotnet_root_falls_back_to_path_lookup() {
     let env = env_with(|e| {
         e.search_path = Some(OsString::from(dotnet_install.as_os_str()));
     });
-    let resolved = resolve_dotnet_root(&env, Path::new(".")).expect("found on PATH");
+    let resolved = resolve_dotnet_root(&env).expect("found on PATH");
 
     let expected = fs::canonicalize(&dotnet_install).unwrap();
     assert_eq!(resolved, expected);
@@ -106,7 +106,7 @@ fn dotnet_root_canonicalises_symlinks_on_path() {
     let env = env_with(|e| {
         e.search_path = Some(OsString::from(path_dir.as_os_str()));
     });
-    let resolved = resolve_dotnet_root(&env, Path::new(".")).expect("found via symlink");
+    let resolved = resolve_dotnet_root(&env).expect("found via symlink");
 
     let expected = fs::canonicalize(&real_install).unwrap();
     assert_eq!(
@@ -131,7 +131,7 @@ fn dotnet_root_skips_path_entries_without_dotnet() {
 
     let path_joined = std::env::join_paths([&empty_a, &empty_b, &real]).unwrap();
     let env = env_with(|e| e.search_path = Some(path_joined));
-    let resolved = resolve_dotnet_root(&env, Path::new(".")).expect("found in third PATH entry");
+    let resolved = resolve_dotnet_root(&env).expect("found in third PATH entry");
 
     assert_eq!(resolved, fs::canonicalize(&real).unwrap());
 }
@@ -157,8 +157,7 @@ fn dotnet_root_skips_shim_dir_without_sdk_sibling() {
 
     let path_joined = std::env::join_paths([&shim, &real]).unwrap();
     let env = env_with(|e| e.search_path = Some(path_joined));
-    let resolved =
-        resolve_dotnet_root(&env, Path::new(".")).expect("real install in second PATH entry");
+    let resolved = resolve_dotnet_root(&env).expect("real install in second PATH entry");
 
     assert_eq!(
         resolved,
@@ -170,9 +169,9 @@ fn dotnet_root_skips_shim_dir_without_sdk_sibling() {
 #[test]
 fn dotnet_root_returns_none_when_only_shims_on_path() {
     // No real install anywhere — every PATH entry with a `dotnet`
-    // binary lacks the `sdk/` sibling. The shim file is empty, so
-    // executing it fails (ENOEXEC), the `--info` fallback yields
-    // nothing, and resolution returns None.
+    // binary lacks the `sdk/` sibling, so resolution returns None.
+    // `discovery_never_executes_a_dotnet_shim_on_path` checks that the
+    // shim is not run to find out where it forwards.
     let tmp = TempDir::new().unwrap();
     let shim = tmp.path().join("shims");
     fs::create_dir_all(&shim).unwrap();
@@ -180,7 +179,7 @@ fn dotnet_root_returns_none_when_only_shims_on_path() {
 
     let env = env_with(|e| e.search_path = Some(OsString::from(shim.as_os_str())));
     assert!(
-        resolve_dotnet_root(&env, Path::new(".")).is_none(),
+        resolve_dotnet_root(&env).is_none(),
         "shim-only PATH must not be accepted as an SDK root"
     );
 }
@@ -188,7 +187,7 @@ fn dotnet_root_returns_none_when_only_shims_on_path() {
 #[test]
 fn dotnet_root_returns_none_with_neither_env_nor_path() {
     let env = env_with(|_| {});
-    assert!(resolve_dotnet_root(&env, Path::new(".")).is_none());
+    assert!(resolve_dotnet_root(&env).is_none());
 }
 
 #[test]
@@ -197,196 +196,160 @@ fn dotnet_root_returns_none_when_path_has_no_dotnet() {
     fs::create_dir_all(tmp.path()).unwrap();
     // Tempdir is empty — no `dotnet` binary lives in it.
     let env = env_with(|e| e.search_path = Some(OsString::from(tmp.path().as_os_str())));
-    assert!(resolve_dotnet_root(&env, Path::new(".")).is_none());
+    assert!(resolve_dotnet_root(&env).is_none());
 }
 
-#[test]
-fn parse_info_recovers_dotnet_root_from_sdks_section() {
-    // The exact shape `dotnet --info` emits on every modern host. The
-    // parser walks to the `.NET SDKs installed:` header, takes the
-    // bracketed path from the first listed entry, and returns the
-    // parent (the install root that has `sdk/` as a child).
-    let info = "\
-.NET SDK:
- Version:           8.0.401
-
-.NET SDKs installed:
-  8.0.401 [/usr/share/dotnet/sdk]
-  9.0.100-preview.4 [/usr/share/dotnet/sdk]
-
-.NET runtimes installed:
-  Microsoft.NETCore.App 8.0.8 [/usr/share/dotnet/shared/Microsoft.NETCore.App]
-";
-    assert_eq!(
-        super::parse_dotnet_info_sdk_root(info).as_deref(),
-        Some(Path::new("/usr/share/dotnet"))
-    );
-}
-
-#[test]
-fn parse_info_returns_none_when_section_missing() {
-    let info = "\
-.NET SDK:
- Version:           8.0.401
-
-.NET runtimes installed:
-  Microsoft.NETCore.App 8.0.8 [/usr/share/dotnet/shared/Microsoft.NETCore.App]
-";
-    assert!(super::parse_dotnet_info_sdk_root(info).is_none());
-}
-
-#[test]
-fn parse_info_returns_none_when_section_is_empty() {
-    // Header present but no entries — followed straight by another
-    // section header. The parser must not treat that header as an
-    // SDK entry.
-    let info = "\
-.NET SDKs installed:
-.NET runtimes installed:
-  Microsoft.NETCore.App 8.0.8 [/usr/share/dotnet/shared/Microsoft.NETCore.App]
-";
-    assert!(super::parse_dotnet_info_sdk_root(info).is_none());
-}
-
-#[test]
-fn parse_info_prefers_base_path_when_sdks_section_lists_other_root() {
-    // The multi-root case: `global.json` uses `sdk.paths` like
-    // `[".dotnet", "$host$"]` so `dotnet --info` lists SDKs from
-    // *both* roots, but `Base Path:` reports the one dotnet actually
-    // selected for this invocation. Picking the first SDKs-installed
-    // entry would point us at the wrong root and `locate_dotnet_sdk`
-    // would then scan a directory that doesn't contain the SDK
-    // global.json asked for. Verify Base Path wins.
-    let info = "\
-.NET SDK:
- Version:           10.0.203
-
-Runtime Environment:
- OS Platform: Linux
- Base Path:   /opt/host-dotnet/sdk/10.0.203/
-
-.NET SDKs installed:
-  9.0.100 [/repo/.dotnet/sdk]
-  10.0.203 [/opt/host-dotnet/sdk]
-
-.NET runtimes installed:
-";
-    assert_eq!(
-        super::parse_dotnet_info_sdk_root(info).as_deref(),
-        Some(Path::new("/opt/host-dotnet"))
-    );
-}
-
-#[test]
-fn parse_info_recovers_from_real_nix_payload() {
-    // Captured from a Nix dev-shell `dotnet --info`. The wrapper at
-    // /nix/store/.../bin/dotnet forwards to the real binary, whose
-    // SDK lives under share/dotnet/sdk. We want
-    // `<store-path>/share/dotnet` back as the root.
-    let info = "\
-.NET SDK:
- Version:           10.0.203
-
-Runtime Environment:
- OS Platform: Darwin
- Base Path:   /nix/store/aaaaa-dotnet-sdk-10.0.203/share/dotnet/sdk/10.0.203/
-
-Host:
-  Version:      10.0.7
-
-.NET SDKs installed:
-  10.0.203 [/nix/store/aaaaa-dotnet-sdk-10.0.203/share/dotnet/sdk]
-
-.NET runtimes installed:
-  Microsoft.NETCore.App 10.0.7 [/nix/store/aaaaa-dotnet-sdk-10.0.203/share/dotnet/shared/Microsoft.NETCore.App]
-";
-    assert_eq!(
-        super::parse_dotnet_info_sdk_root(info).as_deref(),
-        Some(Path::new(
-            "/nix/store/aaaaa-dotnet-sdk-10.0.203/share/dotnet"
-        ))
-    );
-}
-
-#[test]
+/// Lay down a `dotnet` shim in `dir`: an executable whose real location
+/// has no `sdk/` beside it (the asdf/mise/Nix-wrapper shape). Executing it
+/// creates `sentinel`, then prints a well-formed `dotnet --info` payload
+/// naming `reported_root`, so anything that ran it and believed what it
+/// printed would come away with a usable install root.
 #[cfg(unix)]
-fn dotnet_root_falls_back_to_dotnet_info_for_wrapper_layouts() {
-    // The Nix wrapper case: PATH points at a directory containing a
-    // `dotnet` shell script whose parent has no `sdk/` sibling. The
-    // wrapper itself, when executed with `--info`, prints the real
-    // install root. The resolver must invoke `--info` and recover
-    // that root.
+fn sentinel_shim(dir: &Path, sentinel: &Path, reported_root: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = TempDir::new().unwrap();
-    let real_root = tmp.path().join("nix-store").join("share").join("dotnet");
-    fs::create_dir_all(real_root.join("sdk")).unwrap();
-
-    let wrapper_dir = tmp.path().join("nix-store").join("bin");
-    fs::create_dir_all(&wrapper_dir).unwrap();
-    let wrapper_path = wrapper_dir.join(super::DOTNET_BIN);
-    // Print a minimal but realistic `--info` payload. The pure
-    // parser only looks at the SDKs section, but we include enough
-    // surrounding context to keep this honest.
+    fs::create_dir_all(dir).unwrap();
+    let shim = dir.join(super::DOTNET_BIN);
     let script = format!(
-        r#"#!/bin/sh
-cat <<EOF
-.NET SDK:
- Version:           8.0.401
-
-.NET SDKs installed:
-  8.0.401 [{root}/sdk]
-
-.NET runtimes installed:
-EOF
-"#,
-        root = real_root.display(),
+        "#!/bin/sh\n\
+         touch '{sentinel}'\n\
+         printf 'Runtime Environment:\\n Base Path:   {root}/sdk/8.0.401/\\n\\n'\n\
+         printf '.NET SDKs installed:\\n  8.0.401 [{root}/sdk]\\n'\n",
+        sentinel = sentinel.display(),
+        root = reported_root.display(),
     );
-    fs::write(&wrapper_path, &script).unwrap();
-    fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755)).unwrap();
-
-    let env = env_with(|e| e.search_path = Some(OsString::from(wrapper_dir.as_os_str())));
-    let resolved =
-        resolve_dotnet_root(&env, Path::new(".")).expect("fallback recovers root via --info");
-    assert_eq!(resolved, real_root);
+    fs::write(&shim, script).unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// One `sdk.paths` entry as the discovery table below spells it.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+enum PathsEntry {
+    Host,
+    Alt,
+}
+
+/// One row of the discovery table below: a label, the `global.json` text
+/// (`None` for no file), and the `sdk.paths` it spells (`None` for no
+/// `paths` field).
+#[cfg(unix)]
+type DiscoveryCase = (
+    &'static str,
+    Option<&'static str>,
+    Option<&'static [PathsEntry]>,
+);
+
+/// SDK discovery never executes the `dotnet` it finds on `PATH`.
+///
+/// Running `dotnet` runs the managed code of whichever SDK the muxer
+/// selects, and a repository's `global.json` `sdk.paths` can point that
+/// selection at a directory the repository ships. So discovery is
+/// filesystem-only: a shim on `PATH` (no `sdk/` beside its real location)
+/// contributes nothing, and only `$DOTNET_ROOT` or a `PATH` entry that *is*
+/// an install names the host root.
+///
+/// The table covers every arm of `global.json` that reaches host-root
+/// resolution — none at all, no `sdk` object, a version pin without
+/// `paths`, and `paths` lists with and without `$host$` — each under an
+/// unset and a set `$DOTNET_ROOT`. The shim prints a root that really holds
+/// an SDK, so a discovery that ran it would find one; the sentinel catches
+/// the execution even where the printed root would have been discarded.
 #[test]
 #[cfg(unix)]
-fn dotnet_root_fallback_runs_shim_in_project_dir() {
-    // Regression for the cwd-sensitivity of asdf/mise-style shims: the
-    // shim picks an SDK by walking up from cwd looking for
-    // `.tool-versions`. If we inherit the LSP process cwd, projects
-    // pinned via that mechanism resolve against the wrong toolchain.
-    // The fake shim here writes its cwd into stdout in place of the
-    // SDK base path; the assertion fails if the cwd we see isn't the
-    // project directory we threaded through.
-    use std::os::unix::fs::PermissionsExt;
+fn discovery_never_executes_a_dotnet_shim_on_path() {
+    use PathsEntry::{Alt, Host};
 
-    let tmp = TempDir::new().unwrap();
-    let shim_dir = tmp.path().join("shims");
-    fs::create_dir_all(&shim_dir).unwrap();
-    let shim_path = shim_dir.join(super::DOTNET_BIN);
-    // `pwd` runs inside the shim; the printed SDK path is
-    // `<cwd>/sdk`, so the parser yields `<cwd>` as the dotnet_root.
-    let script = "#!/bin/sh\n\
-                  printf '.NET SDKs installed:\\n  9.9.9 [%s/sdk]\\n' \"$(pwd)\"\n";
-    fs::write(&shim_path, script).unwrap();
-    fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let cases: &[DiscoveryCase] = &[
+        ("no global.json", None, None),
+        ("no sdk object", Some("{}"), None),
+        (
+            "version pin without paths",
+            Some(r#"{ "sdk": { "version": "8.0.401" } }"#),
+            None,
+        ),
+        (
+            "paths: [$host$]",
+            Some(r#"{ "sdk": { "paths": ["$host$"] } }"#),
+            Some(&[Host]),
+        ),
+        (
+            "paths: [$host$, ./alt]",
+            Some(r#"{ "sdk": { "paths": ["$host$", "./alt"] } }"#),
+            Some(&[Host, Alt]),
+        ),
+        (
+            "paths: [./alt, $host$]",
+            Some(r#"{ "sdk": { "paths": ["./alt", "$host$"] } }"#),
+            Some(&[Alt, Host]),
+        ),
+        (
+            "paths: [./alt]",
+            Some(r#"{ "sdk": { "paths": ["./alt"] } }"#),
+            Some(&[Alt]),
+        ),
+        (
+            "paths: []",
+            Some(r#"{ "sdk": { "paths": [] } }"#),
+            Some(&[]),
+        ),
+    ];
 
-    // Build a real, canonicalised project directory so the assertion
-    // can compare without worrying about /private/tmp on macOS.
-    let project_dir = fs::canonicalize(tmp.path()).unwrap().join("proj");
-    fs::create_dir_all(&project_dir).unwrap();
+    for &(label, global_json, paths) in cases {
+        for explicit_root in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let root = fs::canonicalize(tmp.path()).unwrap();
+            let reported = root.join("reported-by-shim");
+            install_sdk(&reported, "8.0.401", "Microsoft.NET.Sdk");
+            let alt = root.join("alt");
+            install_sdk(&alt, "8.0.401", "Microsoft.NET.Sdk");
+            let explicit = root.join("explicit-root");
+            install_sdk(&explicit, "8.0.401", "Microsoft.NET.Sdk");
 
-    let env = env_with(|e| e.search_path = Some(OsString::from(shim_dir.as_os_str())));
-    let resolved = resolve_dotnet_root(&env, &project_dir)
-        .expect("fallback should succeed when the shim prints a path");
-    assert_eq!(
-        resolved, project_dir,
-        "shim was invoked from {:?} but should have seen project dir {:?}",
-        resolved, project_dir,
-    );
+            let shim_dir = root.join("shims");
+            let sentinel = root.join("shim-was-executed");
+            sentinel_shim(&shim_dir, &sentinel, &reported);
+
+            if let Some(text) = global_json {
+                fs::write(root.join("global.json"), text).unwrap();
+            }
+            let project = root.join("proj").join("App.fsproj");
+            fs::create_dir_all(project.parent().unwrap()).unwrap();
+
+            let env = env_with(|e| {
+                e.search_path = Some(OsString::from(shim_dir.as_os_str()));
+                e.dotnet_root = explicit_root.then(|| explicit.clone());
+            });
+            let host = explicit_root.then(|| explicit.clone());
+            let expected: Option<Vec<PathBuf>> = match paths {
+                None => host.clone().map(|h| vec![h]),
+                Some(entries) => Some(
+                    entries
+                        .iter()
+                        .filter_map(|entry| match entry {
+                            Host => host.clone(),
+                            Alt => Some(alt.clone()),
+                        })
+                        .collect(),
+                ),
+            };
+
+            let outcome = SdkDiscovery::for_project(&project, &env);
+            let case = format!("{label}, DOTNET_ROOT set: {explicit_root}");
+            assert!(
+                !sentinel.exists(),
+                "{case}: discovery executed the `dotnet` shim on PATH"
+            );
+            match (expected, outcome) {
+                (Some(want), Ok(disc)) => assert_eq!(disc.roots(), want, "{case}"),
+                (None, Err(DiscoveryError::MissingDotnetRoot)) => {}
+                (want, got) => panic!(
+                    "{case}: expected roots {want:?}, got {:?}",
+                    got.map(|d| d.roots().to_vec())
+                ),
+            }
+        }
+    }
 }
 
 #[test]
@@ -990,102 +953,6 @@ fn host_token_skipped_when_host_resolution_fails() {
     );
     let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve via alt"));
     assert!(paths.props.starts_with(alt.join("sdk").join("8.0.401")));
-}
-
-#[test]
-#[cfg(unix)]
-fn host_token_does_not_consult_dotnet_info() {
-    // [P2] from codex review on PR #145. When expanding `$host$`, we
-    // must NOT fall back to `dotnet --info`: the only `--info`-cwd we
-    // have is the project dir, which sits inside a workspace whose
-    // own `sdk.paths` redirect the muxer's SDK selection. The path
-    // `--info` would print is the *resolved* SDK (filtered through
-    // the workspace's own paths), not the host install that `$host$`
-    // is supposed to name — so consulting it would silently produce
-    // a duplicate root or, worse, mis-identify the host. With a
-    // wrapper-only PATH and no DOTNET_ROOT, `$host$` must therefore
-    // be skipped (same behaviour as "no host available at all"),
-    // and the surviving relative entry resolves cleanly.
-    use std::os::unix::fs::PermissionsExt;
-
-    let tmp = TempDir::new().unwrap();
-    let alt = tmp.path().join("alt");
-    install_sdk(&alt, "8.0.401", "Microsoft.NET.Sdk");
-
-    // Wrapper script that prints a path different from `alt`. If the
-    // resolver ever runs `--info` here, the test fails: we'd see the
-    // fake root added to `disc.roots()`.
-    let wrapper_dir = tmp.path().join("nix-bin");
-    fs::create_dir_all(&wrapper_dir).unwrap();
-    let wrapper_path = wrapper_dir.join(super::DOTNET_BIN);
-    let fake_root = tmp.path().join("info-reported");
-    let script = format!(
-        "#!/bin/sh\nprintf '.NET SDKs installed:\\n  9.9.9 [{root}/sdk]\\n'\n",
-        root = fake_root.display(),
-    );
-    fs::write(&wrapper_path, script).unwrap();
-    fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755)).unwrap();
-
-    let project = tmp.path().join("proj").join("App.fsproj");
-    fs::create_dir_all(project.parent().unwrap()).unwrap();
-    fs::write(
-        tmp.path().join("global.json"),
-        r#"{ "sdk": { "paths": ["$host$", "./alt"] } }"#,
-    )
-    .unwrap();
-
-    let env = env_with(|e| e.search_path = Some(OsString::from(wrapper_dir.as_os_str())));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
-
-    assert_eq!(
-        disc.roots(),
-        std::slice::from_ref(&alt),
-        "$host$ must skip the `dotnet --info` fallback; got roots {:?}",
-        disc.roots()
-    );
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve via alt"));
-    assert!(paths.props.starts_with(alt.join("sdk").join("8.0.401")));
-}
-
-#[test]
-#[cfg(unix)]
-fn no_paths_field_still_uses_dotnet_info_for_wrapper() {
-    // Counter-test for the above: when `global.json` has *no* `paths`
-    // field (or no `global.json` at all), wrapper-layout support is
-    // unchanged — the resolver still falls back to `dotnet --info`
-    // to recover the install root. This pins the asymmetry so a
-    // future "simplify by dropping `--info` everywhere" change is
-    // forced to be deliberate rather than incidental.
-    use std::os::unix::fs::PermissionsExt;
-
-    let tmp = TempDir::new().unwrap();
-    let real_root = tmp.path().join("share").join("dotnet");
-    install_sdk(&real_root, "8.0.401", "Microsoft.NET.Sdk");
-
-    let wrapper_dir = tmp.path().join("nix-bin");
-    fs::create_dir_all(&wrapper_dir).unwrap();
-    let wrapper_path = wrapper_dir.join(super::DOTNET_BIN);
-    let script = format!(
-        "#!/bin/sh\nprintf '.NET SDKs installed:\\n  8.0.401 [{root}/sdk]\\n'\n",
-        root = real_root.display(),
-    );
-    fs::write(&wrapper_path, script).unwrap();
-    fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755)).unwrap();
-
-    // `global.json` with an `sdk.version` but NO `paths` field exercises
-    // the no-paths arm of `expand_sdk_paths`.
-    let project = tmp.path().join("proj").join("App.fsproj");
-    fs::create_dir_all(project.parent().unwrap()).unwrap();
-    fs::write(
-        tmp.path().join("global.json"),
-        r#"{ "sdk": { "version": "8.0.401" } }"#,
-    )
-    .unwrap();
-
-    let env = env_with(|e| e.search_path = Some(OsString::from(wrapper_dir.as_os_str())));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
-
-    assert_eq!(disc.roots(), std::slice::from_ref(&real_root));
 }
 
 #[test]

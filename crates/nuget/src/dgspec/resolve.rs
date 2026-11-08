@@ -1,5 +1,5 @@
 //! B₁ of `docs/nuget-dgspec-boundary-plan.md`: the offline resolver
-//! ([`crate::resolve_offline_with_fallback`]) consuming a parsed
+//! ([`crate::resolve_offline_in`]) consuming a parsed
 //! dependency-graph spec.
 //!
 //! [`resolve_dgspec`] commits only where NuGet's restore over the same spec
@@ -15,7 +15,7 @@
 //! field added to the model does not compile until it has been put in one:
 //!
 //! - **Modelled.** Direct dependencies; each framework's asset-target fallback
-//!   list; the packages folder the resolver reads.
+//!   list and packages to prune; the packages folder the resolver reads.
 //! - **Inert.** Fields that cannot move the closure, or turn a success into a
 //!   failure, of a restore the resolver commits to. Each one's reason is
 //!   stated at the point it is discarded. The reasons the differential cannot
@@ -68,8 +68,9 @@ use super::{
 use crate::assets::content_model_framework;
 use crate::{
     AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
-    PackageReadError, ResolveDecline, ResolvedPackageClosure, list_package_files,
-    read_installed_package, resolve_offline_with_fallback, select_compile_assets,
+    PackagePaths, PackageReadError, ResolveDecline, ResolvedPackageClosure, TargetContext,
+    VersionRange, list_package_files, read_installed_package, resolve_offline_in,
+    select_compile_assets,
 };
 
 use std::collections::BTreeSet;
@@ -150,11 +151,9 @@ pub enum UnmodelledField {
     CentralPackageManagement,
     /// A framework's project references (stage 6).
     ProjectReferences,
-    /// A framework's `packagesToPrune` (stage 5).
+    /// A framework's `packagesToPrune` entry without an upper bound, or a
+    /// floating one, whose pruning is not modelled.
     PackagesToPrune,
-    /// A framework's `downloadDependencies` (stage 7b): a download missing
-    /// from the packages folder fails the restore.
-    DownloadDependencies,
     /// An `imports` list that is not an asset-target fallback (the legacy
     /// `PackageTargetFallback`).
     PackageTargetFallback,
@@ -191,7 +190,6 @@ impl UnmodelledField {
             UnmodelledField::CentralPackageManagement => "central-package-management",
             UnmodelledField::ProjectReferences => "project-references",
             UnmodelledField::PackagesToPrune => "packages-to-prune",
-            UnmodelledField::DownloadDependencies => "download-dependencies",
             UnmodelledField::PackageTargetFallback => "package-target-fallback",
             UnmodelledField::DependencyTarget => "dependency-target",
             UnmodelledField::NoFrameworks => "no-frameworks",
@@ -236,6 +234,15 @@ pub enum DgSpecResolveDecline {
         target_alias: String,
         package: Box<PackageIdentity>,
         decline: Option<Box<AssetSelectionDecline>>,
+    },
+    /// A framework's `downloadDependencies` entry that B₁ cannot show is in
+    /// the packages folder: its range is not one exact version, or that
+    /// version is not committed there. Restore fails on a missing download
+    /// (`NU1101`).
+    DownloadUnavailable {
+        target_alias: String,
+        id: PackageId,
+        range: Box<VersionRange>,
     },
     /// A package restore would read (a winner or a losing version) has a
     /// nuspec or a commit marker outside the domain B₁ admits (the nuspec's is
@@ -311,6 +318,15 @@ impl fmt::Display for DgSpecResolveDecline {
                 f,
                 "framework {target_alias:?}: package {} {}: {decline}",
                 package.id, package.version
+            ),
+            DgSpecResolveDecline::DownloadUnavailable {
+                target_alias,
+                id,
+                range,
+            } => write!(
+                f,
+                "framework {target_alias:?}: download {id} {range} is not one exact version in \
+                 the packages folder"
             ),
             DgSpecResolveDecline::PackageRead {
                 target_alias,
@@ -415,6 +431,7 @@ pub fn resolve_dgspec(
         unreachable!("an absent packages path or project name is an unmodelled field")
     };
 
+    let not_pruned = not_pruned_warning(&package_spec.frameworks);
     package_spec
         .frameworks
         .iter()
@@ -426,15 +443,11 @@ pub fn resolve_dgspec(
                     DirectPackageRequirement::new(dependency.id.clone(), dependency.range.clone())
                 })
                 .collect();
-            let fallback: &[NuGetFramework] = if framework.asset_target_fallback {
-                &framework.imports
-            } else {
-                &[]
-            };
-            let closure = resolve_offline_with_fallback(
+            let context = target_context(framework);
+            let closure = resolve_offline_in(
                 Path::new(packages_path),
                 &framework.framework,
-                fallback,
+                &context,
                 &direct,
             )
             .map_err(|decline| DgSpecResolveDecline::Resolve {
@@ -453,6 +466,7 @@ pub fn resolve_dgspec(
                     id: clash.identity.id.clone(),
                 });
             }
+            check_downloads(Path::new(packages_path), framework)?;
             check_metadata(
                 nuget,
                 Path::new(packages_path),
@@ -463,13 +477,14 @@ pub fn resolve_dgspec(
                 Path::new(packages_path),
                 &framework.target_alias,
                 &framework.framework,
-                fallback,
+                &context.asset_target_fallback,
                 &closure,
             )?;
             let warnings = predicted_warnings(
                 Path::new(packages_path),
                 framework,
-                fallback,
+                &context,
+                not_pruned,
                 &package_spec.restore.warning_properties,
                 &closure,
             )?;
@@ -626,6 +641,46 @@ fn framework_folder(file: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// Every `downloadDependencies` entry of `framework` names one exact version
+/// that is committed in the packages folder, with its nuspec.
+///
+/// Restore only checks that a download is present: it fails on a missing one
+/// (`NU1101`) and validates nothing else about it (not its package type, its
+/// minimum client version, nor its commit marker's contents, unlike a
+/// dependency's). The SDK writes each download as an exact range; restore's
+/// handling of any other range is not modelled, so one declines.
+fn check_downloads(
+    packages: &Path,
+    framework: &TargetFrameworkInformation,
+) -> Result<(), DgSpecResolveDecline> {
+    for DownloadDependency { id, range } in &framework.download_dependencies {
+        let unavailable = || DgSpecResolveDecline::DownloadUnavailable {
+            target_alias: framework.target_alias.clone(),
+            id: id.clone(),
+            range: Box::new(range.clone()),
+        };
+        // A floating range consults the sources whatever its bounds.
+        let exact = match (range.min_version(), range.max_version()) {
+            (Some(min), Some(max))
+                if !range.is_floating()
+                    && range.is_min_inclusive()
+                    && range.is_max_inclusive()
+                    && min.eq_strict(max) =>
+            {
+                min.clone()
+            }
+            _ => return Err(unavailable()),
+        };
+        let paths = PackagePaths::new(packages, &PackageIdentity::new(id.clone(), exact));
+        let present = matches!(paths.is_committed(), Ok(true))
+            && matches!(paths.nuspec_path.try_exists(), Ok(true));
+        if !present {
+            return Err(unavailable());
+        }
+    }
+    Ok(())
 }
 
 /// Every version restore may read for `closure` ([`ResolvedPackageClosure::examined`])
@@ -876,7 +931,8 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
             // compatibility check admits only assets for the framework itself);
             // taking a dependency group through it logs nothing.
             warn: _,
-            download_dependencies,
+            // Checked for presence after resolving (`check_downloads`).
+            download_dependencies: _,
             central_package_versions,
             // A framework reference adds no package to the closure; what it
             // takes out of it is `packagesToPrune`, which declines.
@@ -919,10 +975,6 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         if !imports.is_empty() && !*asset_target_fallback {
             decline(UnmodelledField::PackageTargetFallback);
         }
-        for download in download_dependencies {
-            let DownloadDependency { id: _, range: _ } = download;
-            decline(UnmodelledField::DownloadDependencies);
-        }
         for entry in central_package_versions {
             let PackageRangeEntry { id: _, range: _ } = entry;
             decline(UnmodelledField::CentralPackageManagement);
@@ -933,9 +985,13 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
                 private_assets: _,
             } = reference;
         }
+        // Restore prunes by each entry's upper bound (see `TargetContext`); an
+        // entry without one, or a floating one, is not modelled.
         for entry in packages_to_prune {
-            let PackageRangeEntry { id: _, range: _ } = entry;
-            decline(UnmodelledField::PackagesToPrune);
+            let PackageRangeEntry { id: _, range } = entry;
+            if range.max_version().is_none() || range.is_floating() {
+                decline(UnmodelledField::PackagesToPrune);
+            }
         }
     }
 
@@ -1039,7 +1095,8 @@ fn is_local_absolute_path(source: &str) -> bool {
 /// upper bound the version the graph settled on for that dependency exceeds,
 /// which happens when a nearer edge (a direct reference, typically) eclipses
 /// the dependency with a higher version. A settled version below a range's
-/// lower bound logs nothing.
+/// lower bound logs nothing. And on `net10.0` there is `NU1510`: a direct
+/// reference the prune list covers, which restore keeps but warns about.
 ///
 /// A dependency's own `noWarn` suppresses warnings attributed to it, and B₁
 /// does not model which warnings those are, so a framework with one predicts
@@ -1048,7 +1105,8 @@ fn is_local_absolute_path(source: &str) -> bool {
 fn predicted_warnings(
     packages: &Path,
     framework: &TargetFrameworkInformation,
-    fallback: &[NuGetFramework],
+    context: &TargetContext,
+    not_pruned: NotPrunedWarning,
     policy: &WarningProperties,
     closure: &ResolvedPackageClosure,
 ) -> Result<Option<BTreeSet<NuGetLogCode>>, DgSpecResolveDecline> {
@@ -1077,13 +1135,7 @@ fn predicted_warnings(
                     source: Box::new(source),
                 }
             })?;
-        let Some(group) = package
-            .nuspec
-            .select_dependency_group_with_fallback(&framework.framework, fallback)
-        else {
-            continue;
-        };
-        for dependency in &group.dependencies {
+        for dependency in &context.dependencies(&package.nuspec, &framework.framework) {
             let (Some(range), Some(version)) =
                 (dependency.version_range.as_ref(), selected(&dependency.id))
             else {
@@ -1103,8 +1155,88 @@ fn predicted_warnings(
             }
         }
     }
+    match not_pruned {
+        NotPrunedWarning::Never => {}
+        NotPrunedWarning::Logged => {
+            codes.insert(NuGetLogCode::parse("NU1510").expect("NU1510 is a NuGet log code"));
+        }
+        NotPrunedWarning::Unknown => return Ok(None),
+    }
     codes.retain(|code| !policy.no_warn.contains(code));
     Ok(Some(codes))
+}
+
+/// Whether restore warns `NU1510` (a direct reference the prune list covers,
+/// which it keeps) for a project's frameworks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotPrunedWarning {
+    /// For none of them.
+    Never,
+    /// For the project's one framework.
+    Logged,
+    /// Not predicted exactly.
+    Unknown,
+}
+
+/// When restore warns `NU1510`, as far as it is graded. Restore enables the
+/// warning when any target framework is `net10.0` or later, and decides it
+/// across the project's frameworks together. Only a single-framework project
+/// is graded: `net10.0` with a covered direct reference warns, no earlier
+/// framework does whatever `SdkAnalysisLevel` says, and anything else that
+/// could warn (several frameworks, one of them `net10.0`, with a covered
+/// reference; a `.NETCoreApp` after 10) is not predicted exactly.
+fn not_pruned_warning(frameworks: &[TargetFrameworkInformation]) -> NotPrunedWarning {
+    let core_major = |framework: &NuGetFramework| {
+        (framework.framework() == ".NETCoreApp")
+            .then(|| {
+                framework
+                    .version_string()
+                    .split('.')
+                    .next()
+                    .and_then(|major| major.parse::<u32>().ok())
+            })
+            .flatten()
+    };
+    let majors: Vec<Option<u32>> = frameworks
+        .iter()
+        .map(|framework| core_major(&framework.framework))
+        .collect();
+    if majors
+        .iter()
+        .any(|major| major.is_some_and(|major| major > 10))
+    {
+        return NotPrunedWarning::Unknown;
+    }
+    let covered = frameworks.iter().any(|framework| {
+        let context = target_context(framework);
+        framework
+            .dependencies
+            .iter()
+            .any(|dependency| context.covers(&dependency.id, &dependency.range))
+    });
+    match (majors.contains(&Some(10)), covered, frameworks.len()) {
+        (true, true, 1) => NotPrunedWarning::Logged,
+        (true, true, _) => NotPrunedWarning::Unknown,
+        _ => NotPrunedWarning::Never,
+    }
+}
+
+/// What a framework of the spec says about which dependencies each package
+/// contributes: its asset-target fallback list, and its prune list as each
+/// entry's upper bound (an entry without one declines before here).
+fn target_context(framework: &TargetFrameworkInformation) -> TargetContext {
+    TargetContext {
+        asset_target_fallback: if framework.asset_target_fallback {
+            framework.imports.clone()
+        } else {
+            Vec::new()
+        },
+        prune: framework
+            .packages_to_prune
+            .iter()
+            .filter_map(|entry| Some((entry.id.clone(), entry.range.max_version()?.clone())))
+            .collect(),
+    }
 }
 
 /// Whether restore, logging `code` as a warning, fails under `policy`: the

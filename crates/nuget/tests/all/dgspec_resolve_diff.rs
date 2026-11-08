@@ -228,6 +228,10 @@ struct Framework {
     /// The SDK's asset-target fallback list, `net461` to `net481`.
     asset_target_fallback: bool,
     framework_reference: bool,
+    /// `downloadDependencies`: `(id, range)`.
+    downloads: Vec<(&'static str, &'static str)>,
+    /// `packagesToPrune`: `(id, range)`.
+    prune: Vec<(&'static str, &'static str)>,
 }
 
 impl Framework {
@@ -237,6 +241,8 @@ impl Framework {
             deps,
             asset_target_fallback: true,
             framework_reference: false,
+            downloads: Vec::new(),
+            prune: Vec::new(),
         }
     }
 }
@@ -381,6 +387,21 @@ impl Shape {
                         "net461", "net462", "net47", "net471", "net472", "net48", "net481"
                     ]);
                     value["assetTargetFallback"] = json!(true);
+                }
+                if !framework.prune.is_empty() {
+                    value["packagesToPrune"] = framework
+                        .prune
+                        .iter()
+                        .map(|(id, range)| (id.to_string(), json!(range)))
+                        .collect::<Map<_, _>>()
+                        .into();
+                }
+                if !framework.downloads.is_empty() {
+                    value["downloadDependencies"] = framework
+                        .downloads
+                        .iter()
+                        .map(|(id, range)| json!({"name": id, "version": range}))
+                        .collect();
                 }
                 if framework.framework_reference {
                     value["frameworkReferences"] =
@@ -1432,11 +1453,7 @@ fn every_unmodelled_field_declines_by_name() {
         }),
         (UnmodelledField::PackagesToPrune, |spec, _| {
             the_project(spec)["frameworks"]["net8.0"]["packagesToPrune"] =
-                json!({"System.Text.Json": "(,10.0.32767]"});
-        }),
-        (UnmodelledField::DownloadDependencies, |spec, _| {
-            the_project(spec)["frameworks"]["net8.0"]["downloadDependencies"] =
-                json!([{"name": "Microsoft.NETCore.App.Ref", "version": "[8.0.31, 8.0.31]"}]);
+                json!({"System.Text.Json": "[10.0.0, )"});
         }),
         (UnmodelledField::PackageTargetFallback, |spec, _| {
             the_project(spec)["frameworks"]["net8.0"]["assetTargetFallback"] = json!(false);
@@ -1674,6 +1691,12 @@ fn generate(rng: &mut SplitMix64) -> Generated {
         }
     }
 
+    // A download target: version 1.0.0 is installed, 2.0.0 is not.
+    let mut download = Pkg::new("Download", "1.0.0", vec![]).with_files(&["data/x.txt"]);
+    if rng.below(3) == 0 {
+        download.package_types = vec![r#"name="DotnetPlatform""#];
+    }
+    packages.push(download);
     let mut aliases: Vec<&'static str> = PROJECT_FRAMEWORKS.to_vec();
     let count = 1 + usize::from(rng.below(3) == 0);
     let frameworks = (0..count)
@@ -1701,6 +1724,26 @@ fn generate(rng: &mut SplitMix64) -> Generated {
             let mut framework = Framework::new(alias, deps);
             framework.asset_target_fallback = rng.below(4) != 0;
             framework.framework_reference = alias != "net472" && rng.below(2) == 0;
+            if rng.below(3) == 0 {
+                framework.prune = vec![(
+                    *rng.pick(IDS),
+                    *rng.pick(&[
+                        "(, 1.0.0]",
+                        "(, 2.0.0]",
+                        "[2.0.0]",
+                        "(, 0.5.0]",
+                        "(, 32767.0.0]",
+                    ]),
+                )];
+            }
+            if rng.below(3) == 0 {
+                framework.downloads = vec![*rng.pick(&[
+                    ("Download", "[1.0.0, 1.0.0]"),
+                    ("Download", "[1.0.0, 1.0.0]"),
+                    ("Download", "[2.0.0, 2.0.0]"),
+                    ("Download", "[1.0.0, )"),
+                ])];
+            }
             framework
         })
         .collect();
@@ -1772,6 +1815,12 @@ fn features(
         features.push(format!("framework={}", framework.alias));
         if framework.framework_reference {
             features.push("framework-reference".to_owned());
+        }
+        if !framework.downloads.is_empty() {
+            features.push("download".to_owned());
+        }
+        if !framework.prune.is_empty() {
+            features.push("prune".to_owned());
         }
         for dep in &framework.deps {
             if dep.include.is_some() {
@@ -1873,6 +1922,8 @@ fn required_features() -> BTreeSet<String> {
         "all-warnings-as-errors=true",
         "predicted-warnings=true",
         "dependency-no-warn",
+        "download",
+        "prune",
         "no-warn=true",
         "no-warn=false",
         "sdk-analysis-level=None",
@@ -1891,8 +1942,6 @@ fn required_features() -> BTreeSet<String> {
         "auto-referenced",
         "asset-target-fallback-mattered",
         "package-with-assets",
-        "min-client-version=2.12",
-        "min-client-version=5.0.0",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1929,6 +1978,7 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
             }
             PackageMetadataDecline::CommitMarker => "package-metadata:marker".to_owned(),
         },
+        DgSpecResolveDecline::DownloadUnavailable { .. } => "download-unavailable".to_owned(),
     }
 }
 
@@ -2184,9 +2234,11 @@ const XML_PERTURBATIONS: &[&str] = &[
 
 /// Render `template`, whose slots are `{0}`, `{1}`, …, with `values`.
 fn fill(template: &str, values: &[String]) -> String {
+    // Highest slot first, so `{1}` is not replaced inside `{10}`.
     values
         .iter()
         .enumerate()
+        .rev()
         .fold(template.to_owned(), |text, (index, value)| {
             text.replace(&format!("{{{index}}}"), value)
         })
@@ -2209,6 +2261,7 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
     <packageTypes><packageType name="{5}" /></packageTypes>
     <serviceable>{6}</serviceable>
     <dependencies><group targetFramework="{7}"><dependency id="{8}" version="{9}" /></group></dependencies>
+    <contentFiles><files include="{10}" buildAction="{11}" copyToOutput="{12}" flatten="{13}" /></contentFiles>
   </metadata>
 </package>"#;
     const NUSPEC_VALUES: &[&str] = &[
@@ -2222,6 +2275,10 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
         "net8.0",
         "B",
         "[1.0.0, )",
+        "any/net8.0/x.xml",
+        "Content",
+        "true",
+        "false",
     ];
     const CONFIG: &str = r#"<configuration>
   <packageSources><add key="{0}" value="{1}" protocolVersion="{2}" /></packageSources>
@@ -3244,4 +3301,296 @@ fn framework_folder_names_are_graded() {
             "{class}: the alphabet no longer reaches this verdict\n{census:#?}"
         );
     }
+}
+
+/// Restore only checks that a download is in the packages folder: a missing
+/// one fails it (`NU1101`), and nothing else about a present one matters (its
+/// package type, minimum client version, commit marker, metadata). B₁ commits
+/// for any present exact download and declines a missing one, and one whose
+/// range is not exact, which the SDK never writes.
+#[test]
+fn downloads_are_a_presence_check() {
+    let mut oracle = Oracle::spawn();
+    let base = || Pkg::new("D", "1.0.0", vec![]).with_files(&["data/x.txt"]);
+    let mut platform = base();
+    platform.package_types = vec![r#"name="DotnetPlatform""#];
+    let mut client = base();
+    client.min_client_version = Some("99.0");
+    let mut marker = base();
+    marker.marker = Some("{}");
+    let mut metadata = base();
+    metadata.metadata = vec!["<somethingNew>1</somethingNew>"];
+    let cases: Vec<(&str, Vec<Pkg>, &str, bool, bool)> = vec![
+        ("present", vec![base()], "[1.0.0, 1.0.0]", true, true),
+        ("short exact", vec![base()], "[1.0.0]", true, true),
+        (
+            "a platform package",
+            vec![platform],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        (
+            "a high client minimum",
+            vec![client],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        (
+            "an empty marker",
+            vec![marker],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        (
+            "unknown metadata",
+            vec![metadata],
+            "[1.0.0, 1.0.0]",
+            true,
+            true,
+        ),
+        ("missing", vec![], "[1.0.0, 1.0.0]", false, false),
+        ("an open range", vec![base()], "[1.0.0, )", true, false),
+        (
+            "a floating range",
+            vec![base()],
+            "[1.0.*, 1.0.0]",
+            false,
+            false,
+        ),
+    ];
+    for (label, mut packages, range, restores, commits) in cases {
+        packages.push(Pkg::new("A", "1.0.0", vec![]));
+        let mut framework = Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]);
+        framework.downloads = vec![("D", range)];
+        let graded = grade(&mut oracle, &packages, &Shape::new(vec![framework]));
+        assert_eq!(
+            graded.theirs.success, restores,
+            "{label}: {:?}",
+            graded.theirs
+        );
+        assert_eq!(graded.ours.is_ok(), commits, "{label}: {:?}", graded.ours);
+        if !commits {
+            assert!(
+                matches!(
+                    graded.ours,
+                    Err(DgSpecResolveDecline::DownloadUnavailable { .. })
+                ),
+                "{label}: {:?}",
+                graded.ours
+            );
+        }
+    }
+}
+
+/// Restore reads a package's `<contentFiles>` rules and throws on one it
+/// rejects: no `include`, an unknown `buildAction`, a `copyToOutput` or
+/// `flatten` that is not a boolean. B₁ admits a positive subset (a known
+/// action, booleans ignoring case, a non-empty `include`, no other attribute),
+/// and declines the rest, some of which restore accepts.
+#[test]
+fn content_files_rules_are_held_to_what_restore_reads() {
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let rules: &[(&str, bool)] = &[
+        (
+            r#"<files include="any/net8.0/x.xml" buildAction="Content" />"#,
+            true,
+        ),
+        (r#"<files include="any/net8.0/x.xml" />"#, true),
+        (
+            r#"<files include="**/*" buildAction="None" copyToOutput="true" flatten="false" />"#,
+            true,
+        ),
+        (r#"<files include="**/*" buildAction="content" />"#, true),
+        (
+            r#"<files include="**/*" buildAction="EmbeddedResource" />"#,
+            true,
+        ),
+        (r#"<files include="**/*" copyToOutput="TRUE" />"#, true),
+        (r#"<files include="**/*" exclude="**/*.cs" />"#, true),
+        ("", true),
+        (r#"<files include="**/*" buildAction="Page" />"#, false),
+        (r#"<files include="**/*" buildAction="Bad" />"#, false),
+        (r#"<files include="**/*" copyToOutput="yes" />"#, false),
+        (r#"<files include="**/*" flatten="1" />"#, false),
+        (r#"<files buildAction="Content" />"#, false),
+        (r#"<files include="" />"#, false),
+        (r#"<files include="**/*" other="x" />"#, false),
+        (r#"<files include="any/net8.0/../x.xml" />"#, false),
+        (r#"<files include="**/*" exclude="any/../x.xml" />"#, false),
+        (r#"<files include="any\net8.0\x.xml" />"#, false),
+        (r#"<files xmlns:x="urn:test" x:include="**/*" />"#, false),
+    ];
+    for (rule, commits) in rules {
+        let mut package = Pkg::new("A", "1.0.0", vec![])
+            .with_files(&["lib/net8.0/A.dll", "contentFiles/any/net8.0/x.xml"]);
+        let element = format!("<contentFiles>{rule}</contentFiles>");
+        package.metadata = vec![Box::leak(element.into_boxed_str())];
+        let graded = grade(&mut oracle, &[package], &shape);
+        assert_eq!(graded.ours.is_ok(), *commits, "{rule}: {:?}", graded.ours);
+    }
+}
+
+/// Restore prunes a transitive dependency on a listed id when the dependency's
+/// range accepts the prune range's upper bound, before walking,
+/// so its subtree goes with it and another path can still bring the package
+/// in; the prune range's lower bound and the inclusivity of its upper bound
+/// play no part, and a direct reference is never pruned. Each case commits
+/// and agrees with B₀ (which [`grade`] checks); the expected closures pin the
+/// rule itself.
+#[test]
+fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
+    let mut oracle = Oracle::spawn();
+    // A -> B [1.0.0, ), C -> B [3.0.0, ), each B -> D, E -> B [1.0.0, 1.5.0),
+    // F -> B [1.0.0, 2.0.0], G -> B [1.0.0].
+    let packages = vec![
+        Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])]),
+        Pkg::new("C", "1.0.0", vec![group(None, &[("B", "[3.0.0, )")])]),
+        Pkg::new("B", "1.0.0", vec![group(None, &[("D", "[1.0.0, )")])]),
+        Pkg::new("B", "2.0.0", vec![group(None, &[("D", "[1.0.0, )")])]),
+        Pkg::new("B", "3.0.0", vec![group(None, &[("D", "[1.0.0, )")])]),
+        Pkg::new("D", "1.0.0", vec![]),
+        Pkg::new("E", "1.0.0", vec![group(None, &[("B", "[1.0.0, 1.5.0)")])]),
+        Pkg::new("F", "1.0.0", vec![group(None, &[("B", "[1.0.0, 2.0.0]")])]),
+        Pkg::new("G", "1.0.0", vec![group(None, &[("B", "[1.0.0]")])]),
+    ];
+    type Case = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+        &'static [&'static str],
+    );
+    let a = &[("A", "[1.0.0, )")][..];
+    let a_and_c = &[("A", "[1.0.0, )"), ("C", "[1.0.0, )")][..];
+    let cases: &[Case] = &[
+        ("B up to its edge's lower bound", a, "(, 2.0.0]", &["A"]),
+        (
+            "B below its edge's lower bound",
+            a,
+            "(, 0.5.0]",
+            &["A", "B", "D"],
+        ),
+        (
+            "B below another path's bound",
+            &[("C", "[1.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "C", "D"],
+        ),
+        (
+            "B on one path of two",
+            a_and_c,
+            "(, 2.0.0]",
+            &["A", "B", "C", "D"],
+        ),
+        ("B on every path", a_and_c, "(, 32767.0.0]", &["A", "C"]),
+        (
+            "a direct B",
+            &[("B", "[1.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "D"],
+        ),
+        (
+            "a direct B above the bound",
+            &[("B", "[3.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "D"],
+        ),
+        ("an exact range at the edge's bound", a, "[1.0.0]", &["A"]),
+        (
+            "a range whose lower bound is above the edge's",
+            a,
+            "[2.0.0]",
+            &["A"],
+        ),
+        (
+            "an exclusive upper bound at the edge's bound",
+            a,
+            "(, 1.0.0)",
+            &["A"],
+        ),
+        ("an exclusive lower bound", a, "(1.0.0, 2.0.0]", &["A"]),
+        ("a bounded edge", &[("E", "[1.0.0, )")], "(, 1.2.0]", &["E"]),
+        (
+            "an edge bounded above the prune bound",
+            &[("F", "[1.0.0, )")],
+            "(, 1.5.0]",
+            &["F"],
+        ),
+        (
+            "an exact edge below the bound",
+            &[("G", "[1.0.0, )")],
+            "(, 2.0.0]",
+            &["B", "D", "G"],
+        ),
+    ];
+    for (label, direct, prune, expected) in cases {
+        let deps: Vec<Dep> = direct
+            .iter()
+            .map(|(id, range)| Dep::new(id, range))
+            .collect();
+        let mut framework = Framework::new("net8.0", deps);
+        framework.prune = vec![("B", prune)];
+        let graded = grade(&mut oracle, &packages, &Shape::new(vec![framework]));
+        let ids: Vec<String> = committed(&graded)["net8.0"]
+            .iter()
+            .map(|(id, _)| id.to_ascii_uppercase())
+            .collect();
+        assert_eq!(ids, *expected, "pruning {label}");
+    }
+
+    // The prune list matches ids ignoring case, and pruning D leaves B.
+    for (id, expected) in [("b", &["A"][..]), ("D", &["A", "B"][..])] {
+        let mut framework = Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]);
+        framework.prune = vec![(id, "(, 2.0.0]")];
+        let graded = grade(&mut oracle, &packages, &Shape::new(vec![framework]));
+        let ids: Vec<String> = committed(&graded)["net8.0"]
+            .iter()
+            .map(|(id, _)| id.to_ascii_uppercase())
+            .collect();
+        assert_eq!(ids, expected, "pruning {id}");
+    }
+
+    // On `net10.0` a direct reference the list covers is kept with a warning
+    // (`NU1510`), which a promoting policy turns into a failed restore.
+    let mut framework = Framework::new("net10.0", vec![Dep::new("B", "[1.0.0, )")]);
+    framework.prune = vec![("B", "(, 2.0.0]")];
+    let mut shape = Shape::new(vec![framework]);
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert_eq!(graded.theirs.codes, ["NU1510"]);
+    assert!(graded.ours.is_ok(), "{:?}", graded.ours);
+    shape.all_warnings_as_errors = true;
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success);
+    match graded.ours {
+        Err(DgSpecResolveDecline::PromotedWarning {
+            code: Some(code), ..
+        }) => assert_eq!(code.as_str(), "NU1510"),
+        other => panic!("B₁ must decline on the promoted NU1510, not {other:?}"),
+    }
+
+    // With several frameworks, one of them `net10.0`, restore decides NU1510
+    // across them: here it warns for a reference only `net9.0` has. B₁ does not
+    // predict that exactly, so a promoting policy declines.
+    let mut net9 = Framework::new("net9.0", vec![Dep::new("B", "[1.0.0, )")]);
+    net9.prune = vec![("B", "(, 2.0.0]")];
+    let mut shape = Shape::new(vec![Framework::new("net10.0", vec![]), net9]);
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert_eq!(graded.theirs.codes, ["NU1510"]);
+    shape.all_warnings_as_errors = true;
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PromotedWarning { code: None, .. })
+        ),
+        "{:?}",
+        graded.ours
+    );
 }
