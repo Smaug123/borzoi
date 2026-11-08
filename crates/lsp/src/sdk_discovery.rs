@@ -20,14 +20,17 @@
 //! lays down `/usr/local/bin/dotnet` as a symlink into the real install
 //! root), and take the parent of the resolved path.
 //!
-//! Wrapper layouts (Nix's `makeWrapper`, asdf/mise shims, …) defeat
-//! that breadcrumb because the canonicalised wrapper sits in a `bin/`
-//! directory with no `sdk/` sibling. When the PATH walk fails to find
-//! any candidate with an adjacent `sdk/`, we fall back to running
-//! `dotnet --info` on the first viable executable and parsing the
-//! `.NET SDKs installed:` section. The wrapper's job is to forward to
-//! the real binary, so `--info` reports the install paths even when
-//! we can't reach them directly.
+//! Discovery is filesystem-only: it never executes `dotnet`. Running
+//! `dotnet` runs the managed code of whichever SDK the muxer selects, and
+//! a repository's `global.json` `sdk.paths` can point that selection at a
+//! directory the repository ships, so executing it would run
+//! repository-chosen code before the user has opted in to trusting the
+//! repository. Wrapper layouts (Nix's `makeWrapper`, asdf/mise shims, …)
+//! therefore name no host root: the canonicalised wrapper sits in a
+//! directory with no `sdk/` sibling, and nothing on disk says where it
+//! forwards to. Users of such layouts must set `$DOTNET_ROOT`. A
+//! `global.json` whose `sdk.paths` lists only relative entries needs no
+//! host root at all.
 //!
 //! ## `$NUGET_PACKAGES` discovery
 //!
@@ -42,7 +45,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
 
 use borzoi_msbuild::{
     GlobalJsonError, SdkPathEntry, SdkResolution, SdkResolveError, SdkVersion, VersionSpec,
@@ -61,9 +63,11 @@ pub enum DiscoveryError {
     /// `parse_fsproj_with_imports`'s rejection of relative project
     /// paths — callers must absolutise before either call.
     RelativeProjectPath(PathBuf),
-    /// Neither `$DOTNET_ROOT` was set nor was a `dotnet` binary
-    /// findable on `$PATH`. Without one we don't know where to look
-    /// for installed SDKs.
+    /// `$DOTNET_ROOT` was unset and no `dotnet` on `$PATH` sits in an
+    /// install (a directory with an `sdk/` beside the binary's real
+    /// location). A shim on `$PATH` does not count: discovery never
+    /// executes `dotnet` to ask where it forwards. Without a host root
+    /// we don't know where to look for installed SDKs.
     MissingDotnetRoot,
     /// `find_global_json` found a `global.json` but reading it failed.
     GlobalJsonRead {
@@ -84,8 +88,9 @@ impl std::fmt::Display for DiscoveryError {
                 write!(f, "project path must be rooted (got {})", path.display())
             }
             Self::MissingDotnetRoot => f.write_str(
-                "could not locate a .NET SDK install: \
-                 neither $DOTNET_ROOT was set nor was `dotnet` found on $PATH",
+                "could not locate a .NET SDK install: $DOTNET_ROOT is unset and no \
+                 `dotnet` on $PATH has an `sdk/` directory beside its real location \
+                 (a shim such as asdf, mise or a Nix wrapper needs $DOTNET_ROOT set)",
             ),
             Self::GlobalJsonRead { path, source } => {
                 write!(
@@ -367,13 +372,6 @@ impl SdkDiscovery {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        // `walk_start` is also the cwd we hand to the `dotnet --info`
-        // fallback. asdf/mise shims pick the active toolchain by
-        // walking upward from cwd looking for `.tool-versions` /
-        // `mise.toml`, so invoking the shim from our process cwd (the
-        // editor's launch dir — often `$HOME`) would silently route
-        // through the wrong SDK. Anchoring to the project dir matches
-        // what `dotnet build` would do from a terminal in that dir.
         let nuget_packages_dir = resolve_nuget_packages_dir(env);
         // Host root resolution is conditionally fatal: required when
         // there's no `sdk.paths` field (today's behaviour preserved),
@@ -405,7 +403,7 @@ impl SdkDiscovery {
                             VersionSpec::any_version(env.host_default_allow_prerelease),
                         ),
                     };
-                    let roots = expand_sdk_paths(env, &walk_start, &path, paths)?;
+                    let roots = expand_sdk_paths(env, &path, paths)?;
                     (
                         roots,
                         spec,
@@ -415,8 +413,8 @@ impl SdkDiscovery {
                     )
                 }
                 None => {
-                    let host_root = resolve_dotnet_root(env, &walk_start)
-                        .ok_or(DiscoveryError::MissingDotnetRoot)?;
+                    let host_root =
+                        resolve_dotnet_root(env).ok_or(DiscoveryError::MissingDotnetRoot)?;
                     (
                         vec![host_root],
                         VersionSpec::any_version(env.host_default_allow_prerelease),
@@ -562,21 +560,6 @@ const DOTNET_BIN: &str = "dotnet.exe";
 #[cfg(not(windows))]
 const DOTNET_BIN: &str = "dotnet";
 
-/// Pure-ish lookup: explicit `$DOTNET_ROOT` wins; otherwise walk
-/// `$PATH` for the `dotnet` launcher, accepting only entries whose
-/// canonicalised parent actually contains an `sdk/` directory. The
-/// second check guards against asdf/mise/etc. shim scripts that exec
-/// the real `dotnet` from elsewhere — `canonicalize` returns the
-/// shim's own path in that case, and its parent is the shims
-/// directory (no `sdk/`). When we hit one we keep iterating, in case
-/// the user has both a shim and a real install on `$PATH`.
-///
-/// If every `$PATH` candidate fails the adjacent-`sdk/` check, we
-/// invoke `dotnet --info` on the first candidate that at least exists
-/// and parse the `.NET SDKs installed:` section. That covers Nix-style
-/// wrappers whose canonicalised parent is a `bin/` directory without
-/// an `sdk/` sibling.
-///
 /// Project a `global.json` `sdk.paths` field into the ordered list of
 /// SDK install roots [`SdkDiscovery::resolve`] consults.
 ///
@@ -588,9 +571,11 @@ const DOTNET_BIN: &str = "dotnet";
 ///
 /// `paths == Some(entries)` is the .NET-10 opt-in: each entry projects
 /// independently and the host root becomes optional. `Host` entries
-/// expand to the discovered host root if available, else are *skipped*
-/// (with a stderr log line) so a `paths: ["$host$", "./alt"]` setup
-/// on a machine without `dotnet` still resolves via `./alt`. `Relative`
+/// expand to the host root [`resolve_dotnet_root`] finds on disk, else
+/// are *skipped* (with a log line) so a `paths: ["$host$", "./alt"]`
+/// setup on a machine with no `$DOTNET_ROOT` and no install on `$PATH`
+/// (a shim-only `$PATH` included) still resolves via `./alt`. A list of
+/// only `Relative` entries never consults the host at all. `Relative`
 /// entries are joined against `global_json_path`'s parent directory —
 /// not the project's or the process's cwd — matching the .NET host's
 /// reading of the field. No canonicalisation and no existence check:
@@ -605,14 +590,12 @@ const DOTNET_BIN: &str = "dotnet";
 /// host install and the LSP must not paper over it).
 fn expand_sdk_paths(
     env: &SdkDiscoveryEnv,
-    walk_start: &Path,
     global_json_path: &Path,
     paths: Option<Vec<SdkPathEntry>>,
 ) -> Result<Vec<PathBuf>, DiscoveryError> {
     let Some(entries) = paths else {
         // No `paths` field in `global.json` ⇒ host-only, strict.
-        let host_root =
-            resolve_dotnet_root(env, walk_start).ok_or(DiscoveryError::MissingDotnetRoot)?;
+        let host_root = resolve_dotnet_root(env).ok_or(DiscoveryError::MissingDotnetRoot)?;
         return Ok(vec![host_root]);
     };
     let global_json_dir = global_json_path
@@ -620,18 +603,13 @@ fn expand_sdk_paths(
         .expect("find_global_json returns a file path with a parent");
     // Resolve the host once, up front — entries can reference `$host$`
     // multiple times (unusual but legal) and we want a single decision
-    // about whether the host is available.
-    //
-    // `$host$` deliberately uses [`resolve_host_dotnet_root`] (no
-    // `--info` fallback) rather than the general [`resolve_dotnet_root`].
-    // Running `dotnet --info` inside a workspace whose own `sdk.paths`
-    // we're resolving lets the muxer's SDK selection feed back into the
-    // path we recover, so `$host$` could silently expand to one of the
-    // relative entries (or to whatever SDK the workspace pins).
-    // Wrapper-layout users who need `$host$` to resolve can set
-    // `$DOTNET_ROOT` explicitly — there's no ambient signal the
-    // resolver can trust here.
-    let host_root = resolve_host_dotnet_root(env);
+    // about whether the host is available. Only a list that names
+    // `$host$` probes for it.
+    let host_root = entries
+        .iter()
+        .any(|entry| matches!(entry, SdkPathEntry::Host))
+        .then(|| resolve_dotnet_root(env))
+        .flatten();
     let roots = entries
         .into_iter()
         .filter_map(|entry| match entry {
@@ -648,212 +626,36 @@ fn expand_sdk_paths(
     Ok(roots)
 }
 
-/// Outcome of the lexical PATH probe. `Direct` is a verified install
-/// root (its parent has an `sdk/` directory); `Wrapper` is the
-/// canonicalised path of a `dotnet` executable whose layout doesn't
-/// match an install (asdf/mise/Nix shim, …), useful only as input to
-/// the `--info` subprocess.
-enum HostProbe {
-    Direct(PathBuf),
-    Wrapper(PathBuf),
-}
-
-/// PATH/env probe shared by [`resolve_dotnet_root`] and
-/// [`resolve_host_dotnet_root`]. Pure-ish: touches the filesystem
-/// (`is_file`, `canonicalize`, `is_dir`) but never spawns a
-/// subprocess. Callers decide whether to spend a `--info` round-trip
-/// on a `Wrapper` result.
-fn probe_dotnet_root(env: &SdkDiscoveryEnv) -> Option<HostProbe> {
+/// The host's .NET install root, read off the filesystem: an explicit
+/// `$DOTNET_ROOT` wins; otherwise the first `dotnet` launcher on `$PATH`
+/// whose canonicalised parent contains an `sdk/` directory.
+///
+/// Canonicalising follows the installer's usual symlink
+/// (`/usr/local/bin/dotnet` → `/usr/local/share/dotnet/dotnet`) to the
+/// directory holding `sdk/` and `packs/`. A shim (asdf, mise, a Nix
+/// wrapper) canonicalises to itself, in a directory with no `sdk/`, so it
+/// is skipped and the walk continues in case a real install sits further
+/// down `$PATH`. A shim is never executed to ask where it forwards: that
+/// would run the managed code of whatever SDK the muxer selects, which a
+/// repository's `global.json` `sdk.paths` can choose. A shim-only `$PATH`
+/// with no `$DOTNET_ROOT` yields `None`.
+///
+/// Touches the filesystem (`is_file`, `canonicalize`, `is_dir`) and
+/// nothing else.
+fn resolve_dotnet_root(env: &SdkDiscoveryEnv) -> Option<PathBuf> {
     if let Some(root) = &env.dotnet_root {
-        return Some(HostProbe::Direct(root.clone()));
+        return Some(root.clone());
     }
     let path = env.search_path.as_ref()?;
-    let mut wrapper_fallback: Option<PathBuf> = None;
-    for dir in std::env::split_paths(path) {
+    std::env::split_paths(path).find_map(|dir| {
         let candidate = dir.join(DOTNET_BIN);
         if !candidate.is_file() {
-            continue;
-        }
-        // The launcher is commonly installed as a symlink (e.g.
-        // `/usr/local/bin/dotnet` → `/usr/local/share/dotnet/dotnet`);
-        // we want the directory containing the *real* binary, since
-        // that's where `sdk/` and `packs/` live.
-        let Ok(resolved) = std::fs::canonicalize(&candidate) else {
-            continue;
-        };
-        let Some(parent) = resolved.parent() else {
-            continue;
-        };
-        if parent.join("sdk").is_dir() {
-            return Some(HostProbe::Direct(parent.to_path_buf()));
-        }
-        // Looks like a wrapper / shim — remember it and keep walking
-        // in case a real install sits further down `$PATH`. We stash
-        // the *canonicalised* path so the fallback subprocess works
-        // even when `$PATH` had relative components (`.`, `tools`,
-        // …): `run_dotnet_info` sets `current_dir` to the project
-        // dir, and a relative `candidate` would then resolve against
-        // that, spawning the wrong (or no) executable.
-        wrapper_fallback.get_or_insert(resolved);
-    }
-    wrapper_fallback.map(HostProbe::Wrapper)
-}
-
-/// `cwd_hint` is used as the working directory for the `--info`
-/// fallback only — see the caller's note on asdf/mise-style shims.
-fn resolve_dotnet_root(env: &SdkDiscoveryEnv, cwd_hint: &Path) -> Option<PathBuf> {
-    match probe_dotnet_root(env)? {
-        HostProbe::Direct(root) => Some(root),
-        HostProbe::Wrapper(wrapper) => {
-            let info = run_dotnet_info(&wrapper, cwd_hint)?;
-            parse_dotnet_info_sdk_root(&info)
-        }
-    }
-}
-
-/// Restricted variant of [`resolve_dotnet_root`] that *never* invokes
-/// `dotnet --info`. Used when expanding `$host$` from `sdk.paths`,
-/// where the only available `--info`-cwd would sit inside the
-/// workspace whose `sdk.paths` we're resolving — running `--info`
-/// there can let the workspace's own paths feed back into the result,
-/// silently aliasing `$host$` to a relative entry. Returning `None`
-/// for wrapper layouts here is the deliberate tradeoff: users on Nix
-/// / asdf / mise who need `$host$` to resolve must set `$DOTNET_ROOT`
-/// explicitly.
-fn resolve_host_dotnet_root(env: &SdkDiscoveryEnv) -> Option<PathBuf> {
-    match probe_dotnet_root(env)? {
-        HostProbe::Direct(root) => Some(root),
-        HostProbe::Wrapper(_) => None,
-    }
-}
-
-/// Deadline for the `dotnet --info` fallback. A healthy invocation is
-/// sub-second warm and a few seconds cold (first-run JIT + SDK
-/// enumeration); a `dotnet` that takes a minute is wedged — first-run
-/// migration deadlocks and shim loops have both been seen — and an
-/// unbounded wait here would hang SDK discovery, and with it every
-/// per-file request behind it, for the rest of the session.
-const DOTNET_INFO_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Execute `dotnet --info` in `cwd` and return its stdout as a UTF-8
-/// string. Returns `None` on any kind of execution failure (exit code,
-/// non-UTF-8 stdout, IO error, or exceeding [`DOTNET_INFO_TIMEOUT`]) —
-/// callers treat that as "fall back to returning no `dotnet_root`".
-///
-/// We set the subprocess `current_dir` explicitly because asdf/mise
-/// and similar shims pick the active toolchain by walking up from cwd
-/// looking for `.tool-versions` / `mise.toml`. Inheriting the LSP's
-/// own cwd (typically the editor's launch dir, often `$HOME`) would
-/// silently resolve a different SDK than `dotnet build` would from a
-/// terminal in the project directory.
-fn run_dotnet_info(dotnet: &Path, cwd: &Path) -> Option<String> {
-    let mut cmd = std::process::Command::new(dotnet);
-    // `--info` writes its payload to stdout; stderr is irrelevant and
-    // may contain unrelated warnings (telemetry-first-run on some
-    // distros, etc.). `output_bounded` captures it into a buffer we
-    // drop, so it cannot leak noise into the LSP's stderr stream.
-    cmd.arg("--info")
-        .current_dir(cwd)
-        // Avoid the telemetry first-run banner munging stdout on
-        // freshly-extracted SDKs. These vars are idempotent — they
-        // only matter when the corresponding files don't yet exist.
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1");
-    let output = crate::spawn::output_bounded(cmd, DOTNET_INFO_TIMEOUT).ok()?;
-    // Deliberately ignore `output.status`: in wrapper-only PATH setups
-    // `dotnet --info` can print the `.NET SDKs installed:` section and
-    // still exit non-zero (workload first-run temp setup failures,
-    // unsatisfied project-cwd SDK selection, …). The downstream parser
-    // is the real oracle — it returns `None` when the section is
-    // missing or malformed, which is the right "fail if section can't
-    // be recovered" behaviour.
-    String::from_utf8(output.stdout).ok()
-}
-
-/// Recover a candidate `dotnet_root` from `dotnet --info` stdout.
-///
-/// Prefers the `Base Path:` line under `Runtime Environment:`, which
-/// reports the directory of the SDK that dotnet actually selected
-/// (accounting for `global.json`, `sdk.paths`, version rolls, …):
-///
-/// ```text
-/// Runtime Environment:
-///  OS Name:     ubuntu
-///  ...
-///  Base Path:   /usr/share/dotnet/sdk/8.0.401/
-/// ```
-///
-/// The Base Path is `<dotnet_root>/sdk/<version>/`, so two `parent()`
-/// steps yield `dotnet_root`. Using the selected SDK matters in
-/// multi-root setups (e.g. the F# compiler repo's `sdk.paths`:
-/// `[".dotnet", "$host$"]`): naively picking the first entry from
-/// `.NET SDKs installed:` would otherwise return a non-selected root.
-///
-/// Falls back to the `.NET SDKs installed:` section for the rare
-/// payloads where Base Path is absent — typically very old
-/// `dotnet --info` outputs, or partial outputs from a non-zero exit:
-///
-/// ```text
-/// .NET SDKs installed:
-///   8.0.401 [/usr/share/dotnet/sdk]
-///   9.0.100-preview.4 [/usr/share/dotnet/sdk]
-/// ```
-///
-/// The bracketed path is `<dotnet_root>/sdk`, so one `parent()` step
-/// yields `dotnet_root`. The first entry is fine in the fallback
-/// regime: setups without Base Path are also unlikely to have
-/// multiple roots, and a user with several roots wired together
-/// should set `$DOTNET_ROOT` explicitly.
-fn parse_dotnet_info_sdk_root(info: &str) -> Option<PathBuf> {
-    parse_base_path(info).or_else(|| parse_sdks_installed(info))
-}
-
-/// Parse the `Base Path:` line — the directory of the SDK dotnet has
-/// selected for this invocation. Returns `dotnet_root` (two parents
-/// up from the SDK version directory).
-fn parse_base_path(info: &str) -> Option<PathBuf> {
-    for raw_line in info.lines() {
-        let trimmed = raw_line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("Base Path:") {
-            let path = Path::new(rest.trim());
-            // `<dotnet_root>/sdk/<version>/` → drop the version → drop
-            // the `sdk` segment → `dotnet_root`.
-            return path.parent().and_then(Path::parent).map(Path::to_path_buf);
-        }
-    }
-    None
-}
-
-/// Parse the `.NET SDKs installed:` section as a last-resort fallback
-/// when `Base Path:` is absent. The bracketed path is
-/// `<dotnet_root>/sdk`, so one `parent()` step yields `dotnet_root`.
-fn parse_sdks_installed(info: &str) -> Option<PathBuf> {
-    let mut in_section = false;
-    for raw_line in info.lines() {
-        let trimmed = raw_line.trim();
-        if trimmed == ".NET SDKs installed:" {
-            in_section = true;
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        // The list is indented; a non-indented line ends it. A blank
-        // line also ends the section (some host versions emit one
-        // before the next heading).
-        if trimmed.is_empty() || !raw_line.starts_with([' ', '\t']) {
             return None;
         }
-        let open = raw_line.find('[')?;
-        let close = raw_line.rfind(']')?;
-        if close <= open + 1 {
-            return None;
-        }
-        let sdk_base = Path::new(raw_line[open + 1..close].trim());
-        return sdk_base.parent().map(Path::to_path_buf);
-    }
-    None
+        let resolved = std::fs::canonicalize(&candidate).ok()?;
+        let parent = resolved.parent()?;
+        parent.join("sdk").is_dir().then(|| parent.to_path_buf())
+    })
 }
 
 /// Lexical normalisation: drop `.`, pop on `..`, preserve everything

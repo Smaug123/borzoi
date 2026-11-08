@@ -46,7 +46,7 @@ which returns a `ResolvedProject` whose `.file(up_to_index)` is valid
 (`len() > up_to_index`). Logic:
 
 1. **Fast path — before any `Workspace`/SDK probing** (`dotnet_root_for_project`
-   can spawn `dotnet --info` under a long deadline): using the *already-cached*
+   evaluates the project and may re-run SDK discovery): using the *already-cached*
    `project_parses` to size the request, if the cached prefix already covers it
    (`resolved.len() >= want_len`), return it. A cached entry is always folded
    against the current env (a rebuilt env drops it via

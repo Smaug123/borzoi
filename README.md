@@ -28,6 +28,8 @@ Anyway, once NuGet has produced its `obj/project.assets.json` file, we consume i
 Consider setting `BORZOI_LSP_CACHE_DIR="$HOME/.cache/borzoi"`.
 If set, this will speed several things up substantially, most notably the parsing of assemblies your project depends on.
 
+If your `dotnet` is a shim (asdf, mise, a Nix wrapper, and so on), set `DOTNET_ROOT` to the real install: the LSP never runs `dotnet` to discover the SDK, since that would execute whatever SDK the repository's `global.json` selects.
+
 ## Speed
 
 The primary design goal is speed, which is why I'm not using .NET and the F# Compiler Service.
