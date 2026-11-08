@@ -3866,6 +3866,121 @@ fn diff_ast_nested_module_after_kw_attr_abbrev_rejected() {
     assert_asts_match_allow_errors("module [<A>] M = N\n");
 }
 
+// ---- Raw keywords in an after-keyword attribute argument (#110) -----------
+//
+// Inside `module [< … >]` FCS's lex filter pushes no offside contexts, so a
+// `fun`/`function`/`if`/`match`/`try` in the attribute argument reaches the
+// parser raw (`FUN`, `THEN`, `ELSE`, `WITH`, no `OFUN`/`OTHEN`/block
+// virtuals), and FCS parses it with the non-offside productions
+// (`anonLambdaExpr: FUN atomicPatterns RARROW typedSequentialExprBlock`,
+// `ifExprThen: THEN declExpr`, `withClauses: WITH withPatternClauses`). Each
+// case runs in the three header forms: whole-file, nested, and nested under a
+// namespace.
+
+/// The three module-header forms an after-keyword attribute list `attrs` can
+/// sit in.
+fn after_kw_attr_forms(attrs: &str) -> [String; 3] {
+    [
+        format!("module {attrs} M\nlet x = 1\n"),
+        format!("module {attrs} M =\n  let x = 1\n"),
+        format!("namespace N\nmodule {attrs} M =\n  let x = 1\n"),
+    ]
+}
+
+/// `if … then … else …` with raw `THEN`/`ELSE`. This one also type-checks: it
+/// is a constant expression, so `dotnet build` accepts it as an attribute
+/// argument.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_if() {
+    for src in after_kw_attr_forms("[<A(if true then \"a\" else \"b\")>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `if … then …` without an `else` (`ifExprElifs: EMPTY`).
+#[test]
+fn diff_ast_module_after_kw_attr_raw_if_no_else() {
+    for src in after_kw_attr_forms("[<A(if true then ())>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `if … then … elif … then … else …` — a raw `ELIF` chain.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_elif() {
+    for src in after_kw_attr_forms("[<A(if true then 1 elif false then 2 else 3)>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `match … with …` with a raw `WITH`.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_match() {
+    for src in after_kw_attr_forms("[<A(match 1 with _ -> 2)>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `match … with | … | …` — several raw clauses.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_match_clauses() {
+    for src in after_kw_attr_forms("[<A(match 1 with | 1 -> 2 | _ -> 3)>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `try … with …` with a raw `WITH`.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_try_with() {
+    for src in after_kw_attr_forms("[<A(try 1 with _ -> 2)>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `fun x -> x` with a raw `FUN`. FCS parses it; type-checking rejects a
+/// lambda as an attribute argument.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_fun() {
+    for src in after_kw_attr_forms("[<A(fun x -> x)>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `function x -> x` with a raw `FUNCTION`.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_function() {
+    for src in after_kw_attr_forms("[<A(function x -> x)>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// A raw `fun` as a later tuple element.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_fun_tuple() {
+    for src in after_kw_attr_forms("[<A(1, fun x -> x)>]") {
+        assert_asts_match(&src);
+    }
+}
+
+/// `while … do …` needs `done` in raw mode (`WHILE declExpr doToken
+/// typedSequentialExprBlock doneDeclEnd`): both sides reject it. Only the
+/// verdict is compared, since FCS's recovered tree is not modelled.
+#[test]
+fn diff_ast_module_after_kw_attr_raw_while_rejected() {
+    for src in after_kw_attr_forms("[<A(while true do ())>]") {
+        assert!(!assert_parse_verdicts_match(&src), "FCS accepted {src:?}");
+    }
+}
+
+/// `for … in … do …` needs `done` in raw mode: both sides reject it (verdict
+/// only, as above).
+#[test]
+fn diff_ast_module_after_kw_attr_raw_for_rejected() {
+    for src in after_kw_attr_forms("[<A(for x in y do ())>]") {
+        assert!(!assert_parse_verdicts_match(&src), "FCS accepted {src:?}");
+    }
+}
+
 // ---- Phase 10.7f (member-definition attributes): SynBinding.attributes ----
 //
 // A leading `[<…>]` on a `member`/`static member`/`override`/`default` method or

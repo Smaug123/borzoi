@@ -365,10 +365,11 @@ impl<'src> Parser<'src> {
         self.parse_seq_block_body_impl(missing_first, true, SeqBody::Closed)
     }
 
-    /// [`Self::parse_seq_block_body`] for a `let` body (`hardwhiteLetBindings`,
-    /// `let … in`, a `let!` binder), which is a bare `typedSequentialExpr`
-    /// sharing the enclosing sequence's block — see [`SeqBody::Bare`].
-    pub(super) fn parse_let_body(&mut self, missing_first: &str) -> u32 {
+    /// [`Self::parse_seq_block_body`] for a bare `typedSequentialExpr` that
+    /// shares the enclosing sequence's block — see [`SeqBody::Bare`]: a `let`
+    /// body (`hardwhiteLetBindings`, `let … in`, a `let!` binder), and the body
+    /// of a raw `fun` or raw match clause, which nothing closes.
+    pub(super) fn parse_bare_seq_body(&mut self, missing_first: &str) -> u32 {
         self.parse_seq_block_body_impl(missing_first, true, SeqBody::Bare)
     }
 
@@ -465,7 +466,10 @@ impl<'src> Parser<'src> {
                         (Sep::Offside, span.clone())
                     }
                     Some((Ok(FilteredToken::Raw(Token::Semi)), span)) => (Sep::Semi, span.clone()),
-                    Some((Ok(FilteredToken::Virtual(Virtual::Then)), span)) => {
+                    // `then` in either spelling: FCS's `sequentialExpr` has both
+                    // `declExpr OTHEN OBLOCKBEGIN …` and `declExpr THEN
+                    // sequentialExpr` (see [`DualKeyword`]).
+                    Some((Ok(tok), span)) if DualKeyword::Then.form_of(tok).is_some() => {
                         (Sep::Then, span.clone())
                     }
                     _ => break,
@@ -496,21 +500,29 @@ impl<'src> Parser<'src> {
                     // constructors (`T(x) then this.P <- 1`) and any statement
                     // position. LexFilter relabels `then` to `Virtual::Then`
                     // (backed by a real `Token::Then`) and wraps the RHS in its own
-                    // offside block. Emit the `then` as a `THEN_TOK` (the
-                    // `parse_do_bang` idiom), consume the RHS block's `OBLOCKBEGIN`
-                    // zero-width, and record the open block so its matching
-                    // `OBLOCKEND` is drained after the RHS statements — the RHS
-                    // statements then join *this* flat sequence, matching the
-                    // normaliser's flattening of FCS's right-leaning `Sequential`.
+                    // offside block. Emit the `then` as a `THEN_TOK`, consume the
+                    // RHS block's `OBLOCKBEGIN` zero-width, and record the open
+                    // block so its matching `OBLOCKEND` is drained after the RHS
+                    // statements — the RHS statements then join *this* flat
+                    // sequence, matching the normaliser's flattening of FCS's
+                    // right-leaning `Sequential`. A raw `THEN` (`declExpr THEN
+                    // sequentialExpr`) opens no block, so its RHS statements join
+                    // the sequence directly.
                     Sep::Then => {
-                        self.drain_raw_up_to(span.start);
-                        self.emit_text(SyntaxKind::THEN_TOK, span);
-                        self.raw_pos += 1;
-                        self.pos += 1;
-                        if matches!(
-                            self.peek(),
-                            Some((Ok(FilteredToken::Virtual(Virtual::BlockBegin)), _))
-                        ) {
+                        let form = self.bump_dual_keyword(DualKeyword::Then);
+                        if let Some((Ok(FilteredToken::Virtual(Virtual::BlockBegin)), block)) =
+                            self.peek().cloned()
+                        {
+                            // A raw `THEN` meets a block only where a column-0
+                            // line ends a module header's attribute context
+                            // (`module [<A(a then⏎b)>] M`), which FCS rejects.
+                            // Gather the block anyway so the tree stays balanced.
+                            if form == Some(KeywordForm::Raw) {
+                                self.errors.push(ParseError {
+                                    message: "unexpected block after `then`".to_string(),
+                                    span: block,
+                                });
+                            }
                             self.bump_into(SyntaxKind::ERROR);
                             then_blocks += 1;
                         }
@@ -1109,19 +1121,13 @@ impl<'src> Parser<'src> {
             // `Op("*")` always reduces to the wildcard arm), and folded into the
             // `<-` gate below alongside `built_continuation`.
             let lhs_is_wildcard = p.peek_is_index_wildcard_star();
-            // Whether the bare LHS this frame is about to build is a `fixed e`
-            // (`FIXED declExpr` → `SynExpr.Fixed`). Like the `*` wildcard, a
-            // `FIXED_EXPR` is a `declExpr`, **not** a `minusExpr`, so it cannot be a
-            // `<-` assignment LHS — FCS rejects `fixed … <- v`. Captured here (a
-            // fresh Pratt head with a leading `Token::Fixed` always dispatches to
-            // [`Parser::parse_fixed`], which parses the *full* `declExpr` operand and
-            // can return with a `<-` still pending when that operand built a cast /
-            // wildcard that declined it — `fixed a :> T <- v`, `fixed * <- v`). The
-            // tighter `lazy`/`assert` never need this: their operand either folds the
-            // `<-` in itself or leaves a `built_continuation` cast in *this* frame.
-            let lhs_is_fixed = matches!(p.peek(), Some((Ok(FilteredToken::Raw(Token::Fixed)), _)));
+            // Whether the bare LHS this frame is about to build is a keyword
+            // construct that FCS's grammar has only at `declExpr` level (see
+            // [`Parser::at_decl_expr_construct_head`]). Like the `*` wildcard it is
+            // **not** a `minusExpr`, so it cannot be a `<-` assignment LHS.
+            let lhs_is_decl_construct = p.at_decl_expr_construct_head();
             p.parse_minus_expr();
-            p.continue_pratt_expr(cp, min_bp, lhs_is_wildcard, lhs_is_fixed);
+            p.continue_pratt_expr(cp, min_bp, lhs_is_wildcard, lhs_is_decl_construct);
         });
     }
 
@@ -1129,7 +1135,7 @@ impl<'src> Parser<'src> {
     /// [`Self::parse_pratt_expr`], split out so the appExpr-headed brace handler
     /// ([`Self::parse_app_head_brace`]) can resume the climb from an
     /// already-parsed `appExpr` LHS at `cp` (an `appExpr` is a `minusExpr`, so it
-    /// is a valid LHS for this loop; `lhs_is_wildcard` and `lhs_is_fixed` are
+    /// is a valid LHS for this loop; `lhs_is_wildcard` and `lhs_is_decl_construct` are
     /// `false` there).
     /// Behaviourally identical to the inline tail it replaces.
     fn continue_pratt_expr(
@@ -1137,7 +1143,7 @@ impl<'src> Parser<'src> {
         cp: rowan::Checkpoint,
         min_bp: u16,
         lhs_is_wildcard: bool,
-        lhs_is_fixed: bool,
+        lhs_is_decl_construct: bool,
     ) {
         // Tracks whether this loop built *any* continuation (infix App or
         // type-relation cast) on top of the bare `parse_minus_expr` result. FCS's
@@ -1315,9 +1321,13 @@ impl<'src> Parser<'src> {
         // (which records the "unexpected token after binding expression" error
         // and stays lossless) matches FCS. The `*` wildcard is the same case: a
         // `declExpr` leaf, so `* <- 1` leaves the `<-` for recovery (FCS error).
-        // A `fixed e` is likewise a `declExpr` (`lhs_is_fixed`): its operand may
-        // decline a trailing `<-` (`fixed a :> T <- v`, `fixed * <- v`), and FCS
-        // rejects binding it, so leave the `<-` for recovery here too.
+        // A keyword construct (`lhs_is_decl_construct`: `fixed e`, `lazy e`, `if`,
+        // `match`, `fun`, a loop, …) is likewise a `declExpr`. Its tail usually
+        // absorbs a trailing `<-` itself, but not always: `fixed a :> T <- v` and
+        // `fixed * <- v` decline it in the operand, a raw `fun x -> e : T <- v`
+        // ends its body at the annotation, and `while c do e done <- v` (or `lazy
+        // while … done <- v`) at the `done`. FCS rejects binding any of them, so
+        // leave the `<-` for recovery here too.
         //
         // Swallowed-closer gate (the same one `peek_infix_continuation`
         // applies): inside `( x )` / `{ x }` the closer is stripped from the
@@ -1331,7 +1341,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::LArrow)), _))
         ) && !built_continuation
             && !lhs_is_wildcard
-            && !lhs_is_fixed
+            && !lhs_is_decl_construct
             && !self.at_swallowed_seq_closer()
         {
             self.builder
@@ -1340,6 +1350,14 @@ impl<'src> Parser<'src> {
             self.parse_assign_rhs();
             self.builder.finish_node();
         }
+    }
+
+    /// `true` if the current token heads a keyword construct that FCS's grammar
+    /// has only at `declExpr` level ([`decl_expr_keyword`]). Each is dispatched
+    /// from [`Self::parse_minus_expr`], so the Pratt loop would otherwise take
+    /// it as a `minusExpr` LHS.
+    pub(super) fn at_decl_expr_construct_head(&self) -> bool {
+        matches!(self.peek(), Some((Ok(tok), _)) if decl_expr_keyword(tok).is_some())
     }
 
     /// `true` if the current filtered token can lead a fresh expression
@@ -1421,14 +1439,13 @@ impl<'src> Parser<'src> {
             // infix `^` the Pratt loop owns, never reaching this head gate. Kept
             // out of `peek_starts_app_arg`, so `f ^1` stays infix.
             Some((Ok(FilteredToken::Raw(Token::Op("^"))), _)) => true,
-            // `Virtual::Fun` is LexFilter's rewrite of `Token::Fun`. The
-            // raw `Token::Fun` is in `raw_starts_minus_expr`, but the
-            // filtered stream only ever surfaces the virtual at this
-            // position (LexFilter's `pushCtxt CtxtFun`), so the raw arm
-            // above would never fire for `fun`. Recognise it here so
-            // `fun … -> …` is an expression starter at file top, in
-            // tuple elements, in paren bodies, etc.
-            Some((Ok(FilteredToken::Virtual(Virtual::Fun)), _)) => true,
+            // A lambda head: `fun`/`function` in either spelling — LexFilter's
+            // `OFUN`/`OFUNCTION` relabel, or the raw keyword where it pushed no
+            // context (see [`DualKeyword`]). Classified by the same
+            // [`DualKeyword::lambda_head`] that `parse_minus_expr` dispatches
+            // on, so the gate and the dispatch agree by construction. Admits
+            // `fun … -> …` at file top, in tuple elements, in paren bodies, etc.
+            Some((Ok(tok), _)) if DualKeyword::lambda_head(tok).is_some() => true,
             // `Virtual::DoBang` — LexFilter's rewrite of `Token::DoBang`.
             // Like `fun`, the filtered stream only surfaces the virtual, so
             // recognise it here (`do! e` is an expression-start in a CE body,
@@ -1472,13 +1489,6 @@ impl<'src> Parser<'src> {
             // — FCS relabels a non-block `use … in` to `Let`; see the
             // `parse_minus_expr` dispatch note.)
             Some((Ok(FilteredToken::Raw(Token::Let)), _)) => true,
-            // `Virtual::Function` (`OFUNCTION`) — LexFilter's rewrite of
-            // `Token::Function`. Recognised here for the same reason as
-            // `Virtual::Fun`: the filtered stream only ever surfaces the
-            // virtual, so `function … -> …` must be classified as an
-            // expression starter at file top, on a `let` RHS, in tuple
-            // elements, in paren bodies, etc.
-            Some((Ok(FilteredToken::Virtual(Virtual::Function)), _)) => true,
             // `Virtual::Lazy`/`Virtual::Assert` (`OLAZY`/`OASSERT`) — LexFilter's
             // rewrite of an offside/control-flow `lazy`/`assert`. Only the virtual
             // surfaces for that form, so recognise it as an expression starter
@@ -1595,6 +1605,39 @@ impl<'src> Parser<'src> {
     }
 }
 
+/// The keyword `tok` spells if it heads a construct that FCS's grammar has
+/// only at `declExpr` level, never as a `minusExpr`: `fixed`, `lazy`, `assert`,
+/// `if`, `match`/`match!`, `try`, `while`/`while!`, `for`, `let … in`, and a
+/// lambda (`fun`/`function`, either spelling — [`DualKeyword::lambda_head`]).
+/// `lazy`, `assert` and `let` count in both their raw and offside spellings.
+///
+/// Such a construct is neither a `<-` assignment target
+/// ([`Parser::at_decl_expr_construct_head`]) nor a prefix operator's operand
+/// ([`Parser::maybe_warn_keyword_after_prefix`]); both ask this one function,
+/// so the two cannot disagree about which keywords these are.
+pub(super) fn decl_expr_keyword(tok: &FilteredToken<'_>) -> Option<&'static str> {
+    if let Some(lambda) = DualKeyword::lambda_head(tok) {
+        return Some(match lambda {
+            DualKeyword::Function => "function",
+            _ => "fun",
+        });
+    }
+    Some(match tok {
+        FilteredToken::Raw(Token::Fixed) => "fixed",
+        FilteredToken::Raw(Token::Lazy) | FilteredToken::Virtual(Virtual::Lazy) => "lazy",
+        FilteredToken::Raw(Token::Assert) | FilteredToken::Virtual(Virtual::Assert) => "assert",
+        FilteredToken::Raw(Token::If) => "if",
+        FilteredToken::Raw(Token::Match) => "match",
+        FilteredToken::Raw(Token::MatchBang) => "match!",
+        FilteredToken::Raw(Token::Try) => "try",
+        FilteredToken::Raw(Token::While) => "while",
+        FilteredToken::Raw(Token::WhileBang) => "while!",
+        FilteredToken::Raw(Token::For) => "for",
+        FilteredToken::Raw(Token::Let) | FilteredToken::Virtual(Virtual::Let) => "let",
+        _ => return None,
+    })
+}
+
 /// One statement separator as [`Parser::finish_seq_block`] meets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sep {
@@ -1642,8 +1685,10 @@ pub(super) enum SeqBody {
     /// Closed by a token of its own (a bracket, an `OBLOCKEND`, `end`): the
     /// separator is an error.
     Closed,
-    /// A `let` body, which shares its offside block with the enclosing
-    /// sequence: the body ends as trailing `seps`, and the separator is the
-    /// enclosing sequence's (`let x = 1⏎a⏎;⏎b` is `Sequential(LetOrUse(x, a), b)`).
+    /// A body with no closer of its own, sharing the enclosing sequence's
+    /// block — a `let` body, or a raw `fun`/match-clause body: the body ends as
+    /// trailing `seps`, and the separator is the enclosing sequence's (`let x =
+    /// 1⏎a⏎;⏎b` is `Sequential(LetOrUse(x, a), b)`, and a raw `fun x -> a; ; b`
+    /// is `Sequential(Lambda(x, a), b)`).
     Bare,
 }
