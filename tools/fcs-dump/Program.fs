@@ -7657,12 +7657,10 @@ let private projectXmlDocUse (u: FSharpSymbolUse) =
        FromFile = fromFile
        Error = error |}
 
-/// The SDK reference switches (FSharp.Core + the runtime reference pack), from
-/// script resolution on the first path the oracle sees, reused for every later
-/// request: the documentation a symbol carries does not depend on which
-/// assemblies are referenced, so one resolution serves every fixture.
-let mutable private xmlDocSdkSwitches: (FSharpProjectOptions * string[]) option = None
-
+/// Type-check `paths` (Compile order) as one project and report each file's
+/// symbol uses with the documentation FCS attaches. The SDK reference switches
+/// (FSharp.Core + the runtime reference pack) come from script resolution on
+/// the first file, per request, so no request's answer depends on another's.
 let private xmlDocProjectFiles
     (checker: FSharpChecker)
     (paths: string[])
@@ -7671,22 +7669,12 @@ let private xmlDocProjectFiles
     (defineArgs: string[])
     (langVersionArgs: string[])
     =
-    let baseOpts, switches =
-        match xmlDocSdkSwitches with
-        | Some cached -> cached
-        | None ->
-            let text = SourceText.ofString (File.ReadAllText paths.[0])
-            let so, _ =
-                checker.GetProjectOptionsFromScript(
-                    paths.[0], text, assumeDotNetFramework = false, useSdkRefs = true)
-                |> Async.RunSynchronously
-            let switches =
-                so.OtherOptions
-                |> Array.filter (fun o -> o.StartsWith("-") || o.StartsWith("/"))
-                |> Array.filter (fun o ->
-                    not (o.StartsWith("--langversion:") || o.StartsWith("/langversion:")))
-            xmlDocSdkSwitches <- Some(so, switches)
-            so, switches
+    let baseOpts, _ = projectScriptOptions checker paths.[0] (File.ReadAllText paths.[0]) [||]
+    let switches =
+        baseOpts.OtherOptions
+        |> Array.filter (fun o -> o.StartsWith("-") || o.StartsWith("/"))
+        |> Array.filter (fun o ->
+            not (o.StartsWith("--langversion:") || o.StartsWith("/langversion:")))
     let projOpts =
         { baseOpts with
             ProjectFileName =
