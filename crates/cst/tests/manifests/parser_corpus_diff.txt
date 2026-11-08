@@ -271,7 +271,7 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_Index
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_TryFinallyIncompleteStructuredConstruct.fs	both-reject exact 1/1/2
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedKeywordAs01.fs	both-reject exact 1/1/2
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedKeyworkWith01.fs	both-reject outside-damage 1/1/2
-tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs	both-reject outside-damage 4/4/5
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs	both-reject exact 4/4/5
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/attrUnionCaseDecl01.fs	both-reject exact 1/1/3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/attrUnionCaseDecl01b.fs	both-reject exact 1/1/3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/NONTERM/braceExpr01.fs	both-reject outside-damage 0/0/2
