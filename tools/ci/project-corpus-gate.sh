@@ -18,7 +18,7 @@
 # In CI, `tools/ci/project-corpus.sh` has already materialised the corpus and
 # exported BORZOI_PROJECT_LIST. Run locally without it, this materialises the
 # corpus itself first, under
-# ${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}, outside the
+# ${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}/v2, outside the
 # repository, so no `Directory.Build.props` of ours can reach the corpus's
 # restores.
 #
@@ -209,7 +209,7 @@ cleanup() {
   # has since taken.
   if [ -n "$lock_held" ]; then
     lock_held=
-    rm -r "$lock"
+    rm -f "$lock"
   fi
   local f
   for f in "$reader" "$run_env" "$plan" "$wanted"; do
@@ -217,19 +217,26 @@ cleanup() {
   done
 }
 
+# The lock is a file created with O_EXCL (bash's noclobber `>`), so the kernel
+# admits one creator whichever coreutils the host has. A `mkdir` lock would
+# rest on `mkdir` failing for an existing directory, and uutils' `mkdir` before
+# 0.11 (Ubuntu 26.04's coreutils) succeeds there instead. The owner goes in
+# with the create, in one write: a lock seen empty is one being taken.
+take_lock() { (set -C && printf '%s\n' "$me" >"$lock") 2>/dev/null; }
+
 acquire_lock() {
   local owner said=
-  until mkdir "$lock" 2>/dev/null; do
-    # No owner yet is a run between its `mkdir` and recording itself; for
+  until take_lock; do
+    # No owner yet is a run between its create and recording itself; for
     # longer than a minute, it is one that died there.
-    if owner="$(abandoned "$lock/owner")" ||
-      { [ ! -s "$lock/owner" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+    if owner="$(abandoned "$lock")" ||
+      { [ ! -s "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
       echo "project-corpus-gate: $lock is held by a run that has exited" \
         "(${owner:-no owner recorded}). If no gate run is in progress, remove it:" >&2
       echo "  rm -r '$lock'" >&2
       exit 1
     fi
-    owner="$(cat "$lock/owner" 2>/dev/null || true)"
+    owner="$(cat "$lock" 2>/dev/null || true)"
     if [ -z "$said" ]; then
       echo "project-corpus-gate: waiting for $lock (held by pid ${owner%% *})" >&2
       said=1
@@ -237,14 +244,11 @@ acquire_lock() {
     sleep 1
   done
   lock_held=1
-  # Renamed into place, so the owner file is absent or complete.
-  printf '%s\n' "$me" >"$lock/owner.new"
-  mv "$lock/owner.new" "$lock/owner"
 }
 
 release_lock() {
   lock_held=
-  rm -r "$lock"
+  rm -f "$lock"
 }
 
 # Called holding the lock, which is the only time a reader registers, so an
@@ -282,7 +286,11 @@ wait_for_readers() {
 }
 
 if [ -z "${BORZOI_PROJECT_LIST:-}" ]; then
-  cache="${BORZOI_PROJECT_CORPUS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/borzoi/project-corpus}"
+  # Keyed by the lock protocol: runs that take the lock differently each
+  # misread the other's lock, so they must not share a cache. This file lock's
+  # cache is `v2`; a gate script that locks with `mkdir` uses the root itself,
+  # which can be deleted once no worktree has such a script.
+  cache="${BORZOI_PROJECT_CORPUS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/borzoi/project-corpus}/v2"
   lock="$cache/lock"
   readers="$cache/readers"
   stamp="$cache/materialised"

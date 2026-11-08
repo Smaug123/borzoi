@@ -451,7 +451,7 @@ BORZOI_UPDATE_MANIFESTS=1 bash tools/ci/project-corpus-gate.sh
 
 Run that outside `nix develop` (it enters the devshell itself). Run locally, it
 materialises the pinned corpus first, under
-`${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}`, through the
+`${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}/v2`, through the
 same `tools/ci/project-corpus.sh` CI uses; it needs to reach nuget.org. Keys are
 relative to that cache's `project-corpus/` directory in both places, so the
 manifest is host-independent.

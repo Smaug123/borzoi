@@ -552,7 +552,7 @@ failure and names the failed steps at the end.
 
 Run locally, it first materialises the pinned project corpus (clones, and
 restores from nuget.org) into a cache shared by every worktree,
-`${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}`. Concurrent
+`${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}/v2`. Concurrent
 runs are safe: each has its own plan and env files, a lock serialises the
 checkout and restore, and no run rewrites the corpus while another run's steps
 read it, so a run of a different pin waits for them. A run whose pin is
