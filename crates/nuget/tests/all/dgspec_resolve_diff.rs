@@ -39,7 +39,7 @@ use borzoi_nuget::dgspec::{
 };
 use borzoi_nuget::{
     DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId, PackageIdentity,
-    PackagePaths, VersionRange, resolve_offline,
+    PackagePaths, ResolveDecline, VersionRange, resolve_offline,
 };
 use borzoi_oracle_harness::manifest::{Manifest, check};
 use serde_json::{Map, Value, json};
@@ -224,6 +224,34 @@ impl Dep {
     }
 }
 
+/// A `ProjectReference` of one framework, naming a project of the shape by
+/// name (or one the shape does not hold).
+#[derive(Debug, Clone)]
+struct ProjectRef {
+    name: &'static str,
+    private_assets: Option<&'static str>,
+    include_assets: Option<&'static str>,
+    exclude_assets: Option<&'static str>,
+}
+
+impl ProjectRef {
+    fn new(name: &'static str) -> ProjectRef {
+        ProjectRef {
+            name,
+            private_assets: None,
+            include_assets: None,
+            exclude_assets: None,
+        }
+    }
+
+    fn private(name: &'static str, assets: &'static str) -> ProjectRef {
+        ProjectRef {
+            private_assets: Some(assets),
+            ..ProjectRef::new(name)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Framework {
     alias: &'static str,
@@ -235,6 +263,11 @@ struct Framework {
     downloads: Vec<(&'static str, &'static str)>,
     /// `packagesToPrune`: `(id, range)`.
     prune: Vec<(&'static str, &'static str)>,
+    /// The framework's project references.
+    references: Vec<ProjectRef>,
+    /// A `framework` written into the restore metadata's entry for this
+    /// alias, where the SDK writes none (the alias names the framework).
+    restore_framework: Option<&'static str>,
 }
 
 impl Framework {
@@ -246,8 +279,69 @@ impl Framework {
             framework_reference: false,
             downloads: Vec::new(),
             prune: Vec::new(),
+            references: Vec::new(),
+            restore_framework: None,
         }
     }
+
+    fn referencing(alias: &'static str, deps: Vec<Dep>, references: Vec<ProjectRef>) -> Framework {
+        Framework {
+            references,
+            ..Framework::new(alias, deps)
+        }
+    }
+}
+
+/// A project the spec holds besides the one it restores: one the restored
+/// project references, directly or through another. Written as the SDK writes
+/// a referenced project into an entry-only spec, with the same restore
+/// metadata shape as the entry.
+#[derive(Debug, Clone)]
+struct Project {
+    name: &'static str,
+    /// The `version`; `None` leaves the key out, which NuGet reads as 1.0.0.
+    version: Option<&'static str>,
+    frameworks: Vec<Framework>,
+    /// Central package management without pinning, as for the entry.
+    cpm: bool,
+    /// `centralPackageTransitivePinningEnabled`, which the legacy engine
+    /// reads on a referenced project (it adds the project's central versions
+    /// to the graph) and the default engine does not.
+    transitive_pinning: bool,
+    /// The `projectName` written, when it is not [`Self::name`] (which names
+    /// the project's folder and file, and is how references name it).
+    project_name: Option<&'static str>,
+    /// The `projectUniqueName` written (and the key references use), when it
+    /// is not the project's path.
+    unique_name: Option<&'static str>,
+    /// The project's own `warningProperties.noWarn`.
+    no_warn: Vec<&'static str>,
+}
+
+impl Project {
+    fn new(name: &'static str, frameworks: Vec<Framework>) -> Project {
+        Project {
+            name,
+            version: None,
+            frameworks,
+            cpm: false,
+            transitive_pinning: false,
+            project_name: None,
+            unique_name: None,
+            no_warn: Vec::new(),
+        }
+    }
+}
+
+/// The path of the project named `name` under `dir`: the entry is
+/// `App.fsproj`, a referenced project sits in a folder of its own.
+fn project_path(dir: &Path, name: &str) -> String {
+    let path = if name == "App" {
+        dir.join("App.fsproj")
+    } else {
+        dir.join(name).join(format!("{name}.fsproj"))
+    };
+    path.to_str().expect("UTF-8").to_owned()
 }
 
 /// A spec, in the vocabulary the generator varies. [`Shape::render`] writes it
@@ -272,6 +366,12 @@ struct Shape {
     /// Central package management without pinning: every dependency centrally
     /// managed, with a central entry carrying its range.
     cpm: bool,
+    /// The projects the spec holds besides the entry.
+    projects: Vec<Project>,
+    /// `restoreUseLegacyDependencyResolver` on the entry: restore runs NuGet's
+    /// legacy dependency resolver. The reader declines the key, so a spec
+    /// rendered with it is for the oracle alone.
+    legacy_engine: bool,
 }
 
 impl Shape {
@@ -289,13 +389,35 @@ impl Shape {
             lock_file: Some("false"),
             config: None,
             cpm: false,
+            projects: Vec::new(),
+            legacy_engine: false,
         }
+    }
+
+    /// [`Shape::new`] with the entry referencing `projects` from every
+    /// framework, each by name.
+    fn with_projects(frameworks: Vec<Framework>, projects: Vec<Project>) -> Shape {
+        let mut shape = Shape::new(frameworks);
+        for framework in &mut shape.frameworks {
+            framework.references = projects
+                .iter()
+                .map(|project| ProjectRef::new(project.name))
+                .collect();
+        }
+        shape.projects = projects;
+        shape
+    }
+
+    /// The shape with `project` in the spec, referenced by nothing yet.
+    fn also_holding(mut self, project: Project) -> Shape {
+        self.projects.push(project);
+        self
     }
 
     /// The spec, naming folders under `dir` (`gp` is the packages folder).
     fn render(&self, dir: &Path) -> String {
         let path = |name: &str| dir.join(name).to_str().expect("UTF-8").to_owned();
-        let project = path("App.fsproj");
+        let project = project_path(dir, "App");
 
         let mut sources = Map::new();
         for source in &self.sources {
@@ -321,34 +443,159 @@ impl Shape {
             None => Vec::new(),
         };
 
-        let aliases: Vec<&str> = self.frameworks.iter().map(|f| f.alias).collect();
+        let common = RenderCommon {
+            dir,
+            packages_path: path("gp"),
+            sources,
+            config_file_paths,
+        };
+        let mut projects = Map::new();
+        projects.insert(
+            project.clone(),
+            self.render_project(
+                &common,
+                &project,
+                &self.project_name,
+                Some("1.0.0"),
+                &self.frameworks,
+                self.cpm,
+                false,
+                None,
+            ),
+        );
+        for referenced in &self.projects {
+            let referenced_path = self.unique_name_of(dir, referenced.name);
+            projects.insert(
+                referenced_path.clone(),
+                self.render_project(
+                    &common,
+                    &referenced_path,
+                    referenced.project_name.unwrap_or(referenced.name),
+                    referenced.version,
+                    &referenced.frameworks,
+                    referenced.cpm,
+                    referenced.transitive_pinning,
+                    Some(referenced),
+                ),
+            );
+        }
+
+        let spec = json!({
+            "format": 1,
+            "restore": {project: {}},
+            "projects": projects,
+        });
+        serde_json::to_string_pretty(&spec).expect("serialise")
+    }
+
+    /// The unique name of the project named `name` under `dir`: its path,
+    /// unless the shape's project of that name spells one of its own.
+    fn unique_name_of(&self, dir: &Path, name: &str) -> String {
+        self.projects
+            .iter()
+            .find(|project| project.name == name)
+            .and_then(|project| project.unique_name)
+            .map(str::to_owned)
+            .unwrap_or_else(|| project_path(dir, name))
+    }
+
+    /// One project's `PackageSpec`, at `project` (its unique name; its path
+    /// unless `referenced` spells another unique name). The entry
+    /// (`referenced` is `None`) carries the shape's policy fields; a
+    /// referenced project carries the same restore metadata shape, as the
+    /// SDK writes it, with the policy fields at their defaults but for its
+    /// own `noWarn`.
+    #[allow(clippy::too_many_arguments)]
+    fn render_project(
+        &self,
+        common: &RenderCommon<'_>,
+        project: &str,
+        name: &str,
+        version: Option<&str>,
+        frameworks: &[Framework],
+        cpm: bool,
+        transitive_pinning: bool,
+        referenced: Option<&Project>,
+    ) -> Value {
+        let is_entry = referenced.is_none();
+        let project_path = match referenced.and_then(|project| project.unique_name) {
+            Some(_) => project_path(common.dir, name),
+            None => project.to_owned(),
+        };
+        let project_dir = Path::new(&project_path)
+            .parent()
+            .expect("a project path has a directory");
+        let obj = |file: &str| {
+            project_dir
+                .join("obj")
+                .join(file)
+                .to_str()
+                .expect("UTF-8")
+                .to_owned()
+        };
+        let aliases: Vec<&str> = frameworks.iter().map(|f| f.alias).collect();
+        // The policy is the restored project's; a referenced project's is
+        // never applied.
+        let (all_warnings_as_errors, warn_as_error, warn_not_as_error, no_warn) = if is_entry {
+            (
+                self.all_warnings_as_errors,
+                self.warn_as_error.clone(),
+                self.warn_not_as_error.clone(),
+                self.no_warn.clone(),
+            )
+        } else {
+            let no_warn = referenced
+                .map(|project| project.no_warn.clone())
+                .unwrap_or_default();
+            (false, Vec::new(), Vec::new(), no_warn)
+        };
         let mut restore = json!({
             "projectUniqueName": project,
-            "projectName": self.project_name,
-            "projectPath": project,
-            "packagesPath": path("gp"),
-            "outputPath": format!("{}/", path("obj")),
+            "projectName": name,
+            "projectPath": project_path,
+            "packagesPath": common.packages_path,
+            "outputPath": format!("{}/", project_dir.join("obj").to_str().expect("UTF-8")),
             "projectStyle": "PackageReference",
             "crossTargeting": aliases.len() > 1,
-            "configFilePaths": config_file_paths,
+            "configFilePaths": common.config_file_paths,
             "originalTargetFrameworks": aliases,
-            "sources": sources,
-            "frameworks": aliases
+            "sources": common.sources,
+            "frameworks": frameworks
                 .iter()
-                .map(|alias| {
-                    (
-                        alias.to_string(),
-                        json!({"targetAlias": alias, "projectReferences": {}}),
-                    )
+                .map(|framework| {
+                    let references: Map<String, Value> = framework
+                        .references
+                        .iter()
+                        .map(|reference| {
+                            let referenced = self.unique_name_of(common.dir, reference.name);
+                            let mut value = json!({"projectPath": referenced});
+                            if let Some(assets) = reference.private_assets {
+                                value["privateAssets"] = json!(assets);
+                            }
+                            if let Some(assets) = reference.include_assets {
+                                value["includeAssets"] = json!(assets);
+                            }
+                            if let Some(assets) = reference.exclude_assets {
+                                value["excludeAssets"] = json!(assets);
+                            }
+                            (referenced, value)
+                        })
+                        .collect();
+                    let mut entry =
+                        json!({"targetAlias": framework.alias, "projectReferences": references});
+                    if let Some(restore_framework) = framework.restore_framework {
+                        entry["framework"] = json!(restore_framework);
+                    }
+                    (framework.alias.to_string(), entry)
                 })
                 .collect::<Map<_, _>>(),
             "warningProperties": {
-                "allWarningsAsErrors": self.all_warnings_as_errors,
-                "warnAsError": self.warn_as_error,
-                "warnNotAsError": self.warn_not_as_error,
-                "noWarn": self.no_warn,
+                "allWarningsAsErrors": all_warnings_as_errors,
+                "warnAsError": warn_as_error,
+                "warnNotAsError": warn_not_as_error,
+                "noWarn": no_warn,
             },
-            "restoreLockProperties": {"nuGetLockFilePath": path("obj/packages.lock.json")},
+            "restoreLockProperties": {"nuGetLockFilePath": obj("packages.lock.json")},
         });
         if let Some(value) = self.lock_file {
             restore["restoreLockProperties"]["restorePackagesWithLockFile"] = json!(value);
@@ -356,15 +603,20 @@ impl Shape {
         if let Some(value) = self.enable_audit {
             restore["restoreAuditProperties"] = json!({"enableAudit": value});
         }
-        if self.cpm {
+        if cpm {
             restore["centralPackageVersionsManagementEnabled"] = json!(true);
+        }
+        if transitive_pinning {
+            restore["CentralPackageTransitivePinningEnabled"] = json!(true);
         }
         if let Some(level) = self.sdk_analysis_level {
             restore["SdkAnalysisLevel"] = json!(level);
         }
+        if is_entry && self.legacy_engine {
+            restore["restoreUseLegacyDependencyResolver"] = json!(true);
+        }
 
-        let frameworks: Map<String, Value> = self
-            .frameworks
+        let frameworks: Map<String, Value> = frameworks
             .iter()
             .map(|framework| {
                 let dependencies: Map<String, Value> = framework
@@ -384,7 +636,7 @@ impl Shape {
                         if !dep.no_warn.is_empty() {
                             value["noWarn"] = json!(dep.no_warn);
                         }
-                        if self.cpm {
+                        if cpm {
                             value["versionCentrallyManaged"] = json!(true);
                         }
                         (dep.id.clone(), value)
@@ -401,7 +653,7 @@ impl Shape {
                     ]);
                     value["assetTargetFallback"] = json!(true);
                 }
-                if self.cpm {
+                if cpm {
                     value["centralPackageVersions"] = framework
                         .deps
                         .iter()
@@ -432,17 +684,23 @@ impl Shape {
             })
             .collect();
 
-        let spec = json!({
-            "format": 1,
-            "restore": {project.clone(): {}},
-            "projects": {project.clone(): {
-                "version": "1.0.0",
-                "restore": restore,
-                "frameworks": frameworks,
-            }},
+        let mut spec = json!({
+            "restore": restore,
+            "frameworks": frameworks,
         });
-        serde_json::to_string_pretty(&spec).expect("serialise")
+        if let Some(version) = version {
+            spec["version"] = json!(version);
+        }
+        spec
     }
+}
+
+/// What every project of a rendered spec shares.
+struct RenderCommon<'a> {
+    dir: &'a Path,
+    packages_path: String,
+    sources: Map<String, Value>,
+    config_file_paths: Vec<String>,
 }
 
 // ============================================================================
@@ -698,12 +956,59 @@ fn grade_spec_in(
     Graded { ours, theirs }
 }
 
-/// The unique name of the spec's one project.
+/// The unique name of the one project the spec restores.
 fn project_of(spec: &DependencyGraphSpec) -> String {
-    let [project] = spec.projects.as_slice() else {
-        panic!("one project");
+    let [project] = spec.restore.as_slice() else {
+        panic!("one project restores, not {}", spec.restore.len());
     };
-    project.restore.project_unique_name.clone()
+    project.clone()
+}
+
+/// [`grade`], with the spec also restored by NuGet's legacy dependency
+/// resolver: a closure B₁ commits must be the one both engines write. The
+/// default engine's grading is returned.
+///
+/// A shape with a prune list is graded against the default engine alone, as
+/// stage 5 grades pruning: the legacy engine prunes neither a package's
+/// edges nor a referenced project's the same way, and a spec selects it only
+/// through a key the reader declines.
+fn grade_both(oracle: &mut Oracle, packages: &[Pkg], shape: &Shape) -> Graded {
+    assert!(!shape.legacy_engine, "the shape selects the engine here");
+    let dir = tempfile::tempdir().expect("temp dir");
+    install(&dir.path().join("gp"), packages);
+    let text = shape.render(dir.path());
+    let spec = parse_dgspec(&text)
+        .unwrap_or_else(|decline| panic!("the generator left the reader's vocabulary: {decline}"));
+    let description = format!("{shape:#?}\n{packages:#?}");
+    let graded = grade_spec(oracle, &text, &spec, &description);
+    let prunes = shape
+        .frameworks
+        .iter()
+        .chain(
+            shape
+                .projects
+                .iter()
+                .flat_map(|project| &project.frameworks),
+        )
+        .any(|framework| !framework.prune.is_empty());
+    if prunes {
+        return graded;
+    }
+    let mut legacy = shape.clone();
+    legacy.legacy_engine = true;
+    let legacy = restore(oracle, &legacy.render(dir.path()));
+    if let Ok(frameworks) = &graded.ours {
+        assert!(
+            legacy.success,
+            "B₁ committed, but the legacy engine fails:\n{description}\nlegacy: {legacy:#?}"
+        );
+        assert_eq!(
+            by_framework(frameworks),
+            legacy.targets,
+            "B₁'s closures are not the legacy engine's:\n{description}\nlegacy: {legacy:#?}"
+        );
+    }
+    graded
 }
 
 fn by_framework(frameworks: &[ResolvedFramework]) -> BTreeMap<String, PackageSet> {
@@ -1371,8 +1676,9 @@ fn a_package_named_like_the_project_declines() {
     let graded = grade(&mut oracle, &packages, &shape);
     assert!(
         matches!(
-            graded.ours,
-            Err(DgSpecResolveDecline::PackageNamedLikeProject { .. })
+            &graded.ours,
+            Err(DgSpecResolveDecline::Resolve { decline, .. })
+                if matches!(**decline, ResolveDecline::DependencyNamesAProject { .. })
         ),
         "{:?}",
         graded.ours
@@ -1538,12 +1844,6 @@ fn every_unmodelled_field_declines_by_name() {
             the_project(spec)["frameworks"]["net8.0"]["centralPackageVersions"] =
                 json!({"A": "[1.0.0, )"});
         }),
-        (UnmodelledField::ProjectReferences, |spec, dir| {
-            let lib = dir.join("Lib.fsproj");
-            let lib = lib.to_str().unwrap();
-            the_project(spec)["restore"]["frameworks"]["net8.0"]["projectReferences"][lib] =
-                json!({"projectPath": lib});
-        }),
         (UnmodelledField::PackagesToPrune, |spec, _| {
             the_project(spec)["frameworks"]["net8.0"]["packagesToPrune"] =
                 json!({"System.Text.Json": "[10.0.0, )"});
@@ -1603,10 +1903,7 @@ fn every_unmodelled_field_declines_by_name() {
             let path = path.to_str().unwrap();
             other["restore"]["projectUniqueName"] = json!(path);
             other["restore"]["projectPath"] = json!(path);
-            other["restore"]
-                .as_object_mut()
-                .unwrap()
-                .remove("projectName");
+            other["restore"]["projectName"] = json!("Other");
             spec["projects"][path] = other;
         }),
         (UnmodelledField::OtherProjects, |spec, dir| {
@@ -1718,7 +2015,7 @@ const DECLINED_METADATA: &[&str] = &[
 
 fn gen_range(rng: &mut SplitMix64) -> String {
     let version = rng.pick(VERSIONS);
-    match rng.below(5) {
+    match rng.below(4) {
         0 => format!("[{version}]"),
         // Bounded above, so a nearer edge to a higher version leaves it
         // outside its constraint (`NU1608`).
@@ -1727,23 +2024,143 @@ fn gen_range(rng: &mut SplitMix64) -> String {
     }
 }
 
+/// The names the generator gives referenced projects, in order.
+const PROJECT_NAMES: &[&str] = &["Lib", "Core"];
+
+/// Whether a generated spec holds referenced projects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Projects {
+    /// One spec in three, over the adversarial package universe.
+    Sometimes,
+    /// Every spec, over a clean package universe (every version installed,
+    /// no malformed metadata, no duplicate dependencies, the installed
+    /// download), so that what the sweep grades is the project graph.
+    Always,
+}
+
+/// One to two target frameworks, distinct, each from [`gen_framework`].
+fn gen_frameworks(rng: &mut SplitMix64) -> Vec<Framework> {
+    let mut aliases: Vec<&'static str> = PROJECT_FRAMEWORKS.to_vec();
+    let count = 1 + usize::from(rng.below(3) == 0);
+    (0..count)
+        .map(|_| {
+            let alias = aliases.remove(rng.below(aliases.len()));
+            gen_framework(rng, alias)
+        })
+        .collect()
+}
+
+/// The frameworks of [`PROJECT_FRAMEWORKS`] a project targeting `root` can
+/// reference a project of: `netstandard2.0` from every one.
+fn compatible_aliases(root: &str) -> &'static [&'static str] {
+    match root {
+        "net8.0" => &["net8.0", "netstandard2.0"],
+        "netstandard2.0" => &["netstandard2.0"],
+        "net472" => &["net472", "netstandard2.0"],
+        "net10.0" => &["net10.0", "net8.0", "netstandard2.0"],
+        other => unreachable!("{other} is not a generated framework"),
+    }
+}
+
+/// One target framework with one to three dependencies and the generator's
+/// other per-framework variations.
+fn gen_framework(rng: &mut SplitMix64, alias: &'static str) -> Framework {
+    let mut ids: Vec<&str> = IDS.to_vec();
+    let deps = (0..1 + rng.below(3))
+        .map(|_| {
+            let id = ids.remove(rng.below(ids.len()));
+            let mut dep = Dep::new(id, &format!("[{}, )", rng.pick(VERSIONS)));
+            if rng.below(4) == 0 {
+                dep.include = Some(*rng.pick(&["Runtime, Compile", "None", "All", "Compile"]));
+            }
+            if rng.below(4) == 0 {
+                dep.suppress_parent = Some(*rng.pick(&["All", "None", "Compile"]));
+            }
+            dep.auto_referenced = rng.below(4) == 0;
+            if rng.below(8) == 0 {
+                dep.no_warn = vec!["NU1608"];
+            }
+            dep
+        })
+        .collect();
+    let mut framework = Framework::new(alias, deps);
+    framework.asset_target_fallback = rng.below(4) != 0;
+    framework.framework_reference = alias != "net472" && rng.below(2) == 0;
+    if rng.below(3) == 0 {
+        framework.prune = vec![(
+            *rng.pick(IDS),
+            *rng.pick(&[
+                "(, 1.0.0]",
+                "(, 2.0.0]",
+                "[2.0.0]",
+                "(, 0.5.0]",
+                "(, 32767.0.0]",
+            ]),
+        )];
+    }
+    if rng.below(3) == 0 {
+        framework.downloads = vec![*rng.pick(&[
+            ("Download", "[1.0.0, 1.0.0]"),
+            ("Download", "[1.0.0, 1.0.0]"),
+            ("Download", "[2.0.0, 2.0.0]"),
+            ("Download", "[1.0.0, )"),
+        ])];
+    }
+    framework
+}
+
+/// [`gen_framework`] for the clean universe: the download is the installed
+/// one.
+fn gen_clean_framework(rng: &mut SplitMix64, alias: &'static str) -> Framework {
+    let mut framework = gen_framework(rng, alias);
+    if !framework.downloads.is_empty() {
+        framework.downloads = vec![("Download", "[1.0.0, 1.0.0]")];
+    }
+    framework
+}
+
+/// A project reference to `name`, its asset flags varied.
+fn gen_reference(rng: &mut SplitMix64, name: &'static str) -> ProjectRef {
+    let mut reference = ProjectRef::new(name);
+    reference.private_assets = *rng.pick(&[None, None, Some("All"), Some("None"), Some("Compile")]);
+    if rng.below(4) == 0 {
+        reference.include_assets = Some(*rng.pick(&["Compile, Runtime", "All", "None"]));
+    }
+    if rng.below(4) == 0 {
+        reference.exclude_assets = Some(*rng.pick(&["Runtime", "Build", "None"]));
+    }
+    reference
+}
+
 fn generate(rng: &mut SplitMix64) -> Generated {
+    generate_in(rng, Projects::Sometimes)
+}
+
+fn generate_in(rng: &mut SplitMix64, projects: Projects) -> Generated {
+    let clean = projects == Projects::Always;
     let mut packages = Vec::new();
     for id in IDS {
         for version in VERSIONS {
-            if rng.below(10) == 0 {
+            if !clean && rng.below(10) == 0 {
                 continue;
             }
             let groups = (0..rng.below(3))
-                .map(|_| Group {
-                    tfm: *rng.pick(GROUP_TFMS),
-                    deps: (0..rng.below(3))
+                .map(|_| {
+                    let mut deps: Vec<(String, String)> = (0..rng.below(3))
                         .map(|_| ((*rng.pick(IDS)).to_owned(), gen_range(rng)))
                         .filter(|(dep, _)| dep != id)
-                        .collect(),
+                        .collect();
+                    if clean {
+                        let mut seen = BTreeSet::new();
+                        deps.retain(|(dep, _)| seen.insert(dep.to_ascii_lowercase()));
+                    }
+                    Group {
+                        tfm: *rng.pick(GROUP_TFMS),
+                        deps,
+                    }
                 })
                 .collect();
-            let files: &[&str] = match rng.below(8) {
+            let files: &[&str] = match if clean { 7 } else { rng.below(8) } {
                 0 => &["lib/netstandard2.0/X.dll"],
                 1 => &["lib/net48/X.dll"],
                 2 => &["lib/net8.0/X.dll", "lib/net461/X.dll"],
@@ -1760,7 +2177,7 @@ fn generate(rng: &mut SplitMix64) -> Generated {
             if rng.below(3) == 0 {
                 package.metadata = vec![*rng.pick(DESCRIPTIVE_METADATA)];
             }
-            match rng.below(40) {
+            match if clean { usize::MAX } else { rng.below(40) } {
                 10 => package.metadata.push(*rng.pick(DECLINED_METADATA)),
                 11 => package.version_text = Some(*rng.pick(&["9.9.9"])),
                 12 => {
@@ -1790,58 +2207,146 @@ fn generate(rng: &mut SplitMix64) -> Generated {
         download.package_types = vec![r#"name="DotnetPlatform""#];
     }
     packages.push(download);
-    let mut aliases: Vec<&'static str> = PROJECT_FRAMEWORKS.to_vec();
-    let count = 1 + usize::from(rng.below(3) == 0);
-    let frameworks = (0..count)
-        .map(|_| {
-            let alias = aliases.remove(rng.below(aliases.len()));
-            let mut ids: Vec<&str> = IDS.to_vec();
-            let deps = (0..1 + rng.below(3))
-                .map(|_| {
-                    let id = ids.remove(rng.below(ids.len()));
-                    let mut dep = Dep::new(id, &format!("[{}, )", rng.pick(VERSIONS)));
-                    if rng.below(4) == 0 {
-                        dep.include =
-                            Some(*rng.pick(&["Runtime, Compile", "None", "All", "Compile"]));
-                    }
-                    if rng.below(4) == 0 {
-                        dep.suppress_parent = Some(*rng.pick(&["All", "None", "Compile"]));
-                    }
-                    dep.auto_referenced = rng.below(4) == 0;
-                    if rng.below(8) == 0 {
-                        dep.no_warn = vec!["NU1608"];
-                    }
-                    dep
-                })
-                .collect();
-            let mut framework = Framework::new(alias, deps);
-            framework.asset_target_fallback = rng.below(4) != 0;
-            framework.framework_reference = alias != "net472" && rng.below(2) == 0;
-            if rng.below(3) == 0 {
-                framework.prune = vec![(
-                    *rng.pick(IDS),
-                    *rng.pick(&[
-                        "(, 1.0.0]",
-                        "(, 2.0.0]",
-                        "[2.0.0]",
-                        "(, 0.5.0]",
-                        "(, 32767.0.0]",
-                    ]),
-                )];
-            }
-            if rng.below(3) == 0 {
-                framework.downloads = vec![*rng.pick(&[
-                    ("Download", "[1.0.0, 1.0.0]"),
-                    ("Download", "[1.0.0, 1.0.0]"),
-                    ("Download", "[2.0.0, 2.0.0]"),
-                    ("Download", "[1.0.0, )"),
-                ])];
-            }
-            framework
-        })
-        .collect();
+    let frameworks = if clean {
+        let mut aliases: Vec<&'static str> = PROJECT_FRAMEWORKS.to_vec();
+        let count = 1 + usize::from(rng.below(3) == 0);
+        (0..count)
+            .map(|_| {
+                let alias = aliases.remove(rng.below(aliases.len()));
+                gen_clean_framework(rng, alias)
+            })
+            .collect()
+    } else {
+        gen_frameworks(rng)
+    };
 
     let mut shape = Shape::new(frameworks);
+    let project_count = match projects {
+        Projects::Sometimes if rng.below(3) != 0 => 0,
+        Projects::Sometimes | Projects::Always => 1 + rng.below(2),
+    };
+    for default_name in PROJECT_NAMES.iter().take(project_count) {
+        // Now and then a project named like a package of the universe.
+        let name = if rng.below(20) == 0 {
+            *rng.pick(IDS)
+        } else {
+            *default_name
+        };
+        // Mostly a framework every framework of the entry can reference (and
+        // a second, distinct one a third of the time); now and then any.
+        let frameworks = if rng.below(8) == 0 {
+            gen_frameworks(rng)
+        } else {
+            let compatible: Vec<&'static str> = compatible_aliases(shape.frameworks[0].alias)
+                .iter()
+                .copied()
+                .filter(|alias| {
+                    shape
+                        .frameworks
+                        .iter()
+                        .all(|root| compatible_aliases(root.alias).contains(alias))
+                })
+                .collect();
+            let first = *rng.pick(&compatible);
+            let make = if clean {
+                gen_clean_framework
+            } else {
+                gen_framework
+            };
+            let mut frameworks = vec![make(rng, first)];
+            if rng.below(3) == 0 {
+                let others: Vec<&'static str> = PROJECT_FRAMEWORKS
+                    .iter()
+                    .copied()
+                    .filter(|alias| *alias != first)
+                    .collect();
+                let second = *rng.pick(&others);
+                frameworks.push(make(rng, second));
+            }
+            frameworks
+        };
+        let mut project = Project::new(name, frameworks);
+        if clean && IDS.contains(&name) {
+            // Nothing in the universe may depend on a project's name, so the
+            // package of that name leaves every dependency group; the entry
+            // depends on it half the time, which the reference overrides.
+            for package in &mut packages {
+                for group in &mut package.groups {
+                    group
+                        .deps
+                        .retain(|(dep, _)| !dep.eq_ignore_ascii_case(name));
+                }
+            }
+            if rng.below(2) == 0 {
+                shape.frameworks[0].deps.push(Dep::new(name, "[1.0.0, )"));
+            }
+        }
+        if clean {
+            // Low ranges, so a project's edge rarely outranks the entry's
+            // (a downgrade); no implicit references, which fail under
+            // central package management.
+            for framework in &mut project.frameworks {
+                for dep in &mut framework.deps {
+                    if rng.below(3) != 0 {
+                        dep.range = "[1.0.0, )".to_owned();
+                    }
+                    dep.auto_referenced = false;
+                }
+            }
+        }
+        project.version = *rng.pick(&[None, None, Some("1.0.0"), Some("2.0.0-beta.1")]);
+        project.cpm = rng.below(10) == 0;
+        project.transitive_pinning = project.cpm && rng.below(4) == 0;
+        shape.projects.push(project);
+    }
+    // The entry's first framework references the first project; every other
+    // framework references each project two times in three. A project
+    // references a later one half the time, and an earlier one (a cycle)
+    // rarely. Rarely, a reference names a project the spec does not hold.
+    let names: Vec<&'static str> = shape.projects.iter().map(|p| p.name).collect();
+    for (f, framework) in shape.frameworks.iter_mut().enumerate() {
+        for (p, name) in names.iter().enumerate() {
+            if (f == 0 && p == 0) || rng.below(3) != 0 {
+                framework.references.push(gen_reference(rng, name));
+            }
+        }
+        if rng.below(25) == 0 {
+            framework.references.push(gen_reference(rng, "Ghost"));
+        }
+    }
+    for p in 0..names.len() {
+        for (q, target) in names.iter().enumerate() {
+            let refer = if q > p {
+                rng.below(2) == 0
+            } else {
+                q < p && rng.below(10) == 0
+            };
+            if refer {
+                for framework in &mut shape.projects[p].frameworks {
+                    framework.references.push(gen_reference(rng, target));
+                }
+            }
+        }
+    }
+    // A project nothing references is one the spec should not hold; the
+    // entry's first framework references it.
+    for (p, name) in names.iter().enumerate() {
+        let referenced = shape
+            .frameworks
+            .iter()
+            .chain(
+                shape
+                    .projects
+                    .iter()
+                    .flat_map(|project| &project.frameworks),
+            )
+            .flat_map(|framework| &framework.references)
+            .any(|reference| reference.name == *name);
+        if !referenced {
+            let reference = gen_reference(rng, names[p]);
+            shape.frameworks[0].references.push(reference);
+        }
+    }
     shape.sources = match rng.below(4) {
         0 => vec![],
         1 => vec![Source::Missing],
@@ -1875,6 +2380,19 @@ fn generate(rng: &mut SplitMix64) -> Generated {
     shape.cpm = rng.below(4) == 0;
     if rng.below(10) == 0 {
         shape.project_name = (*rng.pick(IDS)).to_owned();
+    }
+    if !shape.projects.is_empty() {
+        // The entry's own policy fields at values B₁ admits, so that a spec
+        // with projects grades its project graph rather than the entry's
+        // declines, which the specs without projects grade.
+        shape.enable_audit = Some("false");
+        shape.lock_file = Some("false");
+        if shape.config == Some(MAPPING_CONFIG) {
+            shape.config = None;
+        }
+        if projects == Projects::Always {
+            shape.cpm = false;
+        }
     }
     Generated { packages, shape }
 }
@@ -1930,6 +2448,68 @@ fn features(
             if !dep.no_warn.is_empty() {
                 features.push("dependency-no-warn".to_owned());
             }
+        }
+    }
+    let references = |frameworks: &[Framework]| {
+        frameworks
+            .iter()
+            .flat_map(|framework| &framework.references)
+            .cloned()
+            .collect::<Vec<ProjectRef>>()
+    };
+    let entry_references = references(&shape.frameworks);
+    if !entry_references.is_empty() {
+        features.push("project-reference".to_owned());
+        if shape.frameworks.len() > 1 {
+            features.push("project-reference-cross-targeting".to_owned());
+        }
+    }
+    for reference in entry_references.iter().chain(
+        shape
+            .projects
+            .iter()
+            .flat_map(|p| references(&p.frameworks))
+            .collect::<Vec<_>>()
+            .iter(),
+    ) {
+        if let Some(assets) = reference.private_assets {
+            features.push(format!("project-reference-private-assets={assets}"));
+        }
+        if reference.include_assets.is_some() || reference.exclude_assets.is_some() {
+            features.push("project-reference-asset-flags".to_owned());
+        }
+    }
+    for project in &shape.projects {
+        if !references(&project.frameworks).is_empty() {
+            features.push("project-chain".to_owned());
+        }
+        features.push(format!("project-version={:?}", project.version));
+        if project.cpm {
+            features.push("project-cpm".to_owned());
+        }
+        if project.frameworks.len() > 1 {
+            features.push("project-cross-targeting".to_owned());
+        }
+        for framework in &project.frameworks {
+            if !framework.prune.is_empty() {
+                features.push("project-prune".to_owned());
+            }
+            for dep in &framework.deps {
+                if dep.suppress_parent == Some("All") {
+                    features.push("project-dependency-private-assets".to_owned());
+                }
+            }
+        }
+        if shape
+            .frameworks
+            .iter()
+            .flat_map(|framework| &framework.deps)
+            .any(|dep| dep.id == project.name)
+        {
+            features.push("project-overrides-package".to_owned());
+        }
+        if IDS.contains(&project.name) {
+            features.push("project-named-like-a-package".to_owned());
         }
     }
     let committed_ids: BTreeSet<String> = frameworks
@@ -2038,12 +2618,39 @@ fn required_features() -> BTreeSet<String> {
         "auto-referenced",
         "asset-target-fallback-mattered",
         "package-with-assets",
+        "project-reference",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect();
     required.extend(PROJECT_FRAMEWORKS.iter().map(|f| format!("framework={f}")));
     required
+}
+
+/// Every variation of a project graph [`features`] can report, each of which
+/// the project sweep must have graded on a committed spec.
+fn required_project_features() -> BTreeSet<String> {
+    [
+        "project-reference",
+        "project-reference-cross-targeting",
+        "project-reference-private-assets=All",
+        "project-reference-private-assets=None",
+        "project-reference-private-assets=Compile",
+        "project-reference-asset-flags",
+        "project-chain",
+        "project-version=None",
+        "project-version=Some(\"1.0.0\")",
+        "project-version=Some(\"2.0.0-beta.1\")",
+        "project-cpm",
+        "project-cross-targeting",
+        "project-prune",
+        "project-dependency-private-assets",
+        "project-overrides-package",
+        "project-named-like-a-package",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 /// The class of a decline, for the census.
@@ -2061,7 +2668,8 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
             let variant = debug.split(['(', ' ', '{']).next().unwrap_or_default();
             format!("resolve:{variant}")
         }
-        DgSpecResolveDecline::PackageNamedLikeProject { .. } => "named-like-project".to_owned(),
+        DgSpecResolveDecline::ProjectReferenceMissing { .. } => "project-missing".to_owned(),
+        DgSpecResolveDecline::ProjectIncompatible { .. } => "project-incompatible".to_owned(),
         DgSpecResolveDecline::PromotedWarning { code, .. } => match code {
             Some(code) => format!("promoted-warning:{code}"),
             None => "promoted-warning:unpredicted".to_owned(),
@@ -2126,6 +2734,55 @@ fn generated_specs_resolve_identically() {
     );
 }
 
+/// Certain-implies-exact over generated specs that hold referenced projects,
+/// against both restore engines: where B₁ commits, the legacy dependency
+/// resolver writes the same closure as the default one.
+#[test]
+fn generated_project_graphs_resolve_identically_on_both_engines() {
+    let cases: usize = std::env::var("BORZOI_DGSPEC_PROJECT_CASES")
+        .ok()
+        .map(|cases| cases.parse().expect("a case count"))
+        .unwrap_or(250);
+    let mut oracle = spawn_oracle();
+    let mut rng = SplitMix64(0x9e37_79b9);
+    let mut census: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    let mut committed = 0;
+    for _ in 0..cases {
+        let generated = generate_in(&mut rng, Projects::Always);
+        let graded = grade_both(&mut oracle, &generated.packages, &generated.shape);
+        let restore = if graded.theirs.success {
+            "restores"
+        } else {
+            "fails"
+        };
+        let ours = match &graded.ours {
+            Ok(frameworks) => {
+                committed += 1;
+                seen.extend(features(&generated, frameworks, &graded.theirs));
+                "commits".to_owned()
+            }
+            Err(decline) => format!("declines {}", decline_class(decline)),
+        };
+        *census.entry(format!("{ours}; B₀ {restore}")).or_default() += 1;
+    }
+    let report: String = census
+        .iter()
+        .map(|(class, count)| format!("  {count:4} {class}\n"))
+        .collect();
+    eprintln!("project graph census over {cases} specs:\n{report}");
+    assert!(
+        committed >= cases / 5,
+        "only {committed} of {cases} project graphs committed; the census:\n{report}"
+    );
+    let required = required_project_features();
+    let missing: Vec<&String> = required.difference(&seen).collect();
+    assert!(
+        missing.is_empty(),
+        "no committed project graph graded {missing:?}; the census:\n{report}"
+    );
+}
+
 /// Every path into a JSON value, each as the sequence of keys and indices that
 /// reaches it, parents before children.
 fn json_paths(value: &Value) -> Vec<Vec<PathStep>> {
@@ -2183,10 +2840,19 @@ fn every_single_deletion_from_a_committing_spec_is_graded() {
     ];
     let mut multi = Framework::new("netstandard2.0", vec![Dep::new("A", "[1.0.0, )")]);
     multi.deps[0].include = Some("Runtime, Compile");
+    // The entry references a project from one framework, so the referenced
+    // project's fields are deleted and emptied too.
+    let mut lib = Framework::new("net8.0", vec![Dep::new("B", "[1.0.0, )")]);
+    lib.deps[0].suppress_parent = Some("None");
     let mut shape = Shape::new(vec![
-        Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")]),
+        Framework::referencing(
+            "net8.0",
+            vec![Dep::new("A", "[1.0.0, )")],
+            vec![ProjectRef::private("Lib", "None")],
+        ),
         multi,
     ]);
+    shape.projects = vec![Project::new("Lib", vec![lib])];
     shape.frameworks[0].framework_reference = true;
     shape.no_warn = vec!["NU1701"];
     shape.warn_as_error = vec!["NU1605"];
@@ -2237,7 +2903,7 @@ fn every_single_deletion_from_a_committing_spec_is_graded() {
             let Ok(spec) = parse_dgspec(&text) else {
                 continue;
             };
-            if spec.projects.len() != 1 {
+            if spec.restore.len() != 1 {
                 continue;
             }
             let graded = grade_spec(&mut oracle, &text, &spec, &format!("{kind} {path:?}"));
@@ -2303,7 +2969,7 @@ fn every_substitution_of_a_committing_specs_strings_is_graded() {
             let Ok(spec) = parse_dgspec(&text) else {
                 continue;
             };
-            if spec.projects.len() != 1 {
+            if spec.restore.len() != 1 {
                 continue;
             }
             let graded = grade_spec(
@@ -3695,6 +4361,638 @@ fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
         "{:?}",
         graded.ours
     );
+}
+
+/// The package universe the project-reference tables resolve over.
+fn project_reference_packages() -> Vec<Pkg> {
+    vec![
+        Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])]),
+        Pkg::new("B", "1.0.0", vec![]),
+        Pkg::new("B", "2.0.0", vec![]),
+        Pkg::new("C", "1.0.0", vec![group(None, &[("B", "[2.0.0, )")])]),
+        Pkg::new("D", "1.0.0", vec![]),
+        Pkg::new("E", "1.0.0", vec![group(None, &[("A", "[1.0.0, )")])]),
+        // A package named like a project, and one depending on that name.
+        Pkg::new("Lib", "1.0.0", vec![]),
+        Pkg::new("F", "1.0.0", vec![group(None, &[("Lib", "[1.0.0, )")])]),
+        // A bounded edge, for `NU1608`.
+        Pkg::new("H", "1.0.0", vec![group(None, &[("B", "[1.0.0, 2.0.0)")])]),
+    ]
+}
+
+/// The ids B₁ committed for `alias`, upper-cased and sorted.
+fn committed_ids(graded: &Graded, alias: &str) -> Vec<String> {
+    committed(graded)[alias]
+        .iter()
+        .map(|(id, _)| id.to_ascii_uppercase())
+        .collect()
+}
+
+/// A project reference is a node of the graph: restore walks the referenced
+/// project's dependencies for the framework of its nearest the entry's, with
+/// the project's `PrivateAssets="All"` dependencies and references left out,
+/// and its project references overriding same-named package dependencies.
+/// Each row pins the closure both engines write (stage 6 of
+/// `docs/nuget-dgspec-boundary-plan.md`).
+#[test]
+fn project_references_resolve_identically() {
+    let mut oracle = spawn_oracle();
+    let packages = project_reference_packages();
+    let dep = |id: &str, range: &str| Dep::new(id, range);
+    let private_dep = |id: &str, range: &str| {
+        let mut dep = Dep::new(id, range);
+        dep.suppress_parent = Some("All");
+        dep
+    };
+    let lib_a = || {
+        Project::new(
+            "Lib",
+            vec![Framework::new("net8.0", vec![dep("A", "[1.0.0, )")])],
+        )
+    };
+
+    type Case = (&'static str, Shape, &'static [&'static str]);
+    let cases: Vec<Case> = vec![
+        (
+            "a reference brings its project's packages",
+            Shape::with_projects(vec![Framework::new("net8.0", vec![])], vec![lib_a()]),
+            &["A", "B"],
+        ),
+        (
+            "private assets on the project's dependency stop it flowing",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::new(
+                        "net8.0",
+                        vec![private_dep("A", "[1.0.0, )"), dep("D", "[1.0.0, )")],
+                    )],
+                )],
+            ),
+            &["D"],
+        ),
+        (
+            "private assets on the entry's own reference do not",
+            {
+                let mut shape =
+                    Shape::with_projects(vec![Framework::new("net8.0", vec![])], vec![lib_a()]);
+                shape.frameworks[0].references = vec![ProjectRef::private("Lib", "All")];
+                shape
+            },
+            &["A", "B"],
+        ),
+        (
+            "a chain of references",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::referencing(
+                        "net8.0",
+                        vec![],
+                        vec![ProjectRef::new("Core")],
+                    )],
+                )],
+            )
+            .also_holding(Project::new(
+                "Core",
+                vec![Framework::new("net8.0", vec![dep("D", "[1.0.0, )")])],
+            )),
+            &["D"],
+        ),
+        (
+            "a chain cut by private assets on the inner reference",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::referencing(
+                        "net8.0",
+                        vec![],
+                        vec![ProjectRef::private("Core", "All")],
+                    )],
+                )],
+            )
+            .also_holding(Project::new(
+                "Core",
+                vec![Framework::new("net8.0", vec![dep("D", "[1.0.0, )")])],
+            )),
+            &[],
+        ),
+        (
+            "the referenced project's nearest framework is walked",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![
+                        Framework::new("net472", vec![dep("D", "[1.0.0, )")]),
+                        Framework::new("netstandard2.0", vec![dep("A", "[1.0.0, )")]),
+                    ],
+                )],
+            ),
+            &["A", "B"],
+        ),
+        (
+            "cousin edges through two references merge upward",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![
+                    Project::new(
+                        "Lib",
+                        vec![Framework::new("net8.0", vec![dep("B", "[1.0.0, )")])],
+                    ),
+                    Project::new(
+                        "Core",
+                        vec![Framework::new("net8.0", vec![dep("B", "[2.0.0, )")])],
+                    ),
+                ],
+            ),
+            &["B"],
+        ),
+        (
+            "a reference overrides a package dependency of the same name",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![dep("Lib", "[1.0.0, )")])],
+                vec![lib_a()],
+            ),
+            &["A", "B"],
+        ),
+        (
+            "a prerelease project version",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project {
+                    version: Some("2.0.0-beta.1"),
+                    ..lib_a()
+                }],
+            ),
+            &["A", "B"],
+        ),
+        (
+            "the entry's prune list reaches the project's transitive edges",
+            {
+                let mut root = Framework::new("net10.0", vec![]);
+                root.prune = vec![("B", "(, 2.0.0]")];
+                Shape::with_projects(
+                    vec![root],
+                    vec![Project::new(
+                        "Lib",
+                        vec![Framework::new("net10.0", vec![dep("A", "[1.0.0, )")])],
+                    )],
+                )
+            },
+            &["A"],
+        ),
+        (
+            "the project's own prune list suppresses its direct reference",
+            {
+                let mut lib = Framework::new("net10.0", vec![dep("A", "[1.0.0, )")]);
+                lib.prune = vec![("A", "(, 2.0.0]")];
+                Shape::with_projects(
+                    vec![Framework::new("net10.0", vec![])],
+                    vec![Project::new("Lib", vec![lib])],
+                )
+            },
+            &[],
+        ),
+        (
+            "the entry's higher direct reference eclipses the project's",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![dep("B", "[2.0.0, )")])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::new("net8.0", vec![dep("B", "[1.0.0, )")])],
+                )],
+            ),
+            &["B"],
+        ),
+        (
+            "include and exclude assets on a reference are inert",
+            {
+                let mut shape =
+                    Shape::with_projects(vec![Framework::new("net8.0", vec![])], vec![lib_a()]);
+                shape.frameworks[0].references = vec![ProjectRef {
+                    include_assets: Some("Compile, Runtime"),
+                    exclude_assets: Some("Runtime"),
+                    ..ProjectRef::new("Lib")
+                }];
+                shape
+            },
+            &["A", "B"],
+        ),
+        (
+            "a referenced project under central package management",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project {
+                    cpm: true,
+                    ..lib_a()
+                }],
+            ),
+            &["A", "B"],
+        ),
+    ];
+    for (label, shape, expected) in &cases {
+        let graded = grade_both(&mut oracle, &packages, shape);
+        assert_eq!(
+            committed_ids(&graded, shape.frameworks[0].alias),
+            *expected,
+            "{label}"
+        );
+    }
+
+    // Each framework of the entry walks its own references.
+    let shape = Shape::with_projects(
+        vec![
+            Framework::new("net8.0", vec![]),
+            Framework::new("netstandard2.0", vec![dep("D", "[1.0.0, )")]),
+        ],
+        vec![lib_a()],
+    );
+    let mut shape = shape;
+    shape.frameworks[1].references.clear();
+    let graded = grade_both(&mut oracle, &packages, &shape);
+    assert_eq!(committed_ids(&graded, "net8.0"), ["A", "B"]);
+    assert_eq!(committed_ids(&graded, "netstandard2.0"), ["D"]);
+
+    // A referenced project's edge outside its constraint warns `NU1608` like
+    // a package's, and the project's own `noWarn` suppresses it along its
+    // paths, which B₁ does not predict.
+    let lib_h = |no_warn: Vec<&'static str>| Project {
+        no_warn,
+        ..Project::new(
+            "Lib",
+            vec![Framework::new(
+                "net8.0",
+                vec![dep("H", "[1.0.0, )"), dep("B", "[2.0.0, )")],
+            )],
+        )
+    };
+    let shape = Shape::with_projects(vec![Framework::new("net8.0", vec![])], vec![lib_h(vec![])]);
+    let graded = grade_both(&mut oracle, &packages, &shape);
+    assert_eq!(committed_ids(&graded, "net8.0"), ["B", "H"]);
+    assert_eq!(graded.theirs.codes, ["NU1608"]);
+    let shape = Shape::with_projects(
+        vec![Framework::new("net8.0", vec![])],
+        vec![lib_h(vec!["NU1608"])],
+    );
+    let graded = grade_both(&mut oracle, &packages, &shape);
+    assert_eq!(committed_ids(&graded, "net8.0"), ["B", "H"]);
+    assert!(graded.theirs.codes.is_empty(), "{:?}", graded.theirs.codes);
+    assert!(
+        committed(&graded)
+            .keys()
+            .all(|_| graded.ours.as_ref().is_ok_and(|f| f[0].warnings.is_none())),
+        "B₁ does not predict a framework's warnings past a referenced project's noWarn"
+    );
+
+    // On `net10.0` the entry's prune list covering a project reference warns
+    // (`NU1511`) and keeps the reference; B₁ does not predict the warning, so
+    // the closure commits and a promoting policy declines.
+    let mut root = Framework::new("net10.0", vec![]);
+    root.prune = vec![("Lib", "(, 2.0.0]")];
+    let mut shape = Shape::with_projects(
+        vec![root],
+        vec![Project::new(
+            "Lib",
+            vec![Framework::new("net10.0", vec![dep("A", "[1.0.0, )")])],
+        )],
+    );
+    let graded = grade_both(&mut oracle, &packages, &shape);
+    assert_eq!(graded.theirs.codes, ["NU1511"]);
+    assert_eq!(committed_ids(&graded, "net10.0"), ["A", "B"]);
+    shape.all_warnings_as_errors = true;
+    let graded = grade_both(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PromotedWarning { code: None, .. })
+        ),
+        "{:?}",
+        graded.ours
+    );
+}
+
+/// What B₁ declines around project references, with restore's own verdict
+/// pinned where it is settled.
+#[test]
+fn project_reference_declines_are_graded() {
+    let mut oracle = spawn_oracle();
+    let packages = project_reference_packages();
+    let dep = |id: &str, range: &str| Dep::new(id, range);
+    let lib_a = || {
+        Project::new(
+            "Lib",
+            vec![Framework::new("net8.0", vec![dep("A", "[1.0.0, )")])],
+        )
+    };
+
+    type Case = (&'static str, Shape, &'static str, Option<bool>);
+    let cases: Vec<Case> = vec![
+        (
+            "a reference to a project the spec does not hold",
+            {
+                let mut shape = Shape::new(vec![Framework::new("net8.0", vec![])]);
+                shape.frameworks[0].references = vec![ProjectRef::new("Ghost")];
+                shape
+            },
+            "project-missing",
+            Some(false),
+        ),
+        (
+            "no framework of the project is compatible with the entry's",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::new("net10.0", vec![dep("A", "[1.0.0, )")])],
+                )],
+            ),
+            "project-incompatible",
+            Some(false),
+        ),
+        (
+            "the project's framework is reached through the fallback list",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::new("net472", vec![dep("D", "[1.0.0, )")])],
+                )],
+            ),
+            "project-incompatible",
+            Some(true),
+        ),
+        (
+            // The entry references Lib alone: a reference to Core too would
+            // eclipse both inner edges, and no engine would see a cycle.
+            "a cycle of references",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::referencing(
+                        "net8.0",
+                        vec![],
+                        vec![ProjectRef::new("Core")],
+                    )],
+                )],
+            )
+            .also_holding(Project::new(
+                "Core",
+                vec![Framework::referencing(
+                    "net8.0",
+                    vec![],
+                    vec![ProjectRef::new("Lib")],
+                )],
+            )),
+            "resolve:DependencyCycle",
+            Some(false),
+        ),
+        (
+            // The default engine checks every dependency for a cycle before
+            // it leaves the suppressed ones out; the legacy engine never
+            // walks the edge.
+            "a cycle closed by a reference with private assets",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::referencing(
+                        "net8.0",
+                        vec![dep("D", "[1.0.0, )")],
+                        vec![ProjectRef::new("Core")],
+                    )],
+                )],
+            )
+            .also_holding(Project::new(
+                "Core",
+                vec![Framework::referencing(
+                    "net8.0",
+                    vec![],
+                    vec![ProjectRef::private("Lib", "All")],
+                )],
+            )),
+            "resolve:SuppressedCycle",
+            Some(false),
+        ),
+        (
+            // NuGet binds a package's dependency to any project of the spec,
+            // whether or not the framework being walked references it.
+            "a package names a project another framework references",
+            {
+                let mut shape = Shape::with_projects(
+                    vec![
+                        Framework::new("net8.0", vec![]),
+                        Framework::new("net10.0", vec![dep("F", "[1.0.0, )")]),
+                    ],
+                    vec![Project::new(
+                        "Lib",
+                        vec![Framework::new(
+                            "netstandard2.0",
+                            vec![dep("D", "[1.0.0, )")],
+                        )],
+                    )],
+                );
+                shape.frameworks[1].references.clear();
+                shape
+            },
+            "resolve:DependencyNamesAProject",
+            Some(true),
+        ),
+        (
+            // Restore validates every framework of every project as specific,
+            // the ones it never walks included.
+            "a referenced project with a framework that is not specific",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![
+                        Framework::new("net8.0", vec![dep("A", "[1.0.0, )")]),
+                        Framework::new("any", vec![dep("D", "[1.0.0, )")]),
+                    ],
+                )],
+            ),
+            "required-metadata",
+            Some(false),
+        ),
+        (
+            // The SDK writes the restore metadata's frameworks as the target
+            // frameworks' aliases; a `framework` of its own there is a shape
+            // NuGet's releases have selected references by differently.
+            "a restore-metadata framework that is not its alias's",
+            {
+                let mut root = Framework::new("net8.0", vec![]);
+                root.restore_framework = Some("net10.0");
+                Shape::with_projects(vec![root], vec![lib_a()])
+            },
+            "required-metadata",
+            Some(true),
+        ),
+        (
+            // NuGet looks projects up by unique name and by name in one
+            // table; the SDK writes a unique name as the project's path.
+            "a project whose unique name is another project's name",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![
+                    Project {
+                        unique_name: Some("Core"),
+                        ..lib_a()
+                    },
+                    Project::new(
+                        "Core",
+                        vec![Framework::new("net8.0", vec![dep("D", "[1.0.0, )")])],
+                    ),
+                ],
+            ),
+            "required-metadata",
+            Some(true),
+        ),
+        (
+            "a reference back to a root not named by a package id",
+            {
+                let mut shape = Shape::with_projects(
+                    vec![Framework::new("net8.0", vec![])],
+                    vec![Project::new(
+                        "Lib",
+                        vec![Framework::referencing(
+                            "net8.0",
+                            vec![dep("D", "[1.0.0, )")],
+                            vec![ProjectRef::new("App")],
+                        )],
+                    )],
+                );
+                shape.project_name = "App With Spaces".to_owned();
+                shape
+            },
+            "project-name",
+            None,
+        ),
+        (
+            "a reference back to the root",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::referencing(
+                        "net8.0",
+                        vec![dep("D", "[1.0.0, )")],
+                        vec![ProjectRef::new("App")],
+                    )],
+                )],
+            ),
+            "resolve:DependencyCycle",
+            Some(false),
+        ),
+        (
+            "two projects whose names differ only in case",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![
+                    lib_a(),
+                    Project {
+                        project_name: Some("lib"),
+                        ..Project::new(
+                            "Core",
+                            vec![Framework::new("net8.0", vec![dep("D", "[1.0.0, )")])],
+                        )
+                    },
+                ],
+            ),
+            "project-name",
+            None,
+        ),
+        (
+            "a package in the graph depends on a project's name",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![dep("F", "[1.0.0, )")])],
+                vec![lib_a()],
+            ),
+            "resolve:DependencyNamesAProject",
+            None,
+        ),
+        (
+            "a suppressed package is reached below the suppressing project",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::new(
+                        "net8.0",
+                        vec![
+                            {
+                                let mut a = dep("A", "[1.0.0, )");
+                                a.suppress_parent = Some("All");
+                                a
+                            },
+                            dep("E", "[1.0.0, )"),
+                        ],
+                    )],
+                )],
+            ),
+            "resolve:SuppressedEdgeReachable",
+            None,
+        ),
+        (
+            // `NU1605` is a warning; the SDK's default policy promotes it,
+            // as here, and restore fails. Without that B₁ still declines.
+            "the entry's lower direct reference downgrades the project's",
+            {
+                let mut shape = Shape::with_projects(
+                    vec![Framework::new("net8.0", vec![dep("B", "[1.0.0, )")])],
+                    vec![Project::new(
+                        "Lib",
+                        vec![Framework::new("net8.0", vec![dep("B", "[2.0.0, )")])],
+                    )],
+                );
+                shape.warn_as_error = vec!["NU1605"];
+                shape
+            },
+            "resolve:Downgrade",
+            Some(false),
+        ),
+        (
+            "a referenced project pinning transitively",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project {
+                    cpm: true,
+                    transitive_pinning: true,
+                    ..lib_a()
+                }],
+            ),
+            "central-package-management",
+            None,
+        ),
+        (
+            "a project in the spec that no reference reaches",
+            {
+                let mut shape = Shape::new(vec![Framework::new("net8.0", vec![])]);
+                shape.projects = vec![lib_a()];
+                shape
+            },
+            "other-projects",
+            None,
+        ),
+    ];
+    for (label, shape, class, restores) in &cases {
+        let graded = grade_both(&mut oracle, &packages, shape);
+        match &graded.ours {
+            Ok(frameworks) => panic!("{label}: B₁ must decline, but committed {frameworks:?}"),
+            Err(decline) => assert_eq!(decline_class(decline), *class, "{label}: {decline}"),
+        }
+        if let Some(restores) = restores {
+            assert_eq!(
+                graded.theirs.success, *restores,
+                "{label}: restore's verdict is pinned"
+            );
+        }
+    }
 }
 
 /// Central package management without transitive pinning moves no closure:

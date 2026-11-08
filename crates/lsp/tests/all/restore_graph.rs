@@ -362,8 +362,11 @@ impl SpawnFree {
                     }
                     DgSpecResolveDecline::UnverifiedNuGet { .. } => "unverified-nuget".to_owned(),
                     DgSpecResolveDecline::ProjectNotRestored { .. } => "not-restored".to_owned(),
-                    DgSpecResolveDecline::PackageNamedLikeProject { .. } => {
-                        "named-like-project".to_owned()
+                    DgSpecResolveDecline::ProjectReferenceMissing { .. } => {
+                        "project-missing".to_owned()
+                    }
+                    DgSpecResolveDecline::ProjectIncompatible { .. } => {
+                        "project-incompatible".to_owned()
                     }
                     DgSpecResolveDecline::DownloadUnavailable { id, .. } => {
                         format!("download-unavailable:{}", id.as_str().to_ascii_lowercase())
@@ -704,8 +707,21 @@ fn a_project_reference_brings_its_project_into_the_spec() {
             ("lib/Lib.fs", "module Lib\n"),
         ],
     );
-    let spec = committed_spec(&root.join("App.fsproj"));
+    let (spec, b1) = committed_spec_and_b1(&root.join("App.fsproj"));
     assert_eq!(spec.projects.len(), 2, "the entry and its reference");
+    // B₁ walks the reference as a node of the graph (stage 6): the entry's
+    // closure is its own and the library's implicit FSharp.Core.
+    match b1 {
+        SpawnFree::Committed(frameworks) => {
+            let ids: BTreeSet<String> = frameworks
+                .iter()
+                .flat_map(|framework| &framework.closure.packages)
+                .map(|package| package.identity.id.as_str().to_ascii_lowercase())
+                .collect();
+            assert_eq!(ids, BTreeSet::from(["fsharp.core".to_owned()]));
+        }
+        SpawnFree::Declined(decline) => panic!("B₁ must commit, but declined: {decline}"),
+    }
     let entry = spec
         .projects
         .iter()
