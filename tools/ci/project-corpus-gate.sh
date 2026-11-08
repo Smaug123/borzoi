@@ -18,7 +18,7 @@
 # In CI, `tools/ci/project-corpus.sh` has already materialised the corpus and
 # exported BORZOI_PROJECT_LIST. Run locally without it, this materialises the
 # corpus itself first, under
-# ${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}, outside the
+# ${BORZOI_PROJECT_CORPUS_CACHE:-~/.cache/borzoi/project-corpus}/v2, outside the
 # repository, so no `Directory.Build.props` of ours can reach the corpus's
 # restores.
 #
@@ -225,22 +225,18 @@ cleanup() {
 take_lock() { (set -C && printf '%s\n' "$me" >"$lock") 2>/dev/null; }
 
 acquire_lock() {
-  local owner owner_file said=
+  local owner said=
   until take_lock; do
-    # A directory is the lock of a run of an older gate script, which records
-    # its owner inside it; it excludes this run just the same.
-    owner_file="$lock"
-    [ ! -d "$lock" ] || owner_file="$lock/owner"
     # No owner yet is a run between its create and recording itself; for
     # longer than a minute, it is one that died there.
-    if owner="$(abandoned "$owner_file")" ||
-      { [ ! -s "$owner_file" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+    if owner="$(abandoned "$lock")" ||
+      { [ ! -s "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
       echo "project-corpus-gate: $lock is held by a run that has exited" \
         "(${owner:-no owner recorded}). If no gate run is in progress, remove it:" >&2
       echo "  rm -r '$lock'" >&2
       exit 1
     fi
-    owner="$(cat "$owner_file" 2>/dev/null || true)"
+    owner="$(cat "$lock" 2>/dev/null || true)"
     if [ -z "$said" ]; then
       echo "project-corpus-gate: waiting for $lock (held by pid ${owner%% *})" >&2
       said=1
@@ -290,7 +286,11 @@ wait_for_readers() {
 }
 
 if [ -z "${BORZOI_PROJECT_LIST:-}" ]; then
-  cache="${BORZOI_PROJECT_CORPUS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/borzoi/project-corpus}"
+  # Keyed by the lock protocol: runs that take the lock differently each
+  # misread the other's lock, so they must not share a cache. This file lock's
+  # cache is `v2`; a gate script that locks with `mkdir` uses the root itself,
+  # which can be deleted once no worktree has such a script.
+  cache="${BORZOI_PROJECT_CORPUS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/borzoi/project-corpus}/v2"
   lock="$cache/lock"
   readers="$cache/readers"
   stamp="$cache/materialised"

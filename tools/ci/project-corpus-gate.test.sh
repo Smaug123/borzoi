@@ -201,11 +201,6 @@ show_failure() { # name
   fi
 }
 
-# A process as the gate script records it (its `identity`).
-identity_of() { # pid
-  printf '%s %s\n' "$1" "$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$1")"
-}
-
 count_log() { grep -c "^$1" "$tmp/log" 2>/dev/null || true; }
 
 test_concurrency() {
@@ -226,7 +221,7 @@ test_concurrency() {
   show_failure b
   assert_eq "both runs' steps ran" 2 "$(count_log step)"
   assert_eq "no run left an env or plan file in the cache" "" \
-    "$(cd "$tmp/cache" && ls -d corpus-env* project-corpus-plan* 2>/dev/null)"
+    "$(cd "$tmp/cache/v2" && ls -d corpus-env* project-corpus-plan* 2>/dev/null)"
 
   : >"$tmp/log"
   run_gate c "$tmp/plan1" "$rev1" "$step"
@@ -239,7 +234,7 @@ test_concurrency() {
   : >"$tmp/log"
   RUN_TZ=Pacific/Kiritimati run_gate d "$tmp/plan1" "$rev1" "$step" &
   # Until d is reading: e must arrive at a corpus in use, not race d to it.
-  until [ -n "$(ls "$tmp/cache/readers")" ] || [ -e "$tmp/d.status" ]; do sleep 0.1; done
+  until [ -n "$(ls "$tmp/cache/v2/readers")" ] || [ -e "$tmp/d.status" ]; do sleep 0.1; done
   RUN_TZ=America/Adak run_gate e "$tmp/plan2" "$rev2" "$step" &
   wait
   assert_eq "a run of another pin beside a reader: reader succeeds" 0 "$(cat "$tmp/d.status")"
@@ -262,63 +257,49 @@ test_concurrency() {
   sh -c 'exit 0' &
   dead=$!
   wait "$dead"
-  echo "$dead gone" >"$tmp/cache/readers/stale"
+  echo "$dead gone" >"$tmp/cache/v2/readers/stale"
   run_gate h "$tmp/plan2" "$rev2" "$step"
   assert_eq "a dead reader stops a run that would rewrite the corpus" 1 "$(cat "$tmp/h.status")"
   assert_eq "the failure names the registration to remove" 1 \
-    "$(grep -c "rm '$tmp/cache/readers/stale'" "$tmp/h.out")"
-  rm "$tmp/cache/readers/stale"
+    "$(grep -c "rm '$tmp/cache/v2/readers/stale'" "$tmp/h.out")"
+  rm "$tmp/cache/v2/readers/stale"
 
   # An empty registration is a run that died registering, before any step.
-  : >"$tmp/cache/readers/empty"
+  : >"$tmp/cache/v2/readers/empty"
   run_gate h2 "$tmp/plan2" "$rev2" "$step"
   assert_eq "an empty registration does not stop materialisation" 0 "$(cat "$tmp/h2.status")"
   show_failure h2
 
-  echo "$dead gone" >"$tmp/cache/lock"
+  echo "$dead gone" >"$tmp/cache/v2/lock"
   run_gate i "$tmp/plan2" "$rev2" "$step"
   assert_eq "a lock held by a dead run fails fast" 1 "$(cat "$tmp/i.status")"
   assert_eq "the failure names the lock to remove" 1 \
-    "$(grep -c "rm -r.*$tmp/cache/lock" "$tmp/i.out")"
-  rm "$tmp/cache/lock"
+    "$(grep -c "rm -r.*$tmp/cache/v2/lock" "$tmp/i.out")"
+  rm "$tmp/cache/v2/lock"
 
   # A lock whose run died between creating it and recording itself.
-  : >"$tmp/cache/lock"
-  touch -t 202001010000 "$tmp/cache/lock"
+  : >"$tmp/cache/v2/lock"
+  touch -t 202001010000 "$tmp/cache/v2/lock"
   run_gate i2 "$tmp/plan2" "$rev2" "$step"
   assert_eq "a lock with no owner for over a minute fails fast" 1 "$(cat "$tmp/i2.status")"
   assert_eq "naming the lock to remove" 1 \
     "$(grep -c "no owner recorded" "$tmp/i2.out")"
-  rm "$tmp/cache/lock"
+  rm "$tmp/cache/v2/lock"
 
-  # An older gate script's lock: a directory with its owner inside.
+  # An older gate script's lock, at the cache root: a run neither waits on it
+  # nor judges it, as the two read each other's locks wrongly.
   mkdir "$tmp/cache/lock"
   echo "$dead gone" >"$tmp/cache/lock/owner"
   run_gate i3 "$tmp/plan2" "$rev2" "$step"
-  assert_eq "an older script's lock held by a dead run fails fast" 1 "$(cat "$tmp/i3.status")"
-  assert_eq "naming that run" 1 "$(grep -c "($dead gone)" "$tmp/i3.out")"
+  assert_eq "an older script's lock does not stop a run" 0 "$(cat "$tmp/i3.status")"
+  show_failure i3
+  assert_eq "nor does the run touch it" "$dead gone" "$(cat "$tmp/cache/lock/owner")"
   rm -r "$tmp/cache/lock"
-
-  # Or held by a live one: this run waits for it.
-  mkdir "$tmp/cache/lock"
-  sleep 30 &
-  local older
-  older=$!
-  identity_of "$older" >"$tmp/cache/lock/owner"
-  run_gate i4 "$tmp/plan2" "$rev2" "$step" &
-  for _ in $(seq 100); do grep -q "waiting for" "$tmp/i4.out" 2>/dev/null && break; sleep 0.1; done
-  assert_eq "a run waits on an older script's live lock" "1 waiting, 0 reading" \
-    "$(grep -c "waiting for" "$tmp/i4.out") waiting, $(find "$tmp/cache/readers" -type f | wc -l | tr -d ' ') reading"
-  rm -r "$tmp/cache/lock"
-  kill "$older"
-  wait
-  assert_eq "and takes the lock once it is released" 0 "$(cat "$tmp/i4.status")"
-  show_failure i4
 
   EXTRA_PATH="$tmp/nops" run_gate j "$tmp/plan2" "$rev2" "$step"
   assert_eq "a run that cannot read its own start time fails" 1 "$(cat "$tmp/j.status")"
   assert_eq "and registers nowhere" "" \
-    "$(ls "$tmp/cache/readers"; ls -d "$tmp/cache/lock" 2>/dev/null)"
+    "$(ls "$tmp/cache/v2/readers"; ls -d "$tmp/cache/v2/lock" 2>/dev/null)"
 
   # A waiter that finds the lock's owner dead only after the owner has
   # released it: the lock it read is gone, not abandoned.
@@ -326,8 +307,8 @@ test_concurrency() {
   : >"$tmp/log"
   FAKE_RESTORE_FAILS=1 FAKE_RESTORE_FAILS_AFTER="$tmp/ps-entered" \
     run_gate k "$tmp/plan1" "$rev1" "$step" &
-  for _ in $(seq 100); do [ -s "$tmp/cache/lock" ] && break; sleep 0.1; done
-  holder="$(cut -d' ' -f1 "$tmp/cache/lock")"
+  for _ in $(seq 100); do [ -s "$tmp/cache/v2/lock" ] && break; sleep 0.1; done
+  holder="$(cut -d' ' -f1 "$tmp/cache/v2/lock")"
   EXTRA_PATH="$tmp/slowps" FAKE_PS_SLOW_PID="$holder" run_gate l "$tmp/plan1" "$rev1" "$step"
   wait
   assert_eq "the waiter did look at the holder as it exited" yes \
@@ -343,7 +324,7 @@ test_concurrency() {
   : >"$tmp/log"
   run_gate o "$tmp/plan2" "$rev2" "$step" &
   for _ in $(seq 100); do [ -e "$tmp/started.o" ] && break; sleep 0.1; done
-  reader="$(cut -d' ' -f1 "$tmp/cache/readers"/*)"
+  reader="$(cut -d' ' -f1 "$tmp/cache/v2/readers"/*)"
   EXTRA_PATH="$tmp/slowps" FAKE_PS_SLOW_PID="$reader" run_gate p "$tmp/plan1" "$rev1" "$step"
   wait
   assert_eq "the writer did look at the reader as it exited" yes \
@@ -358,7 +339,7 @@ test_concurrency() {
   : >"$tmp/log"
   run_gate m "$tmp/plan1" "$rev1" "$step" &
   for _ in $(seq 100); do [ -e "$tmp/started.m" ] && break; sleep 0.1; done
-  kill -9 "$(cut -d' ' -f1 "$tmp/cache/readers"/*)"
+  kill -9 "$(cut -d' ' -f1 "$tmp/cache/v2/readers"/*)"
   run_gate n "$tmp/plan2" "$rev2" "$step"
   for _ in $(seq 100); do [ "$(count_log step)" = 0 ] || break; sleep 0.1; done
   assert_eq "a killed run's surviving step reads its own pin to the end" 1 "$(count_log "step m")"
