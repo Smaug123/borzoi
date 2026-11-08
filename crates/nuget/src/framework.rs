@@ -304,6 +304,16 @@ impl NuGetFramework {
         parse_short(input)
     }
 
+    /// `NuGetFramework.ParseFrameworkName`: the long `FrameworkName` form,
+    /// whatever the input looks like. Restore's content model falls back to
+    /// this after [`Self::parse_folder`], with no comma check, so
+    /// ` .NETFramework` — which [`Self::parse`] reads in the short form, as
+    /// unsupported — is `.NETFramework` at version 0.0 here, and
+    /// `NETFramework` its synonym.
+    pub fn parse_framework_name(input: &str) -> Result<NuGetFramework, FrameworkParseError> {
+        parse_long(input)
+    }
+
     /// `GetShortFolderName()`, or `None` where NuGet's own implementation
     /// throws (some unsupported/agnostic shapes).
     pub fn short_folder_name(&self) -> Option<String> {
@@ -968,67 +978,80 @@ fn parse_portable(version: [u32; 4], list: &str) -> Result<NuGetFramework, Frame
 
 /// Long `FrameworkName` form: `Identifier,Version=vX.Y[,Profile=…]`.
 fn parse_long(input: &str) -> Result<NuGetFramework, FrameworkParseError> {
-    let mut framework: Option<String> = None;
-    let mut version = [0u32; 4];
-    let mut profile: Option<String> = None;
-    let platform: Option<(String, [u32; 4])> = None;
-
-    for raw in input.split(',') {
-        let part = raw.trim();
-        // Empty parts are skipped entirely; the first non-empty part is
-        // the identifier (",45" parses with identifier "45").
-        if part.is_empty() {
-            continue;
-        }
-        if framework.is_none() {
-            framework = Some(canonical_identifier(part));
-            continue;
-        }
-        // After the identifier: known keys (matched case-insensitively)
-        // apply; unknown keys and stray non-key parts are silently
-        // IGNORED (".NETFramework,Version9=v4.5" is net 0.0;
-        // ".NETCoreApp,Version=v8.0,Platform=wind,ows" drops both the
-        // Platform value and the "ows" remnant). The one thing that
-        // throws is a recognised Version key with an unparseable value —
-        // and only a *lowercase* 'v' prefix is stripped, so "Version=V4.0"
-        // throws while "version=v 4.5" parses (component whitespace is
-        // Version-parse leniency). All oracle-pinned.
-        let Some((key, value)) = part.split_once('=') else {
-            continue;
-        };
-        // The key is NOT trimmed: "Profile =Client" (trailing space) is
-        // an unknown key and is ignored — oracle-pinned.
-        match key.to_ascii_lowercase().as_str() {
-            "version" => {
-                // The 'v' strips only as the value's FIRST character —
-                // "Version= v5.4" (space before the v) throws, while
-                // "Version=v 4.5" parses (component whitespace is
-                // System.Version leniency). Oracle-pinned.
-                let v = value.strip_prefix('v').unwrap_or(value);
-                version = parse_long_version(v).ok_or(FrameworkParseError::Invalid)?;
-            }
-            "profile" => {
-                let v = value.trim();
-                // A portable Profile value containing '-' throws
-                // (".NETPortable,…,Profile=Pro-file259") — oracle-pinned.
-                if framework.as_deref() == Some(id::PORTABLE) && v.contains('-') {
-                    return Err(FrameworkParseError::Invalid);
-                }
-                if !v.is_empty() {
-                    profile = Some(v.to_owned());
-                }
-            }
-            // Accepted and discarded — the long form never yields a
-            // platformed framework.
-            "platform" => {}
-            _ => {}
-        }
+    // `Split(',', RemoveEmptyEntries)` then `Trim()` per part: a part that is
+    // only whitespace survives, as the empty string. `parts[0]` of an empty
+    // array throws, so "" and "," are errors.
+    let parts: Vec<&str> = input
+        .split(',')
+        .filter(|raw| !raw.is_empty())
+        .map(str::trim)
+        .collect();
+    let Some(&first) = parts.first() else {
+        return Err(FrameworkParseError::Invalid);
+    };
+    // A special identifier first is that framework; the rest is ignored
+    // ("any,Version=v4.5" is Any).
+    if let Some(special) = [id::ANY, id::AGNOSTIC, id::UNSUPPORTED]
+        .iter()
+        .find(|special| special.eq_ignore_ascii_case(first))
+    {
+        return Ok(NuGetFramework {
+            framework: (*special).to_owned(),
+            version: [0; 4],
+            platform: None,
+            profile: None,
+        });
     }
-
+    // The first part is the identifier, whatever it looks like: ",45" parses
+    // with identifier "45", and "Version=v4.8" alone is a framework named
+    // `Version=v4.8` (at version 4.8, since the key is read from every part,
+    // this one included).
+    let framework = canonical_identifier(first);
+    // `SingleOrDefaultSafe(parts.Where(s => s.IndexOf(key, OrdinalIgnoreCase) == 0))`
+    // then `.Split('=')[1]`: the one part that starts with the key, or none
+    // when two do, and the text between its first and second '='. The key is
+    // matched at the start of the trimmed part, so "Version =v4.5" is not
+    // one and is ignored, as is any part that is no key at all
+    // (".NETFramework,Version9=v4.5" is net 0.0; ".NETCoreApp,Version=v8.0,
+    // Platform=wind,ows" drops both the Platform value and the "ows"
+    // remnant). All oracle-pinned.
+    let keyed = |key: &str| -> Option<&str> {
+        let mut found = parts.iter().filter(|part| {
+            part.get(..key.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(key))
+        });
+        let part = found.next()?;
+        if found.next().is_some() {
+            return None;
+        }
+        Some(part[key.len()..].split('=').next().unwrap_or(""))
+    };
+    let mut version = [0u32; 4];
+    if let Some(value) = keyed("Version=") {
+        // The one thing that throws is a Version value `System.Version`
+        // cannot parse. `TrimStart('v')` strips only lowercase 'v's, so
+        // "Version=V4.0" throws while "version=v 4.5" parses (component
+        // whitespace is Version-parse leniency), and "Version=" itself
+        // throws. Oracle-pinned.
+        let text = value.trim_start_matches('v');
+        version = parse_long_version(text).ok_or(FrameworkParseError::Invalid)?;
+    }
+    let mut profile: Option<String> = None;
+    if let Some(value) = keyed("Profile=")
+        && !value.is_empty()
+    {
+        // A portable Profile value containing '-' throws
+        // (".NETPortable,…,Profile=Pro-file259") — oracle-pinned.
+        if framework == id::PORTABLE && value.contains('-') {
+            return Err(FrameworkParseError::Invalid);
+        }
+        profile = Some(value.to_owned());
+    }
     Ok(NuGetFramework {
-        framework: framework.ok_or(FrameworkParseError::Invalid)?,
+        framework,
         version,
-        platform,
+        // The long form never yields a platformed framework.
+        platform: None,
         profile,
     })
 }

@@ -65,6 +65,7 @@ use super::{
     ProjectRestoreReference, RestoreAuditProperties, RestoreFrameworkInfo, RestoreLockProperties,
     TargetFrameworkInformation, WarningProperties,
 };
+use crate::assets::content_model_framework;
 use crate::{
     AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
     PackageReadError, ResolveDecline, ResolvedPackageClosure, list_package_files,
@@ -462,6 +463,7 @@ pub fn resolve_dgspec(
                 Path::new(packages_path),
                 &framework.target_alias,
                 &framework.framework,
+                fallback,
                 &closure,
             )?;
             let warnings = predicted_warnings(
@@ -509,18 +511,29 @@ pub fn resolve_dgspec(
 /// framework-specific assets, `build/` and `buildTransitive/` ones included,
 /// suits the framework itself. A package with compile assets for the framework
 /// needs neither. One without them is admitted only when it has no file in
-/// `lib/` or `ref/`, and none in a `build/` or `buildTransitive/` folder named
-/// for a framework this crate parses as supported: its other files
-/// (`analyzers/`, `tools/`, `contentFiles/`, `build/` files outside framework
-/// folders such as Nerdbank.GitVersioning's `build/MSBuildCore/`) neither
-/// fail the check nor warn. `asset_folder_shapes_are_graded` holds each shape
-/// to B₀.
+/// `lib/` or `ref/`, and none in a `build/` or `buildTransitive/` folder whose
+/// name restore's content model reads ([`content_model_framework`]: the short
+/// form, or the long `FrameworkName` form it falls back to) as a framework
+/// compatible with the project's or with one of its fallbacks. Its other
+/// files (`analyzers/`, `tools/`, `contentFiles/`, and `build/` folders named
+/// for nothing the project can take, such as Nerdbank.GitVersioning's
+/// `build/MSBuildCore/`, which the content model reads as a framework named
+/// `MSBuildCore`) neither fail the check nor warn.
+/// `asset_folder_shapes_are_graded` holds each shape to B₀, and
+/// `framework_folder_names_are_graded` sweeps the folder names.
 fn check_compatibility(
     packages: &Path,
     target_alias: &str,
     framework: &NuGetFramework,
+    fallback: &[NuGetFramework],
     closure: &ResolvedPackageClosure,
 ) -> Result<(), DgSpecResolveDecline> {
+    let takes = |candidate: &NuGetFramework| {
+        NuGetFramework::is_compatible(framework, candidate)
+            || fallback
+                .iter()
+                .any(|fallback| NuGetFramework::is_compatible(fallback, candidate))
+    };
     for resolved in &closure.packages {
         let unproven =
             |decline: Option<AssetSelectionDecline>| DgSpecResolveDecline::CompatibilityUnproven {
@@ -542,8 +555,7 @@ fn check_compatibility(
         // model and throws on one it cannot parse, whatever else the package
         // holds.
         if files.iter().any(|file| {
-            framework_folder(file)
-                .is_some_and(|folder| NuGetFramework::parse_folder(folder).is_err())
+            framework_folder(file).is_some_and(|folder| content_model_framework(folder).is_err())
         }) {
             return Err(unproven(None));
         }
@@ -570,8 +582,7 @@ fn check_compatibility(
             }
             (named("build") || named("buildTransitive"))
                 && rest.is_some()
-                && NuGetFramework::parse_folder(next)
-                    .is_ok_and(|framework| !framework.is_unsupported())
+                && matches!(content_model_framework(next), Ok(Some(candidate)) if takes(&candidate))
         });
         if framework_specific {
             return Err(unproven(None));

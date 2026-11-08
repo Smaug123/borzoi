@@ -3055,7 +3055,9 @@ fn every_nuspec_layer_is_held_to_its_domain() {
 /// Every top-level asset folder, with and without a framework subfolder, and
 /// with a framework folder NuGet cannot parse (it throws), alone in a package
 /// of a `net8.0` project with the fallback list: graded against B₀, with B₁
-/// committing exactly where the compatibility rule says.
+/// committing exactly where the compatibility rule says. Each row also pins
+/// B₀'s own verdict — whether restore succeeds, and the codes it logs — so a
+/// decline is a decline of a known outcome, not of one nobody looked at.
 #[test]
 fn asset_folder_shapes_are_graded() {
     let mut oracle = Oracle::spawn();
@@ -3063,32 +3065,183 @@ fn asset_folder_shapes_are_graded() {
         "net8.0",
         vec![Dep::new("A", "[1.0.0, )")],
     )]);
-    let shapes: &[(&str, bool)] = &[
-        ("build/A.targets", true),
-        ("build/net48/A.targets", false),
-        ("build/MSBuildCore/A.dll", true),
-        ("buildTransitive/net48/A.props", false),
-        ("buildMultiTargeting/A.props", true),
-        ("buildCrossTargeting/A.props", true),
-        ("analyzers/dotnet/cs/A.dll", true),
-        ("tools/net48/A.exe", true),
-        ("content/A.txt", true),
-        ("contentFiles/any/net48/A.cs", true),
-        ("runtimes/win-x64/lib/net48/A.dll", true),
-        ("runtimes/win-x64/native/A.dll", true),
-        ("native/A.dll", true),
-        ("embed/net48/A.dll", true),
-        ("lib/net48/A.dll", false),
-        ("ref/net48/A.dll", false),
-        ("lib/A.txt", false),
-        ("lib/net48/A.xml", false),
-        ("lib/net8.0/A.dll", true),
-        ("build/portable-net45-client/A.targets", false),
-        ("contentFiles/any/portable-net45-client/A.cs", false),
+    const THREW: &str = "threw System.ArgumentException";
+    // (file, B₁ commits, B₀ succeeds, B₀'s codes)
+    let shapes: &[(&str, bool, bool, &[&str])] = &[
+        ("build/A.targets", true, true, &[]),
+        ("build/net48/A.targets", false, true, &["NU1701"]),
+        ("build/MSBuildCore/A.dll", true, true, &[]),
+        ("buildTransitive/net48/A.props", false, true, &["NU1701"]),
+        ("buildMultiTargeting/A.props", true, true, &[]),
+        ("buildCrossTargeting/A.props", true, true, &[]),
+        ("analyzers/dotnet/cs/A.dll", true, true, &[]),
+        ("tools/net48/A.exe", true, true, &[]),
+        ("content/A.txt", true, true, &[]),
+        ("contentFiles/any/net48/A.cs", true, true, &[]),
+        ("runtimes/win-x64/lib/net48/A.dll", true, true, &[]),
+        ("runtimes/win-x64/native/A.dll", true, true, &[]),
+        ("native/A.dll", true, true, &[]),
+        ("embed/net48/A.dll", true, true, &[]),
+        ("lib/net48/A.dll", false, true, &["NU1701"]),
+        ("ref/net48/A.dll", false, true, &["NU1701"]),
+        ("lib/A.txt", false, false, &["NU1202"]),
+        ("lib/net48/A.xml", false, false, &["NU1202"]),
+        ("lib/net8.0/A.dll", true, true, &[]),
+        (
+            "build/portable-net45-client/A.targets",
+            false,
+            false,
+            &[THREW],
+        ),
+        (
+            "contentFiles/any/portable-net45-client/A.cs",
+            false,
+            false,
+            &[THREW],
+        ),
+        // The content model falls back to the long `FrameworkName` form for a
+        // folder the short form cannot parse, so these are `net48` and
+        // `net8.0` folders. The last is compatible with the project itself
+        // and silent; B₁ declines every parseable `build/` framework folder
+        // all the same, as it does `build/net8.0/`.
+        (
+            "build/.NETFramework,Version=v4.8/A.targets",
+            false,
+            true,
+            &["NU1701"],
+        ),
+        (
+            "buildTransitive/.NETFramework,Version=v4.8/A.props",
+            false,
+            true,
+            &["NU1701"],
+        ),
+        (
+            "lib/.NETFramework,Version=v4.8/A.dll",
+            false,
+            true,
+            &["NU1701"],
+        ),
+        ("build/.NETCoreApp,Version=v8.0/A.targets", false, true, &[]),
+        // The fallback is `ParseFrameworkName` with no comma check: a name
+        // the short form reads as unsupported is trimmed and its first part
+        // looked up as an identifier, synonyms included. These are
+        // `.NETFramework` at 0.0, which the fallback list takes.
+        ("build/ .NETFramework/A.targets", false, true, &["NU1701"]),
+        ("build/NETFramework/A.targets", false, true, &["NU1701"]),
+        ("lib/NETFramework/A.dll", false, true, &["NU1701"]),
+        // Restore throws on a `Version` with no value.
+        (
+            "build/.NETFramework,Version=/A.targets",
+            false,
+            false,
+            &[THREW],
+        ),
+        // The identifier is whatever non-empty part comes first, a key
+        // included: a framework named `Version=v4.8`, compatible with
+        // nothing, so the folder is inert and the package admitted. So is
+        // one the content model names after itself.
+        ("build/Version=v4.8/A.targets", true, true, &[]),
+        ("build/,Version=v4.8/A.targets", true, true, &[]),
+        ("build/NETFramework;Version=v4.8/A.targets", true, true, &[]),
+        // `any` is `.NETPlatform` at the empty version, which the fallback
+        // list takes.
+        ("build/any/A.targets", false, true, &["NU1701"]),
     ];
-    for (file, commits) in shapes {
+    for (file, commits, success, codes) in shapes {
         let package = Pkg::new("A", "1.0.0", vec![]).with_files(&[file]);
         let graded = grade(&mut oracle, &[package], &shape);
         assert_eq!(graded.ours.is_ok(), *commits, "{file}: {:?}", graded.ours);
+        let logged: Vec<&str> = graded.theirs.codes.iter().map(String::as_str).collect();
+        assert_eq!(
+            (graded.theirs.success, logged.as_slice()),
+            (*success, *codes),
+            "{file}: B₀'s verdict moved"
+        );
+    }
+}
+
+/// Framework-position folder names built from an alphabet of the pieces
+/// restore's content model reads — short forms, long-form identifiers and
+/// their synonyms, `Version=` and `Profile=` keys, and the separators and
+/// whitespace its two parsers treat differently — under `build/` and `lib/`,
+/// each alone in a package of a `net8.0` project with the fallback list,
+/// graded against B₀. `asset_folder_shapes_are_graded` pins the shapes found
+/// by hand; this searches their neighbourhood, and requires the alphabet to
+/// keep reaching every verdict class.
+#[test]
+fn framework_folder_names_are_graded() {
+    const TOKENS: &[&str] = &[
+        ".NETFramework",
+        "NETFramework",
+        ".NETCoreApp",
+        "net48",
+        "net",
+        "netstandard2.0",
+        "net8.0",
+        "any",
+        "Any",
+        "agnostic",
+        "unsupported",
+        "Version=v4.8",
+        "Version=v8.0",
+        "Version=",
+        "v4.8",
+        "Profile=Client",
+        "portable",
+        "MSBuildCore",
+        "4.8",
+        ",",
+        " ",
+        ";",
+        "-",
+        "+",
+        ".",
+    ];
+    let mut oracle = Oracle::spawn();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let mut rng = SplitMix64(0xf01d_e125);
+    let mut names = BTreeSet::new();
+    while names.len() < 300 {
+        let pieces = 1 + rng.below(3);
+        let name: String = (0..pieces).map(|_| *rng.pick(TOKENS)).collect();
+        if name.trim().is_empty() || name == "." || name == ".." {
+            continue;
+        }
+        names.insert(name);
+    }
+    let mut census: BTreeMap<&str, usize> = BTreeMap::new();
+    for name in &names {
+        for (folder, file) in [("build", "A.targets"), ("lib", "A.dll")] {
+            let path = format!("{folder}/{name}/{file}");
+            let package = Pkg::new("A", "1.0.0", vec![]).with_files(&[path.as_str()]);
+            let graded = grade(&mut oracle, &[package], &shape);
+            let class = match (
+                &graded.ours,
+                graded.theirs.success,
+                graded.theirs.codes.is_empty(),
+            ) {
+                (Ok(_), _, _) => "commits",
+                (Err(_), false, _) => "declines where B₀ fails",
+                (Err(_), true, false) => "declines where B₀ warns",
+                (Err(_), true, true) => "declines where B₀ is silent",
+            };
+            *census.entry(class).or_default() += 1;
+        }
+    }
+    eprintln!("framework folder names: {census:#?}");
+    for class in [
+        "commits",
+        "declines where B₀ fails",
+        "declines where B₀ warns",
+        "declines where B₀ is silent",
+    ] {
+        assert!(
+            census.get(class).copied().unwrap_or(0) > 0,
+            "{class}: the alphabet no longer reaches this verdict\n{census:#?}"
+        );
     }
 }

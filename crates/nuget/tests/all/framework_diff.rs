@@ -34,9 +34,45 @@ fn oracle_bool(v: &serde_json::Value, field: &str) -> bool {
         .unwrap_or_else(|| panic!("oracle response missing bool field {field}: {v}"))
 }
 
+/// Long-form shapes that exercise `ParseFrameworkName`'s part rules: the
+/// identifier is the first part whatever it looks like, each key is read from
+/// the one part that starts with it (two such parts cancel to none, the
+/// identifier part counts), its value is the text between its first and
+/// second `=`, untrimmed, and only a lowercase `v` prefix is stripped. The
+/// content model reaches this parser for every folder name the short form
+/// reads as unsupported, comma or not.
+const LONG_FORM_CORNERS: &[&str] = &[
+    "Version=v4.8",
+    "Version=v8.0netstandard2.0",
+    " .NETFramework",
+    "NETFramework",
+    "NETFramework ",
+    " ,net",
+    ",Version=v4.8",
+    "Version=v4.8,.NETFramework",
+    ".NETFramework,Version=v4.8,Version=v4.5",
+    ".NETFramework,Version=v4.8,Version=bad",
+    ".NETFramework,Version=vv4.8",
+    ".NETFramework,Version=v4.8=x",
+    ".NETFramework,Version=",
+    ".NETFramework,Profile= Client",
+    ".NETFramework,Profile=Client,Profile=Full",
+    ".NETFramework,profile=Client",
+    ".NETPortable,Version=v4.5,Profile=Profile7",
+    ".NETPortable,Version=v4.5,Profile=net45-win8",
+    "any,Version=v4.5",
+    "Unsupported,Version=v1.0",
+    "MSBuildCore",
+    "NETFramework;Version=v4.8",
+    ",",
+    " ",
+    "",
+];
+
 #[test]
 fn framework_parse_agrees_with_oracle() {
     let mut inputs: Vec<String> = CORNERS.iter().map(|s| s.to_string()).collect();
+    inputs.extend(LONG_FORM_CORNERS.iter().map(|s| s.to_string()));
     let mut rng = SplitMix64(0x5eed_0004);
     for _ in 0..3000 {
         inputs.push(gen_framework_string(&mut rng));
@@ -51,6 +87,7 @@ fn framework_parse_agrees_with_oracle() {
             NuGetFramework::parse as fn(&str) -> Result<NuGetFramework, _>,
         ),
         ("parseFolder", NuGetFramework::parse_folder),
+        ("parseFrameworkName", NuGetFramework::parse_framework_name),
     ] {
         for input in &inputs {
             let ours = ours_parse(input);

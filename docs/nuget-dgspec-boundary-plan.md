@@ -607,15 +607,26 @@ Lifting the policy decline moved the census onto what it had hidden:
   Nerdbank.GitVersioning has no compile assets, only `build/` files, some in
   folders like `build/MSBuildCore/` that are not framework names. A package
   with no compile assets for the framework is now admitted when it has no file
-  in `lib/` or `ref/` and none in a `build/` or `buildTransitive/` folder named
-  for a supported framework: restore fails on the first (`NU1202`, even for a
-  `lib/` file that is not an assembly) and takes the second through the
-  fallback list with `NU1701`. Restore throws on any folder in a framework
-  position of its content model that it cannot parse
-  (`build/portable-net45-client/`), whatever else the package holds, so such a
-  package declines. `asset_folder_shapes_are_graded` holds each top-level
-  folder, with and without a framework subfolder and with an unparseable one,
-  to B₀.
+  in `lib/` or `ref/` and none in a `build/` or `buildTransitive/` folder whose
+  name the content model reads as a framework the project or one of its
+  fallbacks takes: restore fails on the first (`NU1202`, even for a `lib/`
+  file that is not an assembly) and takes the second through the fallback
+  list with `NU1701`. The content model reads a folder name in the short
+  form, and falls back to `ParseFrameworkName`, the long `FrameworkName` form,
+  with no comma check: `build/.NETFramework,Version=v4.8/` is a `net48`
+  folder and warns `NU1701` like one, and ` .NETFramework` and the synonym
+  `NETFramework` are `.NETFramework` at 0.0, which the fallback list takes
+  too; `MSBuildCore` is a framework named `MSBuildCore`, compatible with
+  nothing. So the check parses as it does (`assets::content_model_framework`)
+  and asks compatibility, where the short form alone read all three as
+  unsupported and would have admitted the package. Restore throws on any
+  folder in a framework position of its content model that it cannot parse
+  (`build/portable-net45-client/`), whatever else the package holds, so such
+  a package declines. `asset_folder_shapes_are_graded` holds each top-level
+  folder, with and without a framework subfolder, with long-form and
+  unparseable ones, to B₀, and pins B₀'s own verdict per row;
+  `framework_folder_names_are_graded` sweeps names built from an alphabet of
+  the pieces both parsers read, under `build/` and `lib/`.
 
 | corpus project (6) | B₁ |
 |---|---|
