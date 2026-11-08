@@ -63,7 +63,7 @@ use crate::model::{
     AbbreviationTarget, Access, ArgGroup, ArgGroups, AssemblyIdentity, Augmentation, CaseFields,
     CompilerMessage, CurriedArg, CurriedArgs, Entity, EntityKind, EqualityComparison,
     FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete,
-    ReadValFacts, SkippedMember, TypeParameter, UnionCase, UnionCases, ValMeasures,
+    ReadValFacts, SkippedMember, TypeParameter, TypeRef, UnionCase, UnionCases, ValMeasures,
 };
 use std::collections::HashMap;
 
@@ -3659,14 +3659,20 @@ fn find_entity_unique_mut<'a>(
 
 /// Which projected member of a type one pickled doc key belongs to, as far as
 /// the IL can tell: the slot a val compiles to (a method, or one accessor of a
-/// property, by name, IL arity and staticness), or a `val` field the IL exposes
+/// property, by name, arity and staticness), or a `val` field the IL exposes
 /// as a property.
+///
+/// The arity and staticness are the ones F# **declares** — what the projected
+/// member has once [`settle_compiled_shapes`] has given it its declared shape
+/// — and `compiled` says how the IL member fsc emitted differs from them
+/// ([`DocSlot::compiled_shape`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum DocSlot {
     Method {
         name: String,
         arity: usize,
         is_static: bool,
+        compiled: Compiled,
     },
     /// A property's getter. `name` is the IL property's (a `[<CompiledName>]`
     /// renames it), `accessor` the getter method's — which keeps the val's
@@ -3676,6 +3682,7 @@ enum DocSlot {
         accessor: String,
         index_arity: usize,
         is_static: bool,
+        compiled: Compiled,
     },
     /// A property's setter; see [`DocSlot::Getter`].
     Setter {
@@ -3683,8 +3690,102 @@ enum DocSlot {
         accessor: String,
         index_arity: usize,
         is_static: bool,
+        compiled: Compiled,
     },
     ValField(String),
+}
+
+/// How fsc compiled a type's member val against the staticness F# declares
+/// for it — the two disagree exactly where `MemberIsCompiledAsInstance`
+/// (`TypedTreeOps.Attributes.fs`) overrides the declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Compiled {
+    /// The IL member has the declared staticness and arity.
+    AsDeclared,
+    /// An instance member compiled as an IL static whose first parameter is
+    /// the receiver (by reference, for a struct): every instance member of a
+    /// null-as-true union ([`compiles_instance_members_as_static`]), and one
+    /// carrying `[<CompilationRepresentation(Static)>]`, bar abstract slots,
+    /// overrides and interface implementations, which stay instance.
+    StaticWithReceiver,
+    /// A static member carrying `[<CompilationRepresentation(Instance)>]`,
+    /// which fsc compiles as an IL instance method one parameter short — its
+    /// first argument has become the IL `this`. No projected member can show
+    /// the declared shape, so [`settle_compiled_shapes`] refuses it.
+    InstanceFromStatic,
+}
+
+impl DocSlot {
+    /// The slot as the IL member fsc emitted occupies it: the declared slot
+    /// for [`Compiled::AsDeclared`] (and for a `val` field); otherwise a static
+    /// one argument wider, or an instance one argument narrower (none narrower
+    /// than nullary: the slot of a static compiled instance is refused
+    /// whatever it holds, so it need only find what is there).
+    fn compiled_shape(&self) -> DocSlot {
+        let reshape = |arity: usize, compiled: Compiled| match compiled {
+            Compiled::AsDeclared => (arity, None),
+            Compiled::StaticWithReceiver => (arity + 1, Some(true)),
+            Compiled::InstanceFromStatic => (arity.saturating_sub(1), Some(false)),
+        };
+        match self {
+            DocSlot::Method {
+                name,
+                arity,
+                is_static,
+                compiled,
+            } => {
+                let (arity, il_static) = reshape(*arity, *compiled);
+                DocSlot::Method {
+                    name: name.clone(),
+                    arity,
+                    is_static: il_static.unwrap_or(*is_static),
+                    compiled: Compiled::AsDeclared,
+                }
+            }
+            DocSlot::Getter {
+                name,
+                accessor,
+                index_arity,
+                is_static,
+                compiled,
+            } => {
+                let (index_arity, il_static) = reshape(*index_arity, *compiled);
+                DocSlot::Getter {
+                    name: name.clone(),
+                    accessor: accessor.clone(),
+                    index_arity,
+                    is_static: il_static.unwrap_or(*is_static),
+                    compiled: Compiled::AsDeclared,
+                }
+            }
+            DocSlot::Setter {
+                name,
+                accessor,
+                index_arity,
+                is_static,
+                compiled,
+            } => {
+                let (index_arity, il_static) = reshape(*index_arity, *compiled);
+                DocSlot::Setter {
+                    name: name.clone(),
+                    accessor: accessor.clone(),
+                    index_arity,
+                    is_static: il_static.unwrap_or(*is_static),
+                    compiled: Compiled::AsDeclared,
+                }
+            }
+            DocSlot::ValField(name) => DocSlot::ValField(name.clone()),
+        }
+    }
+
+    fn compiled(&self) -> Compiled {
+        match self {
+            DocSlot::Method { compiled, .. }
+            | DocSlot::Getter { compiled, .. }
+            | DocSlot::Setter { compiled, .. } => *compiled,
+            DocSlot::ValField(_) => Compiled::AsDeclared,
+        }
+    }
 }
 
 /// The [`DocSlot`] a type's member val compiles to, or `None` for one with no
@@ -3695,14 +3796,23 @@ enum DocSlot {
 /// which would name a *different* IL member (`member A` compiled as `B`
 /// beside `member B` compiled as `D`).
 ///
-/// An instance member's first argument group is the receiver, which the IL
-/// signature does not list; a setter's last argument is the assigned value,
-/// which a property's index parameters do not.
-fn member_doc_slot(pickled: &PickledCcu, v: &PickledVal) -> Option<DocSlot> {
+/// An instance member's first argument group is the receiver, which the
+/// declared signature does not list; a setter's last argument is the assigned
+/// value, which a property's index parameters do not.
+///
+/// `instance_members_static` is the val's parent's
+/// [`compiles_instance_members_as_static`].
+fn member_doc_slot(
+    pickled: &PickledCcu,
+    fslib: &FslibAttributes<'_>,
+    v: &PickledVal,
+    instance_members_static: bool,
+) -> Option<DocSlot> {
     let info = v.member_info.as_ref()?;
     if v.flags & VAL_FLAGS_IS_EXTENSION_MEMBER != 0 {
         return None;
     }
+    let compiled = member_compiled(fslib, v, info, instance_members_static);
     // A `[<CompiledName>]` on a type member renames its IL member (an accessor's
     // property, too) but not the val's pickled names, so the slot is named by
     // the attribute. One whose argument cannot be read declines.
@@ -3724,19 +3834,21 @@ fn member_doc_slot(pickled: &PickledCcu, v: &PickledVal) -> Option<DocSlot> {
     } else {
         total.checked_sub(1)?
     };
-    let compiled = renamed
+    let il_name = renamed
         .or(v.compiled_name.as_deref())
         .unwrap_or(&v.logical_name);
     Some(match info.flags.kind {
         PickledMemberKind::Member => DocSlot::Method {
-            name: compiled.to_string(),
+            name: il_name.to_string(),
             arity: args,
             is_static,
+            compiled,
         },
         PickledMemberKind::Constructor => DocSlot::Method {
             name: ".ctor".to_string(),
             arity: total,
             is_static: false,
+            compiled: Compiled::AsDeclared,
         },
         PickledMemberKind::PropertyGet => DocSlot::Getter {
             name: renamed.or(v.logical_name.strip_prefix("get_"))?.to_string(),
@@ -3746,6 +3858,7 @@ fn member_doc_slot(pickled: &PickledCcu, v: &PickledVal) -> Option<DocSlot> {
                 .unwrap_or_else(|| v.logical_name.clone()),
             index_arity: args,
             is_static,
+            compiled,
         },
         PickledMemberKind::PropertySet => DocSlot::Setter {
             name: renamed.or(v.logical_name.strip_prefix("set_"))?.to_string(),
@@ -3755,12 +3868,172 @@ fn member_doc_slot(pickled: &PickledCcu, v: &PickledVal) -> Option<DocSlot> {
                 .unwrap_or_else(|| v.logical_name.clone()),
             index_arity: args.checked_sub(1)?,
             is_static,
+            compiled,
         },
         PickledMemberKind::ClassConstructor => return None,
     })
 }
 
-/// Whether `member` occupies `slot`.
+/// FCS's `MemberIsCompiledAsInstance` for a type's intrinsic member val,
+/// reported against the staticness the val declares.
+///
+/// An abstract slot, an override or an interface implementation compiles as
+/// it is declared. Any other member compiles instance when it carries
+/// `[<CompilationRepresentation(Instance)>]`, or when it is declared instance,
+/// carries no `Static` flag, and its parent does not compile instance members
+/// as statics.
+fn member_compiled(
+    fslib: &FslibAttributes<'_>,
+    v: &PickledVal,
+    info: &crate::fsharp_pickle::model::PickledMemberInfo,
+    instance_members_static: bool,
+) -> Compiled {
+    if matches!(
+        info.flags.kind,
+        PickledMemberKind::Constructor | PickledMemberKind::ClassConstructor
+    ) {
+        return Compiled::AsDeclared;
+    }
+    let declared_instance = info.flags.is_instance;
+    let compiled_instance = if info.flags.is_dispatch_slot
+        || info.flags.is_override_or_explicit_impl
+        || !info.implemented_slots.is_empty()
+    {
+        declared_instance
+    } else {
+        let flags = fslib.compilation_representation(&v.attribs);
+        flags & COMPILATION_REPRESENTATION_INSTANCE != 0
+            || (declared_instance
+                && flags & COMPILATION_REPRESENTATION_STATIC == 0
+                && !instance_members_static)
+    };
+    match (declared_instance, compiled_instance) {
+        (true, false) => Compiled::StaticWithReceiver,
+        (false, true) => Compiled::InstanceFromStatic,
+        _ => Compiled::AsDeclared,
+    }
+}
+
+/// The `CompilationRepresentationFlags` bits `MemberIsCompiledAsInstance` and
+/// `IsUnionTypeWithNullAsTrueValue` read (`prim-types.fs`).
+const COMPILATION_REPRESENTATION_STATIC: i32 = 0x01;
+const COMPILATION_REPRESENTATION_INSTANCE: i32 = 0x02;
+const COMPILATION_REPRESENTATION_USE_NULL_AS_TRUE_VALUE: i32 = 0x08;
+
+/// Recognises an attribute as one of FSharp.Core's own classes the way FCS's
+/// `resolveAttribPath` does: a reference into the FSharp.Core CCU by its path,
+/// or — only in FSharp.Core's own pickle, where those classes are local — a
+/// local type at that path. A same-named class anywhere else is not the
+/// well-known attribute, and FCS does not treat it as one.
+struct FslibAttributes<'a> {
+    pickled: &'a PickledCcu,
+    /// Every local type's logical path, when the host CCU is FSharp.Core.
+    local_paths: Option<HashMap<u32, Vec<String>>>,
+}
+
+impl<'a> FslibAttributes<'a> {
+    const FSLIB: &'static str = "FSharp.Core";
+
+    fn new(pickled: &'a PickledCcu) -> Result<Self, ImportError> {
+        let is_fslib = pickled
+            .tables
+            .tycons
+            .get(pickled.root_entity as usize)
+            .is_some_and(|root| root.logical_name == Self::FSLIB);
+        Ok(Self {
+            pickled,
+            local_paths: if is_fslib {
+                Some(local_tycon_fqns(pickled)?)
+            } else {
+                None
+            },
+        })
+    }
+
+    /// The first attribute in `attribs` whose class is
+    /// `Microsoft.FSharp.Core.<name>`.
+    fn find<'b>(
+        &self,
+        attribs: &'b [PickledAttribute],
+        name: &str,
+    ) -> Option<&'b PickledAttribute> {
+        let path = ["Microsoft", "FSharp", "Core", name];
+        let header = &self.pickled.header;
+        attribs.iter().find(|a| match &a.tcref {
+            PickledTcRef::NonLocal(idx) => header.nlerefs.get(*idx as usize).is_some_and(|nle| {
+                header
+                    .ccu_refs
+                    .get(nle.ccu as usize)
+                    .is_some_and(|ccu| ccu.name == Self::FSLIB)
+                    && nle.path.len() == path.len()
+                    && nle.path.iter().zip(path).all(|(&i, want)| {
+                        header.strings.get(i as usize).map(String::as_str) == Some(want)
+                    })
+            }),
+            PickledTcRef::Local(stamp) => self
+                .local_paths
+                .as_ref()
+                .and_then(|paths| paths.get(stamp))
+                .is_some_and(|p| p.iter().map(String::as_str).eq(path)),
+        })
+    }
+
+    /// The `[<CompilationRepresentation>]` flags `attribs` carry, decoded as
+    /// FCS's `computeEntityWellKnownFlags` does: the single positional argument,
+    /// constant-folded to an `int32`. Any other argument shape carries no flags
+    /// there, and so none here.
+    fn compilation_representation(&self, attribs: &[PickledAttribute]) -> i32 {
+        let Some(attr) = self.find(attribs, "CompilationRepresentationAttribute") else {
+            return 0;
+        };
+        match attr.args_unnamed.as_slice() {
+            [arg] => match &arg.evaluated {
+                PickledExpr::Const {
+                    value: PickledConst::Int32(flags),
+                    ..
+                } => *flags,
+                _ => 0,
+            },
+            _ => 0,
+        }
+    }
+}
+
+/// FCS's `TyconCompilesInstanceMembersAsStatic`, which is
+/// `IsUnionTypeWithNullAsTrueValue`: a union with no cases, or one carrying
+/// `[<CompilationRepresentation(UseNullAsTrueValue)>]` whose cases are exactly
+/// one nullary case and at least one carrying case. fsc compiles such a
+/// union's instance members as statics taking the receiver (FS0061), because
+/// its nullary case is `null`, on which no instance method can be called.
+///
+/// A union whose representation a signature file hides pickles with no cases
+/// to count (`NoRepr`). Its flag still decides: fsc rejects `UseNullAsTrueValue`
+/// on anything but a union of that shape (FS1196), so a compiled type carrying
+/// it is one.
+fn compiles_instance_members_as_static(
+    fslib: &FslibAttributes<'_>,
+    entity: &PickledEntity,
+) -> bool {
+    let flagged = || {
+        fslib.compilation_representation(&entity.attribs)
+            & COMPILATION_REPRESENTATION_USE_NULL_AS_TRUE_VALUE
+            != 0
+    };
+    let cases = match &entity.repr {
+        PickledTyconRepr::Union(cases) => cases,
+        PickledTyconRepr::UnionWithStaticFields { cases, .. } => cases,
+        PickledTyconRepr::NoRepr => return flagged(),
+        _ => return false,
+    };
+    cases.is_empty()
+        || (flagged()
+            && cases.iter().filter(|c| c.fields.is_empty()).count() == 1
+            && cases.iter().any(|c| !c.fields.is_empty()))
+}
+
+/// Whether `member` occupies `slot`, by the slot's declared arity and
+/// staticness; [`DocSlot::compiled_shape`] gives the slot the IL member
+/// occupies before [`settle_compiled_shapes`] reshapes it.
 fn occupies(member: &Member, slot: &DocSlot) -> bool {
     match (member, slot) {
         (
@@ -3769,6 +4042,7 @@ fn occupies(member: &Member, slot: &DocSlot) -> bool {
                 name,
                 arity,
                 is_static,
+                ..
             },
         ) => m.name == *name && m.signature.parameters.len() == *arity && m.is_static == *is_static,
         (
@@ -3817,8 +4091,8 @@ fn occupies(member: &Member, slot: &DocSlot) -> bool {
     }
 }
 
-/// One pickled F# type's doc keys, located by FQN in the ECMA tree.
-struct TypeDocSigTarget {
+/// One pickled F# type's member vals, located by FQN in the ECMA tree.
+struct TypeMemberTarget {
     namespace: Vec<String>,
     type_chain: Vec<String>,
     arity: usize,
@@ -3859,10 +4133,19 @@ enum SlotRole {
     Override,
 }
 
-/// Stamp each F# type's members with the doc-comment key fsc pickled for them
-/// ([`crate::MethodLike::xml_doc_sig`], [`crate::Property::xml_doc_sig`] and
-/// [`crate::Property::setter_xml_doc_sig`]) — the type-member counterpart of the
-/// module member list's claim, which keys module members.
+/// Settle each F# type's members against its pickled member vals, in these
+/// steps per type:
+///
+/// 1. [`settle_compiled_shapes`]: give a member fsc compiled under another
+///    staticness than F# declares the shape F# declares (or refuse it), so the
+///    steps below, and every consumer, see the member F# code calls.
+/// 2. [`surface_case_maker_members`]: a union member whose own IL method fsc
+///    discarded for the case maker of the same name.
+/// 3. [`stamp_doc_sigs`]: the doc-comment key fsc pickled for each member
+///    ([`crate::MethodLike::xml_doc_sig`], [`crate::Property::xml_doc_sig`] and
+///    [`crate::Property::setter_xml_doc_sig`]) — the type-member counterpart of
+///    the module member list's claim, which keys module members.
+/// 4. [`stamp_arg_groups`]: each method's argument groups.
 ///
 /// A type's member vals are its `tcaug.adhoc` entries (what FCS's
 /// `MembersOfFSharpTyconSorted` reads); a class's or struct's `val` fields are
@@ -3876,23 +4159,42 @@ enum SlotRole {
 /// computed IDs.
 ///
 /// The type is located by `(namespace, containers, name, arity)` and must be
-/// the only row at that key (see [`find_entity_at_arity_mut`]; the containers
-/// must each be unique by name too). A type with an erased `[<Measure>]`
-/// parameter is skipped: its pickled arity is not its CLR arity, so the key
-/// cannot name its row. Skipping costs coverage only — a member left unstamped
-/// keeps its computed ID.
-pub(crate) fn apply_type_member_doc_sigs(
+/// the only row at that key ([`locate_type_row`]). A type with an erased
+/// `[<Measure>]` parameter is skipped: its pickled arity is not its CLR arity,
+/// so the key cannot name its row. Skipping costs coverage only — a member left
+/// unstamped keeps its computed ID, and one left unshaped keeps its IL shape.
+pub(crate) fn apply_type_member_overlays(
     entities: &mut [Entity],
     pickled: &PickledCcu,
     physical: &PhysicalMethods,
 ) -> Result<(), ImportError> {
+    for target in type_member_targets(pickled)? {
+        if target.keys.is_empty() {
+            continue;
+        }
+        let Some(ecma) = locate_type_row(entities, &target, physical) else {
+            continue;
+        };
+        settle_compiled_shapes(ecma, &target, physical);
+        surface_case_maker_members(ecma, &target.keys, physical);
+        stamp_doc_sigs(ecma, &target.keys, physical);
+        stamp_arg_groups(ecma, &target.keys, physical);
+    }
+    Ok(())
+}
+
+/// Every pickled F# type (not a module, namespace, abbreviation or
+/// measure-parameterised type) with its member vals' [`DocKey`]s.
+fn type_member_targets(pickled: &PickledCcu) -> Result<Vec<TypeMemberTarget>, ImportError> {
+    let fslib = FslibAttributes::new(pickled)?;
     // A type's member vals are declared in its *enclosing* module or
     // namespace's val list, each naming the type as its apparent parent (the
     // type's own `tcaug.adhoc` holds non-local references back to them). So one
     // walk collects every type's location, by stamp, and every member val, by
-    // its parent's stamp.
-    let mut targets: HashMap<u32, TypeDocSigTarget> = HashMap::new();
-    let mut member_keys: HashMap<PickledTcRef, Vec<DocKey>> = HashMap::new();
+    // its parent's stamp; the vals' keys are built once their parent is known,
+    // because how a val compiles depends on it.
+    let mut targets: HashMap<u32, (TypeMemberTarget, bool)> = HashMap::new();
+    let mut member_vals: HashMap<PickledTcRef, Vec<&PickledVal>> = HashMap::new();
     let mut parents: HashMap<u32, u32> = HashMap::new();
     let mut logical_paths: HashMap<u32, Vec<String>> = HashMap::new();
     let mut path = Vec::new();
@@ -3912,36 +4214,11 @@ pub(crate) fn apply_type_member_doc_sigs(
                         max: pickled.tables.vals.len(),
                     },
                 )?;
-                let Some(info) = &v.member_info else {
-                    continue;
-                };
-                if let Some(slot) = member_doc_slot(pickled, v) {
-                    member_keys
+                if let Some(info) = &v.member_info {
+                    member_vals
                         .entry(info.apparent_parent.clone())
                         .or_default()
-                        .push(DocKey {
-                            slot,
-                            key: pickled_xml_doc_sig(&v.xmldoc_sig),
-                            erased_typars: measure_typar_count(v),
-                            curried: match info.flags.kind {
-                                PickledMemberKind::Member if info.flags.is_instance => {
-                                    curried_args(v, ReceiverAt::This)
-                                }
-                                PickledMemberKind::Member | PickledMemberKind::Constructor => {
-                                    curried_args(v, ReceiverAt::None)
-                                }
-                                PickledMemberKind::PropertyGet
-                                | PickledMemberKind::PropertySet
-                                | PickledMemberKind::ClassConstructor => None,
-                            },
-                            role: if info.flags.is_dispatch_slot {
-                                SlotRole::DispatchSlot
-                            } else if info.flags.is_override_or_explicit_impl {
-                                SlotRole::Override
-                            } else {
-                                SlotRole::Plain
-                            },
-                        });
+                        .push(v);
                 }
             }
             // The entity's logical path from the CCU root, which is how a
@@ -3982,16 +4259,19 @@ pub(crate) fn apply_type_member_doc_sigs(
             chain.push(clr_name(entity));
             targets.insert(
                 stamp,
-                TypeDocSigTarget {
-                    namespace: namespace.to_vec(),
-                    type_chain: chain,
-                    arity: entity.typars.len(),
-                    il_name: entity
-                        .compiled_name
-                        .clone()
-                        .unwrap_or_else(|| entity.logical_name.clone()),
-                    keys,
-                },
+                (
+                    TypeMemberTarget {
+                        namespace: namespace.to_vec(),
+                        type_chain: chain,
+                        arity: entity.typars.len(),
+                        il_name: entity
+                            .compiled_name
+                            .clone()
+                            .unwrap_or_else(|| entity.logical_name.clone()),
+                        keys,
+                    },
+                    compiles_instance_members_as_static(&fslib, entity),
+                ),
             );
             Ok(())
         },
@@ -4005,7 +4285,7 @@ pub(crate) fn apply_type_member_doc_sigs(
         .iter()
         .map(|(stamp, path)| (path.as_slice(), *stamp))
         .collect();
-    for (parent, keys) in member_keys {
+    for (parent, vals) in member_vals {
         let stamp = match parent {
             PickledTcRef::Local(stamp) => Some(stamp),
             // fsc pickles a member's apparent parent as a path into the CCU —
@@ -4032,58 +4312,300 @@ pub(crate) fn apply_type_member_doc_sigs(
         // A parent the walk did not record as a type is a module (whose
         // members the member list keys), a type this overlay skips, or an
         // entity of another CCU.
-        if let Some(target) = stamp.and_then(|s| targets.get_mut(&s)) {
-            target.keys.extend(keys);
-        }
-    }
-    for target in targets.into_values() {
-        if target.keys.is_empty() {
+        let Some((target, instance_members_static)) = stamp.and_then(|s| targets.get_mut(&s))
+        else {
             continue;
-        }
-        let (leaf, containers) = target
-            .type_chain
-            .split_last()
-            .expect("a target's chain ends in its own name");
-        let ecma = if containers.is_empty() {
+        };
+        target.keys.extend(
+            vals.into_iter()
+                .filter_map(|v| member_doc_key(pickled, &fslib, v, *instance_members_static)),
+        );
+    }
+    Ok(targets.into_values().map(|(target, _)| target).collect())
+}
+
+/// The [`DocKey`] of a type's member val, or `None` for one with no
+/// [`DocSlot`] (see [`member_doc_slot`]).
+fn member_doc_key(
+    pickled: &PickledCcu,
+    fslib: &FslibAttributes<'_>,
+    v: &PickledVal,
+    instance_members_static: bool,
+) -> Option<DocKey> {
+    let info = v.member_info.as_ref()?;
+    let slot = member_doc_slot(pickled, fslib, v, instance_members_static)?;
+    Some(DocKey {
+        slot,
+        key: pickled_xml_doc_sig(&v.xmldoc_sig),
+        erased_typars: measure_typar_count(v),
+        curried: match info.flags.kind {
+            PickledMemberKind::Member if info.flags.is_instance => {
+                curried_args(v, ReceiverAt::This)
+            }
+            PickledMemberKind::Member | PickledMemberKind::Constructor => {
+                curried_args(v, ReceiverAt::None)
+            }
+            PickledMemberKind::PropertyGet
+            | PickledMemberKind::PropertySet
+            | PickledMemberKind::ClassConstructor => None,
+        },
+        role: if info.flags.is_dispatch_slot {
+            SlotRole::DispatchSlot
+        } else if info.flags.is_override_or_explicit_impl {
+            SlotRole::Override
+        } else {
+            SlotRole::Plain
+        },
+    })
+}
+
+/// The projected row of a pickled type, or `None` when the lossy key
+/// `(namespace, containers, stripped name, arity)` cannot name it: no row, or
+/// more than one ([`find_entity_at_arity_mut`]; the containers must each be
+/// unique by name too), a module, or a row whose methods are not physically
+/// declared on a TypeDef of the type's IL name.
+fn locate_type_row<'a>(
+    entities: &'a mut [Entity],
+    target: &TypeMemberTarget,
+    physical: &PhysicalMethods,
+) -> Option<&'a mut Entity> {
+    let (leaf, containers) = target
+        .type_chain
+        .split_last()
+        .expect("a target's chain ends in its own name");
+    let ecma = if containers.is_empty() {
+        find_entity_at_arity_mut(
+            entities,
+            &target.namespace,
+            &target.type_chain,
+            target.arity,
+        )
+    } else {
+        find_entity_unique_mut(entities, &target.namespace, containers).and_then(|container| {
             find_entity_at_arity_mut(
-                entities,
-                &target.namespace,
-                &target.type_chain,
+                &mut container.nested_types,
+                &[],
+                std::slice::from_ref(leaf),
                 target.arity,
             )
-        } else {
-            find_entity_unique_mut(entities, &target.namespace, containers).and_then(|container| {
-                find_entity_at_arity_mut(
-                    &mut container.nested_types,
-                    &[],
-                    std::slice::from_ref(leaf),
-                    target.arity,
-                )
-            })
-        };
-        let Some(ecma) = ecma else {
-            continue;
-        };
-        if ecma.kind == EntityKind::Module {
-            continue;
-        }
-        // The key `(namespace, containers, stripped name, arity)` is lossy
-        // (#145): with this type's own row dropped from the projection, a
-        // `[<CompiledName("C`2")>] type D<'T>` sits at `C<'T>`'s key. The
-        // physical TypeDef name, arity suffix included, tells them apart.
-        let declared_here = !ecma.method_def_tokens.is_empty()
-            && ecma.method_def_tokens.iter().all(|t| {
-                physical
-                    .get(t)
-                    .is_some_and(|m| m.declaring_type == target.il_name)
-            });
-        if !declared_here {
-            continue;
-        }
-        stamp_doc_sigs(ecma, &target.keys, physical);
-        stamp_arg_groups(ecma, &target.keys, physical);
+        })
+    }?;
+    if ecma.kind == EntityKind::Module {
+        return None;
     }
-    Ok(())
+    // The key `(namespace, containers, stripped name, arity)` is lossy
+    // (#145): with this type's own row dropped from the projection, a
+    // `[<CompiledName("C`2")>] type D<'T>` sits at `C<'T>`'s key. The
+    // physical TypeDef name, arity suffix included, tells them apart.
+    let declared_here = !ecma.method_def_tokens.is_empty()
+        && ecma.method_def_tokens.iter().all(|t| {
+            physical
+                .get(t)
+                .is_some_and(|m| m.declaring_type == target.il_name)
+        });
+    declared_here.then_some(ecma)
+}
+
+/// Give each member fsc compiled under another staticness than F# declares
+/// ([`Compiled`]) the shape F# declares, which is the shape FCS shows and F#
+/// code calls: an instance member compiled as a static taking the receiver
+/// becomes an instance member without the receiver parameter.
+///
+/// The vals are grouped by the IL slot they compile to
+/// ([`DocSlot::compiled_shape`]), and a group's occupants are reshaped only
+/// when that is unambiguous, the way a doc key is stamped: every val in the
+/// group compiled with its receiver first, exactly as many projected members
+/// and physical methods occupy the IL slot as vals claim it, and each
+/// occupant's first parameter is this type (by reference, for a struct).
+/// Anything else — an occupant that is not the receiver-first shape, a group
+/// that also holds a val declared static (whose IL slot is the same), a count
+/// that does not add up, or a static compiled as an instance method
+/// ([`Compiled::InstanceFromStatic`]) — refuses every occupant of the IL slot,
+/// recording it on [`Entity::skipped_members`]: in its IL shape it is a member
+/// F# does not have, so it must be visibly absent rather than present and
+/// wrong. A property that one accessor's group reshapes and another's refuses
+/// is refused.
+fn settle_compiled_shapes(
+    entity: &mut Entity,
+    target: &TypeMemberTarget,
+    physical: &PhysicalMethods,
+) {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Settle {
+        Reshape,
+        Refuse,
+    }
+    // Per IL slot: how many vals compile to it, and how many of those compiled
+    // with their receiver first.
+    let mut groups: HashMap<DocSlot, (usize, usize, bool)> = HashMap::new();
+    for k in &target.keys {
+        let entry = groups
+            .entry(k.slot.compiled_shape())
+            .or_insert((0, 0, false));
+        entry.0 += 1;
+        match k.slot.compiled() {
+            Compiled::AsDeclared => {}
+            Compiled::StaticWithReceiver => entry.1 += 1,
+            Compiled::InstanceFromStatic => entry.2 = true,
+        }
+    }
+    let mut decisions: HashMap<usize, Settle> = HashMap::new();
+    for (il_slot, (vals, receiver_first, instance_from_static)) in &groups {
+        if *receiver_first == 0 && !instance_from_static {
+            continue;
+        }
+        let occupants: Vec<usize> = entity
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| occupies(m, il_slot))
+            .map(|(i, _)| i)
+            .collect();
+        let unambiguous = !instance_from_static
+            && receiver_first == vals
+            && occupants.len() == *vals
+            && physical_occupants(entity, il_slot, physical) == *vals;
+        for i in occupants {
+            let settle = if unambiguous && leads_with_receiver(&entity.members[i], target) {
+                Settle::Reshape
+            } else {
+                Settle::Refuse
+            };
+            let entry = decisions.entry(i).or_insert(settle);
+            if settle == Settle::Refuse {
+                *entry = Settle::Refuse;
+            }
+        }
+    }
+    let mut refused = Vec::new();
+    for (i, member) in std::mem::take(&mut entity.members).into_iter().enumerate() {
+        match (decisions.get(&i), member) {
+            (None, member) => entity.members.push(member),
+            (Some(Settle::Reshape), Member::Method(mut m)) => {
+                m.signature.parameters.remove(0);
+                m.is_static = false;
+                entity.members.push(Member::Method(m));
+            }
+            (Some(Settle::Reshape), Member::Property(mut p)) => {
+                p.parameters.remove(0);
+                p.is_static = false;
+                entity.members.push(Member::Property(p));
+            }
+            (Some(_), member) => refused.push(member),
+        }
+    }
+    entity
+        .skipped_members
+        .extend(refused.into_iter().map(|member| {
+            SkippedMember {
+                name: match &member {
+                    Member::Method(m) => m.name.clone(),
+                    Member::Property(p) => p.name.clone(),
+                    Member::Field(f) => f.name.clone(),
+                    Member::Event(e) => e.name.clone(),
+                },
+                reason: "an F# member fsc compiled under another staticness than it declares, \
+                     which the projection cannot attribute to its declaration"
+                    .to_string(),
+            }
+        }));
+}
+
+/// Surface the case maker of a union as the static member method it stands
+/// in for.
+///
+/// fsc names FSharp.Core's `Option` and `list` case makers after their cases
+/// (`Some`, `Cons`) rather than `New<Case>`, and *discards* a member method of
+/// the union that clashes with one by name (`IlxGen.fs`, `tdefDiscards`) —
+/// `static member Some` and `static member Cons` among them — so the maker is
+/// the IL method a call to the member binds to. The projection drops it as
+/// compiler-generated, leaving the member absent.
+///
+/// The maker is surfaced for a val only when that is unambiguous: the val is
+/// the only one claiming its static method slot, no projected member occupies
+/// it, exactly one physical method does, and exactly one of the union's
+/// [`Entity::union_case_makers`] is a method of that name and arity. The one
+/// physical method is then the val's, and it is that maker.
+fn surface_case_maker_members(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
+    if entity.kind != EntityKind::Union {
+        return;
+    }
+    let mut claims: HashMap<&DocSlot, usize> = HashMap::new();
+    for k in keys {
+        *claims.entry(&k.slot).or_default() += 1;
+    }
+    let mut surfaced = Vec::new();
+    for (slot, vals) in claims {
+        let DocSlot::Method {
+            name,
+            arity,
+            is_static: true,
+            compiled: Compiled::AsDeclared,
+        } = slot
+        else {
+            continue;
+        };
+        if vals != 1
+            || entity.members.iter().any(|m| occupies(m, slot))
+            || physical_occupants(entity, slot, physical) != 1
+        {
+            continue;
+        }
+        let mut makers = entity.union_case_makers.iter().filter(|maker| {
+            maker.method.name == *name
+                && maker.method.is_static
+                && maker.method.signature.parameters.len() == *arity
+        });
+        if let (Some(maker), None) = (makers.next(), makers.next()) {
+            surfaced.push(maker.method.clone());
+        }
+    }
+    // Metadata order, as the projector lists methods.
+    surfaced.sort_by_key(|m| m.metadata_token);
+    entity
+        .members
+        .extend(surfaced.into_iter().map(|m| Member::Method(Box::new(m))));
+}
+
+/// Whether `member`'s first IL parameter is the receiver fsc puts first when it
+/// compiles an instance member of `target` as a static: `target` itself at its
+/// own type parameters, by reference for a struct (only a method or a
+/// property can lead with one).
+fn leads_with_receiver(member: &Member, target: &TypeMemberTarget) -> bool {
+    let is_self = |ty: &TypeRef| match ty {
+        TypeRef::Named {
+            assembly: None,
+            namespace,
+            name,
+            type_args,
+            ..
+        } => {
+            *namespace == target.namespace
+                && name
+                    .split('/')
+                    .eq(target.type_chain.iter().map(String::as_str))
+                && type_args.len() == target.arity
+                && type_args.iter().enumerate().all(|(i, a)| {
+                    a.ty == TypeRef::Var {
+                        index: i as u16,
+                        is_method: false,
+                    }
+                })
+        }
+        _ => false,
+    };
+    match member {
+        Member::Method(m) => m
+            .signature
+            .parameters
+            .first()
+            .is_some_and(|p| is_self(&p.ty)),
+        Member::Property(p) => p.parameters.first().is_some_and(|p| match &p.ty.ty {
+            TypeRef::ByRef { inner, .. } => is_self(inner),
+            ty => is_self(ty),
+        }),
+        Member::Field(_) | Member::Event(_) => false,
+    }
 }
 
 /// Stamp `entity`'s methods with their vals' argument groups
@@ -4225,11 +4747,13 @@ pub(crate) struct PhysicalMethod {
 /// Every `MethodDef` of an image, by token.
 pub(crate) type PhysicalMethods = HashMap<u32, PhysicalMethod>;
 
-/// How many of `entity`'s physical methods implement `slot`: a method by name,
-/// arity and staticness; a getter or setter by its accessor method; a `val`
-/// field by its getter. A `[<CLIEvent>]` property's getter slot is an IL event
-/// instead, implemented by its `add_` accessor.
+/// How many of `entity`'s physical methods implement `slot`, in the shape fsc
+/// compiled it to ([`DocSlot::compiled_shape`]): a method by name, arity and
+/// staticness; a getter or setter by its accessor method; a `val` field by its
+/// getter. A `[<CLIEvent>]` property's getter slot is an IL event instead,
+/// implemented by its `add_` accessor.
 fn physical_occupants(entity: &Entity, slot: &DocSlot, physical: &PhysicalMethods) -> usize {
+    let slot = &slot.compiled_shape();
     // The method's name, arity and staticness, and for an accessor the IL
     // property it must back.
     let (method, params, is_static, property) = match slot {
@@ -4237,18 +4761,21 @@ fn physical_occupants(entity: &Entity, slot: &DocSlot, physical: &PhysicalMethod
             name,
             arity,
             is_static,
+            ..
         } => (name.clone(), *arity, *is_static, None),
         DocSlot::Getter {
             name,
             accessor,
             index_arity,
             is_static,
+            ..
         } => (accessor.clone(), *index_arity, *is_static, Some(name)),
         DocSlot::Setter {
             name,
             accessor,
             index_arity,
             is_static,
+            ..
         } => (accessor.clone(), index_arity + 1, *is_static, Some(name)),
         DocSlot::ValField(name) => (format!("get_{name}"), 0, false, Some(name)),
     };
@@ -4277,7 +4804,7 @@ fn physical_occupants(entity: &Entity, slot: &DocSlot, physical: &PhysicalMethod
 }
 
 /// Stamp `entity`'s members from one type's pickled keys; see
-/// [`apply_type_member_doc_sigs`] for when a slot is unambiguous.
+/// [`apply_type_member_overlays`] for when a slot is unambiguous.
 fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
     // Per slot: how many vals claim it, and their key if they all agree.
     #[allow(clippy::type_complexity)]
@@ -4528,7 +5055,7 @@ impl MeasureScan {
 /// declares: its `let` values and functions, and any extension members, all of
 /// which compile onto its class.
 ///
-/// The row is located the way [`apply_type_member_doc_sigs`] locates it, under
+/// The row is located the way [`apply_type_member_overlays`] locates it, under
 /// the same guards: an unambiguous `(namespace, containers, name, arity)` key
 /// whose physical methods are declared on a TypeDef of the pickled IL name, and
 /// which is a module exactly when the pickled entity is. A
@@ -4747,7 +5274,7 @@ pub(crate) fn apply_member_measures(
         if (ecma.kind == EntityKind::Module) != target.is_module {
             continue;
         }
-        // The lossy-key guard of `apply_type_member_doc_sigs` (#145): the row
+        // The lossy-key guard of `apply_type_member_overlays` (#145): the row
         // the key found must physically be this type's.
         let declared_here = !ecma.method_def_tokens.is_empty()
             && ecma.method_def_tokens.iter().all(|t| {
@@ -7161,6 +7688,7 @@ mod tests {
                     name: format!("M{}", item.name),
                     arity: item.params.len(),
                     is_static: item.is_static,
+                    compiled: Compiled::AsDeclared,
                 };
                 match item.val {
                     Some((documented, member)) => {
@@ -7316,6 +7844,7 @@ mod tests {
                 name: format!("M{}", i.name),
                 arity: arity(i),
                 is_static: i.is_static,
+                compiled: Compiled::AsDeclared,
             };
             let mut keys = Vec::new();
             // Per projected member: its own val's grouping, if it has a val.
@@ -8928,5 +9457,314 @@ mod tests {
         let mut owned = vec![make_ecma_entity(vec!["N"], "A", EntityKind::Class)];
         apply_entity_overlay(&mut owned, &ccu).unwrap();
         assert_eq!(owned[0].definition_range, None, "bad file index declines");
+    }
+
+    /// How a generated val compiled, against what it declares.
+    #[derive(Debug, Clone, Copy)]
+    enum ValCompiled {
+        AsDeclared,
+        /// Declared instance; the IL method is static and leads with the
+        /// receiver (the generator forces its first parameter to be one).
+        StaticWithReceiver,
+        /// Declared static, one argument wider than the IL instance method.
+        InstanceFromStatic,
+        /// Judged receiver-first by the pickle side, wrongly: the IL method is
+        /// a static one parameter wider whose first parameter is not the
+        /// receiver. `member_compiled` is a port of fsc's rule, and the
+        /// receiver check is what stands between a misport and a wrong shape.
+        Misjudged,
+    }
+
+    /// One generated IL method of `N.T`: its name, parameters over three types
+    /// (`int`, `string`, and `N.T` itself) and staticness — its IL identity —
+    /// and what the projection made of it, plus the pickled val it compiles
+    /// from and how, or nothing for a method the signature file hides.
+    #[derive(Debug, Clone)]
+    struct ShapeItem {
+        name: u8,
+        params: Vec<u8>,
+        is_static: bool,
+        member: ValMember,
+        val: Option<ValCompiled>,
+    }
+
+    fn shape_item() -> impl Strategy<Value = ShapeItem> {
+        let member = prop_oneof![
+            Just(ValMember::Kept),
+            Just(ValMember::Refused),
+            Just(ValMember::Elided),
+        ];
+        let compiled = prop_oneof![
+            Just(ValCompiled::AsDeclared),
+            Just(ValCompiled::StaticWithReceiver),
+            Just(ValCompiled::InstanceFromStatic),
+            Just(ValCompiled::Misjudged),
+        ];
+        (
+            0u8..2,
+            proptest::collection::vec(0u8..3, 0..3),
+            any::<bool>(),
+            member,
+            proptest::option::of(compiled),
+        )
+            .prop_map(|(name, mut params, mut is_static, member, val)| {
+                // The IL shape each compilation produces.
+                match val {
+                    Some(ValCompiled::StaticWithReceiver) => {
+                        is_static = true;
+                        params.insert(0, 2);
+                    }
+                    Some(ValCompiled::InstanceFromStatic) => is_static = false,
+                    Some(ValCompiled::Misjudged) => {
+                        is_static = true;
+                        params.insert(0, 0);
+                    }
+                    Some(ValCompiled::AsDeclared) | None => {}
+                }
+                ShapeItem {
+                    name,
+                    params,
+                    is_static,
+                    member,
+                    val,
+                }
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
+
+        /// Soundness of `settle_compiled_shapes` against a generated ground
+        /// truth. Whatever mix of receiver-first statics, statics compiled
+        /// instance, plain members, signature-hidden methods, and refused or
+        /// elided projections a type holds — sharing IL slots in any way real
+        /// metadata allows — every member left standing has the shape F#
+        /// declares for it: one the pass reshaped is a receiver-first val's own
+        /// method, now its declared shape, and one it left alone is not the
+        /// method of a val compiled under another staticness. And it leaves
+        /// alone every member outside the IL slots such vals compile to.
+        #[test]
+        fn settled_members_have_their_declared_shape(
+            items in proptest::collection::vec(shape_item(), 0..8)
+        ) {
+            let mut seen = std::collections::HashSet::new();
+            let items: Vec<ShapeItem> = items
+                .into_iter()
+                .filter(|i| seen.insert((i.name, i.params.clone(), i.is_static)))
+                .collect();
+            let receiver = TypeRef::Named {
+                assembly: None,
+                namespace: vec!["N".to_string()],
+                name: "T".to_string(),
+                type_args: Vec::new(),
+                segment_arities: vec![0],
+            };
+            let ty = |p: u8| match p {
+                0 => TypeRef::Primitive(Primitive::I4),
+                1 => TypeRef::Primitive(Primitive::String),
+                _ => receiver.clone(),
+            };
+            let method_of = |i: &ShapeItem, tag: usize| {
+                let mut m = make_ecma_method(&format!("M{}", i.name));
+                if let Member::Method(mm) = &mut m {
+                    mm.is_static = i.is_static;
+                    // Tags the member with its item, for the oracle below.
+                    mm.metadata_token = tag as u32;
+                    mm.signature.parameters = i
+                        .params
+                        .iter()
+                        .map(|p| Parameter {
+                            name: None,
+                            ty: ty(*p),
+                            is_byref: false,
+                            is_out: false,
+                            is_readonly_ref: false,
+                            default: crate::model::ParamDefault::None,
+                            is_param_array: false,
+                            nullability: Nullability::Oblivious,
+                        })
+                        .collect();
+                }
+                m
+            };
+            let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Class);
+            let physical: PhysicalMethods = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    (
+                        i as u32,
+                        PhysicalMethod {
+                            declaring_type: "T".to_string(),
+                            name: format!("M{}", item.name),
+                            params: Some(item.params.len()),
+                            is_static: item.is_static,
+                            accessor_of: None,
+                        },
+                    )
+                })
+                .collect();
+            entity.method_def_tokens = (0..items.len() as u32).collect();
+            let mut keys = Vec::new();
+            for (tag, item) in items.iter().enumerate() {
+                if let Some(compiled) = item.val {
+                    let (arity, is_static, compiled) = match compiled {
+                        ValCompiled::AsDeclared => {
+                            (item.params.len(), item.is_static, Compiled::AsDeclared)
+                        }
+                        ValCompiled::StaticWithReceiver | ValCompiled::Misjudged => {
+                            (item.params.len() - 1, false, Compiled::StaticWithReceiver)
+                        }
+                        ValCompiled::InstanceFromStatic => {
+                            (item.params.len() + 1, true, Compiled::InstanceFromStatic)
+                        }
+                    };
+                    keys.push(DocKey {
+                        slot: DocSlot::Method {
+                            name: format!("M{}", item.name),
+                            arity,
+                            is_static,
+                            compiled,
+                        },
+                        key: None,
+                        erased_typars: 0,
+                        curried: None,
+                        role: SlotRole::Plain,
+                    });
+                }
+                match item.member {
+                    ValMember::Kept => entity.members.push(method_of(item, tag)),
+                    ValMember::Refused => entity.skipped_members.push(SkippedMember {
+                        name: format!("M{}", item.name),
+                        reason: "refused".to_string(),
+                    }),
+                    ValMember::Elided => {}
+                }
+            }
+            // The IL slots of the vals compiled under another staticness.
+            let lying_slots: Vec<DocSlot> = keys
+                .iter()
+                .filter(|k| k.slot.compiled() != Compiled::AsDeclared)
+                .map(|k| k.slot.compiled_shape())
+                .collect();
+            let target = TypeMemberTarget {
+                namespace: vec!["N".to_string()],
+                type_chain: vec!["T".to_string()],
+                arity: 0,
+                il_name: "T".to_string(),
+                keys,
+            };
+            let before = entity.members.clone();
+            settle_compiled_shapes(&mut entity, &target, &physical);
+            for member in &entity.members {
+                let Member::Method(m) = member else {
+                    unreachable!("the generator makes only methods");
+                };
+                let item = &items[m.metadata_token as usize];
+                let original = method_of(item, m.metadata_token as usize);
+                if *member == original {
+                    prop_assert!(
+                        matches!(item.val, None | Some(ValCompiled::AsDeclared)),
+                        "{item:?} kept its IL shape, which F# does not declare"
+                    );
+                } else {
+                    prop_assert!(
+                        matches!(item.val, Some(ValCompiled::StaticWithReceiver)),
+                        "{item:?} was reshaped, but is not a receiver-first val's method"
+                    );
+                    prop_assert!(!m.is_static, "{item:?} reshaped to a static");
+                    prop_assert_eq!(
+                        m.signature.parameters.iter().map(|p| p.ty.clone()).collect::<Vec<_>>(),
+                        item.params[1..].iter().map(|p| ty(*p)).collect::<Vec<_>>(),
+                        "{:?} reshaped to the wrong parameters", item
+                    );
+                }
+            }
+            for member in &before {
+                if !lying_slots.iter().any(|slot| occupies(member, slot)) {
+                    prop_assert!(
+                        entity.members.contains(member),
+                        "{member:?} lies outside every reshaped slot, yet was touched"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The common case of `settle_compiled_shapes` reshapes rather than
+    /// refuses: the property above is satisfied by refusing everything.
+    #[test]
+    fn a_lone_receiver_first_static_is_reshaped() {
+        let receiver = TypeRef::Named {
+            assembly: None,
+            namespace: vec!["N".to_string()],
+            name: "T".to_string(),
+            type_args: Vec::new(),
+            segment_arities: vec![0],
+        };
+        let mut m = make_ecma_method("M");
+        if let Member::Method(mm) = &mut m {
+            mm.is_static = true;
+            mm.signature.parameters = [receiver, TypeRef::Primitive(Primitive::I4)]
+                .into_iter()
+                .map(|ty| Parameter {
+                    name: None,
+                    ty,
+                    is_byref: false,
+                    is_out: false,
+                    is_readonly_ref: false,
+                    default: crate::model::ParamDefault::None,
+                    is_param_array: false,
+                    nullability: Nullability::Oblivious,
+                })
+                .collect();
+        }
+        let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Class);
+        entity.members.push(m);
+        entity.method_def_tokens = vec![0];
+        let physical: PhysicalMethods = [(
+            0,
+            PhysicalMethod {
+                declaring_type: "T".to_string(),
+                name: "M".to_string(),
+                params: Some(2),
+                is_static: true,
+                accessor_of: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let target = TypeMemberTarget {
+            namespace: vec!["N".to_string()],
+            type_chain: vec!["T".to_string()],
+            arity: 0,
+            il_name: "T".to_string(),
+            keys: vec![DocKey {
+                slot: DocSlot::Method {
+                    name: "M".to_string(),
+                    arity: 1,
+                    is_static: false,
+                    compiled: Compiled::StaticWithReceiver,
+                },
+                key: None,
+                erased_typars: 0,
+                curried: None,
+                role: SlotRole::Plain,
+            }],
+        };
+        settle_compiled_shapes(&mut entity, &target, &physical);
+        let [Member::Method(m)] = entity.members.as_slice() else {
+            panic!("one method: {:?}", entity.members);
+        };
+        assert!(!m.is_static);
+        assert_eq!(
+            m.signature
+                .parameters
+                .iter()
+                .map(|p| &p.ty)
+                .collect::<Vec<_>>(),
+            [&TypeRef::Primitive(Primitive::I4)]
+        );
+        assert!(entity.skipped_members.is_empty());
     }
 }

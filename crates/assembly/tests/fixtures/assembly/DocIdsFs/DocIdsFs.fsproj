@@ -13,8 +13,9 @@
          declaration in `Library.fs` carries a `///` comment, so every shape the
          fixture exercises has a key. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <!-- `nativeptr` parameters (FS0009) are one of the shapes under test. -->
-    <NoWarn>$(NoWarn);9;51</NoWarn>
+    <!-- `nativeptr` parameters (FS0009) are one of the shapes under test, and
+         so are instance members a null-as-true union compiles static (FS0061). -->
+    <NoWarn>$(NoWarn);9;51;61</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
