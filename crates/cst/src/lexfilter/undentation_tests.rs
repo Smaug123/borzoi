@@ -1,16 +1,16 @@
 //! Equivalence tests for the cache-accelerated `undentation_limit`.
 //!
-//! `Filter::undentation_limit` was made linear by jumping over maximal runs of
-//! "pure-skip" offside contexts via the `undentation_skip` cache (instead of
-//! the O(depth)-per-push stepwise walk). This module holds the **reference
-//! oracle** — [`undentation_limit_reference`], a verbatim, jump-free copy of the
-//! stepwise walk — and a property test asserting the production (cached) function
-//! agrees with it for arbitrary offside stacks, `new_ctxt`, and `strict`.
+//! `Filter::undentation_limit` is made linear by jumping over maximal runs of
+//! "pure-skip" offside contexts via the `undentation_skip` cache instead of
+//! stepping through them one at a time. Passing `skip: None` turns the jump off,
+//! leaving the stepwise walk — the behavioural spec — as the **reference
+//! oracle** [`undentation_limit_reference`]; a property test asserts the two
+//! agree for arbitrary offside stacks, `new_ctxt`, `strict` and language-version
+//! gates.
 //!
 //! The corpus diff can't catch a deep-walk divergence (real source is shallow),
 //! so this generator-driven equivalence check is the real correctness gate for
-//! the optimisation. The reference is the proven pre-cache implementation, so a
-//! mismatch means the jump (or the skip cache) is wrong.
+//! the optimisation: a mismatch means the jump (or the skip cache) is wrong.
 
 use super::*;
 use proptest::prelude::*;
@@ -20,259 +20,21 @@ use proptest::prelude::*;
 /// `I` or the borrow `'a`). Never constructed.
 type RefFilter = Filter<'static, std::iter::Empty<(Result<Token<'static>, LexError>, Span)>>;
 
-/// Verbatim, jump-free copy of `Filter::undentation_limit`'s stepwise walk — the
-/// behavioural spec the cached version must match. The ONLY difference from
-/// production is the absence of the `skip`-cache fast-path, so any divergence
-/// localises to that jump.
+/// Every gate on: the language versions from F# 6.0 up.
+const ALL_GATES: UndentationGates = UndentationGates {
+    relax_whitespace: true,
+    relax_whitespace2: true,
+};
+
+/// The stepwise walk: `Filter::undentation_limit` with the skip-cache jump off.
 fn undentation_limit_reference(
-    mut strict: bool,
+    gates: UndentationGates,
+    strict: bool,
     new_ctxt: &Context,
-    mut stack: &[Context],
+    stack: &[Context],
 ) -> PositionWithColumn {
-    loop {
-        let Some((head, rest)) = stack.split_last() else {
-            return PositionWithColumn {
-                pos: new_ctxt.start_pos(),
-                col: -1,
-            };
-        };
-
-        if let Context::Vanilla { .. } = head {
-            stack = rest;
-            continue;
-        }
-
-        if !strict && matches!(head, Context::SeqBlock { .. } | Context::Paren { .. }) {
-            stack = rest;
-            continue;
-        }
-
-        if let Context::Paren { opener, .. } = head
-            && opener.is_token_l_expr_paren()
-        {
-            strict = false;
-            stack = rest;
-            continue;
-        }
-        if let Context::SeqBlock { .. } = head
-            && let Some(Context::Paren { opener, .. }) = rest.last()
-            && opener.is_token_l_expr_paren()
-        {
-            strict = false;
-            stack = &rest[..rest.len() - 1];
-            continue;
-        }
-
-        if let Context::Paren {
-            opener: Opener::Class | Opener::Struct | Opener::Interface,
-            ..
-        } = head
-            && let [
-                ..,
-                limit_ctxt @ Context::TypeDefns { .. },
-                Context::SeqBlock { .. },
-            ] = rest
-        {
-            return PositionWithColumn {
-                pos: limit_ctxt.start_pos(),
-                col: (limit_ctxt.start_pos().col as i32) + 1,
-            };
-        }
-
-        if let Context::SeqBlock { .. } = new_ctxt
-            && let Context::Else { .. } = head
-            && let Some(Context::If { pos: if_pos }) = rest.last()
-        {
-            return PositionWithColumn {
-                pos: *if_pos,
-                col: if_pos.col as i32,
-            };
-        }
-
-        if let Context::SeqBlock { first: true, .. } = new_ctxt
-            && let Context::Do { pos: do_pos } = head
-            && let [
-                ..,
-                Context::TypeDefns { .. } | Context::ModuleBody { .. },
-                Context::SeqBlock { .. },
-            ] = rest
-        {
-            return PositionWithColumn {
-                pos: *do_pos,
-                col: (do_pos.col as i32) + 1,
-            };
-        }
-
-        if let Context::SeqBlock { first: true, .. } = new_ctxt
-            && let Context::WithAsAugment { .. } = head
-            && let Some(limit_ctxt @ Context::TypeDefns { .. }) = rest.last()
-        {
-            return PositionWithColumn {
-                pos: limit_ctxt.start_pos(),
-                col: (limit_ctxt.start_pos().col as i32) + 1,
-            };
-        }
-
-        if let Context::WithAsAugment { .. } = new_ctxt
-            && matches!(
-                head,
-                Context::MemberHead { .. }
-                    | Context::TypeDefns { .. }
-                    | Context::Exception { .. }
-                    | Context::InterfaceHead { .. }
-            )
-        {
-            return PositionWithColumn {
-                pos: head.start_pos(),
-                col: head.start_pos().col as i32,
-            };
-        }
-
-        if let Context::MatchClauses { .. } = new_ctxt
-            && let Context::Function { .. } = head
-            && let [
-                ..,
-                limit_ctxt @ Context::LetDecl { .. },
-                Context::SeqBlock { .. },
-            ] = rest
-        {
-            return PositionWithColumn {
-                pos: limit_ctxt.start_pos(),
-                col: limit_ctxt.start_pos().col as i32,
-            };
-        }
-
-        if matches!(
-            head,
-            Context::Fun { .. }
-                | Context::Function { .. }
-                | Context::Then { .. }
-                | Context::Else { .. }
-                | Context::Do { .. }
-                | Context::WithAsAugment { .. }
-        ) {
-            strict = false;
-            stack = rest;
-            continue;
-        }
-
-        if let Context::Match { pos: match_pos } = head
-            && let [
-                ..,
-                Context::Paren {
-                    pos: paren_pos,
-                    opener: Opener::Paren | Opener::Begin,
-                },
-                Context::SeqBlock { .. },
-            ] = rest
-        {
-            let pos = if match_pos.col <= paren_pos.col {
-                *match_pos
-            } else {
-                *paren_pos
-            };
-            return PositionWithColumn {
-                pos,
-                col: pos.col as i32,
-            };
-        }
-
-        if let Context::MatchClauses { pos: mc_pos, .. } = head
-            && let [
-                ..,
-                Context::Paren {
-                    pos: paren_pos,
-                    opener: Opener::Paren | Opener::Begin,
-                },
-                Context::SeqBlock { .. },
-                Context::Match { .. },
-            ] = rest
-        {
-            let pos = if mc_pos.col <= paren_pos.col {
-                *mc_pos
-            } else {
-                *paren_pos
-            };
-            return PositionWithColumn {
-                pos,
-                col: pos.col as i32,
-            };
-        }
-
-        if let Context::MatchClauses { .. } = head
-            && let Some(limit_ctxt) = rest.last()
-            && matches!(limit_ctxt, Context::Try { .. } | Context::Match { .. })
-        {
-            return PositionWithColumn {
-                pos: limit_ctxt.start_pos(),
-                col: limit_ctxt.start_pos().col as i32,
-            };
-        }
-
-        // FCS L971-972: If/Else/Then aligned exactly with an enclosing If.
-        if let Context::If { pos: if_pos } = head
-            && matches!(
-                new_ctxt,
-                Context::If { .. } | Context::Else { .. } | Context::Then { .. }
-            )
-        {
-            return PositionWithColumn {
-                pos: *if_pos,
-                col: if_pos.col as i32,
-            };
-        }
-
-        // FCS L956: CtxtWithAsLet on a CtxtMemberHead → member.col + 1.
-        if let Context::WithAsLet { .. } = head
-            && let Some(limit_ctxt @ Context::MemberHead { .. }) = rest.last()
-        {
-            return PositionWithColumn {
-                pos: limit_ctxt.start_pos(),
-                col: (limit_ctxt.start_pos().col as i32) + 1,
-            };
-        }
-
-        let pos = head.start_pos();
-        let col = pos.col as i32;
-        return match head {
-            Context::If { .. }
-            | Context::LetDecl { .. }
-            | Context::WithAsLet { .. }
-            | Context::NamespaceHead { .. }
-            | Context::ModuleHead { .. }
-            | Context::ModuleBody {
-                whole_file: false, ..
-            }
-            | Context::MemberHead { .. }
-            | Context::MemberBody { .. }
-            | Context::Exception { .. }
-            | Context::InterfaceHead { .. } => PositionWithColumn { pos, col: col + 1 },
-            Context::Paren { .. }
-            | Context::For { .. }
-            | Context::When { .. }
-            | Context::While { .. }
-            | Context::Match { .. }
-            | Context::MatchClauses { .. }
-            | Context::SeqBlock { .. }
-            | Context::Try { .. }
-            | Context::NamespaceBody { .. }
-            | Context::ModuleBody {
-                whole_file: true, ..
-            }
-            | Context::TypeDefns { .. } => PositionWithColumn { pos, col },
-            Context::Vanilla { .. }
-            | Context::Fun { .. }
-            | Context::Function { .. }
-            | Context::Then { .. }
-            | Context::Else { .. }
-            | Context::Do { .. }
-            | Context::WithAsAugment { .. } => {
-                unreachable!("recursive arm should have handled {head:?}")
-            }
-        };
-    }
+    RefFilter::undentation_limit(gates, strict, new_ctxt, stack, None)
 }
-
 /// Rebuild the `undentation_skip` cache for a stand-alone stack, mirroring
 /// `Filter::push_undentation_skip` applied in push order.
 fn build_skip(stack: &[Context]) -> Vec<u32> {
@@ -290,8 +52,8 @@ fn build_skip(stack: &[Context]) -> Vec<u32> {
 
 fn assert_cache_matches(strict: bool, new_ctxt: &Context, stack: &[Context]) {
     let skip = build_skip(stack);
-    let cached = RefFilter::undentation_limit(strict, new_ctxt, stack, &skip);
-    let reference = undentation_limit_reference(strict, new_ctxt, stack);
+    let cached = RefFilter::undentation_limit(ALL_GATES, strict, new_ctxt, stack, Some(&skip));
+    let reference = undentation_limit_reference(ALL_GATES, strict, new_ctxt, stack);
     assert_eq!(
         cached, reference,
         "cache/reference mismatch: strict={strict} new_ctxt={new_ctxt:?} stack={stack:?}"
@@ -396,17 +158,20 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(2_000))]
 
     /// The cache-accelerated production walk must equal the stepwise reference
-    /// for any stack / new_ctxt / strict.
+    /// for any stack / new_ctxt / strict / gates.
     #[test]
     fn undentation_cache_matches_reference(
         stack in stack_strategy(),
         new_ctxt in ctxt_strategy(),
         strict in any::<bool>(),
+        relax_whitespace in any::<bool>(),
+        relax_whitespace2 in any::<bool>(),
     ) {
+        let gates = UndentationGates { relax_whitespace, relax_whitespace2 };
         let skip = build_skip(&stack);
         prop_assert_eq!(
-            RefFilter::undentation_limit(strict, &new_ctxt, &stack, &skip),
-            undentation_limit_reference(strict, &new_ctxt, &stack),
+            RefFilter::undentation_limit(gates, strict, &new_ctxt, &stack, Some(&skip)),
+            undentation_limit_reference(gates, strict, &new_ctxt, &stack),
         );
     }
 }
@@ -440,7 +205,7 @@ fn deep_pure_skip_run_jumps_to_limit() {
     assert_cache_matches(true, &new_ctxt, &stack);
     let skip = build_skip(&stack);
     assert_eq!(
-        RefFilter::undentation_limit(true, &new_ctxt, &stack, &skip),
+        RefFilter::undentation_limit(ALL_GATES, true, &new_ctxt, &stack, Some(&skip)),
         PositionWithColumn {
             pos: Pos { line: 1, col: 0 },
             col: 1

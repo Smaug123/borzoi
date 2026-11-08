@@ -249,6 +249,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             }
         }
 
+        // The first rule to consult the stack for `tt`, so the version worlds
+        // still agree on everything but a pending `CtxtMatch`.
+        self.resolve_match_ghost(&tt);
+
         // EOF/IN/DONE/etc. force the head context closed.
         if self.token_forces_head_context_closure(&tt) {
             let ctxt = self.pop_ctxt().expect("guard ensures non-empty");

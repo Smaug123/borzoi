@@ -100,12 +100,13 @@ Two patterns that work:
 - **A consequence-side flag**, computed where the uncertain value is consumed —
   often cheaper *and* exact. The LangVersion case used
   `Parse::shape_depends_on_language_version`: the lex-filter records reaching a
-  version-gated offside push. `false` **proves** the tree is version-invariant
+  version-gated decision (an offside strict push, or a `relaxWhitespace2` pop
+  that matters). `false` **proves** the tree is version-invariant
   (first-divergence argument); `true` over-approximates (EOF-anchored pushes
   reconverge — `module M =` mid-edit). So the fold refuses only on untrusted
   provenance × flagged file × a *verified* green-tree difference against a
-  re-parse from the other side of the boundary (rowan green equality is
-  structural). **Trigger cheap, verify exact.**
+  re-parse at every other `LanguageVersion::SHAPE_REPRESENTATIVES` band (rowan
+  green equality is structural). **Trigger cheap, verify exact.**
 
 ## 3. Test any new trust gate against a real SDK
 

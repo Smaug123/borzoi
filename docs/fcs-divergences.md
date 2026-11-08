@@ -21,10 +21,10 @@ Two kinds of difference are deliberately *not* counted as divergences:
 - **Language-version pinning.** Since `42265b3` (#613) the LSP resolves each
   project's `<LangVersion>` (absent → 10.0, FCS's default; orphan/non-file
   buffers → `preview`) and threads it through the parse, so wired feature gates
-  such as `#elif`/FS3350 and nullness honour it and *match* FCS (not a
-  divergence). The gates that are *not yet* version-aware are implemented at
-  their latest-version form unconditionally, so they diverge only when a project
-  sets an older `<LangVersion>`. See
+  such as `#elif`/FS3350, nullness and the lex-filter's offside gates honour it
+  and *match* FCS (not a divergence). A gate that is *not yet* version-aware is
+  implemented at its latest-version form unconditionally, so it diverges only
+  when a project sets an older `<LangVersion>`. See
   [Language-version pinning](#language-version-pinning).
 - **Correctness over availability.** Where FCS warns-and-continues on malformed
   metadata, we usually error loudly instead, so a future format change is not
@@ -430,21 +430,26 @@ The LSP now resolves each project's `<LangVersion>` and threads it through the
 parse (`6e9377f`/#606 added the seam, `42265b3`/#613 wired it into the LSP):
 `#elif`/FS3350 and nullness gates honour it and *match* FCS, so they are **not**
 divergences (absent `<LangVersion>` → 10.0, FCS's default; orphan/non-file
-buffers → `preview` to avoid guess-flagging). The gates below are *not yet*
-version-aware — they are implemented at their latest-version form
-unconditionally, so they diverge only when a project sets an older
+buffers → `preview` to avoid guess-flagging). Every lexer and lex-filter gate
+FCS consults (`RelaxWhitespace`, `RelaxWhitespace2`, `StrictIndentation`,
+`NullnessChecking`, `ErrorOnInvalidDeclsInTypeDefinitions`) is version-aware
+too: the lex-filter differential runs every fixture at one version per band of
+those gates, comparing both the token stream and the FS0058 offside
+diagnostics. `#nowarn` / `#warnon` arguments record whether they need
+`ParsedHashDirectiveArgumentNonQuotes` (F# 9.0), and
+`Directive::warning_numbers` reads them at a version. The gate below is *not
+yet* version-aware — it is implemented at its latest-version form
+unconditionally, so it diverges only when a project sets an older
 `<LangVersion>`:
 
-- **`relaxWhitespace2` offside grace treated as always-on** — the `+1` column
-  bonus and the `MatchClauses :: CtxtMatch` undentation arm fire unconditionally;
-  FCS gates them on `relaxWhitespace2` (F# 6.0+). (`1a730fd`, `c5e3676`)
-- **`#nowarn` / `#warnon` argument forms accepted regardless of version** — FCS
-  gates the unquoted and `FS`-prefixed forms on `ParsedHashDirectiveArgumentNonQuotes`
-  (F# 9.0+); we accept quoted, unquoted, and `FS` forms always, so we diverge
-  only at `<LangVersion>` ≤ 8. (documentation-only; PR #159)
 - **Older typed-node feature pins are incomplete** — the interval gate covers
   nullness, but other typed-node features introduced below the currently modelled
   surfaces may still be treated as always-on until their interval rows are added.
+
+A parser-level offside diagnostic that is not version-dependent is also
+unmodelled: FCS's `classDefnMembersAtLeastOne` (pars.fsy:1855) reports FS0058 on
+a member that follows an `interface … with` with no members, and we report
+nothing (`ParserFs0058::EmptyInterfaceThenMember` in the lex-filter harness).
 
 ## Oracle-side workarounds (`tools/fcs-dump`)
 

@@ -773,26 +773,37 @@ pub struct FilterRun<'a> {
     /// during the run.
     pub diagnostics: Vec<OffsideDiagnostic>,
     /// Whether this run reached a decision point whose outcome differs
-    /// across language versions — today exactly the strict-indentation gate
-    /// (F# 8, [`LanguageVersion::strict_indentation_is_error`]): a
-    /// version-gated context push whose anchor is offside is *aborted* at
-    /// F# 8+ but *kept* (with a warning) below, so everything after nests
-    /// differently. `false` **proves** the filtered stream — and therefore
-    /// the parse tree — is identical under every [`LanguageVersion`]: two
-    /// hypothetical runs under different versions produce identical streams
-    /// up to their first divergence point, that point is reached in the same
-    /// state by both, and it is by construction a version-gated offside push
-    /// — exactly where this flag is set. Consumers that don't know the
-    /// project's real language version (an untrusted `<LangVersion>`
-    /// provenance) can therefore trust a `false`-flagged parse outright.
+    /// across language versions. There are three kinds:
+    ///
+    ///  * the strict-indentation gate (F# 8,
+    ///    [`LanguageVersion::strict_indentation_is_error`]): a version-gated
+    ///    context push whose anchor is offside is *aborted* at F# 8+ but
+    ///    *kept* (with a warning) below, so everything after nests
+    ///    differently;
+    ///  * the `relaxWhitespace2OffsideRule` grace (F# 6,
+    ///    [`LanguageVersion::supports_relax_whitespace2`]): a dedented closer
+    ///    at exactly an enclosing context's column pops it below 6.0 and
+    ///    leaves it open from 6.0 (`Filter::is_offside_of`);
+    ///  * the `CtxtMatch` popped together with its `CtxtMatchClauses` from
+    ///    F# 6 (`Filter::pop_ctxt`), when the next token would not have
+    ///    removed it anyway (`Filter::resolve_match_ghost`).
+    ///
+    /// `false` **proves** the filtered stream — and therefore the parse
+    /// tree — is identical under every [`LanguageVersion`]: two hypothetical
+    /// runs under different versions produce identical streams up to their
+    /// first divergence point, that point is reached in the same state by
+    /// both, and it is by construction one of the decisions above — exactly
+    /// where this flag is set. Consumers that don't know the project's real
+    /// language version (an untrusted `<LangVersion>` provenance) can
+    /// therefore trust a `false`-flagged parse outright.
     ///
     /// `true` is a sound **over**-approximation: the differing stack
     /// operations can reconverge to the identical stream (an EOF-anchored
     /// push's abort is largely absorbed by the EOF force-closure cascade —
     /// `module M =` at end of file, a common mid-edit state). A consumer for
-    /// which a false positive is costly should verify by comparing a parse
-    /// from the other side of the boundary (strictness is the only shape
-    /// input, so one representative per side decides) before acting.
+    /// which a false positive is costly should verify by comparing parses at
+    /// [`LanguageVersion::SHAPE_REPRESENTATIVES`] (the gates above are the
+    /// only shape inputs, so one version per band decides) before acting.
     pub shape_depends_on_language_version: bool,
 }
 
@@ -892,6 +903,10 @@ struct Filter<'a, I> {
     ///
     /// See [`LanguageVersion::strict_indentation_is_error`].
     strict_indentation_is_error: bool,
+    /// See [`LanguageVersion::supports_relax_whitespace`].
+    relax_whitespace: bool,
+    /// See [`LanguageVersion::supports_relax_whitespace2`].
+    relax_whitespace2: bool,
     /// Whether the nested-declaration-in-type FS0058 problems are reported at
     /// all (F# 10+). See
     /// [`LanguageVersion::reports_invalid_decls_in_type_definitions`]. Consumed
@@ -902,14 +917,29 @@ struct Filter<'a, I> {
     /// order detected. Drained by [`filter_collect`]. Empty until the emission
     /// stages of `docs/offside-diagnostics-plan.md` land.
     diagnostics: Vec<OffsideDiagnostic>,
-    /// Set when this run reaches a [`PushStrictness::VersionGated`] context
-    /// push whose anchor is offside — the one place the filtered stream's
-    /// shape depends on the language version. See
+    /// Set when this run reaches a decision whose outcome turns on the
+    /// language version: a [`PushStrictness::VersionGated`] context push whose
+    /// anchor is offside, or a `relaxWhitespace2` pop that matters. See
     /// [`FilterRun::shape_depends_on_language_version`] for the full
     /// soundness argument (`false` proves version-independence).
     shape_depends_on_language_version: bool,
+    /// The `CtxtMatch` that the two sides of the F# 6.0 boundary disagree
+    /// about, from the moment its `CtxtMatchClauses` is popped until the next
+    /// token settles it: popped with the clauses from 6.0, left on the stack
+    /// below. See [`Self::pop_ctxt`] and [`Self::resolve_match_ghost`].
+    match_ghost: Option<Pos>,
     /// Every context pushed so far, when [`context_pushes`] asked for them.
     pushes: Option<Vec<ContextPush>>,
+}
+
+/// The language-version gates [`Filter::undentation_limit`] consults, both
+/// resolved from the filter's [`LanguageVersion`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UndentationGates {
+    /// [`LanguageVersion::supports_relax_whitespace`].
+    relax_whitespace: bool,
+    /// [`LanguageVersion::supports_relax_whitespace2`].
+    relax_whitespace2: bool,
 }
 
 /// How a context push treats an offside anchor — FCS's `strictIndentation`
@@ -1017,9 +1047,12 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             last_real_was_atomic_end: false,
             tokens_that_need_no_processing: 0,
             strict_indentation_is_error: lang.strict_indentation_is_error(),
+            relax_whitespace: lang.supports_relax_whitespace(),
+            relax_whitespace2: lang.supports_relax_whitespace2(),
             reports_invalid_decls_in_type: lang.reports_invalid_decls_in_type_definitions(),
             diagnostics: Vec::new(),
             shape_depends_on_language_version: false,
+            match_ghost: None,
             pushes: None,
         }
     }
@@ -1750,11 +1783,36 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         trigger: Span,
         ctxt: Context,
     ) -> bool {
+        // A push with a `CtxtMatch` outstanding in one version world only lands
+        // on different stacks in the two (see [`Self::pop_ctxt`]).
+        if self.match_ghost.take().is_some() {
+            self.shape_depends_on_language_version = true;
+        }
         let correct = self.is_correct_indent(ignore_indent, anchor_is_eof, &trigger, &ctxt);
         let strict = match strictness {
             PushStrictness::AlwaysLenient => false,
             PushStrictness::VersionGated => {
-                if !correct {
+                // Below F# 8 the push is kept whatever the limit says; from
+                // F# 8, where every undentation gate is on, it is aborted when
+                // offside. So the versions disagree exactly when the anchor is
+                // offside under F# 8+'s gates, which this run's `correct`
+                // answers only when its own gates are those.
+                let correct_from_f8 = if self.strict_indentation_is_error {
+                    correct
+                } else {
+                    Self::indent_is_exempt(ignore_indent, &ctxt)
+                        || self
+                            .indent_respects_limit(
+                                UndentationGates {
+                                    relax_whitespace: true,
+                                    relax_whitespace2: true,
+                                },
+                                anchor_is_eof,
+                                &ctxt,
+                            )
+                            .is_ok()
+                };
+                if !correct_from_f8 {
                     // This push is kept below F# 8 and aborted at F# 8+, so
                     // everything downstream nests differently: the stream's
                     // shape now provably depends on the language version.
@@ -1804,27 +1862,16 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         trigger: &Span,
         ctxt: &Context,
     ) -> bool {
-        if ignore_indent {
+        if Self::indent_is_exempt(ignore_indent, ctxt) {
             return true;
         }
-        match ctxt {
-            Context::Vanilla { .. } => return true,
-            Context::Paren {
-                opener: Opener::InterpFill,
-                ..
-            } => return true,
-            _ => {}
-        }
-        let limit =
-            Self::undentation_limit(true, ctxt, &self.offside_stack, &self.undentation_skip);
-        // FCS's `startPosOfTokenTup`: an EOF-anchored context's offside column is
-        // its byte column minus one (`ColumnMinusOne`). `ctxt.start_pos()` keeps
-        // the true byte position (for the message / virtual anchoring); the −1
-        // lives only here, in the comparison. Non-EOF anchors subtract 0.
-        let c2 = ctxt.start_pos().col as i32 - i32::from(anchor_is_eof);
-        if c2 >= limit.col {
+        let gates = UndentationGates {
+            relax_whitespace: self.relax_whitespace,
+            relax_whitespace2: self.relax_whitespace2,
+        };
+        let Err(limit) = self.indent_respects_limit(gates, anchor_is_eof, ctxt) else {
             return true;
-        }
+        };
         let severity = if self.strict_indentation_is_error {
             OffsideSeverity::Error
         } else {
@@ -1849,6 +1896,45 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             severity,
         });
         false
+    }
+
+    /// Whether a push is exempt from the undentation check altogether (see
+    /// [`Self::is_correct_indent`]).
+    fn indent_is_exempt(ignore_indent: bool, ctxt: &Context) -> bool {
+        ignore_indent
+            || matches!(
+                ctxt,
+                Context::Vanilla { .. }
+                    | Context::Paren {
+                        opener: Opener::InterpFill,
+                        ..
+                    }
+            )
+    }
+
+    /// Whether `ctxt`'s anchor respects the undentation limit the current stack
+    /// imposes under `gates`, else the limit it violates. The check alone, for
+    /// [`Self::is_correct_indent`] (which reports the violation) and for the
+    /// version-shape flag (which asks about other gates than the run's).
+    fn indent_respects_limit(
+        &self,
+        gates: UndentationGates,
+        anchor_is_eof: bool,
+        ctxt: &Context,
+    ) -> Result<(), PositionWithColumn> {
+        let limit = Self::undentation_limit(
+            gates,
+            true,
+            ctxt,
+            &self.offside_stack,
+            Some(&self.undentation_skip),
+        );
+        // FCS's `startPosOfTokenTup`: an EOF-anchored context's offside column is
+        // its byte column minus one (`ColumnMinusOne`). `ctxt.start_pos()` keeps
+        // the true byte position (for the message / virtual anchoring); the −1
+        // lives only here, in the comparison. Non-EOF anchors subtract 0.
+        let c2 = ctxt.start_pos().col as i32 - i32::from(anchor_is_eof);
+        if c2 >= limit.col { Ok(()) } else { Err(limit) }
     }
 
     /// The byte offset of `pos`, a token-start position (see
@@ -1887,14 +1973,23 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// `else`) discriminate on what's being pushed in addition to the
     /// existing stack shape.
     ///
+    /// `gates` carries the language-version features four of the arms are
+    /// conditioned on. They matter only below F# 8: from 8.0 both are on,
+    /// and below it no push is strict, so the limit grades FS0058 warnings
+    /// and never moves the token stream.
+    ///
+    /// `skip` is [`Self::undentation_skip`] for `stack`, which lets the walk jump
+    /// over runs of transparent contexts; `None` walks them one at a time.
+    ///
     /// Only the arms that reference currently-ported contexts are
     /// populated; arms for not-yet-ported contexts are added alongside
     /// the push site that introduces them.
     fn undentation_limit(
+        gates: UndentationGates,
         mut strict: bool,
         new_ctxt: &Context,
         mut stack: &[Context],
-        skip: &[u32],
+        skip: Option<&[u32]>,
     ) -> PositionWithColumn {
         // Iterative form of FCS's recursive `undentationLimit`, plus an O(1)
         // fast-path over deep transparent runs. The original is tail-recursive
@@ -1905,9 +2000,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // behaviour; the `skip`-cache jump below collapses each maximal run of
         // pure-skip contexts into one step, making the walk O(1) amortised.
         //
-        // The stepwise arms remain the behavioural spec: the test
-        // `undentation_cache_matches_reference` checks this function against a
-        // verbatim, jump-free `undentation_limit_reference` over random stacks.
+        // The stepwise arms remain the behavioural spec: `skip: None` turns the
+        // jump off, and the test `undentation_cache_matches_reference` checks
+        // the two modes agree over random stacks.
         loop {
             let Some((head, rest)) = stack.split_last() else {
                 // FCS L774: empty stack → no limit.
@@ -1923,7 +2018,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // non-pure-skip context (or to "empty" → no limit) instead of
             // stepping one at a time. Strict mode only ever skips Vanilla (one at
             // a time, below), so the jump is gated on `!strict`.
-            if !strict && Self::is_pure_skip(head) {
+            if !strict
+                && Self::is_pure_skip(head)
+                && let Some(skip) = skip
+            {
                 match skip[stack.len() - 1] {
                     u32::MAX => {
                         // Whole remaining prefix is pure-skip — same result
@@ -1962,20 +2060,118 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // gated by `let` (col+1) rather than `(` (col). Without this, our
             // strict push of the inner SeqBlock fails for body columns ≤ paren
             // column and the fallback path kicks in with the wrong anchor.
-            if let Context::Paren { opener, .. } = head
+            //
+            // From F# 6.0 these two arms shadow every later arm whose head is a
+            // `TokenLExprParen` paren or a SeqBlock directly inside one, so the
+            // arms below that match only such stacks are reachable below 6.0
+            // alone.
+            if gates.relax_whitespace2
+                && let Context::Paren { opener, .. } = head
                 && opener.is_token_l_expr_paren()
             {
                 strict = false;
                 stack = rest;
                 continue;
             }
-            if let Context::SeqBlock { .. } = head
+            if gates.relax_whitespace2
+                && let Context::SeqBlock { .. } = head
                 && let Some(Context::Paren { opener, .. }) = rest.last()
                 && opener.is_token_l_expr_paren()
             {
                 strict = false;
                 stack = &rest[..rest.len() - 1];
                 continue;
+            }
+
+            // FCS L853-856: `f ...{` / `f ...[` / `f ...[|` place no limit until
+            // we hit a leading construct (below F# 6.0 only; see above).
+            if let Context::Paren {
+                opener: Opener::Brace | Opener::Brack | Opener::BrackBar,
+                ..
+            } = head
+            {
+                match rest {
+                    [.., Context::SeqBlock { .. }] => {
+                        strict = false;
+                        stack = &rest[..rest.len() - 1];
+                        continue;
+                    }
+                    [.., Context::SeqBlock { .. }, Context::Vanilla { .. }] => {
+                        strict = false;
+                        stack = &rest[..rest.len() - 2];
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            if let Context::SeqBlock { .. } = head
+                && let [
+                    ..,
+                    Context::SeqBlock { .. },
+                    Context::Vanilla { .. },
+                    Context::Paren {
+                        opener: Opener::Brace | Opener::Brack | Opener::BrackBar,
+                        ..
+                    },
+                ] = rest
+            {
+                strict = false;
+                stack = &rest[..rest.len() - 3];
+                continue;
+            }
+
+            // FCS L932-941: a paren after `module … =`, `then`, `else`, or an
+            // application in a SeqBlock is limited by the leading construct's
+            // column + 1 — `module M = struct` by `module`, `if … then (` by
+            // `if`, `f … (` by the SeqBlock holding `f`. Below F# 6.0 only, but
+            // for the `sig`/`struct` module-body shape, whose openers are not
+            // `TokenLExprParen`s.
+            if let Context::Paren { opener, .. } = head {
+                let limit_ctxt = match (opener, rest) {
+                    (
+                        Opener::Sig | Opener::Struct | Opener::Begin,
+                        [
+                            ..,
+                            limit_ctxt @ Context::ModuleBody {
+                                whole_file: false, ..
+                            },
+                            Context::SeqBlock { .. },
+                        ],
+                    ) => Some(limit_ctxt),
+                    (
+                        Opener::Begin
+                        | Opener::Paren
+                        | Opener::Brack
+                        | Opener::Brace
+                        | Opener::BraceBar
+                        | Opener::BrackBar,
+                        [
+                            ..,
+                            limit_ctxt @ Context::If { .. },
+                            Context::Then { .. } | Context::Else { .. },
+                            Context::SeqBlock { .. },
+                        ],
+                    ) => Some(limit_ctxt),
+                    (
+                        Opener::Begin
+                        | Opener::Paren
+                        | Opener::TyparAngle
+                        | Opener::Brack
+                        | Opener::BrackBar,
+                        [
+                            ..,
+                            limit_ctxt @ Context::SeqBlock { .. },
+                            Context::Vanilla { .. },
+                        ],
+                    ) => Some(limit_ctxt),
+                    _ => None,
+                };
+                if let Some(limit_ctxt) = limit_ctxt {
+                    return PositionWithColumn {
+                        pos: limit_ctxt.start_pos(),
+                        col: (limit_ctxt.start_pos().col as i32) + 1,
+                    };
+                }
             }
 
             // FCS L948-949: `type C = (class | struct | interface) ... end` —
@@ -1995,6 +2191,66 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 && let [
                     ..,
                     limit_ctxt @ Context::TypeDefns { .. },
+                    Context::SeqBlock { .. },
+                ] = rest
+            {
+                return PositionWithColumn {
+                    pos: limit_ctxt.start_pos(),
+                    col: (limit_ctxt.start_pos().col as i32) + 1,
+                };
+            }
+
+            // FCS L951-962: a SeqBlock inside `type C(` / `static member C(` is
+            // limited by `type` / the member head + 1 (`RelaxWhitespace`, F#
+            // 4.7); one inside `f … (` / `[` / `[|` in a SeqBlock by that
+            // SeqBlock + 1; and a SeqBlock pushed into a paren opening a type,
+            // `let`, member body or accessor body by that construct + 1. Below
+            // F# 6.0 only (see the `relaxWhitespace2` arms above).
+            if let Context::SeqBlock { .. } = head {
+                let limit_ctxt = match rest {
+                    [
+                        ..,
+                        limit_ctxt @ (Context::TypeDefns { .. } | Context::MemberHead { .. }),
+                        Context::Paren {
+                            opener: Opener::Paren,
+                            ..
+                        },
+                    ] if gates.relax_whitespace => Some(limit_ctxt),
+                    [
+                        ..,
+                        limit_ctxt @ Context::SeqBlock { .. },
+                        Context::Vanilla { .. },
+                        Context::Paren {
+                            opener: Opener::Begin | Opener::Paren | Opener::Brack | Opener::BrackBar,
+                            ..
+                        },
+                    ] => Some(limit_ctxt),
+                    _ => None,
+                };
+                if let Some(limit_ctxt) = limit_ctxt {
+                    return PositionWithColumn {
+                        pos: limit_ctxt.start_pos(),
+                        col: (limit_ctxt.start_pos().col as i32) + 1,
+                    };
+                }
+            }
+            if let Context::SeqBlock { .. } = new_ctxt
+                && let Context::Paren {
+                    opener:
+                        Opener::Begin
+                        | Opener::Paren
+                        | Opener::Brace
+                        | Opener::BraceBar
+                        | Opener::Brack
+                        | Opener::BrackBar,
+                    ..
+                } = head
+                && let [
+                    ..,
+                    limit_ctxt @ (Context::TypeDefns { .. }
+                    | Context::LetDecl { .. }
+                    | Context::MemberBody { .. }
+                    | Context::WithAsLet { .. }),
                     Context::SeqBlock { .. },
                 ] = rest
             {
@@ -2171,7 +2427,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // refused (MatchClauses at col 0, but the general arm returns
             // Match.col = 1, refusing body col 0). Must run before the
             // generic L827 arm.
-            if let Context::MatchClauses { pos: mc_pos, .. } = head
+            // Gated on `relaxWhitespace2` (F# 6.0).
+            if gates.relax_whitespace2
+                && let Context::MatchClauses { pos: mc_pos, .. } = head
                 && let [
                     ..,
                     Context::Paren {
@@ -2196,8 +2454,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             }
 
             // FCS L823-824 / L827-828: `MatchClauses :: CtxtTry` and
-            // `MatchClauses :: CtxtMatch` (the latter gated on relaxWhitespace2,
-            // which we treat as always-on per modern FCS). The arrow body or
+            // `MatchClauses :: CtxtMatch` (the latter gated on `relaxWhitespace2`,
+            // F# 6.0; below it the catch-all limits by the clauses). The arrow body or
             // similar push under a match/try-with clause is limited by the
             // enclosing `try`/`match` column, not by the `|`'s column on
             // CtxtMatchClauses. Without this, `match x with\n    | _ ->\n0`
@@ -2206,7 +2464,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // mis-tokenises the body. Both arms match any `new_ctxt`.
             if let Context::MatchClauses { .. } = head
                 && let Some(limit_ctxt) = rest.last()
-                && matches!(limit_ctxt, Context::Try { .. } | Context::Match { .. })
+                && match limit_ctxt {
+                    Context::Try { .. } => true,
+                    Context::Match { .. } => gates.relax_whitespace2,
+                    _ => false,
+                }
             {
                 return PositionWithColumn {
                     pos: limit_ctxt.start_pos(),
@@ -2241,10 +2503,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // the `with`'s own column. So a property accessor body may deindent
             // left of `with` as long as it stays right of the member keyword.
             // Without this arm the catch-all below uses WithAsLet.col + 1 and
-            // flags a valid accessor body with a spurious FS0058. (FCS gates
-            // this on `RelaxWhitespace`, which we treat as always-on per modern
-            // FCS.) Must precede the catch-all, which handles WithAsLet heads.
-            if let Context::WithAsLet { .. } = head
+            // flags a valid accessor body with a spurious FS0058. Gated on
+            // `RelaxWhitespace` (F# 4.7). Must precede the catch-all, which
+            // handles WithAsLet heads.
+            if gates.relax_whitespace
+                && let Context::WithAsLet { .. } = head
                 && let Some(limit_ctxt @ Context::MemberHead { .. }) = rest.last()
             {
                 return PositionWithColumn {
@@ -2310,12 +2573,84 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         }
     }
 
+    /// FCS's `popCtxt` (LexFilter.fs:1024-1035). From F# 6.0
+    /// (`relaxWhitespace2`) popping a `CtxtMatchClauses` also pops the
+    /// `CtxtMatch` beneath it; below 6.0 the `CtxtMatch` stays until its own
+    /// offside rule or a force-closure removes it. Returns the context popped
+    /// first.
+    ///
+    /// Either way the two version worlds now differ by that one `CtxtMatch`,
+    /// recorded in [`Self::match_ghost`] for [`Self::resolve_match_ghost`] to
+    /// settle at the next token. A pop while it is outstanding removes
+    /// different contexts in the two worlds, so it marks the run as
+    /// version-dependent.
     fn pop_ctxt(&mut self) -> Option<Context> {
+        if self.match_ghost.take().is_some() {
+            self.shape_depends_on_language_version = true;
+        }
+        let popped = self.pop_one_ctxt();
+        if let Some(Context::MatchClauses { .. }) = popped
+            && let Some(&Context::Match { pos }) = self.head()
+        {
+            if self.relax_whitespace2 {
+                self.pop_one_ctxt();
+            }
+            self.match_ghost = Some(pos);
+        }
+        popped
+    }
+
+    fn pop_one_ctxt(&mut self) -> Option<Context> {
         let popped = self.offside_stack.pop();
         if popped.is_some() {
             self.undentation_skip.pop();
         }
         popped
+    }
+
+    /// Settle an outstanding [`Self::match_ghost`] against `tt`, the next
+    /// token to reach the context rules. In the world where the `CtxtMatch`
+    /// survived (below F# 6.0), `tt` meets it first: if it removes it at once
+    /// — a force-closure (EOF, or a closer some deeper context balances), `;;`,
+    /// or `tt` offside of the `match` (LexFilter.fs:2031) — the context is
+    /// popped silently and `tt` is reprocessed against the very stack the
+    /// other world already has, so the streams cannot differ. Otherwise the
+    /// `CtxtMatch` may steer `tt`, and the run is marked version-dependent.
+    /// `in` is excluded from the offside case: the query-join rewrite
+    /// (LexFilter.fs:1674) inspects the stack before the `CtxtMatch` rule
+    /// runs. No rule ahead of that one acts on any other token while a
+    /// `CtxtMatch` heads the stack, so in the offside case this run pops it
+    /// at once, as that rule would.
+    ///
+    /// Must run before anything else consults the stack for `tt`.
+    fn resolve_match_ghost(&mut self, tt: &TokenTup<'a>) {
+        let Some(pos) = self.match_ghost.take() else {
+            return;
+        };
+        // In this run the `CtxtMatch` is on the stack exactly when it was not
+        // popped with its clauses; put it back to ask the other world.
+        let restore = self.relax_whitespace2;
+        if restore {
+            self.offside_stack.push(Context::Match { pos });
+        }
+        let forced = self.token_forces_head_context_closure(tt);
+        if restore {
+            self.offside_stack.pop();
+        }
+        let offside = !matches!(tt.token, TokenContent::Real(Token::In))
+            && (matches!(tt.token, TokenContent::Real(Token::SemiSemi))
+                || tt.start.col + u32::from(Self::is_match_block_continuator(&tt.token))
+                    <= pos.col);
+        if !(forced || offside) {
+            self.shape_depends_on_language_version = true;
+        } else if offside && !forced && !self.relax_whitespace2 {
+            // This run is the world that kept the `CtxtMatch`, and `tt` is
+            // about to pop it through the `CtxtMatch` offside rule. Pop it here
+            // instead: that rule would weigh `relaxWhitespace2OffsideRule`
+            // against a world that has no `CtxtMatch` to pop, and flag a
+            // difference that does not exist.
+            self.pop_one_ctxt();
+        }
     }
 
     /// FCS's `pushCtxtSeqBlockAt` (LexFilter.fs:2770). Strict push of a

@@ -195,7 +195,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 // TypeDefns/ModuleBody/NamespaceBody/MemberHead) gate
                 // their `+1` bump on `relaxWhitespace2OffsideRule ||
                 // isXContinuator`. To mirror FCS, queue a Dummy at every
-                // `TokenRExprParen` closer; `is_relax_whitespace2_offside_rule`
+                // `TokenRExprParen` closer; `is_rexpr_paren_dummy`
                 // unwraps the Dummy and triggers the bump.
                 let queue_dummy = matches!(
                     &tt.token,

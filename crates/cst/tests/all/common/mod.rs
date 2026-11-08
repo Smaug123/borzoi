@@ -25,7 +25,7 @@ pub mod recovery;
 #[allow(unused_imports)]
 pub use range_audit::{assert_ast_ranges_match, assert_sig_ast_ranges_match, ast_ranges_match};
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::lexer::{Token, lex};
-use borzoi_cst::lexfilter::{FilteredToken, Virtual, filter};
+use borzoi_cst::lexfilter::{FilteredToken, OffsideSeverity, Virtual, filter_collect};
 use borzoi_cst::parser::{
     FileKind, ParseOptions, parse, parse_sig, parse_with_options, parse_with_symbols,
 };
@@ -228,9 +228,15 @@ impl BatchPool {
     /// Falls back to *blocking* on a round-robin slot when every child is busy,
     /// so a saturated pool queues rather than spawning without bound.
     fn request(&self, source: &Path) -> String {
+        self.request_line(&source.display().to_string())
+    }
+
+    /// [`Self::request`] with a raw request line, for a subcommand whose line
+    /// carries more than the path.
+    fn request_line(&self, line: &str) -> String {
         for slot in &self.slots {
             if let Ok(mut guard) = slot.try_lock() {
-                return self.round_trip(&mut guard, source);
+                return self.round_trip(&mut guard, line);
             }
         }
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -238,7 +244,7 @@ impl BatchPool {
         let mut guard = self.slots[i]
             .lock()
             .expect("fcs-dump batch mutex poisoned (a previous request failed)");
-        self.round_trip(&mut guard, source)
+        self.round_trip(&mut guard, line)
     }
 
     /// Spawn this slot's child on first use — bounded and self-healing; see the
@@ -246,9 +252,9 @@ impl BatchPool {
     /// lock-step request through it. (The batch payload carries an extra `Path`
     /// field over the one-shot dump; the JSON consumers read by field name and
     /// ignore it.)
-    fn round_trip(&self, slot: &mut Option<BatchChild>, source: &Path) -> String {
+    fn round_trip(&self, slot: &mut Option<BatchChild>, line: &str) -> String {
         slot.get_or_insert_with(|| BatchChild::spawn(fcs_dump_bin(), &[self.subcommand]))
-            .request(&source.display().to_string())
+            .request(line)
     }
 }
 
@@ -258,18 +264,37 @@ impl BatchPool {
 /// `ConditionalDefines` empty, so callers that need `#if` symbols must stay on
 /// [`invoke_fcs_dump_with_defines`].
 pub fn fcs_ast_batch(source: &Path) -> String {
+    ast_pool().request(source)
+}
+
+fn ast_pool() -> &'static BatchPool {
     static P: OnceLock<BatchPool> = OnceLock::new();
     P.get_or_init(|| BatchPool::new("ast-batch"))
-        .request(source)
 }
 
 /// Run `source` through the shared `tokens-lexfilter-internal-batch` pool: the
 /// parser-facing stream including the tokens FCS's public tokenizer drops
 /// (block ends). Read it with [`parse_fcs_parser_stream`].
 pub fn fcs_tokens_parser_stream_batch(source: &Path) -> String {
+    parser_stream_pool().request(source)
+}
+
+/// [`fcs_tokens_parser_stream_batch`] at the `<LangVersion>` `lang_text` (a
+/// token FCS reads, such as `4.6` or `preview`), which the request line
+/// carries after a tab.
+pub fn fcs_tokens_parser_stream_batch_at(source: &Path, lang_text: &str) -> String {
+    parser_stream_pool().request_line(&format!("{}\t{lang_text}", source.display()))
+}
+
+/// [`fcs_ast_batch`] at the `<LangVersion>` `lang_text`, which the request
+/// line carries after a tab.
+pub fn fcs_ast_batch_at(source: &Path, lang_text: &str) -> String {
+    ast_pool().request_line(&format!("{}\t{lang_text}", source.display()))
+}
+
+fn parser_stream_pool() -> &'static BatchPool {
     static P: OnceLock<BatchPool> = OnceLock::new();
     P.get_or_init(|| BatchPool::new("tokens-lexfilter-internal-batch"))
-        .request(source)
 }
 
 /// Run `source` through the shared `tokens-raw-batch` pool. Drop-in for
@@ -1188,8 +1213,23 @@ fn virtual_kind_name(v: &Virtual) -> &'static str {
 // ============================================================================
 
 pub fn report_divergence(source: &str, rust: &[NormalisedToken], fcs: &[NormalisedToken]) -> ! {
+    report_divergence_at("", source, rust, fcs)
+}
+
+/// [`report_divergence`], naming the `context` (e.g. the language version) the
+/// two streams were produced under.
+pub fn report_divergence_at(
+    context: &str,
+    source: &str,
+    rust: &[NormalisedToken],
+    fcs: &[NormalisedToken],
+) -> ! {
     let mut msg = String::new();
-    msg.push_str("token streams diverge.\n\n");
+    if context.is_empty() {
+        msg.push_str("token streams diverge.\n\n");
+    } else {
+        msg.push_str(&format!("token streams diverge at {context}.\n\n"));
+    }
     msg.push_str("source:\n");
     for line in source.lines() {
         msg.push_str("  ");
@@ -1729,31 +1769,132 @@ pub fn assert_asts_match_fcs_accepts_ours_rejects(source: &str) {
 // drives `fcs-dump tokens-lexfilter-internal-batch`, runs our
 // `lexfilter::filter`, normalises both sides, and diffs them.
 
-/// Assert our `lexfilter::filter` output matches the token stream FCS's parser
-/// reads for `source`, block ends (`OBLOCKEND`) and `OAND_BANG` included (see
-/// [`parse_fcs_parser_stream`]).
+/// One representative of every band of language versions across which FCS's
+/// lexer and lex-filter make the same `SupportsFeature` decisions, with the
+/// `<LangVersion>` token FCS reads for it.
+///
+/// Each gate is a monotone threshold, so the bands are the intervals between
+/// consecutive thresholds, and checking one version per band checks them all.
+/// The thresholds (`LanguageFeatures.fs`) are `RelaxWhitespace` (4.7),
+/// `RelaxWhitespace2` (6.0), `StrictIndentation` and
+/// `ExtendedStringInterpolation` (8.0), `NullnessChecking` (9.0),
+/// `ErrorOnInvalidDeclsInTypeDefinitions` (10.0) and `PreprocessorElif` (11.0);
+/// `preview` stands for every feature not yet released. A new lexer or
+/// lex-filter gate at a version not listed here is invisible to the
+/// differential until a band is added for it.
+pub const LEXFILTER_VERSION_BANDS: &[(LanguageVersion, &str)] = &[
+    (LanguageVersion::V4_6, "4.6"),
+    (LanguageVersion::V4_7, "4.7"),
+    (LanguageVersion::V6_0, "6.0"),
+    (LanguageVersion::V8_0, "8.0"),
+    (LanguageVersion::V9_0, "9.0"),
+    (LanguageVersion::V10_0, "10.0"),
+    (LanguageVersion::V11_0, "11.0"),
+    (LanguageVersion::Preview, "preview"),
+];
+
+/// Assert our lex-filter output matches the token stream FCS's parser reads
+/// for `source`, block ends (`OBLOCKEND`) and `OAND_BANG` included (see
+/// [`parse_fcs_parser_stream`]), at every [`LEXFILTER_VERSION_BANDS`] version.
+/// At each version the lex-filter's offside diagnostics (FS0058: span,
+/// severity, message) must also match the FS0058s FCS's parse reports, which
+/// is what grades the warning-only version gates (the undentation limits).
+///
+/// Every fixture runs at every band because a version gate is only exercised
+/// by input that reaches it, and which inputs reach which gate is exactly what
+/// a hand-picked per-gate fixture list gets wrong.
 pub fn assert_filtered_streams_match(source: &str) {
+    filtered_streams_match(source, ParserFs0058::None);
+}
+
+/// Whether FCS's *parser* (pars.fsy), as opposed to its lex-filter, reports an
+/// FS0058 for a fixture. The two report under the same number and message, so
+/// the lex-filter differential cannot tell them apart.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ParserFs0058 {
+    None,
+    /// `classDefnMembersAtLeastOne` (pars.fsy:1855): a member after an
+    /// `interface … with` that has no members of its own. Our parser does not
+    /// report it.
+    EmptyInterfaceThenMember,
+}
+
+/// [`assert_filtered_streams_match`] for a fixture where FCS's parser adds an
+/// FS0058 of the kind `parser`: the lex-filter's FS0058s must be a subset of
+/// FCS's at every band, and FCS must still report one more at some band (so
+/// the fixture is revisited once the parser models it).
+pub fn assert_filtered_streams_match_with_parser_fs0058(source: &str, parser: ParserFs0058) {
+    assert!(parser != ParserFs0058::None);
+    filtered_streams_match(source, parser);
+}
+
+fn filtered_streams_match(source: &str, parser: ParserFs0058) {
+    let mut parser_only_seen = false;
     let mut tmp = NamedTempFile::with_suffix(".fs").expect("create temp .fs file");
     tmp.write_all(source.as_bytes()).expect("write source");
 
-    let fcs_json = fcs_tokens_parser_stream_batch(tmp.path());
-    let fcs_tokens = parse_fcs_parser_stream(&fcs_json, source);
+    for &(lang, lang_text) in LEXFILTER_VERSION_BANDS {
+        let fcs_json = fcs_tokens_parser_stream_batch_at(tmp.path(), lang_text);
+        let fcs_tokens = parse_fcs_parser_stream(&fcs_json, source);
 
-    // `filter` consumes trivia internally (for offside line/column tracking)
-    // and never emits Raw whitespace/comments — so no trivia filter is needed
-    // on the output.
-    let rust_tokens: Vec<NormalisedToken> = filter(source, lex(source))
-        .map(|(tok, span)| {
-            let tok = tok.unwrap_or_else(|e| panic!("rust lex error {e:?} in {source:?}"));
-            NormalisedToken {
-                kind: filtered_kind_name(&tok),
-                start: span.start,
-                end: span.end,
-            }
-        })
-        .collect();
+        // The filter consumes trivia internally (for offside line/column
+        // tracking) and never emits Raw whitespace/comments — so no trivia
+        // filter is needed on the output.
+        let run = filter_collect(source, lang, lex(source));
+        let rust_tokens: Vec<NormalisedToken> = run
+            .tokens
+            .into_iter()
+            .map(|(tok, span)| {
+                let tok = tok.unwrap_or_else(|e| panic!("rust lex error {e:?} in {source:?}"));
+                NormalisedToken {
+                    kind: filtered_kind_name(&tok),
+                    start: span.start,
+                    end: span.end,
+                }
+            })
+            .collect();
 
-    if rust_tokens != fcs_tokens {
-        report_divergence(source, &rust_tokens, &fcs_tokens);
+        if rust_tokens != fcs_tokens {
+            report_divergence_at(
+                &format!("<LangVersion> {lang_text}"),
+                source,
+                &rust_tokens,
+                &fcs_tokens,
+            );
+        }
+
+        let fcs_offside: BTreeSet<(usize, usize, String, String)> =
+            fcs_diagnostics_with_severity(&fcs_ast_batch_at(tmp.path(), lang_text), source, 58)
+                .into_iter()
+                .map(|(s, msg, sev)| (s.start, s.end, sev, msg))
+                .collect();
+        let rust_offside: BTreeSet<(usize, usize, String, String)> = run
+            .diagnostics
+            .iter()
+            .map(|d| {
+                let sev = match d.severity {
+                    OffsideSeverity::Error => "Error",
+                    OffsideSeverity::Warning => "Warning",
+                };
+                (d.span.start, d.span.end, sev.to_string(), d.message.clone())
+            })
+            .collect();
+        if parser == ParserFs0058::None {
+            assert_eq!(
+                rust_offside, fcs_offside,
+                "FS0058 diagnostics diverge at <LangVersion> {lang_text} for {source:?}",
+            );
+        } else {
+            assert!(
+                rust_offside.is_subset(&fcs_offside),
+                "FS0058 diagnostics FCS lacks at <LangVersion> {lang_text} for {source:?}: {:?}",
+                rust_offside.difference(&fcs_offside).collect::<Vec<_>>(),
+            );
+            parser_only_seen |= fcs_offside.len() > rust_offside.len();
+        }
     }
+    assert!(
+        parser == ParserFs0058::None || parser_only_seen,
+        "FCS reports no parser FS0058 for {source:?} at any band: use assert_filtered_streams_match",
+    );
 }

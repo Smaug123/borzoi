@@ -1,6 +1,8 @@
 //! `CtxtInterfaceHead` (`OffsideInterfaceMember`) paths.
 
-use crate::common::assert_filtered_streams_match;
+use crate::common::{
+    ParserFs0058, assert_filtered_streams_match, assert_filtered_streams_match_with_parser_fs0058,
+};
 
 // EOF / `;;` shapes for `let … = function` are *not* asserted by a diff
 // test: FCS's force-closure path emits virtuals whose range uses
@@ -46,8 +48,9 @@ fn diff_filtered_interface_head_basic() {
 /// `OffsideBlockBegin` before `member`.
 #[test]
 fn diff_filtered_interface_head_with_recovery() {
-    assert_filtered_streams_match(
+    assert_filtered_streams_match_with_parser_fs0058(
         "type C() =\n    inherit obj()\n    interface I with\n    member _.M() = 1\n",
+        ParserFs0058::EmptyInterfaceThenMember,
     );
 }
 

@@ -7,6 +7,37 @@ use super::{
 use crate::lexer::{LexError, Span, Token};
 
 impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
+    /// The offside-pop guard most context arms share (LexFilter.fs:1939-2093):
+    /// `(if relaxWhitespace2OffsideRule || continuator then tokenStartCol + 1
+    /// else tokenStartCol) <= offside_col`, where `continuator` is the arm's
+    /// own `is*Continuator` verdict for `tt`.
+    ///
+    /// `relaxWhitespace2OffsideRule` is [`Self::is_rexpr_paren_dummy`] gated on
+    /// F# 6.0, so a dummy closer at exactly `offside_col` pops the context
+    /// below 6.0 and leaves it open from 6.0. That is a context pop, so the
+    /// stream's shape turns on it: when the gate decides the outcome, the run
+    /// is recorded as version-dependent (see
+    /// [`FilterRun::shape_depends_on_language_version`](super::FilterRun::shape_depends_on_language_version)).
+    pub(super) fn is_offside_of(
+        &mut self,
+        tt: &TokenTup<'a>,
+        continuator: bool,
+        offside_col: u32,
+    ) -> bool {
+        let relaxed = tt.start.col
+            + u32::from(continuator || Self::is_rexpr_paren_dummy(&tt.token))
+            <= offside_col;
+        let unrelaxed = tt.start.col + u32::from(continuator) <= offside_col;
+        if relaxed != unrelaxed {
+            self.shape_depends_on_language_version = true;
+        }
+        if self.relax_whitespace2 {
+            relaxed
+        } else {
+            unrelaxed
+        }
+    }
+
     /// CtxtVanilla and CtxtSeqBlock offside machinery: the Vanilla/SeqBlock
     /// offside-pops, the first-in-block repull, and the OBLOCKSEP separator.
     pub(super) fn block_offside(
@@ -379,12 +410,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::Match { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_match_block_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(&tt, Self::is_match_block_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 self.delay_token(tt);
@@ -402,12 +428,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::Try { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_try_block_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(&tt, Self::is_try_block_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 self.delay_token(tt);
@@ -426,12 +447,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::For { pos, .. }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_for_loop_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(&tt, Self::is_for_loop_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 self.delay_token(tt);
@@ -467,12 +483,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::While { pos, .. }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_while_block_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(&tt, Self::is_while_block_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 self.delay_token(tt);
@@ -487,10 +498,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // entirely. (LexFilter.fs:2049-2053)
         if let Some(Context::When { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            if is_semi_semi
-                || tt.start.col + u32::from(Self::is_relax_whitespace2_offside_rule(&tt.token))
-                    <= pos.col
-            {
+            if is_semi_semi || self.is_offside_of(&tt, false, pos.col) {
                 self.pop_ctxt();
                 self.delay_token(tt);
                 return Step::Restart;
@@ -536,10 +544,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // the guard for `ODUMMY TokenRExprParen`. (LexFilter.fs:1990)
         if let Some(Context::Exception { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            if is_semi_semi
-                || tt.start.col + u32::from(Self::is_relax_whitespace2_offside_rule(&tt.token))
-                    <= pos.col
-            {
+            if is_semi_semi || self.is_offside_of(&tt, false, pos.col) {
                 self.pop_ctxt();
                 self.delay_token(tt);
                 return Step::Restart;
@@ -557,12 +562,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // `endTokenForACtxt` returns None, so the pop emits no virtual.
         if let Some(Context::InterfaceHead { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            let threshold_col = tt.start.col
-                + u32::from(
-                    Self::is_relax_whitespace2_offside_rule(&tt.token)
-                        || Self::is_interface_continuator(&tt.token),
-                );
-            if is_semi_semi || threshold_col <= pos.col {
+            if is_semi_semi
+                || self.is_offside_of(&tt, Self::is_interface_continuator(&tt.token), pos.col)
+            {
                 self.pop_ctxt();
                 self.delay_token(tt);
                 return Step::Restart;
@@ -589,12 +591,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::If { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_if_block_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(&tt, Self::is_if_block_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 self.delay_token(tt);
@@ -604,12 +601,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::Then { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_then_block_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(&tt, Self::is_then_block_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 self.delay_token(tt);
@@ -618,10 +610,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         }
         if let Some(Context::Else { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            if is_semi_semi
-                || tt.start.col + u32::from(Self::is_relax_whitespace2_offside_rule(&tt.token))
-                    <= pos.col
-            {
+            if is_semi_semi || self.is_offside_of(&tt, false, pos.col) {
                 self.pop_ctxt();
                 self.delay_token(tt);
                 return Step::Restart;
@@ -680,13 +669,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::LetDecl { block_let, pos }) = self.head().cloned() {
             let is_semi_semi =
                 block_let && matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_let_continuator(&tt.token),
-                    )
-                    <= pos.col
+            if is_semi_semi || self.is_offside_of(&tt, Self::is_let_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 if block_let {
@@ -711,13 +694,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // short-circuits indentation entirely.
         if let Some(Context::WithAsLet { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_let_continuator(&tt.token),
-                    )
-                    <= pos.col
+            if is_semi_semi || self.is_offside_of(&tt, Self::is_let_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 return Step::Emit(self.insert_token(Virtual::End, tt));
@@ -741,12 +718,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::WithAsAugment { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_with_augment_block_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(
+                    &tt,
+                    Self::is_with_augment_block_continuator(&tt.token),
+                    pos.col,
+                )
             {
                 self.pop_ctxt();
                 return Step::Emit(self.insert_token(Virtual::DeclEnd, tt));
@@ -806,12 +782,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::TypeDefns { pos, .. }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
             if is_semi_semi
-                || tt.start.col
-                    + u32::from(
-                        Self::is_relax_whitespace2_offside_rule(&tt.token)
-                            || Self::is_type_continuator(&tt.token),
-                    )
-                    <= pos.col
+                || self.is_offside_of(&tt, Self::is_type_continuator(&tt.token), pos.col)
             {
                 self.pop_ctxt();
                 self.delay_token(tt);
@@ -833,10 +804,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if let Some(Context::ModuleBody { pos, whole_file }) = self.head().cloned() {
             let is_semi_semi =
                 !whole_file && matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            if is_semi_semi
-                || tt.start.col + u32::from(Self::is_relax_whitespace2_offside_rule(&tt.token))
-                    <= pos.col
-            {
+            if is_semi_semi || self.is_offside_of(&tt, false, pos.col) {
                 self.pop_ctxt();
                 self.delay_token(tt);
                 return Step::Restart;
@@ -852,15 +820,12 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // arriving at col ≤ anchor — matching FCS's intent that only
         // a new `namespace` declaration terminates the prior namespace.
         // `relaxWhitespace2OffsideRule` (LexFilter.fs:1473-1500) is
-        // already subsumed because `ODUMMY TokenRExprParen` is *not*
-        // NAMESPACE, hence already a continuator getting the `+1` bump
-        // — explicit OR is a no-op but kept for legibility.
+        // subsumed because `ODUMMY TokenRExprParen` is *not* NAMESPACE,
+        // hence already a continuator getting the `+1` bump.
         // EOF is handled by `token_forces_head_context_closure`.
         if let Some(Context::NamespaceBody { pos }) = self.head().cloned() {
             let is_continuator = !matches!(&tt.token, TokenContent::Real(Token::Namespace));
-            let bump =
-                u32::from(is_continuator || Self::is_relax_whitespace2_offside_rule(&tt.token));
-            if tt.start.col + bump <= pos.col {
+            if self.is_offside_of(&tt, is_continuator, pos.col) {
                 self.pop_ctxt();
                 self.delay_token(tt);
                 return Step::Restart;
@@ -907,10 +872,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // indentation entirely.
         if let Some(Context::MemberHead { pos }) = self.head().cloned() {
             let is_semi_semi = matches!(&tt.token, TokenContent::Real(Token::SemiSemi));
-            if is_semi_semi
-                || tt.start.col + u32::from(Self::is_relax_whitespace2_offside_rule(&tt.token))
-                    <= pos.col
-            {
+            if is_semi_semi || self.is_offside_of(&tt, false, pos.col) {
                 self.pop_ctxt();
                 self.delay_token(tt);
                 return Step::Restart;

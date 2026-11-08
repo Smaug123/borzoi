@@ -188,20 +188,22 @@ pub struct Parse {
     /// are unaffected. [`parse_with_options`] threads a chosen version through.
     /// It drives the `#elif` legality gate (diagnostics only — see
     /// `docs/ast-versioning-plan.md`) and, since the offside-diagnostics
-    /// emission stages, the lex-filter's strict-indentation push decision —
-    /// which **can** change the tree shape across the F# 8 boundary;
+    /// emission stages, the lex-filter's strict-indentation push decision and
+    /// its `relaxWhitespace2` pops — which **can** change the tree shape
+    /// across the F# 8 and F# 6 boundaries;
     /// [`Parse::shape_depends_on_language_version`] reports whether it
     /// actually did for this source.
     pub lang: LanguageVersion,
     /// Whether this parse's tree shape depends on [`Parse::lang`]: the
-    /// lex-filter reached a strict-indentation decision point
-    /// (an offside version-gated context push — aborted at F# 8+, kept with
-    /// a warning below) whose outcome differs across language versions.
+    /// lex-filter reached a decision point whose outcome differs across
+    /// language versions (an offside version-gated context push — aborted at
+    /// F# 8+, kept with a warning below — or a `relaxWhitespace2` pop that
+    /// matters, F# 6).
     /// `false` **proves** the tree is identical under every
     /// [`LanguageVersion`] (see
     /// `crate::lexfilter::FilterRun::shape_depends_on_language_version` for
     /// the argument and for `true`'s over-approximation caveat — verify
-    /// against a parse from the other side of the F# 8 boundary before
+    /// against parses at [`LanguageVersion::SHAPE_REPRESENTATIVES`] before
     /// paying a real cost for `true`), so a consumer that cannot pin the
     /// project's real language version may still trust an unflagged parse;
     /// diagnostics can still differ by version (FS0058 severity, `#elif`
