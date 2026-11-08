@@ -37,19 +37,22 @@
 //! both.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borzoi::restore::{RestoreGraph, RestoreGraphSource, ScratchDir, restore_graph};
+use borzoi::restore::{
+    RestoreGraph, RestoreGraphSource, ScratchDir, restore_environment, restore_graph,
+};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi_nuget::NuGetFramework;
 use borzoi_nuget::dgspec::{
-    DependencyGraphSpec, DgSpecDecline, DgSpecResolveDecline, NuGetIdentity, PathSegment,
-    ResolvedFramework, parse_dgspec, resolve_dgspec,
+    DependencyGraphSpec, DgSpecDecline, DgSpecResolveDecline, EnvironmentVariable, NuGetIdentity,
+    PathSegment, ResolvedFramework, environment_variable, parse_dgspec, resolve_dgspec,
 };
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
-use borzoi_oracle_harness::nuget_oracle::{Oracle, sdk_dir_for};
+use borzoi_oracle_harness::nuget_oracle::{EnvironmentChange, Oracle, sdk_dir_for};
 use serde_json::{Value, json};
 
 use crate::common::checkout_key;
@@ -170,6 +173,56 @@ fn both_routes(project: &Path, env: &SdkDiscoveryEnv) -> Result<Graphs, String> 
 /// SDK, since each runs its own SDK's NuGet.
 static ORACLES: Mutex<BTreeMap<PathBuf, Oracle>> = Mutex::new(BTreeMap::new());
 
+/// The home every restore here runs under: a folder of the suite's own, with
+/// no user config (restore writes its default there).
+static SUITE_HOME: LazyLock<tempfile::TempDir> =
+    LazyLock::new(|| tempfile::tempdir().expect("temp dir"));
+
+/// The environment every restore here runs under: the process's, with every
+/// variable B₁ has a verdict on removed from the build environment, no
+/// `DOTNET_CLI_HOME`, and the home at [`SUITE_HOME`]. `restore.rs` puts the
+/// discovered packages folder back. Without it, the caller's own home and
+/// NuGet variables decide what B₁ may commit to, and so the census.
+fn controlled_env() -> SdkDiscoveryEnv {
+    let mut env = SdkDiscoveryEnv::from_process_env();
+    env.build_environment
+        .retain(|name, _| environment_variable(OsStr::new(name)) == EnvironmentVariable::Unread);
+    env.dotnet_cli_home = None;
+    env.home_dir = Some(SUITE_HOME.path().to_owned());
+    env
+}
+
+/// The changes that give an oracle child [`controlled_env`]'s NuGet-visible
+/// environment, as it inherits this process's: each variable B₁ has a verdict
+/// on removed, then the controlled ones set.
+fn oracle_changes() -> Vec<(String, Option<String>)> {
+    let controlled = restore_environment(&controlled_env());
+    let mut changes: Vec<(String, Option<String>)> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| environment_variable(OsStr::new(name)) != EnvironmentVariable::Unread)
+        .map(|name| (name, None))
+        .collect();
+    changes.extend(
+        controlled
+            .iter()
+            .filter(|(name, _)| environment_variable(name) != EnvironmentVariable::Unread)
+            .map(|(name, value)| {
+                (
+                    name.to_str()
+                        .expect("a NuGet variable's name is UTF-8")
+                        .to_owned(),
+                    Some(
+                        value
+                            .to_str()
+                            .expect("a controlled value is UTF-8")
+                            .to_owned(),
+                    ),
+                )
+            }),
+    );
+    changes
+}
+
 /// What the stage-3 check found for one project.
 struct Decomposition {
     /// The `AssemblyInformationalVersion` of the `NuGet.Commands` that ran.
@@ -196,7 +249,17 @@ fn decomposes_losslessly(
         let mut oracles = ORACLES.lock().unwrap_or_else(|poison| poison.into_inner());
         oracles
             .entry(sdk.clone())
-            .or_insert_with(|| Oracle::spawn_on(&sdk, &[]))
+            .or_insert_with(|| {
+                let changes = oracle_changes();
+                let changes: Vec<EnvironmentChange<'_>> = changes
+                    .iter()
+                    .map(|(name, value)| match value {
+                        Some(value) => EnvironmentChange::Set(name, value),
+                        None => EnvironmentChange::Unset(name),
+                    })
+                    .collect();
+                Oracle::spawn_on_with_changes(&sdk, &changes)
+            })
             .request(&json!({"op": "restoreDgSpec", "text": text}))
     };
     if response["ok"] == false {
@@ -316,6 +379,11 @@ impl SpawnFree {
                     DgSpecResolveDecline::PackageMetadata { package, .. } => {
                         format!("package-metadata:{}", package_label(package))
                     }
+                    // Host-dependent, so a manifest line with it would differ
+                    // between machines: the census expects none.
+                    DgSpecResolveDecline::Environment { decline } => {
+                        format!("environment ({decline})")
+                    }
                 };
                 format!("b1: declined {class}")
             }
@@ -332,9 +400,10 @@ fn package_label(package: &borzoi_nuget::PackageIdentity) -> String {
     )
 }
 
-/// Stage 4: B₁, handed the spec and the identity of the NuGet that restored
-/// it, declines, or commits only where the restore succeeded and to exactly
-/// the package closure each framework's target lists.
+/// Stage 4: B₁, handed the spec, the identity of the NuGet that restored it
+/// and the environment it restored under (`restore.rs`'s, from `env`),
+/// declines, or commits only where the restore succeeded and to exactly the
+/// package closure each framework's target lists.
 ///
 /// Targets are matched by framework, not by name: an assets file of version 4
 /// names a target by its alias, one of version 3 by `NuGetFramework.ToString()`
@@ -344,6 +413,7 @@ fn spawn_free(
     project: &Path,
     spec: &DependencyGraphSpec,
     decomposition: &Decomposition,
+    env: &SdkDiscoveryEnv,
 ) -> Result<SpawnFree, String> {
     let [entry] = spec.restore.as_slice() else {
         return Err(format!(
@@ -353,7 +423,7 @@ fn spawn_free(
         ));
     };
     let identity = NuGetIdentity::new(&decomposition.nuget_commands);
-    let frameworks = match resolve_dgspec(&identity, spec, entry) {
+    let frameworks = match resolve_dgspec(&identity, spec, entry, &restore_environment(env)) {
         Ok(frameworks) => frameworks,
         Err(decline) => return Ok(SpawnFree::Declined(decline)),
     };
@@ -523,16 +593,16 @@ fn committed_spec(project: &Path) -> DependencyGraphSpec {
 /// [`committed_spec`], with B₁'s verdict on it, which must agree with the
 /// restore.
 fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
-    let (text, generated, restored) =
-        match both_routes(project, &SdkDiscoveryEnv::from_process_env()) {
-            Ok(Graphs::Agree {
-                text,
-                generated,
-                restored,
-            }) => (text, generated, restored),
-            Ok(Graphs::Declined) => panic!("{}: both routes declined", project.display()),
-            Err(failure) => panic!("{failure}"),
-        };
+    let env = controlled_env();
+    let (text, generated, restored) = match both_routes(project, &env) {
+        Ok(Graphs::Agree {
+            text,
+            generated,
+            restored,
+        }) => (text, generated, restored),
+        Ok(Graphs::Declined) => panic!("{}: both routes declined", project.display()),
+        Err(failure) => panic!("{failure}"),
+    };
     let decomposition = decomposes_losslessly(project, &text, &generated, &restored)
         .unwrap_or_else(|failure| panic!("{failure}"));
     assert!(
@@ -541,8 +611,8 @@ fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
     );
     let spec =
         parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declined: {decline}"));
-    let b1 =
-        spawn_free(project, &spec, &decomposition).unwrap_or_else(|failure| panic!("{failure}"));
+    let b1 = spawn_free(project, &spec, &decomposition, &env)
+        .unwrap_or_else(|failure| panic!("{failure}"));
     (spec, b1)
 }
 
@@ -658,7 +728,7 @@ fn a_spec_that_loses_a_dependency_does_not_decompose() {
         text,
         generated,
         restored,
-    }) = both_routes(&project, &SdkDiscoveryEnv::from_process_env())
+    }) = both_routes(&project, &controlled_env())
     else {
         panic!("{}: both routes must agree", project.display());
     };
@@ -716,10 +786,7 @@ fn a_project_in_a_symlinked_directory_declines() {
     )
     .unwrap();
 
-    match both_routes(
-        &root.join("link").join("App.fsproj"),
-        &SdkDiscoveryEnv::from_process_env(),
-    ) {
+    match both_routes(&root.join("link").join("App.fsproj"), &controlled_env()) {
         Ok(Graphs::Declined) => {}
         Ok(Graphs::Agree { .. }) => panic!("a project in a symlinked directory must decline"),
         Err(failure) => panic!("{failure}"),
@@ -853,10 +920,7 @@ fn a_locked_project_declines_down_both_routes() {
             ),
         ],
     );
-    match both_routes(
-        &root.join("App.fsproj"),
-        &SdkDiscoveryEnv::from_process_env(),
-    ) {
+    match both_routes(&root.join("App.fsproj"), &controlled_env()) {
         Ok(Graphs::Declined) => {}
         Ok(Graphs::Agree { .. }) => panic!("a locked project must decline"),
         Err(failure) => panic!("{failure}"),
@@ -941,7 +1005,7 @@ fn pinned_projects() {
     );
     let env = SdkDiscoveryEnv {
         nuget_packages_dir: Some(PathBuf::from(packages)),
-        ..SdkDiscoveryEnv::from_process_env()
+        ..controlled_env()
     };
     let mut lines = Vec::new();
     let mut identities = BTreeSet::new();
@@ -962,7 +1026,7 @@ fn pinned_projects() {
                 match decomposes_losslessly(project, &text, &generated, &restored) {
                     Ok(decomposition) => {
                         if let Ok(spec) = &spec {
-                            match spawn_free(project, spec, &decomposition) {
+                            match spawn_free(project, spec, &decomposition, &env) {
                                 Ok(b1) => lines.push(format!("{key} {}", b1.label())),
                                 Err(failure) => failures.push(failure),
                             }
