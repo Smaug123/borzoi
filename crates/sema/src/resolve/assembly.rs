@@ -1436,8 +1436,8 @@ impl<'a> Resolver<'a> {
     /// review; `docs/assembly-module-open-plan.md` Q5 is corrected). Dropping it from
     /// the walk would be a *wrong target*, not a deferral: with `open Prefix` in scope,
     /// `open M` where `Prefix.M` is RQA and a root `M` exists would bind the root `M`'s
-    /// values where FCS binds `Prefix.M`'s. Reporting FS0892 is a Phase-4 concern
-    /// ([`AssemblyEnv::is_require_qualified_access`](crate::AssemblyEnv::is_require_qualified_access) is the signal).
+    /// values where FCS binds `Prefix.M`'s. The FS0892 itself is reported apart
+    /// from the walk ([`Resolver::report_open_of_rqa_module`]).
     pub(super) fn opened_assembly_module(&self, path: &[String]) -> Option<EntityHandle> {
         self.opened_assembly_modules(path).into_iter().next()
     }

@@ -12,7 +12,8 @@ use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
 };
 use super::state::{
-    AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
+    AutoOpenTypeShadow, CertainReach, Frame, OpenGroup, OpenInterpretation, Resolver,
+    ShorteningPrefix,
 };
 use super::{
     attrs_auto_open, attrs_require_qualified_access, id_text, is_type_augmentation, single_ident,
@@ -1053,6 +1054,21 @@ impl<'a> Resolver<'a> {
                     } else {
                         self.open_interpretations(&path, rooted)
                     };
+                    // What FCS certainly opens at each candidate, read before
+                    // this open pushes any prefix of its own: FS0892 on the
+                    // open itself, and the reach every prefix it lends carries.
+                    let reached = if path.is_empty() {
+                        Vec::new()
+                    } else {
+                        self.open_tier_candidates_reached(&path, rooted)
+                    };
+                    self.report_open_of_rqa_module(&idents, &reached);
+                    let reach_of = |gp: &[String]| {
+                        reached
+                            .iter()
+                            .filter(|c| c.full == gp)
+                            .fold(CertainReach::default(), |acc, c| acc.or(c.reach))
+                    };
                     // **Veto through an incomplete prefix** (review round 9). An earlier
                     // `open Parent` whose surface is not provably complete may have
                     // brought in a nested module `Parent.Sub` that projection *dropped* —
@@ -1213,9 +1229,9 @@ impl<'a> Resolver<'a> {
                         // source-name slot lost to an abbreviation marker, or its
                         // contents dropped) `opened_assembly_module` is `None`, so the
                         // conservative path below still fires.
-                        // A `[<RequireQualifiedAccess>]` module imports nothing at all
-                        // (FCS errors, FS0892), so it needs no conservatism either:
-                        // nothing came in to shadow with.
+                        // A `[<RequireQualifiedAccess>]` module is enumerable like
+                        // any other: FCS reports FS0892 on the open and imports its
+                        // contents regardless.
                         let enumerable = self.opened_assembly_module(&path).is_some();
                         if !enumerable {
                             if self.assemblies.is_module(handle)
@@ -1345,6 +1361,7 @@ impl<'a> Resolver<'a> {
                     }
                     let pos: u32 = li.syntax().text_range().start().into();
                     for gp in group_paths.iter().rev() {
+                        let gp_reach = reach_of(gp);
                         let has_project_module = interps
                             .iter()
                             .any(|i| matches!(i, OpenInterpretation::Module(p) if p == gp));
@@ -1460,6 +1477,7 @@ impl<'a> Resolver<'a> {
                                     path: gp.clone(),
                                     namespace_reading: true,
                                     module_reading: false,
+                                    reach: gp_reach,
                                 });
                                 self.explicit_open_prefixes.push((pos, gp.clone()));
                             }
@@ -1485,6 +1503,8 @@ impl<'a> Resolver<'a> {
                                 path: gp.clone(),
                                 namespace_reading: false,
                                 module_reading: true,
+                                // An assembly module's children are its own.
+                                reach: gp_reach.assembly_children(),
                             });
                             // Only a prefix that could hide a whole nested *module*
                             // (a dropped type, an unknowable pickle) can make a
@@ -1625,6 +1645,8 @@ impl<'a> Resolver<'a> {
                                 path: gp.clone(),
                                 namespace_reading: false,
                                 module_reading: false,
+                                // A project module's children are the project's.
+                                reach: gp_reach.project_children(),
                             });
                             self.opaque_dotted_open = true;
                         }
@@ -1720,6 +1742,17 @@ impl<'a> Resolver<'a> {
         qualified.extend(segs.iter().cloned());
         let nm_auto_open = attrs_auto_open(nm.attributes());
         let nm_private = header_is_private(nm.syntax());
+        // FS0892's same-file half, and through the export decl its cross-file
+        // half. A dotted nested name (`module A.B = …`) is not a shape whose
+        // attribute's owner we decide.
+        let nm_rqa = segs.len() == 1
+            && self.module_certainly_require_qualified_access(
+                nm.attributes(),
+                nm_private || self.access_floor.is_some(),
+            );
+        if nm_rqa {
+            self.rqa_module_paths.push(qualified.clone());
+        }
         // The module-only cross-file index ([`ProjectItems::real_nested_modules`]):
         // unlike the name-shadow set just recorded (which types, exceptions,
         // abbreviations, and `extern`s share), this answers "is there a genuine
@@ -1742,6 +1775,7 @@ impl<'a> Resolver<'a> {
                 header: false,
                 auto_open: nm_auto_open,
                 private: nm_private,
+                require_qualified_access: nm_rqa,
             },
         );
 

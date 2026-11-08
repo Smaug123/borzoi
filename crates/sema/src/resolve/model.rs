@@ -394,6 +394,12 @@ pub struct ProjectItems {
     /// answer (a type at an open-supplied head is transparent, probes
     /// CF12/CF13).
     pub(super) real_nested_modules: HashSet<Vec<String>>,
+    /// Full paths of earlier-file modules that certainly carry FSharp.Core's
+    /// `[<RequireQualifiedAccess>]` and are accessible from every later file —
+    /// the cross-file half of FS0892 (`resolve/require_qualified.rs`). Only
+    /// unsignatured files contribute: a later file sees a signatured one's
+    /// modules through the signature.
+    pub(super) rqa_module_paths: HashSet<Vec<String>>,
     /// Qualified paths of declared project **namespaces** (`["Outer", "Inner"]`
     /// for `namespace Outer.Inner`), accumulated across files. Lets
     /// [`Resolver::open_interpretations`](super::state::Resolver::open_interpretations) resolve an `open <namespace>`
@@ -824,6 +830,13 @@ impl ProjectItems {
     /// `extern` name does not answer).
     pub(super) fn is_real_nested_module(&self, names: &[String]) -> bool {
         self.real_nested_modules.contains(names)
+    }
+
+    /// Whether an earlier file declares a module at exactly `path` that
+    /// certainly carries `[<RequireQualifiedAccess>]` (see
+    /// [`Self::rqa_module_paths`]).
+    pub(super) fn is_certain_rqa_module(&self, path: &[String]) -> bool {
+        self.rqa_module_paths.contains(path)
     }
 
     /// The latest export at `path` the reference site `site` can **access**,
@@ -1309,6 +1322,9 @@ impl ProjectItems {
         for nested in idx.real_nested_modules {
             self.real_nested_modules.insert(nested);
         }
+        for rqa in idx.rqa_module_paths {
+            self.rqa_module_paths.insert(rqa);
+        }
         for (path, entry) in idx.type_qualified_cases {
             self.type_qualified_cases.insert(path, entry);
         }
@@ -1571,6 +1587,7 @@ struct FileExportIndices {
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
+    rqa_module_paths: Vec<Vec<String>>,
 }
 
 /// Where the names a hidden-value marker fears come from — the one question
@@ -1821,8 +1838,15 @@ impl FileExportIndices {
                     header,
                     auto_open,
                     private,
+                    require_qualified_access,
                 } => {
                     if !anon {
+                        // A later file sees a signatured file's modules
+                        // through the signature, whose attributes we do not
+                        // read here.
+                        if *require_qualified_access && screen.is_none() {
+                            fi.rqa_module_paths.push(decl.path.clone());
+                        }
                         if *header {
                             fi.module_headers.push(decl.path.clone());
                         } else {
@@ -2123,10 +2147,14 @@ pub(super) enum ExportDeclKind {
     /// nested `module X = …` (feeds `real_nested_modules`). `auto_open` / `private`
     /// carry the `[<AutoOpen>]` and `module private` bits so
     /// `auto_open_module_paths` derives (non-private auto-open modules only).
+    /// `require_qualified_access` is the certain verdict
+    /// [`Resolver::module_certainly_require_qualified_access`](super::state::Resolver::module_certainly_require_qualified_access)
+    /// reached, from which `rqa_module_paths` derives.
     Module {
         header: bool,
         auto_open: bool,
         private: bool,
+        require_qualified_access: bool,
     },
     /// A module abbreviation `module P = Target`. `path` = container + P — both
     /// its nested-module shadow path and its hidden-value path.
@@ -3545,6 +3573,7 @@ impl ResolvedFile {
                         header: true,
                         auto_open: false,
                         private: false,
+                        require_qualified_access: false,
                     },
                 });
             }
@@ -3854,8 +3883,8 @@ impl ResolvedFile {
         &self.exports
     }
 
-    /// The always-sound semantic diagnostics found in this file (today only
-    /// `use rec`; see [`SemaDiagnostic`]), in source order.
+    /// The semantic diagnostics found in this file (see [`SemaDiagnostic`]),
+    /// in source order.
     pub fn diagnostics(&self) -> &[SemaDiagnostic] {
         &self.diagnostics
     }

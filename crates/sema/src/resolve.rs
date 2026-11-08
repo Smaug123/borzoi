@@ -76,6 +76,7 @@ mod decls;
 mod exprs;
 mod lookup;
 mod model;
+mod require_qualified;
 mod state;
 mod types;
 
@@ -448,6 +449,11 @@ pub fn resolve_file(
             r.module_paths.push(path.clone());
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
+            let header_rqa =
+                r.module_certainly_require_qualified_access(module.attributes(), header_private);
+            if header_rqa {
+                r.rqa_module_paths.push(path.clone());
+            }
             if header_auto_open && !r.anonymous_root {
                 r.record_auto_open_module(path.clone(), header_private);
             }
@@ -464,6 +470,7 @@ pub fn resolve_file(
                     header: true,
                     auto_open: header_auto_open,
                     private: header_private,
+                    require_qualified_access: header_rqa,
                 },
             );
         }
@@ -2274,6 +2281,7 @@ impl<'a> Resolver<'a> {
             excluded_param_ranges: HashSet::new(),
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
+            rqa_module_paths: Vec::new(),
             trace_opens: Vec::new(),
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
@@ -3225,6 +3233,7 @@ mod export_decl_tests {
                     header: true,
                     auto_open: true,
                     private: true,
+                    ..
                 }
             )),
             "expected a private auto-open header decl: {:?}",
@@ -3249,6 +3258,7 @@ mod export_decl_tests {
                     header: true,
                     auto_open: true,
                     private: false,
+                    ..
                 }
             )),
             "expected a non-private auto-open header decl: {:?}",

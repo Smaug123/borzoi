@@ -3995,9 +3995,9 @@ impl AssemblyEnv {
 
     /// Whether the entity is `[<RequireQualifiedAccess>]`. Opening such a module is
     /// an **error** in FCS (FS0892 — "This declaration opens the module …, which is
-    /// marked as 'RequireQualifiedAccess'") and imports nothing, so an `open` of it
-    /// contributes no bare names (fsi-verified; `docs/assembly-module-open-plan.md`
-    /// Q5).
+    /// marked as 'RequireQualifiedAccess'"), which the resolver reports
+    /// (`resolve/require_qualified.rs`); FCS still imports the module's contents
+    /// (`docs/assembly-module-open-plan.md` Q5).
     pub fn is_require_qualified_access(&self, handle: EntityHandle) -> bool {
         self.entity(handle).is_require_qualified_access
     }

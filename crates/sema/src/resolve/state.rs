@@ -596,11 +596,90 @@ pub(super) struct OpenGroup {
 /// the auto-open descendants of a same-FQN **module** in some other reference —
 /// FCS opened the namespace, not that module. An open that really did read a
 /// module pushes its own entry with this set.
+///
+/// `reach` says which entities at `path` FCS's environment certainly holds
+/// opened — what a later `open` shortened through this prefix may claim to
+/// name ([`CertainReach`]).
 #[derive(Debug, Clone)]
 pub(super) struct ShorteningPrefix {
     pub(super) path: Vec<String>,
     pub(super) namespace_reading: bool,
     pub(super) module_reading: bool,
+    pub(super) reach: CertainReach,
+}
+
+/// Which entities at a candidate path an `open` **certainly** names in FCS —
+/// the claim the FS0892 diagnostic
+/// ([`SemaDiagnosticKind::OpenOfRequireQualifiedAccessModule`](crate::SemaDiagnosticKind))
+/// rests on, where a resolution only needs "may".
+///
+/// FCS resolves `open A.B` from the head `A`'s list of every module and
+/// namespace in scope under that name and walks the rest from each
+/// (`ResolveLongIdentAsModuleOrNamespace`), so a candidate the tier walk
+/// builds names an entity FCS opens only when the route that built it is one
+/// FCS takes. Three kinds of entity are told apart because the routes differ
+/// for them:
+///
+/// - **this file's** modules are in scope by their short names inside the
+///   containers that declare them, and not by the name of a block still being
+///   checked: `open global.N.M` inside `namespace N` does not reach this
+///   file's `N.M` (FCS-graded);
+/// - **earlier files'** modules are reachable from the root, and through the
+///   enclosing namespace's implicit open;
+/// - a **referenced assembly's** modules likewise, but inside a project module
+///   an assembly module of the same path is a different entity whose children
+///   are not in scope.
+///
+/// `Default` is the claim-nothing value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct CertainReach {
+    /// A module this file declared at the path is certainly opened.
+    pub(super) this_file: bool,
+    /// A module an earlier file declared at the path is certainly opened.
+    pub(super) earlier_files: bool,
+    /// Every referenced-assembly module at the path is certainly opened.
+    pub(super) assembly: bool,
+}
+
+impl CertainReach {
+    /// What either route certainly reaches.
+    pub(super) fn or(self, other: CertainReach) -> CertainReach {
+        CertainReach {
+            this_file: self.this_file || other.this_file,
+            earlier_files: self.earlier_files || other.earlier_files,
+            assembly: self.assembly || other.assembly,
+        }
+    }
+
+    /// What a prefix lends to the children of a **project** module it
+    /// reached: they are declared where the module is.
+    pub(super) fn project_children(self) -> CertainReach {
+        CertainReach {
+            assembly: false,
+            ..self
+        }
+    }
+
+    /// What a prefix lends to the children of a referenced **assembly**
+    /// module it reached: they are the assembly's own.
+    pub(super) fn assembly_children(self) -> CertainReach {
+        CertainReach {
+            this_file: false,
+            earlier_files: false,
+            assembly: self.assembly,
+        }
+    }
+}
+
+/// One candidate full path of an `open`, from
+/// [`Resolver::open_tier_candidates_reached`].
+#[derive(Debug, Clone)]
+pub(super) struct TierCandidate {
+    pub(super) full: Vec<String>,
+    /// Whether a namespace is reachable at this tier.
+    pub(super) namespaces_reachable: bool,
+    /// What FCS certainly opens at `full` through this route.
+    pub(super) reach: CertainReach,
 }
 
 /// One interpretation of an `open <path>` clause at one base of the open's
@@ -1636,10 +1715,19 @@ pub(super) struct Resolver<'a> {
     /// lambda-parameter walk ([`pattern_locals`](Resolver::pattern_locals) with
     /// [`BinderRole::Param`](crate::BinderRole)).
     pub(super) decline_binding_head_param_exprs: bool,
-    /// Always-sound semantic diagnostics accumulated during the walk (today
-    /// only `use rec`; see [`SemaDiagnostic`]). Source-ordered because the
-    /// walk is.
+    /// Always-sound semantic diagnostics accumulated during the walk (see
+    /// [`SemaDiagnostic`]). Source-ordered because the walk is.
     pub(super) diagnostics: Vec<SemaDiagnostic>,
+    /// The full paths (`container_path` + name) of this file's modules that
+    /// certainly carry FSharp.Core's `[<RequireQualifiedAccess>]` and are
+    /// accessible from anywhere in the project
+    /// ([`Resolver::module_certainly_require_qualified_access`]) — the
+    /// same-file half of FS0892, whose cross-file half is
+    /// [`ProjectItems::is_certain_rqa_module`](super::model::ProjectItems::is_certain_rqa_module).
+    /// File-wide: a module stays openable by its full path after its block
+    /// closes. Under an anonymous root the paths are relative to the implicit
+    /// file module, which is how this file's `open`s write them.
+    pub(super) rqa_module_paths: Vec<Vec<String>>,
     /// The resolution-explain trace — one [`OpenTrace`] per `open` declaration,
     /// in source order, recording the opaque-open flags it flipped. Accumulated
     /// across every top-level block (a *file*-level record, deliberately absent
@@ -1744,6 +1832,12 @@ pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<Shor
             path,
             namespace_reading: true,
             module_reading: false,
+            // A referenced assembly's `[<assembly: AutoOpen>]` opens that
+            // namespace in every reference, before any project file exists.
+            reach: CertainReach {
+                assembly: true,
+                ..CertainReach::default()
+            },
         })
         .collect()
 }

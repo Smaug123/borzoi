@@ -128,6 +128,13 @@ impl SyntaxRecovery {
         SyntaxRecovery::Unretained
     }
 
+    /// Whether the file parsed with no recovery at all. FCS reports no
+    /// type-checking diagnostic for a file whose parse failed, so a diagnostic
+    /// sema reports must ask this first.
+    pub fn proves_clean_parse(&self) -> bool {
+        matches!(self, SyntaxRecovery::Reported(spans) if spans.is_empty())
+    }
+
     /// Whether the file parsed with no recovery anywhere before `node` ends —
     /// stronger than [`Self::declaration_is_intact`], for readings a recovery
     /// *earlier* in the file can invalidate. Recovery can spill past the

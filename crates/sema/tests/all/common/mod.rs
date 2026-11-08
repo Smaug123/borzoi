@@ -1507,6 +1507,29 @@ pub fn ensure_qualifier_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **`[<RequireQualifiedAccess>]` open** fixture
+/// (`tests/fixtures/rqa_open_env`, `SemaRqaOpenFixture.dll`) once per test
+/// binary and return its `.dll` path: referenced modules an `open` names, with
+/// and without the attribute, for the FS0892 differential
+/// (`tests/all/open_rqa_diagnostic_diff.rs`). Behind the shared
+/// [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_rqa_open_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rqa_open_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build rqa-open fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaRqaOpenFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **unmodelled-contributor** fixture
 /// (`tests/fixtures/contributor_env`, `SemaContributorFixture.dll`) once per
 /// test binary and return its `.dll` path: referenced statics reaching bare
@@ -2674,6 +2697,24 @@ pub struct FileUses {
     /// The message of every `Severity=Error` diagnostic FCS reported for the
     /// file — empty for a file that checked cleanly.
     pub errors: Vec<String>,
+    /// Every diagnostic FCS reported for the file, parse and check alike, with
+    /// its error number and byte range. `None` when the dump carried no
+    /// `Diagnostics` field at all, which a consumer grading a diagnostic must
+    /// refuse rather than read as "FCS reported nothing".
+    pub diagnostics: Option<Vec<FcsDiagnostic>>,
+}
+
+/// One diagnostic FCS reported for a project file, its range in byte offsets
+/// into that file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FcsDiagnostic {
+    /// `Error`, `Warning`, `Info` or `Hidden`, as FCS spells its severity.
+    pub severity: String,
+    /// The `FSnnnn` number.
+    pub error_number: u32,
+    pub start: usize,
+    pub end: usize,
+    pub message: String,
 }
 
 #[derive(Deserialize)]
@@ -2689,7 +2730,7 @@ struct RawFileUses {
     #[serde(rename = "Uses")]
     uses: Vec<RawUse>,
     #[serde(rename = "Diagnostics", default)]
-    diagnostics: Vec<RawProjectDiagnostic>,
+    diagnostics: Option<Vec<RawProjectDiagnostic>>,
 }
 
 #[derive(Deserialize)]
@@ -2698,6 +2739,10 @@ struct RawProjectDiagnostic {
     severity: String,
     #[serde(rename = "Message")]
     message: String,
+    #[serde(rename = "ErrorNumber")]
+    error_number: u32,
+    #[serde(rename = "Range")]
+    range: FcsRange,
 }
 
 /// Parse the `uses-project` subcommand's JSON into per-file, byte-offset-
@@ -2765,15 +2810,27 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                     }
                 })
                 .collect();
+            let diagnostics = f.diagnostics.map(|ds| {
+                ds.into_iter()
+                    .map(|d| FcsDiagnostic {
+                        error_number: d.error_number,
+                        start: idx.offset(d.range.start.line, d.range.start.col),
+                        end: idx.offset(d.range.end.line, d.range.end.col),
+                        severity: d.severity,
+                        message: d.message,
+                    })
+                    .collect::<Vec<_>>()
+            });
             FileUses {
                 path: path.to_path_buf(),
                 uses,
-                errors: f
-                    .diagnostics
-                    .into_iter()
+                errors: diagnostics
+                    .iter()
+                    .flatten()
                     .filter(|d| d.severity == "Error")
-                    .map(|d| d.message)
+                    .map(|d| d.message.clone())
                     .collect(),
+                diagnostics,
             }
         })
         .collect()
