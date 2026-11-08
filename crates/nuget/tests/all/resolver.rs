@@ -373,8 +373,11 @@ fn a_direct_dependency_below_a_transitive_one_is_a_downgrade() {
     );
 }
 
+/// An asset filter on a dependency decides which of its assets flow, not
+/// whether it is in the graph (`resolver_diff` holds that to both restore
+/// engines), so the closure is the one without it.
 #[test]
-fn dependency_asset_filters_decline_until_asset_semantics_land() {
+fn dependency_asset_filters_do_not_change_the_closure() {
     let root = tempfile::tempdir().expect("root");
     write_package(
         root.path(),
@@ -389,19 +392,14 @@ fn dependency_asset_filters_decline_until_asset_semantics_land() {
     );
     write_package(root.path(), "Beta", "2.0.0", &[]);
 
-    let err = resolve_offline(root.path(), &framework("net8.0"), &[req("Alpha", "1.0.0")])
-        .expect_err("include/exclude asset lists are not interpreted in 6a");
-
-    assert!(
-        matches!(
-            &err,
-            ResolveDecline::DependencyAssetFilterUnsupported {
-                package,
-                dependency,
-            } if package.id == self::id("Alpha") && dependency == &self::id("Beta")
-        ),
-        "unexpected error: {err:?}"
-    );
+    let closure = resolve_offline(root.path(), &framework("net8.0"), &[req("Alpha", "1.0.0")])
+        .expect("an asset filter does not stop resolution");
+    let ids: Vec<&str> = closure
+        .packages
+        .iter()
+        .map(|package| package.identity.id.as_str())
+        .collect();
+    assert_eq!(ids, ["Alpha", "Beta"]);
 }
 
 #[test]

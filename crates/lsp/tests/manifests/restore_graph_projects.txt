@@ -6,11 +6,11 @@ TypeEquality/TypeEquality/TypeEquality.fsproj b1: committed frameworks=1
 TypeEquality/TypeEquality/TypeEquality.fsproj restore: succeeded logs=0
 TypeEquality/TypeEquality/TypeEquality.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj assets netstandard2.0: libraries=19 packages=19 compile=18
-WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj b1: declined resolve:DependencyAssetFilterUnsupported
+WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj b1: declined resolve:LosingVersionNotALeaf
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj restore: succeeded logs=0
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj spec: committed projects=1 frameworks=1 dependencies=6 pruned=0
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj assets net5.0: libraries=6 packages=6 compile=5
-WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj b1: declined download-dependencies
+WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj b1: committed frameworks=1
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj restore: succeeded logs=0
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj spec: committed projects=1 frameworks=1 dependencies=6 pruned=0
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj assets netstandard2.0: libraries=4 packages=4 compile=3
@@ -18,7 +18,7 @@ WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fs
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj restore: succeeded logs=0
 WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj assets net8.0: libraries=5 packages=5 compile=4
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj b1: declined download-dependencies
+WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj b1: declined package-metadata:system.diagnostics.diagnosticsource/9.0.2
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj restore: succeeded logs=0
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj assets netstandard2.0: libraries=4 packages=4 compile=3
