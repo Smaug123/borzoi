@@ -6018,6 +6018,126 @@ let private dumpAttrsBatch () =
     | Some ex -> raise ex
     | None -> ()
 
+/// The directory whose SDK resolution is the same as `dir`'s, chosen so that
+/// unrelated project directories share one.
+///
+/// Script resolution (`GetProjectOptionsFromScript` with `useSdkRefs`) picks
+/// its SDK by running `dotnet --version` with the script's directory as the
+/// working directory, and FCS caches the answer per directory string
+/// (`FxResolver`'s `desiredDotNetSdkVersionForDirectoryCache`). Each fresh
+/// directory therefore costs a `dotnet` process: two-thirds of a small
+/// `uses-project-batch` request, whose callers give every project its own
+/// temporary directory.
+///
+/// `dotnet --version` reads the directory only through the SDK resolver's
+/// search for `global.json`, which walks upward from the working directory,
+/// that is, from the directory's *real* path. If a directory `d` holds no
+/// entry named `global.json` and is not itself a link, then `d`'s real path is
+/// its parent's real path plus one component, and the search from `d` reaches
+/// the parent having found nothing. So `d` and its parent get the same
+/// answer. Walking up while that holds ends at the first directory that holds
+/// a `global.json`, or is a link, or is the root. A directory that cannot be
+/// inspected stops the walk, as does one that does not exist, for which FCS
+/// runs `dotnet` in the current directory instead.
+let private sdkResolutionDir (dir: string) : string =
+    let rec walk (d: DirectoryInfo) =
+        let marker = Path.Combine(d.FullName, "global.json")
+        let stops =
+            try
+                not d.Exists
+                || File.Exists marker
+                || Directory.Exists marker
+                || not (isNull d.LinkTarget)
+            with _ ->
+                true
+        match Option.ofObj d.Parent with
+        | Some parent when not stops -> walk parent
+        | _ -> d.FullName
+    walk (DirectoryInfo(Path.GetFullPath dir))
+
+/// Whether every hash directive `text` could hold is one that names no path:
+/// each `#` must open its line (after indentation) as `#if`, `#else`,
+/// `#endif`, `#nowarn`, `#warnon`, `#light` or `#indent`. A `#` anywhere else,
+/// in a string or a flexible type included, answers `false`; that costs only
+/// the sharing in [`projectScriptOptions`], never its answer.
+let private onlyPathFreeDirectives (text: string) : bool =
+    let safe = set [ "if"; "else"; "endif"; "nowarn"; "warnon"; "light"; "indent" ]
+    text.Split('\n')
+    |> Array.forall (fun line ->
+        let trimmed = line.TrimStart()
+        match line.IndexOf '#' with
+        | -1 -> true
+        | first when line.LastIndexOf '#' = first && trimmed.StartsWith "#" ->
+            let word =
+                trimmed.Substring 1
+                |> Seq.takeWhile Char.IsLetter
+                |> Seq.toArray
+                |> String
+            safe.Contains word
+        | _ -> false)
+
+/// Where [`projectScriptOptions`] resolves a project whose first file is
+/// `firstPath`.
+let private sharedScriptPath (firstPath: string) (firstText: string) : string =
+    match Option.ofObj (Path.GetDirectoryName firstPath), Option.ofObj (Path.GetFileName firstPath) with
+    | Some dir, Some name when onlyPathFreeDirectives firstText -> Path.Combine(sdkResolutionDir dir, name)
+    | _ -> firstPath
+
+/// Script resolution of `text` as though it were the file `path`.
+let private scriptOptionsAs (checker: FSharpChecker) (path: string) (text: string) (otherFlags: string[]) =
+    checker.GetProjectOptionsFromScript(
+        path,
+        SourceText.ofString text,
+        assumeDotNetFramework = false,
+        useSdkRefs = true,
+        otherFlags = otherFlags)
+    |> Async.RunSynchronously
+
+/// Script resolution for a project whose first file is `firstPath`, run where
+/// it can share FCS's per-directory SDK resolution with other projects
+/// ([`sdkResolutionDir`]).
+///
+/// The script stands in that directory under its own file name. Besides the
+/// SDK, the script's directory reaches the result through the `#r`, `#I` and
+/// `#load` paths it resolves, so a text with any directive that might name a
+/// path ([`onlyPathFreeDirectives`]) resolves in its own directory. It reaches
+/// the result through the returned options' `ProjectFileName` and
+/// `SourceFiles` too, and through the text of the diagnostics. **Callers must
+/// replace both fields**; the diagnostics may name the shared directory.
+let private projectScriptOptions
+    (checker: FSharpChecker)
+    (firstPath: string)
+    (firstText: string)
+    (otherFlags: string[])
+    =
+    scriptOptionsAs checker (sharedScriptPath firstPath firstText) firstText otherFlags
+
+/// `script-options-batch`: for each absolute path on stdin, the script
+/// resolution [`projectScriptOptions`] makes and the one made in the file's own
+/// directory, as `{ "ResolvedAs", "Shared", "Direct" }`, each side its
+/// `OtherOptions` and its diagnostics' severities and numbers. The test-only
+/// oracle for the claim that sharing changes nothing a caller reads.
+let private scriptOptionsBatch () =
+    let checker = FSharpChecker.Create()
+    let compact = buildOptionsCompact ()
+    let side (opts: FSharpProjectOptions, diags: FSharp.Compiler.Diagnostics.FSharpDiagnostic list) =
+        {| OtherOptions = opts.OtherOptions
+           Diagnostics =
+            diags |> List.map (fun d -> sprintf "%A FS%04d" d.Severity d.ErrorNumber) |> List.toArray |}
+    let mutable line = Console.In.ReadLine()
+    while not (isNull line) do
+        let path = (Option.ofObj line |> Option.defaultValue "").Trim()
+        if path <> "" then
+            let path = Path.GetFullPath path
+            let text = File.ReadAllText path
+            let response =
+                {| ResolvedAs = sharedScriptPath path text
+                   Shared = side (projectScriptOptions checker path text [||])
+                   Direct = side (scriptOptionsAs checker path text [||]) |}
+            Console.Out.WriteLine(JsonSerializer.Serialize(response, compact))
+            Console.Out.Flush()
+        line <- Console.In.ReadLine()
+
 /// Project-aware sibling of `dumpUses`: type-check an ordered set of source
 /// files as a *single project* (not isolated scripts), so name resolution sees
 /// cross-file declarations. Reads absolute source paths from stdin, one per
@@ -6065,15 +6185,12 @@ let private usesProjectFiles
     (defineArgs: string[])
     (langVersionArgs: string[])
     =
-    let firstText = SourceText.ofString (File.ReadAllText(paths.[0]))
     let scriptOpts, scriptDiags =
-        checker.GetProjectOptionsFromScript(
-            paths.[0],
-            firstText,
-            assumeDotNetFramework = false,
-            useSdkRefs = true,
-            otherFlags = Array.append defineArgs langVersionArgs)
-        |> Async.RunSynchronously
+        projectScriptOptions
+            checker
+            paths.[0]
+            (File.ReadAllText(paths.[0]))
+            (Array.append defineArgs langVersionArgs)
 
     let blocking =
         scriptDiags
@@ -6422,11 +6539,8 @@ let private dumpUsesCensusProjectCore () =
 
     let checker = FSharpChecker.Create()
 
-    let firstText = SourceText.ofString (File.ReadAllText(paths.[0]))
     let scriptOpts, _scriptDiags =
-        checker.GetProjectOptionsFromScript(
-            paths.[0], firstText, assumeDotNetFramework = false, useSdkRefs = true)
-        |> Async.RunSynchronously
+        projectScriptOptions checker paths.[0] (File.ReadAllText(paths.[0])) [||]
 
     let otherOptions =
         scriptOpts.OtherOptions
@@ -7137,11 +7251,8 @@ let private dumpOverloads (absolute: string) =
 /// file has no implementation file, so it reports no nodes and no binders, only
 /// its errors.
 let private typesProjectFiles (checker: FSharpChecker) (paths: string[]) (refArgs: string[]) =
-    let firstText = SourceText.ofString (File.ReadAllText(paths.[0]))
     let scriptOpts, scriptDiags =
-        checker.GetProjectOptionsFromScript(
-            paths.[0], firstText, assumeDotNetFramework = false, useSdkRefs = true)
-        |> Async.RunSynchronously
+        projectScriptOptions checker paths.[0] (File.ReadAllText(paths.[0])) [||]
     let blocking =
         scriptDiags
         |> List.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
@@ -7727,6 +7838,7 @@ let private usage () =
     eprintfn "  overloads <source-path>  dump the chosen overload at each call node (overload-resolution oracle)"
     eprintfn "  file-batch               resident single-file oracle: one JSON request/line {kind,path,refs}, one compact JSON response/line"
     eprintfn "  uses-project-batch       resident project oracle: one JSON request/line {paths,refs,defines,langversion}, one compact {Files} response/line"
+    eprintfn "  script-options-batch     test oracle: per path on stdin, the shared and the own-directory script resolution {ResolvedAs,Shared,Direct}"
     eprintfn "  xmldoc-batch             resident source-XML-doc oracle: one JSON request/line {paths,defines,langversion}, one compact {Files} response/line"
     2
 
@@ -7827,6 +7939,9 @@ let main argv =
         0
     | [| "uses-project-batch" |] ->
         usesProjectBatch ()
+        0
+    | [| "script-options-batch" |] ->
+        scriptOptionsBatch ()
         0
     | [| "uses-census-batch" |] ->
         dumpUsesCensusBatch ()

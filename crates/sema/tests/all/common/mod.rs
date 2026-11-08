@@ -447,6 +447,14 @@ pub fn invoke_fcs_dump_types_census(paths: &[PathBuf]) -> String {
     census_driver("types-census-batch", paths, &[])
 }
 
+/// Run `fcs-dump script-options-batch` over `paths` and return its JSONL
+/// stdout: per path, the script resolution a project oracle makes in a shared
+/// directory and the one made in the path's own, as
+/// `{ ResolvedAs, Shared, Direct }`. The oracle for `fcs_dump_sdk_resolution`.
+pub fn invoke_fcs_dump_script_options(paths: &[PathBuf]) -> String {
+    census_driver("script-options-batch", paths, &[])
+}
+
 /// Shared driver for the two census subcommands. The paths go to the child's
 /// stdin on a dedicated thread while both its output pipes are drained on theirs,
 /// so a large input (whose stdin exceeds the pipe buffer) cannot deadlock against
