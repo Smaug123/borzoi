@@ -43,6 +43,8 @@ const CONSTRUCTS: &[&str] = &[
     "function | 1 -> @ | _ -> @",
     "@, @",
     "@; @",
+    "@; ; @",
+    "@;",
     "@ then @",
     "@ + @",
     "@ |> @",
@@ -78,17 +80,29 @@ fn fill_nth(template: &str, n: usize, fill: &str) -> String {
 }
 
 /// Every expression in the grid: each construct with leaf holes, then each
-/// construct with one hole holding another leaf-filled construct.
+/// construct with one hole holding another leaf-filled construct, bare or in
+/// parentheses.
+///
+/// The parenthesised filler matters because LexFilter swallows the `)` from
+/// the filtered stream: a raw construct has no closing virtuals of its own, so
+/// without the raw-stream closer check its continuation keyword (`else`, a
+/// clause's `|`, `done`) would reach past the `)` into the enclosing
+/// construct (`if a then (if b then c) else d`).
 fn expressions() -> Vec<String> {
     let leafy: Vec<String> = CONSTRUCTS
         .iter()
         .map(|c| fill_nth(c, usize::MAX, LEAF))
         .collect();
-    let mut out = leafy.clone();
+    let fillers: Vec<String> = leafy
+        .iter()
+        .cloned()
+        .chain(leafy.iter().map(|e| format!("({e})")))
+        .collect();
+    let mut out = leafy;
     for outer in CONSTRUCTS {
         let holes = outer.matches(HOLE).count();
         for n in 0..holes {
-            for inner in &leafy {
+            for inner in &fillers {
                 out.push(fill_nth(outer, n, inner));
             }
         }

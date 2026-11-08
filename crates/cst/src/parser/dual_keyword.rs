@@ -97,6 +97,18 @@ impl DualKeyword {
         }
     }
 
+    /// `true` for a keyword that continues a construct after a body (`then`,
+    /// `else`, `with`, a loop's `do`), as opposed to one that heads it (`fun`,
+    /// `function`). A continuation past a LexFilter-swallowed closer belongs to
+    /// the enclosing construct, so [`Parser::peek_dual_keyword`] declines it
+    /// there.
+    fn is_continuation(self) -> bool {
+        match self {
+            DualKeyword::Then | DualKeyword::Else | DualKeyword::With | DualKeyword::Do => true,
+            DualKeyword::Fun | DualKeyword::Function => false,
+        }
+    }
+
     /// The lambda keyword (`fun` or `function`, either spelling) `tok` is, if
     /// any. Every expression-start gate and the `parse_minus_expr` dispatch
     /// classify a lambda head through this one function.
@@ -108,19 +120,38 @@ impl DualKeyword {
 }
 
 impl<'src> Parser<'src> {
+    /// The spelling the current filtered token carries `kw` in, if it is `kw`
+    /// and is this construct's to take.
+    ///
+    /// A continuation keyword ([`DualKeyword::is_continuation`]) is declined
+    /// when a LexFilter-swallowed closer sits before it on the raw stream
+    /// ([`Self::at_swallowed_seq_closer`]): the filtered stream drops a paren's
+    /// `)`, so in `if a then (if b then c) else d` the inner `if` would
+    /// otherwise see the outer `else`. An offside construct is closed by its own
+    /// virtuals before the `)`; a raw one has nothing but this check. A head
+    /// keyword is never declined, so a caller that dispatched on it can rely on
+    /// consuming it.
+    pub(super) fn peek_dual_keyword(&self, kw: DualKeyword) -> Option<KeywordForm> {
+        if kw.is_continuation() && self.at_swallowed_seq_closer() {
+            return None;
+        }
+        match self.peek() {
+            Some((Ok(tok), _)) => kw.form_of(tok),
+            _ => None,
+        }
+    }
+
     /// Consume `kw` in either spelling, emitting its text under the keyword's
-    /// kind, and return the spelling; `None` (consuming nothing) if the current
-    /// token is not `kw`.
+    /// kind, and return the spelling; `None` (consuming nothing) if
+    /// [`Self::peek_dual_keyword`] declines it.
     ///
     /// The offside relabel is backed by the raw token at the same span, so the
     /// raw text is emitted directly and both cursors advance (going through
     /// [`Self::bump_into`] would drain the raw keyword as an ERROR before
     /// reaching the virtual). The raw spelling is an ordinary 1:1 bump.
     pub(super) fn bump_dual_keyword(&mut self, kw: DualKeyword) -> Option<KeywordForm> {
-        let (form, span) = match self.peek() {
-            Some((Ok(tok), span)) => (kw.form_of(tok)?, span.clone()),
-            _ => return None,
-        };
+        let form = self.peek_dual_keyword(kw)?;
+        let span = self.peek().map(|(_, s)| s.clone())?;
         match form {
             KeywordForm::Offside => {
                 self.drain_raw_up_to(span.start);

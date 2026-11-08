@@ -856,10 +856,10 @@ impl<'src> Parser<'src> {
 
         // Body. One or more statements project to a single expr or
         // `SEQUENTIAL_EXPR` via the shared offside-block gather (see
-        // [`Self::parse_let_body`], the bare-body form of the gather
+        // [`Self::parse_bare_seq_body`], the bare-body form of the gather
         // `parse_fun_expr` / `parse_if_body` use). The separator before the body (offside form) was
         // already consumed by the binder loop above.
-        self.parse_let_body("expected computation-expression body after binder");
+        self.parse_bare_seq_body("expected computation-expression body after binder");
 
         self.builder.finish_node(); // LET_OR_USE_EXPR
     }
@@ -1042,7 +1042,7 @@ impl<'src> Parser<'src> {
         });
         if layout_body_idx.is_some() {
             self.close_binder_binding();
-            self.parse_let_body("expected expression after `let`");
+            self.parse_bare_seq_body("expected expression after `let`");
             self.builder
                 .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXPR_DECL));
             self.builder
@@ -1074,7 +1074,7 @@ impl<'src> Parser<'src> {
                 // wrap retroactively (mirrors `parse_let_or_use_expr`'s tail).
                 // `close_binder_binding` claims either terminator shape.
                 self.close_binder_binding();
-                self.parse_let_body("expected expression after `let … in`");
+                self.parse_bare_seq_body("expected expression after `let … in`");
                 self.builder
                     .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXPR_DECL));
                 self.builder
@@ -1206,7 +1206,7 @@ impl<'src> Parser<'src> {
     /// `DeclEnd`, then the body after an offside `BlockSep` — or, in the
     /// explicit-`in` form, no `BlockSep` and a raw `Token::In`
     /// `close_binder_binding` claims). The body goes through
-    /// [`Self::parse_let_body`], so it may itself be another `let`
+    /// [`Self::parse_bare_seq_body`], so it may itself be another `let`
     /// (nesting, `LetOrUse([a], LetOrUse([b], …))`) or a multi-statement
     /// `Sequential`, and ends early on a separator run longer than one
     /// boundary, which belongs to the enclosing sequence.
@@ -1225,7 +1225,7 @@ impl<'src> Parser<'src> {
     /// binding-RHS `BlockEnd`). Both forms share everything below: the binding's
     /// RHS still gets a `BlockBegin…BlockEnd` block, [`Self::close_binder_binding`]
     /// claims the explicit `in` (and tolerates its absence), and the body goes
-    /// through [`Self::parse_let_body`]. Only the head-keyword emission
+    /// through [`Self::parse_bare_seq_body`]. Only the head-keyword emission
     /// differs — a virtual needs [`Self::emit_let_keyword`]'s raw-realignment, a
     /// raw keyword is a plain `bump_into`. (Only the block form reaches here with
     /// `use`; a non-block raw `Token::Use` is *not* dispatched — see
@@ -1251,7 +1251,7 @@ impl<'src> Parser<'src> {
         ) {
             self.bump_into(SyntaxKind::ERROR);
         }
-        self.parse_let_body("expected expression after `let` binding");
+        self.parse_bare_seq_body("expected expression after `let` binding");
 
         self.builder.finish_node(); // LET_OR_USE_EXPR
     }

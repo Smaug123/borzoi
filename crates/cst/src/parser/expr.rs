@@ -365,10 +365,11 @@ impl<'src> Parser<'src> {
         self.parse_seq_block_body_impl(missing_first, true, SeqBody::Closed)
     }
 
-    /// [`Self::parse_seq_block_body`] for a `let` body (`hardwhiteLetBindings`,
-    /// `let … in`, a `let!` binder), which is a bare `typedSequentialExpr`
-    /// sharing the enclosing sequence's block — see [`SeqBody::Bare`].
-    pub(super) fn parse_let_body(&mut self, missing_first: &str) -> u32 {
+    /// [`Self::parse_seq_block_body`] for a bare `typedSequentialExpr` that
+    /// shares the enclosing sequence's block — see [`SeqBody::Bare`]: a `let`
+    /// body (`hardwhiteLetBindings`, `let … in`, a `let!` binder), and the body
+    /// of a raw `fun` or raw match clause, which nothing closes.
+    pub(super) fn parse_bare_seq_body(&mut self, missing_first: &str) -> u32 {
         self.parse_seq_block_body_impl(missing_first, true, SeqBody::Bare)
     }
 
@@ -1675,8 +1676,10 @@ pub(super) enum SeqBody {
     /// Closed by a token of its own (a bracket, an `OBLOCKEND`, `end`): the
     /// separator is an error.
     Closed,
-    /// A `let` body, which shares its offside block with the enclosing
-    /// sequence: the body ends as trailing `seps`, and the separator is the
-    /// enclosing sequence's (`let x = 1⏎a⏎;⏎b` is `Sequential(LetOrUse(x, a), b)`).
+    /// A body with no closer of its own, sharing the enclosing sequence's
+    /// block — a `let` body, or a raw `fun`/match-clause body: the body ends as
+    /// trailing `seps`, and the separator is the enclosing sequence's (`let x =
+    /// 1⏎a⏎;⏎b` is `Sequential(LetOrUse(x, a), b)`, and a raw `fun x -> a; ; b`
+    /// is `Sequential(Lambda(x, a), b)`).
     Bare,
 }

@@ -139,7 +139,7 @@ impl<'src> Parser<'src> {
         //   [`IfThenElseExpr::else_branch`] surfaces as `None`
         //   (FCS's `SynExpr.IfThenElse.elseExpr = None`).
         match self.peek().cloned() {
-            Some((Ok(tok), _)) if DualKeyword::Else.form_of(&tok).is_some() => {
+            Some(_) if self.peek_dual_keyword(DualKeyword::Else).is_some() => {
                 let else_form = self.bump_dual_keyword(DualKeyword::Else);
 
                 let opened_else_block = matches!(
@@ -152,7 +152,11 @@ impl<'src> Parser<'src> {
                 let else_form = else_form.expect("the arm's guard matched an `else`");
                 self.parse_if_branch_body("else", else_form, opened_else_block);
             }
-            Some((Ok(FilteredToken::Raw(Token::Elif)), elif_span)) => {
+            // Like `else` (see [`Parser::peek_dual_keyword`]), an `elif` past a
+            // swallowed closer belongs to the enclosing construct.
+            Some((Ok(FilteredToken::Raw(Token::Elif)), elif_span))
+                if !self.at_swallowed_seq_closer() =>
+            {
                 // Bare `elif` vs merged `else if` (LexFilter rewrote both
                 // into a single filtered `Token::Elif`, see
                 // `crates/cst/src/lexfilter/mod.rs:3380-3408`). Dispatch
@@ -404,8 +408,14 @@ impl<'src> Parser<'src> {
         //
         // Shared offside-block gather (see [`Self::parse_seq_block_body`]):
         // the first statement plus each same-indent `Virtual::BlockSep`
-        // continuation, wrapped in `SEQUENTIAL_EXPR` when more than one.
-        self.parse_seq_block_body("expected expression after `->`");
+        // continuation, wrapped in `SEQUENTIAL_EXPR` when more than one. A raw
+        // `fun`'s body has no closer, so it is a bare sequence
+        // ([`SeqBody::Bare`]): a separator past a complete boundary is the
+        // enclosing sequence's (`fun x -> a; ; b`).
+        match form {
+            KeywordForm::Offside => self.parse_seq_block_body("expected expression after `->`"),
+            KeywordForm::Raw => self.parse_bare_seq_body("expected expression after `->`"),
+        };
 
         // A raw `fun` pushed no `CtxtFun`, so nothing closes it: FCS's
         // `FUN atomicPatterns RARROW typedSequentialExprBlock` ends with the body.
@@ -705,8 +715,13 @@ impl<'src> Parser<'src> {
             // so its internal checkpoint (see [`Self::parse_seq_block_body`])
             // wraps only the result statements; the guard stays a separate
             // sibling `Expr` child and the positional `guard()`/`result()`
-            // disambiguation is preserved.
-            self.parse_seq_block_body("expected expression after `->`");
+            // disambiguation is preserved. Under a raw opener the result has no
+            // closer, so it is a bare sequence ([`SeqBody::Bare`]), as a raw
+            // `fun` body is.
+            match opener {
+                KeywordForm::Offside => self.parse_seq_block_body("expected expression after `->`"),
+                KeywordForm::Raw => self.parse_bare_seq_body("expected expression after `->`"),
+            };
 
             // Drain this clause's one-sided SeqBlock close (zero-width), if
             // present. Single-line shapes emit it only after the last clause;
@@ -723,8 +738,12 @@ impl<'src> Parser<'src> {
 
             // Continue while the next clause separator `|` is present. `peek`
             // skips trivia, so any `RightBlockEnd` drained above doesn't hide
-            // the following `Bar`.
-            if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Bar)), _))) {
+            // the following `Bar`. A `|` past a swallowed closer belongs to an
+            // enclosing clause list (`| A -> (function _ -> a) | B -> b`): a raw
+            // list has no `OEND` to stop at, so check the raw stream.
+            if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Bar)), _)))
+                && !self.at_swallowed_seq_closer()
+            {
                 continue;
             }
             break;
@@ -834,7 +853,8 @@ impl<'src> Parser<'src> {
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::Finally)), _)),
-        ) {
+        ) && !self.at_swallowed_seq_closer()
+        {
             // `finally` — plain raw passthrough (no relabel), then the regular
             // block finally body (the `while`/`for` `do`-body shape).
             self.bump_into(SyntaxKind::FINALLY_TOK);
@@ -1234,7 +1254,9 @@ impl<'src> Parser<'src> {
                 self.parse_seq_block_body(&format!(
                     "expected expression after `do` in `{keyword}`"
                 ));
-                if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Done)), _))) {
+                if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Done)), _)))
+                    && !self.at_swallowed_seq_closer()
+                {
                     self.bump_into(SyntaxKind::DONE_TOK);
                 } else {
                     let span = self
@@ -1261,6 +1283,11 @@ impl<'src> Parser<'src> {
     /// trailing `DeclEnd` consumed by [`Self::consume_block_decl_end`] (which
     /// leaves the *enclosing* block's `DeclEnd` for that block's owner). `keyword`
     /// is used only in the missing-body diagnostic.
+    ///
+    /// With no `BlockBegin` — a raw `finally`, where LexFilter pushed no context
+    /// (see [`DualKeyword`]) — nothing closes the body, so it is a bare sequence
+    /// ([`SeqBody::Bare`]): `try a finally b; ; c` leaves the second `;` to the
+    /// enclosing sequence.
     fn parse_block_body_after_keyword(&mut self, keyword: &str) {
         let opened = matches!(
             self.peek(),
@@ -1268,8 +1295,10 @@ impl<'src> Parser<'src> {
         );
         if opened {
             self.bump_into(SyntaxKind::ERROR);
+            self.parse_if_body(keyword, opened);
+        } else {
+            self.parse_bare_seq_body(&format!("expected expression after `{keyword}`"));
         }
-        self.parse_if_body(keyword, opened);
         self.consume_block_decl_end();
     }
 
