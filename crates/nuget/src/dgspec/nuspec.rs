@@ -38,8 +38,7 @@
 //!   one framework are admitted: the first wins on both sides, and the
 //!   generated sweep grades it. The elements restore reads
 //!   and B₁ does not model (`contentFiles`, `frameworkAssemblies`,
-//!   `frameworkReferences`, `developmentDependency`) decline by name, as does
-//!   any other.
+//!   `frameworkReferences`) decline by name, as does any other.
 //! - **Identity.** `<id>` and `<version>` name the folder the package is in;
 //!   every `<packageType>` is `Dependency` without a version (restore refuses
 //!   other types in a `PackageReference` project, `DotnetTool` with `NU1212`,
@@ -55,8 +54,8 @@
 //! `<group>` but `<dependency>`, and no repeated `<dependencies>` or
 //! `<group>` framework; 3,837 open with a UTF-8 byte order mark and 2 are
 //! UTF-16. What that cache has and this domain declines is
-//! `<frameworkAssemblies>` (839 nuspecs), `<developmentDependency>` (202),
-//! `<frameworkReferences>` (74) and `<contentFiles>` (31): later stages.
+//! `<frameworkAssemblies>` (839 nuspecs), `<frameworkReferences>` (74) and
+//! `<contentFiles>` (31): later stages.
 
 use super::resolve::NuGetIdentity;
 use crate::{NuGetFramework, NuGetVersion, PackageId, PackageIdentity, VersionRange};
@@ -125,7 +124,8 @@ const NUSPEC_NAMESPACES: &[&str] = &[
 ];
 
 /// The `<metadata>` elements restore never reads: what a package says about
-/// itself for people and galleries. Their subtrees may hold anything. The
+/// itself for people and galleries, and `developmentDependency`, which restore
+/// ignores whatever its value. Their subtrees may hold anything. The
 /// differential's generator writes them, malformed ones included, so the
 /// claim is graded.
 pub const DESCRIPTIVE_ELEMENTS: &[&str] = &[
@@ -147,15 +147,12 @@ pub const DESCRIPTIVE_ELEMENTS: &[&str] = &[
     "repository",
     "requireLicenseAcceptance",
     "serviceable",
+    "developmentDependency",
 ];
 
 /// The `<metadata>` elements restore reads and B₁ does not model.
-const UNMODELLED_ELEMENTS: &[&str] = &[
-    "contentFiles",
-    "frameworkAssemblies",
-    "frameworkReferences",
-    "developmentDependency",
-];
+const UNMODELLED_ELEMENTS: &[&str] =
+    &["contentFiles", "frameworkAssemblies", "frameworkReferences"];
 
 /// Whether `bytes`, the nuspec of the package `identity` is installed as, is
 /// in the domain B₁ commits in under the restoring NuGet `nuget`.

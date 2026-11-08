@@ -53,7 +53,9 @@
 ///   {"op":"rangeSatisfies","range":s,"version":s}
 ///     -> {"ok":true,"satisfies":bool} | {"ok":false}
 ///   {"op":"parseFramework","input":s} / {"op":"parseFolder","input":s}
-///     (NuGetFramework.Parse / NuGetFramework.ParseFolder)
+///   / {"op":"parseFrameworkName","input":s}
+///     (NuGetFramework.Parse / NuGetFramework.ParseFolder /
+///      NuGetFramework.ParseFrameworkName, the content model's fallback)
 ///     -> {"ok":true, "shortFolderName":..,"framework":..,"version":..,
 ///         "platform":..,"platformVersion":..,"profile":..,
 ///         "isSpecificFramework":..,"isUnsupported":..,"isAny":..,
@@ -1074,6 +1076,10 @@ let private serve (sdkDir: string) =
                     | "rangeSatisfies" -> respondRangeSatisfies root
                     | "parseFramework" -> respondParseFrameworkWith NuGetFramework.Parse root
                     | "parseFolder" -> respondParseFrameworkWith NuGetFramework.ParseFolder root
+                    | "parseFrameworkName" ->
+                        respondParseFrameworkWith
+                            (fun input -> NuGetFramework.ParseFrameworkName(input, DefaultFrameworkNameProvider.Instance))
+                            root
                     | "isCompatible" -> respondIsCompatible root
                     | "getNearest" -> respondGetNearest root
                     | "readNuspec" -> respondReadNuspec root

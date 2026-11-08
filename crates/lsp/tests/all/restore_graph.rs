@@ -302,16 +302,31 @@ impl SpawnFree {
                     DgSpecResolveDecline::PackageNamedLikeProject { .. } => {
                         "named-like-project".to_owned()
                     }
-                    DgSpecResolveDecline::CompatibilityUnproven { .. } => {
-                        "compatibility-unproven".to_owned()
+                    DgSpecResolveDecline::PromotedWarning { code, .. } => match code {
+                        Some(code) => format!("promoted-warning:{code}"),
+                        None => "promoted-warning:unpredicted".to_owned(),
+                    },
+                    DgSpecResolveDecline::CompatibilityUnproven { package, .. } => {
+                        format!("compatibility-unproven:{}", package_label(package))
                     }
                     DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
-                    DgSpecResolveDecline::PackageMetadata { .. } => "package-metadata".to_owned(),
+                    DgSpecResolveDecline::PackageMetadata { package, .. } => {
+                        format!("package-metadata:{}", package_label(package))
+                    }
                 };
                 format!("b1: declined {class}")
             }
         }
     }
+}
+
+/// A package in a census label: its id, lower-cased, and version.
+fn package_label(package: &borzoi_nuget::PackageIdentity) -> String {
+    format!(
+        "{}/{}",
+        package.id.as_str().to_ascii_lowercase(),
+        package.version.to_normalized_string()
+    )
 }
 
 /// Stage 4: B₁, handed the spec and the identity of the NuGet that restored
@@ -389,11 +404,34 @@ fn spawn_free(
         .collect();
     if ours != theirs {
         return Err(format!(
-            "{}: B₁'s closures are not the restore's:
-B₁: {ours:?}
-restore: {theirs:?}",
+            "{}: B₁'s closures are not the restore's:\nB₁: {ours:?}\nrestore: {theirs:?}",
             project.display()
         ));
+    }
+    // B₁'s predicted warnings, where it makes a prediction, are the codes the
+    // restore logged.
+    if let Some(predicted) = frameworks
+        .iter()
+        .map(|framework| framework.warnings.clone())
+        .collect::<Option<Vec<_>>>()
+    {
+        let predicted: BTreeSet<String> = predicted
+            .into_iter()
+            .flatten()
+            .map(|code| code.as_str().to_owned())
+            .collect();
+        let logged: BTreeSet<String> = decomposition.assets["logs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|log| log["code"].as_str().map(str::to_owned))
+            .collect();
+        if predicted != logged {
+            return Err(format!(
+                "{}: B₁ predicts warnings {predicted:?}, the restore logged {logged:?}",
+                project.display()
+            ));
+        }
     }
     Ok(SpawnFree::Committed(frameworks))
 }

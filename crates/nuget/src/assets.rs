@@ -54,6 +54,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::framework::FrameworkParseError;
 use crate::{InstalledPackage, NuGetFramework, PackageNuspec};
 
 /// NuGet's empty-folder placeholder: a deliberately-empty asset group.
@@ -743,8 +744,26 @@ fn is_assembly(text: &str) -> bool {
 }
 
 /// `ManagedCodeConventions.TargetFrameworkName_ParserCore`, plus the
-/// `DotnetAnyTable` replacement that precedes it.
+/// `DotnetAnyTable` replacement that precedes it: [`content_model_framework`]
+/// with its last arm, a framework named after the folder, filled in. A folder
+/// NuGet throws on is read the same way; the restore-side check declines the
+/// package before selecting its assets (`dgspec::resolve::check_compatibility`),
+/// and asset selection on its own has no verdict for it.
 fn folder_framework(name: &str) -> NuGetFramework {
+    match content_model_framework(name) {
+        Ok(Some(framework)) => framework,
+        Ok(None) | Err(_) => NuGetFramework::unknown_identifier(name),
+    }
+}
+
+/// What restore's content model makes of a folder in a framework position
+/// (`ManagedCodeConventions.TargetFrameworkName_ParserCore`, after the
+/// `DotnetAnyTable` replacement): `Some` framework where either form parses
+/// it, `None` where the content model names a framework after the folder
+/// itself, compatible with nothing, and `Err` where NuGet throws.
+pub(crate) fn content_model_framework(
+    name: &str,
+) -> Result<Option<NuGetFramework>, FrameworkParseError> {
     // `DotnetAnyTable` rewrites the folder `any` to
     // `FrameworkConstants.CommonFrameworks.DotNet` — `.NETPlatform` at the
     // *empty* version. Note that this is not what the string `dotnet` would
@@ -758,22 +777,23 @@ fn folder_framework(name: &str) -> NuGetFramework {
     // rewritten: `Any` misses it entirely and parses to NuGet's Any framework,
     // which is compatible with every project.
     if name == "any" {
-        return NuGetFramework::dot_net_platform_empty_version();
+        return Ok(Some(NuGetFramework::dot_net_platform_empty_version()));
     }
-    if let Ok(framework) = NuGetFramework::parse_folder(name)
-        && !framework.is_unsupported()
-    {
-        return framework;
+    let framework = NuGetFramework::parse_folder(name)?;
+    if !framework.is_unsupported() {
+        return Ok(Some(framework));
     }
-    // NuGet falls back to `ParseFrameworkName` — the long `FrameworkName` form
-    // — before giving up. A folder name can legally contain a comma, so this
-    // arm is reachable, if only ever adversarially.
-    if let Ok(framework) = NuGetFramework::parse(name)
-        && !framework.is_unsupported()
-    {
-        return framework;
+    // NuGet falls back to `ParseFrameworkName` — the long `FrameworkName`
+    // form, with no comma check — before giving up. So this arm is reached by
+    // every folder the short form reads as unsupported, and takes
+    // `.NETFramework,Version=v4.8`, ` .NETFramework` and `NETFramework`
+    // alike; `Parse`, which only takes the long form on a comma, would read
+    // the last two in the short form again.
+    let framework = NuGetFramework::parse_framework_name(name)?;
+    if !framework.is_unsupported() {
+        return Ok(Some(framework));
     }
-    NuGetFramework::unknown_identifier(name)
+    Ok(None)
 }
 
 /// An asset group: the framework it targets, and the assets that fell into it.
