@@ -1973,7 +1973,7 @@ impl<'a> Resolver<'a> {
         // `opaque_dotted_open` (the `open_imports_project_values` fallback sets only
         // the former), yet an opened project module with unenumerable contents can
         // still supply a shadowing type.
-        if self.unmodelled_open_active || self.opaque_dotted_open || self.opaque_value_open {
+        if self.unmodelled_open_active || self.dotted_opacity.any() || self.opaque_value_open {
             return TypePathResolution::Deferred(DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
         }
 
